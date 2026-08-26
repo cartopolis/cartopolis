@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung"]
-updated: 2026-08-23
+triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay]
+updated: 2026-08-26
 ---
 
 # One street arrives as a chain of features, and most of its "junctions" are not
@@ -60,10 +60,11 @@ fired off along the tangent and butt-capped itself into a notch. `ribbon` takes
 a `ring` flag now and mitres the seam. Only an *unclipped* run is still a ring;
 a loop cut by the tile border is an ordinary open polyline.
 
-## What this did not fix
+## What this did not fix at the time
 
-Roads still overlap heavily at real junctions and that is correct — the ladder
-in `road_rung` decides who is on top, not the geometry. Self-overlap within one
+Roads still overlapped heavily at real junctions, and that was thought to be
+correct — the ladder in `road_rung` decided who was on top, not the geometry.
+**That premise is what turned out to be wrong**; see the last section. Self-overlap within one
 class over the fixture went 10.7 % → 6.0 % (`Minor`), 8.0 % → 0.0 % (`Major`),
 21.4 % → 14.2 % (`Carriageway`); what is left is genuine crossings, slip roads
 and the interchange at the north of the tile. `cargo test -p cartopolis_geo
@@ -195,3 +196,85 @@ on both sides of the overlap.
 The prior figures are kept above because the *shape* of that table is the useful
 part: the largest single win was the adjacency rule in `assign_road_ties`, not
 any amount of extra ladder.
+
+## The ladder was the wrong tool, and the overlap is gone instead (2026-08-26)
+
+Every section above is an attempt to *order* an overlap. All of them work in the
+sense they claim and none of them stopped the flicker, because a depth tie-break
+only holds while the separation it asks for is larger than the rasteriser's own
+interpolation rounding — and `ROAD_RUNG_ULP` was **four** depth units, asserted
+to "clear the noise" and never measured. The sibling ladder that orders grass
+against water against road uses sixty-four, and `DEPTH_BIAS_STEP`'s own comment
+records sixteen being tried and found wanting at the shallow angles a low camera
+looks at the middle distance with. A road is the surface you almost always see at
+a shallow angle.
+
+Measured on the fixture before the change, as a share of road-covered pixels:
+
+| held apart by | share |
+|---|---|
+| nothing at all (same rung) | 0.51 % |
+| one rung (4 depth units) | 1.9 % |
+| three rungs or fewer (≤ 12 units) | 3.3 % |
+| **covered by two or more triangles at all** | **76.1 %** |
+
+That last row is the one that had never been measured, and it is the shape of the
+problem: **the kerb band was a slab.** Every road laid a casing ribbon the full
+width of road-plus-kerb and then drew its tarmac on top of it, so every
+carriageway pixel in the tile was two opaque coplanar surfaces. Junction crossings
+are the visible part; the slab is the bulk.
+
+Confirmed in a render before touching anything: the same camera, the same scene,
+with only the shader's `RUNG_ULP` raised from 4 to 32, changed 2.2 % of the frame
+— all of it distant roads at shallow angles, where a street that came out broken
+and patchy at 4 came out solid at 32
+(`/tmp` only; the method is `--shot` twice with one constant edited, since the
+shader is an asset and needs no rebuild).
+
+So `cartopolis_geo::road_stitch` cuts the ribbons against each other instead.
+Each ribbon keeps only the ground no higher-priority ribbon claims; what is drawn
+is a partition. **Road pixels covered twice: 76.1 % → 0.81 %**, and the covered
+area itself moves by 4 pixels in 423,028 (0.001 %) — nothing was given up but the
+double coverage. `the_road_sheet_is_a_partition` prints both figures.
+
+Standing facts about the cut:
+
+- **`road_rung` survives, as the order the cut runs in.** The hierarchy — bridge,
+  then class, then width band, then the tie colouring — is unchanged and still
+  worth its tests; it simply no longer has to be expressed in the depth buffer.
+- **The depth ladder is two rungs**, ground and bridge, at sixty-four units each.
+  A flyover and the road under it are the one overlap deliberately kept, because
+  they are two real surfaces in one place. Everything else is geometry now.
+- **Collapsing the ladder fixed a second bug for free.** Five things drawn *over*
+  roads carry hard-coded rungs on the shared ladder — zebra paint at 10.5, the
+  route casing and fill at 18 and 20, street labels at 23, the driver arrow at 24
+  — and the 399-rung ladder's ceiling of 1,916 depth units had swallowed all of
+  them. Zebra crossings on anything wider than a residential street were being
+  drawn under the tarmac. The old test checked four *other* things and stayed
+  green; `everything_drawn_over_a_road_clears_the_road_ladder` checks all nine.
+- **The kerb is a band, not a slab** (`vector_tiles::kerb_band`). Zipped between
+  two runs of `ribbon` at `half` and `half + ROAD_CASING_M` rather than offset by
+  hand, so its inner edge is the carriageway's outer edge by construction — same
+  join code, same miter, same bevel decision, same clamp.
+- **No gaps, and the reason is the lattice.** Every road vertex is snapped to
+  integer millimetres and the cut runs on `i_overlay`'s integer interface, so a
+  boundary between two pieces is the same two points for both of them rather than
+  two floating-point opinions about one line. A triangle nothing reaches is passed
+  through untouched, which is also what keeps the texture registered down a curve.
+- **What it costs.** `tessellate_roads` over the fixture: 4.7 ms → 88 ms. Three
+  things got it there from 1.4 s, and all three are about not asking the boolean
+  solver questions it does not need: a bucket index over the ribbons' *triangles*
+  (a road's bounding box is a hopeless proxy for a road), clipping against the
+  blockers' individual triangles rather than their whole contours, and an exact
+  integer separating-axis test before each call. It runs on a `platform::workers`
+  thread beside a ~120 ms tile rasterise.
+- **`i_overlay` is a new dependency**, chosen because it is pure Rust with no C
+  in the tree — the Android and wasm lanes have only the NDK's clang — and
+  because its integer interface is what the no-gaps argument rests on.
+
+Rejected on the way: **raising `ROAD_RUNG_ULP` and leaving the overlap there.** It
+does work (the render above is the proof), but the whole ladder cannot simply be
+scaled up — its top holds the tree trunks, the benches and the bridge decks, and
+at 399 rungs × 64 units those would be pulled a metre toward the camera at a
+kilometre. It would also have left 76 % of the road sheet shaded twice, which is
+fill rate a handset does not have.

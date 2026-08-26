@@ -125,7 +125,7 @@ const LABEL_Y: f32 = 0.55;
 
 /// Rung on the shared depth-bias ladder: above the route ribbon (20) and its
 /// casing, below the driver arrow (24).
-const LABEL_RUNG: f32 = 23.0;
+pub(crate) const LABEL_RUNG: f32 = 23.0;
 
 /// Textures built per frame. Mass texture uploads are the documented way to lose
 /// the device on a weak iGPU (see CLAUDE.md), and a fresh ring of cells wants a

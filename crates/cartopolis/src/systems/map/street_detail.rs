@@ -54,6 +54,19 @@ use crate::systems::terrain::TerrainSnapshot;
 use crate::systems::vector_tiles::SurfaceGroup;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
+/// Rung on the shared depth ladder for painted road markings — zebra bars and
+/// the like (`vector_tiles::DEPTH_BIAS_STEP` is the step, and
+/// `road_depth::everything_drawn_over_a_road_clears_the_road_ladder` is what
+/// keeps this above the roads it is painted on).
+///
+/// It sat at this value while the road ladder grew from a handful of rungs to
+/// 399, whose ceiling reached 1,916 depth units — so every zebra crossing on a
+/// road wider than a residential street was quietly drawn *underneath* the
+/// tarmac. The road ladder is two rungs again now that `road_stitch` settles the
+/// overlap in geometry, and the test is there so the next person to change one
+/// side hears about the other.
+pub(crate) const PAINT_RUNG: f32 = 10.5;
+
 /// Fixed grid zoom for fetch + cache, matching the building cells so one mental
 /// model covers both. Cache keys are versioned (`features/v1/…`) because the
 /// combined query *will* grow tags over time, and a cached cell fetched under an
@@ -1598,8 +1611,7 @@ fn spawn_cell(
                         materials.add(StandardMaterial {
                             base_color: Color::srgb(0.93, 0.93, 0.90),
                             unlit: true,
-                            // Over every road rung, under the bridge decks.
-                            depth_bias: 10.5 * crate::systems::vector_tiles::DEPTH_BIAS_STEP,
+                            depth_bias: PAINT_RUNG * crate::systems::vector_tiles::DEPTH_BIAS_STEP,
                             cull_mode: None,
                             ..default()
                         })

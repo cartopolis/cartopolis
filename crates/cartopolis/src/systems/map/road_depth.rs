@@ -1,47 +1,49 @@
 //! The road stack's depth ladder: the per-vertex rung, and the material that
 //! applies it.
 //!
-//! Road ribbons overlap by construction — a junction stub crosses whatever it
-//! tees into, Shortbread's merged ways cross each other freely, a flyover shares
-//! the ground plane with the road under it — and every overlap is two opaque
-//! *coplanar* triangles. Which one wins is then decided by rasteriser rounding,
-//! and it re-rolls every frame the view matrix moves: the shimmer down a street
-//! and the bleeding at its junctions.
+//! **The ladder has two rungs — ground, and bridge — and that is the whole of it.**
+//! It used to have 399, ordering every road ribbon against every other by class,
+//! then casing, then width band, then a tie colouring, because road ribbons
+//! overlapped by construction and something had to decide which one the
+//! rasteriser drew. `cartopolis_geo::road_stitch` cuts the overlap away now: the
+//! ground roads are a partition, no two of them cover the same patch, and there is
+//! nothing left for a tie-break to break.
 //!
-//! [`vector_tiles::road_rung`](cartopolis_geo::vector_tiles) decides the order —
-//! class, then casing, then width band, then a tie colouring. This module is what
-//! makes the decision stick.
+//! What remains is the one overlap that is real. A flyover and the road beneath it
+//! are two surfaces in one place — both drawn on the ground plane, since the deck
+//! carries its own height only where `tessellate_bridges` gives it one — and the
+//! rung is what holds them apart.
 //!
 //! ## Why this is a material and not a `depth_bias`
 //!
-//! `StandardMaterial::depth_bias` reaches the hardware depth bias and is exactly
-//! the right *denomination* — depth-buffer ULPs, whose apparent world shift grows
-//! with range in step with the buffer's own quantum. It is the wrong *granularity*:
-//! it is one constant for every ribbon sharing the material, and all roads of a
-//! class share one. So it can rank `Minor` against `Major` and can say nothing at
-//! all about two residential streets crossing.
+//! `StandardMaterial::depth_bias` reaches the hardware depth bias and is the right
+//! *denomination* — depth-buffer units, whose apparent world shift grows with
+//! range in step with the buffer's own quantum. It is the wrong *granularity*: it
+//! is one constant for every ribbon sharing the material, and a bridge's tarmac
+//! shares a material with the ordinary road it flies over. Hence a vertex
+//! attribute.
 //!
-//! The rung used to make up the difference geometrically, lifting each ribbon
-//! 24 µm. That is the half that failed. A geometric gap's significance decays as
-//! 1/z — 24 µm is 2.0 ULP at 100 m, 1.0 at 200 m, nothing beyond — so past a
-//! couple of hundred metres the within-class ladder was below the depth buffer's
-//! resolution and every same-class overlap went back to a coin flip. Worse, the
-//! two ladders were denominated differently and had to be kept agreeing by hand;
-//! where they disagreed the winner *flipped* with camera distance, which reads as
-//! a street's tarmac vanishing rather than as flicker.
+//! ## Why the rung is a depth offset and not a height
 //!
-//! Carrying the rung per vertex and applying it in the vertex stage
-//! (`assets/shaders/road_depth.wgsl`) collapses both ladders into one, in the
-//! units the depth buffer actually arbitrates in. Nothing decays, nothing can
-//! contradict, and — since the rung costs no height — the ceiling that forced the
-//! width bands down to two disappears with it.
+//! It was a height once, lifting each ribbon 24 µm, and that decays: a geometric
+//! gap is worth 2.0 depth units at 100 m, 1.0 at 200 m and nothing beyond, so past
+//! a couple of hundred metres the ordering simply dissolved. Scaling clip-space
+//! `z` instead offsets a surface by a fixed number of units of its *own* depth,
+//! which is exactly what a hardware depth-bias unit is, so the separation neither
+//! decays nor runs away with range. `assets/shaders/road_depth.wgsl` does it in
+//! the vertex stage.
+//!
+//! One rung is [`ROAD_RUNG_ULP`] = 64 depth units, matching
+//! `vector_tiles::DEPTH_BIAS_STEP`. It was 4, on the assertion that four "clears
+//! the rasteriser's interpolation noise" — which was never measured, and was
+//! wrong: the sibling ladder needs 64, having found 16 too little at the shallow
+//! angles a low camera looks at the middle distance with. That is the whole
+//! failure this module used to have, and the reason the fix moved into geometry.
 //!
 //! ## What this costs
 //!
 //! Four bytes per road vertex, and one extra pipeline. It costs no draw calls:
-//! there is still exactly one material per [`SurfaceGroup`], which is the whole
-//! reason the ordering had to be per *vertex* rather than per material in the
-//! first place.
+//! there is still exactly one material per [`SurfaceGroup`].
 
 use bevy::mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef};
 use bevy::pbr::{
@@ -129,6 +131,43 @@ mod tests {
             (value - ROAD_RUNG_ULP).abs() < f32::EPSILON,
             "road_depth.wgsl says {value} ULPs per rung, the ladder says {ROAD_RUNG_ULP}",
         );
+    }
+
+    /// **Everything drawn over a road has to clear the road ladder**, and until
+    /// 2026-08-26 five things did not.
+    ///
+    /// The ladder grew from a handful of rungs to 399 when the road ordering moved
+    /// into the depth buffer, and its ceiling went with it — from a couple of
+    /// hundred depth units to 1,916. Four hard-coded rungs on the same ladder were
+    /// left where they were and were swallowed: the zebra paint at 672, the route
+    /// line's casing and fill at 1,152 and 1,280, the street labels at 1,472 and
+    /// the driver arrow at 1,536. A zebra crossing on anything wider than a
+    /// residential street was being drawn underneath the tarmac.
+    ///
+    /// The test that existed then checked four *other* things — the bridge decks,
+    /// the tree canopy, the trunks and the street furniture — and stayed green
+    /// throughout. So it checks all nine now, and takes the ceiling from
+    /// `road_rung_ceiling()` rather than from a number written down twice.
+    #[test]
+    fn everything_drawn_over_a_road_clears_the_road_ladder() {
+        use crate::systems::vector_tiles::DEPTH_BIAS_STEP;
+        let ceiling = road_rung_ceiling();
+        for (what, rung) in [
+            ("zebra paint", crate::systems::street_detail::PAINT_RUNG),
+            (
+                "route casing",
+                crate::systems::navigation::ROUTE_CASING_RUNG,
+            ),
+            ("route line", crate::systems::navigation::ROUTE_RUNG),
+            ("street label", crate::systems::street_labels::LABEL_RUNG),
+            ("driver arrow", crate::systems::driver::ARROW_RUNG),
+        ] {
+            assert!(
+                rung * DEPTH_BIAS_STEP > ceiling,
+                "{what} biases {} but the road ladder reaches {ceiling}",
+                rung * DEPTH_BIAS_STEP,
+            );
+        }
     }
 
     /// The road ladder lives *inside* the band `SurfaceGroup::depth_rung` leaves

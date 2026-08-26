@@ -325,10 +325,20 @@ const ROAD_BAND_FOOT: f32 = 5.0;
 /// The `2.0` is a truncation guard plus a whole rung of clear air: `as u32`
 /// rounds the band's height *down*, so one of those units only gets the ceiling
 /// back level with the tallest road rung. Without the second the margin would be
-/// whatever the division happened to leave — 4 ULP at the current sizes, and
-/// silently negative if the ladder ever grew past the next multiple.
-const ROAD_BAND_CEILING: f32 =
-    ROAD_BAND_FOOT + 2.0 + (ROAD_LAYERS as f32 * ROAD_RUNG_ULP / DEPTH_BIAS_STEP) as u32 as f32;
+/// whatever the division happened to leave, and silently negative if the ladder
+/// ever grew past the next multiple.
+///
+/// The band is two rungs tall now rather than 399 (see [`ROAD_DEPTH_RUNGS`]), and
+/// that matters to more than tidiness. Five things in the client are drawn *over*
+/// roads by a hard-coded rung on this same ladder — the zebra paint at 10.5, the
+/// route line's casing and fill at 18 and 20, the street labels at 23 and the
+/// driver arrow at 24 — and when the road ladder grew to 399 rungs its ceiling
+/// climbed to 1,916 depth units and swallowed every one of them. A zebra crossing
+/// on anything wider than a residential street was being drawn underneath the
+/// tarmac.
+const ROAD_BAND_CEILING: f32 = ROAD_BAND_FOOT
+    + 2.0
+    + (ROAD_DEPTH_RUNGS as f32 * ROAD_RUNG_ULP / DEPTH_BIAS_STEP) as u32 as f32;
 
 /// Which sub-rectangle of a source tile to draw, when the requested tile is deeper
 /// than [`MAX_SOURCE_ZOOM`]. `factor` is 2^(requested_z − source_z); `(x, y)` is the
@@ -1812,9 +1822,43 @@ const JUNCTION_EXTEND_MAX: f32 = 12.0;
 ///
 /// Denominated in ULPs the rung is **range-invariant** by construction: the
 /// apparent world shift is `1.19e-7 · ulps · z`, so it grows exactly as fast as
-/// the depth buffer's own quantum. Four ULPs clears the rasteriser's
-/// interpolation noise, which one does not.
-pub const ROAD_RUNG_ULP: f32 = 4.0;
+/// the depth buffer's own quantum.
+///
+/// It is sixty-four now and was four, and the change came with
+/// [`crate::road_stitch`] taking the overlap away. Four was chosen as "enough to
+/// clear the rasteriser's interpolation noise" and was never measured; the
+/// sibling ladder that orders grass against water against road needs
+/// [`DEPTH_BIAS_STEP`] — sixty-four — and its own comment records sixteen being
+/// tried and found wanting at the shallow angles a low camera looks at the middle
+/// distance with. On the Groningen fixture 1.9 % of road pixels were held apart by
+/// a single four-unit rung, and a headless capture over the city confirmed the
+/// consequence: raising this constant alone changed which ribbon was drawn along
+/// every road past about two kilometres.
+///
+/// A rung can afford to be sixteen times taller because there are two of them
+/// instead of 399 ([`ROAD_DEPTH_RUNGS`]) — the ordering that used to need all
+/// those rungs is a *cut* now, not a tie-break.
+pub const ROAD_RUNG_ULP: f32 = 64.0;
+
+/// How many rungs the road band actually holds: ground, then bridge.
+///
+/// `road_stitch` leaves the ground roads as a partition — no two of them cover the
+/// same patch — so nothing there needs separating in depth at all. The one
+/// overlap it deliberately keeps is a flyover over the road it crosses, which is
+/// two real surfaces in one place, and one rung is what holds them apart.
+///
+/// The 399-rung ladder this replaces was `class × width band × tie colouring`, all
+/// of it in aid of deciding which of two overlapping ribbons to draw. That decision
+/// is made in geometry now, and [`road_rung`] survives only as the *order the cut
+/// runs in* — the hierarchy is still exactly as it was, it simply no longer has to
+/// be expressed in the depth buffer.
+pub const ROAD_DEPTH_RUNGS: u32 = 2;
+
+/// Which of the two depth rungs a ribbon draws on.
+#[must_use]
+pub fn road_depth_rung(bridge: bool) -> f32 {
+    u32::from(bridge) as f32
+}
 
 /// Rungs reserved at the top of the ladder for roads carried on a bridge deck.
 /// One casing plus a full set of ties, so a flyover's ribbons separate from each
@@ -1867,7 +1911,7 @@ const ROAD_RUNGS_PER_CLASS: u32 = CASING_RUNGS_PER_CLASS + ROAD_WIDTH_SUBBANDS *
 /// they do, so growing the ladder can never silently push it through them.
 #[must_use]
 pub fn road_rung_ceiling() -> f32 {
-    ROAD_BAND_FOOT * DEPTH_BIAS_STEP + ROAD_LAYERS as f32 * ROAD_RUNG_ULP
+    ROAD_BAND_FOOT * DEPTH_BIAS_STEP + ROAD_DEPTH_RUNGS as f32 * ROAD_RUNG_ULP
 }
 
 /// A class's block index, low to high — **the** road hierarchy.
@@ -2264,8 +2308,8 @@ pub fn tessellate_roads(
         Vec<f32>,
     );
     let mut builders: Vec<RoadBuilder> = Vec::new();
-    // Groups cut loose mid-tile, over the frame's upload budget. See the sweep at
-    // the bottom of the feature loop.
+    // Groups cut loose mid-tile, over the frame's upload budget. See the sweep in
+    // the emit loop at the bottom.
     let mut full: Vec<SurfaceMesh> = Vec::new();
     let slot_for = |builders: &mut Vec<RoadBuilder>, group: SurfaceGroup| match builders
         .iter()
@@ -2277,6 +2321,11 @@ pub fn tessellate_roads(
             builders.len() - 1
         }
     };
+    // Every ribbon is laid into a buffer of its own first, because the thing that
+    // settles a junction now is `road_stitch`, and it can only cut a ribbon it can
+    // still tell apart from its neighbours. They are merged into the per-group
+    // meshes after the cut.
+    let mut staged: Vec<crate::road_stitch::Ribbon> = Vec::new();
 
     for (fi, feature) in features.iter().enumerate() {
         let Some((class, half)) = drawn_street(feature) else {
@@ -2286,9 +2335,6 @@ pub fn tessellate_roads(
         // Kerbed classes get a casing ribbon under the fill; paths and rails
         // have no kerb to draw.
         let cased = !matches!(class, RoadClass::Path | RoadClass::Rail);
-
-        let slot = slot_for(&mut builders, SurfaceGroup::Road(class));
-        let casing_slot = cased.then(|| slot_for(&mut builders, SurfaceGroup::RoadCasing(class)));
 
         let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
         match &feature.geometry {
@@ -2390,38 +2436,64 @@ pub fn tessellate_roads(
                 // which is not a junction — extending there would push tarmac out
                 // from under the structure.
                 let whole = parts.len() == 1 && parts[0].len() == run.len();
-                for part in parts {
+                for (pi, part) in parts.into_iter().enumerate() {
                     let ends = if whole {
                         [join_head, join_tail]
                     } else {
                         [EndJoin::default(); 2]
                     };
-                    {
-                        let (_, positions, uvs, indices, rungs) = &mut builders[slot];
-                        ribbon(
-                            &part,
-                            half,
-                            0.0,
-                            class.texture_length_m(),
-                            ends,
-                            run_is_ring && whole,
+                    let mut lay = |group: SurfaceGroup,
+                                   rung: f32,
+                                   priority: u32,
+                                   positions: Vec<[f32; 3]>,
+                                   uvs: Vec<[f32; 2]>,
+                                   indices: Vec<u32>| {
+                        if indices.is_empty() {
+                            return;
+                        }
+                        staged.push(crate::road_stitch::Ribbon {
+                            group,
+                            rung,
+                            // `road_rung` is the road hierarchy and decides who
+                            // wins the ground; the rest only has to make the
+                            // order total, so that two ribbons which tie on the
+                            // hierarchy still have a definite winner rather than
+                            // a draw the renderer would have to break.
+                            priority: (priority, fi, li, pi),
+                            bridge,
                             positions,
                             uvs,
                             indices,
-                        );
-                        // One rung per vertex the ribbon just appended. `ribbon`
-                        // only ever grows the buffers, so resizing to the new
-                        // length tags exactly this feature's vertices and leaves
-                        // every earlier one alone.
-                        rungs.resize(positions.len(), rung);
-                    }
-                    if let Some(cs) = casing_slot {
-                        // The casing wraps the fill's stub ends too, so the
-                        // kerb band runs around the junction mouth instead of
-                        // stopping square at it. A mitred end needs no such
-                        // treatment — the neighbour's casing is mitred to the
-                        // same bisector and meets this one exactly. It draws on
-                        // its class block's own foot rung (`road_casing_rung`).
+                        });
+                    };
+                    let mut p = Vec::new();
+                    let mut u = Vec::new();
+                    let mut i = Vec::new();
+                    ribbon(
+                        &part,
+                        half,
+                        0.0,
+                        class.texture_length_m(),
+                        ends,
+                        run_is_ring && whole,
+                        &mut p,
+                        &mut u,
+                        &mut i,
+                    );
+                    lay(
+                        SurfaceGroup::Road(class),
+                        road_depth_rung(bridge),
+                        rung as u32,
+                        p,
+                        u,
+                        i,
+                    );
+                    if cased {
+                        // The kerb wraps the fill's stub ends too, so the band
+                        // runs around the junction mouth instead of stopping
+                        // square at it. A mitred end needs no such treatment —
+                        // the neighbour's kerb is mitred to the same bisector and
+                        // meets this one exactly.
                         let ext = ends.map(|e| EndJoin {
                             extend: if e.extend > 0.0 {
                                 e.extend + ROAD_CASING_M
@@ -2430,46 +2502,65 @@ pub fn tessellate_roads(
                             },
                             cont: e.cont,
                         });
-                        let (_, positions, uvs, indices, rungs) = &mut builders[cs];
-                        ribbon(
+                        let mut p = Vec::new();
+                        let mut u = Vec::new();
+                        let mut i = Vec::new();
+                        kerb_band(
                             &part,
-                            half + ROAD_CASING_M,
-                            0.0,
+                            half,
                             class.texture_length_m(),
+                            ends,
                             ext,
                             run_is_ring && whole,
-                            positions,
-                            uvs,
-                            indices,
+                            &mut p,
+                            &mut u,
+                            &mut i,
                         );
-                        rungs.resize(positions.len(), casing_rung);
+                        lay(
+                            SurfaceGroup::RoadCasing(class),
+                            road_depth_rung(bridge),
+                            casing_rung as u32,
+                            p,
+                            u,
+                            i,
+                        );
                     }
                 }
             }
         }
+    }
 
-        // One sweep per feature, over every group rather than the one just
-        // touched: a single street writes into two builders (its surface and its
-        // casing), so checking only the last would leave the other to grow.
-        //
-        // The cut is after the feature, not before it — a ribbon's vertex count is
-        // not known until it has been laid — so the bound is "the ceiling plus at
-        // most one feature", which is what `scatter`'s test asserts. A road cell
-        // over Groningen was 4.2 MB in one mesh (2026-08-19); one feature is a
-        // street.
+    // Cut every ribbon back to the ground no higher-priority ribbon claims. After
+    // this the road sheet is a partition: no two ribbons cover one patch, so
+    // nothing is left for the depth ladder to arbitrate at ground level.
+    crate::road_stitch::stitch(&mut staged);
+
+    for r in staged {
+        let slot = slot_for(&mut builders, r.group);
+        let (_, positions, uvs, indices, rungs) = &mut builders[slot];
+        let base = positions.len() as u32;
+        positions.extend(r.positions);
+        uvs.extend(r.uvs);
+        indices.extend(r.indices.iter().map(|i| i + base));
+        // One rung per vertex this ribbon just appended, leaving every earlier
+        // one alone.
+        rungs.resize(positions.len(), r.rung);
+
+        // The cut is after the ribbon, not before it — its vertex count is not
+        // known until it has been laid — so the bound is "the ceiling plus at most
+        // one ribbon", which is what `scatter`'s test asserts. A road cell over
+        // Groningen was 4.2 MB in one mesh (2026-08-19).
         if let Some(max) = max_bytes {
-            for (group, positions, uvs, indices, rungs) in &mut builders {
-                if mesh_upload_bytes(positions.len(), indices.len()) >= max {
-                    full.push(SurfaceMesh {
-                        group: *group,
-                        positions: std::mem::take(positions),
-                        uvs: std::mem::take(uvs),
-                        indices: std::mem::take(indices),
-                        normals: Vec::new(),
-                        colors: Vec::new(),
-                        rungs: std::mem::take(rungs),
-                    });
-                }
+            if mesh_upload_bytes(positions.len(), indices.len()) >= max {
+                full.push(SurfaceMesh {
+                    group: r.group,
+                    positions: std::mem::take(positions),
+                    uvs: std::mem::take(uvs),
+                    indices: std::mem::take(indices),
+                    normals: Vec::new(),
+                    colors: Vec::new(),
+                    rungs: std::mem::take(rungs),
+                });
             }
         }
     }
@@ -2984,7 +3075,7 @@ fn ribbon(
     positions: &mut Vec<[f32; 3]>,
     uvs: &mut Vec<[f32; 2]>,
     indices: &mut Vec<u32>,
-) {
+) -> RibbonEdges {
     let extend = [ends[0].extend, ends[1].extend];
     // Consecutive duplicates have no direction and would produce NaN normals.
     let mut pts: Vec<[f32; 2]> = Vec::with_capacity(points.len());
@@ -2997,7 +3088,7 @@ fn ribbon(
         }
     }
     if pts.len() < 2 || half <= 0.0 {
-        return;
+        return RibbonEdges::default();
     }
     // A ring needs three distinct points plus the repeat to have an interior;
     // and the caller's flag is only a hint until the geometry agrees with it
@@ -3180,6 +3271,51 @@ fn ribbon(
         }
     }
 
+    // The area this ribbon covers, read straight off the strip it just laid.
+    //
+    // `joins` holds, per centre-line point, the `(u = 0, u = 1)` vertex pair the
+    // incoming quad closes on and the pair the outgoing one opens from — so the
+    // two sides of the ribbon *are* the two chains through those pairs, and the
+    // boundary is one walked forward and the other walked back. Reading it out of
+    // the strip rather than recomputing the offsets is the point: `road_stitch`
+    // cuts against exactly the triangles that were laid, never against a second
+    // opinion about where they are.
+    let n = joins.len();
+    // On a ring the last join is the first one again; keeping it would close the
+    // contour on a doubled vertex.
+    let span = if ring { n.saturating_sub(1) } else { n };
+    let mut side_a: Vec<[f32; 2]> = Vec::with_capacity(span * 2);
+    let mut side_b: Vec<[f32; 2]> = Vec::with_capacity(span * 2);
+    fn push_flat(chain: &mut Vec<[f32; 2]>, positions: &[[f32; 3]], idx: u32) {
+        let p = positions[idx as usize];
+        let q = [p[0], p[2]];
+        if chain
+            .last()
+            .is_none_or(|l: &[f32; 2]| (l[0] - q[0]).hypot(l[1] - q[1]) > 1e-6)
+        {
+            chain.push(q);
+        }
+    }
+    for j in joins.iter().take(span) {
+        push_flat(&mut side_a, positions, j.0 .0);
+        push_flat(&mut side_a, positions, j.1 .0);
+        push_flat(&mut side_b, positions, j.0 .1);
+        push_flat(&mut side_b, positions, j.1 .1);
+    }
+    let sides = [side_a.clone(), side_b.clone()];
+    let mut contours: Vec<Vec<[f32; 2]>> = Vec::new();
+    if ring {
+        // A closed ribbon is an annulus, so its two sides are two separate
+        // contours — the outer boundary and the hole in the middle of the
+        // roundabout — not one loop walked out and back.
+        contours.push(side_a);
+        contours.push(side_b);
+    } else {
+        side_b.reverse();
+        side_a.extend(side_b);
+        contours.push(side_a);
+    }
+
     // Junction stubs, as standalone quads rather than extra strip points, for
     // two reasons. They sample [`STUB_PLAIN_U`] — a marking-free column of the
     // class texture — so the kerb lines and centre dashes *break* at the
@@ -3189,6 +3325,7 @@ fn ribbon(
     // own butt-end coordinates (the ends are unmitred: `d_out == d_in` there),
     // so the seam is watertight by construction.
     let total = travelled;
+    let mut stub_contours: Vec<Vec<[f32; 2]>> = Vec::new();
     let mut stub = |end: [f32; 2], d: [f32; 2], len: f32, v0: f32| {
         let n = [-d[1], d[0]];
         let far = [end[0] + d[0] * len, end[1] + d[1] * len];
@@ -3220,6 +3357,7 @@ fn ribbon(
             positions.push([p[0], y, p[1]]);
             uvs.push([u, v]);
         }
+        stub_contours.push(corners.iter().map(|(p, _, _)| *p).collect());
         push_triangle_up(positions, indices, base, base + 1, base + 2);
         push_triangle_up(positions, indices, base, base + 2, base + 3);
     };
@@ -3234,6 +3372,165 @@ fn ribbon(
             total / tex_len_m,
         );
     }
+    drop(stub);
+    contours.extend(stub_contours);
+    // One winding for every solid contour and the other for a hole, because the
+    // boolean below reads them under a non-zero fill rule and a contour wound the
+    // wrong way there subtracts itself from its own neighbours.
+    let outer = contours
+        .iter()
+        .map(|c| ring_area(c).abs())
+        .fold(0.0f32, f32::max);
+    for c in &mut contours {
+        let a = ring_area(c);
+        // The roundabout's hole is the one contour that must run the other way;
+        // it is the small one, and `ring` is the only thing that produces a pair.
+        let want_positive = !ring || ring_area(c).abs() >= outer - f32::EPSILON;
+        if (a > 0.0) != want_positive {
+            c.reverse();
+        }
+    }
+    contours.retain(|c| c.len() >= 3);
+    RibbonEdges { contours, sides }
+}
+
+/// The boundary of what a ribbon covers, as [`ribbon`] laid it.
+///
+/// Both fields exist for [`kerb_band`], which is the only caller that reads them:
+/// `sides` are the two offset chains, one per side of the centre line and in
+/// centre-line order, which it zips against a second, wider pair to make the kerb
+/// a band rather than a slab; `contours` is the closed form, whose entries past
+/// the strip itself are the junction stub quads.
+///
+/// **`road_stitch` does not use either.** It cuts the ribbons' *triangles* — the
+/// geometry about to be drawn — rather than a separate description of where that
+/// geometry is, which is one fewer thing that can disagree.
+#[derive(Default)]
+struct RibbonEdges {
+    contours: Vec<Vec<[f32; 2]>>,
+    sides: [Vec<[f32; 2]>; 2],
+}
+
+/// Lay a road's kerb band: the strip of [`ROAD_CASING_M`] outside each edge of
+/// the carriageway, and **not** the carriageway itself.
+///
+/// The kerb used to be a second ribbon the full width of road-plus-kerb, drawn
+/// underneath the tarmac. That is a slab, and it made every carriageway pixel in
+/// the tile a place where two opaque coplanar surfaces met — 70 % of the road
+/// sheet, and by a long way the largest overlap in the scene. `road_stitch` will
+/// cut it back to the two side strips whatever this does, but cutting a shape you
+/// did not have to draw is work: laying the slab and subtracting it again was 60 %
+/// of the whole cut's cost on the Groningen fixture.
+///
+/// The band is zipped between two runs of [`ribbon`] rather than offset by hand,
+/// and that is what makes its inner edge *exactly* the carriageway's outer edge:
+/// the same join code, the same miter, the same bevel decision and the same inner
+/// backtrack clamp produce both, so the two meet on shared coordinates and the
+/// seam cannot open. If the two runs ever disagree about how many points a side
+/// has — they cannot today, since every one of those decisions is independent of
+/// the width — this falls back to the slab, which `road_stitch` then cuts as
+/// before. Slower, never wrong.
+///
+/// Kerb geometry carries no texture: `RoadCasing`'s material is flat-coloured
+/// (see `road_base_material`), so the texture coordinates here only have to
+/// exist.
+#[allow(clippy::too_many_arguments)]
+fn kerb_band(
+    points: &[[f32; 2]],
+    half: f32,
+    tex_len_m: f32,
+    ends: [EndJoin; 2],
+    kerb_ends: [EndJoin; 2],
+    ring: bool,
+    positions: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    indices: &mut Vec<u32>,
+) {
+    let mut sink = (Vec::new(), Vec::new(), Vec::new());
+    let inner = ribbon(
+        points,
+        half,
+        0.0,
+        tex_len_m,
+        ends,
+        ring,
+        &mut sink.0,
+        &mut sink.1,
+        &mut sink.2,
+    );
+    sink = (Vec::new(), Vec::new(), Vec::new());
+    let outer = ribbon(
+        points,
+        half + ROAD_CASING_M,
+        0.0,
+        tex_len_m,
+        kerb_ends,
+        ring,
+        &mut sink.0,
+        &mut sink.1,
+        &mut sink.2,
+    );
+    let zips = inner
+        .sides
+        .iter()
+        .zip(outer.sides.iter())
+        .all(|(a, b)| a.len() == b.len() && a.len() >= 2);
+    if !zips {
+        // Fall back to the slab; the cut removes the doubled area either way.
+        let base = positions.len() as u32;
+        positions.append(&mut sink.0);
+        uvs.append(&mut sink.1);
+        indices.extend(sink.2.iter().map(|i| i + base));
+        return;
+    }
+
+    for (a, b) in inner.sides.iter().zip(outer.sides.iter()) {
+        let base = positions.len() as u32;
+        for (k, (p, q)) in a.iter().zip(b.iter()).enumerate() {
+            let v = k as f32 / (a.len() - 1) as f32;
+            positions.push([p[0], 0.0, p[1]]);
+            uvs.push([0.0, v]);
+            positions.push([q[0], 0.0, q[1]]);
+            uvs.push([1.0, v]);
+        }
+        for k in 0..a.len() - 1 {
+            let (i0, o0) = (base + (k as u32) * 2, base + (k as u32) * 2 + 1);
+            let (i1, o1) = (i0 + 2, o0 + 2);
+            push_triangle_up(positions, indices, i0, o0, o1);
+            push_triangle_up(positions, indices, i0, o1, i1);
+        }
+    }
+    // A kerb also wraps the mouth of a junction stub, where the carriageway ends
+    // square against the road it joins rather than being mitred into it. Those
+    // patches are not side strips, so they are laid whole — as the quads `ribbon`
+    // made them — and the general cut takes the carriageway back out of them.
+    // There are at most two per ribbon, so the cut has almost nothing to do.
+    let strips = if ring { 2 } else { 1 };
+    for stub in outer.contours.into_iter().skip(strips) {
+        if stub.len() != 4 {
+            continue;
+        }
+        let base = positions.len() as u32;
+        for p in &stub {
+            positions.push([p[0], 0.0, p[1]]);
+            uvs.push([0.0, 0.0]);
+        }
+        push_triangle_up(positions, indices, base, base + 1, base + 2);
+        push_triangle_up(positions, indices, base, base + 2, base + 3);
+    }
+}
+
+/// Twice the signed area of a closed ring — positive counter-clockwise in the
+/// tile's (x east, y south) frame. Only the sign and the ordering of magnitudes
+/// are used, so the factor of two is left in.
+fn ring_area(ring: &[[f32; 2]]) -> f32 {
+    let mut acc = 0.0f32;
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[(i + 1) % ring.len()];
+        acc += a[0] * b[1] - b[0] * a[1];
+    }
+    acc
 }
 
 /// Append a triangle wound so its face points **+Y**, whatever order the caller
@@ -4990,135 +5287,82 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_road_features_are_separated_in_depth() {
-        // Ribbons overlap at every junction and tile seam; equal heights there
-        // z-fight, which is the flicker along a joint. The old form of this test
-        // only asserted "more than one height exists", which stayed green while
-        // a quarter of same-band crossings were exactly coplanar. This one
-        // rasterises each class's ribbons per *rung* and counts the pixels a
-        // single rung covers twice — the coplanar area, i.e. the z-fight area —
-        // as a fraction of all covered pixels.
+    fn the_road_sheet_is_a_partition() {
+        // The claim `road_stitch` exists to make: no two road ribbons cover the
+        // same patch of ground, so nothing is left for the depth buffer to
+        // arbitrate and no camera angle can change which one is drawn.
         //
-        // The floor is not zero: a ribbon legitimately meets itself along
-        // shared triangle edges and in the bevel corner fills, and a hash
-        // tie-break still collides at 1-in-4 for same-band crossings. The bound
-        // is calibrated against the fixture (2.24% measured after the ladder
-        // rework) to catch a regression to index-correlated or single-rung
-        // behaviour, not to demand geometric perfection.
-        const PX: usize = 600;
+        // Rasterise every road and kerb triangle top-down and count how often each
+        // pixel is covered. Before the cut this measured 76.1 % of road pixels
+        // covered twice and 12.5 % three times or more (2026-08-26).
+        const PX: usize = 1200;
         let tile_m = 1000.0f32;
         let meshes = tessellate_roads(GRONINGEN_Z14, tile_m, &[]).expect("tessellate");
-        let mut covered = 0usize;
-        let mut coplanar = 0usize;
-        // Casing ribbons are exempt: a whole class's casings share one rung by
-        // design (`road_casing_rung`), and a z-fight between two patches of the
-        // same flat colour cannot be seen.
+        let mut count: Vec<u16> = vec![0; PX * PX];
         for m in meshes
             .iter()
-            .filter(|m| matches!(m.group, SurfaceGroup::Road(_)))
+            .filter(|m| matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)))
         {
-            // One coverage grid per rung actually present in this class. The rung
-            // is the attribute now, not the vertex height — the ribbons are all
-            // exactly coplanar and it is the *depth* they are separated in.
-            assert_eq!(
-                m.rungs.len(),
-                m.positions.len(),
-                "a road mesh must carry one rung per vertex",
-            );
-            let rungs: std::collections::BTreeSet<u32> =
-                m.rungs.iter().map(|r| r.round() as u32).collect();
-            let mut any = vec![false; PX * PX];
-            let mut doubled = vec![false; PX * PX];
-            for rung in rungs {
-                let mut own = vec![0u8; PX * PX];
-                for tri in m.indices.chunks_exact(3) {
-                    if m.rungs[tri[0] as usize].round() as u32 != rung {
-                        continue;
-                    }
-                    let p: Vec<[f32; 2]> = tri
-                        .iter()
-                        .map(|i| {
-                            let v = m.positions[*i as usize];
-                            [v[0] / tile_m * PX as f32, v[2] / tile_m * PX as f32]
-                        })
-                        .collect();
-                    let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
-                        - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
-                    if area.abs() < 1e-9 {
-                        continue;
-                    }
-                    let x0 = p
-                        .iter()
-                        .map(|q| q[0])
-                        .fold(f32::MAX, f32::min)
-                        .floor()
-                        .max(0.0) as usize;
-                    let x1 = p
-                        .iter()
-                        .map(|q| q[0])
-                        .fold(f32::MIN, f32::max)
-                        .ceil()
-                        .min(PX as f32 - 1.0) as usize;
-                    let y0 = p
-                        .iter()
-                        .map(|q| q[1])
-                        .fold(f32::MAX, f32::min)
-                        .floor()
-                        .max(0.0) as usize;
-                    let y1 = p
-                        .iter()
-                        .map(|q| q[1])
-                        .fold(f32::MIN, f32::max)
-                        .ceil()
-                        .min(PX as f32 - 1.0) as usize;
-                    for y in y0..=y1 {
-                        for x in x0..=x1 {
-                            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                            let w0 = ((p[1][0] - p[0][0]) * (py - p[0][1])
-                                - (px - p[0][0]) * (p[1][1] - p[0][1]))
-                                / area;
-                            let w1 = ((px - p[0][0]) * (p[2][1] - p[0][1])
-                                - (p[2][0] - p[0][0]) * (py - p[0][1]))
-                                / area;
-                            if w0 >= 0.0 && w1 >= 0.0 && w0 + w1 <= 1.0 {
-                                own[y * PX + x] = own[y * PX + x].saturating_add(1);
-                            }
+            for t in m.indices.chunks_exact(3) {
+                let p: Vec<[f32; 2]> = t
+                    .iter()
+                    .map(|i| {
+                        let v = m.positions[*i as usize];
+                        [v[0] / tile_m * PX as f32, v[2] / tile_m * PX as f32]
+                    })
+                    .collect();
+                let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                    - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                if area.abs() < 1e-9 {
+                    continue;
+                }
+                let lo = |f: &dyn Fn(&[f32; 2]) -> f32| {
+                    p.iter().map(f).fold(f32::MAX, f32::min).floor().max(0.0) as usize
+                };
+                let hi = |f: &dyn Fn(&[f32; 2]) -> f32| {
+                    (p.iter().map(f).fold(f32::MIN, f32::max).ceil()).min(PX as f32 - 1.0) as usize
+                };
+                let (x0, x1) = (lo(&|q: &[f32; 2]| q[0]), hi(&|q: &[f32; 2]| q[0]));
+                let (y0, y1) = (lo(&|q: &[f32; 2]| q[1]), hi(&|q: &[f32; 2]| q[1]));
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let s = |a: &[f32; 2], b: &[f32; 2]| {
+                            (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])
+                        };
+                        let (d0, d1, d2) = (s(&p[0], &p[1]), s(&p[1], &p[2]), s(&p[2], &p[0]));
+                        let inside = (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0)
+                            || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0);
+                        if inside {
+                            count[y * PX + x] = count[y * PX + x].saturating_add(1);
                         }
                     }
                 }
-                for (i, c) in own.iter().enumerate() {
-                    if *c > 0 {
-                        any[i] = true;
-                    }
-                    if *c > 1 {
-                        doubled[i] = true;
-                    }
-                }
             }
-            covered += any.iter().filter(|b| **b).count();
-            coplanar += doubled.iter().filter(|b| **b).count();
         }
-        let frac = coplanar as f32 / covered.max(1) as f32;
+        let covered = count.iter().filter(|c| **c > 0).count();
+        let doubled = count.iter().filter(|c| **c > 1).count();
+        let frac = doubled as f32 / covered.max(1) as f32;
         println!(
-            "coplanar-overlap: {coplanar}/{covered} px = {:.2}%",
+            "road overdraw: {doubled}/{covered} px = {:.2}%",
             frac * 100.0
         );
-        // 0.51% measured (2026-08-23). The old bound was 5%, which is how 1.60%
-        // sat here unnoticed until someone read the printed figure — a bound that
-        // loose asserts nothing. This one is a little over the measurement, so it
-        // catches a return to hash-only or single-rung behaviour without tripping
-        // on a fixture that gains a street.
+        // 0.81 % measured (2026-08-26), and it is not zero because a ribbon still
+        // laps over *itself* where a bevel fills a tight corner. That is the one
+        // collision this never had to settle: one ribbon is one material, one
+        // colour and one run of texture coordinates, so which of its own two
+        // triangles wins cannot be seen. The bound is a little over the
+        // measurement, to catch the cut being skipped rather than a fixture that
+        // gains a street.
         assert!(
-            frac < 0.01,
-            "{:.2}% of covered road pixels are coplanar-overlapped (z-fight area)",
+            frac < 0.02,
+            "{:.2}% of covered road pixels are covered twice",
             frac * 100.0
         );
-        // **Roads carry no height of their own any more**, and that is what makes
-        // the ordering survive at range: it lives in the rung, which is applied in
-        // depth rather than in world space (`systems::road_depth`). A stray lift
-        // here would resurrect the second ladder this design exists to delete —
-        // and, being millimetres, would do it invisibly up close and wrongly far
-        // away.
+        // **Roads carry no height of their own**, and that is what lets the cut be
+        // a plain two-dimensional one: every ribbon lies in the same plane, so
+        // "who covers this ground" is the whole question. A stray lift here would
+        // put the ribbons back on separate planes and quietly make the cut a lie.
         for m in meshes
             .iter()
             .filter(|m| matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)))
@@ -5126,6 +5370,15 @@ mod tests {
             for p in &m.positions {
                 assert_eq!(p[1], 0.0, "a road vertex was lifted off the road plane");
             }
+            // The rung is a vertex attribute, and a mesh that carries the wrong
+            // number of them fails pipeline validation — which bevy answers by
+            // skipping the pass, i.e. the roads are simply not drawn, with healthy
+            // mesh counts and nothing in the log.
+            assert_eq!(
+                m.rungs.len(),
+                m.positions.len(),
+                "a road mesh must carry one rung per vertex",
+            );
         }
     }
 
