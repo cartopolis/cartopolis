@@ -1,41 +1,25 @@
-// The road stack's depth ladder — the one thing that decides which of two
-// overlapping road ribbons is drawn on top.
+// The road stack's depth ladder — two rungs, ground and bridge.
 //
-// Road ribbons **overlap by construction**: a junction stub crosses whatever it
-// tees into, Shortbread's merged ways cross each other freely, and a flyover is
-// drawn on the same ground plane as the road it flies over. Every one of those
-// overlaps is two opaque coplanar triangles, whose depth values agree to the last
-// few bits — so which one wins is decided by rasteriser rounding, and it re-rolls
-// every frame the view matrix moves. That is the shimmer along a street and the
-// bleeding at its junctions.
+// Road ribbons used to overlap by construction, and this file used to be what
+// decided which of two coplanar surfaces was drawn: 399 rungs of class, casing,
+// width band and tie colouring, each worth four depth-buffer units. Four was not
+// enough — the sibling ladder that orders grass against water against road needs
+// sixty-four, and sixteen had already been measured as too little at the shallow
+// angles a low camera looks at the middle distance with — so junctions kept
+// flickering however carefully the rungs were assigned.
 //
-// `cartopolis_geo::vector_tiles::road_rung` settles it by giving every ribbon an
-// explicit place in an ordered ladder — class, then casing, then width band, then
-// a tie colouring. This file is the half that applies it.
+// `cartopolis_geo::road_stitch` removes the overlap instead of ordering it. The
+// ground roads are cut against each other into a partition, so nothing is left
+// for a tie-break, and the only overlap that remains is the one that is real: a
+// flyover and the road beneath it, both drawn on the ground plane. One rung of
+// sixty-four units holds those apart.
 //
-// ## Why the rung is applied here and not as height
-//
-// It used to be height: each rung lifted a ribbon 24 µm. That works up close and
-// **dissolves with distance**, because a geometric gap's significance in the depth
-// buffer decays as 1/z — 24 µm is 2.0 ULP at 100 m, 1.0 at 200 m and nothing
-// beyond. Past a couple of hundred metres the whole ladder was below the buffer's
-// resolution and every same-class overlap went back to a per-pixel coin flip. No
-// amount of cleverness in *assigning* rungs could reach that, because the rungs
-// had stopped meaning anything.
-//
-// A depth offset proportional to the primitive's own depth cannot decay, which is
-// the entire point: scaling clip-space `z` by `1 + k` shifts the surface toward
-// the viewer by `k · z` in world terms, so the separation tracks the depth
-// buffer's own quantum at every range. It is the same denomination
-// `StandardMaterial::depth_bias` uses (`1.19e-7` per ULP) — the difference is that
-// a material constant is one value for every ribbon sharing the material, and the
-// fight this settles is *between* two such ribbons. Hence a vertex attribute.
-//
-// Two consequences worth keeping in mind. The geometry is left exactly flat, so
-// the ladder costs no height and can be as tall as it likes — which is what let
-// the width bands and the tie set go back to full resolution. And because nothing
-// moves in world space, shadow casting and the collider footprints are untouched:
-// only `prepass_vertex_shader` is left at bevy's default, deliberately, so the
+// The rung is a depth offset, not a height, and that has not changed. A geometric
+// gap's significance decays as 1/z — 24 µm is 2.0 units at 100 m, 1.0 at 200 m and
+// nothing beyond — while scaling clip-space `z` shifts a surface by a fixed number
+// of units of its own depth, which is what a hardware depth-bias unit is. The
+// geometry is left exactly flat, so shadow casting and the collider footprints are
+// untouched, and `prepass_vertex_shader` stays at bevy's default deliberately: the
 // shadow map sees honest geometry.
 
 #import bevy_pbr::{
@@ -53,15 +37,15 @@ const ULP: f32 = 1.19e-7;
 // How many ULPs one rung is worth. Must match
 // `cartopolis_geo::vector_tiles::ROAD_RUNG_ULP` — `road_depth`'s
 // `the_shader_and_the_ladder_agree_on_the_step` pins the pair.
-const RUNG_ULP: f32 = 4.0;
+const RUNG_ULP: f32 = 64.0;
 
 struct RoadVertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
-    // `SurfaceMesh::rungs`, one per vertex — the whole road ordering as a single
-    // number. Constant across a ribbon, so this interpolates to itself.
+    // `SurfaceMesh::rungs`, one per vertex: 0 on the ground, 1 on a bridge.
+    // Constant across a ribbon, so this interpolates to itself.
     @location(8) rung: f32,
 };
 

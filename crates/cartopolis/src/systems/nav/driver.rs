@@ -153,6 +153,11 @@ use crate::systems::routing::{format_distance, format_duration, Maneuver, Route}
 use crate::systems::theme;
 use crate::systems::vector_tiles;
 
+/// Rung on the shared depth ladder for the driver arrow — above the route line it
+/// follows, and above every road (`road_depth`'s
+/// `everything_drawn_over_a_road_clears_the_road_ladder` pins that).
+pub(crate) const ARROW_RUNG: f32 = 24.0;
+
 // ─── Tuning ──────────────────────────────────────────────────────────────────
 
 /// The locked chase rig, per map orientation: distance from the arrow in metres,
@@ -1770,7 +1775,7 @@ pub fn update_driver_arrow(
             let fill = materials.add(StandardMaterial {
                 base_color: Color::srgb(0.20, 0.60, 0.98),
                 unlit: true,
-                depth_bias: 24.0 * vector_tiles::DEPTH_BIAS_STEP,
+                depth_bias: ARROW_RUNG * vector_tiles::DEPTH_BIAS_STEP,
                 cull_mode: None,
                 ..default()
             });

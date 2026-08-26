@@ -76,6 +76,13 @@ const MAX_SUGGESTIONS: usize = 6;
 /// but half a metre is a comfortable margin and still reads as painted on the road.
 const ROUTE_Y: f32 = 0.5;
 
+/// Rungs on the shared depth ladder for the route line and its casing — above
+/// every road, below the street labels and the driver arrow. `road_depth`'s
+/// `everything_drawn_over_a_road_clears_the_road_ladder` is what keeps the first
+/// of those true when the road ladder changes shape.
+pub(crate) const ROUTE_RUNG: f32 = 20.0;
+pub(crate) const ROUTE_CASING_RUNG: f32 = 18.0;
+
 /// Half-widths in metres: a bright fill inside a darker casing, the way every road
 /// on the basemap is drawn, so the route reads as part of the map rather than an
 /// overlay floating on it.
@@ -1168,8 +1175,8 @@ pub fn update_route_visuals(
             // ULPs, and one rung of separation is below the rounding noise.
             let rung = |n: f32| n * vector_tiles::DEPTH_BIAS_STEP;
             let p = RouteMaterials {
-                fill: line(0.16, 0.53, 0.90, rung(20.0)),
-                casing: line(0.06, 0.22, 0.42, rung(18.0)),
+                fill: line(0.16, 0.53, 0.90, rung(ROUTE_RUNG)),
+                casing: line(0.06, 0.22, 0.42, rung(ROUTE_CASING_RUNG)),
                 start: line(
                     ROUTE_START_RGB[0],
                     ROUTE_START_RGB[1],

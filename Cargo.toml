@@ -130,6 +130,12 @@ egui-wgpu = { version = "0.35", default-features = false }
 clap = { version = "4.5", features = ["derive"] }
 earcutr = "0.4"
 figment = { version = "0.10", features = ["toml", "env"] }
+# Polygon boolean operations, used by `cartopolis_geo::road_stitch` to cut the
+# road ribbons against each other so no two of them cover the same ground. Pure
+# Rust with no C in the tree, which is what the Android and wasm lanes need; the
+# integer API is the one we call, because a shared boundary computed on a fixed
+# lattice is the same two points for both pieces and so cannot open into a crack.
+i_overlay = { version = "8.1", default-features = false }
 fontdue = "0.9"
 glam = { version = "0.32", features = ["serde"] }
 # Only the formats something in this tree can actually hand it. `image`'s default
