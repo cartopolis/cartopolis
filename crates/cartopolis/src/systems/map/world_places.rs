@@ -33,6 +33,11 @@ pub struct CellPlaces {
     pub vehicles: Vec<FurnitureInstance>,
     pub pois: Vec<Poi>,
     pub addresses: Vec<Address>,
+    /// Drivable centrelines for `systems::traffic`. Carried here rather than in
+    /// its own channel because it comes off the same parse on the same worker and
+    /// has to be retired with the same cell; `insert_cell` hands it straight on to
+    /// `DriveNetwork` and keeps none of it.
+    pub drive_lines: Vec<cartopolis_geo::traffic::DriveLine>,
 }
 
 /// A thing in the world the avatar can walk up to, in anchored world XZ.

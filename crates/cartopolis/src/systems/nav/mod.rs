@@ -6,5 +6,6 @@ pub mod locate;
 pub mod navigation;
 pub mod place_link;
 pub mod route_ahead;
+pub mod traffic;
 pub mod transit_live;
 pub mod transit_vehicles;

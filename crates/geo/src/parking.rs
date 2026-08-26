@@ -93,7 +93,7 @@ struct Lot {
 /// the colours a car park actually reads as from across it — silver, white and
 /// graphite are most of any Dutch lot — with two desaturated hues to break up the
 /// grey and nothing brighter.
-const CAR_PAINTS: &[u32] = &[
+pub const CAR_PAINTS: &[u32] = &[
     0xC6_C8_CA, // silver
     0xE2_E0_DC, // white
     0x7E_81_85, // graphite

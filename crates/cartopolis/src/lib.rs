@@ -1885,6 +1885,7 @@ fn run_client() {
         .init_resource::<systems::map_geometry::MapSurfaces>()
         // Filled by the same streamer, cell for cell (`systems::street_labels`).
         .init_resource::<systems::world_places::WorldPlaces>()
+        .init_resource::<systems::traffic::DriveNetwork>()
         .init_resource::<systems::interact::InteractState>()
         .init_resource::<systems::street_labels::StreetLabelStore>()
         .init_resource::<systems::map_geometry::DeckPlates>()
@@ -2109,6 +2110,17 @@ fn run_client() {
             #[cfg(target_os = "android")]
             platform::android::report_dex,
             systems::free_camera::setup_camera,
+            // The car pool. One mesh, a handful of materials and a fixed number
+            // of entities, all built once — after which this layer uploads
+            // nothing (`systems::traffic`).
+            //
+            // **After the camera**, which is what spawns the `BigSpace` root the
+            // cars are parented to (`free_camera::setup_camera` calls
+            // `spawn_big_space`). Registered in this tuple with no ordering it
+            // ran first, found no root, returned silently, and the pool was never
+            // created — no cars and nothing in the log. `setup_sky_dome` below
+            // carries the same `.after` for its own reason.
+            systems::traffic::setup_traffic.after(systems::free_camera::setup_camera),
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.
             systems::sky_dome::setup_sky_dome.after(systems::free_camera::setup_camera),
@@ -2571,6 +2583,9 @@ fn run_client() {
                 sky::manage_lights.after(systems::ui::render_dev_panel),
                 sky::apply_distance_fog.after(systems::ui::render_dev_panel),
                 sky::update_window_glow,
+                // Ambient traffic: one transform write per car per frame, and no
+                // asset touched after startup (`systems::traffic`).
+                systems::traffic::drive_traffic,
                 // The other lane's windows. `update_window_glow` above only
                 // reaches the OSM buildings, which are never drawn over 3DBAG
                 // coverage — see `systems::building_windows`.

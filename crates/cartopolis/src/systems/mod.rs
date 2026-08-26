@@ -51,7 +51,8 @@ pub use map::{
     tile_loader, tile_source, vegetation, water, weather, world_places,
 };
 pub use nav::{
-    driver, geo_nav, locate, navigation, place_link, route_ahead, transit_live, transit_vehicles,
+    driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
+    transit_vehicles,
 };
 pub use net::{background, network, session, user_store, voice};
 pub use player::{

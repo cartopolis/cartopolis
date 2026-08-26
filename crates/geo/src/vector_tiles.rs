@@ -2620,7 +2620,7 @@ fn off_deck_runs(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<Vec<[f32; 2]>
 
 /// Read a boolean Shortbread property (`bridge`, `tunnel`, `oneway`, `link`),
 /// treating a missing or non-boolean value as `false`.
-fn flag_of(feature: &Feature, name: &str) -> bool {
+pub(crate) fn flag_of(feature: &Feature, name: &str) -> bool {
     matches!(
         feature.properties.as_ref().and_then(|p| p.get(name)),
         Some(Value::Bool(true))

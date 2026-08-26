@@ -490,6 +490,14 @@ pub struct DataLayers {
     /// collider set: `collision::sync_prop_colliders` gates on this, and a prop
     /// that is hidden but still solid is an invisible wall.
     pub furniture_enabled: bool,
+    /// Feature toggle (under Map): ambient traffic (`systems::traffic`) — cars
+    /// driving the streets the map already draws, off the same `streets` layer.
+    ///
+    /// Its own toggle rather than riding the furniture one, because it is the
+    /// only layer here that *moves*: it is the first thing somebody who finds the
+    /// motion distracting will look for, and the first thing to switch off when
+    /// judging anything else in a still.
+    pub traffic_enabled: bool,
     /// Feature toggle (under Map): textured road surfaces (generated tarmac +
     /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
     pub roads_textured: bool,
@@ -604,6 +612,7 @@ impl DataLayers {
             water_shading: self.water_shading,
             street_labels: self.street_labels,
             furniture,
+            traffic: self.traffic_enabled,
             street_detail,
             height: self.height_enabled,
             vehicles,
@@ -674,6 +683,7 @@ impl DataLayers {
         self.water_shading = p.water_shading;
         self.street_labels = p.street_labels;
         self.furniture_enabled = p.furniture;
+        self.traffic_enabled = p.traffic;
         self.street_detail_enabled = p.street_detail;
         self.height_enabled = p.height;
         self.vehicles_enabled = p.vehicles;
@@ -728,6 +738,10 @@ impl Default for DataLayers {
             trees_enabled: detail,
             grass_enabled: detail,
             furniture_enabled: detail,
+            // Rides `detail_layers` with the rest: a phone starts without it, and
+            // a moving object is the most expensive kind of detail to draw on the
+            // one platform whose schedule has no second thread.
+            traffic_enabled: detail,
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
@@ -2298,6 +2312,11 @@ pub fn render_data_layers_panel(
                         ui,
                         &mut dl.furniture_enabled,
                         egui::RichText::new("Street furniture").size(theme::SIZE_SUB),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.traffic_enabled,
+                        egui::RichText::new("Traffic").size(theme::SIZE_SUB),
                     );
                     crate::systems::theme::checkbox(
                         ui,

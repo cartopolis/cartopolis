@@ -47,6 +47,9 @@ pub mod scatter;
 // vertex shader and never exists on this side at all. Named for the ground
 // rather than the plant so it can pair with the client's `systems::grass` the
 // way `scatter` pairs with `systems::vegetation`.
+// The drivable network behind ambient traffic, off the same `streets` layer the
+// roads and the routing graph are built from.
+pub mod traffic;
 pub mod turf;
 pub mod vector_tiles;
 

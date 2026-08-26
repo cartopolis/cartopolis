@@ -136,6 +136,10 @@ pub struct CellStores<'w> {
     places: ResMut<'w, WorldPlaces>,
     decks: ResMut<'w, DeckPlates>,
     grass: ResMut<'w, GrassAreas>,
+    /// The drivable network (`systems::traffic`). Here for the reason all of
+    /// these are: keyed by cell, filled from the same parse, and retired on
+    /// exactly the same events.
+    roads: ResMut<'w, crate::systems::traffic::DriveNetwork>,
 }
 
 /// Everything a surface cell needs to *make a material out of*, in one parameter
@@ -532,6 +536,15 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "poi extraction failed");
                                 }
                             }
+                            // The drivable network for ambient traffic, off the
+                            // same `streets` layer the ribbons and the routing
+                            // graph are built from (`systems::traffic`).
+                            match cartopolis_geo::traffic::extract_drive_lines(&tile, tile_m) {
+                                Ok(lines) => cell_places.drive_lines = lines,
+                                Err(e) => {
+                                    tracing::warn!(cell = ?cell, error = %e, "drive line extraction failed");
+                                }
+                            }
                             match places::extract_addresses(&tile, tile_m) {
                                 Ok(a) => cell_places.addresses = a,
                                 Err(e) => {
@@ -689,6 +702,7 @@ pub fn update_map_surfaces(
             stores.places.clear();
             stores.decks.clear();
             stores.grass.clear();
+            stores.roads.clear();
         }
         return;
     }
@@ -710,6 +724,7 @@ pub fn update_map_surfaces(
         stores.labels.clear();
         stores.decks.clear();
         stores.grass.clear();
+        stores.roads.clear();
     }
     // So does the ground moving under them. The measured field lands a second or
     // two after the anchor it belongs to, by which time these cells have already
@@ -724,6 +739,7 @@ pub fn update_map_surfaces(
         stores.labels.clear();
         stores.decks.clear();
         stores.grass.clear();
+        stores.roads.clear();
     }
 
     // The cells hold whatever detail was wanted when their worker ran, so turning
@@ -749,6 +765,7 @@ pub fn update_map_surfaces(
         stores.labels.clear();
         stores.decks.clear();
         stores.grass.clear();
+        stores.roads.clear();
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -784,6 +801,7 @@ pub fn update_map_surfaces(
         stores.places.remove_cell(&c);
         stores.decks.remove_cell(&c);
         stores.grass.remove_cell(&c);
+        stores.roads.remove_cell(&c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -833,7 +851,7 @@ pub fn update_map_surfaces(
     }
     let deferred = ready.split_off(take);
     surfaces.stream.defer(deferred);
-    for (c, (outcome, shore, decks, street_names, cell_places, grass)) in ready {
+    for (c, (outcome, shore, decks, street_names, mut cell_places, grass)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.stream.forget(&c);
@@ -859,6 +877,12 @@ pub fn update_map_surfaces(
         // The props and places go in on the same terms and at the same origin:
         // they are retired with the cell below, for the same reason the labels
         // are.
+        // The roads go to their own store first — `insert_cell` consumes
+        // `cell_places`, and taking the lines out of it here is what keeps
+        // `WorldPlaces` from holding a copy of a network it does not use.
+        stores
+            .roads
+            .insert_cell(c, wx, wz, std::mem::take(&mut cell_places.drive_lines));
         stores.places.insert_cell(c, wx, wz, cell_places);
         // Same origin, same lifetime, same retire path — see `CellStores`.
         if let Some(area) = grass {
