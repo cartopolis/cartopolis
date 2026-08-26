@@ -1734,6 +1734,7 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
         .init_resource::<GameState>()
         .init_resource::<AvatarState>()
+        .init_resource::<resources::NetPredictionHealth>()
         .init_resource::<LocalAvatarSimId>()
         .init_resource::<CameraState>()
         .init_resource::<MouseState>()

@@ -303,10 +303,36 @@ const ONLINE_DISPLAY_SMOOTHING: f32 = 14.0;
 /// this can be brisk without the tick-rate pulsing the old ease-to-latest had.
 const ONLINE_RECONCILE_RATE: f32 = 9.0;
 /// Cap on how far the authoritative pose is extrapolated while waiting for the
-/// next snapshot (see `smooth_online_avatar_display`). Just over one 20 Hz
-/// snapshot period: enough to bridge the normal gap, short enough that a stalled
-/// connection parks the avatar instead of flying it off on a stale velocity.
-const ONLINE_MAX_EXTRAPOLATION: f32 = 0.15;
+/// next snapshot (see `smooth_online_avatar_display`) — i.e. **how long the
+/// client will move on its own prediction with no confirmation**.
+///
+/// Past the cap the target stops advancing while the display keeps integrating,
+/// so reconciliation brakes the display to a halt within `1 / ONLINE_RECONCILE_RATE`
+/// seconds and holds it there until the next snapshot lands. That braking is the
+/// point — an unconfirmed avatar should stop, not fly on — but the cap decides how
+/// often an ordinary hiccup triggers it, and the consequence is proportional to
+/// speed: at a walk the avatar loses 20 cm and nobody sees it, at 250 m/s it stops
+/// dead and lurches.
+///
+/// It was 0.15 s, three server ticks, which assumed the only thing between the
+/// two ends was a healthy local network. Two ordinary events on a phone exceed it
+/// several times a minute and neither is a fault:
+///
+/// - **The mobile link.** Inter-arrival on cellular routinely spikes to a few
+///   hundred milliseconds, and the connection carries chat, prims and voice over
+///   one ordered stream, so a single retransmission delays the snapshots queued
+///   behind it.
+/// - **Our own frame.** `apply_network_snapshot` drains the mailbox once per Bevy
+///   frame, so a 200 ms hitch — a tile upload burst during fast flight, exactly
+///   when this matters most — ages every queued snapshot by the length of the
+///   hitch before any of them is read. The stall then looks like a network fault
+///   from inside this function, and isn't one.
+///
+/// Half a second covers both while still parking a genuinely dead link inside a
+/// second. It is deliberately below `ONLINE_SNAP_SECONDS`-worth of travel: a
+/// server that has really stopped agreeing with us surfaces as divergence past
+/// the cap and then as a snap, rather than being extrapolated away.
+const ONLINE_MAX_EXTRAPOLATION: f32 = 0.5;
 /// Prediction error (metres) beyond which the display snaps instead of easing —
 /// a teleport, a server correction or a resumed connection, not drift. The floor
 /// of [`online_snap_error`]; see there for why it cannot be the whole rule.
@@ -336,6 +362,38 @@ const ONLINE_SNAP_SECONDS: f32 = 0.6;
 #[must_use]
 fn online_snap_error(speed: f32) -> f32 {
     (speed * ONLINE_SNAP_SECONDS).max(ONLINE_SNAP_ERROR)
+}
+
+/// Where the last authoritative pose has got to by now, given how long ago it
+/// arrived — the thing reconciliation eases the predicted display toward.
+///
+/// `AvatarState::position` advances only at the sim's 20 Hz tick, so used raw it
+/// is a staircase and the correction drags the display backwards on every frame
+/// between two steps. Extrapolating it by its own age compares like with like: the
+/// error signal is smooth and reconciliation only corrects real divergence.
+///
+/// The clamp is where the client stops believing itself
+/// ([`ONLINE_MAX_EXTRAPOLATION`]). Past it the target stands still while the
+/// display keeps integrating, so the ease brakes the avatar to a halt — deliberate
+/// for a link that has actually stopped, and the reason the cap must be generous
+/// enough that an ordinary hiccup does not reach it.
+///
+/// Note it extrapolates by the **predicted** velocity, which is the client's own
+/// live input rather than anything the snapshot carried. That is what makes a
+/// long window safe: waiting longer means trusting our own keys for longer, not
+/// coasting on a stale reading of somebody else's.
+#[must_use]
+fn extrapolated_target(position: Vec3, predicted_velocity: Vec3, snapshot_age: f32) -> Vec3 {
+    position + predicted_velocity * snapshot_age.min(ONLINE_MAX_EXTRAPOLATION)
+}
+
+/// Whether a snapshot age has run past the window, i.e. the display is being
+/// braked rather than predicted. Counted into
+/// [`crate::resources::NetPredictionHealth`], which is the only place this becomes
+/// visible to somebody holding the device.
+#[must_use]
+fn is_stalled(snapshot_age: f32) -> bool {
+    snapshot_age >= ONLINE_MAX_EXTRAPOLATION
 }
 /// Remote rotation should feel a bit snappier than position.
 const REMOTE_ROT_SMOOTHING: f32 = 18.0;
@@ -1538,9 +1596,33 @@ pub fn smooth_online_avatar_display(
     time: Res<Time>,
     mut avatar_query: Query<&mut Transform, With<Avatar>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    mut health: ResMut<crate::resources::NetPredictionHealth>,
+    // The age this system saw last frame, so the gap a snapshot closed can be read
+    // off the frame it resets on. A `Local` and not a field on the resource: it is
+    // this system's own bookkeeping and nothing else may write it.
+    mut prev_age: Local<f32>,
 ) {
     let dt = time.delta_secs();
     if online.is_some() {
+        // A teleport holds authority off for up to `network::TELEPORT_HOLD_S`
+        // while the sim's echo comes back, so the age climbs for a reason that has
+        // nothing to do with the link. Measuring those frames would report a
+        // two-second network gap every time somebody taps a saved place, which is
+        // the fastest way to make an instrument not worth reading.
+        if avatar_state.teleport_hold.is_none() {
+            // A snapshot landed since this system last ran: `apply_network_snapshot`
+            // is ordered ahead of us and zeroes the age, and nothing else does. So
+            // last frame's age is the gap that snapshot closed.
+            if avatar_state.snapshot_age == 0.0 && *prev_age > 0.0 {
+                health.last_gap_s = *prev_age;
+                health.worst_gap_s = health.worst_gap_s.max(*prev_age);
+                health.snapshots += 1;
+            }
+            health.frames += 1;
+            if is_stalled(avatar_state.snapshot_age + dt) {
+                health.stalled_frames += 1;
+            }
+        }
         // Client-side prediction: advance the display by the velocity we're
         // sending to the sim (frame-rate integration), then reconcile toward the
         // authoritative position. `predicted_velocity` already reflects collision
@@ -1557,9 +1639,12 @@ pub fn smooth_online_avatar_display(
         // `display_position`) in the whole view. Extrapolating the target by
         // `snapshot_age` compares like with like: the error signal is smooth, so
         // reconciliation only corrects genuine divergence.
-        avatar_state.snapshot_age = (avatar_state.snapshot_age + dt).min(ONLINE_MAX_EXTRAPOLATION);
-        let mut target =
-            avatar_state.position + avatar_state.predicted_velocity * avatar_state.snapshot_age;
+        avatar_state.snapshot_age += dt;
+        let mut target = extrapolated_target(
+            avatar_state.position,
+            avatar_state.predicted_velocity,
+            avatar_state.snapshot_age,
+        );
         let mut display = avatar_state.display_position + avatar_state.predicted_velocity * dt;
         // The sim has no terrain and never will — it holds no map data at all, and
         // the map streams only on the client. So the ground is added *here*, on the
@@ -1596,11 +1681,13 @@ pub fn smooth_online_avatar_display(
         // answer online: it is precisely the rate `display_position` advances at
         // between snapshots, which is what the rig is trying to keep up with.
         avatar_state.velocity = avatar_state.predicted_velocity;
+        *prev_age = avatar_state.snapshot_age;
         if let Ok(mut tf) = avatar_query.single_mut() {
             tf.translation = avatar_state.display_position;
         }
     } else {
         avatar_state.display_position = avatar_state.position;
+        *prev_age = 0.0;
     }
 }
 
@@ -2315,6 +2402,66 @@ mod tests {
             online_snap_error(crate::systems::locomotion::FLY_SPEED * motion::FLY_ALT_MAX_FACTOR)
                 < 1_000.0
         );
+    }
+
+    /// The prediction keeps moving through the two ordinary events that used to
+    /// park it, and still stops for a link that has genuinely gone.
+    ///
+    /// Past [`ONLINE_MAX_EXTRAPOLATION`] the reconcile target stands still while
+    /// the display keeps integrating, so the ease brakes the avatar to a halt —
+    /// which at a walk costs 20 cm and nobody sees, and in flight at altitude is a
+    /// dead stop and a lurch. The window therefore has to outlast a hiccup and
+    /// nothing more.
+    #[test]
+    fn the_prediction_rides_out_a_late_snapshot() {
+        // The two events that reach this code as a late snapshot and are not
+        // faults. Both are why 0.15 s (three server ticks) was too tight.
+        let server_tick = 1.0 / 20.0;
+        assert!(
+            !is_stalled(server_tick * 4.0),
+            "four ticks of jitter on a mobile link is ordinary, not a stall"
+        );
+        assert!(
+            !is_stalled(0.2),
+            "a 200 ms frame hitch delays our own mailbox drain by its own length"
+        );
+
+        // …and it still parks a link that has actually stopped. The brake takes
+        // about `1 / ONLINE_RECONCILE_RATE` on top, so this is what decides
+        // whether a dropped connection reads as stopping or as flying on.
+        assert!(is_stalled(1.0), "a whole second with nothing is a stall");
+        assert!(
+            ONLINE_MAX_EXTRAPOLATION + 1.0 / ONLINE_RECONCILE_RATE < 1.0,
+            "an unconfirmed avatar should be stopped inside a second"
+        );
+
+        // The window must stay under the snap's own duration, or a server that has
+        // really stopped agreeing with us is extrapolated away instead of
+        // surfacing as divergence and then as a snap.
+        assert!(ONLINE_MAX_EXTRAPOLATION < ONLINE_SNAP_SECONDS);
+
+        // What the window buys, at the speed it matters: the target keeps pace
+        // with the prediction through a late snapshot instead of standing still.
+        let v = Vec3::new(0.0, 0.0, -crate::systems::locomotion::FLY_SPEED * 8.0);
+        let here = Vec3::ZERO;
+        for age in [server_tick, 0.2, 0.4] {
+            let moved = extrapolated_target(here, v, age).distance(here);
+            let expected = v.length() * age;
+            assert!(
+                (moved - expected).abs() < 1e-3,
+                "at {age}s the target should have travelled {expected} m, not {moved}"
+            );
+        }
+        // Past the window it stops, which is the brake being applied on purpose.
+        let capped = extrapolated_target(here, v, 5.0).distance(here);
+        assert!(
+            (capped - v.length() * ONLINE_MAX_EXTRAPOLATION).abs() < 1e-3,
+            "the window is not being clamped: {capped}"
+        );
+
+        // A standing avatar has no extrapolation to do at any age, so a bad link
+        // can never move one.
+        assert_eq!(extrapolated_target(here, Vec3::ZERO, 9.0), here);
     }
 
     /// The arrival grows out of a thin column, overshoots once, and finishes at

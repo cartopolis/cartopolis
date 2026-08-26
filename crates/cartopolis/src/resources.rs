@@ -1165,6 +1165,11 @@ pub struct AvatarState {
     /// The reconcile target is extrapolated forward by this much, so the 20 Hz
     /// snapshot staircase doesn't drag the predicted display backwards on every
     /// frame between snapshots (see `smooth_online_avatar_display`).
+    ///
+    /// **Uncapped**, and the clamp lives at the one place that extrapolates
+    /// (`avatar::extrapolated_target`). It used to be clamped here, which cost the
+    /// only measurement of how late a snapshot actually was: the moment the number
+    /// is worth reading is the moment a stored clamp stops being able to say it.
     pub snapshot_age: f32,
     /// The avatar's current world yaw (radians) — the single source for the render
     /// transform, the replicated `display_yaw` and the follow-and-rotate camera.
@@ -1290,6 +1295,57 @@ impl Default for AvatarState {
             teleport_sequence: 0,
             seated: None,
         }
+    }
+}
+
+/// How well the online prediction is being fed — the one instrument for "the
+/// avatar stutters online" that a person holding a phone can read.
+///
+/// **It exists because that report was unanswerable from here.** Prediction
+/// smoothness depends on how evenly snapshots reach
+/// `avatar::smooth_online_avatar_display`, and until now nothing measured that at
+/// all: a stall from a slow mobile link, a stall from our own frame hitch
+/// delaying the mailbox drain, and a genuine disagreement with the sim all
+/// produced the same jerk on screen and the same silence in the log. The numbers
+/// here separate them, and they go into the shareable diagnostics report rather
+/// than a `tracing` line for the reason that whole module exists — `logcat` needs
+/// a cable, which is exactly what the person with the failing device does not
+/// have.
+///
+/// Written by `avatar::smooth_online_avatar_display` and reset by
+/// `session::teardown`, so a figure never describes a connection that has ended.
+/// All of it is *observed* time between applied snapshots, which is what the
+/// prediction actually rides on — not a round-trip ping, which would say nothing
+/// about the client-side half.
+#[derive(Resource, Default, Debug)]
+pub struct NetPredictionHealth {
+    /// Gap between the last two applied snapshots, in seconds. At a 20 Hz server
+    /// tick a healthy link sits at ~0.05.
+    pub last_gap_s: f32,
+    /// The worst gap seen since the session began, in seconds.
+    pub worst_gap_s: f32,
+    /// Snapshots applied this session.
+    pub snapshots: u32,
+    /// Frames spent past `avatar::ONLINE_MAX_EXTRAPOLATION`, where the display is
+    /// being braked to a halt because there is nothing left to extrapolate from.
+    /// **This is the stutter itself**: divided by [`Self::frames`] it is the
+    /// fraction of the session the avatar was parked waiting for the network.
+    pub stalled_frames: u32,
+    /// Frames of online prediction this session, the denominator for
+    /// [`Self::stalled_frames`].
+    pub frames: u32,
+}
+
+impl NetPredictionHealth {
+    /// The share of predicted frames that were parked waiting for a snapshot,
+    /// 0.0–1.0. Zero when nothing has been predicted yet, which reads correctly as
+    /// "no stalls seen".
+    #[must_use]
+    pub fn stalled_fraction(&self) -> f32 {
+        if self.frames == 0 {
+            return 0.0;
+        }
+        self.stalled_frames as f32 / self.frames as f32
     }
 }
 
