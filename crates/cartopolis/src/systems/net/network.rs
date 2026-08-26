@@ -1026,6 +1026,10 @@ fn sync_remote_avatar_entities(
             if let Ok((_, mut r)) = remote_query.get_mut(entity) {
                 r.net_position = a.position;
                 r.net_yaw = snap_yaw_continuation(r.net_yaw, a.yaw);
+                // A level, not an edge: the sim re-sends it in every snapshot for
+                // as long as the sit lasts, and the *blend* onto it is this
+                // client's own business (`avatar::update_avatar_model_pose`).
+                r.seated = a.seated.map(Vec2::from);
                 // Fire only on a sequence we haven't seen: the sim re-sends a live
                 // emote in every snapshot for a couple of seconds, so diffing on
                 // the emote itself would restart the clip 20 times a second.
@@ -1049,6 +1053,12 @@ fn sync_remote_avatar_entities(
                     // the whole reason the sim holds it on the wire.
                     pending_emote: a.emote.map(|e| e.emote),
                     last_emote_sequence: a.emote.map(|e| e.sequence),
+                    // An avatar already sitting when it comes into range is drawn
+                    // sitting, and slides onto the seat from here like everyone
+                    // else — a fraction of a second of one stranger arriving
+                    // upright is cheaper than a special case.
+                    seated: a.seated.map(Vec2::from),
+                    seat_blend: 0.0,
                 },
                 RemoteAvatarMotionHint::default(),
                 Transform::from_translation(a.position)
@@ -1203,6 +1213,8 @@ pub struct SentIntent {
     flying: bool,
     fly_up: bool,
     fly_down: bool,
+    /// The seat, only so the change test can see it start and stop.
+    seated: Option<[f32; 2]>,
 }
 
 /// Whether an intent carries an *edge* — something that happens once and is lost
@@ -1377,6 +1389,14 @@ pub fn send_network_intent(
     // Send on change (so a key edge reaches the sim the frame it happens) or on
     // the keepalive tick — not every frame; see `INTENT_KEEPALIVE`.
     *since_send += time.delta_secs();
+    // The seat as the sim will hold it: the *whole* offset, not the fraction of
+    // it the slide has covered so far. Each viewer eases onto it itself, so
+    // sending the eased value would be sending an animation twenty times a second
+    // to say something one field already says.
+    let seated = avatar_state
+        .seated
+        .filter(|s| !s.rising)
+        .map(|s| s.offset.to_array());
     let intent = SentIntent {
         move_x: v.x,
         move_z: v.z,
@@ -1384,6 +1404,7 @@ pub fn send_network_intent(
         flying: avatar_state.is_flying,
         fly_up,
         fly_down,
+        seated,
     };
     let changed = last_sent.map_or(true, |p| {
         (p.move_x - intent.move_x).abs() > INTENT_EPS_DIR
@@ -1392,6 +1413,9 @@ pub fn send_network_intent(
             || p.flying != intent.flying
             || p.fly_up != intent.fly_up
             || p.fly_down != intent.fly_down
+            // Sitting down and standing up are changes, so they reach the sim on
+            // the frame they happen rather than on the next keepalive.
+            || p.seated.is_some() != intent.seated.is_some()
     });
     // An edge is never throttled: a skipped jump is a jump that did not happen,
     // where a skipped movement frame is one the next intent corrects anyway.
@@ -1411,6 +1435,7 @@ pub fn send_network_intent(
         fly_down,
         jump,
         emote,
+        seated,
     });
 }
 

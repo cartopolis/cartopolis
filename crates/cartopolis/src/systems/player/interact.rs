@@ -16,11 +16,11 @@
 
 use bevy::prelude::*;
 
-use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel};
+use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel, Seated};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{world_to_lat_lng, GeoNavState};
 use crate::systems::theme;
-use crate::systems::world_places::{Interactable, WorldPlaces};
+use crate::systems::world_places::{Interactable, SeatSpot, WorldPlaces};
 use cartopolis_core::Emote;
 
 /// How close the avatar must be for a prompt to appear (metres). Roughly two
@@ -62,16 +62,22 @@ pub struct TargetInfo {
     /// the button being pressed, and re-querying by name would be a different
     /// question with a different answer.
     pub pos: Vec2,
+    /// Where on it the avatar would sit, for the forms anybody sits on. Resolved
+    /// while the prompt is being built, against where the avatar was standing at
+    /// the time, so walking to one end of a bench and sitting puts you at that
+    /// end.
+    pub seat: Option<SeatSpot>,
 }
 
 impl TargetInfo {
-    fn of(i: &Interactable) -> Self {
+    fn of(i: &Interactable, from: Vec2) -> Self {
         Self {
             name: i.name.clone(),
             glyph: i.kind.glyph(),
             verb: i.kind.verb(),
             detail: i.kind.detail(),
             pos: i.pos,
+            seat: i.seat_spot(from),
         }
     }
 
@@ -94,9 +100,38 @@ impl InteractState {
     /// second copy of "play the clip, remember the line, start its timer" is how
     /// they would come to behave differently.
     fn act(&mut self, avatar_state: &mut AvatarState) {
+        // Sitting is the one interaction that is a *state* rather than a gesture,
+        // so the same control leaves it. Asked for while seated, this is "stand
+        // up" whatever the prompt is standing next to.
+        if avatar_state.is_seated() {
+            avatar_state.stand_up();
+            self.last = None;
+            self.last_ttl = 0.0;
+            return;
+        }
         let Some(target) = self.target.clone() else {
             return;
         };
+        if let Some(seat) = target.seat {
+            // The offset, not the destination: the sim owns the avatar's position
+            // and knows nothing about benches, so the seat is carried as a
+            // displacement of the model (`resources::Seated`). Measured against
+            // the same `position` the prompt's proximity test used, so the two
+            // cannot disagree about which frame they are in.
+            let from = Vec2::new(avatar_state.position.x, avatar_state.position.z);
+            avatar_state.seated = Some(Seated {
+                offset: seat.pos - from,
+                yaw: seat.yaw,
+                blend: 0.0,
+                rising: false,
+            });
+            // No receipt: the body is the feedback, and it stays there. A line
+            // reading "Sit at Bench" fading out under a seated avatar would be
+            // reporting an event that is still going on.
+            self.last = None;
+            self.last_ttl = 0.0;
+            return;
+        }
         // The same one-shot channel the emote keys use, so acting on the world and
         // emoting are the same motion as far as the animation and the wire are
         // concerned — which is exactly right, since `Interact` *is* the clip for
@@ -165,7 +200,16 @@ pub fn track_interaction_target(
         _ => true,
     };
     if changed {
-        state.target = nearest.map(TargetInfo::of);
+        state.target = nearest.map(|i| TargetInfo::of(i, pos));
+    } else if let (Some(t), Some(i)) = (state.target.as_mut(), nearest) {
+        // Same thing, but not necessarily the same *place* on it: walking along a
+        // bench slides where you would sit, and a seat resolved when you first
+        // came into range would put you back at the end you arrived at. Allocates
+        // nothing, and only moves while you do.
+        let seat = i.seat_spot(pos);
+        if seat != t.seat {
+            t.seat = seat;
+        }
     }
 
     // Likewise: `nearest_address` hands back a `&str`, so compare through it and
@@ -196,9 +240,16 @@ pub fn handle_interaction_input(
         return;
     }
 
-    for (key, emote) in EMOTE_KEYS {
-        if keyboard.just_pressed(key) {
-            avatar_state.pending_emote = Some(emote);
+    // Not while sitting. The emote clips are whole-body motions authored for a
+    // standing rig, and the seated pose is holding the legs and the pelvis — a
+    // wave played over it swings the arms of a body that is half on a bench. The
+    // wire carries emotes, so playing one anyway would also show every other
+    // player a gesture this client cannot itself draw.
+    if !avatar_state.is_seated() {
+        for (key, emote) in EMOTE_KEYS {
+            if keyboard.just_pressed(key) {
+                avatar_state.pending_emote = Some(emote);
+            }
         }
     }
 
@@ -245,7 +296,11 @@ pub fn render_interaction_prompt(
     }
     let target = state.target.clone();
     let receipt = state.last.clone();
-    if target.is_none() && receipt.is_none() {
+    // A seated avatar always has a prompt, whatever it is standing next to —
+    // getting up is the one thing it can do, and on a phone this button is the
+    // only way to ask for it.
+    let seated = avatar_state.is_seated();
+    if target.is_none() && receipt.is_none() && !seated {
         return;
     }
 
@@ -260,12 +315,30 @@ pub fn render_interaction_prompt(
     egui::Area::new(egui::Id::new("interact_prompt"))
         .order(egui::Order::Background)
         // A live prompt is a control; the receipt left behind after acting is not.
-        .interactable(target.is_some())
+        .interactable(target.is_some() || seated)
         .fixed_pos(pos)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(&egui_manager.ctx.clone(), |ui| {
             theme::overlay_frame().show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    if seated {
+                        // The glyph is the thing being sat on where there is one,
+                        // so the button that put you there and the button that
+                        // takes you off it are visibly the same control.
+                        let glyph = target.as_ref().map_or("", |t| t.glyph);
+                        let hint = if compact { "" } else { "   [E]" };
+                        if ui
+                            .button(
+                                egui::RichText::new(format!("{glyph}  Stand up{hint}"))
+                                    .color(theme::TEXT)
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            acted = true;
+                        }
+                        return;
+                    }
                     let Some(t) = &target else {
                         // Nothing in range: what is left is the line naming what
                         // was last acted on, which is a receipt and not a button.
@@ -325,11 +398,16 @@ mod tests {
     use crate::systems::world_places::InteractKind;
 
     fn target(name: &str, kind: InteractKind) -> TargetInfo {
-        TargetInfo::of(&Interactable {
-            pos: Vec2::ZERO,
-            name: name.to_string(),
-            kind,
-        })
+        TargetInfo::of(
+            &Interactable {
+                pos: Vec2::ZERO,
+                yaw: 0.0,
+                name: name.to_string(),
+                kind,
+            },
+            // Standing just in front of it, which is where the prompt appears.
+            Vec2::new(0.0, 1.0),
+        )
     }
 
     /// A prop's line reads as an action on a thing, with no parenthetical
@@ -384,11 +462,73 @@ mod tests {
         assert!(avatar.pending_emote.is_none());
         assert!(state.last.is_none());
 
-        state.target = Some(target("Bench", InteractKind::Prop(FurnitureKind::Bench)));
+        state.target = Some(target("Litter bin", InteractKind::Prop(FurnitureKind::Bin)));
         state.act(&mut avatar);
         assert!(matches!(avatar.pending_emote, Some(Emote::Interact)));
-        assert_eq!(state.last.as_deref(), Some("Sit at Bench"));
+        assert_eq!(state.last.as_deref(), Some("Use Litter bin"));
         assert!(state.last_ttl > 0.0, "the receipt must fade on its own");
+    }
+
+    /// A bench is the one prompt that does not fire a gesture: it puts the avatar
+    /// in a state, and the same control takes it out again. The receipt is
+    /// deliberately *not* left behind — a line reading "Sit at Bench" fading out
+    /// under an avatar that is still sitting there reports a finished event that
+    /// has not finished.
+    #[test]
+    fn sitting_down_is_a_state_and_the_same_button_ends_it() {
+        let mut state = InteractState::default();
+        let mut avatar = AvatarState::default();
+        // Standing where `target` says the prompt was resolved from: a metre in
+        // front of a bench at the origin.
+        avatar.position = Vec3::new(0.0, 0.0, 1.0);
+        state.target = Some(target("Bench", InteractKind::Prop(FurnitureKind::Bench)));
+
+        state.act(&mut avatar);
+        assert!(
+            avatar.is_seated(),
+            "the bench should have seated the avatar"
+        );
+        assert!(
+            avatar.pending_emote.is_none(),
+            "sitting is a pose, not a one-shot gesture"
+        );
+        assert!(state.last.is_none());
+        // The bench in `target` is at the origin and the avatar a metre in front
+        // of it, so the seat is the metre back onto it.
+        let seat = avatar.seated.expect("a seat");
+        assert!(seat.offset.length() > 0.5, "{:?}", seat.offset);
+        assert_eq!(seat.blend, 0.0, "it slides on, it does not appear on");
+
+        state.act(&mut avatar);
+        assert!(!avatar.is_seated(), "the same control stands it up");
+        assert!(
+            avatar.seated.is_some_and(|s| s.rising),
+            "…but the seat outlives the decision, so the slide can unwind"
+        );
+    }
+
+    /// The place to sit is on the bench and turned out of it — not the bench's
+    /// own point, which is where the timber is.
+    #[test]
+    fn a_bench_seats_you_on_it_facing_out() {
+        // A bench at the origin, front (+z in its own frame) turned toward +x.
+        let bench = Interactable {
+            pos: Vec2::ZERO,
+            yaw: std::f32::consts::FRAC_PI_2,
+            name: "Bench".to_string(),
+            kind: InteractKind::Prop(FurnitureKind::Bench),
+        };
+        let spot = bench
+            .seat_spot(Vec2::new(1.2, 0.0))
+            .expect("a bench is sittable");
+        assert!((spot.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+        assert!(spot.pos.length() < 0.1, "sit on the bench: {:?}", spot.pos);
+
+        // Walk to one end and you sit at that end, not in the middle.
+        let end = bench
+            .seat_spot(Vec2::new(1.2, -0.9))
+            .expect("a bench is sittable");
+        assert!(end.pos.y < -0.5, "{:?}", end.pos);
     }
 
     /// The prompt offers to route to what it names, so the target has to remember
@@ -399,13 +539,14 @@ mod tests {
         use crate::systems::places::PoiCategory;
         let it = Interactable {
             pos: Vec2::new(120.0, -40.0),
+            yaw: 0.0,
             name: "Vismarkt".to_string(),
             kind: InteractKind::Place {
                 category: PoiCategory::Drink,
                 kind: None,
             },
         };
-        assert_eq!(TargetInfo::of(&it).pos, Vec2::new(120.0, -40.0));
+        assert_eq!(TargetInfo::of(&it, Vec2::ZERO).pos, Vec2::new(120.0, -40.0));
     }
 
     /// Every emote key is distinct and maps to a distinct emote — a duplicate

@@ -1094,6 +1094,38 @@ impl EditDialogState {
     }
 }
 
+/// Where the avatar is sitting, while it is (`systems::interact` puts it there,
+/// `systems::sit_pose` supplies the body).
+///
+/// **A seat is a display offset, not a position.** The sim owns the avatar's
+/// translation and has no idea a bench exists — it holds no map data and never
+/// will — so moving the avatar onto the seat would be overwritten by the next
+/// snapshot, and moving it there *locally* would fight reconciliation for as long
+/// as the player sat down. The offset is also not avoidable: the bench is a solid
+/// prop ([`crate::systems::world_places`] gives it a circle collider), so the
+/// avatar cannot stand where it has to sit. Same shape as the terrain lift, and
+/// for the same reason.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seated {
+    /// World-XZ from the avatar's own position to the place on the seat, measured
+    /// once, when it sat down. Nothing moves while seated, so it does not go
+    /// stale.
+    pub offset: Vec2,
+    /// The world yaw a sitter on this seat turns to — out of the bench, across the
+    /// picnic table.
+    pub yaw: f32,
+    /// How much of the way onto the seat the model has slid, 0..1. Eased rather
+    /// than switched, so sitting down and getting up are movements and not cuts;
+    /// it rides the same seconds the animation cross-fades over.
+    pub blend: f32,
+    /// Set the moment the player asks to get up. The seat outlives the decision by
+    /// however long the slide takes — clearing it outright would snap the model
+    /// back to the avatar's feet in one frame, which is the cut the blend exists to
+    /// avoid — so this says "on the way out": the body is already standing and
+    /// walking, only the offset is still unwinding.
+    pub rising: bool,
+}
+
 #[derive(Resource)]
 pub struct AvatarState {
     /// Authoritative sim position (from server when online).
@@ -1197,6 +1229,38 @@ pub struct AvatarState {
     /// run in different phases of the schedule, so a flag cleared by the first
     /// would be invisible to the second. Each keeps the last value it acted on.
     pub teleport_sequence: u32,
+    /// Set while the avatar is sitting on a bench or a picnic table. Blocks
+    /// locomotion (any movement input stands it back up) and swaps the animation
+    /// for the authored seated pose.
+    pub seated: Option<Seated>,
+}
+
+impl AvatarState {
+    /// Whether the avatar is on a seat right now — which is not the same as
+    /// [`Self::seated`] being set, because a seat that is unwinding still is.
+    /// This is the one to ask before blocking movement or choosing the pose.
+    #[must_use]
+    pub fn is_seated(&self) -> bool {
+        self.seated.is_some_and(|s| !s.rising)
+    }
+
+    /// Ask to stand up, if sitting. Idempotent, and a no-op while already rising.
+    pub fn stand_up(&mut self) {
+        if let Some(s) = &mut self.seated {
+            s.rising = true;
+        }
+    }
+
+    /// The world-XZ displacement currently applied to the *model* by a seat, or
+    /// zero. The camera adds it so the avatar stays framed while it slides onto
+    /// the bench, and the model holders apply it so it gets there at all.
+    #[must_use]
+    pub fn seat_shift(&self) -> Vec3 {
+        self.seated.map_or(Vec3::ZERO, |s| {
+            let o = s.offset * s.blend;
+            Vec3::new(o.x, 0.0, o.y)
+        })
+    }
 }
 
 impl Default for AvatarState {
@@ -1224,6 +1288,7 @@ impl Default for AvatarState {
             landing_impact: 0.0,
             teleport_hold: None,
             teleport_sequence: 0,
+            seated: None,
         }
     }
 }

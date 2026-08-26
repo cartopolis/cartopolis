@@ -1,6 +1,6 @@
 use cartopolis_core::{
     snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
-    PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS,
+    PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -46,6 +46,15 @@ struct AvatarSim {
     /// Monotonic per-avatar counter. The same emote twice running is two events,
     /// and a receiver that diffed on the emote alone would play only the first.
     emote_sequence: u32,
+    /// Where this avatar's body is drawn relative to [`Self::position`], while it
+    /// is sitting on something (`AvatarStateDto::seated`).
+    ///
+    /// The sim holds it without understanding it: it has no map, so it cannot
+    /// check that there is a bench there. What it *can* do is the two things a
+    /// client must not be trusted with — bound it (`MAX_SEAT_OFFSET_M`) and drop
+    /// it the moment the same avatar asks to move, so "sitting" cannot become a
+    /// way to walk around displaced from your own position.
+    seated: Option<[f32; 2]>,
 }
 
 pub struct SimWorld {
@@ -159,6 +168,7 @@ impl SimWorld {
                 emote: None,
                 emote_age: 0.0,
                 emote_sequence: 0,
+                seated: None,
             },
         );
         id
@@ -238,6 +248,7 @@ impl SimWorld {
         fly_down: bool,
         jump: bool,
         emote: Option<Emote>,
+        seated: Option<[f32; 2]>,
     ) {
         // Every float in an intent must be a real number, or the whole intent is
         // discarded.
@@ -308,6 +319,24 @@ impl SimWorld {
         // after the key that asked for it.
         if flying {
             av.jump_requested = false;
+        }
+        // The seat. A *level*, unlike the jump and the emote beside it: it holds
+        // until the client says otherwise, so an avatar that comes into range
+        // mid-sit is drawn sitting.
+        //
+        // Three ways to lose it, and each is the sim refusing to take the client's
+        // word for something. A non-finite or over-long offset is rejected outright
+        // — the client is describing a body somewhere its position is not, and
+        // there is a limit to how far that may be. Asking to move ends the sit, so
+        // sitting cannot become a way to walk around displaced. And flight ends it
+        // for the same reason gravity does: nothing is under you.
+        av.seated = seated.filter(|o| {
+            o[0].is_finite()
+                && o[1].is_finite()
+                && (o[0] * o[0] + o[1] * o[1]) <= MAX_SEAT_OFFSET_M * MAX_SEAT_OFFSET_M
+        });
+        if mag > 1e-4 || flying || jump {
+            av.seated = None;
         }
         // An emote is a one-shot: stamp it with a fresh sequence so receivers can
         // tell "waved again" from "still waving".
@@ -408,6 +437,7 @@ impl SimWorld {
                 position: a.position,
                 yaw: a.yaw,
                 emote: a.emote,
+                seated: a.seated,
             })
             .collect();
 
@@ -782,7 +812,7 @@ mod tests {
             (f32::NAN, f32::NAN, 0.0),
             (1.0, 0.0, f32::NAN),
         ] {
-            world.apply_intent(id, x, z, yaw, false, false, false, false, None);
+            world.apply_intent(id, x, z, yaw, false, false, false, false, None, None);
             world.step(0.05);
             let p = world.avatar_position(id).expect("still there");
             assert!(
@@ -798,7 +828,7 @@ mod tests {
 
         // And an ordinary intent still moves, so the guard is not simply refusing
         // everything.
-        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None);
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None, None);
         world.step(0.05);
         let p = world.avatar_position(id).expect("still there");
         assert!(p.is_finite());
@@ -806,6 +836,133 @@ mod tests {
             (p.z - start.z).abs() > 1e-4,
             "a valid intent should have moved the avatar"
         );
+    }
+
+    /// The seat is the one thing a client may use to draw its body away from the
+    /// position this sim holds for it, so the sim polices it: it must be a real,
+    /// short offset, and it does not survive the same client asking to move.
+    ///
+    /// Without the second rule "sitting" is a way to walk around a metre or two
+    /// displaced from your own position — invisible to anything that reasons
+    /// about where an avatar is, because that is still the honest number.
+    #[test]
+    fn a_seat_is_bounded_and_does_not_survive_moving() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        let seated = |w: &SimWorld| {
+            let NetMessage::WorldSnapshot { avatars, .. } = w.snapshot(0) else {
+                panic!("snapshot")
+            };
+            avatars.iter().find(|a| a.id == id).expect("in view").seated
+        };
+
+        // An ordinary seat: still, and within reach of a bench.
+        world.apply_intent(
+            id,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some([0.4, -0.9]),
+        );
+        assert_eq!(seated(&world), Some([0.4, -0.9]));
+
+        // Asking to move ends it, in the same intent that asks.
+        world.apply_intent(
+            id,
+            0.0,
+            1.0,
+            0.0,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some([0.4, -0.9]),
+        );
+        assert_eq!(seated(&world), None, "walking away should end the sit");
+
+        // So does taking off, and so does a jump.
+        world.apply_intent(
+            id,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some([0.4, -0.9]),
+        );
+        world.apply_intent(
+            id,
+            0.0,
+            0.0,
+            0.0,
+            true,
+            false,
+            false,
+            false,
+            None,
+            Some([0.4, -0.9]),
+        );
+        assert_eq!(seated(&world), None, "flying should end the sit");
+        world.apply_intent(
+            id,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some([0.4, -0.9]),
+        );
+        world.apply_intent(
+            id,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            true,
+            None,
+            Some([0.4, -0.9]),
+        );
+        assert_eq!(seated(&world), None, "jumping should end the sit");
+
+        // Nothing a client can put on the wire draws its body across the street,
+        // and nothing it can put there is not a number.
+        for bad in [
+            [50.0, 0.0],
+            [0.0, -50.0],
+            [f32::INFINITY, 0.0],
+            [f32::NAN, f32::NAN],
+        ] {
+            world.apply_intent(
+                id,
+                0.0,
+                0.0,
+                0.0,
+                false,
+                false,
+                false,
+                false,
+                None,
+                Some(bad),
+            );
+            assert_eq!(seated(&world), None, "{bad:?} should have been refused");
+        }
+
+        // And the position itself never moved through any of it.
+        assert!(world.avatar_position(id).expect("spawned").is_finite());
     }
 
     /// A teleport (protocol 17) *places* the avatar: position set, motion
@@ -817,7 +974,7 @@ mod tests {
         let id = world.spawn_avatar();
         // Walking when the jump lands: the carried velocity must not slide the
         // avatar off the destination.
-        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None);
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None, None);
         world.step(0.05);
 
         let dest = Vec3::new(1234.5, 0.05, -987.0);

@@ -2029,6 +2029,12 @@ pub fn apply_teleport(
         tf.translation = avatar_local;
         avatar_state.position = avatar_local;
         avatar_state.display_position = avatar_local;
+        // A jump ends a sit, immediately and without the slide: the bench that was
+        // being sat on belongs to the cells this teleport is about to retire, so
+        // easing off it would ease off a seat that is no longer anywhere
+        // (`resources::Seated` holds an offset, and after this the offset points at
+        // a place in the new city).
+        avatar_state.seated = None;
         // Online, the sim owns this position, so ask it to place the avatar too
         // (`NetMessage::Teleport`, protocol 17) — without this the next snapshot
         // pulled the body straight back to where it was, which is what every

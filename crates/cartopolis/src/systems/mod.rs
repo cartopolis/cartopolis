@@ -55,7 +55,7 @@ pub use nav::{
 };
 pub use net::{background, network, session, user_store, voice};
 pub use player::{
-    avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, touch,
+    avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, sit_pose, touch,
 };
 // Re-exported only where something reaches it by name: with `audio` off the
 // module is still compiled (its synthesis and rate maths are pure and tested),

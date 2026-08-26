@@ -132,6 +132,52 @@ impl FurnitureKind {
     }
 }
 
+/// Where a form can be sat on, in the object's own frame (+z front).
+///
+/// The numbers are read off [`form`]'s parts rather than restated: a seat is the
+/// top of a slat that is already meshed, and the two drifting apart would put the
+/// avatar's hips through the timber.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seat {
+    /// Height of the slat's top surface above the object's ground.
+    pub height: f32,
+    /// Half the usable length along the object's x axis. Shorter than the slat
+    /// itself, so a sitter placed at the end of the span still has both hips on
+    /// it.
+    pub half_span: f32,
+    /// One entry per place to sit: the slat's z in the object frame, and the yaw
+    /// (radians about +y, added to the object's own) a sitter turns to. A bench
+    /// has one and it faces away from its back panel; a picnic table has two,
+    /// facing each other across it.
+    pub rows: &'static [(f32, f32)],
+}
+
+/// Where the avatar can sit on `kind`, or `None` for a form nobody sits on.
+///
+/// The verb the prompt offers is derived from the same fact on the client side,
+/// so anything answering `Some` here must read "Sit at …" there.
+#[must_use]
+pub fn seat(kind: FurnitureKind) -> Option<Seat> {
+    match kind {
+        // form::BENCH[0]: slat centred at y 0.45, 3 cm half-height, z 0. The back
+        // panel is at −z, so a sitter faces +z, which is also the side the whole
+        // object was turned toward the path.
+        FurnitureKind::Bench => Some(Seat {
+            height: 0.48,
+            half_span: 0.6,
+            rows: &[(0.0, 0.0)],
+        }),
+        // form::PICNIC_TABLE[1..3]: two slats at z ±0.62, same height, each facing
+        // the table top between them.
+        FurnitureKind::PicnicTable => Some(Seat {
+            height: 0.48,
+            half_span: 0.6,
+            rows: &[(-0.62, 0.0), (0.62, std::f32::consts::PI)],
+        }),
+        _ => None,
+    }
+}
+
 /// OSM tag → form. Matched on key **and** value, in order, first hit wins.
 ///
 /// `pois` carries raw OSM tags rather than a Shortbread `kind`, and a feature
@@ -959,6 +1005,31 @@ mod tests {
         assert!(!FurnitureKind::Fountain.takes_angle_from_path());
         assert!(!FurnitureKind::Artwork.takes_angle_from_path());
         assert!(FurnitureKind::Bench.takes_angle_from_path());
+    }
+
+    #[test]
+    fn a_seat_is_the_top_of_a_slat_that_is_really_meshed() {
+        // The avatar's sitting pose is built around `Seat::height`, and the only
+        // thing that makes it land on the timber rather than through it is that
+        // this number is the slat's own top. Nothing but this test connects the
+        // two: `seat` restates the geometry, so a re-measured bench that did not
+        // update it would seat the avatar in mid-air.
+        for kind in [FurnitureKind::Bench, FurnitureKind::PicnicTable] {
+            let s = seat(kind).expect("a form the prompt offers to sit at");
+            for (z, _) in s.rows {
+                let slat = parts(kind)
+                    .iter()
+                    .find(|p| (p.at[2] - z).abs() < 1e-3 && p.half[0] > s.half_span)
+                    .unwrap_or_else(|| panic!("{kind:?} has no slat at z {z}"));
+                assert!(
+                    (slat.at[1] + slat.half[1] - s.height).abs() < 1e-3,
+                    "{kind:?} seat at {} but the slat's top is {}",
+                    s.height,
+                    slat.at[1] + slat.half[1]
+                );
+            }
+        }
+        assert!(seat(FurnitureKind::Bin).is_none());
     }
 
     #[test]

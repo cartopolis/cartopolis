@@ -33,9 +33,52 @@ pub struct CellPlaces {
 #[derive(Clone)]
 pub struct Interactable {
     pub pos: Vec2,
+    /// Which way the thing faces (radians about +y, world frame). A prop takes it
+    /// from the path it stands beside ([`FurnitureInstance::yaw`]); a POI is a
+    /// bare point and has none, so it is zero and nothing reads it.
+    pub yaw: f32,
     /// What the prompt says, e.g. "Vismarkt" or "Bench".
     pub name: String,
     pub kind: InteractKind,
+}
+
+/// A place to sit, resolved into the anchored world frame: where the avatar's
+/// hips go, and which way it turns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeatSpot {
+    pub pos: Vec2,
+    pub yaw: f32,
+}
+
+impl Interactable {
+    /// Where on this thing an avatar standing at `from` would sit, or `None` if
+    /// nobody sits on it.
+    ///
+    /// It picks the row nearest the approach — which side of a picnic table you
+    /// walked up to — and then slides along that row to meet you, so walking to
+    /// the end of a bench and sitting does not teleport you to its middle.
+    #[must_use]
+    pub fn seat_spot(&self, from: Vec2) -> Option<SeatSpot> {
+        let seat = crate::systems::furniture::seat(match self.kind {
+            InteractKind::Prop(kind) => kind,
+            InteractKind::Place { .. } => return None,
+        })?;
+        let (sin, cos) = self.yaw.sin_cos();
+        // Into the object's own frame: +x along the slat, +z out of its front.
+        let d = from - self.pos;
+        let local = Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
+        let (row_z, row_yaw) = *seat
+            .rows
+            .iter()
+            .min_by(|a, b| (local.y - a.0).abs().total_cmp(&(local.y - b.0).abs()))
+            .expect("a seat has at least one row");
+        let along = local.x.clamp(-seat.half_span, seat.half_span);
+        let spot = Vec2::new(along, row_z);
+        Some(SeatSpot {
+            pos: self.pos + Vec2::new(spot.x * cos + spot.y * sin, -spot.x * sin + spot.y * cos),
+            yaw: self.yaw + row_yaw,
+        })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -167,6 +210,7 @@ impl WorldPlaces {
             }
             interactables.push(Interactable {
                 pos,
+                yaw: f.yaw,
                 name: prop_name(f.kind).to_string(),
                 kind: InteractKind::Prop(f.kind),
             });
@@ -174,6 +218,7 @@ impl WorldPlaces {
         for p in places.pois {
             interactables.push(Interactable {
                 pos: origin + Vec2::new(p.x, p.z),
+                yaw: 0.0,
                 name: p.name,
                 kind: InteractKind::Place {
                     category: p.category,
