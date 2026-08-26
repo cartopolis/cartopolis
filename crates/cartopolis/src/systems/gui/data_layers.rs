@@ -481,8 +481,14 @@ pub struct DataLayers {
     /// switches off is the per-cell coverage read and the patch pool.
     pub grass_enabled: bool,
     /// Feature toggle (under Map): the merged street furniture
-    /// (`systems::street_furniture`) — benches, bins, shelters read out of the
-    /// tile's `pois` layer. Gates their visibility on top of the altitude LOD.
+    /// (`systems::street_furniture`) — benches, bins and shelters read out of the
+    /// tile's `pois` layer, **and** the cars and bikes filled into its `sites` car
+    /// parks (`systems::parking`). Gates their visibility on top of the altitude
+    /// LOD.
+    ///
+    /// One toggle for both because they are one mesh group, one material and one
+    /// collider set: `collision::sync_prop_colliders` gates on this, and a prop
+    /// that is hidden but still solid is an invisible wall.
     pub furniture_enabled: bool,
     /// Feature toggle (under Map): textured road surfaces (generated tarmac +
     /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
@@ -2286,6 +2292,8 @@ pub fn render_data_layers_panel(
                         &mut dl.grass_enabled,
                         egui::RichText::new("Grass").size(theme::SIZE_SUB),
                     );
+                    // Also the parked cars and bikes (`systems::parking`); the
+                    // label stays short because this is a phone row.
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.furniture_enabled,

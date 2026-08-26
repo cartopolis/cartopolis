@@ -327,6 +327,11 @@ pub fn furniture(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Fountain => FOUNTAIN,
         FurnitureKind::Artwork => ARTWORK,
         FurnitureKind::Swing => SWING,
+        // Parked vehicles are not interactables (`world_places::CellPlaces`), so
+        // these are never drawn. The travel-mode icons already in the subset are
+        // what they would use, so the arms cost nothing and no font work.
+        FurnitureKind::Car => CAR,
+        FurnitureKind::Bicycle => BIKE,
     }
 }
 

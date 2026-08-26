@@ -41,6 +41,7 @@ use crate::systems::globe::GlobeState;
 use crate::systems::grass::GrassAreas;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
+use crate::systems::parking;
 use crate::systems::places;
 use crate::systems::road_depth::{RoadDepthExtension, RoadMaterial};
 use crate::systems::road_texture::{road_texture, RoadClass};
@@ -493,7 +494,9 @@ fn spawn_geometry_task(
                                     veg_seed(cell),
                                 ) {
                                     Ok(items) => {
-                                        meshes.extend(furniture::build_furniture_meshes(&items));
+                                        meshes.extend(furniture::build_furniture_meshes(
+                                            &items, mesh_bytes,
+                                        ));
                                         // Keep the instances, not just their meshes:
                                         // they are where the props stand, which is
                                         // what makes them solid and what the
@@ -502,6 +505,22 @@ fn spawn_geometry_task(
                                     }
                                     Err(e) => {
                                         tracing::warn!(cell = ?cell, error = %e, "street furniture extraction failed");
+                                    }
+                                }
+                                // The `sites` layer's car parks, filled — same
+                                // fetch, same parse, same group and material as
+                                // the benches above, and the same toggle, because
+                                // collision has to match what is drawn
+                                // (`systems::parking`).
+                                match parking::extract_parking(&tile, tile_m, veg_seed(cell)) {
+                                    Ok(items) => {
+                                        meshes.extend(furniture::build_furniture_meshes(
+                                            &items, mesh_bytes,
+                                        ));
+                                        cell_places.vehicles = items;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(cell = ?cell, error = %e, "parked vehicle fill failed");
                                     }
                                 }
                             }

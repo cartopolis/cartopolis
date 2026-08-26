@@ -10,6 +10,12 @@
 
 pub mod furniture;
 pub mod mip;
+// The `sites` layer's car parks and cycle parking, filled with vehicles. Split
+// from `furniture` rather than folded into it because the claim is different: a
+// bench is surveyed and a parked car is inferred from the area it stands on. It
+// borrows `furniture`'s forms and mesh builder, which is the whole reason the two
+// end up in one group and one material.
+pub mod parking;
 // Allocation budgets. `cfg(test)` on purpose: the counting allocator must not
 // exist in a shipped build, and nothing outside the suite reads it.
 #[cfg(test)]

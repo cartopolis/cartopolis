@@ -551,12 +551,12 @@ pub(crate) fn bucket_range(
 /// Without this the inset carves a bald 3-metre strip along every cell seam, and
 /// the seams are on a 1.5 km grid across the whole map — far more visible than the
 /// overhang the inset exists to prevent.
-struct BorderGuard {
+pub(crate) struct BorderGuard {
     tile_m: f32,
 }
 
 impl BorderGuard {
-    fn new(tile_m: f32) -> Self {
+    pub(crate) fn new(tile_m: f32) -> Self {
         Self { tile_m }
     }
 
@@ -573,7 +573,7 @@ impl BorderGuard {
 
 /// A uniform grid over a feature's boundary segments, so the inset test costs a
 /// 3×3 cell lookup per candidate instead of a scan over every ring point.
-struct EdgeGrid {
+pub(crate) struct EdgeGrid {
     cell: f32,
     segs: Vec<([f32; 2], [f32; 2])>,
     buckets: HashMap<(i32, i32), Vec<u32>>,
@@ -582,7 +582,7 @@ struct EdgeGrid {
 impl EdgeGrid {
     const CELL: f32 = 8.0;
 
-    fn new(rings: &[Vec<[f32; 2]>], border: &BorderGuard) -> Self {
+    pub(crate) fn new(rings: &[Vec<[f32; 2]>], border: &BorderGuard) -> Self {
         let mut grid = Self {
             cell: Self::CELL,
             segs: Vec::new(),
@@ -609,7 +609,7 @@ impl EdgeGrid {
     }
 
     /// True if any boundary segment passes within `r` of the point.
-    fn within(&self, x: f32, z: f32, r: f32) -> bool {
+    pub(crate) fn within(&self, x: f32, z: f32, r: f32) -> bool {
         let lo_i = ((x - r) / self.cell).floor() as i32;
         let hi_i = ((x + r) / self.cell).floor() as i32;
         let lo_j = ((z - r) / self.cell).floor() as i32;
@@ -632,8 +632,9 @@ impl EdgeGrid {
     }
 }
 
-/// Angle of the longest boundary segment — the orchard's row direction.
-fn dominant_angle(rings: &[Vec<[f32; 2]>]) -> f32 {
+/// Angle of the longest boundary segment — the orchard's row direction, and the
+/// axis a car park's bays are laid out along ([`crate::parking`]).
+pub(crate) fn dominant_angle(rings: &[Vec<[f32; 2]>]) -> f32 {
     let mut best = 0.0f32;
     let mut angle = 0.0f32;
     for ring in rings {
