@@ -1,15 +1,21 @@
 ---
 topic: flight-at-speed
-triggers: [flight stutters, flying is jerky, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, teleport sound, teleport animation, arrival]
-updated: 2026-08-25
+triggers: [flight stutters, flying is jerky, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival]
+updated: 2026-08-26
 ---
 
 # Why fast flight juddered, and what the fixes rest on
 
-Reported 2026-08-25 as "the avatar flight is stuttery". Three separate causes,
-none of them in the flight controls themselves. Recording it because two of the
-three are constants that look correct until you multiply them by the altitude
-ramp, and anyone re-tuning from first principles would restore them.
+Reported 2026-08-25 as "the avatar flight is stuttery", and **reported again on
+2026-08-26 after those fixes shipped** — from a phone, signed in to the hosted
+sim, which is the case the first round never touched. Five causes now, none of
+them in the flight controls themselves. Recording it because most of them are
+constants that look correct until you multiply them by the altitude ramp, and
+anyone re-tuning from first principles would restore them.
+
+Sections 1–3 are the first round (client-side smoothing and the camera).
+Sections 4–5 are the second (the snapshot stream that feeds all of it), and
+section 6 is why the answer was not UDP.
 
 **Flight is the one thing in this client that is fast.** `motion::MAX_SPEED` is
 32 m/s, and `motion::fly_altitude_factor` multiplies it by up to
@@ -48,10 +54,11 @@ far more than reconciliation's own lag at any speed and far less than any
 teleport, which moves the avatar to another part of the world.
 
 **A threshold in metres on a quantity that scales with speed is a threshold in
-seconds that nobody wrote down.** The same trap is waiting in
-`ONLINE_MAX_EXTRAPOLATION` (a genuine time, deliberately) and in
-`driver::GPS_TELEPORT_M` (a genuine distance, deliberately) — check which kind
-you have before tuning either.
+seconds that nobody wrote down.** `driver::GPS_TELEPORT_M` is the other side of
+the coin and is a genuine distance, deliberately — check which kind you have
+before tuning either. `ONLINE_MAX_EXTRAPOLATION` was named here as already being
+a genuine time and therefore safe; it was a genuine time and it was still wrong,
+for the different reason section 4 gives.
 
 ## 2. The follow camera trailed further than its boom could reach
 
@@ -116,6 +123,106 @@ about how fast the ground should slide past at a given height. `FLY_ALT_MAX_FACT
 was left at 20 for the reason its own doc gives: past ~640 m/s the map streams
 for a viewpoint that outruns it, and that is a *streaming* limit, so raising it
 would trade the stutter this note is about for a worse one.
+
+## 4. The client stopped believing itself after 150 ms
+
+This is the one the second report was about, and it is the one that only shows up
+on a phone talking to a real server.
+
+`smooth_online_avatar_display` eases the predicted display toward the last
+authoritative pose *extrapolated by its own age*. `ONLINE_MAX_EXTRAPOLATION` caps
+that age. Past the cap the target stands still while the display keeps
+integrating, so within `1 / ONLINE_RECONCILE_RATE` the ease brakes the avatar to a
+**dead stop**, and it stays stopped until the next snapshot lands and it lurches
+forward. The braking is deliberate — an avatar nobody has confirmed for a while
+should stop rather than fly on — but the cap decides how often an ordinary event
+triggers it, and the cost is proportional to speed. At a walk it is 20 cm and
+invisible. At 250 m/s it is the stutter.
+
+The cap was 0.15 s: three server ticks, which assumes the only thing between the
+two ends is a healthy local network. Two ordinary events beat it several times a
+minute on a handset and neither is a fault:
+
+- **The mobile link.** Inter-arrival on cellular spikes to a few hundred
+  milliseconds, and everything shares one ordered stream (chat, prims, voice), so
+  one retransmission delays every snapshot queued behind it.
+- **Our own frame.** `network::apply_network_snapshot` drains the mailbox once per
+  Bevy frame, so a 200 ms hitch — a tile upload burst during fast flight, i.e.
+  exactly when this matters — ages every queued snapshot by the length of the
+  hitch before any of them is read. From inside the smoothing function that is
+  indistinguishable from a network fault, and it isn't one.
+
+Now 0.5 s, which covers both and still parks a genuinely dead link inside a
+second. It stays under `ONLINE_SNAP_SECONDS` on purpose: a server that has really
+stopped agreeing with us has to surface as divergence and then as a snap, not be
+extrapolated away.
+
+**Waiting longer is safe here for a reason that is easy to miss.** The
+extrapolation runs on `predicted_velocity` — the client's own live input — not on
+anything the snapshot carried. A longer window means trusting our own keys for
+longer, not coasting on a stale reading of somebody else's. That is why this
+number can be measured in half-seconds where a dead-reckoning-from-the-server
+design could not afford it.
+
+`AvatarState::snapshot_age` is stored uncapped now and clamped at the one place
+that extrapolates (`avatar::extrapolated_target`). Clamping it at the source cost
+the only measurement of how late a snapshot actually was — the moment the number
+is worth reading is the moment a stored clamp stops being able to say it.
+
+## 5. Nagle's algorithm was on, on every socket
+
+`TCP_NODELAY` was set nowhere in the tree: not on the client's TCP connect, not on
+its WebSocket, not on the server's accept loop, not on the axum listener the
+deployed `wss://` clients all arrive through.
+
+Nagle holds a small write until the previous one is acknowledged, to save headers
+on bulk transfers made of many tiny writes. Nothing on this wire is that — an
+intent is one complete message the sim wants now, a snapshot is one complete
+message the prediction wants now. What the delay buys instead, on a link with real
+round-trip time, is intents leaving in clumps and snapshots arriving in clumps,
+which is precisely the late-snapshot pattern section 4 is about. On loopback it is
+invisible, which is why it survived this long.
+
+Four sites, all best-effort (a socket that refuses the option is still a working
+socket): `network::set_nodelay` for both client carriers, the simulator's accept
+loop, and `axum::serve::ListenerExt::tap_io` for the `/ws` listener.
+
+## 6. Why not UDP
+
+Asked directly, and worth writing down because it will be asked again.
+
+Nothing in sections 4 or 5 is caused by ordering or by retransmission. The avatar
+stalls because the client refused to extrapolate, and it would stall identically
+over UDP. Nagle is a socket option, not a protocol.
+
+The costs are real and the benefit is unmeasured. A browser cannot open a UDP
+socket at all, so it would be a **third** carrier beside TCP and WebSocket rather
+than a replacement — and the whole reason `net::handle_connection` is generic over
+`FrameTransport` is to avoid a second copy of the connection loop, let alone a
+third. The same connection carries sign-in, chat, prims and voice, all of which
+want ordering and delivery, so it would mean splitting into a reliable channel and
+an unreliable one: a protocol project, not a socket change.
+
+Revisit it if `NetPredictionHealth` (below) shows large gaps *with* nodelay on and
+a generous window — that would be genuine loss, which is the thing UDP actually
+addresses.
+
+## The instrument: `NetPredictionHealth`
+
+Both rounds of this were diagnosed by reading constants, because nothing measured
+the thing being complained about. `resources::NetPredictionHealth` now does:
+snapshots applied, the last and worst gap between them, and — the number that
+matters — the share of predicted frames spent **parked** past the extrapolation
+window.
+
+It goes into the shareable diagnostics report (☰ ▸ the report `systems::dev::diagnostics`
+composes) rather than a log line, for that module's own reason: `logcat` needs a
+cable, which is what the person holding the failing device does not have.
+
+Read it as a fork. `parked` near zero during a stuttering flight means this is not
+a network problem at all and the `perf:` block above it is where to look. Anything
+above a percent or two means it is. Nothing else in the report tells those two
+apart and they need opposite fixes.
 
 ## Teleport arrivals
 
