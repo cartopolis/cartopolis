@@ -2046,6 +2046,19 @@ fn run_client() {
                     .after(systems::geo_nav::apply_teleport)
                     .after(systems::shot_harness::hold_scripted_camera_mode)
                     .before(systems::free_camera::camera_controls),
+                // `--ui locate`: a fix with no provider, so the device arrow can
+                // be photographed at all.
+                //
+                // **After** the tracking system, not before. That system reads
+                // the live watches every frame and writes what it finds — which
+                // in a scripted run is nothing, since no provider exists — so a
+                // seed seen first is a seed wiped before the overlay reads it.
+                // Running last is the whole reason `--ui locate` produces a
+                // picture rather than an empty map.
+                systems::shot_harness::track_scripted_device
+                    .after(systems::geo_nav::apply_teleport)
+                    .after(systems::locate::track_device_pose)
+                    .before(systems::locate::render_locate_arrow),
                 // After drive_screenshots so the `hide_ui` it clears
                 // each frame isn't cleared again before PostUpdate's
                 // egui suppression reads it.
@@ -2595,7 +2608,8 @@ fn run_client() {
         //
         // `render_place_pins` must stay last: it culls against the root `Ui`'s
         // leftover space, which is only the map area once every side panel has taken
-        // its width.
+        // its width. `locate::render_locate_arrow` reads the same leftover space and
+        // is ordered after it (Phase 8) for the same reason.
         .add_systems(
             Update,
             (
@@ -2634,6 +2648,16 @@ fn run_client() {
                 systems::chat_overlay::render_chat_composer,
                 // Also after the camera has moved, so pins project onto this frame's view.
                 systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
+                // The device arrow: where the phone is, in the views where the
+                // avatar isn't standing in for it. Same placement rules as the
+                // pins above — it reads the root `Ui`'s leftover space to find
+                // the map area, so it must run after every panel, and after the
+                // camera so it projects onto this frame's view. It paints and
+                // never senses, so unlike a pin it cannot take a tap and needs no
+                // ordering against the dock beyond that.
+                systems::locate::render_locate_arrow
+                    .after(systems::free_camera::camera_controls)
+                    .after(systems::place_pins::render_place_pins),
             )
                 .chain(),
         )

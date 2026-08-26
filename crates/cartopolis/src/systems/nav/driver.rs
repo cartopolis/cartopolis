@@ -141,7 +141,7 @@ use web_time::Instant;
 
 use crate::components::{Avatar, FreeCamera};
 use crate::platform::location::{GpsFix, LocationWatch};
-use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
+use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
     lat_lng_to_world, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
@@ -886,6 +886,9 @@ pub fn drive_driver_mode(
     mut avatar_state: ResMut<AvatarState>,
     mut avatars: Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
     map_anchor: Res<MapAnchor>,
+    // Online, a device fix has to reach the sim or the next snapshot undoes it —
+    // see [`place_avatar`], which is where that happens for both callers.
+    online: Option<Res<OnlineSession>>,
 ) {
     // `route` is mutable only so leaving the route can ask for a new one (see the
     // reroute at the end of this system); everything else here reads it.
@@ -951,8 +954,14 @@ pub fn drive_driver_mode(
     // millimetre has either stopped or is parked, and the two are indistinguishable
     // from here — hence a generous `GPS_STALE_S`, and a message that says the
     // position is the last known one rather than claiming the receiver is broken.
+    //
+    // Whether this is a report we have not applied yet. The provider republishes
+    // the same value until the next one lands, so this is what separates "one
+    // fix" from "sixty frames looking at one fix" — see [`place_avatar`], which
+    // is only allowed to reach the sim on the former.
+    let fix_is_new = fix.is_some_and(|f| driver.last_fix != Some(f));
     if let Some(f) = fix {
-        if driver.last_fix != Some(f) {
+        if fix_is_new {
             driver.last_fix = Some(f);
             driver.last_fix_at = Some(now);
         }
@@ -979,7 +988,14 @@ pub fn drive_driver_mode(
             );
             nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None).silently());
         } else {
-            place_avatar(anchor, fix.lat, fix.lng, &mut avatar_state, &mut avatars);
+            place_avatar(
+                anchor,
+                fix.lat,
+                fix.lng,
+                &mut avatar_state,
+                &mut avatars,
+                if fix_is_new { online.as_deref() } else { None },
+            );
         }
         driver.snap_pending = false;
     } else if driver.snap_pending {
@@ -1260,26 +1276,79 @@ impl DriverState {
 /// The `Without<FreeCamera>` in the filter is for that caller's benefit — it also
 /// holds the camera, and Bevy needs the two `&mut Transform` queries to be
 /// provably disjoint. Costs this one nothing: an avatar is never a camera.
+///
+/// **Online, writing the position here is not enough, and doing only that is why
+/// device tracking did nothing on a server.** The sim owns the avatar's
+/// translation — `network::apply_network_snapshot` assigns
+/// [`AvatarState::position`] from every snapshot and
+/// `avatar::smooth_online_avatar_display` puts the transform back on it — so a
+/// fix written locally was erased twenty times a second and the avatar stayed
+/// exactly where the sim had last put it. On foot that reads as an arrow that
+/// never leaves the block; on a train it is an avatar that never leaves the
+/// station, until the accumulated gap crosses [`GPS_TELEPORT_M`] and the far arm
+/// jumps it two kilometres in one go.
+///
+/// So the sim is told, with the one verb the wire has for placing an avatar
+/// ([`cartopolis_core::NetMessage::Teleport`], protocol 17) — the same message
+/// `geo_nav::apply_teleport` sends for a searched place or a bookmark, and for
+/// the same reason. It carries the **cell-local** translation, because that is
+/// the frame the sim's positions are in (`apply_local_avatar_pose_full` assigns a
+/// snapshot position straight into `Transform::translation`); sending absolute
+/// world metres would put the avatar a cell edge away.
+///
+/// [`AvatarState::teleport_hold`] goes with it, exactly as it does there: the
+/// snapshots already in flight still carry the old position, and adopting one
+/// would yank the avatar back for a frame or two before the sim's confirmation
+/// lands (`network::adopt_local_pose`). The echo — or the two-second timeout —
+/// clears it, so a lost message costs one fix rather than the rest of the trip.
+///
+/// `online` is `Some` only on the frame a *new* fix arrived, and that is the
+/// caller's job rather than this function's because only the caller knows. Both
+/// of them re-apply the latest fix every frame — `LocationWatch::latest` answers
+/// with the last value it was given, not with an event — so a session passed in
+/// unconditionally would put sixty teleports a second on a wire that refuses
+/// intents closer together than 50 ms. One placement per report is what makes it
+/// an unrated message rather than a stream, which is also why the sim does not
+/// rate-limit teleports.
 pub(crate) fn place_avatar(
     anchor: (f64, f64, u32),
     lat: f64,
     lng: f64,
     avatar_state: &mut AvatarState,
     avatars: &mut Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
+    online: Option<&OnlineSession>,
 ) {
     let (wx, wz) = lat_lng_to_world(anchor, lat, lng);
-    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-    let (cell, local) = grid.translation_to_grid(DVec3::new(
-        wx,
-        f64::from(avatar_state.position.y.max(0.05)),
-        wz,
-    ));
+    let (cell, local) = placement(wx, wz, avatar_state.position.y);
     if let Ok((mut c, mut tf)) = avatars.single_mut() {
         *c = cell;
         tf.translation = local;
     }
     avatar_state.position = local;
     avatar_state.display_position = local;
+    if let Some(sess) = online {
+        sess.send(
+            "device fix",
+            cartopolis_core::NetMessage::Teleport {
+                request_id: 0,
+                position: local,
+            },
+        );
+        avatar_state.teleport_hold = Some(Instant::now());
+    }
+}
+
+/// Split a position in absolute anchored world metres into the big_space cell and
+/// the local translation that stand for it, at standing height.
+///
+/// Pure, and split out of [`place_avatar`] for one reason: the local half is what
+/// goes on the wire, and a version of this that handed the sim `wx`/`wz` instead
+/// would look right, place the avatar correctly on the client that sent it, and
+/// be a cell edge — ten kilometres — out for the sim and for everyone else.
+#[must_use]
+fn placement(wx: f64, wz: f64, y: f32) -> (GridCell, Vec3) {
+    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+    grid.translation_to_grid(DVec3::new(wx, f64::from(y.max(0.05)), wz))
 }
 
 /// Is this fix further from the avatar than [`GPS_TELEPORT_M`]?
@@ -3627,6 +3696,59 @@ mod tests {
         // matters — the map is built around the anchor, not around the fix.
         let away = DVec3::new(10_000.0, 0.0, 0.0);
         assert!(gps_gap_m(anchor, anchor.0, anchor.1, away) > GPS_TELEPORT_M);
+    }
+
+    /// What goes on the wire when a device fix is applied online is the **local**
+    /// half of the split, and this is the test that says so. The sim assigns a
+    /// snapshot position straight into `Transform::translation`, so handing it the
+    /// absolute world metres instead would look right on the client that sent it
+    /// and put the avatar a whole cell edge — ten kilometres — out for the sim and
+    /// for every other viewer. The two halves are only distinguishable once the
+    /// position is past a cell boundary, which is exactly the case a long drive
+    /// reaches and a test at the origin never would.
+    #[test]
+    fn the_wire_gets_the_cell_local_half_of_a_fix() {
+        // Inside the first cell: the local translation *is* the world position, so
+        // this arm cannot tell a correct implementation from a wrong one.
+        let (cell, local) = placement(1_500.0, -2_500.0, 0.0);
+        assert_eq!((cell.x, cell.z), (0, 0));
+        assert!((local.x - 1_500.0).abs() < 1e-3 && (local.z + 2_500.0).abs() < 1e-3);
+
+        // Past the first cell in both axes — the case a long drive reaches within
+        // the hour, and the only one where the two halves differ at all. Cells are
+        // *centred* on their index, so the local translation runs to half an edge
+        // either side rather than from zero to a whole one.
+        let (cell, local) = placement(23_000.0, -14_000.0, 0.0);
+        assert_eq!((cell.x, cell.z), (2, -1));
+        assert!(
+            local.x.abs() <= WORLD_CELL_EDGE && local.z.abs() <= WORLD_CELL_EDGE,
+            "a local translation may never exceed the cell edge, got {local:?}"
+        );
+        // …and the two halves still add back up to where the fix actually was,
+        // which is the property the sim depends on: it is handed `local` alone and
+        // the client keeps `cell` to itself.
+        let rebuilt_x =
+            f64::from(cell.x as f32).mul_add(f64::from(WORLD_CELL_EDGE), f64::from(local.x));
+        let rebuilt_z =
+            f64::from(cell.z as f32).mul_add(f64::from(WORLD_CELL_EDGE), f64::from(local.z));
+        assert!(
+            (rebuilt_x - 23_000.0).abs() < 1e-2,
+            "x rebuilt to {rebuilt_x}"
+        );
+        assert!(
+            (rebuilt_z + 14_000.0).abs() < 1e-2,
+            "z rebuilt to {rebuilt_z}"
+        );
+    }
+
+    /// The avatar stands on the ground, whatever the last position said. A fix
+    /// carries no height, so a `y` that had gone negative (a prediction dipping
+    /// through the floor before a correction) must not be handed back to the sim
+    /// as an underground placement.
+    #[test]
+    fn a_fix_never_places_the_avatar_below_the_ground() {
+        let (_, local) = placement(0.0, 0.0, -12.0);
+        assert!(local.y > 0.0, "y was {}", local.y);
     }
 
     #[test]

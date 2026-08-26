@@ -97,41 +97,7 @@ pub fn render_place_pins(
         return;
     };
 
-    // The map area: the viewport minus whatever the side panels took. Read off
-    // the shared root `Ui` *before* borrowing the context, so both borrows of
-    // `egui` don't overlap (the context is a cheap `Arc` clone).
-    let mut map_rect = egui.ui_mut().available_rect_before_wrap();
-    // The on-screen keyboard is a floating `Area`, so it takes no space out of the
-    // root `Ui` and `available_rect_before_wrap` cannot know about it. Subtract it
-    // by hand, for the reason this whole system culls rather than clips: a pin left
-    // under the keyboard is still an interactive `Area`, and it would eat the taps
-    // meant for the keys on top of it.
-    if let Some(slab) = keyboard.slab() {
-        if slab.top() > map_rect.top() {
-            map_rect.max.y = map_rect.max.y.min(slab.top());
-        } else {
-            map_rect.min.y = map_rect.min.y.max(slab.bottom());
-        }
-    }
-    // **The dock and the top-left disc column need exactly the same treatment,
-    // and only the keyboard ever got it.** They are floating `Area`s too, so
-    // they reserve nothing in the root `Ui` either — and `render_place_pins`
-    // runs last (Phase 8) at the same `Order::Middle` the dock draws in, so
-    // within that order a pin raised later wins egui's hit test. On a phone the
-    // dock is ~240 pt of a 274 pt viewport, so a saved place projecting anywhere
-    // near the bottom edge was swallowing taps meant for Search and the app
-    // menu — the two controls the whole dock layout exists to put under a thumb.
-    // The reasoning is the keyboard's, verbatim; the edges were simply never
-    // added.
-    map_rect.max.y -= crate::systems::dock::reserved_bottom();
-    map_rect.min.y += crate::systems::dock::reserved_top();
-    // The route planner's sheet, for exactly the same reason and with the same
-    // arithmetic: it is a floating `Area` over the bottom of the map
-    // (`navigation::SheetDetent`), it reserves nothing in the root `Ui`, and the
-    // taps it would lose are "Start driving" and the destination field.
-    if let Some(sheet) = route.sheet_rect {
-        map_rect.max.y = map_rect.max.y.min(sheet.top());
-    }
+    let map_rect = map_area(&mut egui, &keyboard, &route);
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
@@ -222,10 +188,55 @@ pub fn render_place_pins(
     }
 }
 
+/// The part of the viewport a world-anchored overlay may paint on: the free
+/// central area, minus every floating `Area` that reserves nothing in the root
+/// `Ui` and would otherwise be painted over.
+///
+/// Shared with [`crate::systems::locate`]'s device arrow, which has the same
+/// problem and had no business growing a second copy of this list — the list is
+/// the part that goes out of date, one forgotten overlay at a time.
+///
+/// **The keyboard, the dock and the route sheet are all here for one reason.**
+/// They are floating `Area`s, so `available_rect_before_wrap` cannot know about
+/// them, and this system runs last at the same `Order::Middle` the dock draws in
+/// — so within that order a pin raised later wins egui's hit test. On a phone the
+/// dock is ~240 pt of a 274 pt viewport, so a saved place projecting anywhere
+/// near the bottom edge was swallowing taps meant for Search and the app menu,
+/// the two controls the whole dock layout exists to put under a thumb. Only the
+/// keyboard ever got this treatment; the other two edges were simply never added.
+///
+/// Read off the shared root `Ui` *before* the caller borrows the context, so the
+/// two borrows of `egui` don't overlap (the context is a cheap `Arc` clone).
+pub(crate) fn map_area(
+    egui: &mut EguiManager,
+    keyboard: &crate::systems::onscreen_keyboard::OnScreenKeyboard,
+    route: &crate::systems::navigation::RouteState,
+) -> egui::Rect {
+    let mut map_rect = egui.ui_mut().available_rect_before_wrap();
+    if let Some(slab) = keyboard.slab() {
+        if slab.top() > map_rect.top() {
+            map_rect.max.y = map_rect.max.y.min(slab.top());
+        } else {
+            map_rect.min.y = map_rect.min.y.max(slab.bottom());
+        }
+    }
+    map_rect.max.y -= crate::systems::dock::reserved_bottom();
+    map_rect.min.y += crate::systems::dock::reserved_top();
+    if let Some(sheet) = route.sheet_rect {
+        map_rect.max.y = map_rect.max.y.min(sheet.top());
+    }
+    map_rect
+}
+
 /// Where a place is relative to the camera, in metres, or `None` when it should
 /// not be drawn at all (over the horizon in space, or out of range on the flat
 /// frame).
-fn place_delta(
+///
+/// `pub(crate)` because the device arrow (`systems::locate`) is the same question
+/// asked about the phone's own position: which tier the map is in decides whether
+/// a coordinate lives on the anchored Mercator plane or on the sphere, and that
+/// decision must not be made twice.
+pub(crate) fn place_delta(
     globe: &GlobeState,
     anchor: (f64, f64, u32),
     cam_world: DVec3,

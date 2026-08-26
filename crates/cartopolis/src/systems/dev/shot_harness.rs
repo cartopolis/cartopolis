@@ -1299,6 +1299,7 @@ const UI_ELEMENTS: &[&str] = &[
     "signin",
     "chat",
     "sit",
+    "locate",
     "all",
 ];
 
@@ -1776,6 +1777,75 @@ pub fn seat_scripted_avatar(
         blend: 1.0,
         rising: false,
     });
+}
+
+/// `--ui locate` lights the device-tracking switch and hands it a fix, so a
+/// capture can photograph the arrow that marks where the phone is
+/// (`systems::locate::render_locate_arrow`).
+///
+/// **The fix is invented, and it has to be.** There is no location provider on a
+/// desktop or in a container — `LocationWatch::available()` is `false` and
+/// nothing is ever published — so without this the arrow is a feature that
+/// cannot be looked at on any machine that can take a picture of it.
+///
+/// **Where** it is invented took one wasted capture to get right. The obvious
+/// answer, `--at` itself, is the *camera's* position in Fly and Earth, not the
+/// point it is looking at: from 900 m with the view pitched 55° down, a marker
+/// at `--at` is directly beneath the lens and lands off the bottom of the frame.
+/// The picture came back with the locate button lit and a bare map, which reads
+/// exactly like a broken overlay. So the fix goes where the look ray meets the
+/// ground — `alt / tan(pitch)` along the yaw bearing — and a level or upward
+/// look, which never meets it, falls back to the camera's own coordinate rather
+/// than to an infinity.
+///
+/// The heading is invented too (north-east, so a mirrored or transposed rotation
+/// is obvious in the image — due north would look identical to a broken one).
+/// Follow mode is skipped for the same reason the real system skips it: there the
+/// avatar is the marker.
+///
+/// Every frame rather than once per shot, because the position it seeds is read
+/// from the shot and a teleport can arrive after the seeding would have run.
+pub fn track_scripted_device(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut tracking: ResMut<crate::systems::locate::LocateTracking>,
+) {
+    let panels = harness.ui_for(progress.index);
+    let all = panels.iter().any(|u| u == "all");
+    if !(all || panels.iter().any(|u| u == "locate")) {
+        if tracking.active {
+            tracking.exit();
+        }
+        return;
+    }
+    let Some(shot) = harness.shots.get(progress.index) else {
+        return;
+    };
+    let down = (-shot.pitch_deg).to_radians();
+    let (lat, lng) = if down > 0.02 {
+        let ahead = shot.alt / f64::from(down.tan());
+        crate::systems::locate::step_along_bearing(
+            shot.lat,
+            shot.lng,
+            f64::from(shot.yaw_deg),
+            ahead,
+        )
+    } else {
+        (shot.lat, shot.lng)
+    };
+    tracking.seed_for_capture(
+        crate::platform::location::GpsFix {
+            lat,
+            lng,
+            accuracy_m: 8.0,
+            speed_ms: Some(1.4),
+            heading_deg: Some(45.0),
+        },
+        Some(crate::platform::orientation::DeviceHeading {
+            bearing_deg: 45.0,
+            accuracy_deg: Some(10.0),
+        }),
+    );
 }
 
 /// `--shot-mode earth` above the space threshold: put the orbit camera straight

@@ -206,7 +206,11 @@ impl SimWorld {
         av.velocity = Vec3::ZERO;
         av.vertical_velocity = 0.0;
         av.jump_requested = false;
-        tracing::info!(id, x = position.x, z = position.z, "avatar teleported");
+        // `debug`, not `info`: this stopped being one message per deliberate jump
+        // when device tracking started sending a placement per GNSS fix, i.e. at
+        // ~1 Hz for as long as somebody is driving or has the locate button lit.
+        // A line a second per tracked client is a log nobody can read the rest of.
+        tracing::debug!(id, x = position.x, z = position.z, "avatar teleported");
     }
 
     /// Current position of an avatar (proximity chat, ADR-028).

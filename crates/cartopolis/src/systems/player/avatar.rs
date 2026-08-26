@@ -1609,6 +1609,17 @@ pub fn smooth_online_avatar_display(
         // nothing to do with the link. Measuring those frames would report a
         // two-second network gap every time somebody taps a saved place, which is
         // the fastest way to make an instrument not worth reading.
+        //
+        // **Device tracking sets the same hold about once a second**, because a
+        // GNSS fix is placed through `NetMessage::Teleport` too
+        // (`driver::place_avatar`). At a walking pace the next snapshot is well
+        // inside `TELEPORT_ECHO_M` and clears it within a frame, so almost
+        // nothing is skipped; in a vehicle the hold lasts a round trip and this
+        // stops counting for perhaps a tenth of the frames. That is the right
+        // answer rather than a hole in the instrument — while a fix owns the
+        // position it is being *written*, not predicted, so those frames have no
+        // prediction health to report. Worth knowing before reading a `parked`
+        // share taken with the locate button lit or while driving.
         if avatar_state.teleport_hold.is_none() {
             // A snapshot landed since this system last ran: `apply_network_snapshot`
             // is ordered ahead of us and zeroes the age, and nothing else does. So
