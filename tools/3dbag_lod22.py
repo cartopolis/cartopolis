@@ -22,10 +22,14 @@ Pipeline (server-side):
   4. Bin each building into the client's zoom-14 cell (first vertex) and write
      `lod22/{14}/{x}/{y}.json` + `lod22/coverage.json`.
 
-Wire format per cell: {"elements":[{ "id":int, "p":[[lat,lng,h],...],
-"t":[[i,j,k,roof],...] }, ...]} — `p` deduped vertices, `t` triangles indexing
-`p` (roof=1/0). The client projects each vertex through the same lat/lng->local
-math it already uses, so no CRS logic moves to the client.
+Wire format per cell: {"elements":[{ "id":"0014100010903891", "part":0,
+"p":[[lat,lng,h],...], "t":[[i,j,k,roof],...] }, ...]} — `p` deduped vertices,
+`t` triangles indexing `p` (roof=1/0). The client projects each vertex through
+the same lat/lng->local math it already uses, so no CRS logic moves to the
+client. `id` is the **BAG pand identificatie** verbatim, which is what makes
+every other Kadaster register (attributes, addresses, monuments) joinable to a
+drawn building; `part` is omitted when 0. See `bag_attributes.py`, which keys
+its per-cell attribute files on the same string.
 
 Data: 3DBAG (https://3dbag.nl), TU Delft — CC BY 4.0; footprints Kadaster BAG.
 
@@ -40,6 +44,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import urllib.parse
@@ -197,10 +202,35 @@ def process_object(geom22, verts, scale, translate):
     return p, tris
 
 
+_PAND_RE = re.compile(r"(?:^|\.)(\d{16})(?:-(\d+))?$")
+
+
 def object_id(oid):
-    # NL.IMBAG.Pand.0014100010903891-0 -> a stable-ish int from the digits.
-    digits = "".join(ch for ch in oid if ch.isdigit())
-    return int(digits[-15:]) if digits else abs(hash(oid)) % (10 ** 15)
+    """`NL.IMBAG.Pand.0014100010903891-0` -> `("0014100010903891", 0)`.
+
+    The 16-digit body is the BAG **identificatie**: the key BAG, the address
+    register, the monuments register and any BIM model of the building are all
+    joined on. The `-N` suffix numbers the parts one pand was split into (an
+    L-shaped block with two roof forms is one pand and several solids), so it
+    belongs beside the id, not inside it.
+
+    This used to keep "the last 15 digits" of everything numeric in the name and
+    call the result "stable-ish", which it was — as an internal dedupe key, the
+    only thing it was ever used for. It was not the identificatie and could not
+    be joined with anything: the part suffix contributes a digit of its own, so
+    the truncation shifted the number by a decade for every object carrying one.
+    Leading zeros matter too (a `0014…` pand is Groningen), which is why this
+    stays a string rather than becoming an int.
+
+    Anything that doesn't parse is passed through verbatim with part 0 — a name
+    we don't recognise is still a stable identifier for the object, and inventing
+    a hash for it (as the old fallback did, from Python's per-process-salted
+    `hash`) makes it differ between two runs of the same build.
+    """
+    m = _PAND_RE.search(oid)
+    if not m:
+        return oid, 0
+    return m.group(1), int(m.group(2) or 0)
 
 
 def build(bbox, out_dir, name):
@@ -225,16 +255,19 @@ def build(bbox, out_dir, name):
                         and g.get("type") == "Solid"), None)
             if g22 is None:
                 continue
-            wid = object_id(oid)
-            if wid in seen:
+            pand, part = object_id(oid)
+            if (pand, part) in seen:
                 continue
             out = process_object(g22, verts, scale, translate)
             if out is None:
                 continue
-            seen.add(wid)
+            seen.add((pand, part))
             p, tris = out
             cx, cy = lat_lng_to_tile(p[0][0], p[0][1])
-            cells.setdefault((cx, cy), []).append({"id": wid, "p": p, "t": tris})
+            el = {"id": pand, "p": p, "t": tris}
+            if part:
+                el["part"] = part      # omitted for the common single-part pand
+            cells.setdefault((cx, cy), []).append(el)
             n_tile += 1
             total += 1
         print(f"  [{ti + 1}/{len(urls)}] {url.split('/')[-1]}: "
