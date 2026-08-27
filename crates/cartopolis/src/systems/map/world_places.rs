@@ -25,8 +25,19 @@ use crate::systems::places::{Address, Poi, PoiCategory};
 #[derive(Default)]
 pub struct CellPlaces {
     pub furniture: Vec<FurnitureInstance>,
+    /// Parked cars and bikes (`systems::parking`). Separate from `furniture`
+    /// because they are solid but **not** interactable: OSM surveys the car park,
+    /// never the cars in it, so a proximity prompt on one would name a thing this
+    /// client invented. They are the same `FurnitureInstance` because they are
+    /// the same forms and the same mesh builder.
+    pub vehicles: Vec<FurnitureInstance>,
     pub pois: Vec<Poi>,
     pub addresses: Vec<Address>,
+    /// Drivable centrelines for `systems::traffic`. Carried here rather than in
+    /// its own channel because it comes off the same parse on the same worker and
+    /// has to be retired with the same cell; `insert_cell` hands it straight on to
+    /// `DriveNetwork` and keeps none of it.
+    pub drive_lines: Vec<cartopolis_geo::traffic::DriveLine>,
 }
 
 /// A thing in the world the avatar can walk up to, in anchored world XZ.
@@ -159,6 +170,14 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Fountain => "Fountain",
         FurnitureKind::Artwork => "Artwork",
         FurnitureKind::Swing => "Playground",
+        // Never reached: parked vehicles are not interactables (see
+        // `CellPlaces::vehicles`). Here because the match is exhaustive, and
+        // written as what it *would* say rather than as an `unreachable!`, so
+        // making one interactable later is a one-line decision and not a panic.
+        FurnitureKind::Car => "Parked car",
+        FurnitureKind::Bicycle => "Bicycle",
+        FurnitureKind::Person => "Person",
+        FurnitureKind::Boat => "Boat",
     }
 }
 
@@ -178,7 +197,45 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         // polygon, and a collider there would be an invisible post in the middle
         // of a park.
         FurnitureKind::Swing => 0.0,
+        // A vehicle is long, so one circle is the wrong shape for it and
+        // [`vehicle_circles`] gives it two. This is the radius of each.
+        FurnitureKind::Car => 1.05,
+        FurnitureKind::Bicycle => 0.35,
+        // A boat is on water the avatar cannot walk on, so a collider there is
+        // an invisible wall in the middle of a canal.
+        // A walker is a moving agent, never a placed prop — nothing inserts one
+        // into a cell, so nothing here ever asks. Zero rather than a radius,
+        // because a collider that followed a pedestrian would be a wall that
+        // walks.
+        FurnitureKind::Person => 0.0,
+        FurnitureKind::Boat => 0.0,
     }
+}
+
+/// A parked vehicle as collider circles in the anchored world frame.
+///
+/// Two circles down the long axis rather than the one every other prop gets: a
+/// car is 4.4 m by 1.7 m, and the circle that covers its length lets you walk
+/// through the bay beside it while the circle that fits its width lets you walk
+/// through its bonnet. A bike is short enough for one.
+fn vehicle_circles(f: &FurnitureInstance, pos: Vec2, out: &mut Vec<(Vec2, f32)>) {
+    let r = prop_radius(f.kind);
+    if r <= 0.0 {
+        return;
+    }
+    // Half the distance between the two centres, along the form's own +z.
+    let reach = match f.kind {
+        FurnitureKind::Car => 1.15,
+        _ => 0.0,
+    };
+    if reach == 0.0 {
+        out.push((pos, r));
+        return;
+    }
+    let (sin, cos) = f.yaw.sin_cos();
+    let along = Vec2::new(sin, cos) * reach;
+    out.push((pos + along, r));
+    out.push((pos - along, r));
 }
 
 /// Everything walkable-up-to in the streamed world, keyed by the cell that
@@ -238,6 +295,11 @@ impl WorldPlaces {
                 (origin + Vec2::new(a.x, a.z), label)
             })
             .collect();
+
+        // Solid, but never interactable — `CellPlaces::vehicles` says why.
+        for v in &places.vehicles {
+            vehicle_circles(v, origin + Vec2::new(v.x, v.z), &mut props);
+        }
 
         self.cells.insert(cell, interactables);
         self.props.insert(cell, props);
@@ -312,6 +374,14 @@ mod tests {
             yaw: 0.0,
             kind,
             luma: 1.0,
+            paint: crate::systems::vector_tiles::palette::FURNITURE,
+        }
+    }
+
+    fn vehicle(x: f32, z: f32, yaw: f32, kind: FurnitureKind) -> FurnitureInstance {
+        FurnitureInstance {
+            yaw,
+            ..furniture(x, z, kind)
         }
     }
 
@@ -338,6 +408,7 @@ mod tests {
                 furniture: vec![furniture(10.0, 20.0, FurnitureKind::Bench)],
                 pois: vec![poi(30.0, 40.0, "Vismarkt")],
                 addresses: Vec::new(),
+                ..Default::default()
             },
         );
         let bench = places
@@ -363,6 +434,7 @@ mod tests {
                 furniture: vec![furniture(1.0, 1.0, FurnitureKind::Bin)],
                 pois: Vec::new(),
                 addresses: Vec::new(),
+                ..Default::default()
             },
         );
         assert!(places.nearest(Vec2::new(1.0, 1.0), 2.0).is_some());
@@ -387,6 +459,7 @@ mod tests {
                 furniture: Vec::new(),
                 pois: vec![poi(3.0, 0.0, "near"), poi(9.0, 0.0, "far")],
                 addresses: Vec::new(),
+                ..Default::default()
             },
         );
         assert_eq!(places.nearest(Vec2::ZERO, 20.0).unwrap().name, "near");
@@ -414,6 +487,7 @@ mod tests {
                 furniture: vec![furniture(0.0, 0.0, FurnitureKind::Swing)],
                 pois: Vec::new(),
                 addresses: Vec::new(),
+                ..Default::default()
             },
         );
         assert!(
@@ -448,6 +522,7 @@ mod tests {
                         street: None,
                     },
                 ],
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -456,5 +531,80 @@ mod tests {
         );
         assert_eq!(places.nearest_address(Vec2::new(50.0, 0.0), 5.0), Some("3"));
         assert_eq!(places.nearest_address(Vec2::new(500.0, 0.0), 5.0), None);
+    }
+
+    /// A parked car is solid and silent: the collider index gets it, the prompt
+    /// never does. OSM surveys the car park, not the cars in it, so naming one
+    /// would be this client asserting something it made up.
+    #[test]
+    fn a_parked_car_is_solid_but_never_promptable() {
+        let mut places = WorldPlaces::default();
+        places.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            CellPlaces {
+                vehicles: vec![vehicle(0.0, 0.0, 0.0, FurnitureKind::Car)],
+                ..Default::default()
+            },
+        );
+        assert!(
+            places.nearest(Vec2::ZERO, 5.0).is_none(),
+            "no prompt for a vehicle"
+        );
+        // Two circles down the car's own length, not one — see `vehicle_circles`.
+        assert_eq!(places.props().count(), 2);
+        let ends: Vec<Vec2> = places.props().map(|(p, _)| *p).collect();
+        assert!(
+            ends.iter().all(|p| p.x.abs() < 1e-5),
+            "a car at yaw 0 runs along +z, so both circles stay on the axis: {ends:?}"
+        );
+        assert!(
+            ends.iter().any(|p| p.y > 0.5) && ends.iter().any(|p| p.y < -0.5),
+            "one circle each side of the centre: {ends:?}"
+        );
+    }
+
+    /// A bike is short enough for the one circle every other prop gets.
+    #[test]
+    fn a_parked_bike_is_one_circle() {
+        let mut places = WorldPlaces::default();
+        places.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            CellPlaces {
+                vehicles: vec![vehicle(4.0, 5.0, 1.2, FurnitureKind::Bicycle)],
+                ..Default::default()
+            },
+        );
+        assert_eq!(places.props().count(), 1);
+        assert_eq!(
+            places.props().next().expect("the bike").0,
+            Vec2::new(4.0, 5.0)
+        );
+    }
+
+    /// Turning the car turns its colliders with it — the pair has to follow the
+    /// form's own +z or a car parked across the lattice blocks the wrong bay.
+    #[test]
+    fn the_collider_pair_follows_the_cars_yaw() {
+        let mut places = WorldPlaces::default();
+        let yaw = std::f32::consts::FRAC_PI_2;
+        places.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            CellPlaces {
+                vehicles: vec![vehicle(0.0, 0.0, yaw, FurnitureKind::Car)],
+                ..Default::default()
+            },
+        );
+        let ends: Vec<Vec2> = places.props().map(|(p, _)| *p).collect();
+        assert!(
+            ends.iter().all(|p| p.y.abs() < 1e-5),
+            "a quarter turn puts the length on x: {ends:?}"
+        );
+        assert!(ends.iter().any(|p| p.x > 0.5) && ends.iter().any(|p| p.x < -0.5));
     }
 }

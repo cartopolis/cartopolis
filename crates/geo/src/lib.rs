@@ -10,6 +10,16 @@
 
 pub mod furniture;
 pub mod mip;
+// The `sites` layer's car parks and cycle parking, filled with vehicles. Split
+// from `furniture` rather than folded into it because the claim is different: a
+// bench is surveyed and a parked car is inferred from the area it stands on. It
+// borrows `furniture`'s forms and mesh builder, which is the whole reason the two
+// end up in one group and one material.
+// Boats moored along the canal banks. Split from `parking` for the same reason
+// that is split from `furniture`: a different source (the water polygons' own
+// boundary) and a different rule for deciding there is anything there at all.
+pub mod moorings;
+pub mod parking;
 // Allocation budgets. `cfg(test)` on purpose: the counting allocator must not
 // exist in a shipped build, and nothing outside the suite reads it.
 #[cfg(test)]
@@ -41,6 +51,9 @@ pub mod scatter;
 // vertex shader and never exists on this side at all. Named for the ground
 // rather than the plant so it can pair with the client's `systems::grass` the
 // way `scatter` pairs with `systems::vegetation`.
+// The drivable network behind ambient traffic, off the same `streets` layer the
+// roads and the routing graph are built from.
+pub mod traffic;
 pub mod turf;
 pub mod vector_tiles;
 

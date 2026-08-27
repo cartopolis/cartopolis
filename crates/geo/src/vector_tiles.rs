@@ -503,6 +503,13 @@ pub mod palette {
     pub const FURNITURE_ROOF: u32 = 0xC6_C1_B6;
     /// Masonry: a fountain rim, an artwork plinth.
     pub const FURNITURE_STONE: u32 = 0xC0_BA_AE;
+    /// Glazing: a car's windows. Dark enough to read as a cabin against any body
+    /// colour, and grey rather than blue — a tinted windscreen on a pale map is
+    /// the same mistake a saturated bench is.
+    pub const VEHICLE_GLASS: u32 = 0x6E_74_79;
+    /// Rubber: tyres. The darkest tone in the group, and the one thing that makes
+    /// a box on the ground read as a vehicle rather than as a crate.
+    pub const VEHICLE_TYRE: u32 = 0x4A_47_45;
 }
 
 /// How one source layer is painted.
@@ -2613,7 +2620,7 @@ fn off_deck_runs(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<Vec<[f32; 2]>
 
 /// Read a boolean Shortbread property (`bridge`, `tunnel`, `oneway`, `link`),
 /// treating a missing or non-boolean value as `false`.
-fn flag_of(feature: &Feature, name: &str) -> bool {
+pub(crate) fn flag_of(feature: &Feature, name: &str) -> bool {
     matches!(
         feature.properties.as_ref().and_then(|p| p.get(name)),
         Some(Value::Bool(true))

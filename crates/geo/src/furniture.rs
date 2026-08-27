@@ -47,7 +47,9 @@ use mvt_reader::feature::Feature;
 
 use crate::pois::{single_point, tag_str};
 use crate::scatter::{bucket_range, hash3, rand01, srgb_to_linear_rgb};
-use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData, TILE_BUFFER_FRAC};
+use crate::vector_tiles::{
+    palette, SurfaceGroup, SurfaceMesh, TileData, INDEX_BYTES, TILE_BUFFER_FRAC, VERTEX_BYTES,
+};
 
 /// Altitude at which furniture starts merging into the paving.
 ///
@@ -89,6 +91,14 @@ pub struct FurnitureInstance {
     /// scatter uses: one shared material, and a street's worth of objects that are
     /// not all the identical grey.
     pub luma: f32,
+    /// sRGB body colour for the parts a form paints per instance ([`Tone::Paint`]).
+    ///
+    /// Every surveyed form is [`palette::FURNITURE`] here, i.e. no tint at all —
+    /// a bench is the colour its `Tone`s say it is. It exists for the inferred
+    /// ones: a car park's worth of cars in one identical grey is the giveaway of a
+    /// fill, and one colour per instance is the cheapest cure that keeps the
+    /// group's single shared material (`crate::parking`).
+    pub paint: u32,
 }
 
 /// The vocabulary of things this module can stand on a street.
@@ -117,6 +127,23 @@ pub enum FurnitureKind {
     /// A swing frame. The token for `leisure=playground`, whose node is the
     /// *centroid* of a play area we have no geometry for; see [`FURNITURE_TABLE`].
     Swing,
+    /// A parked car. **Not** in [`FURNITURE_TABLE`]: no `pois` feature is a car,
+    /// and OSM does not survey individual vehicles. It is laid into the `sites`
+    /// layer's car parks by [`crate::parking`], which is a different kind of
+    /// claim — see that module for what it does and does not assert.
+    Car,
+    /// A parked bicycle, from the same place and on the same terms.
+    Bicycle,
+    /// A person on foot. Like the vehicles it is inferred rather than surveyed —
+    /// OSM records where people may walk, never who is walking there — and it is
+    /// the one form here that is only ever *moving* (`systems::traffic` drives a
+    /// pool of them; nothing places a standing one).
+    Person,
+    /// A boat moored against a canal bank. Like the two above it is inferred
+    /// rather than surveyed — see [`crate::moorings`], which reads the shape of
+    /// the water polygon rather than any tag to decide there is a canal there at
+    /// all.
+    Boat,
 }
 
 impl FurnitureKind {
@@ -285,6 +312,8 @@ pub fn extract_furniture(
             yaw,
             kind,
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
+            // No form here has a `Paint` part; this is the no-tint value.
+            paint: palette::FURNITURE,
         });
         if out.len() >= MAX_FURNITURE_PER_CELL {
             truncated = true;
@@ -484,6 +513,14 @@ pub enum Tone {
     /// [`palette::WATER`] — the same colour the canals are, so a fountain is
     /// recognisably the same substance.
     Water,
+    /// Glazing — a car's cabin.
+    Glass,
+    /// Rubber — a tyre.
+    Tyre,
+    /// **The instance's own** [`FurnitureInstance::paint`] rather than a tone of
+    /// this table's. The one part of the scheme that varies within a form, and the
+    /// reason is in that field's docs.
+    Paint,
 }
 
 impl Tone {
@@ -494,6 +531,11 @@ impl Tone {
             Self::Roof => palette::FURNITURE_ROOF,
             Self::Stone => palette::FURNITURE_STONE,
             Self::Water => palette::WATER,
+            Self::Glass => palette::VEHICLE_GLASS,
+            Self::Tyre => palette::VEHICLE_TYRE,
+            // Answered per instance by [`paint_multiplier`]; this is the no-tint
+            // value, so a form using `Paint` without one still draws.
+            Self::Paint => palette::FURNITURE,
         }
     }
 
@@ -502,14 +544,22 @@ impl Tone {
     /// multiplies. Same mechanism as the canopy's two tones: one material for the
     /// whole layer, the variety carried by the mesh.
     fn multiplier(self) -> [f32; 3] {
-        let base = srgb_to_linear_rgb(palette::FURNITURE);
-        let want = srgb_to_linear_rgb(self.rgb());
-        [
-            want[0] / base[0].max(1e-4),
-            want[1] / base[1].max(1e-4),
-            want[2] / base[2].max(1e-4),
-        ]
+        paint_multiplier(self.rgb())
     }
+}
+
+/// The vertex-colour multiplier that turns [`palette::FURNITURE`] into `rgb`.
+///
+/// Split out of [`Tone::multiplier`] because [`Tone::Paint`] answers from the
+/// instance rather than from the table, and both need the same conversion.
+fn paint_multiplier(rgb: u32) -> [f32; 3] {
+    let base = srgb_to_linear_rgb(palette::FURNITURE);
+    let want = srgb_to_linear_rgb(rgb);
+    [
+        want[0] / base[0].max(1e-4),
+        want[1] / base[1].max(1e-4),
+        want[2] / base[2].max(1e-4),
+    ]
 }
 
 /// One box of one object, in the object's own frame: +x right, +y up, +z **front**
@@ -597,6 +647,69 @@ mod form {
         part([-0.60, 0.50, 0.0], [0.22, 0.03, 0.12], Wood),
         part([0.60, 0.50, 0.0], [0.22, 0.03, 0.12], Wood),
     ];
+    /// A hatchback, measured: 4.40 m long, 1.72 m wide, 1.45 m to the roof. Seven
+    /// boxes is the whole budget — a car park holds hundreds of these and every
+    /// extra box is 24 vertices multiplied by the whole lot (see
+    /// [`crate::parking`] on why the count is what bounds this form).
+    ///
+    /// The body sits 27 cm off the ground and the wheels reach under it, which is
+    /// the one detail that stops a stack of boxes reading as a crate.
+    ///
+    /// **The roof is its own `Paint` box on top of the glass, and the seventh box
+    /// buys exactly that.** With the greenhouse as the topmost part every car was
+    /// a dark grey rectangle from above — which is where this camera spends most
+    /// of its time — so a lot read as a field of identical slabs and the whole
+    /// per-instance body colour showed only as a thin skirt below the windows.
+    /// Glazing you can see through the *side* of is what a car looks like; a
+    /// tinted sunroof over the entire cabin is not.
+    pub const CAR: [Part; 7] = [
+        part([0.0, 0.60, 0.0], [0.86, 0.33, 2.20], Paint),
+        part([0.0, 1.14, -0.15], [0.80, 0.22, 1.15], Glass),
+        part([0.0, 1.40, -0.15], [0.79, 0.05, 1.12], Paint),
+        part([-0.86, 0.32, 1.45], [0.10, 0.32, 0.32], Tyre),
+        part([0.86, 0.32, 1.45], [0.10, 0.32, 0.32], Tyre),
+        part([-0.86, 0.32, -1.45], [0.10, 0.32, 0.32], Tyre),
+        part([0.86, 0.32, -1.45], [0.10, 0.32, 0.32], Tyre),
+    ];
+    /// A city bike: 1.75 m long, 1.03 m to the bars. Four boxes, and the wheels
+    /// are 6 cm slabs rather than discs — from the side that is a wheel, and from
+    /// any other angle a bike is a thicket of other bikes anyway.
+    pub const BICYCLE: [Part; 4] = [
+        part([0.0, 0.34, 0.52], [0.03, 0.34, 0.34], Tyre),
+        part([0.0, 0.34, -0.52], [0.03, 0.34, 0.34], Tyre),
+        part([0.0, 0.62, 0.0], [0.03, 0.16, 0.50], Paint),
+        part([0.0, 1.00, 0.40], [0.24, 0.03, 0.03], Metal),
+    ];
+    /// A person: 1.72 m tall, shoulders at 1.4 m.
+    ///
+    /// Three boxes, and the head is [`Tone::Metal`] rather than a skin colour on
+    /// purpose — a crowd rendered in any one complexion is a claim about a city's
+    /// people that a road centreline cannot support, and six would be a worse one.
+    /// It reads as a figure, not as a person you could name, which is the honest
+    /// resolution for something inferred from "a pavement exists here".
+    ///
+    /// The legs are a single box with the gap left in front-to-back rather than
+    /// two: at this size two would alias into one anyway, and the silhouette that
+    /// matters is *upright and narrow*, which is what stops it reading as a
+    /// bollard.
+    pub const PERSON: [Part; 3] = [
+        part([0.0, 0.42, 0.0], [0.17, 0.42, 0.11], Paint),
+        part([0.0, 1.10, 0.0], [0.22, 0.28, 0.14], Paint),
+        part([0.0, 1.52, 0.0], [0.10, 0.12, 0.10], Metal),
+    ];
+    /// A canal boat: 9 m long, 2.4 m in the beam, a low cabin aft of centre.
+    /// Measured off the small *woonboten* and sloops a Groningen canal is lined
+    /// with, not off a barge — a barge on a 12 m canal reads as a ship in a
+    /// bathtub.
+    ///
+    /// The hull straddles y = 0 because that is where the water surface is: the
+    /// bottom 20 cm is under it and the rest is freeboard. It is the one form
+    /// here with anything below the ground plane, and it is deliberate.
+    pub const BOAT: [Part; 3] = [
+        part([0.0, 0.10, 0.0], [1.20, 0.30, 4.50], Paint),
+        part([0.0, 0.46, -0.90], [0.95, 0.06, 2.60], Roof),
+        part([0.0, 0.78, -1.30], [0.80, 0.32, 1.60], Metal),
+    ];
 }
 
 pub fn parts(kind: FurnitureKind) -> &'static [Part] {
@@ -611,29 +724,68 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Fountain => &form::FOUNTAIN,
         FurnitureKind::Artwork => &form::ARTWORK,
         FurnitureKind::Swing => &form::SWING,
+        FurnitureKind::Car => &form::CAR,
+        FurnitureKind::Bicycle => &form::BICYCLE,
+        FurnitureKind::Person => &form::PERSON,
+        FurnitureKind::Boat => &form::BOAT,
     }
 }
 
-/// Merge a cell's furniture into a single mesh.
+/// Merge a cell's furniture into one group's meshes, each no larger than
+/// `max_bytes`.
 ///
-/// One mesh, one group, one material — the same contract the canopies and trunks
-/// hold to, and the reason a street's worth of objects costs one draw call.
+/// One group, one material — the reason a street's worth of objects costs a
+/// handful of draw calls rather than a thousand.
+///
+/// It used to be exactly one mesh per cell, and that was safe only while the
+/// cell's whole vocabulary was surveyed points: 467 of them in the Groningen
+/// fixture, five boxes each. [`crate::parking`] feeds the same group from an
+/// *area* — a car park is filled, not surveyed, so the count follows the ground
+/// it covers — and that is how the canopies came to be the largest asset in the
+/// app (`build_vegetation_meshes` has the measurement). So the cut is the same
+/// cut, for the same reason, taken **between** objects so no car loses its wheels.
+///
+/// `max_bytes` is `None` on every rung without an upload ceiling, which restores
+/// the single-mesh behaviour exactly.
 #[must_use]
-pub fn build_furniture_meshes(items: &[FurnitureInstance]) -> Vec<SurfaceMesh> {
+pub fn build_furniture_meshes(
+    items: &[FurnitureInstance],
+    max_bytes: Option<usize>,
+) -> Vec<SurfaceMesh> {
     if items.is_empty() {
         return Vec::new();
     }
+    let mut out = Vec::new();
     let mut buf = MeshBuf::default();
     for item in items {
+        // Flush *before* adding, and only with something to flush — a piece must
+        // hold at least one object or a cap under one form's cost would emit
+        // empty meshes forever.
+        if let Some(max) = max_bytes {
+            let step = parts(item.kind).len() * BOX_BYTES;
+            if buf.bytes() + step > max && !buf.positions.is_empty() {
+                out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
+            }
+        }
         let (sn, cs) = item.yaw.sin_cos();
         for p in parts(item.kind) {
-            let m = p.tone.multiplier();
+            let m = match p.tone {
+                Tone::Paint => paint_multiplier(item.paint),
+                tone => tone.multiplier(),
+            };
             let tint = [m[0] * item.luma, m[1] * item.luma, m[2] * item.luma, 1.0];
             push_box(&mut buf, item.x, item.z, (sn, cs), p, tint);
         }
     }
-    vec![buf.finish(SurfaceGroup::Furniture)]
+    if !buf.positions.is_empty() {
+        out.push(buf.finish(SurfaceGroup::Furniture));
+    }
+    out
 }
+
+/// What one [`Part`] costs to upload: [`push_box`] emits 24 vertices and 36
+/// indices, flat-shaded, every time.
+const BOX_BYTES: usize = 24 * VERTEX_BYTES + 36 * INDEX_BYTES;
 
 #[derive(Default)]
 struct MeshBuf {
@@ -644,6 +796,11 @@ struct MeshBuf {
 }
 
 impl MeshBuf {
+    /// What this buffer will cost to upload, in the units the frame budget is in.
+    fn bytes(&self) -> usize {
+        self.positions.len() * VERTEX_BYTES + self.indices.len() * INDEX_BYTES
+    }
+
     fn finish(self, group: SurfaceGroup) -> SurfaceMesh {
         SurfaceMesh {
             group,
@@ -1063,7 +1220,7 @@ mod tests {
     #[test]
     fn a_merged_cell_is_one_mesh_with_matching_attribute_counts() {
         let items = extract_furniture(&fixture(), TILE_M, 5).expect("extract");
-        let meshes = build_furniture_meshes(&items);
+        let meshes = build_furniture_meshes(&items, None);
         assert_eq!(meshes.len(), 1, "furniture must merge into one draw");
         let m = &meshes[0];
         assert_eq!(m.group, SurfaceGroup::Furniture);
@@ -1080,7 +1237,7 @@ mod tests {
 
     #[test]
     fn empty_input_builds_nothing() {
-        assert!(build_furniture_meshes(&[]).is_empty());
+        assert!(build_furniture_meshes(&[], None).is_empty());
     }
 
     #[test]
@@ -1093,8 +1250,9 @@ mod tests {
             yaw: 0.9,
             kind: FurnitureKind::Bin,
             luma: 1.0,
+            paint: palette::FURNITURE,
         }];
-        let m = &build_furniture_meshes(&one)[0];
+        let m = &build_furniture_meshes(&one, None)[0];
         let extent = |axis: usize| {
             let lo = m.positions.iter().map(|p| p[axis]).fold(f32::MAX, f32::min);
             let hi = m.positions.iter().map(|p| p[axis]).fold(f32::MIN, f32::max);
@@ -1127,8 +1285,9 @@ mod tests {
             yaw: 2.1,
             kind: FurnitureKind::Shelter,
             luma: 1.0,
+            paint: palette::FURNITURE,
         }];
-        let m = &build_furniture_meshes(&one)[0];
+        let m = &build_furniture_meshes(&one, None)[0];
         for n in &m.normals {
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             assert!((len - 1.0).abs() < 1e-4, "normal {n:?} has length {len}");

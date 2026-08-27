@@ -219,6 +219,13 @@ pub struct LayerPrefs {
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,
+    /// Ambient traffic (`systems::traffic`).
+    ///
+    /// `serde(default)` on the same helper as the rest, so a `user.json` written
+    /// before this layer existed reads as the tier's default rather than as off —
+    /// an absent key is "not stated", not "the user turned it off".
+    #[serde(default = "detail_default")]
+    pub traffic: bool,
     /// The Overpass street-detail layer (`systems::street_detail`).
     #[serde(default = "detail_default")]
     pub street_detail: bool,

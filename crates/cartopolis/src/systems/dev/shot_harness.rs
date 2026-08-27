@@ -544,6 +544,22 @@ pub struct ShotMetrics {
     /// arrived (Overpass, cache, or the toggle), which a capture alone cannot
     /// tell apart from "this town has none of it mapped".
     pub prop_meshes: usize,
+    /// Ambient agents currently **placed on a line** — cars and people, counted
+    /// apart (`systems::traffic`).
+    ///
+    /// Placed, **not** on screen: the test is `Visibility != Hidden`, which an
+    /// agent behind a building or beyond the far plane still passes. That is the
+    /// useful question, because the pools are a fixed size and spawn hidden, so a
+    /// raw entity count reads the same whether the layer is working or never
+    /// found a road. `traffic_cars == 0` over a city with the toggle on means the
+    /// network never arrived or the pool was never created — which is exactly the
+    /// failure that hid a missing car pool once already, silently.
+    ///
+    /// What it cannot tell you is whether any of them are in *frame*; a full
+    /// count with an empty-looking street means the pool is spread too thin, not
+    /// that it is broken.
+    pub traffic_cars: usize,
+    pub traffic_walkers: usize,
     /// Drawn-route entities (ADR-037) and how many the view actually rendered.
     /// The same "black image vs black scene" question the globe counts answer: a
     /// route that is built but not rendered is a visibility or culling problem,
@@ -697,6 +713,7 @@ alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,prop_meshes,\
+traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
@@ -1934,6 +1951,41 @@ pub struct ShotReadouts<'w, 's> {
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
 #[allow(clippy::too_many_arguments)]
+/// The three "is it actually on screen" queries, in **one** parameter.
+///
+/// `drive_capture` sits on Bevy's 16-parameter ceiling — the same wall
+/// `camera_controls` and `update_map_surfaces` hit, and for the same reason:
+/// there is one of everything to measure. A new fact therefore arrives bundled,
+/// not as its own argument. Adding `agents` bare took the system to seventeen
+/// and it silently stopped being a system at all: the compiler's complaint was
+/// that `.after()` did not exist on it, which is several steps from the cause.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct VisualCounts<'w, 's> {
+    globe: Query<
+        'w,
+        's,
+        (
+            &'static bevy::camera::visibility::ViewVisibility,
+            &'static Visibility,
+        ),
+        With<GlobeMesh>,
+    >,
+    route: Query<
+        'w,
+        's,
+        &'static bevy::camera::visibility::ViewVisibility,
+        With<crate::components::RouteVisual>,
+    >,
+    agents: Query<
+        'w,
+        's,
+        (
+            &'static crate::systems::traffic::AgentKind,
+            &'static Visibility,
+        ),
+    >,
+}
+
 pub fn drive_capture(
     mut commands: Commands,
     time: Res<Time>,
@@ -1963,11 +2015,7 @@ pub fn drive_capture(
         ),
         With<FreeCamera>,
     >,
-    globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
-    route_meshes: Query<
-        &bevy::camera::visibility::ViewVisibility,
-        With<crate::components::RouteVisual>,
-    >,
+    visuals: VisualCounts,
 ) {
     if let Some(frames) = progress.exit_in {
         let left = frames.saturating_sub(1);
@@ -2253,20 +2301,35 @@ pub fn drive_capture(
             globe_albedo: readouts.globe_albedo.0,
             veg_factor: readouts.vegetation.factor,
             furniture_factor: readouts.furniture.factor,
-            route_meshes: route_meshes.iter().count(),
-            route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
+            route_meshes: visuals.route.iter().count(),
+            route_rendered: visuals.route.iter().filter(|vv| vv.get()).count(),
             grass_patches: grass.0,
             grass_slots: grass.1,
             grass_rendered: grass.2,
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
+            traffic_cars: visuals
+                .agents
+                .iter()
+                .filter(|(k, v)| {
+                    **k == crate::systems::traffic::AgentKind::Car && **v != Visibility::Hidden
+                })
+                .count(),
+            traffic_walkers: visuals
+                .agents
+                .iter()
+                .filter(|(k, v)| {
+                    **k == crate::systems::traffic::AgentKind::Walker && **v != Visibility::Hidden
+                })
+                .count(),
             avatar_meshes: avatar_counts.0,
             avatar_rendered: avatar_counts.1,
-            globe_entities: globe_meshes.iter().count(),
-            globe_visible: globe_meshes
+            globe_entities: visuals.globe.iter().count(),
+            globe_visible: visuals
+                .globe
                 .iter()
                 .filter(|(_, v)| **v == Visibility::Visible)
                 .count(),
-            globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
+            globe_rendered: visuals.globe.iter().filter(|(vv, _)| vv.get()).count(),
             globe_tiles_loaded: globe.tiles_loaded(),
             globe_tiles_desired: globe.tiles_desired(),
             globe_texture_mb: globe.tile_texture_bytes() as f32 / (1024.0 * 1024.0),
@@ -2349,6 +2412,8 @@ pub fn drive_capture(
                     grass_slots = m.grass_slots,
                     grass_rendered = m.grass_rendered,
                     prop_meshes = m.prop_meshes,
+                    traffic_cars = m.traffic_cars,
+                    traffic_walkers = m.traffic_walkers,
                     avatar_meshes = m.avatar_meshes,
                     avatar_rendered = m.avatar_rendered,
                     globe_entities = m.globe_entities,
@@ -2624,6 +2689,8 @@ mod tests {
             grass_slots: 0,
             grass_rendered: 0,
             prop_meshes: 0,
+            traffic_cars: 0,
+            traffic_walkers: 0,
             furniture_factor: 0.0,
             globe_entities: 0,
             globe_visible: 0,

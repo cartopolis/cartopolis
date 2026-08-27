@@ -45,13 +45,14 @@ pub use gui::{
     settings, splash, text_touch, theme, ui,
 };
 pub use map::{
-    atmosphere_patch, globe, globe_ocean, globe_weather, grass, height, lod22, map_geometry,
-    map_stream, osm_buildings, render_scale, rendering, road_depth, sky, sky_dome, stream_ledger,
-    street_detail, street_furniture, street_labels, tall_structures, terrain, tile_loader,
-    tile_source, vegetation, water, weather, world_places,
+    atmosphere_patch, building_windows, globe, globe_ocean, globe_weather, grass, height, lod22,
+    map_geometry, map_stream, osm_buildings, render_scale, rendering, road_depth, sky, sky_dome,
+    stream_ledger, street_detail, street_furniture, street_labels, tall_structures, terrain,
+    tile_loader, tile_source, vegetation, water, weather, world_places,
 };
 pub use nav::{
-    driver, geo_nav, locate, navigation, place_link, route_ahead, transit_live, transit_vehicles,
+    driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
+    transit_vehicles,
 };
 pub use net::{background, network, session, user_store, voice};
 pub use player::{
@@ -62,7 +63,13 @@ pub use player::{
 // but nothing outside it calls in, and an unconditional re-export would be an
 // unused import rather than a convenience.
 pub use cartopolis_geo::{
-    furniture, mip, places, pois, road_texture, routing, scatter, turf, vector_tiles,
+    furniture, mip, moorings, parking, places, pois, road_texture, routing, scatter, turf,
+    vector_tiles,
 };
-#[cfg(feature = "audio")]
+// **Unconditional since 2026-08-26.** It used to be `cfg(feature = "audio")`,
+// with the note above explaining that nothing outside reached it by name so an
+// unconditional re-export would be an unused import. Something does now:
+// `traffic::DriveNetwork::loudest_road` answers in `soundscape::road_loudness`'s
+// units, and that function is pure and compiled on every lane — which is the
+// whole reason the maths lives outside the `cfg` in the first place.
 pub use player::soundscape;

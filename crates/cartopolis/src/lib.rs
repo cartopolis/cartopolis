@@ -1726,6 +1726,9 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
+        // The LoD2.2 buildings' walls, with the window pattern on them
+        // (`systems::building_windows`).
+        .add_plugins(MaterialPlugin::<systems::building_windows::BuildingMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::grass::GrassMaterial>::default())
         // Roads and their casings. The ladder that decides which of two
         // overlapping ribbons is on top rides in a vertex attribute, so the road
@@ -1882,6 +1885,7 @@ fn run_client() {
         .init_resource::<systems::map_geometry::MapSurfaces>()
         // Filled by the same streamer, cell for cell (`systems::street_labels`).
         .init_resource::<systems::world_places::WorldPlaces>()
+        .init_resource::<systems::traffic::DriveNetwork>()
         .init_resource::<systems::interact::InteractState>()
         .init_resource::<systems::street_labels::StreetLabelStore>()
         .init_resource::<systems::map_geometry::DeckPlates>()
@@ -2106,6 +2110,17 @@ fn run_client() {
             #[cfg(target_os = "android")]
             platform::android::report_dex,
             systems::free_camera::setup_camera,
+            // The car pool. One mesh, a handful of materials and a fixed number
+            // of entities, all built once — after which this layer uploads
+            // nothing (`systems::traffic`).
+            //
+            // **After the camera**, which is what spawns the `BigSpace` root the
+            // cars are parented to (`free_camera::setup_camera` calls
+            // `spawn_big_space`). Registered in this tuple with no ordering it
+            // ran first, found no root, returned silently, and the pool was never
+            // created — no cars and nothing in the log. `setup_sky_dome` below
+            // carries the same `.after` for its own reason.
+            systems::traffic::setup_traffic.after(systems::free_camera::setup_camera),
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.
             systems::sky_dome::setup_sky_dome.after(systems::free_camera::setup_camera),
@@ -2462,6 +2477,10 @@ fn run_client() {
                 // movement just did, so all three run after it.
                 systems::soundscape::play_avatar_sounds.after(avatar::handle_avatar_movement),
                 systems::soundscape::update_wind_volume.after(avatar::handle_avatar_movement),
+                // The road hum is a function of the map rather than of movement,
+                // so it hangs off nothing — it reads the streamed road network
+                // and the camera, both of which are settled by now.
+                systems::soundscape::update_road_hum,
                 // The arrival whoosh. After the teleport that causes it, so a
                 // jump is heard on the frame it lands rather than the next one.
                 systems::soundscape::announce_teleports.after(systems::geo_nav::apply_teleport),
@@ -2568,6 +2587,13 @@ fn run_client() {
                 sky::manage_lights.after(systems::ui::render_dev_panel),
                 sky::apply_distance_fog.after(systems::ui::render_dev_panel),
                 sky::update_window_glow,
+                // Ambient traffic: one transform write per car per frame, and no
+                // asset touched after startup (`systems::traffic`).
+                systems::traffic::drive_traffic,
+                // The other lane's windows. `update_window_glow` above only
+                // reaches the OSM buildings, which are never drawn over 3DBAG
+                // coverage — see `systems::building_windows`.
+                systems::building_windows::update_building_windows,
                 // Track the camera after it has been positioned this frame.
                 sky::update_star_sky.after(systems::free_camera::camera_controls),
                 sky::update_moon.after(systems::free_camera::camera_controls),

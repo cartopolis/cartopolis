@@ -1,7 +1,7 @@
 ---
 topic: vector-tile-unused-layers
 triggers: [vector_tiles.rs, street_furniture.rs, data_layers.rs, pois.rs, places.rs, PAINT_ORDER, pois, addresses, "shortbread", "what else is in the tile", "osm data", "more realism", "overpass"]
-updated: 2026-08-10
+updated: 2026-08-26
 ---
 
 # What else is already in the vector tile
@@ -25,7 +25,7 @@ nothing at all. The conclusions are unaffected; the cost model was.
 | `pois` | 467 | **three** readers of one layer: street furniture (`street_furniture.rs`), the map's shop markers (`data_layers.rs` via `pois.rs` — 55 features carry a `shop`), and every *named* feature as a proximity prompt (`places.rs`) |
 | `street_labels` | 244 | street names, routing turn names |
 | `streets` | 95 | roads, routing graph |
-| `sites` | 84 | flat fill only — `parking`×56, `bicycle_parking`×15, `school`×7, `hospital`, `university` |
+| `sites` | 84 | flat fill, **and the parked vehicles filled into it** (`parking.rs`) — `parking`×56, `bicycle_parking`×15, `school`×7, `hospital`, `university`; the last three are still fill only |
 | `public_transport` | 25 | the transit markers (`data_layers.rs`) — Overpass now only enriches them, see below |
 | `water_polygons` | 23 | water surfaces |
 | `place_labels` | 21 | **nothing** (`kind`, `name`, `population`) |
@@ -108,3 +108,11 @@ features slightly outside their own cell, and `housenumber` is frequently a
 numeric MVT value rather than a string.
 
 `public_transport`, `place_labels` and `street_labels_points` are still unread.
+
+## And the `sites` polygons are filled now (2026-08-26)
+
+`sites` was listed above as a flat fill and nothing else. `cartopolis_geo::parking`
+lays parked cars into its `parking` polygons and bikes into its `bicycle_parking`
+ones, off the same parse, into the same mesh group as the street furniture. It is
+the first thing here derived from a polygon's *area* rather than from a surveyed
+point, which changes what bounds it — see `docs/notes/parked-vehicles.md`.
