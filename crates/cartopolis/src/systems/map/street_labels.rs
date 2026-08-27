@@ -147,11 +147,12 @@ const GLYPH_PX: f32 = 40.0;
 /// plate rather than a halo.
 const HALO_PX: i32 = 3;
 
-/// Ink and halo, off the shared palette ([`theme::INK`] over [`theme::LABEL_HALO`])
-/// so a name on the map and a label in the chrome are the same near-black on the
-/// same near-white — the one pair that survives tarmac, grass, water and a
-/// terracotta roof without a chip behind it.
-const INK: [f32; 3] = srgb_of(theme::INK);
+/// Ink and halo, off the shared palette ([`theme::LABEL_INK`] over
+/// [`theme::LABEL_HALO`]) — deep slate-teal on pale teal, the map labels' own
+/// pair rather than the chrome's near-black-on-cream, so the names belong to
+/// the blue city instead of floating over it. Contrast is pinned in `theme`'s
+/// tests against both a white and a night basemap.
+const INK: [f32; 3] = srgb_of(theme::LABEL_INK);
 const HALO: [f32; 3] = srgb_of(theme::LABEL_HALO);
 /// The halo's own opacity, and deliberately not [`theme::LABEL_HALO`]'s alpha:
 /// that one is set for text over a dimmed overlay, this one has bare tarmac

@@ -163,9 +163,20 @@ pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0x3C, 0x
 pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x10, 0x18, 0x1E, 235);
 /// Halo behind map text that has no chip to sit on — the street names
 /// (`systems::street_labels`), which are painted *along* their street and would
-/// black it out under a chip. Near-white and only mostly opaque: it has to lift
-/// [`INK`] off tarmac, grass and water without reading as a second word.
-pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xF6, 0xF4, 0xF0, 205);
+/// black it out under a chip. Pale and only mostly opaque: it has to lift
+/// [`LABEL_INK`] off tarmac, grass and water without reading as a second word.
+/// Tinted toward the palette's slate-teal rather than the chrome's warm cream —
+/// on the night map the halo is most of what the eye sees of a name, and the
+/// warm near-white read as unrelated to the blue city around it. The tint costs
+/// contrast it can afford: 12.7:1 against [`LABEL_INK`] flat, 8.8:1 composited
+/// over the dark-map sample (the old cream pair measured 16.3 / 11.1).
+pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xCF, 0xE9, 0xED, 205);
+/// The stroke inside [`LABEL_HALO`]. Not [`INK`]: that one is the chrome's
+/// text-well fill and the type on accent-orange, so it cannot follow the map
+/// labels' tint — this is the same darkness pulled toward the halo's teal, which
+/// keeps letter and halo reading as one mark rather than black type on a
+/// coloured plate.
+pub const LABEL_INK: Color32 = Color32::from_rgb(0x0C, 0x24, 0x2B);
 
 // ─── Fonts ────────────────────────────────────────────────────────────────────
 
@@ -2364,10 +2375,11 @@ mod tests {
             // tile with no panel anywhere near them.
             ("chip label over bright map", CREAM, chip_bright, 4.5),
             ("chip dim over bright map", TEXT_DIM, chip_bright, 4.5),
-            // And the halo, the same promise inverted: near-black ink on
-            // near-white, over tarmac at one end and open water at the other.
-            ("street name over bright map", INK, halo_bright, 4.5),
-            ("street name over dark map", INK, halo_dark, 4.5),
+            // And the halo, the same promise inverted: deep teal ink on its
+            // pale-teal halo, over tarmac at one end and open water at the
+            // other.
+            ("street name over bright map", LABEL_INK, halo_bright, 4.5),
+            ("street name over dark map", LABEL_INK, halo_dark, 4.5),
         ] {
             let got = contrast(fg, bg);
             assert!(got >= min, "{name}: contrast {got:.2} < {min}");
