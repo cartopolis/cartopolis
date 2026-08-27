@@ -1,6 +1,7 @@
 //! `systems::map` — one file per concern; see systems/mod.rs for the map.
 
 pub mod atmosphere_patch;
+pub mod building_facts;
 pub mod building_windows;
 pub mod globe;
 pub mod globe_ocean;

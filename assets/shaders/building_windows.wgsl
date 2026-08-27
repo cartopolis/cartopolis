@@ -147,7 +147,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let bidx = floor(in.world_position.xz / block.x);
         let bkey = bidx - floor(bidx / block.y) * block.y;
         let liveliness = hash2(bkey + vec2<f32>(37.0, 91.0));
-        let lit_fraction = mix(block.z, block.w, liveliness);
+
+        // …scaled by what the building is actually *for*. The vertex colour's
+        // alpha carries `osm_buildings::night_lit_scale` of the BAG's
+        // `gebruiksdoel` for this building — free, because the material is opaque
+        // and that channel was a constant 1.0 (the same spare-channel trick
+        // `globe_ocean` plays with its sea mask, and read here for the same
+        // reason: before `alpha_discard`, which flattens alpha on an opaque
+        // material). 1.0 means "nothing known", so a building outside the BAG
+        // coverage — or a whole city outside the Netherlands — keeps the purely
+        // hashed liveliness above and looks exactly as it did.
+        //
+        // Clamped rather than trusted: the scale is authored above 1.0 for homes,
+        // and a lit fraction past 1 would light every window on a facade.
+        let occupancy = clamp(pbr_input.material.base_color.a, 0.0, 2.0);
+        let lit_fraction = clamp(mix(block.z, block.w, liveliness) * occupancy, 0.0, 1.0);
 
         // Lit if this window's own draw came in under the block's fraction, then
         // ramped so the ones that are on are not all on equally.

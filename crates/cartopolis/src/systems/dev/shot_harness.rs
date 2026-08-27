@@ -538,6 +538,18 @@ pub struct ShotMetrics {
     /// below the frame and is frustum-culled — `45 / 0` is that, and it is not a
     /// bug. `n / n` with a bare lawn is the mask; `0 / 0` is the pool.
     pub grass_rendered: usize,
+    /// BAG records currently indexed (`systems::building_facts`): buildings,
+    /// addressed units, and houseboat/mobile-home berths.
+    ///
+    /// The layer's failure mode is silence — a host with no `bag/` tree, a
+    /// coverage manifest that never loaded, or a cell ring that never overlapped
+    /// the covered cells all produce a *correct-looking* city with the generated
+    /// palette and the hashed window lighting. `bag_buildings == 0` over
+    /// Groningen is the only thing that tells those apart from "the facts landed
+    /// and made no difference", and no capture can show it.
+    pub bag_buildings: usize,
+    pub bag_addresses: usize,
+    pub bag_berths: usize,
     /// Mesh entities spawned by the Overpass street-detail layer
     /// (`systems::street_detail`) — surveyed trees, lamps, signals, barriers,
     /// piers, paint. `0` over a city with the layer on means the cells never
@@ -712,7 +724,8 @@ tiles_occluded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,prop_meshes,\
+route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
+bag_buildings,bag_addresses,bag_berths,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
@@ -1947,6 +1960,11 @@ pub struct ShotReadouts<'w, 's> {
     /// metric.
     street_detail: Res<'w, crate::systems::street_detail::StreetDetail>,
     tall_structures: Res<'w, crate::systems::tall_structures::TallStructures>,
+    /// The BAG attribute index (`systems::building_facts`) — a metric only, never
+    /// a settle input. Nothing waits for it: a building whose facts have not
+    /// landed is drawn with the generated palette, which is a different picture
+    /// but not an unfinished one.
+    bag: Res<'w, crate::systems::building_facts::BuildingFacts>,
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -2306,6 +2324,9 @@ pub fn drive_capture(
             grass_patches: grass.0,
             grass_slots: grass.1,
             grass_rendered: grass.2,
+            bag_buildings: readouts.bag.len(),
+            bag_addresses: readouts.bag.addresses().len(),
+            bag_berths: readouts.bag.berths().len(),
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
             traffic_cars: visuals
                 .agents
@@ -2686,6 +2707,9 @@ mod tests {
             globe_albedo: 1.0,
             veg_factor: 0.0,
             grass_patches: 0,
+            bag_buildings: 0,
+            bag_addresses: 0,
+            bag_berths: 0,
             grass_slots: 0,
             grass_rendered: 0,
             prop_meshes: 0,

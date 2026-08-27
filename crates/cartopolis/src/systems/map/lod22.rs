@@ -31,9 +31,7 @@ use crate::platform::{http, storage};
 use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
-use crate::systems::osm_buildings::{
-    building_palette, lat_lng_to_local, lod22_covers, tdbag_url, MeshData,
-};
+use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, tdbag_url, MeshData};
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` (the cells
@@ -169,6 +167,11 @@ pub struct Lod22Mesh;
 
 /// One building's mesh data as received from the host.
 struct Bldg {
+    /// The BAG **identificatie** — the key `systems::building_facts` joins the
+    /// register's year, use and status on, and the key any other Dutch register or
+    /// BIM model of this building shares. Empty when the host predates the id
+    /// being carried, which every consumer reads as "no facts".
+    id: String,
     /// Vertices as (lat, lng, height-above-own-base).
     p: Vec<(f64, f64, f32)>,
     /// Triangles: indices into `p` plus a roof flag (1 = roof, 0 = wall).
@@ -225,6 +228,13 @@ pub struct Lod22Buildings {
     /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
     /// teardown in [`update_lod22`] runs exactly once per uncheck.
     enabled_was: bool,
+    /// BAG coverage revision these cells were built against
+    /// (`building_facts::coverage_revision`) — 0 while the manifest is still in
+    /// flight, 1 once it has answered. The era palette and the window occupancy
+    /// are baked into vertex colours, so cells built during that gap carry the
+    /// generated look and have to be rebuilt once the answer arrives. It changes
+    /// at most once per process.
+    bag_revision: u32,
     /// Terrain-field revision these cells were built against. The field arrives a
     /// second or two after the anchor, so the first cells are always built on flat
     /// ground and have to be rebuilt onto the measured one.
@@ -265,6 +275,7 @@ impl Default for Lod22Buildings {
             material: None,
             enabled_was: true,
             terrain_revision: 0,
+            bag_revision: 0,
             partial: None,
         }
     }
@@ -302,9 +313,17 @@ pub fn update_lod22(
     // exactly as a re-anchor does — every base was computed against the field as it
     // stood — so it takes the same path. `sync` runs unconditionally so it adopts
     // the new generation either way.
+    //
+    // The BAG coverage answer lands the same way and is folded into the same
+    // condition: it decides the facade palette and the window occupancy, both of
+    // which are vertex colours, so a cell built before it arrived is as stale as
+    // one built on flat ground. Unlike the terrain it can only change once.
+    crate::systems::building_facts::prefetch_coverage(now);
+    let bag_revision = crate::systems::building_facts::coverage_revision();
     let reanchored = lod.stream.sync(stream.anchor_generation);
-    if reanchored || lod.terrain_revision != terrain.revision {
+    if reanchored || lod.terrain_revision != terrain.revision || lod.bag_revision != bag_revision {
         lod.terrain_revision = terrain.revision;
+        lod.bag_revision = bag_revision;
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
@@ -417,10 +436,20 @@ pub fn update_lod22(
                         return;
                     }
                 };
+                // The cell's BAG facts travel with the mesh job rather than
+                // arriving through the `BuildingFacts` resource on their own
+                // schedule: a year and a use are baked into vertex colours, so
+                // they have to be known on the worker that writes them. It is a
+                // second request that hits the same storage cache as the facts
+                // streamer's, so at worst it is a cache read; at best it is the
+                // fetch the streamer then reads. Uncovered cells return an empty
+                // set without asking anything.
+                let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
                 crate::platform::workers::submit(
                     "lod22",
                     Box::new(move || {
-                        let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
+                        let built =
+                            build_lod22_from_text(&text, cx, cy, ax, ay, z, lat, &ground, &facts);
                         if let Ok(mut g) = results.lock() {
                             g.push(((cx, cy), built));
                         }
@@ -632,6 +661,7 @@ fn build_lod22_from_text(
     z: u32,
     lat: f64,
     ground: &crate::systems::terrain::TerrainSnapshot,
+    facts: &crate::systems::building_facts::BagCell,
 ) -> Result<Option<Lod22Build>, String> {
     let elements = parse_lod22(text)?;
     let (north, west) = tile_to_lat_lng(cx, cy, LOD22_ZOOM);
@@ -659,6 +689,9 @@ fn build_lod22_from_text(
     let mut buf = MeshData::with_dedup();
     // One footprint polygon per building, in world XZ (for avatar collision).
     let mut footprints: Vec<crate::systems::collision::Footprint> = Vec::new();
+    // Buildings the register has struck off, for the log line below — a silent
+    // subtraction from the city is exactly the kind of thing to be able to check.
+    let mut struck = 0usize;
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -666,13 +699,44 @@ fn build_lod22_from_text(
         if blat < south || blat >= north || blng < west || blng >= east {
             continue;
         }
-        let (wall, roof_tile) = building_palette(blat, blng);
-        let wall = [wall[0], wall[1], wall[2], 1.0];
-        let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], 1.0];
+        // What the register says about this building, when the host serves the
+        // BAG tree and this element carries an id. `None` everywhere else, and
+        // every read below has the old behaviour as its `None` arm.
+        let fact = (!b.id.is_empty()).then(|| facts.building(&b.id)).flatten();
+        // A pand the register has struck off is not drawn. 3DBAG's solids are a
+        // dated snapshot and the BAG is refreshed far more often, so "demolished"
+        // here means the building came down after the mesh was cut — the one case
+        // where the two sources disagree and the register is certainly right.
+        // Nothing weaker qualifies: a permit is not a demolition and an empty
+        // building is still a building.
+        if matches!(
+            fact.map(|f| f.status),
+            Some(crate::systems::building_facts::BuildingStatus::Demolished)
+                | Some(crate::systems::building_facts::BuildingStatus::NotRealised)
+        ) {
+            struck += 1;
+            continue;
+        }
+        let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_dated(
+            blat,
+            blng,
+            fact.and_then(|f| f.year),
+        );
+        // Alpha is not opacity here — the material is opaque and `alpha_discard`
+        // flattens it — it is the per-building night-occupancy scale the window
+        // shader reads out of `base_color.a`, the same free channel
+        // `globe_ocean` puts its sea mask in. 1.0 for a building we know nothing
+        // about, which is exactly the look this lane had before.
+        let lit = crate::systems::osm_buildings::night_lit_scale(
+            fact.map_or(0, |f| f.uses),
+            fact.map_or(0, |f| f.units),
+        );
+        let wall = [wall[0], wall[1], wall[2], lit];
+        let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
         // `FLAT_ROOF_COLOR` is authored in sRGB; vertex colours multiply in
         // linear space (same exit rule as `building_palette`).
         let flat_lin = crate::systems::scatter::srgb_to_linear_f32(FLAT_ROOF_COLOR);
-        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], 1.0];
+        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], lit];
 
         // World-XZ position of each vertex (before the cell offset); the hull of
         // these is the building's footprint no-go polygon.
@@ -711,6 +775,14 @@ fn build_lod22_from_text(
             };
             buf.tri(a, bb, c, color);
         }
+    }
+    if struck > 0 {
+        tracing::debug!(
+            cx,
+            cy,
+            struck,
+            "BAG: skipped buildings the register has struck off"
+        );
     }
     let pieces = buf.into_meshes(max_cell_mesh_bytes());
     Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints)))
@@ -759,9 +831,43 @@ fn parse_lod22(text: &str) -> Result<Vec<Bldg>, String> {
     #[derive(serde::Deserialize)]
     struct El {
         #[serde(default)]
+        id: WireId,
+        #[serde(default)]
         p: Vec<(f64, f64, f32)>,
         #[serde(default)]
         t: Vec<Tri>,
+    }
+    /// The element's BAG id, which is a **string** since the extractor stopped
+    /// mangling it into an integer — and a number in every cell file written
+    /// before that, including the ones already sitting in users' caches (a cache
+    /// entry is evicted when it fails to parse, so a strict `String` here would
+    /// silently re-fetch every cell on the first run after an upgrade). Absent
+    /// entirely in the oldest files, which `Default` reads as "no id".
+    #[derive(Default)]
+    struct WireId(String);
+    impl<'de> serde::Deserialize<'de> for WireId {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl serde::de::Visitor<'_> for V {
+                type Value = WireId;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a BAG identificatie as a string, or a legacy number")
+                }
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<WireId, E> {
+                    Ok(WireId(v.to_string()))
+                }
+                fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<WireId, E> {
+                    // A legacy id joins with nothing — it was the digits of the
+                    // identificatie shifted by the part suffix — so it is dropped
+                    // rather than carried as a key that would never match.
+                    Ok(WireId(String::new()))
+                }
+                fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<WireId, E> {
+                    Ok(WireId(String::new()))
+                }
+            }
+            d.deserialize_any(V)
+        }
     }
     struct Tri(u32, u32, u32, u8);
     impl<'de> serde::Deserialize<'de> for Tri {
@@ -800,7 +906,7 @@ fn parse_lod22(text: &str) -> Result<Vec<Bldg>, String> {
             }
         }
         if p.len() >= 3 && !t.is_empty() {
-            out.push(Bldg { p, t });
+            out.push(Bldg { id: el.id.0, p, t });
         }
     }
     Ok(out)

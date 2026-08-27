@@ -367,15 +367,187 @@ pub fn tdbag_attribution() -> Option<String> {
     None
 }
 
-/// Wall + tiled-roof colour for a LoD2.2 building at a location, reusing the same
-/// palette/jitter as the extruded buildings so 3DBAG and OSM buildings share a
-/// look. (`lod22.rs` picks grey for near-flat roof triangles by slope.)
-pub(crate) fn building_palette(lat: f64, lng: f64) -> ([f32; 3], [f32; 3]) {
+/// Wall + roof palettes by building era.
+///
+/// A Dutch street is legible by age from across it — the dark weathered brick of
+/// a pre-1900 canal house, the warm red of the interbellum blocks, the pale
+/// render and grey concrete of post-war reconstruction, the light greys and
+/// charcoal of the last twenty years. The position hash alone cannot know any of
+/// that, so before the BAG's `bouwjaar` arrived every street was the same eight
+/// colours shuffled, and a 1650 warehouse stood next to a 2015 apartment block in
+/// the same beige.
+///
+/// Each era keeps several tones and the existing per-building hash still chooses
+/// among them, so this changes *which* palette a building draws from, not the
+/// fact that neighbours differ. sRGB, converted on the way out like every other
+/// colour here.
+const ERA_PALETTES: [(u16, &[[f32; 3]], &[[f32; 3]]); 5] = [
+    // ≤1900 — dark red and brown brick, weathered; dark and mossy tile.
+    (
+        1900,
+        &[
+            [0.55, 0.36, 0.30],
+            [0.48, 0.33, 0.29],
+            [0.60, 0.42, 0.34],
+            [0.52, 0.40, 0.35],
+            [0.44, 0.31, 0.27],
+        ],
+        &[
+            [0.40, 0.26, 0.22],
+            [0.35, 0.25, 0.23],
+            [0.45, 0.30, 0.25],
+            [0.33, 0.30, 0.28],
+        ],
+    ),
+    // 1901–1944 — the interbellum's warm red-orange brick, red pantile.
+    (
+        1945,
+        &[
+            [0.70, 0.44, 0.34],
+            [0.64, 0.40, 0.32],
+            [0.74, 0.50, 0.38],
+            [0.66, 0.47, 0.40],
+            [0.58, 0.38, 0.33],
+        ],
+        &[
+            [0.58, 0.30, 0.23],
+            [0.52, 0.32, 0.25],
+            [0.62, 0.34, 0.26],
+            [0.46, 0.30, 0.26],
+        ],
+    ),
+    // 1945–1974 — reconstruction: pale render, light brick, grey concrete, and
+    // the flatter greyer roofs that came with it.
+    (
+        1975,
+        &[
+            [0.80, 0.77, 0.71],
+            [0.74, 0.72, 0.69],
+            [0.84, 0.81, 0.75],
+            [0.71, 0.69, 0.65],
+            [0.78, 0.74, 0.66],
+        ],
+        &[
+            [0.50, 0.48, 0.48],
+            [0.44, 0.42, 0.43],
+            [0.55, 0.40, 0.34],
+            [0.47, 0.45, 0.44],
+        ],
+    ),
+    // 1975–1999 — mid-brown brick and beige render, brown tile.
+    (
+        2000,
+        &[
+            [0.68, 0.54, 0.44],
+            [0.72, 0.62, 0.52],
+            [0.63, 0.50, 0.42],
+            [0.76, 0.68, 0.58],
+            [0.66, 0.58, 0.50],
+        ],
+        &[
+            [0.46, 0.32, 0.26],
+            [0.42, 0.34, 0.29],
+            [0.50, 0.36, 0.28],
+            [0.45, 0.43, 0.42],
+        ],
+    ),
+    // 2000+ — light grey, off-white and charcoal; dark flat and shallow roofs.
+    (
+        u16::MAX,
+        &[
+            [0.82, 0.82, 0.83],
+            [0.74, 0.75, 0.77],
+            [0.88, 0.87, 0.85],
+            [0.62, 0.63, 0.66],
+            [0.70, 0.66, 0.62],
+        ],
+        &[
+            [0.36, 0.37, 0.39],
+            [0.42, 0.43, 0.45],
+            [0.30, 0.31, 0.33],
+            [0.48, 0.46, 0.45],
+        ],
+    ),
+];
+
+/// Wall + tiled-roof colour, using the BAG's construction year when we have one.
+///
+/// `year: None` reproduces the generated palette exactly — that is the path every
+/// building outside the BAG coverage still takes, and it must not shift because
+/// the covered ones now differ.
+pub(crate) fn building_palette_dated(
+    lat: f64,
+    lng: f64,
+    year: Option<u16>,
+) -> ([f32; 3], [f32; 3]) {
     let seed = color_seed((lat, lng));
-    let wall = jitter(palette_color((lat, lng)), seed, 0.12);
-    let roof = jitter(default_roof("yes", seed), seed.rotate_left(17), 0.12);
+    let (wall, roof) = match year {
+        None => (palette_color((lat, lng)), default_roof("yes", seed)),
+        Some(y) => {
+            let (_, walls, roofs) = ERA_PALETTES
+                .iter()
+                .find(|(until, _, _)| y < *until)
+                .unwrap_or(&ERA_PALETTES[ERA_PALETTES.len() - 1]);
+            (
+                walls[(seed as usize) % walls.len()],
+                roofs[(seed.rotate_left(29) as usize) % roofs.len()],
+            )
+        }
+    };
+    let wall = jitter(wall, seed, 0.12);
+    let roof = jitter(roof, seed.rotate_left(17), 0.12);
     // Same sRGB→linear exit as `derive_colors` — these feed vertex colours too.
     (srgb_to_linear_f32(wall), srgb_to_linear_f32(roof))
+}
+
+/// How lit a building's windows should be at night, as a multiplier on the
+/// shader's per-block lit fraction. **1.0 is "we know nothing", and reproduces
+/// the look exactly**, which is what every building outside the BAG coverage
+/// gets.
+///
+/// The shader already varies liveliness by block so that whole buildings stand
+/// dark between the lit ones — realistic, but random. This makes it *true* where
+/// the register knows: the office park goes quiet in the evening while the
+/// terraced street above the shops does not, and the hospital stays on all night.
+///
+/// The maximum over the set bits, not a blend: a shop with three flats above it
+/// is lit like the flats, because that is what is behind the windows after six.
+pub(crate) fn night_lit_scale(uses: u16, units: u16) -> f32 {
+    use crate::systems::building_facts::uses as u;
+    if uses == 0 {
+        return 1.0;
+    }
+    let mut scale: f32 = 0.0;
+    for (bit, s) in [
+        (u::HOME, 1.15),
+        (u::LODGING, 1.05),
+        (u::HEALTHCARE, 1.10),
+        (u::CELL, 0.95),
+        (u::OFFICE, 0.55),
+        (u::EDUCATION, 0.50),
+        (u::SHOP, 0.50),
+        (u::MEETING, 0.60),
+        (u::SPORT, 0.60),
+        (u::OTHER, 0.60),
+        (u::INDUSTRY, 0.40),
+    ] {
+        if uses & bit != 0 {
+            scale = scale.max(s);
+        }
+    }
+    // An unrecognised bit leaves `scale` at 0, which would black the building out
+    // for a reason nobody chose; fall back to the neutral answer instead.
+    if scale <= 0.0 {
+        return 1.0;
+    }
+    // A block of flats is never entirely dark and a single house often is, so the
+    // count of addressable units inside lifts the floor a little. Saturating well
+    // below the largest blocks: the difference that reads is between one dwelling
+    // and a dozen, not between forty and eighty.
+    const UNITS_FOR_FULL_LIFT: f32 = 24.0;
+    const MAX_LIFT: f32 = 0.25;
+    let lift = 1.0 + (units as f32 / UNITS_FOR_FULL_LIFT).min(1.0) * MAX_LIFT;
+    scale * lift
 }
 
 /// Roof form from OSM `roof:shape` (Simple 3D Buildings).
@@ -3535,5 +3707,106 @@ mod tests {
         // Underside: at least one triangle's flat normal points down.
         let down = bld.normals.iter().any(|n| n[1] < -0.9);
         assert!(down, "raised part needs an underside cap");
+    }
+
+    /// Every year has to land in a palette, including the ones outside the table's
+    /// span. The lookup takes the first era whose `until` the year is below, so a
+    /// year past the last boundary depends on the final row being `u16::MAX` —
+    /// change that and a 2026 building falls through to the `unwrap_or` instead,
+    /// which happens to give the same answer and would stop doing so the moment
+    /// anyone appended a row.
+    #[test]
+    fn every_year_lands_in_an_era() {
+        for year in [
+            0u16,
+            1225,
+            1899,
+            1900,
+            1944,
+            1945,
+            1974,
+            1975,
+            1999,
+            2000,
+            2026,
+            u16::MAX,
+        ] {
+            let (wall, roof) = building_palette_dated(53.2194, 6.5665, Some(year));
+            for c in wall.iter().chain(roof.iter()) {
+                assert!(
+                    (0.0..=1.0).contains(c),
+                    "year {year} produced a colour outside [0,1]: {wall:?} {roof:?}"
+                );
+            }
+        }
+    }
+
+    /// The eras have to be *distinguishable*, or the whole layer is a no-op with
+    /// extra steps: a 1880 canal house and a 2015 block at the same location must
+    /// not come out the same colour. Same location on purpose — that fixes the
+    /// position hash, so the only difference left is the era.
+    #[test]
+    fn eras_differ_from_each_other() {
+        let old = building_palette_dated(53.2194, 6.5665, Some(1880));
+        let new = building_palette_dated(53.2194, 6.5665, Some(2015));
+        assert_ne!(old.0, new.0, "pre-1900 and post-2000 walls must differ");
+    }
+
+    /// A building the register says nothing about keeps the generated palette, and
+    /// that is the path every building outside the BAG coverage takes.
+    #[test]
+    fn no_year_uses_the_generated_palette() {
+        let seed = color_seed((53.2194, 6.5665));
+        let expected = (
+            srgb_to_linear_f32(jitter(palette_color((53.2194, 6.5665)), seed, 0.12)),
+            srgb_to_linear_f32(jitter(
+                default_roof("yes", seed),
+                seed.rotate_left(17),
+                0.12,
+            )),
+        );
+        assert_eq!(building_palette_dated(53.2194, 6.5665, None), expected);
+    }
+
+    /// 1.0 is the "we know nothing" answer, and the window shader is written
+    /// around it: it multiplies the per-block lit fraction, so anything but 1.0
+    /// here changes how every building outside the Netherlands looks at night.
+    #[test]
+    fn night_lit_scale_is_neutral_without_facts() {
+        assert_eq!(night_lit_scale(0, 0), 1.0);
+        assert_eq!(night_lit_scale(0, 40), 1.0);
+    }
+
+    /// A use we do not recognise must also be neutral rather than dark: leaving
+    /// the running maximum at zero would black the building out for a reason
+    /// nobody chose.
+    #[test]
+    fn an_unknown_use_bit_is_neutral() {
+        assert_eq!(night_lit_scale(1 << 15, 0), 1.0);
+    }
+
+    /// A shop with flats above it is lit like the flats — the maximum over the
+    /// set bits, not a blend, because that is what is behind the windows after six.
+    #[test]
+    fn night_lit_scale_takes_the_liveliest_use() {
+        use crate::systems::building_facts::uses as u;
+        let shop = night_lit_scale(u::SHOP, 0);
+        let both = night_lit_scale(u::SHOP | u::HOME, 0);
+        assert!(both > shop, "{both} should exceed the shop-only {shop}");
+        assert_eq!(both, night_lit_scale(u::HOME, 0));
+        assert!(night_lit_scale(u::OFFICE, 0) < 1.0, "an office goes quiet");
+        assert!(night_lit_scale(u::HOME, 0) > 1.0, "a home does not");
+    }
+
+    /// A block of flats is never entirely dark, and the lift saturates well below
+    /// the largest blocks — the difference that reads is one dwelling against a
+    /// dozen, not forty against eighty.
+    #[test]
+    fn night_lit_scale_lifts_with_unit_count() {
+        use crate::systems::building_facts::uses as u;
+        let one = night_lit_scale(u::HOME, 1);
+        let many = night_lit_scale(u::HOME, 24);
+        assert!(many > one);
+        assert_eq!(many, night_lit_scale(u::HOME, 240), "the lift saturates");
     }
 }

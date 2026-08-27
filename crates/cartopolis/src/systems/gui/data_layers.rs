@@ -2367,6 +2367,9 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
                     ui.small(credit);
                 }
+                if let Some(credit) = crate::systems::building_facts::bag_attribution() {
+                    ui.small(credit);
+                }
                 ui.small(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );
