@@ -143,9 +143,25 @@ const BAR_SWEEP_BELOW: f32 = 0.005;
 /// it — a floor, so "the map has been placed" is visible as a fill rather than
 /// as the same empty track as "nothing has happened yet".
 const BAR_ANCHORED: f32 = 0.06;
-/// The most of the track the streamed-tile fraction may claim. The rest belongs
-/// to the closing fade; see [`bar_target`].
+/// The most of the track the streaming phase may claim. The rest belongs to the
+/// closing fade; see [`bar_streaming`].
 const BAR_STREAMING: f32 = 0.85;
+/// Seconds at which the creep has spent half of what the streaming phase may
+/// claim — the time constant of `t / (t + tau)`.
+///
+/// **The bar has to move while nothing is arriving, and that is not a lie.**
+/// Measured here 2026-08-27 on the phone tier: the tile fraction was `8/199`
+/// when dismissal was decided, so the track sat at 6 % for the whole hold and
+/// then ran to full inside the fade. On a handset, where that hold is seconds
+/// rather than one, the same shape is the screenshot behind this change — a bar
+/// parked near the left margin under a caption that keeps counting, which reads
+/// as a loader that has given up.
+///
+/// Hyperbolic rather than exponential, and asymptotic rather than clamped: it
+/// never stops moving and it never arrives on its own, so however long the wait
+/// turns out to be there is no second place for the bar to look stuck. What
+/// finishes it is the same thing that always finished it — the closing fade.
+const BAR_CREEP_TAU: f32 = 2.0;
 
 /// What the splash is waiting for, in the words under the track.
 ///
@@ -167,7 +183,7 @@ struct Loading {
     stage: Option<String>,
     /// How much of the streamer's *current* working set has arrived, or `None`
     /// before there is a set to count. **Not the bar** — see
-    /// [`bar_target`] for why the two are different numbers.
+    /// [`bar_streaming`] for why the two are different numbers.
     streamed: Option<f32>,
     /// Enough of the world is on screen that lifting the splash uncovers a map
     /// rather than a void.
@@ -236,7 +252,7 @@ fn caption(signin: Option<&str>, stage: Option<&str>) -> String {
     }
 }
 
-/// Where the bar should stand this frame, before the monotone latch.
+/// Where the bar stands while the world is still arriving.
 ///
 /// **The bar and the tile count are deliberately different numbers, and
 /// conflating them is what made this meter unbelievable.** The splash lifts on
@@ -248,21 +264,29 @@ fn caption(signin: Option<&str>, stage: Option<&str>) -> String {
 /// moment anyone reads it, and to sit there while the app underneath was
 /// already running: a loading bar that has never once finished loading.
 ///
-/// What it measures now is the splash's own dismissal, which is a thing that
-/// always completes. The tile fraction still drives the middle of the range —
-/// it is real progress and it moves — but it is squeezed into
-/// [`BAR_ANCHORED`]..[`BAR_STREAMING`], and the closing fade carries the bar the
-/// rest of the way to full. The counts keep their place in the caption, where
-/// they were always the diagnostic and never the promise.
-fn bar_target(closing: Option<f32>, streamed: Option<f32>) -> f32 {
-    match (closing, streamed) {
-        // Dismissal decided: run to full over the fade, so the bar finishes in
-        // front of the person who watched it.
-        (Some(t), _) => ease(t),
-        (None, Some(f)) => BAR_ANCHORED + f * (BAR_STREAMING - BAR_ANCHORED),
-        // Nothing to count yet — the sweep says so (`BAR_SWEEP_BELOW`).
-        (None, None) => 0.0,
-    }
+/// So the streaming phase owns [`BAR_ANCHORED`]..[`BAR_STREAMING`] and is driven
+/// by **whichever of the splash's two clocks is further along**: the tile
+/// fraction, which is real progress and does move, and the [`BAR_CREEP_TAU`]
+/// creep, which moves whether or not anything has arrived. Taking the faster of
+/// the two rather than the count alone is the difference between a track that
+/// shows a wait passing and one that shows a tenth of a tile set — and on a
+/// handset, where the wait is seconds, that difference is the whole complaint.
+fn bar_streaming(since_anchor: f32, streamed: Option<f32>) -> f32 {
+    let creep = since_anchor.max(0.0) / (since_anchor.max(0.0) + BAR_CREEP_TAU);
+    let measured = streamed.unwrap_or(0.0).clamp(0.0, 1.0);
+    BAR_ANCHORED + creep.max(measured) * (BAR_STREAMING - BAR_ANCHORED)
+}
+
+/// …and where it stands once dismissal is decided: from wherever the streaming
+/// phase left it to full, over the fade, so the bar finishes in front of the
+/// person who watched it.
+///
+/// **From `held`, not from zero.** The closing ramp used to be `ease(t)` against
+/// a monotone latch, so a bar already at 0.5 had to wait out the third of the
+/// fade the ramp spent climbing back to where it already was — a pause at
+/// exactly the moment the screen is supposed to be leaving.
+fn bar_closing(held: f32, t: f32) -> f32 {
+    held + (1.0 - held) * ease(t)
 }
 
 /// The sign-in half of the status line, when there is one to report.
@@ -308,6 +332,14 @@ pub struct BootSplash {
     /// working set every quarter second as the view refines. Drawn straight,
     /// that is a bar that jumps backwards while the world is loading forwards.
     bar: f32,
+    /// [`Self::elapsed`] at the frame a streamer first had a working set to count
+    /// against — the zero the creep measures from, so a launch that spends a
+    /// second placing the map does not arrive at the streaming phase with the
+    /// creep already part-spent.
+    anchored_at: Option<f32>,
+    /// The fill the streaming phase left behind, captured the frame dismissal is
+    /// decided. [`bar_closing`] runs from here rather than from zero.
+    held: f32,
     finished: bool,
 }
 
@@ -354,6 +386,11 @@ pub fn boot_splash(
     let ready = progress.ready && splash.elapsed >= min_visible_s();
     if (ready || splash.elapsed >= MAX_VISIBLE_S) && splash.fading.is_none() {
         splash.fading = Some(FADE_S);
+        // Where the streaming phase got to, before the fade starts moving it.
+        splash.held = splash.bar;
+    }
+    if splash.anchored_at.is_none() && progress.streamed.is_some() {
+        splash.anchored_at = Some(splash.elapsed);
     }
 
     // The dismissal fade, which takes the backdrop with it — this is the layer
@@ -383,7 +420,13 @@ pub fn boot_splash(
     let closing = splash
         .fading
         .map(|left| 1.0 - (left / FADE_S).clamp(0.0, 1.0));
-    splash.bar = splash.bar.max(bar_target(closing, progress.streamed));
+    let target = match (closing, splash.anchored_at) {
+        (Some(t), _) => bar_closing(splash.held, t),
+        (None, Some(t0)) => bar_streaming(splash.elapsed - t0, progress.streamed),
+        // Nothing to count yet — the sweep says so (`BAR_SWEEP_BELOW`).
+        (None, None) => 0.0,
+    };
+    splash.bar = splash.bar.max(target);
     let label = caption(
         signin.as_deref(),
         closing
@@ -572,11 +615,33 @@ mod tests {
     /// and stayed there, which is a loading bar that never finishes loading.
     #[test]
     fn the_bar_finishes_over_the_closing_fade() {
-        assert!(bar_target(None, Some(0.02)) < BAR_STREAMING);
-        assert!(bar_target(None, Some(1.0)) <= BAR_STREAMING);
-        // The fade carries whatever is left.
-        assert!(bar_target(Some(0.5), Some(0.02)) > bar_target(None, Some(0.02)));
-        assert!((bar_target(Some(1.0), Some(0.02)) - 1.0).abs() < 1e-6);
+        let held = bar_streaming(1.4, Some(0.02));
+        assert!(held < BAR_STREAMING);
+        // The fade carries whatever is left, and starts moving on its first
+        // frame rather than climbing back to where the bar already was.
+        assert!(bar_closing(held, 0.1) > held);
+        assert!((bar_closing(held, 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    /// **The track moves while nothing is arriving.** A handset spends seconds
+    /// in the streaming phase with a tile count in the low tens, and the count
+    /// alone parked the bar at the anchored floor for all of it.
+    #[test]
+    fn the_bar_moves_on_time_when_the_count_does_not() {
+        let stalled = Some(0.02);
+        let (early, later) = (bar_streaming(0.5, stalled), bar_streaming(4.0, stalled));
+        assert!(later > early + 0.1, "{early} -> {later}");
+        // …and never on its own reaches the ceiling the fade takes over at, so
+        // there is no second place for it to look stuck.
+        assert!(bar_streaming(60.0, stalled) < BAR_STREAMING);
+    }
+
+    /// Real progress still wins when there is more of it than time has spent —
+    /// the creep is a floor under the count, not a replacement for it.
+    #[test]
+    fn a_fast_stream_outruns_the_creep() {
+        assert!(bar_streaming(0.2, Some(0.9)) > bar_streaming(0.2, Some(0.1)));
+        assert!((bar_streaming(0.0, Some(1.0)) - BAR_STREAMING).abs() < 1e-6);
     }
 
     /// A streamer that has a set but nothing in it must not paint an empty
@@ -584,9 +649,7 @@ mod tests {
     /// empty track is what a stalled loader looks like.
     #[test]
     fn a_streamer_with_nothing_yet_still_shows_a_fill() {
-        assert!(bar_target(None, Some(0.0)) > BAR_SWEEP_BELOW);
-        // …while "no anchor, nothing to count" stays on the sweep.
-        assert!(bar_target(None, None) <= BAR_SWEEP_BELOW);
+        assert!(bar_streaming(0.0, Some(0.0)) > BAR_SWEEP_BELOW);
     }
 
     /// The counted set changes under the meter — flat streamer to globe
@@ -597,9 +660,9 @@ mod tests {
         // 12/326 on the flat streamer, then the view goes to orbit and the
         // globe answers 0/280 instead.
         let mut bar: f32 = 0.0;
-        bar = bar.max(bar_target(None, Some(12.0 / 326.0)));
+        bar = bar.max(bar_streaming(0.4, Some(12.0 / 326.0)));
         let peak = bar;
-        bar = bar.max(bar_target(None, Some(0.0)));
+        bar = bar.max(bar_streaming(0.4, Some(0.0)));
         assert_eq!(bar, peak);
     }
 
