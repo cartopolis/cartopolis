@@ -23,6 +23,19 @@ other route to the same register, does). Four layers:
     pand and no 3D geometry, which is exactly why they are missing from a map
     built from buildings alone.
 
+Two heritage layers come from the RCE's own WFS and are joined onto the buildings
+**here, server-side**, because this is the only place that holds both the
+monument points and the footprints to test them against:
+
+  * `rce:NationalListedMonumentPoints` — one point per national monument, with
+    its register number and category. The point lands inside the pand it
+    describes.
+  * `rce:Townscapes` — the protected historic districts, as areas. A building is
+    marked with the district it stands in rather than the district being shipped
+    as geometry: the client wants to know "is this house in the old town", and
+    that is one interned string on a building record instead of a polygon layer
+    with its own streamer.
+
 Pipeline (server-side, so the client stays in lat/lng like every other stream):
 
   1. Page each WFS layer over an RD (EPSG:28992) bbox (see `PAGE` — the server
@@ -41,8 +54,11 @@ Wire format — **two files per cell**, same schema, different arrays populated.
 Street names interned per file, absent fields omitted:
 
     bag/{14}/{x}/{y}.json
-    {"buildings": [{"id": "0014100010909097", "year": 1884, "use": 1,
-                    "area": 94, "units": 1, "status": "demolished"?}, ...]}
+    {"districts": ["Groningen"],
+     "buildings": [{"id": "0014100010909097", "year": 1884, "use": 1,
+                    "area": 94, "units": 1, "status": "demolished"?,
+                    "mon": 18452, "mcat": "Religieuze gebouwen",
+                    "district": 0}, ...]}
 
     bag/{14}/{x}/{y}.places.json
     {"streets": ["Paterswoldseweg", ...],
@@ -92,6 +108,15 @@ import urllib.request
 from pyproj import Transformer
 
 WFS_BASE = "https://service.pdok.nl/lv/bag/wfs/v2_0"
+# The heritage register. Not on PDOK, which is where everybody looks first — the
+# Rijksdienst voor het Cultureel Erfgoed serves its own WFS, and the layer names
+# are English while every attribute is Dutch.
+RCE_WFS = "https://services.rce.geovoorziening.nl/rce/wfs"
+# How far a monument point may sit from a building's footprint and still be taken
+# to describe it. The register's own `herkomst` says most points were derived from
+# the BAG, so the ordinary case is a point *inside* the footprint and this margin
+# is only for the ones placed by hand.
+MONUMENT_SNAP_M = 12.0
 # Features per GetFeature request. **Measured, not the documented cap**: this
 # service truncates a GeoJSON response at 1000 features however large a `count`
 # you ask for, and — unlike the 3DBAG WFS that `3dbag_extract.py` pages, which
@@ -388,10 +413,194 @@ class Cells:
         return out
 
 
+
+def rings_of(geom):
+    """Every ring of a (Multi)Polygon as a list of (x, y), outer rings included
+    with their holes — the holes matter for `point_in_rings` below."""
+    if not geom:
+        return []
+    t = geom.get("type")
+    coords = geom.get("coordinates") or []
+    if t == "Polygon":
+        return [[(p[0], p[1]) for p in ring] for ring in coords]
+    if t == "MultiPolygon":
+        return [[(p[0], p[1]) for p in ring] for poly in coords for ring in poly]
+    return []
+
+
+def point_in_ring(x, y, ring):
+    """Crossing-number test. Ring may be closed or not; the wrap handles both."""
+    inside = False
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            xc = x1 + (y - y1) / (y2 - y1) * (x2 - x1)
+            if x < xc:
+                inside = not inside
+    return inside
+
+
+def point_in_rings(x, y, rings):
+    """Inside the outer ring and outside every hole.
+
+    Rings arrive in GeoJSON order (outer, then its holes), and the parity rule
+    handles that without needing to know which is which: a point inside an outer
+    ring and inside one hole flips twice and comes out false.
+    """
+    hits = 0
+    for ring in rings:
+        if len(ring) >= 3 and point_in_ring(x, y, ring):
+            hits += 1
+    return hits % 2 == 1
+
+
+class FootprintIndex:
+    """RD footprints in a coarse grid, for "which building is this point in?".
+
+    A grid, not an R-tree: the cells are 100 m, the query is a point, and the
+    whole structure is thrown away when the run ends. Buildings are held by
+    their rings rather than only their bboxes because a monument point beside a
+    long terrace would otherwise attach to whichever bbox it clipped.
+    """
+
+    CELL_M = 100.0
+
+    def __init__(self):
+        self.grid = {}
+        self.rings = {}
+
+    def _keys(self, bb):
+        x0 = int(bb[0] // self.CELL_M)
+        y0 = int(bb[1] // self.CELL_M)
+        x1 = int(bb[2] // self.CELL_M)
+        y1 = int(bb[3] // self.CELL_M)
+        return [(gx, gy) for gx in range(x0, x1 + 1) for gy in range(y0, y1 + 1)]
+
+    def add(self, pand, bb, rings):
+        if not rings:
+            return
+        self.rings[pand] = (bb, rings)
+        for key in self._keys(bb):
+            self.grid.setdefault(key, []).append(pand)
+
+    def at(self, x, y, snap_m=0.0):
+        """The pand containing (x, y), else the nearest whose bbox is within
+        `snap_m`, else None."""
+        best = None
+        best_d = snap_m * snap_m
+        reach = int(snap_m // self.CELL_M) + 1
+        gx0, gy0 = int(x // self.CELL_M), int(y // self.CELL_M)
+        for gx in range(gx0 - reach, gx0 + reach + 1):
+            for gy in range(gy0 - reach, gy0 + reach + 1):
+                for pand in self.grid.get((gx, gy), ()):
+                    bb, rings = self.rings[pand]
+                    if point_in_rings(x, y, rings):
+                        return pand          # containment always beats distance
+                    dx = max(bb[0] - x, 0.0, x - bb[2])
+                    dy = max(bb[1] - y, 0.0, y - bb[3])
+                    d = dx * dx + dy * dy
+                    if d < best_d:
+                        best_d, best = d, pand
+        return best
+
+
+def collect_monuments(bbox, index, by_pand):
+    """`rce:NationalListedMonumentPoints` -> a monument number on its building."""
+    n = 0
+    for feat in rce_features("rce:NationalListedMonumentPoints", bbox):
+        props = feat.get("properties") or {}
+        number = props.get("rijksmonument_nummer")
+        pts = list(geom_coords(feat.get("geometry")))
+        if not number or not pts:
+            continue
+        pand = index.at(pts[0][0], pts[0][1], MONUMENT_SNAP_M)
+        rec = by_pand.get(pand) if pand else None
+        if rec is None:
+            continue
+        rec["mon"] = int(number)
+        cat = props.get("hoofdcategorie")
+        if cat:
+            rec["mcat"] = cat
+        n += 1
+    return n
+
+
+def collect_townscapes(bbox, index, by_pand, districts):
+    """`rce:Townscapes` -> the protected district each building stands in.
+
+    Tested the other way round from the monuments: there are a handful of
+    districts and tens of thousands of buildings, so this walks the districts and
+    asks each building's own centre, rather than asking every building which of
+    the districts it might be in.
+    """
+    n = 0
+    for feat in rce_features("rce:Townscapes", bbox):
+        props = feat.get("properties") or {}
+        name = props.get("NAAM") or props.get("naam")
+        rings = rings_of(feat.get("geometry"))
+        if not name or not rings:
+            continue
+        ix = districts.setdefault(name, len(districts))
+        for pand, (bb, _) in index.rings.items():
+            rec = by_pand.get(pand)
+            if rec is None or "district" in rec:
+                continue
+            cx, cy = (bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0
+            if point_in_rings(cx, cy, rings):
+                rec["district"] = ix
+                n += 1
+    return n
+
+
+def rce_features(layer, bbox):
+    """Every feature of an RCE layer over an RD bbox.
+
+    Separate from `pages` because it is a different server with different limits
+    and, so far, small answers: the national monuments in a city bbox are
+    hundreds, not tens of thousands. It still pages, so a dense historic centre
+    cannot silently truncate.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    start = 0
+    while True:
+        params = {
+            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+            "typeNames": layer, "count": str(PAGE), "startIndex": str(start),
+            "outputFormat": "application/json", "srsName": "EPSG:28992",
+            "bbox": f"{xmin},{ymin},{xmax},{ymax},EPSG:28992",
+        }
+        url = RCE_WFS + "?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(url, timeout=120) as resp:
+                page = json.load(resp)
+        except Exception as e:  # noqa: BLE001 - heritage data is a bonus, not a gate
+            print(f"  {layer}: unavailable ({e}); skipping", file=sys.stderr)
+            return
+        feats = page.get("features") or []
+        if not feats:
+            return
+        yield from feats
+        start += len(feats)
+        print(f"  {layer}: {start}", file=sys.stderr)
+        if len(feats) < PAGE:
+            return
+
+
 def collect_buildings(bbox, cells):
-    """`bag:pand` -> one record per building, in every cell its footprint spans."""
+    """`bag:pand` -> one record per building, in every cell its footprint spans.
+
+    Returns `(count, index, by_pand)`. The last two are what the heritage joins
+    run against: a footprint index to test a monument point in, and the record
+    itself by id. Note the record is the *same object* in every cell it was
+    written to, so a later join mutates all of them at once — which is why the
+    monuments do not have to know about cells at all.
+    """
     n = 0
     seen = set()
+    index = FootprintIndex()
+    by_pand = {}
     for feat in pages("bag:pand", bbox):
         props = feat.get("properties") or {}
         pand = props.get("identificatie")
@@ -421,8 +630,10 @@ def collect_buildings(bbox, cells):
             rec["status"] = STATUS_CODES.get(status, status)
         for key in cells_of_bbox(bb):
             cells.add(key, "buildings", rec)
+        by_pand[pand] = rec
+        index.add(pand, bb, rings_of(feat.get("geometry")))
         n += 1
-    return n
+    return n, index, by_pand
 
 
 def collect_addresses(bbox, cells):
@@ -490,18 +701,28 @@ def collect_berths(bbox, cells):
 def build(bbox, out_dir, name):
     cells = Cells()
     print("panden…", file=sys.stderr)
-    n_bld = collect_buildings(bbox, cells)
+    n_bld, index, by_pand = collect_buildings(bbox, cells)
     print("verblijfsobjecten…", file=sys.stderr)
     n_adr = collect_addresses(bbox, cells)
     print("ligplaatsen + standplaatsen…", file=sys.stderr)
     n_bth = collect_berths(bbox, cells)
+    print("rijksmonumenten…", file=sys.stderr)
+    n_mon = collect_monuments(bbox, index, by_pand)
+    print("beschermde stads- en dorpsgezichten…", file=sys.stderr)
+    districts = {}
+    n_dis = collect_townscapes(bbox, index, by_pand, districts)
+    district_names = [name for name, _ in sorted(districts.items(), key=lambda kv: kv[1])]
 
     done = cells.finish()
     bdir = os.path.join(out_dir, "bag", str(CACHE_ZOOM))
     for (cx, cy), cell in done.items():
         if cell["buildings"]:
+            # The district table is written whole into every cell rather than
+            # once into the manifest: it is a handful of names, and a cell that
+            # explains its own indices can be read on its own.
             _write_json(os.path.join(bdir, str(cx), f"{cy}.json"),
-                        {"buildings": cell["buildings"]})
+                        {"districts": district_names,
+                         "buildings": cell["buildings"]})
         if cell["addresses"] or cell["berths"]:
             _write_json(os.path.join(bdir, str(cx), f"{cy}.places.json"),
                         {"streets": cell["streets"],
@@ -515,9 +736,12 @@ def build(bbox, out_dir, name):
         "building_count": n_bld,
         "address_count": n_adr,
         "berth_count": n_bth,
+        "monument_count": n_mon,
+        "districts": district_names,
     })
-    print(f"\nDone: {n_bld} buildings, {n_adr} addresses, {n_bth} berths "
-          f"across {len(done)} cells.")
+    print(f"\nDone: {n_bld} buildings, {n_adr} addresses, {n_bth} berths, "
+          f"{n_mon} monuments, {n_dis} buildings in {len(district_names)} "
+          f"protected districts, across {len(done)} cells.")
     print(f"Output: {out_dir}/bag/{CACHE_ZOOM}/  +  {out_dir}/bag/coverage.json")
 
 
