@@ -3,6 +3,7 @@
 pub mod atmosphere_patch;
 pub mod building_facts;
 pub mod building_windows;
+pub mod coverage;
 pub mod globe;
 pub mod globe_ocean;
 pub mod globe_weather;
@@ -21,6 +22,7 @@ pub mod stream_ledger;
 pub mod street_detail;
 pub mod street_furniture;
 pub mod street_labels;
+pub mod surveyed;
 pub mod tall_structures;
 pub mod terrain;
 pub mod tile_loader;

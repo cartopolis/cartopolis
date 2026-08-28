@@ -300,7 +300,34 @@ fn bag_address(
     if building.is_some_and(|b| !b.status.standing()) {
         line.push_str(" · disused");
     }
+    if let Some(b) = building {
+        push_heritage(&mut line, b);
+    }
     Some(line)
+}
+
+/// Append what the heritage registers say, if anything: whether the building is
+/// listed, and whether it stands in a protected historic district.
+///
+/// Last on the line and in that order, because they are the rarest facts and the
+/// readout truncates from the right — a house number must never be pushed off by
+/// a district name that applies to half the city centre.
+fn push_heritage(line: &mut String, building: &crate::systems::building_facts::BuildingFact) {
+    if building.monument.is_some() {
+        line.push_str(" · national monument");
+        // The register's own category, in its own language. It is the difference
+        // between "a listed building" and "a listed church", which is most of
+        // what a person wants from the word.
+        if let Some(cat) = &building.monument_category {
+            line.push_str(" (");
+            line.push_str(cat);
+            line.push(')');
+        }
+    }
+    if let Some(district) = &building.district {
+        line.push_str(" · in ");
+        line.push_str(district);
+    }
 }
 
 /// The nearest houseboat berth or mobile-home plot, named.

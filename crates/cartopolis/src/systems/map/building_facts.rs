@@ -25,9 +25,8 @@
 //! rebuilding meshes whenever a facts cell landed, which is the terrain-revision
 //! retear — affordable for a 6.4 km field that arrives once, not for a stream.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
@@ -36,6 +35,7 @@ use crate::components::FreeCamera;
 use crate::grid::WORLD_CELL_EDGE;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::coverage::CoverageSlot;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::tdbag_url;
@@ -167,6 +167,18 @@ pub struct BuildingFact {
     /// Addressable units inside (0 = none, e.g. a shed or a garage block).
     pub units: u16,
     pub status: BuildingStatus,
+    /// National monument number (`rijksmonument`), if the heritage register has
+    /// one for this building. The number is the register's own and resolves at
+    /// `monumentenregister.cultureelerfgoed.nl/monumenten/<n>`.
+    pub monument: Option<u32>,
+    /// The monument's broad category — "Religieuze gebouwen", "Woningen en
+    /// woningbouwcomplexen". Dutch, because it is the register's own word and
+    /// translating a controlled vocabulary invents distinctions it does not make.
+    pub monument_category: Option<Arc<str>>,
+    /// The protected historic district (*beschermd stadsgezicht*) this building
+    /// stands in, if any. Interned per cell — a district covers thousands of
+    /// buildings and its name is one string.
+    pub district: Option<Arc<str>>,
 }
 
 /// One addressable unit — the BAG's `verblijfsobject`.
@@ -242,6 +254,8 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
         #[serde(default)]
         streets: Vec<String>,
         #[serde(default)]
+        districts: Vec<String>,
+        #[serde(default)]
         buildings: Vec<WireBuilding>,
         #[serde(default)]
         addresses: Vec<WireAddress>,
@@ -264,6 +278,12 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
         units: u16,
         #[serde(default)]
         status: Option<String>,
+        #[serde(default)]
+        mon: Option<u32>,
+        #[serde(default)]
+        mcat: Option<String>,
+        #[serde(default)]
+        district: Option<usize>,
     }
     #[derive(serde::Deserialize)]
     struct WireAddress {
@@ -300,7 +320,13 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
     // copies of "Paterswoldseweg" per cell.
     let streets: Vec<Arc<str>> = wire.streets.into_iter().map(Arc::from).collect();
     let street_of = |ix: Option<usize>| ix.and_then(|i| streets.get(i).cloned());
+    let districts: Vec<Arc<str>> = wire.districts.into_iter().map(Arc::from).collect();
 
+    // Monument categories are a closed vocabulary of a dozen phrases spread over
+    // every listed building in the cell, so they are interned as they are seen
+    // rather than shipped as a table: the table would have to be built by the
+    // extractor for a saving the parser can make for itself.
+    let mut categories: HashMap<String, Arc<str>> = HashMap::new();
     let mut buildings = HashMap::with_capacity(wire.buildings.len());
     for b in wire.buildings {
         buildings.insert(
@@ -316,6 +342,14 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
                     .status
                     .as_deref()
                     .map_or(BuildingStatus::InUse, BuildingStatus::parse),
+                monument: b.mon,
+                monument_category: b.mcat.map(|c| {
+                    categories
+                        .entry(c)
+                        .or_insert_with_key(|k| Arc::from(k.as_str()))
+                        .clone()
+                }),
+                district: b.district.and_then(|i| districts.get(i).cloned()),
             },
         );
     }
@@ -356,121 +390,8 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
 
 // ─── Coverage ────────────────────────────────────────────────────────────────
 
-/// Which cells the host serves BAG attributes for, and its attribution line.
-struct BagCoverage {
-    zoom: u32,
-    cells: HashSet<(i64, i64)>,
-    attribution: String,
-}
-
-static COVERAGE: OnceLock<BagCoverage> = OnceLock::new();
-static COVERAGE_FETCHING: AtomicBool = AtomicBool::new(false);
-static COVERAGE_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
-/// Failed coverage attempts so far.
-///
-/// The 3DBAG manifests retry forever on an unreachable host, which is right for
-/// them: they are the difference between real buildings and guessed ones, and the
-/// host being briefly unreachable at startup must not disable them for the
-/// session. This tree is *additive* — a host that has never run
-/// `bag_attributes.py` answers 404 for ever — so retrying without end would be a
-/// request every 30 s for the life of the process to re-learn one permanent fact.
-/// A few attempts covers the transient case; then it latches empty and says so.
-static COVERAGE_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
-const COVERAGE_MAX_ATTEMPTS: u8 = 3;
-const COVERAGE_RETRY_SECS: f64 = 30.0;
-
-/// Kick off the coverage fetch, at most one in flight. Cheap to call every frame.
-fn ensure_bag_coverage(now: f64) {
-    if COVERAGE.get().is_some() || COVERAGE_FETCHING.load(Ordering::Relaxed) {
-        return;
-    }
-    if COVERAGE_ATTEMPTS.load(Ordering::Relaxed) >= COVERAGE_MAX_ATTEMPTS {
-        return;
-    }
-    let last = f64::from_bits(COVERAGE_LAST_ATTEMPT.load(Ordering::Relaxed));
-    if last > 0.0 && now - last < COVERAGE_RETRY_SECS {
-        return;
-    }
-    COVERAGE_FETCHING.store(true, Ordering::Relaxed);
-    COVERAGE_LAST_ATTEMPT.store(now.to_bits(), Ordering::Relaxed);
-    IoTaskPool::get()
-        .spawn(async {
-            if let Some(c) = fetch_bag_coverage().await {
-                let _ = COVERAGE.set(c);
-            } else {
-                let n = COVERAGE_ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
-                if n >= COVERAGE_MAX_ATTEMPTS {
-                    tracing::info!(
-                        "no BAG attribute coverage on this host; \
-                                    buildings keep their generated colours"
-                    );
-                    let _ = COVERAGE.set(BagCoverage {
-                        zoom: BAG_ZOOM,
-                        cells: HashSet::new(),
-                        attribution: String::new(),
-                    });
-                }
-            }
-            COVERAGE_FETCHING.store(false, Ordering::Relaxed);
-        })
-        .detach();
-}
-
-/// `None` means "could not ask"; `Some` is an answer, empty or not.
-async fn fetch_bag_coverage() -> Option<BagCoverage> {
-    let base = tdbag_url();
-    if base.is_empty() {
-        return Some(BagCoverage {
-            zoom: BAG_ZOOM,
-            cells: HashSet::new(),
-            attribution: String::new(),
-        });
-    }
-    let url = format!("{base}/bag/coverage.json");
-    let text = match http::fetch_string(http::Request::get(url.clone())).await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::debug!(%url, error = %e, "BAG coverage unreachable");
-            return None;
-        }
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        tracing::warn!(%url, "BAG coverage is not JSON");
-        return Some(BagCoverage {
-            zoom: BAG_ZOOM,
-            cells: HashSet::new(),
-            attribution: String::new(),
-        });
-    };
-    let zoom = json
-        .get("zoom")
-        .and_then(|z| z.as_u64())
-        .unwrap_or(BAG_ZOOM as u64) as u32;
-    let attribution = json
-        .get("attribution")
-        .and_then(|a| a.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let mut cells = HashSet::new();
-    if let Some(arr) = json.get("cells").and_then(|c| c.as_array()) {
-        for cell in arr {
-            if let Some(pair) = cell.as_array() {
-                if let (Some(x), Some(y)) = (
-                    pair.first().and_then(|v| v.as_i64()),
-                    pair.get(1).and_then(|v| v.as_i64()),
-                ) {
-                    cells.insert((x, y));
-                }
-            }
-        }
-    }
-    tracing::info!(cells = cells.len(), zoom, "BAG attribute coverage loaded");
-    Some(BagCoverage {
-        zoom,
-        cells,
-        attribution,
-    })
-}
+/// Which cells the host serves BAG attributes for (`systems::map::coverage`).
+static COVERAGE: CoverageSlot = CoverageSlot::new("bag", "/bag/coverage.json", BAG_ZOOM);
 
 /// Bumped once, when the coverage question is finally answered — successfully or
 /// as the empty "no BAG on this host" fallback.
@@ -478,17 +399,11 @@ async fn fetch_bag_coverage() -> Option<BagCoverage> {
 /// `lod22` bakes a building's year and use into vertex colours, so a cell built
 /// before this manifest arrived is coloured as if the register said nothing, and
 /// nothing would ever revisit it: cells are rebuilt on a re-anchor, and standing
-/// still after startup is the normal case. This is the same shape as
-/// `TerrainField::revision` and is read the same way, in the same retear — and
-/// like the terrain field it can only change **once** per process, so the cost is
-/// one rebuild of whatever was already standing, not a stream of them.
-///
-/// Blocking the building lanes until it resolved was the other option, and it
-/// loses on a host with no `bag/` tree: that answer takes three attempts spread
-/// over a minute and a half to become final, and a minute and a half of no
-/// buildings is a far worse trade than one retear.
+/// still after startup is the normal case. Same shape as `TerrainField::revision`
+/// and read in the same retear — and like that field it can only change **once**
+/// per process, so the cost is one rebuild of whatever was already standing.
 pub fn coverage_revision() -> u32 {
-    u32::from(COVERAGE.get().is_some())
+    COVERAGE.revision()
 }
 
 /// Start the coverage fetch from a caller that is not the facts streamer.
@@ -497,23 +412,18 @@ pub fn coverage_revision() -> u32 {
 /// streamer does on the frames that matter (both give up early without a map
 /// anchor). Idempotent and cheap.
 pub(crate) fn prefetch_coverage(now: f64) {
-    ensure_bag_coverage(now);
+    COVERAGE.ensure(now);
 }
 
 /// True if the host serves BAG attributes for this cell. `false` until coverage
 /// lands, so every consumer degrades to "no facts" rather than waiting.
 pub fn bag_covers(cx: i64, cy: i64) -> bool {
-    COVERAGE
-        .get()
-        .is_some_and(|c| c.zoom == BAG_ZOOM && c.cells.contains(&(cx, cy)))
+    COVERAGE.covers(cx, cy)
 }
 
 /// The BAG attribution line, once coverage has loaded and is non-empty.
 pub fn bag_attribution() -> Option<String> {
-    COVERAGE
-        .get()
-        .filter(|c| !c.cells.is_empty() && !c.attribution.is_empty())
-        .map(|c| c.attribution.clone())
+    COVERAGE.attribution()
 }
 
 // ─── Fetching ────────────────────────────────────────────────────────────────
@@ -710,7 +620,7 @@ pub fn update_building_facts(
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
-    ensure_bag_coverage(now);
+    COVERAGE.ensure(now);
 
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
