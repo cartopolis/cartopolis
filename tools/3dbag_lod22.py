@@ -55,7 +55,14 @@ import mapbox_earcut as earcut
 from pyproj import Transformer
 
 WFS_BASE = "https://data.3dbag.nl/api/BAG3D/wfs"
-TILES_LAYER = "BAG3D:Tiles"
+#: Preferred name of the tile-index layer, and what to fall back to.
+#:
+#: **Upstream renamed it.** It was `BAG3D:Tiles` when this was written and is
+#: `BAG3D:tiles` as of 2026-08-28; asking for the old one earns a flat HTTP 400
+#: with `InvalidParameterValue` and nothing that says the name is the problem. So
+#: the name is *resolved* against the service's own capabilities rather than
+#: hard-coded, and only the case-insensitive match is assumed to be stable.
+TILES_LAYER = "BAG3D:tiles"
 CACHE_ZOOM = 14
 _TO_WGS84 = Transformer.from_crs("EPSG:28992", "EPSG:4326", always_xy=True)
 
@@ -74,12 +81,39 @@ def lat_lng_to_tile(lat, lng, z=CACHE_ZOOM):
     return x, y
 
 
+def resolve_tiles_layer():
+    """The tile-index layer's name as this service currently spells it.
+
+    One extra request at the start of a run, against a rename that costs the whole
+    run when it happens and reports itself as a bare 400. Falls back to the
+    preferred spelling if the capabilities cannot be read, so a transient failure
+    here does not become a hard stop.
+    """
+    url = WFS_BASE + "?service=WFS&request=GetCapabilities"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            caps = resp.read().decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001
+        print(f"  capabilities unreadable ({e}); assuming {TILES_LAYER}",
+              file=sys.stderr)
+        return TILES_LAYER
+    for name in re.findall(r"<Name>([^<]+)</Name>", caps):
+        if name.lower() == TILES_LAYER.lower():
+            if name != TILES_LAYER:
+                print(f"  tile layer is '{name}' upstream, not '{TILES_LAYER}'",
+                      file=sys.stderr)
+            return name
+    print(f"  no tile layer in the capabilities; assuming {TILES_LAYER}",
+          file=sys.stderr)
+    return TILES_LAYER
+
+
 def tile_cj_urls(bbox):
     """Every LoD2.2 CityJSON tile download URL intersecting the RD bbox."""
     xmin, ymin, xmax, ymax = bbox
     params = {
         "service": "WFS", "version": "2.0.0", "request": "GetFeature",
-        "typeNames": TILES_LAYER, "count": "10000",
+        "typeNames": resolve_tiles_layer(), "count": "10000",
         "outputFormat": "application/json", "srsName": "EPSG:28992",
         "bbox": f"{xmin},{ymin},{xmax},{ymax},EPSG:28992",
     }
