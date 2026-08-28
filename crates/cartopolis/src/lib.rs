@@ -2165,6 +2165,7 @@ fn run_client() {
             (
                 systems::lod22::update_lod22.after(rendering::spawn_regions),
                 systems::building_facts::update_building_facts,
+                systems::surveyed::prefetch_bgt_coverage,
             ),
             systems::data_layers::update_data_layers.after(rendering::spawn_regions),
             systems::data_layers::animate_stop_rings

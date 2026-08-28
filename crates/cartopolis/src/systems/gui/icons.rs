@@ -327,6 +327,10 @@ pub fn furniture(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Fountain => FOUNTAIN,
         FurnitureKind::Artwork => ARTWORK,
         FurnitureKind::Swing => SWING,
+        // A street light is solid but not interactable (`prop_interactable`), so
+        // this is never drawn either. `CABINET`'s box-on-a-post is the nearest
+        // thing in the subset and costs no font work.
+        FurnitureKind::Lamp => CABINET,
         // Parked vehicles are not interactables (`world_places::CellPlaces`), so
         // these are never drawn. The travel-mode icons already in the subset are
         // what they would use, so the arms cost nothing and no font work.

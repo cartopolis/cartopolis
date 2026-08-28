@@ -298,6 +298,12 @@ pub struct MapSurfaces {
     /// Terrain-field revision the live cells were tessellated against, so a field
     /// that lands (or goes away) after them rebuilds them onto the right ground.
     terrain_revision: u32,
+    /// BGT coverage revision these cells were built against
+    /// (`surveyed::coverage_revision`) — 0 while the manifest is in flight, 1 once
+    /// it has answered. Surveyed trees and lampposts are merged into these cells'
+    /// meshes, so a cell built during that gap has none of them and nothing would
+    /// revisit it. It changes at most once per process.
+    bgt_revision: u32,
     /// Cells whose bridge decks are tessellated but not yet *placed*: their height
     /// is a measurement that arrives from `systems::height` some frames later. Held
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
@@ -328,6 +334,7 @@ impl Default for MapSurfaces {
             materials: HashMap::new(),
             road_materials: HashMap::new(),
             terrain_revision: 0,
+            bgt_revision: 0,
             pending_decks: HashMap::new(),
             detail_wants: None,
         }
@@ -428,6 +435,13 @@ fn spawn_geometry_task(
         .spawn(async move {
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
             let fetched = load_tile_image(&key, &template).await;
+            // The cell's surveyed BGT objects travel with the job for the reason
+            // `building_facts` gives about `lod22`: they end up merged into this
+            // cell's meshes, so they have to be in hand on the worker that builds
+            // them rather than arriving later on a stream of their own. Empty
+            // outside the coverage, which is everywhere the host has not run
+            // `tools/bgt_objects.py`.
+            let surveyed = crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1).await;
             crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
@@ -477,7 +491,25 @@ fn spawn_geometry_task(
                             // uploads the result.
                             if wants.trees {
                                 match scatter::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
-                                    Ok(trees) => {
+                                    Ok(mut trees) => {
+                                        // The BGT's individual street trees join
+                                        // the scattered canopies rather than
+                                        // replacing them — see
+                                        // `systems::surveyed` for why that is not
+                                        // a compromise: the scatter fills park and
+                                        // wood polygons, these stand on the
+                                        // pavement, and the registration is
+                                        // optional content whose coverage varies
+                                        // by municipality.
+                                        let planted = crate::systems::surveyed::surveyed_trees(
+                                            &surveyed,
+                                            cell.0,
+                                            cell.1,
+                                            tile_m,
+                                            veg_seed(cell),
+                                        );
+                                        cell_places.surveyed.0 = planted.len();
+                                        trees.extend(planted);
                                         meshes.extend(scatter::build_vegetation_meshes(
                                             &trees,
                                             mesh_bytes,
@@ -498,7 +530,23 @@ fn spawn_geometry_task(
                                     tile_m,
                                     veg_seed(cell),
                                 ) {
-                                    Ok(items) => {
+                                    Ok(mut items) => {
+                                        // …and the surveyed street objects join
+                                        // the ones read out of `pois`. Mostly
+                                        // lighting: `pois` has no street lighting
+                                        // in it at all, and a lamppost is the most
+                                        // numerous thing on a street by a wide
+                                        // margin.
+                                        let placed = crate::systems::surveyed::surveyed_props(
+                                            &surveyed,
+                                            &tile,
+                                            cell.0,
+                                            cell.1,
+                                            tile_m,
+                                            veg_seed(cell),
+                                        );
+                                        cell_places.surveyed.1 = placed.len();
+                                        items.extend(placed);
                                         meshes.extend(furniture::build_furniture_meshes(
                                             &items, mesh_bytes,
                                         ));
@@ -753,8 +801,15 @@ pub fn update_map_surfaces(
     // the first pass fetched. Correcting the meshes in place instead would mean
     // holding every cell's CPU-side geometry for the life of the cell, to save a
     // rebuild that happens once per anchor.
-    if surfaces.terrain_revision != terrain.revision {
+    // The BGT coverage answer lands the same way and takes the same retear: it
+    // decides whether a cell gets its surveyed street trees and lighting, and
+    // those are merged into the cell's own meshes. Unlike the terrain it can only
+    // change once, so this costs one rebuild of whatever was standing when the
+    // manifest arrived.
+    let bgt_revision = crate::systems::surveyed::coverage_revision();
+    if surfaces.terrain_revision != terrain.revision || surfaces.bgt_revision != bgt_revision {
         surfaces.terrain_revision = terrain.revision;
+        surfaces.bgt_revision = bgt_revision;
         surfaces.clear();
         stores.places.clear();
         stores.labels.clear();

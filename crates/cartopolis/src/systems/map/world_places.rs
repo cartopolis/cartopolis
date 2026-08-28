@@ -38,6 +38,17 @@ pub struct CellPlaces {
     /// has to be retired with the same cell; `insert_cell` hands it straight on to
     /// `DriveNetwork` and keeps none of it.
     pub drive_lines: Vec<cartopolis_geo::traffic::DriveLine>,
+    /// How much of this cell was **surveyed** rather than generated: trees and
+    /// street objects taken from the BGT (`systems::surveyed`).
+    ///
+    /// A count, not the objects — they are already inside `furniture` and inside
+    /// the merged tree meshes by the time this is read. It exists because the
+    /// layer's failure mode is silence: a host with no `bgt/` tree, a manifest
+    /// that never loaded, or a cell ring that never met the covered cells all
+    /// leave a perfectly ordinary-looking street with scattered canopies and no
+    /// lighting, and no capture can tell those apart from "the data arrived and
+    /// this street has none". `--dump-state` reports it.
+    pub surveyed: (usize, usize),
 }
 
 /// A thing in the world the avatar can walk up to, in anchored world XZ.
@@ -170,6 +181,10 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Fountain => "Fountain",
         FurnitureKind::Artwork => "Artwork",
         FurnitureKind::Swing => "Playground",
+        // Never reached — see `prop_interactable`. Named for the same reason the
+        // vehicles below are: making one interactable later should be a decision,
+        // not a panic.
+        FurnitureKind::Lamp => "Street light",
         // Never reached: parked vehicles are not interactables (see
         // `CellPlaces::vehicles`). Here because the match is exhaustive, and
         // written as what it *would* say rather than as an `unreachable!`, so
@@ -179,6 +194,18 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Person => "Person",
         FurnitureKind::Boat => "Boat",
     }
+}
+
+/// Whether walking up to this form should offer the player anything.
+///
+/// Solid and interactable are separate questions, and the street lighting is what
+/// separated them: a lamp column is firmly in the way, and there is nothing
+/// whatever to do with one. Before this the two were the same list, so every
+/// object that was placed also got a prompt — which was fine while the only
+/// source was `pois`, a layer of things people visit, and stops being fine the
+/// moment a city's worth of surveyed lampposts arrives.
+fn prop_interactable(kind: FurnitureKind) -> bool {
+    !matches!(kind, FurnitureKind::Lamp)
 }
 
 /// Radius (m) each furniture form occupies for collision. The meshes are built
@@ -197,6 +224,9 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         // polygon, and a collider there would be an invisible post in the middle
         // of a park.
         FurnitureKind::Swing => 0.0,
+        // A lamp column is slim and genuinely in the way — walking through one is
+        // one of those small things that tells you the world is a drawing.
+        FurnitureKind::Lamp => 0.25,
         // A vehicle is long, so one circle is the wrong shape for it and
         // [`vehicle_circles`] gives it two. This is the radius of each.
         FurnitureKind::Car => 1.05,
@@ -243,6 +273,11 @@ fn vehicle_circles(f: &FurnitureInstance, pos: Vec2, out: &mut Vec<(Vec2, f32)>)
 #[derive(Resource, Default)]
 pub struct WorldPlaces {
     cells: HashMap<(i64, i64), Vec<Interactable>>,
+    /// [`CellPlaces::surveyed`] per loaded cell, summed on demand rather than
+    /// kept as a running total: the ring is nine cells, so the sum is free, and a
+    /// total maintained across insert *and* remove is one missed subtraction away
+    /// from a number that only ever grows.
+    surveyed: HashMap<(i64, i64), (usize, usize)>,
     /// Solid props as `(centre, radius)` in anchored world XZ, kept per cell for
     /// the same reason.
     props: HashMap<(i64, i64), Vec<(Vec2, f32)>>,
@@ -264,6 +299,9 @@ impl WorldPlaces {
             let radius = prop_radius(f.kind);
             if radius > 0.0 {
                 props.push((pos, radius));
+            }
+            if !prop_interactable(f.kind) {
+                continue;
             }
             interactables.push(Interactable {
                 pos,
@@ -304,13 +342,15 @@ impl WorldPlaces {
         self.cells.insert(cell, interactables);
         self.props.insert(cell, props);
         self.addresses.insert(cell, addresses);
+        self.surveyed.insert(cell, places.surveyed);
         self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn remove_cell(&mut self, cell: &(i64, i64)) {
         let had = self.cells.remove(cell).is_some()
             | self.props.remove(cell).is_some()
-            | self.addresses.remove(cell).is_some();
+            | self.addresses.remove(cell).is_some()
+            | self.surveyed.remove(cell).is_some();
         if had {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -323,7 +363,16 @@ impl WorldPlaces {
         self.cells.clear();
         self.props.clear();
         self.addresses.clear();
+        self.surveyed.clear();
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Surveyed trees and street objects across the loaded cells — the "did the
+    /// BGT data actually reach the meshes?" reading. See [`CellPlaces::surveyed`].
+    pub fn surveyed(&self) -> (usize, usize) {
+        self.surveyed
+            .values()
+            .fold((0, 0), |(t, p), (ct, cp)| (t + ct, p + cp))
     }
 
     /// Every solid prop, for the collider index.

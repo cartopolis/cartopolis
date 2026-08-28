@@ -550,6 +550,12 @@ pub struct ShotMetrics {
     pub bag_buildings: usize,
     pub bag_addresses: usize,
     pub bag_berths: usize,
+    /// Surveyed BGT objects standing in the loaded cells: trees, then street
+    /// objects (`systems::surveyed`). Same reason as the BAG counts above — the
+    /// layer fails by being silently absent, and a street with scattered canopies
+    /// and no lighting is exactly what a working map looks like.
+    pub surveyed_trees: usize,
+    pub surveyed_props: usize,
     /// Mesh entities spawned by the Overpass street-detail layer
     /// (`systems::street_detail`) — surveyed trees, lamps, signals, barriers,
     /// piers, paint. `0` over a city with the layer on means the cells never
@@ -725,7 +731,7 @@ alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,prop_meshes,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
@@ -1965,6 +1971,9 @@ pub struct ShotReadouts<'w, 's> {
     /// landed is drawn with the generated palette, which is a different picture
     /// but not an unfinished one.
     bag: Res<'w, crate::systems::building_facts::BuildingFacts>,
+    /// The per-cell places store, for the surveyed counts alone — see
+    /// `ShotMetrics::surveyed_trees`.
+    places: Res<'w, crate::systems::world_places::WorldPlaces>,
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -2327,6 +2336,8 @@ pub fn drive_capture(
             bag_buildings: readouts.bag.len(),
             bag_addresses: readouts.bag.addresses().len(),
             bag_berths: readouts.bag.berths().len(),
+            surveyed_trees: readouts.places.surveyed().0,
+            surveyed_props: readouts.places.surveyed().1,
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
             traffic_cars: visuals
                 .agents
@@ -2710,6 +2721,8 @@ mod tests {
             bag_buildings: 0,
             bag_addresses: 0,
             bag_berths: 0,
+            surveyed_trees: 0,
+            surveyed_props: 0,
             grass_slots: 0,
             grass_rendered: 0,
             prop_meshes: 0,

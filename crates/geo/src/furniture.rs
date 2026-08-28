@@ -127,6 +127,16 @@ pub enum FurnitureKind {
     /// A swing frame. The token for `leisure=playground`, whose node is the
     /// *centroid* of a play area we have no geometry for; see [`FURNITURE_TABLE`].
     Swing,
+    /// A street light: a column with a head on a short bracket.
+    ///
+    /// **Not** in [`FURNITURE_TABLE`] either, and for the opposite reason to the
+    /// vehicles below — a lamppost is not inferred, it is surveyed, just not by
+    /// the source this module reads. Shortbread's `pois` layer does not carry
+    /// street lighting at all; the BGT surveys every column in the country, and
+    /// `systems::surveyed` lays these from it. It is by a wide margin the most
+    /// numerous object on a street: 651 columns against 54 of everything else in
+    /// one Groningen page.
+    Lamp,
     /// A parked car. **Not** in [`FURNITURE_TABLE`]: no `pois` feature is a car,
     /// and OSM does not survey individual vehicles. It is laid into the `sites`
     /// layer's car parks by [`crate::parking`], which is a different kind of
@@ -634,6 +644,14 @@ mod form {
         part([0.0, 0.26, 0.0], [1.40, 0.02, 1.40], Water),
         part([0.0, 0.55, 0.0], [0.15, 0.55, 0.15], Stone),
     ];
+    /// A 4 m column with the head on a short bracket over the carriageway. The
+    /// bracket is what makes it read as a street light rather than as a post from
+    /// any distance, and it is why the form takes its angle from the path.
+    pub const LAMP: [Part; 3] = [
+        part([0.0, 2.00, 0.0], [0.06, 2.00, 0.06], Metal),
+        part([0.0, 3.98, 0.28], [0.05, 0.04, 0.28], Metal),
+        part([0.0, 3.90, 0.52], [0.14, 0.06, 0.22], Roof),
+    ];
     pub const ARTWORK: [Part; 2] = [
         part([0.0, 0.35, 0.0], [0.45, 0.35, 0.45], Stone),
         part([0.0, 1.10, 0.0], [0.25, 0.40, 0.25], Metal),
@@ -724,11 +742,56 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Fountain => &form::FOUNTAIN,
         FurnitureKind::Artwork => &form::ARTWORK,
         FurnitureKind::Swing => &form::SWING,
+        FurnitureKind::Lamp => &form::LAMP,
         FurnitureKind::Car => &form::CAR,
         FurnitureKind::Bicycle => &form::BICYCLE,
         FurnitureKind::Person => &form::PERSON,
         FurnitureKind::Boat => &form::BOAT,
     }
+}
+
+/// Turn **surveyed** points into oriented furniture instances.
+///
+/// The companion to [`extract_furniture`], for objects that come from a source
+/// this module does not read. The caller supplies tile-local metres and a form —
+/// `systems::surveyed` gets both from the BGT — and everything after that is the
+/// same: the same hashed luma so a street is not one flat grey, and the same
+/// [`WayField`] so a lamp's bracket reaches over the carriageway instead of
+/// pointing at a hashed angle.
+///
+/// It takes the tile for the way field alone. That is the whole reason this lives
+/// here rather than in the client: the field is built from the *`streets`* layer
+/// of the very tile the cell is being meshed from, and exposing it would mean
+/// exporting the field, its scale rule and the trap in its doc comment.
+#[must_use]
+pub fn place_surveyed(
+    tile: &TileData,
+    tile_m: f32,
+    seed: u64,
+    points: &[(f32, f32, FurnitureKind)],
+) -> Vec<FurnitureInstance> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let ways = WayField::build(tile, tile_m);
+    let mut out = Vec::with_capacity(points.len());
+    for (i, &(x, z, kind)) in points.iter().enumerate() {
+        let h = hash3(seed, i as i32, kind as i32);
+        let yaw = kind
+            .takes_angle_from_path()
+            .then(|| ways.facing(x, z, ORIENT_RADIUS_M))
+            .flatten()
+            .unwrap_or_else(|| rand01(h, 0) * std::f32::consts::TAU);
+        out.push(FurnitureInstance {
+            x,
+            z,
+            yaw,
+            kind,
+            luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
+            paint: palette::FURNITURE,
+        });
+    }
+    out
 }
 
 /// Merge a cell's furniture into one group's meshes, each no larger than
