@@ -547,6 +547,21 @@ fn spawn_geometry_task(
                                         );
                                         cell_places.surveyed.1 = placed.len();
                                         items.extend(placed);
+                                        // …and the surveyed boundaries, which are
+                                        // lines rather than point props and so get
+                                        // their own builder — one box per surveyed
+                                        // segment, in the same group and material
+                                        // as everything above.
+                                        let lines = crate::systems::surveyed::surveyed_lines(
+                                            &surveyed,
+                                            cell.0,
+                                            cell.1,
+                                            tile_m,
+                                        );
+                                        cell_places.surveyed.2 = lines.len();
+                                        meshes.extend(furniture::build_line_meshes(
+                                            &lines, mesh_bytes,
+                                        ));
                                         meshes.extend(furniture::build_furniture_meshes(
                                             &items, mesh_bytes,
                                         ));

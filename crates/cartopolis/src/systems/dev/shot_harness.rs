@@ -556,6 +556,8 @@ pub struct ShotMetrics {
     /// and no lighting is exactly what a working map looks like.
     pub surveyed_trees: usize,
     pub surveyed_props: usize,
+    /// Surveyed fences, walls and hedges in the loaded cells.
+    pub surveyed_lines: usize,
     /// Drawn buildings whose BAG facts were found, and drawn buildings. See
     /// `lod22::DatedCount`: a ratio near zero over the Netherlands means the join
     /// is broken — most likely the served meshes and the client disagree about
@@ -737,7 +739,7 @@ alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -2345,6 +2347,7 @@ pub fn drive_capture(
             bag_berths: readouts.bag.berths().len(),
             surveyed_trees: readouts.places.surveyed().0,
             surveyed_props: readouts.places.surveyed().1,
+            surveyed_lines: readouts.places.surveyed().2,
             lod22_dated: readouts.lod22.dated().0,
             lod22_elements: readouts.lod22.dated().1,
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
@@ -2732,6 +2735,7 @@ mod tests {
             bag_berths: 0,
             surveyed_trees: 0,
             surveyed_props: 0,
+            surveyed_lines: 0,
             lod22_dated: 0,
             lod22_elements: 0,
             grass_slots: 0,

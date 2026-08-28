@@ -25,7 +25,7 @@
 
 use crate::platform::{http, storage};
 use crate::systems::coverage::CoverageSlot;
-use crate::systems::furniture::{FurnitureInstance, FurnitureKind};
+use crate::systems::furniture::{FurnitureInstance, FurnitureKind, LineKind, SurveyedLine};
 use crate::systems::osm_buildings::tdbag_url;
 use crate::systems::scatter::TreeInstance;
 use cartopolis_core::world::tile_to_lat_lng;
@@ -78,6 +78,10 @@ const PROP_KINDS: [FurnitureKind; 7] = [
     FurnitureKind::Cabinet,
 ];
 
+/// The linear forms, in wire order. Mirrors `LINE_KINDS` in
+/// `tools/bgt_objects.py` — **append, never renumber**.
+const LINE_KINDS: [LineKind; 3] = [LineKind::Fence, LineKind::Wall, LineKind::Hedge];
+
 /// One cell's surveyed objects, still in lat/lng as the host sent them.
 #[derive(Clone, Debug, Default)]
 pub struct SurveyedCell {
@@ -85,6 +89,9 @@ pub struct SurveyedCell {
     pub trees: Vec<(f64, f64)>,
     /// Street objects: position and form.
     pub props: Vec<(f64, f64, FurnitureKind)>,
+    /// Boundaries — fences, walls, hedges — as the polylines they were surveyed
+    /// as, with their form.
+    pub lines: Vec<(LineKind, Vec<(f64, f64)>)>,
 }
 
 /// Parse a cell file: `{"trees":[[lat,lng],…],"props":[[lat,lng,kind],…]}`.
@@ -95,6 +102,8 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
         trees: Vec<(f64, f64)>,
         #[serde(default)]
         props: Vec<(f64, f64, usize)>,
+        #[serde(default)]
+        lines: Vec<(usize, Vec<(f64, f64)>)>,
     }
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
     Ok(SurveyedCell {
@@ -103,6 +112,14 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
             .props
             .into_iter()
             .filter_map(|(lat, lng, k)| PROP_KINDS.get(k).map(|&kind| (lat, lng, kind)))
+            .collect(),
+        lines: wire
+            .lines
+            .into_iter()
+            // A one-point line is not a line. The extractor does not emit them,
+            // and a truncated cache entry can.
+            .filter(|(_, pts)| pts.len() >= 2)
+            .filter_map(|(k, pts)| LINE_KINDS.get(k).map(|&kind| (kind, pts)))
             .collect(),
     })
 }
@@ -182,6 +199,31 @@ pub fn surveyed_trees(
     crate::systems::scatter::surveyed_trees(&points, seed)
 }
 
+/// This cell's surveyed boundaries, in the cell's local metre frame.
+///
+/// A line is kept only if **every** vertex falls inside the cell. The alternative
+/// — dropping the outside ones and joining what is left — would run a fence
+/// straight across whatever lies between them, and a boundary that crosses a cell
+/// edge is already drawn whole by the cell that owns its first point.
+#[must_use]
+pub fn surveyed_lines(cell: &SurveyedCell, cx: i64, cy: i64, tile_m: f32) -> Vec<SurveyedLine> {
+    cell.lines
+        .iter()
+        .filter_map(|(kind, pts)| {
+            let local: Vec<[f32; 2]> = pts
+                .iter()
+                .filter_map(|&(lat, lng)| {
+                    to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| [x, z])
+                })
+                .collect();
+            (local.len() == pts.len() && local.len() >= 2).then_some(SurveyedLine {
+                points: local,
+                kind: *kind,
+            })
+        })
+        .collect()
+}
+
 /// This cell's surveyed street objects, oriented against the tile's own streets.
 #[must_use]
 pub fn surveyed_props(
@@ -221,6 +263,48 @@ mod tests {
     /// A host running a newer extractor sends a form this build has no shape for.
     /// Dropping it is the whole point — clamping to the last known kind would put
     /// a cabinet wherever the next form is meant to stand.
+    #[test]
+    fn parses_boundary_lines_and_maps_their_forms() {
+        let cell = parse_surveyed_cell(
+            r#"{"lines":[[0,[[53.2194,6.5665],[53.2195,6.5666]]],
+                         [2,[[53.2196,6.5667],[53.2197,6.5668],[53.2198,6.5669]]]]}"#,
+        )
+        .expect("valid cell");
+        assert_eq!(cell.lines[0].0, LineKind::Fence);
+        assert_eq!(cell.lines[1].0, LineKind::Hedge);
+        assert_eq!(cell.lines[1].1.len(), 3);
+    }
+
+    /// A line with one point is not a line — the extractor never writes one, and a
+    /// truncated cache entry can.
+    #[test]
+    fn a_degenerate_line_is_dropped() {
+        let cell =
+            parse_surveyed_cell(r#"{"lines":[[0,[[53.2,6.5]]],[1,[]]]}"#).expect("valid cell");
+        assert!(cell.lines.is_empty());
+    }
+
+    /// A boundary is kept only if every vertex is inside the cell. Joining the
+    /// survivors of one that leaves would run a fence straight across whatever
+    /// lies between them.
+    #[test]
+    fn a_line_leaving_the_cell_is_dropped_whole() {
+        let (cx, cy) = (8490, 5320);
+        let (north, west) = tile_to_lat_lng(cx, cy, BGT_ZOOM);
+        let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, BGT_ZOOM);
+        let inside = ((north + south) / 2.0, (west + east) / 2.0);
+        let cell = SurveyedCell {
+            lines: vec![
+                (LineKind::Wall, vec![inside, (inside.0 + 1e-5, inside.1)]),
+                (LineKind::Wall, vec![inside, (north + 0.01, inside.1)]),
+            ],
+            ..SurveyedCell::default()
+        };
+        let built = surveyed_lines(&cell, cx, cy, 1500.0);
+        assert_eq!(built.len(), 1, "only the wholly-inside line survives");
+        assert_eq!(built[0].points.len(), 2);
+    }
+
     #[test]
     fn an_unknown_form_is_dropped_not_clamped() {
         let cell = parse_surveyed_cell(r#"{"props":[[53.2,6.5,0],[53.2,6.5,99]]}"#).expect("valid");

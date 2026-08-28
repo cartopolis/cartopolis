@@ -73,6 +73,27 @@ generated ones. Two small additions were all it took:
 `FurnitureKind::Lamp` is new — a 4 m column with the head on a short bracket, so
 it reads as a street light rather than as a post from any distance.
 
+The **boundaries** — fences, walls and hedges — needed a builder of their own,
+because they are lines and everything else here is a point. `build_line_meshes`
+stands **one box per surveyed segment**, at that segment's own length. Walking
+each line in fixed steps was the obvious alternative and is both dearer and worse:
+dearer because the survey's segments average 6.4 m over Groningen, so a 2 m step
+would triple the box count for the same fence; worse because a fixed step cannot
+land on a corner, so every bend gains a gap on the outside and an overlap on the
+inside.
+
+Hedges are surveyed as *areas*, and the extractor reduces each to the line down
+its middle — the polygon's principal axis through its centroid, cut at its
+extremes. Laying boxes round a hedge's outline would draw every hedge as a hollow
+rectangle of hedge. `Tone::Foliage` is new for them, and it is `palette::CANOPY`
+so a clipped hedge is recognisably the same substance as the tree crowns above it.
+
+None of the boundaries are solid. A cell holds ~18 km of them at the worst, which
+is thousands of collider polygons where the existing index takes circles for props
+and footprints for buildings — the same call `moorings` makes about boats, for the
+same reason, and the same one to revisit if walking through a garden wall starts
+to matter more than the cost.
+
 **Solid and interactable stopped being the same list.** Every furniture instance
 used to become both a collider and a prompt, which was fine while the only source
 was `pois` — a layer of things people visit. A city's worth of lampposts breaks
@@ -87,11 +108,13 @@ that: a column is firmly in the way and there is nothing whatever to do with one
   it for everywhere that is not the Netherlands. It is the single biggest
   remaining upgrade available from this dataset: real pavements, kerbs and
   carriageway edges at 20 cm.
-- **`scheiding_lijn`/`scheiding_vlak`** is surveyed fencing and walling, and there
-  is no form to draw a fence with yet — it is a line, and everything here is a
-  point prop.
-- **`vegetatieobject_vlak`** is mostly hedges (853 in one Groningen page). Same
-  problem: an area, not a point.
+- **`scheiding_vlak`** is the boundaries that were surveyed as areas rather than
+  lines. Its `type` is empty on every feature seen so far, so there is nothing to
+  say whether one is a wall, a bank or a planter.
+- **The bank protections** in `scheiding_lijn` — `walbescherming`, `damwand`,
+  `kademuur` — are dropped on purpose. They are retaining structures at the
+  water's edge, and drawing them as walls would stand a metre of masonry along
+  every canal in the city, on the side the map already draws as a bank.
 - `slagboom`, `fietsenrek`, `hectometerpaal` and the traffic-signal posts are
   real and surveyed, and there is no form here that is honestly them. The rule the
   furniture table and the tree scatter already follow — an unstyled thing beats a

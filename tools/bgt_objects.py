@@ -27,19 +27,25 @@ Collections read, and what each becomes on the client:
   * `straatmeubilair` — benches, shelters, picnic tables, artworks, play
     equipment, advertising columns and payment machines, mapped onto the forms
     `crates/geo/src/furniture.rs` can already build.
+  * `scheiding_lijn` — fences, walls and noise barriers, as lines the client lays
+    panels along.
+  * `vegetatieobject_vlak` (`plus_type = haag`) — hedges. Surveyed as areas and
+    reduced here to the line down the middle, because a run of boxes laid round a
+    hedge's outline draws a hollow rectangle of hedge.
 
 What is deliberately *not* read, and why: `wegdeel` and the terrain parts are the
 road and ground surfaces, and taking those would mean replacing the map's own
 tessellated geometry rather than adding to it — a different and much larger
 change, and one the OSM path would still have to exist alongside for everywhere
-that is not the Netherlands. `scheiding_lijn` is real surveyed fencing and has no
-form to draw it with yet. See `docs/notes/surveyed-street-objects.md`.
+that is not the Netherlands. See `docs/notes/surveyed-street-objects.md`.
 
-Wire format per cell — `props` is `[lat, lng, kind]`, `kind` indexing PROP_KINDS:
+Wire format per cell — `props` is `[lat, lng, kind]` indexing PROP_KINDS, `lines`
+is `[kind, [[lat, lng], …]]` indexing LINE_KINDS:
 
     bgt/{14}/{x}/{y}.json
     {"trees": [[53.21940, 6.56650], ...],
-     "props": [[53.21941, 6.56652, 0], ...]}
+     "props": [[53.21941, 6.56652, 0], ...],
+     "lines": [[0, [[53.2194, 6.5665], [53.2195, 6.5666]]], ...]}
 
 Coordinates stay lat/lng like every other pipeline here; the client turns them
 into tile-local metres, which is the frame `furniture.rs` and `scatter.rs`
@@ -82,6 +88,28 @@ ATTRIBUTION = "Street objects © Kadaster BGT via PDOK (open data)"
 PROP_KINDS = ["lamp", "bench", "shelter", "picnic_table", "artwork", "swing",
               "cabinet"]
 _KIND_IX = {name: i for i, name in enumerate(PROP_KINDS)}
+
+#: Linear forms, in wire order. Mirrored by `LINE_KINDS` in `systems::surveyed`.
+LINE_KINDS = ["fence", "wall", "hedge"]
+_LINE_IX = {name: i for i, name in enumerate(LINE_KINDS)}
+
+#: `scheiding_lijn.type` -> our linear form.
+#:
+#: The bank protections — `walbescherming`, `damwand`, `kademuur` — are left out
+#: deliberately. They are real and surveyed, and they are retaining structures at
+#: the water's edge: drawing them as walls would stand a metre of masonry along
+#: every canal, on the side the map already draws as a bank.
+LINE_TYPE_FORM = {
+    "hek": "fence",
+    "draadraster": "fence",
+    "muur": "wall",
+    "geluidsscherm": "wall",
+}
+
+#: How far apart panel instances are laid along a line, metres. Each instance is
+#: one box of the same length, so this is also the panel length — a shorter step
+#: is a smoother curve and proportionally more objects.
+LINE_STEP_M = 2.0
 
 # BGT `plus_type` -> our form. Anything unlisted is dropped rather than given a
 # nearest-looking shape: the same "an unstyled polygon beats a wrongly styled
@@ -176,6 +204,84 @@ def items(collection, bbox):
               f"area is incomplete.", file=sys.stderr)
 
 
+def line_points(geom):
+    """A (Multi)LineString's vertices as [(lat, lng), …] per part."""
+    if not geom:
+        return []
+    t, coords = geom.get("type"), geom.get("coordinates") or []
+    parts = [coords] if t == "LineString" else coords if t == "MultiLineString" else []
+    out = []
+    for part in parts:
+        pts = [(round(p[1], 7), round(p[0], 7)) for p in part if len(p) >= 2]
+        if len(pts) >= 2:
+            out.append(pts)
+    return out
+
+
+def hedge_centreline(geom):
+    """A hedge polygon reduced to the line down its middle.
+
+    A hedge is surveyed as an area and drawn as a run of boxes, so what the client
+    needs is a spine, not an outline — laying panels round the outline would draw
+    every hedge as a hollow rectangle of hedge.
+
+    The spine is the polygon's principal axis: the direction its points vary in
+    most, taken through their centroid and cut at their extremes. That is exactly
+    right for the long thin strip a hedge almost always is, and degrades to an
+    arbitrary diagonal for the rare blobby one — which is a worse hedge, not a
+    wrong place.
+    """
+    rings = []
+    t, coords = geom.get("type"), geom.get("coordinates") or []
+    if t == "Polygon":
+        rings = coords[:1]
+    elif t == "MultiPolygon":
+        rings = [poly[0] for poly in coords if poly]
+    out = []
+    for ring in rings:
+        pts = [(p[0], p[1]) for p in ring if len(p) >= 2]
+        if len(pts) < 3:
+            continue
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        # Covariance of the ring about its centroid; the principal axis is the
+        # eigenvector of the larger eigenvalue, which for a 2x2 symmetric matrix
+        # is one closed-form line rather than a numeric solve.
+        sxx = sum((p[0] - cx) ** 2 for p in pts)
+        syy = sum((p[1] - cy) ** 2 for p in pts)
+        sxy = sum((p[0] - cx) * (p[1] - cy) for p in pts)
+        theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+        ux, uy = math.cos(theta), math.sin(theta)
+        ts = [(p[0] - cx) * ux + (p[1] - cy) * uy for p in pts]
+        lo, hi = min(ts), max(ts)
+        # In degrees; a hedge shorter than roughly a metre is not worth an object.
+        if (hi - lo) < 1.0e-5:
+            continue
+        a = (round(cy + lo * uy, 7), round(cx + lo * ux, 7))
+        b = (round(cy + hi * uy, 7), round(cx + hi * ux, 7))
+        out.append([a, b])
+    return out
+
+
+def collect_lines(bbox, cells, cell_of):
+    """Fences, walls and hedges, as polylines the client lays panels along."""
+    n = 0
+    for feat in items("scheiding_lijn", bbox):
+        form = LINE_TYPE_FORM.get((feat.get("properties") or {}).get("type"))
+        if not form:
+            continue
+        for pts in line_points(feat.get("geometry")):
+            cell_of(pts[0])["lines"].append([_LINE_IX[form], [list(p) for p in pts]])
+            n += 1
+    for feat in items("vegetatieobject_vlak", bbox):
+        if (feat.get("properties") or {}).get("plus_type") != "haag":
+            continue
+        for pts in hedge_centreline(feat.get("geometry") or {}):
+            cell_of(pts[0])["lines"].append([_LINE_IX["hedge"], [list(p) for p in pts]])
+            n += 1
+    return n
+
+
 def point_of(feat):
     """A feature's (lat, lng) — its first coordinate, which for these point
     collections is its only one."""
@@ -194,7 +300,8 @@ def build(rd_bbox, out_dir, name):
     cells = {}
 
     def cell_of(at):
-        return cells.setdefault(lat_lng_to_tile(*at), {"trees": [], "props": []})
+        return cells.setdefault(lat_lng_to_tile(*at),
+                                {"trees": [], "props": [], "lines": []})
 
     print("bomen…", file=sys.stderr)
     n_trees = 0
@@ -218,8 +325,12 @@ def build(rd_bbox, out_dir, name):
             cell_of(at)["props"].append([at[0], at[1], _KIND_IX[form]])
             n_props += 1
 
+    print("hekken, muren en hagen…", file=sys.stderr)
+    n_lines = collect_lines(bbox, cells, cell_of)
+
     bdir = os.path.join(out_dir, "bgt", str(CACHE_ZOOM))
-    written = {k: v for k, v in cells.items() if v["trees"] or v["props"]}
+    written = {k: v for k, v in cells.items()
+               if v["trees"] or v["props"] or v["lines"]}
     for (cx, cy), cell in written.items():
         _write_json(os.path.join(bdir, str(cx), f"{cy}.json"), cell)
     _write_json(os.path.join(out_dir, "bgt", "coverage.json"), {
@@ -227,12 +338,14 @@ def build(rd_bbox, out_dir, name):
         "attribution": ATTRIBUTION, "source": "Kadaster BGT via PDOK OGC API",
         "bbox_rd": list(rd_bbox),
         "kinds": PROP_KINDS,
+        "line_kinds": LINE_KINDS,
         "cells": sorted([cx, cy] for (cx, cy) in written),
         "tree_count": n_trees,
         "prop_count": n_props,
+        "line_count": n_lines,
     })
-    print(f"\nDone: {n_trees} surveyed trees, {n_props} street objects "
-          f"across {len(written)} cells.")
+    print(f"\nDone: {n_trees} surveyed trees, {n_props} street objects, "
+          f"{n_lines} fences, walls and hedges across {len(written)} cells.")
     print(f"Output: {out_dir}/bgt/{CACHE_ZOOM}/  +  {out_dir}/bgt/coverage.json")
 
 
