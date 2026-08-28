@@ -46,10 +46,10 @@ pub use gui::{
 };
 pub use map::{
     atmosphere_patch, building_facts, building_windows, coverage, globe, globe_ocean,
-    globe_weather, grass, height, lod22, map_geometry, map_stream, osm_buildings, render_scale,
-    rendering, road_depth, sky, sky_dome, stream_ledger, street_detail, street_furniture,
-    street_labels, surveyed, tall_structures, terrain, tile_loader, tile_source, vegetation, water,
-    weather, world_places,
+    globe_weather, grass, height, lod22, lod3, map_geometry, map_stream, osm_buildings,
+    render_scale, rendering, road_depth, sky, sky_dome, stream_ledger, street_detail,
+    street_furniture, street_labels, surveyed, tall_structures, terrain, tile_loader, tile_source,
+    vegetation, water, weather, world_places,
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,

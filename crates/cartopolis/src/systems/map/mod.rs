@@ -10,6 +10,7 @@ pub mod globe_weather;
 pub mod grass;
 pub mod height;
 pub mod lod22;
+pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;
 pub mod osm_buildings;
