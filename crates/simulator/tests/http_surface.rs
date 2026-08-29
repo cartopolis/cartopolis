@@ -352,6 +352,70 @@ async fn a_player_cannot_reach_the_admin_api() {
     assert_eq!(status, 401);
 }
 
+/// `/api/login` is the player's way back in: an already-registered account signs
+/// in with its password and holds an ordinary session — enough for the
+/// `require_session` routes (claiming a house), and still nothing on the admin
+/// surface.
+#[tokio::test]
+async fn a_player_can_sign_in_and_hold_a_session() {
+    let (handle, _dir) = server().await;
+    let base = http_base(&handle);
+
+    let (status, body) = api(
+        "POST",
+        format!("{base}/api/login"),
+        None,
+        Some(serde_json::json!({"username": "player", "password": "playerpw"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let token = body["token"].as_str().expect("a session token").to_string();
+
+    // The session works where any session works…
+    let (status, _) = api(
+        "GET",
+        format!("{base}/api/houses/mine"),
+        Some(token.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "a player session must reach the house routes");
+
+    // …and not where only an admin's does.
+    let (status, _) = api(
+        "GET",
+        format!("{base}/api/admin/accounts"),
+        Some(token.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "a player session must not open the admin surface"
+    );
+
+    // A wrong password is refused, and sign-out revokes the session.
+    let (status, _) = api(
+        "POST",
+        format!("{base}/api/login"),
+        None,
+        Some(serde_json::json!({"username": "player", "password": "wrong"})),
+    )
+    .await;
+    assert_eq!(status, 401);
+
+    let (status, _) = api(
+        "POST",
+        format!("{base}/api/logout"),
+        Some(token.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = api("GET", format!("{base}/api/houses/mine"), Some(token), None).await;
+    assert_eq!(status, 401, "a revoked session must be dead");
+}
+
 /// The last enabled admin cannot demote, disable or delete themselves. Locking
 /// everyone out of a running server is only repairable with shell access to the
 /// box it runs on.

@@ -96,6 +96,8 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/houses/search", get(search_houses))
         .route("/api/houses/claim", post(claim_house))
         .route("/api/houses/mine", get(my_house).delete(release_house))
+        .route("/api/login", post(player_login))
+        .route("/api/logout", post(logout))
         .route("/api/admin/login", post(login))
         .route("/api/admin/logout", post(logout))
         .route("/api/admin/me", get(me))
@@ -252,6 +254,10 @@ async fn registration_status(State(state): State<HttpState>) -> Json<serde_json:
         // So the "check your inbox" screen can say how long the link is good for
         // without the number living in two repositories.
         "verification_valid_hours": registration::VERIFICATION_TTL.as_secs() / 3600,
+        // Read by the sign-in screen to decide whether to offer the way to the
+        // claim-your-house page at all — a link on a server that does not hand
+        // out houses would lead to a refusal.
+        "houses_open": state.config.house_claims_open,
     }))
 }
 
@@ -682,15 +688,14 @@ struct LoginRequest {
     password: String,
 }
 
-/// Sign in to the admin API. Issues a token from the *same* session store the
-/// game uses, so there is one notion of "signed in" per account.
-async fn login(
-    State(state): State<HttpState>,
-    Json(body): Json<LoginRequest>,
-) -> ApiResult<Json<serde_json::Value>> {
+/// The password check both login routes share.
+///
+/// `lookup_credential` already filters `disabled = 1`, so a disabled account
+/// gets the same answer as an unknown one.
+async fn check_password_login(state: &HttpState, body: &LoginRequest) -> ApiResult<Uuid> {
     // Read the row, drop the guard, then hash — the module note in `auth` explains
     // why an argon2 verify must never happen with this mutex held.
-    let stored = with_db(&state, |c| auth::lookup_credential(c, &body.username))?;
+    let stored = with_db(state, |c| auth::lookup_credential(c, &body.username))?;
     let unauthorized = || {
         ApiError(
             StatusCode::UNAUTHORIZED,
@@ -698,26 +703,57 @@ async fn login(
         )
     };
     let stored = stored.ok_or_else(unauthorized)?;
-    let principal = stored.principal;
-    if !auth::verify_password_bounded(body.password, stored.phc).await {
+    if !auth::verify_password_bounded(body.password.clone(), stored.phc).await {
         return Err(unauthorized());
     }
     // The password is proved before the account's state is mentioned, for the
-    // reason `net::authenticate` documents. It cannot arise here in practice — a
-    // registration is never an admin — but the rule is about the order, and a
-    // rule with an exception in it is not one.
+    // reason `net::authenticate` documents.
     if stored.email_pending {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "confirm your email address first — check your inbox for the link".into(),
         ));
     }
+    Ok(stored.principal)
+}
+
+/// Sign in to the admin API. Issues a token from the *same* session store the
+/// game uses, so there is one notion of "signed in" per account.
+async fn login(
+    State(state): State<HttpState>,
+    Json(body): Json<LoginRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let principal = check_password_login(&state, &body).await?;
     // Authenticated, but the API is admin-only: a player's correct password gets
     // the same answer as a wrong one, so this endpoint cannot be used to tell
     // which usernames exist.
     if !with_db(&state, |c| auth::is_admin(c, principal))? {
-        return Err(unauthorized());
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "wrong username or password".into(),
+        ));
     }
+    let token = state.sessions.issue(principal, &body.username);
+    Ok(Json(json!({
+        "token": token,
+        "principal": principal,
+        "username": body.username,
+    })))
+}
+
+/// Sign in as a player, for the account pages that are not the game.
+///
+/// Until this route the only ways to hold a session in a browser were the
+/// verification link (spent once, at sign-up) and the admin login (which refuses
+/// players) — so an already-registered person could never reach the
+/// claim-your-house screen again. The token is the ordinary session token, same
+/// store and lifetime as the game's; `/api/houses/*` takes it via
+/// `require_session`, and the admin routes still refuse it.
+async fn player_login(
+    State(state): State<HttpState>,
+    Json(body): Json<LoginRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let principal = check_password_login(&state, &body).await?;
     let token = state.sessions.issue(principal, &body.username);
     Ok(Json(json!({
         "token": token,
