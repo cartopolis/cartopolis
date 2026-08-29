@@ -62,9 +62,9 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //     "ticketsPerDay": 1,      // how many new ones a day
 //     "ship": false }          // merge and deploy finished ones, or stop at review
 
-type Config = { enabled: boolean; ticketsPerDay: number; ship: boolean };
+type Config = { enabled: boolean; ticketsPerDay: number; maxOpen: number; ship: boolean };
 
-const DEFAULTS: Config = { enabled: false, ticketsPerDay: 1, ship: false };
+const DEFAULTS: Config = { enabled: false, ticketsPerDay: 5, maxOpen: 2, ship: false };
 
 async function config(): Promise<Config> {
   try {
@@ -74,6 +74,11 @@ async function config(): Promise<Config> {
       // A quota of 0 is "file nothing", which is a different and useful state
       // from `enabled: false` — it keeps shipping what is already in flight.
       ticketsPerDay: Number.isFinite(raw.ticketsPerDay) ? Math.max(0, Math.floor(raw.ticketsPerDay)) : DEFAULTS.ticketsPerDay,
+      // How many may be open at once, which is a different limit from the daily
+      // one: the watcher builds two at a time and they all branch from the same
+      // `main`, so filing five at once would be five branches racing a moving
+      // base. The day's quota paces the work; this paces the collisions.
+      maxOpen: Number.isFinite(raw.maxOpen) ? Math.max(1, Math.floor(raw.maxOpen)) : DEFAULTS.maxOpen,
       ship: Boolean(raw.ship),
     };
   } catch {
@@ -243,15 +248,28 @@ async function deployMain(issueNumber: number) {
  */
 async function mainVerdict(): Promise<{ sha: string; failed: [string, string][] } | null> {
   const d = await api(`/actions/tasks?limit=50`, {}, MERGE_TOKEN ?? TOKEN);
-  const runs = (d.workflow_runs ?? []).filter((r: any) => r.head_branch === "main" && r.event === "push");
+  // Only the CI workflow. A deploy job that failed says something about the
+  // world outside the repository — a runner without a network, a service that
+  // would not restart — and blocking every ticket on it would be reading "the
+  // publish did not work" as "the code is broken".
+  const runs = (d.workflow_runs ?? []).filter((r: any) => r.head_branch === "main" && r.workflow_id === "ci.yml");
   if (!runs.length) return null;
   const sha = runs[0].head_sha;
   const jobs = runs.filter((r: any) => r.head_sha === sha);
-  if (jobs.some((r: any) => ["waiting", "running", "blocked"].includes(r.status))) return null;
-  return {
-    sha,
-    failed: jobs.filter((r: any) => r.status !== "success").map((r: any) => [r.status, r.name] as [string, string]),
-  };
+
+  // Group by job name and let any successful run clear it: a job re-dispatched
+  // after a runner timeout is the answer, and the failed attempt beside it is
+  // history. Without this a re-run can never turn `main` green again.
+  const byName = new Map<string, string[]>();
+  for (const j of jobs) byName.set(j.name, [...(byName.get(j.name) ?? []), j.status]);
+
+  const failed: [string, string][] = [];
+  for (const [name, states] of byName) {
+    if (states.includes("success")) continue;
+    if (states.some((st) => ["waiting", "running", "blocked"].includes(st))) return null; // still deciding
+    failed.push([states[0] ?? "", name]);
+  }
+  return { sha, failed };
 }
 
 /**
@@ -363,7 +381,9 @@ async function generate(cfg: Config) {
   // nothing is ever filed. `shipReady` re-checks its labels for the same reason.
   const open = await api(`/issues?state=open&type=issues&limit=50`);
   const inFlight = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT));
-  if (inFlight.length) return log(`${inFlight.length} autopilot ticket(s) still open — waiting for #${inFlight[0].number}`);
+  if (inFlight.length >= cfg.maxOpen) {
+    return log(`${inFlight.length} autopilot ticket(s) open (limit ${cfg.maxOpen}) — waiting for #${inFlight[0].number}`);
+  }
 
   let rows: { key: string; source: string; adds: string }[];
   try {
@@ -415,8 +435,60 @@ async function generate(cfg: Config) {
     return;
   }
 
+  // The frontier ran out. That is not "there is no work" — it is the queue
+  // needing to be refilled, which is itself a ticket: read what the registries
+  // publish, check what this world already draws, and propose rows.
+  //
+  // Keyed on how many rows the table has, so the same ask can be made again
+  // after the table grows, and cannot be made twice against the same one.
+  const refill = `frontier-refill-${rows.length}`;
+  if (!(await alreadyFiled(refill))) {
+    const issue = requireIssue(
+      await api(`/issues`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "The frontier is empty — find the next things worth importing",
+          labels: await labelIds([AUTONOMOUS, FILED_BY_AUTOPILOT, ...(cfg.ship ? [SHIP] : [])]),
+          body: [
+            "Every candidate in the frontier table of [`docs/direction.md`](../src/branch/main/docs/direction.md)",
+            "has been filed. This ticket refills it.",
+            "",
+            "The goal is at the top of that file, and it is the filter: a three-dimensional,",
+            "augmented-reality twin of the real world, the Netherlands in the most detail,",
+            "built from data somebody already publishes. So look for **sources**, not features:",
+            "",
+            "- What do PDOK, the Kadaster, CBS, Rijkswaterstaat, the provinces, the",
+            "  municipalities and the water boards publish that this world does not draw yet?",
+            "- What does OpenStreetMap carry that the client ignores — tags already in the",
+            "  vector tiles it streams, layers it never reads?",
+            "- What is registered but invisible: things with a position and no representation.",
+            "",
+            "For each one worth proposing, add a row to the candidates table with the source and",
+            "one line on what it would add. Rules for what goes in:",
+            "",
+            "- **A source, not an idea.** Something that publishes data, with an interface.",
+            "- **Not the maintainer's job.** Nothing whose success is a matter of taste — no",
+            "  colour, lighting or feel work, and nothing that needs a camera or a headset.",
+            "- **Say what it costs** if you can measure it: bytes per cell, or requests per view.",
+            "- Do not touch the goal, the rules, or the list of what is already wired.",
+            "",
+            "Six to ten rows is a good outcome. Fewer, well-checked ones beat a long list of",
+            "sources nobody confirmed exists — and if a candidate turns out not to be real, that",
+            "is worth saying in the pull request rather than filing it as a row.",
+            "",
+            `<sub>Filed by the autopilot. <!-- autopilot:${refill} --></sub>`,
+          ].join("\n"),
+        }),
+      }),
+    );
+    log(`filed #${issue.number}: refill the frontier (${rows.length} rows exhausted)`);
+    state.filed++;
+    await saveState(state);
+    return;
+  }
+
   await saveState(state);
-  log("nothing left on the frontier that has not been filed");
+  log("nothing left on the frontier, and the refill ticket is already open");
 }
 
 
