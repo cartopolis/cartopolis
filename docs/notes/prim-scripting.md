@@ -1,6 +1,6 @@
 ---
 topic: prim-scripting
-triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "vf.", "sandbox", "fuel", "on_touch", vfSetGeo, vfSensor, vfParticles]
+triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "vf.", "sandbox", "fuel", "on_touch", vfSetGeo, vfSensor, vfParticles, vfSend, on_message]
 updated: 2026-08-29
 ---
 
@@ -131,7 +131,8 @@ second owner and stays where a script puts it.
 anchor its own call.** `vfSetGeo(lat, lng)` writes the anchor directly — which is
 the authoritative value, so it survives a re-anchor, a reconnect and a restart —
 and `vfGeoScale(lat)` hands back metres per degree so a script can turn a radius
-into an offset. `content/firebird.lua` flies a 180 m circle with the two of them.
+into an offset. The firebird in the `firebird` content pack flies a 180 m circle
+with the two of them.
 
 That is a smaller change than the one this note used to propose (move the
 Mercator projection into `cartopolis_core` and have the sim rewrite `geo` from
@@ -166,6 +167,37 @@ one tick old, exactly as `vfGetPos` always has. An avatar whose client has not
 sent a fix is **not seen**, which is the honest answer rather than a guessed
 position. And the range is capped at `SENSOR_MAX_RANGE_M` however wide a script
 asks, because the gathering is what costs, not the question.
+
+## One prim reaches another only over a channel
+
+Every `vf` call acts on the script's own prim — `prim_id` is captured by the host
+and is not an argument — so a button cannot reach the thing it controls. That is
+the *authorisation surface* working as designed (there is no argument an author
+can supply that touches somebody else's object) and it also meant a button was
+impossible to build.
+
+`vfSend(channel, text)` and `on_message(channel, text, sender)` are the way
+through, with `vfListen(channel)` to opt in. Four properties, each chosen against
+an alternative:
+
+- **A message never leaves the host thread.** It is not a `ScriptCommand`: the
+  simulation has nothing to do with it, and routing a button press out to the
+  tick loop and back would put it behind the world's write lock for no reason.
+- **Delivery is after the whole round-robin pass, so it lands next tick.**
+  Delivering inline would make "does this listener see it this tick or next?"
+  depend on where the scheduler's cursor happened to be — a script's behaviour
+  would change with the number of other scripts in the region.
+- **Listening is opt-in.** Without it every send would queue an event on every
+  script in the region, so one chatty prim would cost every other one work.
+- **A script does not hear itself**, which is the one deviation from Second Life
+  here. Listening on the channel you send on is the ordinary shape — the beacon
+  and the firebird both do it — and hearing yourself makes that an immediate
+  feedback loop the author did not write.
+
+Channels are scoped to the **region**, because one that silently crossed would
+let an estate's button work its neighbour's door. `MAX_MESSAGES_PER_TICK` bounds a
+sender for a different reason than `MAX_COMMANDS_PER_TICK` does: a command costs
+one wire frame, a message costs an event queued on every listener.
 
 ## The unit of accounting is the region
 

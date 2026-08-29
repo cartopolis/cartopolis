@@ -74,9 +74,39 @@ script's load budget would be the wrong trade, so a 200 here means "stored", and
 the script console in a connected viewer is still the only place the answer
 appears. `PUT /prims/{id}/script` says so in its own reply.
 
+## Content the server carries
+
+`POST /api/admin/content/{name}` installs a named piece of world the *simulator*
+defines — `crates/simulator/src/content.rs`, with the Luau `include_str!`-ed from
+`crates/simulator/content/`.
+
+It started the other way round: a `.lua` file in the repository and a Python
+script that read it, built a prim specification and posted it. That is wrong
+twice over. The definition of a demo — which prims, where, what shape, which
+script — is a statement about this world, so it belongs to the thing that owns
+the world; and **a deployed simulator has no repository beside it**, so content
+kept in the tree is content a running server cannot install.
+
+Two rules it follows.
+
+A pack is a *canned request*: each prim is a `PrimSpec`, the same type an HTTP
+body deserialises into, and installing one runs the same handler an author's
+`POST` does. There is one code path that creates a prim, so a pack cannot drift
+from it or acquire abilities the API does not have.
+
+Installing twice **replaces**, matching on `prims.origin`
+(`V12__prim_origin.sql`). The first version matched the prim *names* the pack
+declares and the pack broke it itself: the beacon's script renames it to whatever
+its label currently says, so a reinstall found nothing called "Beacon", left the
+old one standing and added another — measured, three prims after two installs. A
+script may rewrite any field a client can see; provenance is a fact about the row
+and is not one of them. `origin` is deliberately not in `PrimDto`: no client has
+any use for it.
+
 ## The tool
 
 `tools/author.py` is a convenience over `curl` and nothing more — the API is the
 product. Its `--print` flag shows the request without sending it or signing in,
-which is the fastest way to write one of these by hand. `tools/author.py
-firebird` installs the worked example (`content/firebird.lua`).
+which is the fastest way to write one of these by hand. `tools/author.py install
+firebird` is one POST with a name in it; everything about *what* is installed is
+decided in the simulator.

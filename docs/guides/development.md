@@ -85,18 +85,28 @@ export CARTO_SIM=http://127.0.0.1:8080
 export CARTO_ADMIN_USER=dev CARTO_ADMIN_PASSWORD=...
 
 tools/author.py regions                 # ids, anchors, prim/script budgets
-tools/author.py firebird                # the worked example, over Groningen
+tools/author.py content                 # what the server can install
+tools/author.py install firebird        # the worked example, over Groningen
 tools/author.py create --lat 53.2194 --lng 6.5665 --alt 20 \
     --shape sphere --particles '{"color_start": [0.2, 0.6, 4.0]}'
-tools/author.py script 3 content/mine.lua
+tools/author.py script 3 mine.lua
 tools/author.py --print patch 3 --color 1,0.4,0.1   # show the request, send nothing
 ```
 
-`content/firebird.lua` is the worked example for the script API: it flies a
-circle with `vfSetGeo`, watches for company with `vfSensor`, burns with
-`vfParticles` and goes off with `vfParticleBurst`. The in-editor reference is
-generated from `cartopolis_core::SCRIPT_API`, which is the catalogue the server
-is tested against — so it cannot drift from what a script can actually call.
+The **content the server installs is the server's**, not the tool's:
+`crates/simulator/src/content.rs` defines each pack and embeds its Luau from
+`crates/simulator/content/` at compile time, because a deployed simulator has no
+repository beside it. Installing a pack twice replaces what it installed.
+
+The `firebird` pack is the worked example for the script API and is two prims: a
+burning thing that flies a circle with `vfSetGeo`, watches for company with
+`vfSensor` and goes off with `vfParticleBurst`, and a beacon on the Grote Markt
+that calls it in and sends it back out over `vfSend` / `on_message` — which is
+the only way one prim can reach another. Walk up to the beacon and press E.
+
+The in-editor reference is generated from `cartopolis_core::SCRIPT_API`, which is
+the catalogue the server is tested against — so it cannot drift from what a
+script can actually call.
 
 A 200 from the script route means *stored*, not *compiled*: the host compiles on
 its own thread and reports through `ScriptOutput` on the wire, so the script
@@ -111,7 +121,7 @@ console in a connected viewer is still where the answer appears.
 | `crates/simulator/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs`, `http.rs` + `authoring.rs` (the admin/authoring API) |
 | `crates/cartopolis/` | Bevy client — everything below |
 | `crates/big_space/` | Vendored floating-origin fork; re-sync `bevy_compat.rs` on every Bevy bump |
-| `content/` | World content authored as files rather than by hand — Luau scripts installed with `tools/author.py` |
+| `crates/simulator/content/` | Luau for the content packs the server carries, embedded into the binary by `content.rs` |
 
 Inside the client, `components.rs` / `resources.rs` hold the ECS types and
 `systems/` is one file per concern, grouped into folders and registered in ordered
