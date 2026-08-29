@@ -558,6 +558,14 @@ pub struct ShotMetrics {
     pub surveyed_props: usize,
     /// Surveyed fences, walls and hedges in the loaded cells.
     pub surveyed_lines: usize,
+    /// Ground-floor rooms standing near the avatar (`systems::interiors`). A door
+    /// with no room behind it is a hole in the world, so this is read against the
+    /// doors: zero here with a building in front of you means walking in would
+    /// put you inside a shell whose walls are culled away.
+    pub interior_rooms: usize,
+    /// Doors drawn on facades from the register's entrance points
+    /// (`lod22::DoorCount`).
+    pub building_doors: usize,
     /// Surveyed paved surfaces — pavements, cycle paths, parking bays, verges.
     /// Zero over a covered city means the paving never arrived, and the street
     /// then looks exactly like the one this client always drew.
@@ -743,7 +751,7 @@ alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,interior_rooms,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -1987,6 +1995,8 @@ pub struct ShotReadouts<'w, 's> {
     /// The per-cell places store, for the surveyed counts alone — see
     /// `ShotMetrics::surveyed_trees`.
     places: Res<'w, crate::systems::world_places::WorldPlaces>,
+    /// The near-camera interior layer, for its room count alone.
+    interiors: Res<'w, crate::systems::interiors::Interiors>,
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -2353,6 +2363,8 @@ pub fn drive_capture(
             surveyed_props: readouts.places.surveyed().1,
             surveyed_lines: readouts.places.surveyed().2,
             surveyed_paving: readouts.places.surveyed().3,
+            interior_rooms: readouts.interiors.rooms(),
+            building_doors: readouts.lod22.doors(),
             lod22_dated: readouts.lod22.dated().0,
             lod22_elements: readouts.lod22.dated().1,
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
@@ -2742,6 +2754,8 @@ mod tests {
             surveyed_props: 0,
             surveyed_lines: 0,
             surveyed_paving: 0,
+            interior_rooms: 0,
+            building_doors: 0,
             lod22_dated: 0,
             lod22_elements: 0,
             grass_slots: 0,

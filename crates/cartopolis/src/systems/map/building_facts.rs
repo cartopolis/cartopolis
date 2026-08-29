@@ -179,6 +179,18 @@ pub struct BuildingFact {
     /// stands in, if any. Interned per cell — a district covers thousands of
     /// buildings and its name is one string.
     pub district: Option<Arc<str>>,
+    /// The building's own outline, as lat/lng, open (no repeated first point).
+    ///
+    /// The shape the client never had. A 3DBAG building arrives as a triangle
+    /// soup, from which the only footprint recoverable is the **convex hull** —
+    /// right for a rectangle, wrong for every L-shaped building, whose inner
+    /// corner it fills in with a collider nobody can walk through. This is the
+    /// register's own ring.
+    pub footprint: Vec<(f64, f64)>,
+    /// Where this building's addressed units are entered, as lat/lng. The
+    /// register's own points, which is the closest thing to a national
+    /// door-position dataset there is.
+    pub doors: Vec<(f64, f64)>,
 }
 
 /// One addressable unit — the BAG's `verblijfsobject`.
@@ -284,6 +296,10 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
         mcat: Option<String>,
         #[serde(default)]
         district: Option<usize>,
+        #[serde(default)]
+        fp: Vec<(f64, f64)>,
+        #[serde(default)]
+        doors: Vec<(f64, f64)>,
     }
     #[derive(serde::Deserialize)]
     struct WireAddress {
@@ -350,6 +366,10 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
                         .clone()
                 }),
                 district: b.district.and_then(|i| districts.get(i).cloned()),
+                // A ring under three points is not an outline; the extractor does
+                // not write one and a truncated cache entry can.
+                footprint: if b.fp.len() >= 3 { b.fp } else { Vec::new() },
+                doors: b.doors,
             },
         );
     }
@@ -562,6 +582,31 @@ impl BuildingFacts {
 
     pub fn is_empty(&self) -> bool {
         self.buildings.is_empty()
+    }
+
+    /// Every building whose outline starts within `max_m` of a (lat, lng).
+    ///
+    /// Linear over the index — tens of thousands of buildings, walked when the
+    /// avatar has moved fifteen metres rather than per frame, which is a fraction
+    /// of a millisecond in the place it is spent. Distance is measured to the
+    /// outline's **first vertex** rather than to a centroid: a building is metres
+    /// across and this radius is seventy, so the difference cannot change an
+    /// answer that matters, and a centroid would cost a pass over every ring.
+    pub fn near(&self, lat: f64, lng: f64, max_m: f64) -> Vec<&BuildingFact> {
+        const M_PER_DEG: f64 = 111_320.0;
+        let scale = lat.to_radians().cos();
+        let max2 = max_m * max_m;
+        self.buildings
+            .values()
+            .filter(|b| {
+                let Some(&(blat, blng)) = b.footprint.first() else {
+                    return false;
+                };
+                let dy = (blat - lat) * M_PER_DEG;
+                let dx = (blng - lng) * M_PER_DEG * scale;
+                dx * dx + dy * dy <= max2
+            })
+            .collect()
     }
 
     /// The nearest addressed unit to a (lat, lng), within `max_m` metres.

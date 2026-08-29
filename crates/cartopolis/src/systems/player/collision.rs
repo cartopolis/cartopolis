@@ -19,6 +19,15 @@ use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use std::collections::HashMap;
 
+/// Half the width of the gap a door opens in a building's collider, metres.
+///
+/// Generous next to a real door leaf, and deliberately: the register's point is
+/// the *unit's* position rather than the doorway's, so it sits somewhere near the
+/// entrance rather than exactly in it, and a tight gap would be a door you have
+/// to hunt for with the keyboard. Wide enough to walk through at a jog, narrow
+/// enough that a terrace of front doors does not become an open colonnade.
+pub const DOOR_HALF_WIDTH: f32 = 1.1;
+
 /// How far beyond a wall an ejected avatar is placed (metres).
 pub const EJECT_MARGIN: f32 = 1.0;
 
@@ -33,12 +42,33 @@ pub struct Footprint {
     ring: Vec<Vec2>,
     min: Vec2,
     max: Vec2,
+    /// Where this building can be walked through: its entrance points, from the
+    /// register (`building_facts::BuildingFact::doors`).
+    ///
+    /// A doorway is a *hole in the collider*, not a shape in the ring. Cutting a
+    /// notch into the polygon would be the tidy version and it is the wrong one:
+    /// the ring is also what the interior room is built from, and a notched ring
+    /// would put a wedge-shaped gap in the wall of every room. So the polygon
+    /// stays whole and the test below lets the avatar past within
+    /// [`DOOR_HALF_WIDTH`] of a door.
+    doors: Vec<Vec2>,
 }
 
 impl Footprint {
     /// Build a footprint from a ring of world-XZ points (≥ 3), or `None` if the
     /// ring is degenerate.
     pub fn new(ring: Vec<Vec2>) -> Option<Self> {
+        Self::with_doors(ring, &[])
+    }
+
+    /// Build a footprint that can be walked through at the given entrance points.
+    ///
+    /// A door only opens the collider; nothing here decides whether there is
+    /// anything on the other side. That is `systems::interiors`, and the two must
+    /// agree — a doorway into a building with no room is a way to stand inside a
+    /// shell whose walls are culled away, i.e. a hole you fall out of the world
+    /// through, visually.
+    pub fn with_doors(ring: Vec<Vec2>, doors: &[Vec2]) -> Option<Self> {
         if ring.len() < 3 {
             return None;
         }
@@ -48,16 +78,37 @@ impl Footprint {
             min = min.min(*p);
             max = max.max(*p);
         }
-        Some(Self { ring, min, max })
+        Some(Self {
+            ring,
+            min,
+            max,
+            doors: doors.to_vec(),
+        })
+    }
+
+    /// Whether `p` is close enough to one of this building's doors to pass.
+    ///
+    /// Half a doorway either side of the register's point. The point is the
+    /// *unit's* position rather than the door leaf's, so it can sit a metre or so
+    /// inside the wall — which is why this is a radius around it and not a test
+    /// against the wall segment.
+    fn in_a_doorway(&self, p: Vec2) -> bool {
+        self.doors
+            .iter()
+            .any(|d| d.distance_squared(p) <= DOOR_HALF_WIDTH * DOOR_HALF_WIDTH)
     }
 
     fn aabb_contains(&self, p: Vec2) -> bool {
         p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y
     }
 
-    /// Even-odd ray cast: true when `p` is strictly inside the ring.
+    /// Even-odd ray cast: true when `p` is strictly inside the ring — and not
+    /// standing in one of its doorways.
     fn contains(&self, p: Vec2) -> bool {
         if !self.aabb_contains(p) {
+            return false;
+        }
+        if self.in_a_doorway(p) {
             return false;
         }
         let n = self.ring.len();

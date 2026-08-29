@@ -161,6 +161,84 @@ const SHADOW_RADIUS: i64 = 0;
 /// double-sided) if any building renders inside-out.
 const BACKFACE_CULL: bool = true;
 
+/// A drawn door's width, height, and how far it stands off the wall (metres).
+///
+/// The height is the load-bearing one: it must stay under
+/// `building_windows::FIRST_SILL_M`, which is the height below which that shader
+/// paints no windows. A taller door would come out with panes across it.
+const DOOR_WIDTH_M: f32 = 1.1;
+const DOOR_HEIGHT_M: f32 = 2.1;
+const DOOR_PROUD_M: f32 = 0.04;
+
+/// The door's colour, linear RGB with the neutral night-occupancy alpha.
+///
+/// A dark warm brown against pale brick and grey render: the one thing on a
+/// facade that should read as "a way in" from across the street. It is a *vertex*
+/// colour like everything else in this mesh, so it costs no material.
+const DOOR_COLOR: [f32; 4] = [0.115, 0.075, 0.055, 1.0];
+
+/// The point on a ring nearest `p`, and the **outward** normal of the edge it
+/// lies on.
+///
+/// Outward is settled by stepping off the wall and asking whether that lands
+/// outside the ring, rather than by reasoning about which way the ring is wound.
+/// That is deliberate. The first version derived it from the signed area, which
+/// is the tidy answer and was the wrong way round in this frame — where +z runs
+/// *south* — so every door in the city was drawn on the inside of its own wall,
+/// hidden by the shell around it. The count said 113,710 doors and the street
+/// showed none, which is the kind of failure a convention produces and a
+/// measurement does not: a point either is inside the polygon or it is not, on
+/// any winding and on any shape.
+fn nearest_edge_point(ring: &[Vec2], p: Vec2) -> Option<(Vec2, Vec2)> {
+    let mut best: Option<(f32, Vec2, Vec2)> = None;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        let ab = b - a;
+        let len2 = ab.length_squared();
+        if len2 <= f32::EPSILON {
+            continue;
+        }
+        let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+        let at = a + ab * t;
+        let d2 = at.distance_squared(p);
+        if best.is_none_or(|(bd, _, _)| d2 < bd) {
+            best = Some((d2, at, Vec2::new(ab.y, -ab.x) / len2.sqrt()));
+        }
+    }
+    let (_, at, n) = best?;
+    /// How far off the wall the inside/outside probe is taken. Well under a wall's
+    /// thickness and well over the precision of a ring rounded to 1 cm.
+    const PROBE_M: f32 = 0.05;
+    Some((
+        at,
+        if point_in_ring(ring, at + n * PROBE_M) {
+            -n
+        } else {
+            n
+        },
+    ))
+}
+
+/// Even-odd ray cast — the same test `collision::Footprint` uses, kept here
+/// because this crate's copy answers about a bare slice rather than a built
+/// footprint.
+fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[j]);
+        if (a.y > p.y) != (b.y > p.y) {
+            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+            if p.x < x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Marker for spawned LoD2.2 meshes.
 #[derive(Component)]
 pub struct Lod22Mesh;
@@ -220,11 +298,20 @@ type Piece = (Mesh, bool);
 /// completely normal. This is the number that says so.
 type DatedCount = (usize, usize);
 
+/// Doors drawn on a cell's facades, from the register's entrance points.
+///
+/// A count for the same reason every other layer here has one: a door is a small
+/// dark rectangle at the foot of a wall, and "there are none" and "I am not
+/// looking at one" are indistinguishable from any camera. Chasing that difference
+/// with viewpoints is how an afternoon goes.
+type DoorCount = usize;
+
 type Lod22Build = (
     GridCell,
     Vec<Piece>,
     Vec<crate::systems::collision::Footprint>,
     DatedCount,
+    DoorCount,
 );
 
 /// A cell taken off the stream but not fully spawned: the remaining pieces land
@@ -275,6 +362,8 @@ pub struct Lod22Buildings {
     bag_revision: u32,
     /// Per-cell BAG join tally ([`DatedCount`]), summed for `--dump-state`.
     dated: HashMap<(i64, i64), DatedCount>,
+    /// Per-cell tally of doors drawn ([`DoorCount`]).
+    doors: HashMap<(i64, i64), DoorCount>,
     /// Terrain-field revision these cells were built against. The field arrives a
     /// second or two after the anchor, so the first cells are always built on flat
     /// ground and have to be rebuilt onto the measured one.
@@ -306,6 +395,11 @@ impl Lod22Buildings {
             .values()
             .fold((0, 0), |(m, t), (cm, ct)| (m + cm, t + ct))
     }
+
+    /// Doors drawn across the loaded cells. See [`DoorCount`].
+    pub fn doors(&self) -> usize {
+        self.doors.values().sum()
+    }
 }
 
 impl Default for Lod22Buildings {
@@ -323,6 +417,7 @@ impl Default for Lod22Buildings {
             }),
             cells: HashMap::new(),
             dated: HashMap::new(),
+            doors: HashMap::new(),
             no_shadow: HashSet::new(),
             material: None,
             interior_material: None,
@@ -384,6 +479,7 @@ pub fn update_lod22(
         lod.bag_revision = bag_revision;
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.dated.clear();
+        lod.doors.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -406,6 +502,7 @@ pub fn update_lod22(
     if lod.enabled_was && !enabled {
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.dated.clear();
+        lod.doors.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -553,7 +650,7 @@ pub fn update_lod22(
         lod.stream.defer(deferred);
         for (c, built) in done {
             match built {
-                Ok(Some((grid_cell, pieces, footprints, dated))) => {
+                Ok(Some((grid_cell, pieces, footprints, dated, doors))) => {
                     // The whole cell's bookkeeping lands with its first frame:
                     // colliders are cheap CPU state (an avatar can bump into a
                     // building a frame before it is drawn, which beats walking
@@ -564,6 +661,7 @@ pub fn update_lod22(
                     lod.stream.succeeded(&c);
                     lod.cells.insert(c, Vec::new());
                     lod.dated.insert(c, dated);
+                    lod.doors.insert(c, doors);
                     lod.partial = Some(PartialCell {
                         cell: c,
                         grid_cell,
@@ -692,6 +790,7 @@ pub fn update_lod22(
         .collect();
     for c in stale {
         lod.dated.remove(&c);
+        lod.doors.remove(&c);
         if let Some(entities) = lod.cells.remove(&c) {
             for e in entities {
                 lod.stream.retire(e);
@@ -810,6 +909,7 @@ fn build_lod22_from_text(
     let mut struck = 0usize;
     // How many drawn buildings the BAG join reached, and how many were drawn.
     let mut dated = (0usize, 0usize);
+    let mut drawn_doors = 0usize;
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -865,16 +965,73 @@ fn build_lod22_from_text(
         let flat_lin = crate::systems::scatter::srgb_to_linear_f32(FLAT_ROOF_COLOR);
         let flat = [flat_lin[0], flat_lin[1], flat_lin[2], lit];
 
-        // World-XZ position of each vertex (before the cell offset); the hull of
-        // these is the building's footprint no-go polygon.
+        // World-XZ position of each vertex (before the cell offset).
         let world_xz: Vec<Vec2> =
             b.p.iter()
                 .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
                 .collect();
-        if let Some(fp) = crate::systems::collision::Footprint::new(
-            crate::systems::collision::convex_hull_xz(world_xz.clone()),
-        ) {
+        // The register's own outline where we have it, and the convex hull of the
+        // mesh where we do not.
+        //
+        // The hull is what a triangle soup can give and it is wrong for every
+        // building that is not convex: an L-shaped block's hull fills in the inner
+        // corner, so the yard between its wings is a place the avatar cannot walk
+        // and nothing is drawn. Now that `bag_attributes.py` ships the ring, that
+        // approximation is only the fallback.
+        let ring: Vec<Vec2> = fact
+            .map(|f| f.footprint.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+            .collect();
+        let doors: Vec<Vec2> = fact
+            .map(|f| f.doors.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+            .collect();
+        let outline = if ring.len() >= 3 {
+            ring
+        } else {
+            crate::systems::collision::convex_hull_xz(world_xz.clone())
+        };
+        if let Some(fp) = crate::systems::collision::Footprint::with_doors(outline.clone(), &doors)
+        {
             footprints.push(fp);
+        }
+
+        // A door on the facade at each entrance the register lists.
+        //
+        // It is drawn *proud* of the wall rather than cut into it: a hole needs
+        // the wall to be re-triangulated around it, and these walls arrive as a
+        // finished soup. A panel standing 4 cm off the brick reads as a doorway
+        // at every distance this is visible from, and cannot leave a crack.
+        //
+        // Note the height. `building_windows.wgsl` paints its lattice only above
+        // `FIRST_SILL_M` (2.2 m), so a door topping out below that is in the one
+        // band of the facade the window shader leaves alone — otherwise every
+        // front door in the city would have window panes painted across it.
+        if !doors.is_empty() && outline.len() >= 3 {
+            let base = ground.level_over(outline.iter().map(|w| [w.x, w.y]));
+            for &door in &doors {
+                let Some((at, normal)) = nearest_edge_point(&outline, door) else {
+                    continue;
+                };
+                let side = Vec2::new(-normal.y, normal.x) * DOOR_WIDTH_M * 0.5;
+                let out = normal * DOOR_PROUD_M;
+                let foot =
+                    |p: Vec2, y: f32| Vec3::new(p.x + out.x - ox, y + base, p.y + out.y - oz);
+                let (l, r) = (at - side, at + side);
+                buf.quad_facing(
+                    foot(l, 0.0),
+                    foot(r, 0.0),
+                    foot(r, DOOR_HEIGHT_M),
+                    foot(l, DOOR_HEIGHT_M),
+                    DOOR_COLOR,
+                    Vec3::new(normal.x, 0.0, normal.y),
+                );
+                drawn_doors += 1;
+            }
         }
 
         // The whole building steps up to the ground under it — one height for the
@@ -971,7 +1128,7 @@ fn build_lod22_from_text(
             .into_iter()
             .map(|m| (m, true)),
     );
-    Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints, dated)))
+    Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints, dated, drawn_doors)))
 }
 
 /// Cache key for a LoD2.2 cell (its own namespace under the cache root).
@@ -1122,4 +1279,58 @@ fn parse_lod22(text: &str) -> Result<CellFile, String> {
         elements: out,
         pands: file.pands,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A square, wound both ways. The register does not promise a winding, and a
+    /// door placed on the *inward* normal is drawn inside its own building, where
+    /// the shell hides it completely — the door count says 113,710 and the street
+    /// shows none. That is exactly what happened, and it is why this is a test and
+    /// not a comment.
+    #[test]
+    fn a_door_faces_out_of_the_building_whichever_way_the_ring_is_wound() {
+        let square = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ];
+        let centre = Vec2::new(5.0, 5.0);
+        for ring in [square.clone(), square.into_iter().rev().collect::<Vec<_>>()] {
+            // A door against each of the four walls in turn.
+            for probe in [
+                Vec2::new(5.0, 0.5),
+                Vec2::new(9.5, 5.0),
+                Vec2::new(5.0, 9.5),
+                Vec2::new(0.5, 5.0),
+            ] {
+                let (at, normal) = nearest_edge_point(&ring, probe).expect("a square has edges");
+                let outward = (at - centre).normalize();
+                assert!(
+                    normal.dot(outward) > 0.5,
+                    "normal {normal:?} at {at:?} points into the building, not out of it"
+                );
+            }
+        }
+    }
+
+    /// The point must land *on* the wall, not at a corner or out in the street.
+    #[test]
+    fn a_door_lands_on_the_wall_nearest_it() {
+        let ring = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 6.0),
+            Vec2::new(0.0, 6.0),
+        ];
+        let (at, _) = nearest_edge_point(&ring, Vec2::new(3.0, 1.2)).expect("edges");
+        assert!(
+            (at.y - 0.0).abs() < 1e-4,
+            "expected the south wall, got {at:?}"
+        );
+        assert!((at.x - 3.0).abs() < 1e-4);
+    }
 }

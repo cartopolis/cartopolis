@@ -57,8 +57,9 @@ Street names interned per file, absent fields omitted:
     {"districts": ["Groningen"],
      "buildings": [{"id": "0014100010909097", "year": 1884, "use": 1,
                     "area": 94, "units": 1, "status": "demolished"?,
-                    "mon": 18452, "mcat": "Religieuze gebouwen",
-                    "district": 0}, ...]}
+                    "mon": 18452, "mcat": "Religieuze gebouwen", "district": 0,
+                    "fp": [[lat, lng], ...],
+                    "doors": [[lat, lng], ...]}, ...]}
 
     bag/{14}/{x}/{y}.places.json
     {"streets": ["Paterswoldseweg", ...],
@@ -117,6 +118,12 @@ RCE_WFS = "https://services.rce.geovoorziening.nl/rce/wfs"
 # the BAG, so the ordinary case is a point *inside* the footprint and this margin
 # is only for the ones placed by hand.
 MONUMENT_SNAP_M = 12.0
+#: Simplification tolerance for a building outline, metres — the same 10 cm the
+#: paving uses, and for the same reason.
+FOOTPRINT_SIMPLIFY_M = 0.10
+#: Smallest footprint worth shipping an outline for. Below this a pand is a meter
+#: cupboard or a bin store, and a door in it would be a door to nowhere.
+MIN_FOOTPRINT_M2 = 6.0
 # Features per GetFeature request. **Measured, not the documented cap**: this
 # service truncates a GeoJSON response at 1000 features however large a `count`
 # you ask for, and — unlike the 3DBAG WFS that `3dbag_extract.py` pages, which
@@ -628,6 +635,17 @@ def collect_buildings(bbox, cells):
         status = props.get("status")
         if status and status != STATUS_IN_USE:
             rec["status"] = STATUS_CODES.get(status, status)
+        # The building's own outline, simplified and in lat/lng.
+        #
+        # This is the shape the client has never had. Its collider for a 3DBAG
+        # building is the **convex hull** of a triangle soup, because a hull is
+        # all you can recover from one — which is right for a rectangle and wrong
+        # for every L-shaped building, whose inner corner it fills in. The BAG
+        # holds the real ring, and once the client has it the same outline also
+        # says where a wall is, which is what a door has to stand in.
+        outline = footprint_ring(feat.get("geometry"))
+        if outline:
+            rec["fp"] = outline
         for key in cells_of_bbox(bb):
             cells.add(key, "buildings", rec)
         by_pand[pand] = rec
@@ -636,8 +654,100 @@ def collect_buildings(bbox, cells):
     return n, index, by_pand
 
 
-def collect_addresses(bbox, cells):
-    """`bag:verblijfsobject` -> one addressed unit per record, at its own point."""
+def footprint_ring(geom):
+    """A pand's outer ring, simplified, as `[[lat, lng], …]` — open, no repeat.
+
+    The *largest* ring of a multipolygon rather than all of them: a pand is one
+    building, and the extra parts are courtyard slivers and porches that a door
+    and a collider have no use for. Simplified at the same 10 cm as the paving,
+    which takes a BAG footprint from ~11 to ~9 vertices — these rings were never
+    the dense ones, so this is a tidy-up rather than the reduction it is there.
+    """
+    polys = polygon_rings_rd(geom)
+    if not polys:
+        return None
+    best, best_area = None, 0.0
+    for rings in polys:
+        ring = rings[0]
+        pts = [(p[0], p[1]) for p in ring]
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts = pts[:-1]
+        if len(pts) < 3:
+            continue
+        a = ring_area_rd(pts)
+        if a > best_area:
+            best, best_area = pts, a
+    if best is None or best_area < MIN_FOOTPRINT_M2:
+        return None
+    kept = simplify_rd(best, FOOTPRINT_SIMPLIFY_M)
+    if len(kept) < 3:
+        return None
+    out = []
+    for x, y in kept:
+        lng, lat = _TO_WGS84.transform(x, y)
+        out.append([round(lat, 7), round(lng, 7)])
+    return out
+
+
+def polygon_rings_rd(geom):
+    """A (Multi)Polygon's rings in RD metres, grouped per polygon."""
+    if not geom:
+        return []
+    t, coords = geom.get("type"), geom.get("coordinates") or []
+    if t == "Polygon":
+        return [coords]
+    if t == "MultiPolygon":
+        return list(coords)
+    return []
+
+
+def ring_area_rd(pts):
+    """Shoelace area of an RD ring, unsigned — already in square metres."""
+    a = 0.0
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        a += x1 * y2 - x2 * y1
+    return abs(a) * 0.5
+
+
+def simplify_rd(pts, eps):
+    """Douglas-Peucker on an RD ring. Iterative; see `bgt_objects.simplify`."""
+    n = len(pts)
+    if n < 3:
+        return pts
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        ax, ay = pts[i]
+        bx, by = pts[j]
+        dx, dy = bx - ax, by - ay
+        seg = math.hypot(dx, dy)
+        best, at = -1.0, -1
+        for k in range(i + 1, j):
+            px, py = pts[k]
+            d = (math.hypot(px - ax, py - ay) if seg < 1e-12
+                 else abs(dx * (ay - py) - (ax - px) * dy) / seg)
+            if d > best:
+                best, at = d, k
+        if best > eps:
+            keep[at] = True
+            stack.append((i, at))
+            stack.append((at, j))
+    return [p for p, k in zip(pts, keep) if k]
+
+
+def collect_addresses(bbox, cells, by_pand):
+    """`bag:verblijfsobject` -> one addressed unit per record, at its own point.
+
+    Each unit's point is also pushed onto its building's record as a **door**.
+    Two files carry the same coordinate on purpose: the places file is the one a
+    readout reads and it is heavy (2 MB a cell), while the mesh lane needs only
+    "where are this building's entrances" and must not pull the addresses to get
+    it. One point is a dozen bytes; the file it rides in is the small one.
+    """
     n = 0
     seen = set()
     for feat in pages("bag:verblijfsobject", bbox):
@@ -666,6 +776,10 @@ def collect_addresses(bbox, cells):
         if props.get("oppervlakte") is not None:
             rec["area"] = int(props["oppervlakte"])
         cells.add(key, "addresses", rec)
+        pand = props.get("pandidentificatie")
+        building = by_pand.get(pand) if pand else None
+        if building is not None:
+            building.setdefault("doors", []).append([at[0], at[1]])
         n += 1
     return n
 
@@ -703,7 +817,7 @@ def build(bbox, out_dir, name):
     print("panden…", file=sys.stderr)
     n_bld, index, by_pand = collect_buildings(bbox, cells)
     print("verblijfsobjecten…", file=sys.stderr)
-    n_adr = collect_addresses(bbox, cells)
+    n_adr = collect_addresses(bbox, cells, by_pand)
     print("ligplaatsen + standplaatsen…", file=sys.stderr)
     n_bth = collect_berths(bbox, cells)
     print("rijksmonumenten…", file=sys.stderr)

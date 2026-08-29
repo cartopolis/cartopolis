@@ -9,6 +9,7 @@ pub mod globe_ocean;
 pub mod globe_weather;
 pub mod grass;
 pub mod height;
+pub mod interiors;
 pub mod lod22;
 pub mod lod3;
 pub mod map_geometry;
