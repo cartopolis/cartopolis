@@ -375,7 +375,7 @@ fn nearest_scripted_prim(
 /// unit, and what the register says about the building it is in.
 ///
 /// `"Paterswoldseweg 62 · home · 1884"`. `None` outside the BAG coverage, which
-/// is everywhere the host has not run `tools/bag_attributes.py` — the tile-layer
+/// is everywhere the host has not extracted the BAG for — the tile-layer
 /// house number then answers as it always did.
 fn bag_address(
     facts: &crate::systems::building_facts::BuildingFacts,

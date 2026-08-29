@@ -3,11 +3,11 @@
 //! The 3DBAG lanes supply a building's shape; this supplies its *facts* — year
 //! built, what it is used for, how big it is, whether the register still thinks
 //! it exists — plus the addresses and the houseboat berths in the same cell.
-//! Served from our own host by `tools/bag_attributes.py` as
+//! Served from our own host by cartopy's `bag.ts` as
 //! `bag/{14}/{x}/{y}.json`, alongside the 3DBAG trees and behind the same
 //! coverage manifest pattern.
 //!
-//! **The join is an id, not a geometry test.** `tools/3dbag_lod22.py` writes each
+//! **The join is an id, not a geometry test.** cartopy's `lod22.ts` writes each
 //! mesh element's BAG *identificatie* verbatim, and every record here is keyed on
 //! the same string, so a building either carries the key or it does not — there is
 //! no tolerance to tune and no nearest-match to be wrong about. That id is also
@@ -64,7 +64,7 @@ const BAG_RETRY_AFTER_SECS: f64 = 60.0;
 ///
 /// A pand routinely has several — a shop with flats above it is the ordinary
 /// Dutch street — so this is a set, not an enum. The bit order is the wire format
-/// and is mirrored by `USE_BITS` in `tools/bag_attributes.py`: **append, never
+/// and is mirrored by `USE_BITS` in cartopy's `bag.ts`: **append, never
 /// renumber**.
 pub mod uses {
     pub const HOME: u16 = 1 << 0;

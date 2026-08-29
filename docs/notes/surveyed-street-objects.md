@@ -1,6 +1,6 @@
 ---
 topic: map
-triggers: [surveyed.rs, bgt_objects.py, scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK]
+triggers: [surveyed.rs, bgt_objects.py, bgt.ts, scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK]
 updated: 2026-08-28
 ---
 
@@ -13,7 +13,7 @@ reads the `pois` layer, which has no street lighting in it at all — so until n
 the map had no lampposts anywhere.
 
 The BGT — the Netherlands' large-scale topography, ~20 cm — registers both,
-object by object. `tools/bgt_objects.py` reads it and `systems::surveyed` streams
+object by object. cartopy's `server/pipeline/bgt.ts` reads it and `systems::surveyed` streams
 it.
 
 ## The API behaves nothing like the BAG WFS next door
@@ -22,7 +22,7 @@ Same organisation, same portal, opposite design, and the differences are not
 cosmetic:
 
 - **Cursor paging, not `startIndex`.** So there is no 50 000-row wall and no bbox
-  to split, which is the whole of what `bag_attributes.py` had to be built around.
+  to split, which is the whole of what the BAG extractor had to be built around.
 - **No total, ever.** `numberMatched` is absent, so a walk cannot be checked
   against a count the way the BAG extract checks itself. The guard here is a page
   ceiling that warns when it trips, which is weaker, and there is nothing better

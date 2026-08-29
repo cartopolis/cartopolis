@@ -1,6 +1,6 @@
 ---
 topic: buildings
-triggers: [building_facts.rs, bag_attributes.py, 3dbag_lod22.py, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
+triggers: [building_facts.rs, bag_attributes.py, 3dbag_lod22.py, bag.ts, lod22.ts, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
 updated: 2026-08-27
 ---
 
@@ -8,7 +8,7 @@ updated: 2026-08-27
 
 ## The id was not an id
 
-`tools/3dbag_lod22.py` has always written an `id` on each mesh element, and until
+The LoD2.2 extractor has always written an `id` on each mesh element, and until
 2026-08-27 it was made like this:
 
 ```python
@@ -43,7 +43,7 @@ load-bearing), with `part` beside it rather than inside it.
 
 `api.bag.kadaster.nl` is the Kadaster's own BAG API and needs a key. PDOK's
 `service.pdok.nl/lv/bag/wfs/v2_0` serves the same register, open, keyless, and
-that is what `tools/bag_attributes.py` pages.
+that is what the BAG extractor pages.
 
 The layer split is worth knowing because it is not what you would guess:
 **`bag:pand` already carries the attributes per building** — `bouwjaar`, `status`,
@@ -64,11 +64,11 @@ loop: asking for 10 000 returns a *full* page that looks like a short one, the
 walk ends after the first thousand rows, and nothing anywhere reports a problem —
 the output is a city that quietly knows about a tenth of its buildings.
 
-Note the sibling script `3dbag_extract.py` pages the **3DBAG** WFS with
+Note the sibling LoD1.2 extractor pages the **3DBAG** WFS with
 `PAGE = 10_000`, and that is correct for *that* server. The two are different
 services with different caps; the number is not shareable.
 
-`bag_attributes.py` therefore pages at 1000 and calls `resultType=hits` (a small
+It therefore pages at 1000 and calls `resultType=hits` (a small
 XML read) once per layer, purely so the walk can be checked against a total it did
 not compute itself. It warns when the two disagree.
 
@@ -79,7 +79,7 @@ Also measured 2026-08-27, and this one is not survivable by paging at all:
 default bbox holds 94 052 panden and 129 270 addressed units, so *no* page size
 reaches the end of it.
 
-`bag_attributes.py` therefore quarters the bbox recursively until every piece is
+It therefore quarters the bbox recursively until every piece is
 under 40 000 features and pages each piece. A WFS bbox is an intersects test, so
 a building straddling a cut comes back from both halves — every collector dedupes
 on `identificatie`, which it can do precisely because the id is now a real one.
@@ -101,7 +101,7 @@ The mesh pipeline bins a building by the first vertex of its 3D solid. The
 attribute pipeline has only a 2D footprint and cannot reproduce that rule, and a
 building whose attributes landed one cell over from its mesh would never join —
 silently, and only for buildings near a cell edge, which is the worst possible
-distribution for noticing. So `bag_attributes.py` writes each pand into every z14
+distribution for noticing. So cartopy's `bag.ts` writes each pand into every z14
 cell its footprint bbox touches. The duplication is a few bytes on a handful of
 buildings; the alternative is a bug that reproduces on a tenth of a percent of
 the city.
@@ -187,7 +187,7 @@ with no `bag/` tree, so every consumer's fallback is the behaviour that was ther
 before. One difference from the 3DBAG manifests next door: those retry an
 unreachable host indefinitely, because they are the difference between real
 buildings and guessed ones. This tree is additive, and a host that has never run
-`bag_attributes.py` answers 404 permanently — so it gives up after three attempts
+the BAG extractor answers 404 permanently — so it gives up after three attempts
 rather than asking the same question every 30 seconds for the life of the process.
 
 `--dump-state` carries `bag_buildings` / `bag_addresses` / `bag_berths`, because

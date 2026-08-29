@@ -10,7 +10,7 @@
 //! fields added, so `lod22` parses it, meshes it and spawns it through the code
 //! that already existed; what is here is the coverage manifest and the fetch. The
 //! whole tier is worth having because of one field: the BAG identificatie that
-//! `3dbag_lod22.py` now carries. Without a shared key, swapping a mass for a model
+//! cartopy's `lod22.ts` now carries. Without a shared key, swapping a mass for a model
 //! is a geometry match against a building that has moved, been extended or been
 //! re-surveyed since. With one, it is a set membership test.
 //!

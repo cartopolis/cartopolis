@@ -20,7 +20,7 @@ extended, re-surveyed or rebuilt since either was captured — and the failure i
 silent, because a wrong match still draws a building.
 
 So the model is keyed on the BAG identificatie, given once on the command line.
-That is the entire reason `3dbag_lod22.py` was fixed to carry a real one:
+That is the entire reason the LoD2.2 extractor was fixed to carry a real one:
 `replaced_pands` turns "which shells do I skip?" into a set membership test.
 
 ## Georeferencing is an argument, not a discovery

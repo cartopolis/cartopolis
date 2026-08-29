@@ -468,67 +468,66 @@ reverse-geocoding (`bookmarks.rs`) both use `nominatim_base_url()`, which defaul
 to `DEFAULT_NOMINATIM_URL` and is overridable with `CARTO_NOMINATIM_URL` (e.g.
 `https://nominatim.openstreetmap.org`).
 
-## 8. 3DBAG buildings (self-hosted static tiles)
+## 8. The Dutch map layers (self-hosted static tiles)
 
-For the Netherlands we serve **3DBAG** building data (real BAG heights + ground
-level) instead of OSM footprints with guessed heights. The live 3DBAG API is
-slow, so — like Overpass — we host it ourselves. Unlike Overpass it is **static,
-download-once** data: no database, no diffs, just preprocessed files behind
-Caddy. Currently the **city of Groningen** is covered (90k buildings, ~44 MB).
+For the Netherlands we serve building geometry, building facts and surveyed
+street objects from our own host instead of guessing them from OSM. The live
+source APIs are slow and rate-limited, so — like Overpass — we host the result
+ourselves. Unlike Overpass it is **static, download-once** data: no database, no
+diffs, just preprocessed files behind Caddy. Currently the **city of Groningen**
+is covered.
 
-**Pieces on the box** (all under `/data/3dbag/`, owned by `ubuntu`):
+Four datasets, all landing in one tree and all served by the same Caddy site:
+
+| Path | Source | What the client does with it |
+|---|---|---|
+| `buildings/` | 3DBAG WFS `BAG3D:lod12` | footprints + heights, Overpass-shaped — the fallback tier (`osm_buildings.rs`) |
+| `lod22/` | 3DBAG CityJSON LoD2.2 | real roof and wall geometry, as triangles (`lod22.rs`) |
+| `bag/` | PDOK BAG WFS + the RCE heritage layers | year, use, floor areas, addresses, entrance points, monuments (`building_facts.rs`) |
+| `bgt/` | PDOK BGT OGC API | surveyed trees, lampposts, benches, fences, hedges, paving (`surveyed.rs`) |
+
+### Where the extractors live
+
+**Not in this repository.** They were four Python scripts under `tools/`, run by
+hand over ssh, and since 2026-08 they are TypeScript in
+[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) under `server/`,
+driven by the **Data** tab of the admin GUI at
+[web.cartopolis.org](https://web.cartopolis.org). An operator picks an area,
+picks datasets, presses Start and watches the log; the coverage panel says what
+the tree currently holds before anything is run.
+
+The reason they moved is the console. The reason to know they moved is the other
+direction: **their output formats are parsed here** — `lod22.rs`,
+`building_facts.rs`, `surveyed.rs` and `osm_buildings.rs` each read one of these
+shapes, and nothing but a person keeps the two repositories in step. cartopy's
+`server/pipeline/format.test.ts` pins each format against captures of a real run,
+so a change there fails a test rather than reaching a client as an empty layer.
+Change a wire format here and change it there.
+
+`docs/notes/where-the-map-data-is-built.md` has the move, the equivalence check
+against the Python it replaced, and what is still done by hand.
+
+### The tree on the box
 
 ```
-/data/3dbag
-├── venv/                 # python venv with pyproj (RD -> WGS84 reprojection)
-├── bin/3dbag_extract.py  # deployed copy of tools/3dbag_extract.py
-└── site/                 # OUTPUT, bind-mounted read-only into caddy
-    ├── coverage.json     # which z14 cells this host serves (client routing)
-    └── buildings/14/{x}/{y}.json   # per-cell Overpass-shaped buildings
+/data/3dbag/site               # OUTPUT, bind-mounted read-only into caddy
+├── coverage.json              # which z14 cells this host serves (client routing)
+├── buildings/14/{x}/{y}.json  # per-cell Overpass-shaped buildings
+├── lod22/14/{x}/{y}.json      # per-cell LoD2.2 triangle meshes
+├── bag/14/{x}/{y}.json        # per-cell building facts  (+ .places.json)
+└── bgt/14/{x}/{y}.json        # per-cell street objects  (+ .surfaces.json)
 ```
 
-The extract script (`tools/3dbag_extract.py` in the repo) pages the 3DBAG WFS
-`BAG3D:lod12` layer over an RD/EPSG:28992 bbox, reprojects footprints to WGS84,
-derives `height`/`roof:shape`/`roof:height` tags from the BAG attributes
-(`b3_h_maaiveld`, `b3_h_70p`, `b3_h_nok`, `b3_dak_type`), and bins each building
-into the client's zoom-14 CACHE_ZOOM cell. Output is **Overpass-shaped JSON**, so
-the client's existing `parse_buildings` consumes it unchanged — only the *source
-URL* differs per covered cell.
+Two of the datasets write **two files per cell**, and it is the same reason both
+times: the heavy half is wanted by a different consumer from the light half.
+`bag/{y}.places.json` holds the addresses (2.0 MB in the densest Groningen cell,
+against 0.53 MB of buildings) which only `building_facts` reads, while `lod22`
+fetches the buildings file inside its own mesh job. `bgt/{y}.surfaces.json` holds
+the paving, which is the second-heaviest thing the client streams.
 
-**One-time setup** (already done on this box):
-
-```bash
-sudo mkdir -p /data/3dbag/{bin,site} && sudo chown -R ubuntu:ubuntu /data/3dbag
-sudo apt-get install -y python3.14-venv
-cd /data/3dbag && python3 -m venv venv && ./venv/bin/pip install -q pyproj
-```
-
-**Generate / refresh a city** (idempotent — rewrites `site/`, no Caddy change):
-
-```bash
-# from the repo, redeploy the script if it changed:
-scp tools/3dbag_extract.py ubuntu@garage44.eu:/data/3dbag/bin/
-
-# on the box (default bbox = Groningen city; ~40 s):
-cd /data/3dbag && ./venv/bin/python bin/3dbag_extract.py --out site --name groningen
-# other area: --name <city> --bbox <xmin ymin xmax ymax>   (EPSG:28992 / RD New)
-```
-
-**LoD2.2 real roofs** (`tools/3dbag_lod22.py`) — the higher-detail tier: instead
-of footprints, it parses 3DBAG's **CityJSON** tiles, triangulates each building's
-real LoD2.2 roof/wall surfaces, reprojects, and emits per-cell meshes to
-`site/lod22/{14}/{x}/{y}.json` (+ `site/lod22/coverage.json`). Needs `numpy` +
-`mapbox_earcut` in the venv:
-
-```bash
-cd /data/3dbag && ./venv/bin/pip install -q numpy mapbox_earcut
-# ~3-4 min for Groningen; writes into the already-served site/ tree:
-./venv/bin/python bin/3dbag_lod22.py --out site --name groningen
-```
-
-The client's `lod22.rs` streams these for covered cells (real roofs); the LoD1.2
-footprints above remain the fallback tier. Groningen LoD2.2 is ~114 MB / 101k
-buildings / 112 cells.
+The old `/data/3dbag/venv` and `/data/3dbag/bin` are the retired Python. They can
+go once the pipeline service has run a full city; keeping them costs nothing and
+is the fallback until then.
 
 **Serving** — the `caddy` service bind-mounts `/data/3dbag/site:/srv/3dbag:ro`
 and the `Caddyfile` has:
@@ -543,6 +542,9 @@ and the `Caddyfile` has:
 	header Access-Control-Allow-Origin "*"
 	header /coverage.json Cache-Control "public, max-age=3600"
 	header /buildings/* Cache-Control "public, max-age=86400"
+	header /lod22/* Cache-Control "public, max-age=86400"
+	header /bag/* Cache-Control "public, max-age=86400"
+	header /bgt/* Cache-Control "public, max-age=86400"
 }
 ```
 
@@ -552,40 +554,31 @@ Adding the bind mount needs a **recreate** (not reload):
 
 Smoke test: `curl --compressed https://3dbag.cartopolis.org/coverage.json`.
 
-**BAG attributes** (`tools/bag_attributes.py`) — what the buildings *are*, as
-opposed to what shape they are. It pages PDOK's open BAG WFS (no API key; the
-Kadaster's own `api.bag.kadaster.nl` needs one) for `pand` (year built, status,
-use, floor-area range, unit count), `verblijfsobject` (per-unit address and
-entrance point), and `ligplaats`/`standplaats` (houseboat berths and mobile-home
-plots), and writes two files per cell — `site/bag/{14}/{x}/{y}.json` (buildings)
-and `{y}.places.json` (addresses and berths) — plus `site/bag/coverage.json`,
-into the same served tree. Every record is keyed on the BAG identificatie, which
-is the `id` the LoD2.2 meshes now carry. Needs only `pyproj`:
+### The pipeline service
 
-```bash
-cd /data/3dbag && ./venv/bin/python bin/bag_attributes.py --out site --name groningen
-# Groningen: 94,052 buildings, 129,270 addresses, 781 berths, 47 cells, ~20 MB,
-# about ten minutes. The densest cell is 0.53 MB of buildings + 2.0 MB of
-# addresses, which is why they are two files — see the note.
-```
+`cartopolis-pipeline.service` runs cartopy's `server/index.ts` under Bun as a
+systemd unit, the same shape as `cartopolis-sim.service`: CI publishes the files
+into `/data/cartopolis/pipeline` and touches `restart.stamp`, and a `.path` unit
+on the host does the restart. It listens on the docker0 gateway and Caddy reaches
+it at `/api/pipeline/*` on `web.cartopolis.org` — **before** the `/api/*` block,
+or every call lands on the simulator and 404s.
 
-Add a cache header for it beside the others in the `Caddyfile`:
+It authorises nothing itself: each request's bearer goes to the simulator's
+`/api/admin/me`, so there is one list of operators and revoking somebody there
+revokes them here.
 
-```caddy
-	header /bag/* Cache-Control "public, max-age=86400"
-```
+The unit files and the Caddy block are in cartopy's `deploy/` and README.
 
-The client streams these through `systems::building_facts` and joins them onto
-the drawn buildings by id — facade colour by era, night window lighting by use,
-and the address readout in the status HUD. Uncovered areas keep the generated
-palette exactly. `docs/notes/building-identity-and-bag.md` has the reasoning and
-the paging trap (this WFS truncates at 1000 features per request whatever you
-ask for, and does not always say so).
+**A refresh replaces a dataset's coverage, it does not add to it.** Each
+extractor rewrites the whole manifest for its dataset, so extracting a second
+city takes the first one's place — the first city's cell files stay on disk and
+the client simply stops being told about them. The console warns before doing it.
+Until that is fixed, one covered area per dataset is the rule.
 
-**Client wiring:** the client fetches covered z14 cells from
-`CARTO_3DBAG_URL` (default `https://3dbag.cartopolis.org`) and falls back to Overpass
-(OSM) on a 404 — see `osm_buildings.rs`. Attribution
-(`coverage.json.attribution`, CC BY 4.0) is shown in the client.
+**Client wiring:** the client fetches covered z14 cells from `CARTO_3DBAG_URL`
+(default `https://3dbag.cartopolis.org`) and falls back to Overpass (OSM) on a
+404 — see `osm_buildings.rs`. Attribution (`coverage.json.attribution`, CC BY
+4.0) is shown in the client.
 
 ## 9. VersaTiles vector basemap (self-hosted)
 

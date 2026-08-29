@@ -29,7 +29,7 @@ from one is its **convex hull**. That is what the collider has always been —
 right for a rectangle, and wrong for every L-shaped building, whose inner corner
 it fills in with a wall nobody can walk through and nothing is drawn on.
 
-The BAG holds the real ring, so `bag_attributes.py` now ships it, simplified at
+The BAG holds the real ring, so the BAG extractor now ships it, simplified at
 10 cm (about 11 vertices down to 9 — these rings were never the dense ones). The
 hull is the fallback for a building the register has no outline for. The same
 outline then says where a wall *is*, which is what a door has to stand in and what

@@ -448,7 +448,7 @@ fn spawn_geometry_task(
             // cell's meshes, so they have to be in hand on the worker that builds
             // them rather than arriving later on a stream of their own. Empty
             // outside the coverage, which is everywhere the host has not run
-            // `tools/bgt_objects.py`.
+            // cartopy's `bgt.ts`.
             let surveyed = crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1).await;
             // …and its surveyed paving, in a file of its own because it is by far
             // the heavier half.

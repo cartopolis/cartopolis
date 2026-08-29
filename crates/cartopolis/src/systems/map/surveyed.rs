@@ -5,7 +5,7 @@
 //! carries canopy *areas*, so "the trees here are scattered, not surveyed" — and
 //! `furniture.rs` reads a `pois` layer that has no street lighting in it at all.
 //! The BGT registers both, object by object, for the whole country, and
-//! `tools/bgt_objects.py` bins them into the same z14 cells everything else here
+//! cartopy's `bgt.ts` bins them into the same z14 cells everything else here
 //! is streamed in.
 //!
 //! **Added to the generated layers, never replacing them.** Two reasons, and the
@@ -64,7 +64,7 @@ pub fn bgt_attribution() -> Option<String> {
 }
 
 /// The forms the extractor can name, in wire order. Mirrors `PROP_KINDS` in
-/// `tools/bgt_objects.py` — **append, never renumber**.
+/// cartopy's `bgt.ts` — **append, never renumber**.
 ///
 /// An index past the end is dropped rather than clamped: a host running a newer
 /// extractor than this client should lose the objects it has no form for, not
@@ -80,11 +80,11 @@ const PROP_KINDS: [FurnitureKind; 7] = [
 ];
 
 /// The linear forms, in wire order. Mirrors `LINE_KINDS` in
-/// `tools/bgt_objects.py` — **append, never renumber**.
+/// cartopy's `bgt.ts` — **append, never renumber**.
 const LINE_KINDS: [LineKind; 3] = [LineKind::Fence, LineKind::Wall, LineKind::Hedge];
 
 /// The paved forms, in wire order. Mirrors `SURFACE_KINDS` in
-/// `tools/bgt_objects.py` — **append, never renumber**.
+/// cartopy's `bgt.ts` — **append, never renumber**.
 const SURFACE_KINDS: [PavingKind; 8] = [
     PavingKind::Footway,
     PavingKind::Cycleway,
