@@ -97,6 +97,45 @@ to cite the code rather than assume.
 *Use it for:* work that should happen while you are not at a keyboard.
 *Not for:* anything visual, or anything you cannot state precisely.
 
+### ④ Autopilot — nobody steering at all
+
+`viberfox-autopilot` on the VPS: a third container that files the next ticket
+and lands the finished ones, so work continues while the maintainer is away.
+Two jobs, one config file, and **no language model** — `tools/autopilot.ts`
+decides only which frontier item in [`direction.md`](direction.md) has no ticket
+yet, and which finished branch every Actions job passed on. The thinking is
+still ③'s sessions, which refine the ticket and implement it.
+
+It is a separate container from the watcher for one reason, and it is the same
+reason the watcher has no `config:` volume: ③ spawns sessions whose prompt is
+issue text anyone can write, and the merge token can push to `main`. The
+autopilot holds that token, runs no session, reads no free text, and has no
+clone to be edited in.
+
+**The knob is `/data/agent/state/autopilot.json`**, re-read every tick, so a
+change takes effect within ten minutes and needs no restart:
+
+```json
+{ "enabled": false, "ticketsPerDay": 1, "ship": false }
+```
+
+- `enabled` — file new tickets at all.
+- `ticketsPerDay` — how many, and it never runs two at once regardless.
+- `ship` — merge finished tickets and deploy, or leave them on `agent:done`
+  for a person, which is where this lane stopped before.
+
+Shipping is `agent:done` **plus** a `ship` label, and it re-checks every Actions
+job on the branch head before merging rather than trusting the label: the
+watcher also awards `agent:done` when CI never answered, and landing a branch on
+no verdict is recoverable where publishing on no verdict is not. After the merge
+it runs [`tools/deploy-main`](../tools/deploy-main), which gates on `main` being
+green and deploys the simulator before the web client — they share one wire
+protocol and `decode_app_frame` refuses a mismatch outright.
+
+What it may not touch is in [`direction.md`](direction.md), and the sharpest one
+is the wire protocol: a bump locks out every installed Android app and every
+downloaded desktop binary, and no deploy from this machine reaches either.
+
 ### The lane axis — how much it may assume
 
 A spec written with you in the room is reviewed as it is written. The same
@@ -801,6 +840,18 @@ directory". No second mechanism.
 | Token, bot password | `watcher.env`, `0600` |
 | Modes, labels, column ids | `docker-compose.yml` → `environment:` |
 | CI gate | `AGENT_CI_GATE` (default on), `AGENT_CI_TIMEOUT_MIN` (45) |
+
+**④ Autopilot — the `viberfox-autopilot` container** (`/data/agent/`)
+
+| What | Where |
+|---|---|
+| The two scripts | `autopilot/autopilot.ts`, `autopilot/deploy-main` — copies of `tools/` in this repo |
+| Tokens (`write:issue` **and** `write:repository`) | `autopilot.env`, `0600` — deliberately not `watcher.env` |
+| The knob | `state/autopilot.json`, re-read every tick |
+| Tick interval | the `command:` loop in `docker-compose.yml` (10 min) |
+
+Updating either script is a copy from this repository into `/data/agent/autopilot/`;
+the mount is read-only and the container picks the new file up on its next tick.
 
 The `Stop` hook exists in two places on purpose — ① and ② are separate
 environments — but it is the same script. `md5sum` both after editing either;
