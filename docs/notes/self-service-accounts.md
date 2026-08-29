@@ -20,7 +20,7 @@ negotiable:
 | Locatieserver (`api.pdok.nl/bzk/locatieserver/search/v3_1/free`) | free text → addresses, with `nummeraanduiding_id` + `adresseerbaarobject_id` | the building |
 | BAG WFS (`service.pdok.nl/lv/bag/wfs/v2_0`, `bag:verblijfsobject`) | unit → `pandidentificatie` | any tolerance for typed text |
 
-`pandidentificatie` is the same string `tools/3dbag_lod22.py` writes into the
+`pandidentificatie` is the same string the LoD2.2 extractor writes into the
 tiles and `systems::building_facts` reads back, so the join to the geometry is an
 exact string match and never a spatial test.
 

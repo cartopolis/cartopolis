@@ -12,7 +12,7 @@
 //!    a `nummeraanduiding_id` (the address) and an `adresseerbaarobject_id` (the
 //!    unit behind it). It does **not** carry the building.
 //!  * **The BAG WFS** does. One `bag:verblijfsobject` row per unit, carrying
-//!    `pandidentificatie`, which is the same `identificatie` `tools/3dbag_lod22.py`
+//!    `pandidentificatie`, which is the same `identificatie` cartopy's `lod22.ts`
 //!    writes into the tiles and `systems::building_facts` reads back. That is the
 //!    join, and it is an exact string match rather than a geometry test.
 //!

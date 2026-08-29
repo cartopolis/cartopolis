@@ -3,7 +3,7 @@
 //! Where the OSM/LoD1.2 path (`osm_buildings.rs`) extrudes footprints and *guesses*
 //! roofs, this streams the actual triangulated BAG roof geometry (sloped, hipped,
 //! complex roofs) preprocessed server-side into per-cell meshes
-//! (`tools/3dbag_lod22.py` → `https://3dbag.cartopolis.org/lod22/…`). Each cell file is
+//! (cartopy's `lod22.ts` → `https://3dbag.cartopolis.org/lod22/…`). Each cell file is
 //! `{"elements":[{id, p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}` — deduped vertices
 //! and triangles tagged roof/wall.
 //!
@@ -976,7 +976,7 @@ fn build_lod22_from_text(
         // The hull is what a triangle soup can give and it is wrong for every
         // building that is not convex: an L-shaped block's hull fills in the inner
         // corner, so the yard between its wings is a place the avatar cannot walk
-        // and nothing is drawn. Now that `bag_attributes.py` ships the ring, that
+        // and nothing is drawn. Now that cartopy's `bag.ts` ships the ring, that
         // approximation is only the fallback.
         let ring: Vec<Vec2> = fact
             .map(|f| f.footprint.as_slice())

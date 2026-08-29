@@ -861,7 +861,7 @@ pub struct SurveyedLine {
     pub kind: LineKind,
 }
 
-/// The three linear forms. Mirrors `LINE_KINDS` in `tools/bgt_objects.py`.
+/// The three linear forms. Mirrors `LINE_KINDS` in cartopy's `bgt.ts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     /// Garden fencing and wire mesh.
