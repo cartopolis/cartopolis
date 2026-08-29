@@ -42,7 +42,12 @@ const API = process.env.FORGEJO_API ?? "https://code.garage44.eu/api/v1";
 const REPO = process.env.FORGEJO_REPO ?? "jeroen/cartopolis";
 const TOKEN = process.env.FORGEJO_TOKEN;              // write:issue
 const MERGE_TOKEN = process.env.FORGEJO_MERGE_TOKEN;  // write:repository
-const REPO_ROOT = process.env.AGENT_REPO_ROOT ?? "/home/agent/cartopolis";
+// deploy-main lives beside this script — in the repo both are in tools/, and
+// the autopilot container mounts that directory whole at /opt/autopilot with no
+// checkout anywhere (deploy-main deliberately works from the API alone). The
+// old default of `$AGENT_REPO_ROOT/tools/deploy-main` pointed at a path that
+// does not exist in the container, so no unattended deploy ever ran.
+const DEPLOY_MAIN = process.env.AGENT_DEPLOY_MAIN ?? `${import.meta.dir}/deploy-main`;
 const CONFIG_PATH = process.env.CARTO_AUTOPILOT_CONFIG ?? "/home/agent/issue-agent/autopilot.json";
 const STATE_PATH = process.env.CARTO_AUTOPILOT_STATE ?? "/home/agent/issue-agent/autopilot-state.json";
 /** Written hourly by the host, because this container has no claude login of its own. */
@@ -233,6 +238,10 @@ async function shipReady(cfg: Config) {
     // Falling back to the watcher's default keeps an unrefined ticket shippable.
     const branch = /^\s*Branch:\s*`?([A-Za-z0-9._\/-]+)`?\s*$/im.exec(issue.body ?? "")?.[1] ?? `issue-${n}`;
 
+    // Whether mergePr got through — a failure after that point must not tell
+    // the issue "nothing was merged" (issue #187 was told exactly that, two
+    // lines under the comment announcing its own merge).
+    let merged = false;
     try {
       const head = await api(`/branches/${encodeURIComponent(branch)}`);
       const sha = head.commit.id;
@@ -285,6 +294,7 @@ async function shipReady(cfg: Config) {
 
       log(`#${n}: merging pull request ${pr.number} (${branch} → main)`);
       await mergePr(pr.number);
+      merged = true;
 
       await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" });
       await addLabel(n, SHIPPED);
@@ -292,9 +302,28 @@ async function shipReady(cfg: Config) {
 
       await deployMain(n);
     } catch (e) {
-      log(`#${n}: ship failed —`, e instanceof Error ? e.message : e);
-      await comment(n, `🤖 **Could not ship this.** ${e instanceof Error ? e.message : e}\n\nThe branch is intact; nothing was merged.`).catch(() => {});
-      await addLabel(n, FAILED).catch(() => {});
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`#${n}: ship failed —`, msg);
+      if (e instanceof MergeConflict) {
+        // Retrying cannot resolve this — every autopilot ticket edits
+        // docs/direction.md, so two in flight collide with whichever lands
+        // first. Park it the way a fenced ticket is parked (drop `ship`, say
+        // why once) instead of failing and commenting every five minutes.
+        await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" }).catch(() => {});
+        await comment(
+          n,
+          `🤖 **Not shipping this one — the branch conflicts with \`main\`** (another ticket landed first).\n\n` +
+            `Rebase \`${branch}\` onto \`main\`, resolve, push, and put the \`ship\` label back to land it.`,
+        ).catch(() => {});
+      } else {
+        await comment(
+          n,
+          merged
+            ? `🤖 **Merged, but the step after the merge failed.** ${msg}\n\n\`main\` has the change.`
+            : `🤖 **Could not ship this.** ${msg}\n\nThe branch is intact; nothing was merged.`,
+        ).catch(() => {});
+        await addLabel(n, FAILED).catch(() => {});
+      }
     }
   }
 }
@@ -321,26 +350,50 @@ async function openOrFindPr(issue: any, branch: string) {
   );
 }
 
+/** The branch genuinely conflicts with `main`; no amount of retrying merges it. */
+class MergeConflict extends Error {}
+
 async function mergePr(index: number) {
-  // A 405 here is Forgejo still computing mergeability, not a permission
-  // problem — it answers "Please try again later" in the body. Poll it.
+  // The merge endpoint answers 405 both while Forgejo is still computing
+  // mergeability and for a genuine conflict, and the two are indistinguishable
+  // there. The pull request itself is the tell: `mergeable` flips true within
+  // seconds when computation was the only obstacle, and stays false for ever
+  // on a conflict — so poll that, merge when it says yes, and after five
+  // minutes of "no" call it what it is.
   for (let attempt = 0; attempt < 20; attempt++) {
-    const res = await fetch(`${API}/repos/${REPO}/pulls/${index}/merge`, {
-      method: "POST",
-      headers: { Authorization: `token ${MERGE_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ Do: "merge", delete_branch_after_merge: false }),
-    });
-    if (res.ok) return;
-    const body = await res.text();
-    if (res.status !== 405) throw new Error(`merge → ${res.status} ${body}`);
+    const pr = await api(`/pulls/${index}`, {}, MERGE_TOKEN);
+    if (pr.mergeable) {
+      const res = await fetch(`${API}/repos/${REPO}/pulls/${index}/merge`, {
+        method: "POST",
+        headers: { Authorization: `token ${MERGE_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ Do: "merge", delete_branch_after_merge: false }),
+      });
+      if (res.ok) return;
+      const body = await res.text();
+      // A 405 despite `mergeable: true` means main moved between the two
+      // calls; anything else is a real refusal.
+      if (res.status !== 405) throw new Error(`merge → ${res.status} ${body}`);
+    }
     await Bun.sleep(15_000);
   }
-  throw new Error("Forgejo never reported the pull request as mergeable");
+  throw new MergeConflict(`pull request ${index} never became mergeable — its branch conflicts with \`main\``);
 }
 
 /** Hand `main` to the deploy script; it does its own gating and ordering. */
 async function deployMain(issueNumber: number) {
-  const res = await $`${REPO_ROOT}/tools/deploy-main`.cwd(REPO_ROOT).nothrow().quiet();
+  let res;
+  try {
+    res = await $`${DEPLOY_MAIN}`.nothrow().quiet();
+  } catch (e) {
+    // .nothrow() covers a non-zero exit, not a failure to spawn at all.
+    log(`#${issueNumber}: deploy script did not run —`, e instanceof Error ? e.message : e);
+    await comment(
+      issueNumber,
+      `🤖 **Merged, but not deployed** — the deploy script could not be run: ${e instanceof Error ? e.message : e}\n\n` +
+        `\`main\` has the change; the public services are still on the previous build.`,
+    ).catch(() => {});
+    return;
+  }
   const out = `${res.stdout.toString()}${res.stderr.toString()}`.trim().slice(-3000);
   if (res.exitCode === 0) {
     log(`#${issueNumber}: deployed`);
