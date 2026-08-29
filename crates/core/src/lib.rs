@@ -4,6 +4,7 @@ pub mod error;
 pub mod geo;
 pub mod moderation;
 pub mod motion;
+pub mod particles;
 pub mod protocol;
 pub mod script_api;
 pub mod world;
@@ -11,10 +12,14 @@ pub mod yaw;
 
 pub use error::ProtocolError;
 pub use geo::{
-    ecef_to_geodetic, geodetic_to_ecef, region_index, region_origin, regions_adjacent,
-    TangentFrame, REGION_SIZE,
+    degree_scale_m, ecef_to_geodetic, geodetic_to_ecef, ground_distance_m, region_index,
+    region_origin, regions_adjacent, TangentFrame, REGION_SIZE,
 };
 pub use moderation::Filter;
+pub use particles::{
+    ParticleEffect, MAX_PARTICLES, MAX_PARTICLE_GRAVITY, MAX_PARTICLE_LIFE_S, MAX_PARTICLE_SIZE,
+    MAX_PARTICLE_SPEED,
+};
 pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, AuthCredential, AvatarStateDto, ChatScope, Emote, EmoteState, GeoAnchor,
