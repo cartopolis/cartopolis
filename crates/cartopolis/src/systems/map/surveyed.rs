@@ -27,7 +27,7 @@ use crate::platform::{http, storage};
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind, LineKind, SurveyedLine};
 use crate::systems::osm_buildings::tdbag_url;
-use crate::systems::paving::{PavedArea, PavingKind};
+use crate::systems::paving::{PavedArea, PavingKind, PavingMaterial};
 use crate::systems::scatter::TreeInstance;
 use cartopolis_core::world::tile_to_lat_lng;
 
@@ -96,18 +96,48 @@ const SURFACE_KINDS: [PavingKind; 8] = [
     PavingKind::Steps,
 ];
 
+/// The surveyed materials, in wire order. Mirrors `SURFACE_MATERIALS` in
+/// `tools/bgt_objects.py` — **append, never renumber**.
+const SURFACE_MATERIALS: [PavingMaterial; 12] = [
+    PavingMaterial::Asphalt,
+    PavingMaterial::Concrete,
+    PavingMaterial::Brick,
+    PavingMaterial::ConcretePaver,
+    PavingMaterial::Tiles,
+    PavingMaterial::Stone,
+    PavingMaterial::GrassPaver,
+    PavingMaterial::Grass,
+    PavingMaterial::Planting,
+    PavingMaterial::Gravel,
+    PavingMaterial::Sand,
+    PavingMaterial::Unpaved,
+];
+
+/// One surface on the wire: its form, its rings, and — only where the register
+/// names one — what it is made of.
+///
+/// The material is a **trailing** element rather than a field, and the
+/// `#[serde(default)]` is what makes the two-element form still read. Two things
+/// need that. The register says nothing about the substance of roughly one drawn
+/// surface in six, so "unknown" has to cost no bytes; and a paving cell cached
+/// before this existed must keep parsing, because the alternative is that every
+/// stored cell in the country fails at once and silently re-downloads the second
+/// heaviest thing this client streams.
+#[derive(serde::Deserialize)]
+struct WireSurface(usize, Vec<Vec<(f64, f64)>>, #[serde(default)] Option<usize>);
+
 /// One cell's surveyed paving, as rings of lat/lng: outer ring first, holes after.
 #[derive(Clone, Debug, Default)]
 pub struct SurveyedPaving {
-    pub areas: Vec<(PavingKind, Vec<Vec<(f64, f64)>>)>,
+    pub areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<(f64, f64)>>)>,
 }
 
-/// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…]],…]}`.
+/// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…],material?],…]}`.
 pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
     #[derive(serde::Deserialize)]
     struct Wire {
         #[serde(default)]
-        surfaces: Vec<(usize, Vec<Vec<(f64, f64)>>)>,
+        surfaces: Vec<WireSurface>,
     }
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
     Ok(SurveyedPaving {
@@ -116,8 +146,16 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
             .into_iter()
             // An outer ring under three points is not a surface. The extractor
             // drops those; a truncated cache entry can produce one.
-            .filter(|(_, rings)| rings.first().is_some_and(|r| r.len() >= 3))
-            .filter_map(|(k, rings)| SURFACE_KINDS.get(k).map(|&kind| (kind, rings)))
+            .filter(|s| s.1.first().is_some_and(|r| r.len() >= 3))
+            .filter_map(|WireSurface(k, rings, m)| {
+                // An unknown *form* drops the surface — there is nothing to draw
+                // it as. An unknown *material* only drops the material: a
+                // vocabulary this reader is too old for still leaves a pavement,
+                // drawn the way it was drawn before materials existed.
+                let kind = *SURFACE_KINDS.get(k)?;
+                let material = m.and_then(|i| SURFACE_MATERIALS.get(i).copied());
+                Some((kind, material, rings))
+            })
             .collect(),
     })
 }
@@ -142,12 +180,13 @@ pub fn surveyed_paving(paving: &SurveyedPaving, cx: i64, cy: i64, tile_m: f32) -
     paving
         .areas
         .iter()
-        .filter_map(|(kind, rings)| {
+        .filter_map(|(kind, material, rings)| {
             let outer = to_local(rings.first()?)?;
             let mut local = vec![outer];
             local.extend(rings[1..].iter().filter_map(to_local));
             Some(PavedArea {
                 kind: *kind,
+                material: *material,
                 rings: local,
             })
         })
@@ -418,6 +457,59 @@ mod tests {
         assert_eq!(paving.areas[1].0, PavingKind::Verge);
     }
 
+    /// The two wire forms have to coexist: the register names a substance for
+    /// only about a third of surfaces, and a cell cached before materials existed
+    /// carries none at all. Both must parse in the same file.
+    #[test]
+    fn a_surface_with_and_without_a_material_both_parse() {
+        let ring = r#"[[[53.2194,6.5665],[53.2195,6.5665],[53.2195,6.5666]]]"#;
+        let paving = parse_surveyed_paving(&format!(
+            r#"{{"surfaces":[[0,{ring},2],[0,{ring}],[4,{ring},7]]}}"#
+        ))
+        .expect("valid cell");
+        assert_eq!(paving.areas.len(), 3);
+        assert_eq!(paving.areas[0].1, Some(PavingMaterial::Brick));
+        assert_eq!(paving.areas[1].1, None, "the short form means unknown");
+        assert_eq!(paving.areas[2].1, Some(PavingMaterial::Grass));
+    }
+
+    /// An unknown *form* costs the surface; an unknown *material* must cost only
+    /// the material. A host running a newer extractor should still pave the
+    /// street, in the tone this build already knew.
+    #[test]
+    fn an_unknown_material_keeps_the_surface() {
+        let ring = r#"[[[53.2194,6.5665],[53.2195,6.5665],[53.2195,6.5666]]]"#;
+        let paving = parse_surveyed_paving(&format!(r#"{{"surfaces":[[0,{ring},99]]}}"#))
+            .expect("valid cell");
+        assert_eq!(paving.areas.len(), 1);
+        assert_eq!(paving.areas[0].0, PavingKind::Footway);
+        assert_eq!(paving.areas[0].1, None);
+    }
+
+    /// The material has to survive the trip into the frame the mesh is built in —
+    /// a field that parsed and was then dropped on the way to the worker is a
+    /// field that changes nothing.
+    #[test]
+    fn the_material_reaches_the_built_area() {
+        let (cx, cy) = (8490, 5320);
+        let (north, west) = tile_to_lat_lng(cx, cy, BGT_ZOOM);
+        let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, BGT_ZOOM);
+        let (mid_lat, mid_lng) = ((north + south) / 2.0, (west + east) / 2.0);
+        let paving = SurveyedPaving {
+            areas: vec![(
+                PavingKind::Footway,
+                Some(PavingMaterial::Brick),
+                vec![vec![
+                    (mid_lat, mid_lng),
+                    (mid_lat + 1e-5, mid_lng),
+                    (mid_lat + 1e-5, mid_lng + 1e-5),
+                ]],
+            )],
+        };
+        let built = surveyed_paving(&paving, cx, cy, 1500.0);
+        assert_eq!(built[0].material, Some(PavingMaterial::Brick));
+    }
+
     /// An outer ring under three points is not a surface.
     #[test]
     fn a_degenerate_surface_is_dropped() {
@@ -448,8 +540,8 @@ mod tests {
         ];
         let paving = SurveyedPaving {
             areas: vec![
-                (PavingKind::Footway, vec![inside]),
-                (PavingKind::Footway, vec![leaves]),
+                (PavingKind::Footway, None, vec![inside]),
+                (PavingKind::Footway, None, vec![leaves]),
             ],
         };
         let built = surveyed_paving(&paving, cx, cy, 1500.0);

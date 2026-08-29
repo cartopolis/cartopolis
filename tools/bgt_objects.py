@@ -47,6 +47,17 @@ is `[kind, [[lat, lng], …]]` indexing LINE_KINDS:
      "props": [[53.21941, 6.56652, 0], ...],
      "lines": [[0, [[53.2194, 6.5665], [53.2195, 6.5666]]], ...]}
 
+and the paving beside it, in a file of its own because it is much the heavier
+half — `[kind, [ring, …]]` indexing SURFACE_KINDS, with an **optional** third
+element indexing SURFACE_MATERIALS:
+
+    bgt/{14}/{x}/{y}.surfaces.json
+    {"surfaces": [[0, [[[53.2194, 6.5665], ...]], 2], ...]}
+
+The material is appended rather than inserted so the two-element form still
+reads: about one drawn surface in six has nothing said about it, and "it does not
+say" has to stay cheap to express and free to draw.
+
 Coordinates stay lat/lng like every other pipeline here; the client turns them
 into tile-local metres, which is the frame `furniture.rs` and `scatter.rs`
 already work in.
@@ -142,6 +153,76 @@ SURFACE_FUNCTIE_FORM = {
     "berm": "verge",
     "verkeerseiland": "island",
 }
+
+#: Surveyed surface materials, in wire order. Mirrored by `SURFACE_MATERIALS` in
+#: `systems::surveyed` and by `PavingMaterial` in `crates/geo` — **append, never
+#: renumber**.
+SURFACE_MATERIALS = ["asphalt", "concrete", "brick", "concrete_paver", "tiles",
+                     "stone", "grass_paver", "grass", "planting", "gravel",
+                     "sand", "unpaved"]
+_MATERIAL_IX = {name: i for i, name in enumerate(SURFACE_MATERIALS)}
+
+#: `plus_fysiek_voorkomen` -> our material. This is the field that names a
+#: substance, and on the surfaces this pipeline keeps it is filled far more often
+#: than a look at `wegdeel` as a whole suggests: 2,813 of 3,393 (83%) over a
+#: square kilometre of central Groningen, 2026-08-29, against about a third when
+#: the carriageways are counted in — and the carriageways are exactly what is
+#: left to OpenStreetMap here. Anything unlisted is left unknown rather than
+#: given a nearest-looking substance, the same rule the furniture table and the
+#: tree scatter follow.
+#:
+#: What that square kilometre turned out to be, by count: 885 concrete pavers,
+#: 699 fired brick, 558 tiles, 248 asphalt, 200 decorative stone, 128 concrete,
+#: 55 grass, 34 gravel, and 580 with nothing said.
+SURFACE_PLUS_MATERIAL = {
+    "asfalt": "asphalt",
+    "cementbeton": "concrete",
+    "beton element": "concrete",
+    "gebakken klinkers": "brick",
+    "betonstraatstenen": "concrete_paver",
+    "tegels": "tiles",
+    "sierbestrating": "stone",
+    "natuursteen": "stone",
+    "grasklinkers": "grass_paver",
+    "gras- en kruidachtigen": "grass",
+    "bosplantsoen": "planting",
+    "heesters": "planting",
+    "planten": "planting",
+    "boomschors": "planting",
+    "grind": "gravel",
+    "split": "gravel",
+    "schelpen": "gravel",
+    "puin": "gravel",
+    "zand": "sand",
+}
+
+#: `fysiek_voorkomen` -> our material, for the two coarse values that name a
+#: *substance*.
+#:
+#: The other three do not, and reading them would be a guess dressed as data.
+#: `open verharding` and `gesloten verharding` describe a **construction** —
+#: laid in separate elements, or continuous — and say nothing about what the
+#: elements are: over the same three cities `gesloten verharding` resolved to
+#: asphalt 94 times and to concrete 59, so calling it either is wrong a third of
+#: the time. `half verhard` is worse: its own commonest refinement is
+#: `grasklinkers`, which is mostly lawn.
+SURFACE_COARSE_MATERIAL = {
+    "groenvoorziening": "grass",
+    "onverhard": "unpaved",
+}
+
+
+def surface_material(props):
+    """The material index for one surface, or `None` where the survey is silent.
+
+    The fine field wins where it is filled; the coarse one only speaks for the
+    two values that name a substance.
+    """
+    name = SURFACE_PLUS_MATERIAL.get(props.get("plus_fysiek_voorkomen"))
+    if name is None:
+        name = SURFACE_COARSE_MATERIAL.get(props.get("fysiek_voorkomen"))
+    return _MATERIAL_IX[name] if name else None
+
 
 #: Simplification tolerance for a surface ring, metres.
 #:
@@ -388,7 +469,7 @@ def polygon_rings(geom):
 
 def collect_surfaces(bbox, cells, cell_of):
     """`wegdeel` + `ondersteunendwegdeel` -> the paving beside the carriageway."""
-    n = dropped_level = 0
+    n = dropped_level = n_material = 0
     for collection in ("wegdeel", "ondersteunendwegdeel"):
         print(f"{collection}…", file=sys.stderr)
         for feat in items(collection, bbox):
@@ -433,12 +514,22 @@ def collect_surfaces(bbox, cells, cell_of):
                     out_rings.append(back)
                 if not out_rings:
                     continue
-                cell_of(tuple(out_rings[0][0]))["surfaces"].append(
-                    [_SURFACE_IX[form], out_rings])
+                # The material is appended, never inserted: a reader that
+                # predates it sees the two-element form it already understood,
+                # and a cached cell from before this change still parses.
+                entry = [_SURFACE_IX[form], out_rings]
+                material = surface_material(props)
+                if material is not None:
+                    entry.append(material)
+                    n_material += 1
+                cell_of(tuple(out_rings[0][0]))["surfaces"].append(entry)
                 n += 1
     if dropped_level:
         print(f"  {dropped_level} surfaces above or below ground level were "
               f"dropped (bridges and tunnels)", file=sys.stderr)
+    if n:
+        print(f"  {n_material} of {n} surfaces carry a material "
+              f"({100 * n_material // n}%)", file=sys.stderr)
     return n
 
 
@@ -509,6 +600,7 @@ def build(rd_bbox, out_dir, name):
         "kinds": PROP_KINDS,
         "line_kinds": LINE_KINDS,
         "surface_kinds": SURFACE_KINDS,
+        "surface_materials": SURFACE_MATERIALS,
         "cells": sorted([cx, cy] for (cx, cy) in written),
         "tree_count": n_trees,
         "prop_count": n_props,
