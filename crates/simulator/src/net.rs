@@ -89,18 +89,47 @@ async fn authenticate(
     conn: &Arc<Mutex<rusqlite::Connection>>,
     sessions: &crate::auth::Sessions,
     auth: &AuthCredential,
-) -> Option<(uuid::Uuid, String)> {
+) -> Result<(uuid::Uuid, String), AuthRefusal> {
     match auth {
-        AuthCredential::Token(token) => sessions.resolve(token),
+        AuthCredential::Token(token) => sessions.resolve(token).ok_or(AuthRefusal::BadCredential),
         AuthCredential::Password { username, password } => {
             let stored = {
-                let guard = conn.lock().ok()?;
-                crate::auth::lookup_account(&guard, username).ok()?
+                let guard = conn.lock().map_err(|_| AuthRefusal::BadCredential)?;
+                crate::auth::lookup_credential(&guard, username)
+                    .map_err(|_| AuthRefusal::BadCredential)?
             };
-            let (principal, phc) = stored?;
-            crate::auth::verify_password_bounded(password.clone(), phc)
-                .await
-                .then(|| (principal, username.clone()))
+            let stored = stored.ok_or(AuthRefusal::BadCredential)?;
+            if !crate::auth::verify_password_bounded(password.clone(), stored.phc).await {
+                return Err(AuthRefusal::BadCredential);
+            }
+            // Only now, with the password proved, may the account's state be
+            // reported: telling an unauthenticated caller "confirm your email"
+            // would answer "does this username have a pending registration?" for
+            // anyone who asked.
+            if stored.email_pending {
+                return Err(AuthRefusal::EmailUnconfirmed);
+            }
+            Ok((stored.principal, username.clone()))
+        }
+    }
+}
+
+/// Why a handshake was refused. Two outcomes, deliberately: one of them is the
+/// person's own fault and unfixable by them, and the other is a link sitting in
+/// their inbox — reporting both as "authentication failed" is how somebody spends
+/// an evening retyping a password that was right all along.
+enum AuthRefusal {
+    BadCredential,
+    EmailUnconfirmed,
+}
+
+impl AuthRefusal {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::BadCredential => "authentication failed",
+            Self::EmailUnconfirmed => {
+                "confirm your email address first — check your inbox for the link"
+            }
         }
     }
 }
@@ -286,15 +315,16 @@ pub async fn handle_connection<T: FrameTransport>(
     // ADR-016: authenticate before any world traffic. No snapshot or mutating
     // message is served until this succeeds.
     let (principal, username) = match authenticate(&conn, &sessions, &auth).await {
-        Some(p) => p,
-        None => {
+        Ok(p) => p,
+        Err(refusal) => {
+            let message = refusal.message();
             let err = encode_app_frame(&NetMessage::ServerError {
                 request_id: 0,
                 code: 401,
-                message: "authentication failed".into(),
+                message: message.into(),
             })?;
             framed.send(Bytes::from(err)).await?;
-            return Err(anyhow::anyhow!("authentication failed"));
+            return Err(anyhow::anyhow!("{message}"));
         }
     };
     let session_token = sessions.issue(principal, &username);

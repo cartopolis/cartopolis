@@ -46,6 +46,69 @@ pub struct SimConfig {
     /// text editor and `>>` are good at.
     #[serde(default)]
     pub moderation_words_file: Option<String>,
+    /// Whether strangers may create their own accounts (`POST /api/register`).
+    ///
+    /// On by default, and only reachable at all when `http_listen` is set — the
+    /// listener is the opt-in, and a server that has published an HTTP surface
+    /// for the web client has already decided to have players it did not create
+    /// by hand. An operator running a private world turns this off and keeps
+    /// `--create-admin` plus the admin API.
+    #[serde(default = "default_registration_open")]
+    pub registration_open: bool,
+    /// SMTP relay for the verification mail, e.g.
+    /// `smtps://user:pass@smtp.example.com:465`. Unset means the mailer logs each
+    /// message instead of sending it (`mail`'s module note) — which is the dev
+    /// loop, and is loudly wrong in production.
+    #[serde(default)]
+    pub smtp_url: Option<String>,
+    /// Envelope sender for that mail. Most relays refuse to send as anything but
+    /// an address they have been told belongs to you.
+    #[serde(default = "default_mail_from")]
+    pub mail_from: String,
+    /// Display name beside it.
+    #[serde(default = "default_mail_from_name")]
+    pub mail_from_name: String,
+    /// Public origin of the web app, which verification links are built against
+    /// — e.g. `https://web.cartopolis.org`. Never taken from the request's `Host`
+    /// header; see [`crate::mail::MailConfig::public_base_url`].
+    #[serde(default = "default_public_base_url")]
+    pub public_base_url: String,
+    /// Whether an account may claim a house (`houses`).
+    #[serde(default = "default_house_claims_open")]
+    pub house_claims_open: bool,
+    /// The one municipality whose addresses may be claimed.
+    ///
+    /// Groningen because that is where the world is: the client's 3DBAG cells,
+    /// the seeded region and every fixture are there, and an address claimed in
+    /// Maastricht would be a row in a table with nothing on the map behind it.
+    /// A single name rather than a list, because widening it is a decision about
+    /// map coverage and should be made once the coverage exists.
+    #[serde(default = "default_claim_municipality")]
+    pub claim_municipality: String,
+}
+
+fn default_house_claims_open() -> bool {
+    true
+}
+
+fn default_claim_municipality() -> String {
+    "Groningen".into()
+}
+
+fn default_registration_open() -> bool {
+    true
+}
+
+fn default_mail_from() -> String {
+    crate::mail::MailConfig::default().from
+}
+
+fn default_mail_from_name() -> String {
+    crate::mail::MailConfig::default().from_name
+}
+
+fn default_public_base_url() -> String {
+    crate::mail::MailConfig::default().public_base_url
 }
 
 fn default_listen() -> String {
@@ -91,6 +154,13 @@ impl Default for SimConfig {
             texture_dir: default_texture_dir(),
             moderation_words: default_moderation_words(),
             moderation_words_file: None,
+            registration_open: default_registration_open(),
+            smtp_url: None,
+            mail_from: default_mail_from(),
+            mail_from_name: default_mail_from_name(),
+            public_base_url: default_public_base_url(),
+            house_claims_open: default_house_claims_open(),
+            claim_municipality: default_claim_municipality(),
         }
     }
 }
@@ -122,6 +192,22 @@ impl SimConfig {
             .with_context(|| format!("read moderation_words_file {path}"))?;
         self.moderation_words = text.lines().map(str::to_string).collect();
         Ok(())
+    }
+
+    /// The mail settings, gathered into the shape `mail::Mailer` takes.
+    ///
+    /// Flat on `SimConfig` rather than a `[mail]` table because every one of
+    /// these is set from the environment on the deployed sim (`CARTO_SMTP_URL`,
+    /// `CARTO_MAIL_FROM`, …), and figment's env provider addresses a nested table
+    /// through a separator nobody would guess from reading this file.
+    #[must_use]
+    pub fn mail(&self) -> crate::mail::MailConfig {
+        crate::mail::MailConfig {
+            smtp_url: self.smtp_url.clone(),
+            from: self.mail_from.clone(),
+            from_name: self.mail_from_name.clone(),
+            public_base_url: self.public_base_url.clone(),
+        }
     }
 
     /// The compiled chat filter. Built per caller — it is a few dozen short

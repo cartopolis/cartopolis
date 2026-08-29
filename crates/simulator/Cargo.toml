@@ -26,6 +26,22 @@ bytes.workspace = true
 clap.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
 figment = { workspace = true, features = ["toml", "env"] }
+# Outbound mail (account verification). `native-tls` is out of the default set
+# deliberately: it means OpenSSL, and this workspace is rustls everywhere for the
+# reason the client's dependency note gives. `tokio1-rustls-tls` selects rustls +
+# ring + webpki-roots, all three of which are already in the tree.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "hostname",
+    "pool",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls-tls",
+] }
+# Only to install the process-wide `CryptoProvider` rustls 0.23 refuses to pick
+# for itself. Without it the first TLS connection to the mail relay panics —
+# compiles perfectly, dies when somebody registers.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 glam.workspace = true
 mlua.workspace = true
 refinery = { workspace = true }
@@ -37,6 +53,11 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+# Address lookups for house claims (`houses`), against PDOK's two keyless
+# services. Blocking, and called from `spawn_blocking`: it is what the rest of
+# this workspace already fetches with, and an async client for two requests would
+# put a second TLS stack in the tree to save two threads.
+ureq.workspace = true
 cartopolis_core = { path = "../core" }
 
 [dev-dependencies]
@@ -44,9 +65,6 @@ tempfile = "3.0"
 # A WebSocket *client*, for the test that proves the browser carrier reaches the
 # same handshake the TCP one does. Test-only: the server half is axum's.
 tokio-tungstenite.workspace = true
-# Blocking HTTP for the admin-API test. Already a workspace dependency (the
-# client's tile fetch), so this costs the tree nothing new.
-ureq.workspace = true
 
 [lints]
 workspace = true

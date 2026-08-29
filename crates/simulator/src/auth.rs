@@ -96,22 +96,63 @@ fn account_id(conn: &Connection, username: &str) -> anyhow::Result<Option<Uuid>>
     Ok(raw.and_then(|s| Uuid::parse_str(&s).ok()))
 }
 
-/// The stored `(principal, password hash)` for a username, if the account exists
-/// and is enabled.
+/// The stored credential for a username, if the account exists and an operator
+/// has not disabled it.
 ///
 /// The half of [`verify_credentials`] that needs the database, split out so a
 /// caller can drop the connection guard before spending 20 ms of argon2 on the
 /// answer. Returning the PHC string to the caller is not a leak of anything the
 /// caller could not already read — it holds the connection.
-pub fn lookup_account(conn: &Connection, username: &str) -> anyhow::Result<Option<(Uuid, String)>> {
-    let row: Option<(String, String)> = conn
+///
+/// A registration awaiting its email is returned here, flagged, rather than
+/// hidden: the caller has to check the password *before* it may say anything
+/// about the account's state, or "confirm your email first" becomes a way for a
+/// stranger to find out which usernames have unconfirmed registrations against
+/// them. Both sign-in paths follow that order.
+pub fn lookup_credential(
+    conn: &Connection,
+    username: &str,
+) -> anyhow::Result<Option<StoredCredential>> {
+    let row: Option<(String, String, Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT id, pw_hash FROM accounts WHERE username = ?1 AND disabled = 0",
+            "SELECT id, pw_hash, email, email_verified_at FROM accounts
+             WHERE username = ?1 AND disabled = 0",
             [username],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    Ok(row.and_then(|(id, hash)| Uuid::parse_str(&id).ok().map(|id| (id, hash))))
+    Ok(row.and_then(|(id, phc, email, verified_at)| {
+        Uuid::parse_str(&id).ok().map(|principal| StoredCredential {
+            principal,
+            phc,
+            email_pending: email.is_some() && verified_at.is_none(),
+        })
+    }))
+}
+
+/// What [`lookup_credential`] found.
+#[derive(Debug, Clone)]
+pub struct StoredCredential {
+    pub principal: Uuid,
+    /// The argon2id PHC string to verify against.
+    pub phc: String,
+    /// A self-service registration whose address has not answered yet
+    /// (`registration`'s module note defines it). An operator-made account has no
+    /// email and is never pending.
+    pub email_pending: bool,
+}
+
+/// The stored `(principal, password hash)` for a username, if the account is one
+/// that may sign in at all — enabled, and not a registration still waiting on its
+/// email.
+///
+/// The narrow accessor, for callers that have no way to *report* a pending
+/// account and would otherwise treat one as signable-in. Sign-in paths want
+/// [`lookup_credential`].
+pub fn lookup_account(conn: &Connection, username: &str) -> anyhow::Result<Option<(Uuid, String)>> {
+    Ok(lookup_credential(conn, username)?
+        .filter(|c| !c.email_pending)
+        .map(|c| (c.principal, c.phc)))
 }
 
 /// One account as the admin API reports it. Deliberately carries no `pw_hash`:
@@ -124,6 +165,15 @@ pub struct AccountRow {
     pub disabled: bool,
     pub admin: bool,
     pub created_at: String,
+    /// Present only on self-registered accounts; an operator makes accounts
+    /// without one. This *is* personal data, and it is on the admin surface
+    /// because the operator is the person who has to answer a deletion request
+    /// and needs to be able to find the account it names.
+    pub email: Option<String>,
+    /// `false` while a registration is still waiting on its address. Distinct
+    /// from `disabled`: that is the operator's switch, this is the email gate,
+    /// and an account can be stopped by either.
+    pub email_pending: bool,
 }
 
 /// Every account, oldest first. The store is a few hundred rows at most, so this
@@ -131,16 +181,21 @@ pub struct AccountRow {
 /// nobody has.
 pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, username, disabled, admin, created_at FROM accounts ORDER BY created_at, username",
+        "SELECT id, username, disabled, admin, created_at, email, email_verified_at
+         FROM accounts ORDER BY created_at, username",
     )?;
     let rows = stmt
         .query_map([], |r| {
+            let email: Option<String> = r.get(5)?;
+            let verified_at: Option<String> = r.get(6)?;
             Ok(AccountRow {
                 id: r.get(0)?,
                 username: r.get(1)?,
                 disabled: r.get::<_, i64>(2)? != 0,
                 admin: r.get::<_, i64>(3)? != 0,
                 created_at: r.get(4)?,
+                email_pending: email.is_some() && verified_at.is_none(),
+                email,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -151,15 +206,20 @@ pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
 pub fn get_account(conn: &Connection, id: &str) -> anyhow::Result<Option<AccountRow>> {
     let row = conn
         .query_row(
-            "SELECT id, username, disabled, admin, created_at FROM accounts WHERE id = ?1",
+            "SELECT id, username, disabled, admin, created_at, email, email_verified_at
+             FROM accounts WHERE id = ?1",
             [id],
             |r| {
+                let email: Option<String> = r.get(5)?;
+                let verified_at: Option<String> = r.get(6)?;
                 Ok(AccountRow {
                     id: r.get(0)?,
                     username: r.get(1)?,
                     disabled: r.get::<_, i64>(2)? != 0,
                     admin: r.get::<_, i64>(3)? != 0,
                     created_at: r.get(4)?,
+                    email_pending: email.is_some() && verified_at.is_none(),
+                    email,
                 })
             },
         )
@@ -656,7 +716,7 @@ fn cutoff(ttl: Duration) -> u64 {
 
 /// What the map and the table are keyed by: a hash, so neither is worth stealing.
 /// Blake2s over sha2 only because argon2 already brings it into the build.
-fn token_hash(token: &str) -> String {
+pub(crate) fn token_hash(token: &str) -> String {
     let digest = Blake2s256::digest(token.as_bytes());
     let mut s = String::with_capacity(64);
     for b in digest {
@@ -678,7 +738,11 @@ fn evict_oldest(map: &mut HashMap<String, Session>) -> Option<String> {
 }
 
 /// 256-bit random token, hex-encoded.
-fn random_token() -> String {
+///
+/// Shared with `registration`: a verification link is a bearer credential that
+/// activates an account, so it is generated and stored exactly the way a session
+/// token is rather than by a second, weaker recipe next to this one.
+pub(crate) fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     let mut s = String::with_capacity(64);
@@ -693,14 +757,12 @@ mod tests {
     use super::*;
 
     fn mem_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, \
-             pw_hash TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, \
-             created_at TEXT NOT NULL DEFAULT (datetime('now')), \
-             admin INTEGER NOT NULL DEFAULT 0);",
-        )
-        .unwrap();
+        // The real migrations, not a hand-written approximation of them: this
+        // block drifted behind production the moment `accounts` grew a column,
+        // and a suite passing against a schema that no longer exists is worse
+        // than one that fails.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&mut conn).unwrap();
         conn
     }
 
