@@ -232,6 +232,70 @@ async function deployMain(issueNumber: number) {
   }
 }
 
+
+/**
+ * The newest commit on `main` that Actions ran for, and how those jobs ended.
+ *
+ * Not simply `main`'s head: the CI workflow ignores `docs/**` and `*.md`, so a
+ * documentation merge leaves a head with no jobs at all, which is
+ * indistinguishable from a commit whose run never started. Walking back to the
+ * newest commit that *was* built is what "is main broken?" actually means.
+ */
+async function mainVerdict(): Promise<{ sha: string; failed: [string, string][] } | null> {
+  const d = await api(`/actions/tasks?limit=50`, {}, MERGE_TOKEN ?? TOKEN);
+  const runs = (d.workflow_runs ?? []).filter((r: any) => r.head_branch === "main" && r.event === "push");
+  if (!runs.length) return null;
+  const sha = runs[0].head_sha;
+  const jobs = runs.filter((r: any) => r.head_sha === sha);
+  if (jobs.some((r: any) => ["waiting", "running", "blocked"].includes(r.status))) return null;
+  return {
+    sha,
+    failed: jobs.filter((r: any) => r.status !== "success").map((r: any) => [r.status, r.name] as [string, string]),
+  };
+}
+
+/**
+ * A broken `main` outranks the frontier. Nothing can be shipped from it — both
+ * this and tools/deploy-main refuse — so filing anything else first is filing
+ * work that cannot land.
+ */
+async function fileRedMainTicket(): Promise<"filed" | "known" | "green"> {
+  const verdict = await mainVerdict();
+  if (!verdict || !verdict.failed.length) return "green";
+
+  const key = `main-red-${verdict.sha.slice(0, 8)}`;
+  if (await alreadyFiled(key)) {
+    // Asked already. Still a stop: nothing filed now could land on this `main`.
+    log(`main is red on ${verdict.sha.slice(0, 8)} and a ticket for it exists — waiting`);
+    return "known";
+  }
+
+  const jobs = verdict.failed.map(([st, name]) => `- \`${name}\` — ${st}`).join("\n");
+  const issue = requireIssue(await api(`/issues`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: `main is red on ${verdict.sha.slice(0, 8)}`,
+      labels: await labelIds([AUTONOMOUS, FILED_BY_AUTOPILOT, ...(( await config()).ship ? [SHIP] : [])]),
+      body: [
+        `The last commit on \`main\` that CI ran for is \`${verdict.sha.slice(0, 8)}\`, and it did not pass:`,
+        "",
+        jobs,
+        "",
+        "Nothing can be deployed while this stands — `tools/deploy-main` gates on it — so this",
+        "comes before anything on the frontier.",
+        "",
+        "Read the failing job's log, reproduce it locally, and fix the cause. If the failure is",
+        "the runner rather than the code (a flake, a cache miss, a missing tool), say so on this",
+        "ticket and close it rather than changing code to suit it.",
+        "",
+        `<sub>Filed by the autopilot. <!-- autopilot:${key} --></sub>`,
+      ].join("\n"),
+    }),
+  }));
+  log(`filed #${issue.number}: main is red on ${verdict.sha.slice(0, 8)}`);
+  return "filed";
+}
+
 // --- filing the next ticket --------------------------------------------------
 //
 // The frontier lives in docs/direction.md as a table, read from `main` over the
@@ -275,6 +339,13 @@ async function alreadyFiled(key: string): Promise<boolean> {
 
 async function generate(cfg: Config) {
   if (!cfg.enabled) return log("filing is off (enabled: false)");
+  // A red `main` comes before everything, and it bypasses both the daily quota
+  // and the one-at-a-time rule on purpose: every branch is cut from `main`, so
+  // while it is broken each new ticket inherits the failure and stalls at its
+  // own CI. This is not more work, it is the thing that lets work land.
+  const red = await fileRedMainTicket();
+  if (red !== "green") return;
+
   const state = await loadState();
   if (state.day !== today()) {
     state.day = today();
@@ -329,14 +400,14 @@ async function generate(cfg: Config) {
       `<sub>Filed by the autopilot. <!-- autopilot:${row.key} --></sub>`,
     ].join("\n");
 
-    const issue = await api(`/issues`, {
+    const issue = await requireIssue(await api(`/issues`, {
       method: "POST",
       body: JSON.stringify({
         title: `${row.source}: is it worth wiring in?`,
         body,
         labels: await labelIds([AUTONOMOUS, FILED_BY_AUTOPILOT, ...(cfg.ship ? [SHIP] : [])]),
       }),
-    });
+    }));
     log(`filed #${issue.number}: ${row.source}`);
     state.filed++;
     state.keys.push(row.key);
@@ -346,6 +417,24 @@ async function generate(cfg: Config) {
 
   await saveState(state);
   log("nothing left on the frontier that has not been filed");
+}
+
+
+/**
+ * A created issue, or a hard error.
+ *
+ * Worth the four lines: `FORGEJO_REPO` held the repository's **old** name, and
+ * Forgejo answers an API call on a renamed repository with a redirect — which
+ * turns a POST into a GET, so creating an issue returned the issue *list* with
+ * status 200 and no `number` in it. The autopilot then recorded a ticket it had
+ * not filed and moved on to the next frontier row. Anything that must create
+ * something checks that it did.
+ */
+function requireIssue(res: any): any {
+  if (!res || typeof res.number !== "number") {
+    throw new Error(`issue was not created (got ${JSON.stringify(res).slice(0, 200)}) — is FORGEJO_REPO the current name?`);
+  }
+  return res;
 }
 
 // --- label plumbing ----------------------------------------------------------
