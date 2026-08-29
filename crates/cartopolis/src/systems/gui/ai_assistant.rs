@@ -587,6 +587,9 @@ fn run_tool(
                     surface: PrimSurface::default(),
                     geometry: geom.geometry(),
                     geo,
+                    // The assistant has no vocabulary for an emitter; a prim it
+                    // makes has none.
+                    particles: None,
                 },
             );
             format!("Created '{}' (sent to server)", prim_name)
@@ -663,6 +666,10 @@ fn run_tool(
                     surface: cur_surface,
                     geometry: new_geom.geometry(),
                     geo,
+                    // Carried over, like every other field the tool call did not
+                    // mention: `UpdatePrim` replaces the whole prim, so an
+                    // unmentioned emitter must be re-sent or it is removed.
+                    particles: existing.and_then(|(_, p, _)| p.particles),
                 },
             );
             format!("Updated prim {} (sent to server)", prim_id)

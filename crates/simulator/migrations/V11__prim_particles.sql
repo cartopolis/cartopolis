@@ -1,0 +1,13 @@
+-- A prim's particle emitter (protocol v20).
+--
+-- One JSON column rather than fourteen REAL ones, and that is a departure from
+-- how every other prim field is stored here. The reason is what the value is: an
+-- emitter is a *description handed to a shader*, consumed as a block by exactly
+-- one reader, and no query will ever filter or sort on the size a particle fades
+-- to. Fourteen columns would be fourteen more names in `PRIM_COLUMNS`, fourteen
+-- more placeholders in `update_prim`, and a migration every time the effect grows
+-- a knob — for a value that is only ever read and written whole.
+--
+-- NULL means "no emitter", which is what almost every prim is, and it is also
+-- what a row written before this migration says with no backfill needed.
+ALTER TABLE prims ADD COLUMN particles TEXT;
