@@ -39,6 +39,7 @@ pub fn prim_picking(
     // against.
     geo_cameras: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    online: Option<Res<crate::resources::OnlineSession>>,
 ) {
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
     if egui_manager.ctx.egui_wants_pointer_input() {
@@ -111,7 +112,35 @@ pub fn prim_picking(
             // A gizmo handle drag started on this click (it runs first) — keep the
             // current selection instead of treating the arm click as a world click.
         } else if let Some((entity, prim, _)) = hit_prim {
-            if shift {
+            // A scripted prim is a *control*, so a plain click works it rather
+            // than selecting it — Second Life's rule, and the one everybody
+            // expects: you click the button, you do not select the button.
+            //
+            // Before this, pressing something needed the right-click menu's Touch
+            // entry or walking within arm's reach and pressing E, and the beacon
+            // on the Grote Markt is what proved that is not discoverable — the
+            // person it was built for went looking and could not work it.
+            //
+            // Shift-click still selects (it is already the selection modifier),
+            // and the right-click menu still has Edit and Script, so a builder
+            // loses nothing. The selection is deliberately left alone here: a
+            // click that both fired a handler and moved the edit target would be
+            // two actions on one press.
+            if prim.scripted && !shift {
+                if let Some(session) = online.as_ref() {
+                    session.send(
+                        "touch prim",
+                        cartopolis_core::NetMessage::TouchPrim {
+                            request_id: 0,
+                            prim_id: prim.id,
+                        },
+                    );
+                    tracing::debug!(prim_id = prim.id, "prim touched");
+                }
+                // Offline there is no script to run and nothing to say: a scripted
+                // prim cannot exist without a server, so this is unreachable
+                // rather than a silent failure.
+            } else if shift {
                 // Shift+click: toggle this prim in the selection.
                 if selected_query.get(entity).is_ok() {
                     commands.entity(entity).remove::<Selected>();
