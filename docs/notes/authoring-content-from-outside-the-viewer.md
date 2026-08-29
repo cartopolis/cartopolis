@@ -148,10 +148,45 @@ person. It is deliberately **not** in `PrimDto` — no client has a use for it, 
 putting an account id on an object every observer receives twenty times a second
 is a privacy decision nobody asked for.
 
-**What this does not do**, and should not be mistaken for: it is not an
-authorisation model for *editing*. `UpdatePrim` and `DeletePrim` are still open to
-any connected client, exactly as they were. Owning a prim currently means one
-thing — you can export it.
+## Ownership gates editing, and an admin overrides it
+
+`UpdatePrim`, `DeletePrim` and `SetPrimScript` are refused unless the caller owns
+the prim or is an admin. Before this they were open to any connected client:
+anything anybody built could be moved, recoloured, rescripted or deleted by
+anybody else.
+
+`SetPrimScript` is the same gate rather than a lesser one, and that is the point
+worth remembering — a script can move a prim, rename it, set it alight and delete
+it, so being allowed to script somebody else's object is the most complete way to
+take it over.
+
+**An unowned prim belongs to the server**, so only an admin may change it. That is
+everything built before schema V15 and everything a content pack installs, and it
+is the deliberate side of a trade: treating "no owner" as "anybody's" would leave
+the firebird and the beacon deletable by any passer-by. An operator re-homes a
+genuinely orphaned build with `POST /api/content/transfer`.
+
+The admin flag is read **once, at the handshake**, not per edit. That is the same
+freshness `disabled` already has — `Sessions` is keyed by token with no principal
+index, so revoking either takes effect on the next `ClientHello` — and it keeps
+SQLite off a path that `UpdatePrim` walks at the gizmo's drag rate. The owner map
+is in memory for the same reason (`SimWorld::owners`, loaded at startup and
+maintained beside `scripted`).
+
+### A refusal has to carry the truth
+
+This is the half that is easy to miss. The edit dialog and the gizmo both apply a
+change **locally** before the server answers, deliberately, for the feel of it. So
+a refused client is left drawing something that never happened — a prim moved
+where the world does not have it, or, on a refused delete, despawned locally while
+the server still has it. Nothing would correct that: `PrimUpsert` is only
+broadcast when something *changes*, and a refusal changes nothing.
+
+So the server sends the authoritative prim straight after the 403
+(`net::refuse_and_correct`), and the client deselects on that code before applying
+it. The order matters and is not incidental: the client deliberately ignores
+upserts for the prim the local user is manipulating, so without the deselect the
+correction would be the one message it throws away.
 
 ### The document is a canned request
 
