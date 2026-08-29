@@ -42,7 +42,8 @@ today.
 **Wired:** OpenStreetMap (vector tiles + Overpass) · 3DBAG LoD2.2 buildings ·
 BAG building register, addresses and entrances · BGT street objects and paving ·
 AHN ground relief · OVapi live transit · RCE listed buildings and protected
-districts · a single IFC building model · forecast weather.
+districts · a single IFC building model · forecast weather ·
+PDOK aerial imagery (off by default — [notes](notes/aerial-imagery.md)).
 
 **Candidates, unverified.** Nobody has yet confirmed the interface, the licence
 or the volume for these — that check is the first half of the ticket, and
@@ -50,7 +51,6 @@ or the volume for these — that check is the first half of the ticket, and
 
 | Source | What it would add |
 |---|---|
-| PDOK aerial imagery | true-colour ground at the scale the drawn map cannot reach |
 | BGT, the remaining layers | the surveyed surfaces not yet read |
 | NWB road network | measured carriageways, and bridge and tunnel geometry |
 | NDW traffic | real vehicle counts in place of invented ambient traffic |

@@ -35,19 +35,77 @@ use std::sync::{Arc, Mutex, OnceLock};
 use futures_channel::oneshot;
 
 use crate::platform::{http, storage};
+use cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE;
 use cartopolis_core::TileKey;
 use cartopolis_core::{format_osm_tile_url, tile_source_kind, TileSourceKind};
 
+/// Which *source* a tile body came from, as a short stable slug.
+///
+/// The kind alone was the identity until the aerial basemap
+/// ([`crate::systems::aerial`]) made two raster sources reachable in one run, and
+/// two raster sources at one key collide — a PDOK photograph served to a consumer
+/// asking for the drawn map, and the wrong one of the two persisted to disk under
+/// the other's path. The vector/raster split was never the general answer; it was
+/// the only distinction that had ever been needed.
+///
+/// Derived from the template rather than passed in, so every existing call site
+/// keeps its signature and no caller can forget to say which source it meant. The
+/// hash is **FNV-1a and not `DefaultHasher`**: this ends up in an on-disk path
+/// that has to mean the same thing on the next run and in the next toolchain, and
+/// `DefaultHasher`'s output is explicitly not stable across either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceId(u64);
+
+impl SourceId {
+    /// The identity of whatever `template` addresses. An empty template is the
+    /// built-in default ([`format_osm_tile_url`] substitutes it), so the two must
+    /// hash alike or an unconfigured run and a configured-to-the-default one keep
+    /// two copies of the same bytes.
+    #[must_use]
+    pub fn of(template: &str) -> Self {
+        let template = if template.is_empty() {
+            DEFAULT_TILE_URL_TEMPLATE
+        } else {
+            template
+        };
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in template.as_bytes() {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+        Self(hash)
+    }
+
+    fn slug(self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
 /// On-disk cache path for a tile, under the app's `cache/` folder (persists across
 /// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
-/// The extension tracks the source kind so a raster and a vector cache can coexist
-/// (and so switching sources doesn't serve MVT bytes to the PNG decoder).
-pub(crate) fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
+///
+/// Two segments carry the identity. The extension tracks the source kind so
+/// switching sources doesn't serve MVT bytes to the PNG decoder, and the
+/// [`SourceId`] slug separates two sources *of the same kind* — which is what the
+/// aerial basemap made possible, and what a `CARTO_TILE_URL` raster basemap
+/// already made possible against it.
+///
+/// Adding the slug orphans whatever a previous build left under `tiles/{z}/…`.
+/// That costs one re-fetch per tile and nothing else: `utils::cache::sweep` bounds
+/// the whole tree by bytes, oldest first, so the orphans are reclaimed rather than
+/// kept forever.
+pub(crate) fn tile_cache_key(key: &TileKey, kind: TileSourceKind, source: SourceId) -> String {
     let ext = match kind {
         TileSourceKind::Raster => "png",
         TileSourceKind::Vector => "mvt",
     };
-    format!("tiles/{}/{}/{}.{ext}", key.z, key.x, key.y)
+    format!(
+        "tiles/{}/{}/{}/{}.{ext}",
+        source.slug(),
+        key.z,
+        key.x,
+        key.y
+    )
 }
 
 /// Ceiling on the in-memory byte cache.
@@ -60,13 +118,15 @@ pub(crate) fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
 /// one edit moves it when someone does.
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
-/// What identifies a cached body. Carries the [`TileSourceKind`] for the same
-/// reason [`tile_cache_key`] does: a source switch must not hand MVT
-/// bytes to the PNG decoder.
+/// What identifies a cached body. Carries the [`TileSourceKind`] and the
+/// [`SourceId`] for the same reason [`tile_cache_key`] does: a source switch must
+/// not hand MVT bytes to the PNG decoder, and two sources of the same kind must
+/// not hand each other's pixels round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     pub key: TileKey,
     pub kind: TileSourceKind,
+    pub source: SourceId,
 }
 
 /// One cached-and-coalesced byte source.
@@ -237,9 +297,16 @@ fn shared() -> &'static TileSource {
 /// call-site change.
 pub async fn tile_bytes(key: &TileKey, template: &str) -> Result<Arc<Vec<u8>>, String> {
     let kind = tile_source_kind(template);
-    let ck = CacheKey { key: *key, kind };
+    let source = SourceId::of(template);
+    let ck = CacheKey {
+        key: *key,
+        kind,
+        source,
+    };
     let (result, origin) = shared()
-        .bytes(ck, || fetch_uncached(*key, kind, template.to_string()))
+        .bytes(ck, || {
+            fetch_uncached(*key, kind, source, template.to_string())
+        })
         .await;
     if origin != Origin::Fetched {
         tracing::trace!(tile = %key.to_path(), ?origin, "tile bytes served without a fetch");
@@ -254,9 +321,10 @@ pub async fn tile_bytes(key: &TileKey, template: &str) -> Result<Arc<Vec<u8>>, S
 async fn fetch_uncached(
     key: TileKey,
     kind: TileSourceKind,
+    source: SourceId,
     template: String,
 ) -> Result<Vec<u8>, String> {
-    let cache_key = tile_cache_key(&key, kind);
+    let cache_key = tile_cache_key(&key, kind, source);
     if let Some(bytes) = storage::get(storage::Namespace::Cache, &cache_key).await {
         if !bytes.is_empty() {
             return Ok(bytes);
@@ -279,6 +347,7 @@ mod tests {
         CacheKey {
             key: TileKey::new(x, 0, 14),
             kind: TileSourceKind::Vector,
+            source: SourceId::of(""),
         }
     }
 
@@ -411,14 +480,65 @@ mod tests {
         let vector = CacheKey {
             key: k,
             kind: TileSourceKind::Vector,
+            source: SourceId::of(""),
         };
         let raster = CacheKey {
-            key: k,
             kind: TileSourceKind::Raster,
+            ..vector
         };
         let _ = run(source.bytes(vector, || async { Ok(b"mvt".to_vec()) }));
         let (r, origin) = run(source.bytes(raster, || async { Ok(b"png".to_vec()) }));
         assert_eq!(origin, Origin::Fetched, "a kind switch reused cached bytes");
         assert_eq!(r.unwrap().as_slice(), b"png");
+    }
+
+    /// The other half of the same rule, and the one the aerial basemap needed:
+    /// two *raster* sources at the same tile share a kind, so before [`SourceId`]
+    /// they shared a cache entry — in memory and on disk. Whichever landed first
+    /// was served to the other, so turning the photograph on could paint the
+    /// drawn map and turning it off could paint the photograph.
+    #[test]
+    fn cache_keys_separate_two_raster_sources() {
+        let drawn = "https://tiles.example.org/{z}/{x}/{y}.png";
+        let aerial = crate::systems::aerial::template();
+        assert_eq!(tile_source_kind(drawn), TileSourceKind::Raster);
+        assert_eq!(tile_source_kind(aerial), TileSourceKind::Raster);
+        assert_ne!(
+            SourceId::of(drawn),
+            SourceId::of(aerial),
+            "two raster templates share an identity"
+        );
+
+        let k = TileKey::new(8425, 5405, 14);
+        let ck = |template: &str| CacheKey {
+            key: k,
+            kind: TileSourceKind::Raster,
+            source: SourceId::of(template),
+        };
+        let source = TileSource::default();
+        let _ = run(source.bytes(ck(drawn), || async { Ok(b"drawn".to_vec()) }));
+        let (r, origin) = run(source.bytes(ck(aerial), || async { Ok(b"aerial".to_vec()) }));
+        assert_eq!(
+            origin,
+            Origin::Fetched,
+            "the second raster source reused the first's bytes"
+        );
+        assert_eq!(r.unwrap().as_slice(), b"aerial");
+
+        // …and the same separation on disk, where it survives the run.
+        assert_ne!(
+            tile_cache_key(&k, TileSourceKind::Raster, SourceId::of(drawn)),
+            tile_cache_key(&k, TileSourceKind::Raster, SourceId::of(aerial)),
+            "two raster sources write one cache path"
+        );
+    }
+
+    /// An empty template *is* the built-in default (`format_osm_tile_url`
+    /// substitutes it), so the two must not be two sources — an unconfigured run
+    /// and a configured-to-the-default one would otherwise keep two copies of
+    /// every tile and warm neither cache for the other.
+    #[test]
+    fn the_empty_template_is_the_default_source() {
+        assert_eq!(SourceId::of(""), SourceId::of(DEFAULT_TILE_URL_TEMPLATE));
     }
 }

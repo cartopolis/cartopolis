@@ -300,6 +300,21 @@ explicitly with `--height`; there is no Layers panel to tick.
 Over a Dutch city the relief is only a couple of metres and the picture barely
 changes. The Veluwe is where you see it.
 
+### Aerial photography
+
+**Map ▸ Aerial photography** swaps the drawn ground for real photographs —
+[PDOK](https://www.pdok.nl/)'s Luchtfoto RGB, 25 cm, flown in summer — under
+everything else the map draws. Off by default, and *Netherlands only* for the same
+reason Height is: outside the coverage the tiles quietly stay the drawn map, and
+nothing else changes with it. Routing, street names, water shading and both
+building layers read the vector map either way, so they behave identically.
+
+It is worth switching on close to the ground: between zoom 15 and 17 the drawn map
+is a magnified version of the deepest tiles it has, while the photographs are made
+at those scales. A headless run opts in with `--aerial`, and `CARTO_AERIAL_LAYER`
+picks a different layer — `Actueel_orthoHR` for 8 cm winter imagery, or a year from
+the archive back to 2016.
+
 ## Developer panel
 
 Open it with **Ctrl + Shift + D** (or ☰ ▸ Developer tools). It is a **readout,

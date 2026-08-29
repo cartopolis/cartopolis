@@ -90,6 +90,14 @@ url: https://www.ahn.nl/
 notice: Elevation from the Actueel Hoogtebestand Nederland, served by PDOK.
 scope: Netherlands only
 
+## Luchtfoto (Beeldmateriaal / PDOK)
+
+role: Aerial basemap imagery
+license: CC BY 4.0
+url: https://www.beeldmateriaal.nl/
+notice: Aerial photography by Beeldmateriaal Nederland, served as Luchtfoto RGB (Open) by PDOK, CC BY 4.0.
+scope: Netherlands only
+
 ## OVapi / NDOV
 
 role: Live public-transport departures and vehicle positions

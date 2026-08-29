@@ -197,6 +197,13 @@ struct Cli {
     /// since a headless run has no Layers panel to tick.
     #[arg(long)]
     height: bool,
+
+    /// Switch the **aerial basemap** on for this run (`systems::aerial`): PDOK's
+    /// Luchtfoto RGB under the clipmap instead of the drawn map, over the
+    /// Netherlands only. Same shape and same reason as `--height` — a headless
+    /// run has no Layers panel to tick. `CARTO_AERIAL_LAYER` picks the layer.
+    #[arg(long)]
+    aerial: bool,
 }
 
 /// Resolve the scripted capture the CLI asked for, if any.
@@ -1862,11 +1869,13 @@ fn run_client() {
         .init_resource::<systems::height::HeightLayer>()
         .init_resource::<systems::terrain::TerrainField>()
         .insert_resource({
-            // `--height` is the only way into the layer in a scripted run; an
-            // interactive session ticks it in the Layers panel (or restores it from
-            // `data/user.json`, which `apply_prefs` does after this).
+            // `--height` and `--aerial` are the only way into those two layers in a
+            // scripted run; an interactive session ticks them in the Layers panel
+            // (or restores them from `data/user.json`, which `apply_prefs` does
+            // after this).
             let mut layers = systems::data_layers::DataLayers::default();
             layers.height_enabled = cli.height;
+            layers.aerial_enabled = cli.aerial;
             layers
         })
         .init_resource::<systems::transit_live::TransitLive>()
@@ -2277,9 +2286,19 @@ fn run_client() {
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             // Re-anchor requests (from teleports / globe descent) drop the old
             // tiles before streaming resumes at the new origin (ADR-025).
-            systems::map_stream::apply_reanchor
-                .after(systems::geo_nav::apply_teleport)
-                .before(systems::map_stream::update_map_stream),
+            // Nested as one element to stay under Bevy's per-tuple system limit.
+            (
+                systems::map_stream::apply_reanchor
+                    .after(systems::geo_nav::apply_teleport)
+                    .before(systems::map_stream::update_map_stream),
+                // A basemap source change retears the clipmap the same way, so it
+                // has to land before the streamer refills it — and before
+                // `apply_stream_textures`, which asks the same resolved answer
+                // which source a finished tile came from.
+                systems::map_stream::apply_aerial_source
+                    .after(systems::map_stream::init_map_stream)
+                    .before(systems::map_stream::update_map_stream),
+            ),
             systems::map_stream::update_map_stream
                 .after(systems::map_stream::init_map_stream)
                 .after(systems::map_stream::apply_reanchor),

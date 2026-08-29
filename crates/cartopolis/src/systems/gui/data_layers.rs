@@ -553,6 +553,15 @@ pub struct DataLayers {
     /// sub-toggle, like Buildings: it answers only over the Netherlands, and off
     /// means every consumer falls back to the flat-ground assumption.
     pub height_enabled: bool,
+    /// Feature toggle (under Map): the **aerial basemap** (`systems::aerial`) —
+    /// PDOK's Luchtfoto RGB under the clipmap in place of the drawn one. Off by
+    /// default for the same reason the height layer is: it reaches a third
+    /// party's service and only answers over the Netherlands.
+    ///
+    /// Read by `map_stream` alone. `map_geometry`, `globe`, `navigation` and the
+    /// router keep the vector template, so nothing about the geometry, the
+    /// routing, the street labels or the water shading changes with it.
+    pub aerial_enabled: bool,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
     /// Terrain-field revision the live marker cells were built against.
@@ -676,6 +685,7 @@ impl DataLayers {
             people: self.people_enabled,
             street_detail,
             height: self.height_enabled,
+            aerial: self.aerial_enabled,
             vehicles,
             overlays: LAYER_DEFS
                 .iter()
@@ -750,6 +760,7 @@ impl DataLayers {
         self.people_enabled = p.people;
         self.street_detail_enabled = p.street_detail;
         self.height_enabled = p.height;
+        self.aerial_enabled = p.aerial;
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
             if let Some(on) = p.overlays.get(def.key) {
@@ -821,6 +832,10 @@ impl Default for DataLayers {
             // Off by default: it reaches a third party's service and only
             // answers over the Netherlands, so opting in is the honest default.
             height_enabled: false,
+            // Off for the same two reasons, plus one of its own: it *replaces* the
+            // drawn ground rather than adding to it, which is a change to how the
+            // map looks and not only to what it knows.
+            aerial_enabled: false,
             terrain_revision: 0,
             popup: None,
             anchor: None,
@@ -2401,6 +2416,18 @@ pub fn render_data_layers_panel(
                         &mut dl.street_detail_enabled,
                         egui::RichText::new("Street detail").size(theme::SIZE_SUB),
                     );
+                    ui.add_space(4.0);
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.aerial_enabled,
+                        egui::RichText::new("Aerial photography").size(theme::SIZE_SUB),
+                    );
+                    // Same rule as Height's: a toggle that silently does nothing
+                    // over Berlin is a bug report, so the panel says where it works.
+                    ui.label(
+                        egui::RichText::new("PDOK imagery — Netherlands only")
+                            .size(theme::SIZE_SUB),
+                    );
                 });
                 ui.add_space(4.0);
                 ui.separator();
@@ -2537,6 +2564,7 @@ pub fn render_data_layers_panel(
         dl.people_enabled = fresh.people_enabled;
         dl.street_detail_enabled = fresh.street_detail_enabled;
         dl.height_enabled = fresh.height_enabled;
+        dl.aerial_enabled = fresh.aerial_enabled;
     }
     if about {
         *right_panel = crate::resources::RightPanel::About;
@@ -3164,6 +3192,7 @@ mod tests {
         dl.vehicles_enabled = true;
         dl.people_enabled = !dl.people_enabled;
         dl.life_enabled = false;
+        dl.aerial_enabled = true;
         dl.layers[0].enabled = true;
 
         let json = serde_json::to_string(&dl.prefs()).unwrap();
@@ -3175,6 +3204,10 @@ mod tests {
         assert!(!restored.trees_enabled);
         assert!(restored.vehicles_enabled);
         assert!(!restored.life_enabled);
+        assert!(
+            restored.aerial_enabled,
+            "the aerial basemap must survive a save/load"
+        );
         assert_eq!(restored.people_enabled, dl.people_enabled);
         assert!(restored.layers[0].enabled);
         assert!(
