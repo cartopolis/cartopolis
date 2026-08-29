@@ -1262,23 +1262,32 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 /// Read a `vfParticles` rules table into an effect.
 ///
 /// Unspecified fields keep the preset's value, which is what makes
-/// `vfParticles{ color = {0,0.4,1} }` a blue flame rather than an error message
-/// about the eleven fields it did not mention. An **unknown** key is an error,
-/// though, and deliberately so: `vfParticles{ lifetime = 3 }` silently emitting
-/// the default 1.4 s is the kind of bug an author cannot see, and this is the
-/// same rule the shot manifest applies to its own keys.
+/// `vfParticles{ color_start = {0,0.4,1} }` a blue flame rather than an error
+/// message about the eleven fields it did not mention. An **unknown** key is an
+/// error, though, and deliberately so: `vfParticles{ lifetime = 3 }` silently
+/// emitting the default 1.4 s is the kind of bug an author cannot see, and this
+/// is the same rule the shot manifest applies to its own keys.
+///
+/// The names are **exactly** `authoring::ParticleSpec`'s, and
+/// `the_two_authoring_surfaces_use_one_vocabulary` is the test that keeps them
+/// so. They were shorter here once — `spread`, `radius`, `size`, `color` — which
+/// meant the same emitter was spelled two ways depending on whether a script or
+/// an HTTP body set it, and a person moving between them had to translate. The
+/// longer names won because they are symmetric (`size_start` beside `size_end`,
+/// where `size` beside `end_size` is not) and because `spread_deg` carries its
+/// unit, which this codebase has reason to care about.
 fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Result<ParticleEffect> {
     const KEYS: &[&str] = &[
         "count",
         "life",
         "speed",
-        "spread",
+        "spread_deg",
         "gravity",
-        "radius",
-        "size",
-        "end_size",
-        "color",
-        "end_color",
+        "source_radius",
+        "size_start",
+        "size_end",
+        "color_start",
+        "color_end",
         "alpha",
         "turbulence",
     ];
@@ -1289,10 +1298,24 @@ fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Resul
             .and_then(|s| s.to_str().ok().map(|v| v.to_string()))
             .unwrap_or_default();
         if !KEYS.contains(&name.as_str()) {
-            return Err(mlua::Error::RuntimeError(format!(
-                "particle rule `{name}` is not one of: {}",
-                KEYS.join(", ")
-            )));
+            // An old spelling gets its replacement by name rather than the whole
+            // list. These six were the script API's own names until the two
+            // authoring surfaces were reconciled, so a script written against
+            // them is somebody's real work and deserves better than "not one of:
+            // twelve things".
+            let hint = match name.as_str() {
+                "spread" => Some("spread_deg"),
+                "radius" => Some("source_radius"),
+                "size" => Some("size_start"),
+                "end_size" => Some("size_end"),
+                "color" => Some("color_start"),
+                "end_color" => Some("color_end"),
+                _ => None,
+            };
+            return Err(mlua::Error::RuntimeError(match hint {
+                Some(now) => format!("particle rule `{name}` is called `{now}` now"),
+                None => format!("particle rule `{name}` is not one of: {}", KEYS.join(", ")),
+            }));
         }
     }
 
@@ -1324,13 +1347,13 @@ fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Resul
         count: num("count", f32::from(base.count))?.clamp(0.0, 65_535.0) as u16,
         life: num("life", base.life)?,
         speed: num("speed", base.speed)?,
-        spread_deg: num("spread", base.spread_deg)?,
+        spread_deg: num("spread_deg", base.spread_deg)?,
         gravity: num("gravity", base.gravity)?,
-        source_radius: num("radius", base.source_radius)?,
-        size_start: num("size", base.size_start)?,
-        size_end: num("end_size", base.size_end)?,
-        color_start: rgb("color", base.color_start)?,
-        color_end: rgb("end_color", base.color_end)?,
+        source_radius: num("source_radius", base.source_radius)?,
+        size_start: num("size_start", base.size_start)?,
+        size_end: num("size_end", base.size_end)?,
+        color_start: rgb("color_start", base.color_start)?,
+        color_end: rgb("color_end", base.color_end)?,
         alpha: num("alpha", base.alpha)?,
         turbulence: num("turbulence", base.turbulence)?,
         burst,
