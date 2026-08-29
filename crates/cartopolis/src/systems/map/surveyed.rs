@@ -69,7 +69,16 @@ pub fn bgt_attribution() -> Option<String> {
 /// An index past the end is dropped rather than clamped: a host running a newer
 /// extractor than this client should lose the objects it has no form for, not
 /// draw them as whatever happens to sit at the end of this list.
-const PROP_KINDS: [FurnitureKind; 7] = [
+///
+/// Positions 7–9 are claimed by the second round of collections
+/// (`docs/notes/surveyed-street-objects.md`, "The other forty-two"): the `bord`,
+/// `kast` and `bak` registers. `Cabinet` was already here for `straatmeubilair`,
+/// so `kast` needs no position of its own. Nothing emits 7–9 yet — the extractor
+/// half lives in cartopy — and a client that can name a form the host never sends
+/// is the harmless direction of this seam. The reverse is not: an extractor that
+/// sends a position no client has is silently dropped content, so the client goes
+/// first.
+const PROP_KINDS: [FurnitureKind; 10] = [
     FurnitureKind::Lamp,
     FurnitureKind::Bench,
     FurnitureKind::Shelter,
@@ -77,6 +86,9 @@ const PROP_KINDS: [FurnitureKind; 7] = [
     FurnitureKind::Artwork,
     FurnitureKind::Swing,
     FurnitureKind::Cabinet,
+    FurnitureKind::Board,
+    FurnitureKind::Bin,
+    FurnitureKind::Recycling,
 ];
 
 /// The linear forms, in wire order. Mirrors `LINE_KINDS` in
@@ -638,6 +650,59 @@ mod tests {
         };
         let built = surveyed_paving(&paving, cx, cy, 1500.0);
         assert_eq!(built.len(), 1, "only the wholly-inside surface survives");
+    }
+
+    /// The prop table is a **wire order**, shared with an extractor in another
+    /// repository that nothing but a person keeps in step. Nobody notices a
+    /// renumber by reading the diff — a swapped pair compiles, parses and puts
+    /// benches where the lampposts are — so the positions are written out here
+    /// once, and moving one has to be done deliberately, twice.
+    #[test]
+    fn the_prop_wire_positions_are_pinned() {
+        assert_eq!(
+            PROP_KINDS.to_vec(),
+            vec![
+                FurnitureKind::Lamp,
+                FurnitureKind::Bench,
+                FurnitureKind::Shelter,
+                FurnitureKind::PicnicTable,
+                FurnitureKind::Artwork,
+                FurnitureKind::Swing,
+                FurnitureKind::Cabinet,
+                FurnitureKind::Board,
+                FurnitureKind::Bin,
+                FurnitureKind::Recycling,
+            ]
+        );
+        assert_eq!(
+            LINE_KINDS.to_vec(),
+            vec![LineKind::Fence, LineKind::Wall, LineKind::Hedge]
+        );
+    }
+
+    /// Both directions of the seam, in one file. A cell written before positions
+    /// 7–9 existed must read exactly as it did (the old indices cannot have
+    /// moved), and a cell written by an extractor newer than this client must
+    /// lose only the forms this build has no shape for.
+    #[test]
+    fn old_and_new_cell_files_both_parse() {
+        let old = parse_surveyed_cell(r#"{"props":[[53.2,6.5,0],[53.2,6.5,6]]}"#).expect("valid");
+        assert_eq!(old.props[0].2, FurnitureKind::Lamp);
+        assert_eq!(old.props[1].2, FurnitureKind::Cabinet);
+
+        let new = parse_surveyed_cell(
+            r#"{"props":[[53.2,6.5,7],[53.2,6.5,8],[53.2,6.5,9],
+                                                   [53.2,6.5,10]]}"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            new.props.len(),
+            3,
+            "position 10 has no form here and is dropped"
+        );
+        assert_eq!(new.props[0].2, FurnitureKind::Board);
+        assert_eq!(new.props[1].2, FurnitureKind::Bin);
+        assert_eq!(new.props[2].2, FurnitureKind::Recycling);
     }
 
     #[test]

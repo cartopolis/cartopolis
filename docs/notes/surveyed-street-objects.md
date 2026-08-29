@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [surveyed.rs, bgt_objects.py, bgt.ts, scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK]
-updated: 2026-08-28
+triggers: [surveyed.rs, bgt_objects.py, bgt.ts, scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
+updated: 2026-08-29
 ---
 
 # Streets that were actually surveyed
@@ -225,9 +225,6 @@ genuinely grey cycle path drawn red, which is much the cheaper error.
   what the tree scatter plants inside. Replacing the fills means keeping the tile
   parse for all of that anyway, and then reconciling two descriptions of the same
   ground.
-- **`scheiding_vlak`** is the boundaries that were surveyed as areas rather than
-  lines. Its `type` is empty on every feature seen so far, so there is nothing to
-  say whether one is a wall, a bank or a planter.
 - **The bank protections** in `scheiding_lijn` — `walbescherming`, `damwand`,
   `kademuur` — are dropped on purpose. They are retaining structures at the
   water's edge, and drawing them as walls would stand a metre of masonry along
@@ -236,3 +233,186 @@ genuinely grey cycle path drawn red, which is much the cheaper error.
   real and surveyed, and there is no form here that is honestly them. The rule the
   furniture table and the tree scatter already follow — an unstyled thing beats a
   wrongly styled one — applies to a data source as much as to a tag.
+
+## The other forty-two collections, gone through once
+
+The BGT publishes **49 collections** and the layer above reads **seven**. All 49
+were measured on **2026-08-29** — one page (`limit=1000`) each over 1 km² of
+central Groningen (`bbox=6.5590,53.2149,6.5740,53.2239`), and a second page over
+roughly 10 × 9 km of the city (`bbox=6.4800,53.1800,6.6300,53.2600`) for the ones
+the small box returned empty. Current versions only, i.e. after the
+`termination_date` filter.
+
+**Every "over the city" number below is one page, so it is a floor and not a
+count.** The API returns no total, so a collection whose page came back full at
+1000 features has more behind it than the figure says — `bord`, `put`, `paal`,
+`spoor` and the terrain parts are all in that state. The figures are the right
+order of magnitude for deciding whether a collection is worth reading, and the
+wrong thing to size a cache against.
+
+Two facts confirmed while doing it, and they are what a "should we?" question
+actually turns on: the interface is unchanged (`https://api.pdok.nl/lv/bgt/ogc/v1`,
+keyless, cursor-paged, no `numberMatched`, every historical version returned), and the
+licence is **CC0 1.0**, stated by the API itself in the `collections` document's
+`license` link. Caching and redistributing the cells is unambiguously allowed;
+the attribution line in `surveyed.rs` is courtesy, not obligation.
+
+### `type` is not the classifier for optional content — `plus_type` is
+
+This is the trap, and it is the one that would silently delete a whole layer.
+The core BGT collections carry their class in `type`. The **optional** ones
+(IMGeo "plus" content) carry `type: "niet-bgt"` on *every* feature and put the
+real class in `plus_type`. Measured:
+
+| Collection | `type` | `plus_type` |
+|---|---|---|
+| `scheiding_vlak` | `muur` 140, `kademuur` 71, `transitie` 12 | empty on all 223 |
+| `bord` | `niet-bgt` on all 843 | `verkeersbord` 629, `wegwijzer` 80, `informatiebord` 52, `verklikker transportleiding` 34, `scheepvaartbord` 20, `straatnaambord` 17, `plaatsnaambord` 10 |
+| `kast` | `niet-bgt` on all 162 | `elektrakast` 75, `openbare verlichtingkast` 29, `CAI-kast` 24 |
+| `bak` | `niet-bgt` on all 34 | `afvalbak` 15, `container` 11, `afval apart plaats` 7 |
+| `vegetatieobject_lijn` | `niet-bgt` on all 33 | `haag` 32 |
+
+So **"drop everything that is `niet-bgt`" is not a filter, it is a way to read
+nothing.** Four of the five collections worth reading are `niet-bgt` end to end.
+The rule is per-collection: read `type` where the register fills it, `plus_type`
+where it does not, and drop a feature only when *both* are empty.
+
+This also corrects a claim this note used to make: `scheiding_vlak`'s `type` was
+said to be "empty on every feature seen so far". It is filled on all 223 current
+features over that 1 km². It is `plus_type` that is empty there.
+
+### Central Groningen has no surveyed point objects at all
+
+Over that same 1 km² box, **every point collection returns zero current
+features**: `paal`, `straatmeubilair`, `bak`, `bord`, `put`, `kast`, `mast`,
+`sensor_punt` and `vegetatieobject_punt`. The wider city has all of them. It is
+not a bbox mistake: the *same* box returns 331 `begroeidterreindeel`, 816
+`onbegroeidterreindeel`, 223 `scheiding_vlak` and 97 `vegetatieobject_vlak`, so
+the query works and the area is well surveyed — it is the point registers
+specifically that are absent. This is the same municipality-level coverage hole
+recorded above for trees, except that it is wider than trees: it is every point
+collection there is. The densest part of the city is the part with no surveyed
+street objects in it, so a capture of the centre is the wrong place to check
+whether any of this arrived.
+
+### Worth reading: five
+
+Each has to clear the same four bars — nothing the client already reads supplies
+it, `furniture.rs` already has an honest form for it, it is visible at the scale
+the layer is drawn at, and it goes *beside* the generated layers rather than
+replacing them.
+
+| Collection | Geometry | Current, measured | Form |
+|---|---|---|---|
+| `scheiding_vlak` | Polygon | 223 over the 1 km² | `LineKind::Wall` |
+| `vegetatieobject_lijn` | LineString | 33 over the city | `LineKind::Hedge` |
+| `bord` | Point | ≥843 over the city | `FurnitureKind::Board` |
+| `kast` | Point | 162 over the city | `FurnitureKind::Cabinet` |
+| `bak` | Point | 34 over the city | `FurnitureKind::Bin` / `Recycling` |
+
+Two shape notes. `scheiding_vlak` is boundaries surveyed as **areas**, so it takes
+the same centreline reduction the area hedges take — laying boxes round the
+outline would draw both faces of every wall. Its `kademuur` and `transitie` are
+dropped: `kademuur` for exactly the reason `scheiding_lijn` already drops it (a
+metre of masonry along every canal, on the side the map draws as a bank), and
+`transitie` because it is a joining segment between two boundaries rather than a
+boundary. `vegetatieobject_lijn`, by contrast, is a hedge already surveyed as a
+**line**, so it skips that reduction and reaches `LineKind::Hedge` directly.
+
+**Open, and deliberately not decided here: `verkeersbord`.** 629 of the 843
+`bord` records are traffic signs. `FurnitureKind::Board` is an information board
+on two posts, and a traffic sign is a plate on one pole — drawing 629 of the
+first where the second stands is exactly the "wrongly styled thing" this note
+keeps arguing against, and at a density where it would be the first thing anyone
+noticed. The honest subset is `wegwijzer`, `informatiebord`, `straatnaambord`,
+`plaatsnaambord` and `reclamebord`, which is about 160 over the city — still
+worth reading. So either `bord` is taken as that subset, or `verkeersbord` waits
+for a sign form of its own. Either way it is not a reason to hold up the other
+four collections.
+
+**The client half of this has landed; the extractor half has not.** `PROP_KINDS`
+in `surveyed.rs` now names positions **7 `Board`, 8 `Bin`, 9 `Recycling`** — the
+forms `bord` and `bak` need, `kast` reusing position 6 `Cabinet`, and
+`scheiding_vlak` and `vegetatieobject_lijn` reusing `LINE_KINDS` 1 `Wall` and 2
+`Hedge`, so `LINE_KINDS` did not move. Nothing emits 7–9 yet. That order is
+deliberate and is the only safe one across this seam: a client naming a form no
+host sends costs nothing, while a host sending a position no client has is
+content that vanishes with no error anywhere. cartopy's `bgt.ts` must match those
+positions exactly when the walk is added there.
+
+### Not worth reading: the rest
+
+- **Something the client already reads supplies it.** `pand` and
+  `pand_nummeraanduiding` (BAG / 3DBAG), `spoor` (OSM's textured ribbons),
+  `waterdeel`, `ondersteunendwaterdeel`, `begroeidterreindeel`,
+  `onbegroeidterreindeel` (the tile's own fills, for the reason above), `mast` (1
+  current over the city) and `kunstwerkdeel_punt` (99 `hoogspanningsmast`) —
+  `systems::tall_structures` already streams masts and pylons from Overpass at z11
+  over ±30 km, a wider ring than a z14 cell can give them.
+- **Administrative, changes no picture.** `functioneelgebied` (69, mostly
+  `infrastructuur waterstaatswerken`), and `buurt`, `wijk`, `stadsdeel`,
+  `waterschap`, `openbareruimte` — which return no features at all over either
+  box, so there is not even a boundary to consider drawing.
+- **Too near empty to be worth a walk.** `weginrichtingselement_punt` (8 over the
+  city, and `plus_type` is empty on all 8, so there is nothing to say what they
+  are); `ongeclassificeerdobject` (2); `overigescheiding` (5, four of them with
+  no `plus_type`). The last two are *not* retired, as an earlier reading of this
+  had it — their survivors carry an ordinary `status: bestaand`. They are simply
+  almost never used.
+- **No honest form at this scale.** `put` (973 in one page over the city, 787 of
+  them `kolk` — a gully grate is a texture, not geometry), `weginrichtingselement_vlak`
+  (101, 100 of them `rooster`, gratings, for the same reason — and note it reads
+  as *empty* over the 1 km² box, which is the coverage hole and not the truth),
+  `weginrichtingselement_lijn` (15 / km², all `molgoot` — a gutter channel finer
+  than the paving layer's own 10 cm simplification), `sensor_punt` (71, mostly
+  cameras), `sensor_lijn` (88, all `detectielus` — induction loops buried in the
+  road surface), `installatie` (23, all `zonnepaneel`, rooftop),
+  `kunstwerkdeel_lijn` (511, 434 `duiker` — culverts, underground),
+  `kunstwerkdeel_vlak` (5 / km², a mix of `keermuur` and `steiger`),
+  `overigbouwwerk` (34, split between `transitie` and `lage trafo`),
+  `gebouwinstallatie` (16 `toegangstrap` / `bordes`),
+  `waterinrichtingselement_lijn` (24, all `remmingswerk`).
+- **A layer, not a collection.** `overbruggingsdeel` (20 / km²) and `tunneldeel`
+  (45 / city). This is the one rejection with real picture value: the paving
+  extractor drops every surface at `relatieve_hoogteligging != 0`, so a bridge
+  gets no surveyed paving today and a deck drawn flat would lie in the water it
+  crosses. Drawing it needs a deck *height* the BGT does not carry and a rung on
+  the depth ladder the flat paving layer does not have.
+- **Would replace rather than add.** `openbareruimtelabel` (217 / km², points
+  carrying a rotation — surveyed street-name placements). `systems::street_labels`
+  places labels view-independently from world footprints on purpose, and that is
+  the argument to reopen before this is an option.
+- **Belongs to another module.** `begroeidterreindeel_kruinlijn`,
+  `onbegroeidterreindeel_kruinlijn`, `ondersteunendwegdeel_kruinlijn`,
+  `wegdeel_kruinlijn` — crest lines, whose consumer is `systems::dikes`.
+
+**One near miss, recorded so the next pass does not have to find it again:**
+`waterinrichtingselement_punt` is 906 features in one page over the city, 898 of
+them `meerpaal` — mooring posts along the canals. That is more numerous than the
+five accepted collections put together, and it is rejected only because there is
+no form for a short post: `FurnitureKind::Lamp` is a column with a head on it and
+nothing else here is close. It is the obvious partner for `crate::moorings`,
+which currently infers where a boat could tie up from the *shape* of the water
+polygon and would rather be told.
+
+The carriageways are not in either list because they are settled elsewhere:
+`wegdeel`'s `rijbaan *`, `spoorbaan` and `OV-baan` stay with OpenStreetMap for
+the reason `crates/geo/src/paving.rs` gives.
+
+### What has not been measured
+
+**The per-cell byte cost of the five.** Paving is already the second heaviest
+thing the client streams at 3.8 MB for the densest cell; these five go into the
+*objects* file, 60 kB for that same cell. The measurement is a full extractor run
+over the 1 km² box and `du -b` on the produced `bgt/14/*/*.json`, and it wants
+doing before the pipeline is run at scale.
+
+**Whether a client that has already visited a city would ever see the new
+content.** It would not, as things stand: `load_surveyed_cell` returns the cached
+copy whenever one exists, and the coverage manifest carries no data version —
+`zoom`, `cells`, `attribution`, and `CoverageSlot::revision` can only change once
+per process. So re-running the extractor reaches only clients that have not been
+there yet. The three ways out are to accept it and let cache eviction handle it,
+to put a version in `coverage.json` and mix it into the cache key (a change to the
+shared `CoverageSlot`, so to every layer that uses one), or to serve new content
+under a new path so the old keys simply miss. That is a decision, not a detail.
