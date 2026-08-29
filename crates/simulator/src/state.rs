@@ -693,6 +693,14 @@ impl SimWorld {
         } else {
             self.scripted.remove(&prim_id);
         }
+        // And on the prim itself, which is what clients are sent (protocol 21).
+        // `db::row_to_prim` reads the same fact out of `prim_scripts` on every
+        // load, so this is the in-memory copy catching up rather than a second
+        // source of truth — but without it a freshly scripted prim would not be
+        // pressable until the server restarted.
+        if let Some(p) = self.prims.iter_mut().find(|p| p.id == prim_id) {
+            p.scripted = scripted;
+        }
     }
 
     /// Whether `prim_id` may take a script. Replacing an existing one is always
@@ -761,6 +769,7 @@ impl SimWorld {
                         name: p.name.clone(),
                         particles: p.particles,
                         geo: p.geo,
+                        region_id: p.region_id,
                         nearby,
                     },
                 )

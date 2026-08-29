@@ -93,6 +93,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "particles + avatar geo — PrimDto.particles carries an emitter; ClientIntent.geo says where on Earth the avatar is, which is the only frame a script's vfSensor can measure in",
     },
+    ProtocolRevision {
+        version: 21,
+        adr: "",
+        summary: "PrimDto.scripted — whether a prim carries a script. The client cannot derive it (source never travels in a snapshot) and it is what decides whether walking up to a prim offers to press it",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -347,6 +352,22 @@ pub struct PrimDto {
     /// the overwhelmingly common case and costs one byte.
     #[serde(default)]
     pub particles: Option<ParticleEffect>,
+    /// Whether this prim carries a script (protocol v21).
+    ///
+    /// **The client cannot work this out.** Script source is deliberately kept
+    /// out of `WorldSnapshot` — it is an order of magnitude larger than the rest
+    /// of a prim and of interest to one person — so "does pressing this do
+    /// anything?" has no answer on the client without the server saying. It is
+    /// what `systems::interact` gates its prompt on: offering to press every
+    /// crate in the city would be noise, and offering to press nothing would mean
+    /// a button nobody can find.
+    ///
+    /// It says a script is *stored*, not that it is running: a source that failed
+    /// to compile is stored and faulted, and pressing it does nothing. Reporting
+    /// "stored" is the honest half — the client has no business knowing about a
+    /// compile error on somebody else's object.
+    #[serde(default)]
+    pub scripted: bool,
 }
 
 fn default_path_cut_end() -> f32 {
@@ -1378,6 +1399,7 @@ mod tests {
                 longitude: 6.5665,
             },
             particles: Some(crate::particles::ParticleEffect::blast()),
+            scripted: true,
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();

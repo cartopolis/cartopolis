@@ -1697,6 +1697,11 @@ pub fn hold_scripted_fire(
                     slice_end: 1.0,
                     surface: cartopolis_core::PrimSurface::default(),
                     particles: Some(effect),
+                    // A scripted run has no server and so no script; this also
+                    // keeps the seeded prims out of the interact prompt, which
+                    // would otherwise offer to press a thing with nothing behind
+                    // it in every `--ui fire` capture.
+                    scripted: false,
                 },
                 crate::systems::particles::ScriptedFire { burst },
                 Transform::from_translation(place(distance * offset.0, offset.1))

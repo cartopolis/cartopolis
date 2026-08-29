@@ -1135,6 +1135,7 @@ fn prim_from_dto(p: &PrimDto) -> Prim {
         slice_end: p.slice_end,
         surface: p.surface,
         particles: p.particles,
+        scripted: p.scripted,
     }
 }
 

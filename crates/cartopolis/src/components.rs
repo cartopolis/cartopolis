@@ -50,6 +50,11 @@ pub struct Prim {
     /// overwhelming majority that have none. `systems::particles` turns it into a
     /// child entity; nothing else reads it.
     pub particles: Option<cartopolis_core::ParticleEffect>,
+    /// Whether the server holds a script for this prim (protocol v21). The client
+    /// cannot derive it — source never travels in a snapshot — and
+    /// `systems::interact` is what reads it, to decide whether walking up to this
+    /// thing offers to press it.
+    pub scripted: bool,
 }
 
 /// ADR-029: a prim's absolute geographic placement. Present iff the prim was
