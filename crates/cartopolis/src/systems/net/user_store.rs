@@ -219,13 +219,25 @@ pub struct LayerPrefs {
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,
-    /// Ambient traffic (`systems::traffic`).
+    /// The **Life** group master: everything that moves (`data_layers::
+    /// DataLayers::life_enabled`). Defaults to on, like the other group masters —
+    /// what a fresh install starts *with* is decided by the three rows under it.
+    #[serde(default = "yes")]
+    pub life: bool,
+    /// Ambient cars (`systems::traffic`).
     ///
     /// `serde(default)` on the same helper as the rest, so a `user.json` written
     /// before this layer existed reads as the tier's default rather than as off —
     /// an absent key is "not stated", not "the user turned it off".
     #[serde(default = "detail_default")]
     pub traffic: bool,
+    /// Ambient people (`systems::traffic`'s walker pool).
+    ///
+    /// Split out of `traffic` when the Life group was formed. A file written
+    /// before the split carries no key, so this reads as the tier's default —
+    /// which is what the one toggle they *did* have meant for the walkers too.
+    #[serde(default = "detail_default")]
+    pub people: bool,
     /// The Overpass street-detail layer (`systems::street_detail`).
     #[serde(default = "detail_default")]
     pub street_detail: bool,

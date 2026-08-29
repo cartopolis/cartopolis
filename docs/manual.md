@@ -265,6 +265,24 @@ rather than flip while looking at the map:
 Live transit boards and vehicles appear in the world when the relevant layers are
 active.
 
+### Life
+
+Everything on the map that *moves* is grouped under **Life** in the Layers panel,
+apart from the rest of the map because motion is its own thing: it is what you
+switch off to judge a still picture, or to give a slow phone one less job, and it
+has nothing to do with which ground textures or buildings you have on.
+
+- **Traffic** — cars driving the streets, generated from the road centrelines.
+- **People** — figures walking the pavements beside them, from the same lines.
+- **Live vehicles** — real Dutch buses and trains, off their operators' own
+  position feed, so this one is off until you ask for it and answers only over the
+  Netherlands.
+
+The first two are invented: nobody surveys where a car is, and these are a
+plausible city rather than a real one. The third is reported. The panel keeps them
+under separate headings for that reason, and the group's master checkbox stops all
+three at once.
+
 ### Height
 
 The **Height** toggle at the bottom of the Layers panel is the one layer that is off

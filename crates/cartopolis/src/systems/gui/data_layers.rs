@@ -470,7 +470,14 @@ pub struct DataLayers {
     pub osm_buildings_enabled: bool,
     /// Feature toggle: the map ground (streamed OSM tiles + region plane).
     pub map_enabled: bool,
-    /// Feature toggle: live moving vehicles on the transit layer (ADR-026).
+    /// Feature toggle (under Life): live moving vehicles (ADR-026) — real Dutch
+    /// buses and trains off OVapi's position feed.
+    ///
+    /// It used to hang under the Public transport *marker* layer and to require
+    /// it, which was a politeness gate rather than a data dependency: the feed
+    /// carries its own positions and never reads a stop. Under Life it stands on
+    /// its own, next to the two generated crowds — "what is moving out there" is
+    /// one question whether the thing moving is invented or reported.
     pub vehicles_enabled: bool,
     /// Feature toggle (under Map): the merged tree canopies/trunks
     /// (`systems::vegetation`). Gates their visibility on top of the altitude LOD.
@@ -490,14 +497,38 @@ pub struct DataLayers {
     /// collider set: `collision::sync_prop_colliders` gates on this, and a prop
     /// that is hidden but still solid is an invisible wall.
     pub furniture_enabled: bool,
-    /// Feature toggle (under Map): ambient traffic (`systems::traffic`) — cars
-    /// driving the streets the map already draws, off the same `streets` layer.
+    /// Master toggle for **Life**: everything on the map that moves — the
+    /// generated cars and people, and the real vehicles their operators report.
     ///
-    /// Its own toggle rather than riding the furniture one, because it is the
-    /// only layer here that *moves*: it is the first thing somebody who finds the
-    /// motion distracting will look for, and the first thing to switch off when
-    /// judging anything else in a still.
+    /// A group rather than three loose rows because motion is one property, and
+    /// it is the one a viewer either wants or does not independently of what is
+    /// surveyed underneath it: judging a still, or a slow phone, is one tap here
+    /// rather than three hunted out of three different lists.
+    ///
+    /// **Read it through [`Self::cars_visible`] and its two siblings, never
+    /// directly.** A master toggle whose consumers each have to remember to `&&`
+    /// it is a master toggle that will eventually be forgotten by one of them,
+    /// and that layer then keeps moving with the group switched off.
+    pub life_enabled: bool,
+    /// Feature toggle (under Life): the ambient cars (`systems::traffic`) driving
+    /// the streets the map already draws, off the same `streets` layer.
+    ///
+    /// Under Life rather than under Map because Map's other sub-toggles are all
+    /// surveyed things that are placed and then stand still, and these move. It
+    /// is the first thing somebody who finds the motion distracting will look
+    /// for, and the first thing to switch off when judging anything else in a
+    /// still — so it should not be five rows down a list of ground textures.
     pub traffic_enabled: bool,
+    /// Feature toggle (under Life): the ambient people (`systems::traffic`'s
+    /// [`AgentKind::Walker`](crate::systems::traffic::AgentKind) pool) walking the
+    /// pavements beside those same streets.
+    ///
+    /// Split from the cars, though they share every line of the steering: the
+    /// pools are separate and independently sized, one is invented crowds and the
+    /// other is invented traffic, and someone judging a street's *emptiness* will
+    /// want exactly one of them. Cheap, too — a hidden pool costs a transform
+    /// write it never makes.
+    pub people_enabled: bool,
     /// Feature toggle (under Map): textured road surfaces (generated tarmac +
     /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
     pub roads_textured: bool,
@@ -575,6 +606,29 @@ pub struct DataLayers {
 }
 
 impl DataLayers {
+    /// Should the ambient cars be drawn and driven? (`systems::traffic`)
+    ///
+    /// The three `*_visible` answers below are the only way the Life group is
+    /// read: each folds the group's master toggle into its own, so a consumer
+    /// cannot half-apply it. See [`Self::life_enabled`].
+    #[must_use]
+    pub fn cars_visible(&self) -> bool {
+        self.life_enabled && self.traffic_enabled
+    }
+
+    /// Should the ambient people be drawn and walked? (`systems::traffic`)
+    #[must_use]
+    pub fn people_visible(&self) -> bool {
+        self.life_enabled && self.people_enabled
+    }
+
+    /// Should the live vehicle feed be polled and drawn?
+    /// (`systems::transit_vehicles`)
+    #[must_use]
+    pub fn live_vehicles_visible(&self) -> bool {
+        self.life_enabled && self.vehicles_enabled
+    }
+
     /// Snapshot the panel's toggles for persistence (`data/user.json`). While
     /// driver mode's minimal mode is active, the user's *real* preferences live
     /// in its snapshot — persist those, so exiting mid-drive doesn't freeze the
@@ -606,6 +660,7 @@ impl DataLayers {
             tdbag: self.tdbag_enabled,
             osm_buildings: self.osm_buildings_enabled,
             map: self.map_enabled,
+            life: self.life_enabled,
             trees,
             grass,
             roads_textured: self.roads_textured,
@@ -613,6 +668,7 @@ impl DataLayers {
             street_labels: self.street_labels,
             furniture,
             traffic: self.traffic_enabled,
+            people: self.people_enabled,
             street_detail,
             height: self.height_enabled,
             vehicles,
@@ -677,6 +733,7 @@ impl DataLayers {
         self.tdbag_enabled = p.tdbag;
         self.osm_buildings_enabled = p.osm_buildings;
         self.map_enabled = p.map;
+        self.life_enabled = p.life;
         self.trees_enabled = p.trees;
         self.grass_enabled = p.grass;
         self.roads_textured = p.roads_textured;
@@ -684,6 +741,7 @@ impl DataLayers {
         self.street_labels = p.street_labels;
         self.furniture_enabled = p.furniture;
         self.traffic_enabled = p.traffic;
+        self.people_enabled = p.people;
         self.street_detail_enabled = p.street_detail;
         self.height_enabled = p.height;
         self.vehicles_enabled = p.vehicles;
@@ -734,14 +792,19 @@ impl Default for DataLayers {
             tdbag_enabled: true,
             osm_buildings_enabled: true,
             map_enabled: true,
+            // On, like the other group masters: what a fresh install starts
+            // *with* is decided by the rows under it, which ride the render
+            // budget. A master that started off would hide them twice.
+            life_enabled: true,
             vehicles_enabled: false,
             trees_enabled: detail,
             grass_enabled: detail,
             furniture_enabled: detail,
-            // Rides `detail_layers` with the rest: a phone starts without it, and
-            // a moving object is the most expensive kind of detail to draw on the
-            // one platform whose schedule has no second thread.
+            // Both ride `detail_layers` with the rest: a phone starts without
+            // them, and a moving object is the most expensive kind of detail to
+            // draw on the one platform whose schedule has no second thread.
             traffic_enabled: detail,
+            people_enabled: detail,
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
@@ -2260,15 +2323,6 @@ pub fn render_data_layers_panel(
                                 ui.label(egui::RichText::new(*label).size(theme::SIZE_SUB));
                             });
                         }
-                        // Live moving vehicles ride on the transit layer (ADR-026).
-                        if i == TRANSIT_LAYER {
-                            ui.add_space(2.0);
-                            crate::systems::theme::checkbox(
-                                ui,
-                                &mut dl.vehicles_enabled,
-                                egui::RichText::new("Live vehicles").size(theme::SIZE_SUB),
-                            );
-                        }
                     });
                     ui.add_space(4.0);
                     ui.separator();
@@ -2315,11 +2369,6 @@ pub fn render_data_layers_panel(
                     );
                     crate::systems::theme::checkbox(
                         ui,
-                        &mut dl.traffic_enabled,
-                        egui::RichText::new("Traffic & people").size(theme::SIZE_SUB),
-                    );
-                    crate::systems::theme::checkbox(
-                        ui,
                         &mut dl.roads_textured,
                         egui::RichText::new("Road textures").size(theme::SIZE_SUB),
                     );
@@ -2337,6 +2386,56 @@ pub fn render_data_layers_panel(
                         ui,
                         &mut dl.street_detail_enabled,
                         egui::RichText::new("Street detail").size(theme::SIZE_SUB),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                // Life: everything on the map that moves. Its own section rather
+                // than three rows scattered through the others, because "is
+                // anything moving" is one question and the answer is only ever
+                // read as a whole — and because motion is the one property a
+                // viewer either wants or does not, independent of what is
+                // surveyed underneath it.
+                crate::systems::theme::checkbox(
+                    ui,
+                    &mut dl.life_enabled,
+                    egui::RichText::new("Life"),
+                );
+                ui.indent("life", |ui| {
+                    // Say which of these is invented, in the panel: two of the
+                    // three are made up off the road centrelines and the third is
+                    // a real feed of real buses, and a viewer who cannot tell
+                    // them apart is being misled about what the map knows.
+                    ui.label(
+                        egui::RichText::new("Generated from the streets").size(theme::SIZE_SUB),
+                    );
+                    ui.add_space(2.0);
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.traffic_enabled,
+                        egui::RichText::new("Traffic").size(theme::SIZE_SUB),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.people_enabled,
+                        egui::RichText::new("People").size(theme::SIZE_SUB),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Reported by their operators").size(theme::SIZE_SUB),
+                    );
+                    ui.add_space(2.0);
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.vehicles_enabled,
+                        egui::RichText::new("Live vehicles").size(theme::SIZE_SUB),
+                    );
+                    // Same rule as Height's "Netherlands only": a toggle that
+                    // silently does nothing over Berlin is a bug report.
+                    ui.label(
+                        egui::RichText::new("Buses & trains — Netherlands only")
+                            .size(theme::SIZE_SUB),
                     );
                 });
                 ui.add_space(4.0);
@@ -2402,6 +2501,7 @@ pub fn render_data_layers_panel(
         dl.tdbag_enabled = fresh.tdbag_enabled;
         dl.osm_buildings_enabled = fresh.osm_buildings_enabled;
         dl.map_enabled = fresh.map_enabled;
+        dl.life_enabled = fresh.life_enabled;
         dl.vehicles_enabled = fresh.vehicles_enabled;
         dl.trees_enabled = fresh.trees_enabled;
         dl.grass_enabled = fresh.grass_enabled;
@@ -2409,6 +2509,13 @@ pub fn render_data_layers_panel(
         dl.roads_textured = fresh.roads_textured;
         dl.water_shading = fresh.water_shading;
         dl.street_labels = fresh.street_labels;
+        // The three that a "reset" used to leave standing. Traffic and people are
+        // new here; `street_detail` was simply missed, and a reset that puts back
+        // every checkbox but one is worse than none — the one it skips reads as a
+        // toggle that has stuck.
+        dl.traffic_enabled = fresh.traffic_enabled;
+        dl.people_enabled = fresh.people_enabled;
+        dl.street_detail_enabled = fresh.street_detail_enabled;
         dl.height_enabled = fresh.height_enabled;
     }
     if about {
@@ -3035,6 +3142,8 @@ mod tests {
         dl.tdbag_enabled = false;
         dl.trees_enabled = false;
         dl.vehicles_enabled = true;
+        dl.people_enabled = !dl.people_enabled;
+        dl.life_enabled = false;
         dl.layers[0].enabled = true;
 
         let json = serde_json::to_string(&dl.prefs()).unwrap();
@@ -3045,12 +3154,45 @@ mod tests {
         assert!(!restored.tdbag_enabled);
         assert!(!restored.trees_enabled);
         assert!(restored.vehicles_enabled);
+        assert!(!restored.life_enabled);
+        assert_eq!(restored.people_enabled, dl.people_enabled);
         assert!(restored.layers[0].enabled);
         assert!(
             restored.buildings_enabled,
             "untouched toggles keep defaults"
         );
         assert_eq!(restored.prefs(), prefs);
+    }
+
+    /// The Life master has to reach all three rows under it, and each row still
+    /// has to be able to say no on its own.
+    ///
+    /// Worth a test rather than a reading of three one-line methods: the failure
+    /// it guards against is a *fourth* row added later that reads its own field
+    /// directly and keeps moving with the group switched off, and this is where
+    /// the next person adding one finds out what the contract is.
+    #[test]
+    fn the_life_master_reaches_every_row_under_it() {
+        let mut dl = DataLayers::default();
+        dl.life_enabled = true;
+        dl.traffic_enabled = true;
+        dl.people_enabled = true;
+        dl.vehicles_enabled = true;
+        assert!(dl.cars_visible() && dl.people_visible() && dl.live_vehicles_visible());
+
+        dl.life_enabled = false;
+        assert!(
+            !dl.cars_visible() && !dl.people_visible() && !dl.live_vehicles_visible(),
+            "the group master stops all three at once"
+        );
+
+        // …and switching the group back on restores exactly what was ticked
+        // under it: the master gates the rows, it does not overwrite them.
+        dl.life_enabled = true;
+        dl.people_enabled = false;
+        assert!(dl.cars_visible(), "cars are unaffected by the people row");
+        assert!(!dl.people_visible());
+        assert!(dl.live_vehicles_visible());
     }
 
     /// The persisted sky is the user's, not driver mode's. Quitting mid-drive

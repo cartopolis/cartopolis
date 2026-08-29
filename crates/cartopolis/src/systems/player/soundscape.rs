@@ -347,8 +347,9 @@ fn step_wobble(foot: usize, phase: f32) -> (f32, f32) {
 /// idea: the city sounds like a city because of what the map already says is
 /// there.
 ///
-/// Gated on the **Traffic & people** toggle, because somebody switching the
-/// traffic off expects the traffic to stop, including the sound of it.
+/// Gated on **Layers ▸ Life ▸ Traffic**, because somebody switching the traffic
+/// off expects the traffic to stop, including the sound of it. On the cars
+/// alone: the hum is a road's, and a pavement of people makes none of it.
 pub fn update_road_hum(
     time: Res<Time>,
     net: Res<crate::systems::traffic::DriveNetwork>,
@@ -358,7 +359,7 @@ pub fn update_road_hum(
     mut hum: Query<&mut AudioSink, With<RoadHum>>,
     mut current: Local<f32>,
 ) {
-    let target = if layers.traffic_enabled {
+    let target = if layers.cars_visible() {
         camera
             .single()
             .ok()

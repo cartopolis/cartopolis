@@ -26,8 +26,15 @@
 //! [`parse_vehicle_positions`].
 //!
 //! Politeness: one request per [`POLL_INTERVAL`] on a worker thread, gated on
-//! the transit layer being on, the camera being near the ground, and vehicles
-//! being in range — the same discipline the boards and building streaming use.
+//! its own toggle (Layers ▸ Life ▸ Live vehicles, off by default), the camera
+//! being near the ground, and vehicles being in range — the same discipline the
+//! boards and building streaming use.
+//!
+//! It used to require the Public transport *marker* layer as well. That was a
+//! second politeness gate rather than a data dependency — this feed carries its
+//! own positions and never reads a stop — and it made the checkbox do nothing at
+//! all unless another one, in another section, happened to be ticked. The layer
+//! is opt-in already; one opt-in is enough.
 
 use crate::components::FreeCamera;
 use crate::components::{VehicleBox, VehicleLabel};
@@ -45,7 +52,7 @@ use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::{http, storage};
-use crate::systems::data_layers::{DataLayers, TRANSIT_LAYER};
+use crate::systems::data_layers::DataLayers;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::lat_lng_to_local;
@@ -304,7 +311,7 @@ pub fn poll_transit_vehicles(
         .retain(|_, s| s.last_seen.elapsed() < VEHICLE_TTL);
 
     // Decide whether to poll now.
-    if tv.in_flight || !(dl.layers[TRANSIT_LAYER].enabled && dl.vehicles_enabled) {
+    if tv.in_flight || !dl.live_vehicles_visible() {
         return;
     }
     let Ok((cell, tf)) = camera.single() else {
@@ -417,7 +424,7 @@ pub fn update_transit_vehicles(
     // Hide everything when the layer is off, we are in space, or there is no
     // camera — despawn is fine, the set is small and bounded.
     let cam = camera.single().ok();
-    let layer_on = dl.layers[TRANSIT_LAYER].enabled && dl.vehicles_enabled;
+    let layer_on = dl.live_vehicles_visible();
     let hidden = !layer_on || cam.is_none_or(|(c, t)| globe.in_space(c, t));
     if hidden {
         for (_, e) in tv.entities.drain().chain(tv.labels.drain()) {
