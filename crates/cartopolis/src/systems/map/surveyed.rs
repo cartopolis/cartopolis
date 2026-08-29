@@ -140,6 +140,16 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
         surfaces: Vec<WireSurface>,
     }
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // Every surface in the layer shares one rung of the depth ladder, so two
+    // copies of one polygon are a per-pixel z-fight that re-rolls with the view
+    // matrix — the pavement shimmers wherever the camera moves. The extractor
+    // has shipped exactly that: the BGT API answers with every *version* of a
+    // surface, superseded ones marked only by `eind_registratie`, and a filter
+    // that tested `termination_date` alone kept them all (measured at 19 % exact
+    // duplicates over a Groningen cell, one pavement seven times). The data is
+    // fixed upstream; this is the floor under it, because a cell cached before
+    // the fix keeps its ghosts for as long as the cache lives.
+    let mut seen = std::collections::HashSet::new();
     Ok(SurveyedPaving {
         areas: wire
             .surfaces
@@ -147,6 +157,20 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
             // An outer ring under three points is not a surface. The extractor
             // drops those; a truncated cache entry can produce one.
             .filter(|s| s.1.first().is_some_and(|r| r.len() >= 3))
+            .filter(|WireSurface(k, rings, m)| {
+                seen.insert((
+                    *k,
+                    *m,
+                    rings
+                        .iter()
+                        .map(|r| {
+                            r.iter()
+                                .map(|&(lat, lng)| (lat.to_bits(), lng.to_bits()))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>(),
+                ))
+            })
             .filter_map(|WireSurface(k, rings, m)| {
                 // An unknown *form* drops the surface — there is nothing to draw
                 // it as. An unknown *material* only drops the material: a
@@ -217,11 +241,23 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
         lines: Vec<(usize, Vec<(f64, f64)>)>,
     }
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // Exact duplicates are ghost *versions* of one object, same as the paving
+    // (see `parse_surveyed_paving`): a doubled tree or fence segment is two
+    // identical meshes in one place, z-fighting their own surfaces.
+    let bits = |lat: f64, lng: f64| (lat.to_bits(), lng.to_bits());
+    let mut seen_tree = std::collections::HashSet::new();
+    let mut seen_prop = std::collections::HashSet::new();
+    let mut seen_line = std::collections::HashSet::new();
     Ok(SurveyedCell {
-        trees: wire.trees,
+        trees: wire
+            .trees
+            .into_iter()
+            .filter(|&(lat, lng)| seen_tree.insert(bits(lat, lng)))
+            .collect(),
         props: wire
             .props
             .into_iter()
+            .filter(|&(lat, lng, k)| seen_prop.insert((bits(lat, lng), k)))
             .filter_map(|(lat, lng, k)| PROP_KINDS.get(k).map(|&kind| (lat, lng, kind)))
             .collect(),
         lines: wire
@@ -230,13 +266,26 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
             // A one-point line is not a line. The extractor does not emit them,
             // and a truncated cache entry can.
             .filter(|(_, pts)| pts.len() >= 2)
+            .filter(|(k, pts)| {
+                seen_line.insert((
+                    *k,
+                    pts.iter()
+                        .map(|&(lat, lng)| bits(lat, lng))
+                        .collect::<Vec<_>>(),
+                ))
+            })
             .filter_map(|(k, pts)| LINE_KINDS.get(k).map(|&kind| (kind, pts)))
             .collect(),
     })
 }
 
+/// Cache keys carry a `v2` the server path does not: nothing ever revalidates a
+/// cached cell (the sweep is by size, not age), so when the deployed data was
+/// regenerated without the ghost versions the only way an existing install would
+/// ever see the fix was a new key. The `v1` entries age out through the ordinary
+/// sweep.
 fn cell_cache_key(cx: i64, cy: i64) -> String {
-    format!("bgt/{BGT_ZOOM}/{cx}/{cy}.json")
+    format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.json")
 }
 
 /// Fetch one cell's **paving**, through the storage cache.
@@ -248,7 +297,8 @@ pub(crate) async fn load_surveyed_paving(cx: i64, cy: i64) -> SurveyedPaving {
     if !COVERAGE.covers(cx, cy) {
         return SurveyedPaving::default();
     }
-    let key = format!("bgt/{BGT_ZOOM}/{cx}/{cy}.surfaces.json");
+    // `v2` for the reason `cell_cache_key` gives.
+    let key = format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.surfaces.json");
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return parse_surveyed_paving(&cached).unwrap_or_default();
     }
@@ -455,6 +505,48 @@ mod tests {
         .expect("valid cell");
         assert_eq!(paving.areas[0].0, PavingKind::Footway);
         assert_eq!(paving.areas[1].0, PavingKind::Verge);
+    }
+
+    /// A repeated record is a ghost *version* of the same object — the BGT API
+    /// hands out every superseded version of a surface and the extractor once
+    /// kept them all — and every copy past the first is a coplanar z-fight on
+    /// the pavement it duplicates. The parse drops exact repeats, because a
+    /// cell cached with the ghosts in it never gets refetched on its own.
+    #[test]
+    fn a_repeated_surface_is_kept_once() {
+        let ring = r#"[[[53.2194,6.5665],[53.2195,6.5665],[53.2195,6.5666]]]"#;
+        let other = r#"[[[53.2196,6.5667],[53.2197,6.5667],[53.2197,6.5668]]]"#;
+        let paving = parse_surveyed_paving(&format!(
+            r#"{{"surfaces":[[0,{ring},2],[0,{ring},2],[0,{ring},2],[0,{other},2]]}}"#
+        ))
+        .expect("valid cell");
+        assert_eq!(paving.areas.len(), 2, "three copies collapse to one");
+    }
+
+    /// Same kind and geometry with a *different* material is not a repeat — the
+    /// register can genuinely re-describe a surface — so only exact copies fold.
+    #[test]
+    fn a_repeated_ring_with_a_different_material_is_not_a_repeat() {
+        let ring = r#"[[[53.2194,6.5665],[53.2195,6.5665],[53.2195,6.5666]]]"#;
+        let paving =
+            parse_surveyed_paving(&format!(r#"{{"surfaces":[[0,{ring},2],[0,{ring},1]]}}"#))
+                .expect("valid cell");
+        assert_eq!(paving.areas.len(), 2);
+    }
+
+    /// The cell file has the same ghost-version problem: a doubled tree is two
+    /// identical canopies z-fighting, a doubled fence line two coplanar boxes.
+    #[test]
+    fn repeated_trees_props_and_lines_are_kept_once() {
+        let cell = parse_surveyed_cell(
+            r#"{"trees":[[53.2,6.5],[53.2,6.5],[53.3,6.5]],
+                "props":[[53.2,6.5,0],[53.2,6.5,0]],
+                "lines":[[0,[[53.2,6.5],[53.2,6.6]]],[0,[[53.2,6.5],[53.2,6.6]]]]}"#,
+        )
+        .expect("valid cell");
+        assert_eq!(cell.trees.len(), 2);
+        assert_eq!(cell.props.len(), 1);
+        assert_eq!(cell.lines.len(), 1);
     }
 
     /// The two wire forms have to coexist: the register names a substance for

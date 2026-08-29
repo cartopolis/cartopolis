@@ -144,6 +144,19 @@ jump between adjacent rows of the `space_factor` / `exposure` / `bloom` /
 *actual* camera state (e.g. the placed altitude after the teleport snaps it), not
 the requested `--at` — which is the point.
 
+**`--flicker` is the depth-stability instrument.** A z-fight between coplanar
+surfaces is deterministic per view matrix and re-rolled by any camera move, so
+no single still can show it — which is how every coplanar-flicker bug here
+(roads over roads, water over land, the ghost-pavement duplicates of
+2026-08-29) shipped past a green screenshot job. `--flicker` captures each
+`--at` twice, ~5 cm apart, and reports the pixels that flipped as `flicker_px`
+(3×3-eroded, so silhouette aliasing crawl doesn't count): honest geometry moves
+sub-pixel under the nudge while a depth coin flip decorrelates completely. Gate
+it with `--expect 'flicker_px<=N'` in a pinned environment (`--time 12
+--clouds 0 --rain 0`) — traffic and pedestrians still animate between the pair,
+so the threshold sits above that floor, never at 0. Asserting `flicker_px`
+without `--flicker` is a startup error (it would gate a constant 0).
+
 **`--expect` turns the instrument into a gate.** `--expect 'settled==true'
 --expect 'globe_rendered>0'` (quote them — `>` is a shell redirect) asserts any
 `--dump-state` field on every capture and exits

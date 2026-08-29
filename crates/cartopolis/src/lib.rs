@@ -191,6 +191,16 @@ struct Cli {
     #[arg(long)]
     weather_live: bool,
 
+    /// Capture every `--at` viewpoint **twice**, ~5 cm apart, and report the
+    /// pixels that flipped between the pair as the `flicker_px` metric — the
+    /// depth-stability instrument. A z-fight between coplanar surfaces re-rolls
+    /// per pixel under any camera move, so it is invisible to a single still and
+    /// lights up under a nudge that moves honest geometry sub-pixel. Gate it
+    /// with `--expect 'flicker_px<=N'`, in a pinned environment (`--time
+    /// --clouds 0 --rain 0`) so traffic and weather set the floor, not the sky.
+    #[arg(long)]
+    flicker: bool,
+
     /// Switch the **height layer** on for this run (`systems::height`): measured
     /// AHN elevation from PDOK, over the Netherlands only. Off by default because
     /// it reaches a third party's service; this is how a scripted capture opts in,
@@ -255,6 +265,7 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
         csv: cli.csv.clone(),
         dump_state: cli.dump_state.clone(),
         expect: &cli.expect,
+        flicker: cli.flicker,
     })
     .map(Some)
     .map_err(|e| format!("--shot: {e}"))

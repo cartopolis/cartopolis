@@ -264,7 +264,26 @@ pub struct ShotHarness {
     /// non-zero. Empty = the harness only reports, and only a render failure can
     /// fail the process.
     pub expect: Vec<Expectation>,
+    /// `--flicker`: photograph every viewpoint **twice**, the second time with
+    /// the camera nudged [`FLICKER_NUDGE_DEG`] north (~5 cm), and report how many
+    /// pixels flipped between the pair as [`ShotMetrics::flicker_px`].
+    ///
+    /// This is the depth-stability instrument: a z-fight between coplanar
+    /// surfaces is *temporal* — deterministic per view matrix, re-rolled by any
+    /// camera move — so no single still can show it and every one of this
+    /// codebase's coplanar-flicker bugs (roads over roads, water over land, the
+    /// ghost-pavement duplicates) shipped past a green screenshot job. Under a
+    /// centimetre nudge, honest geometry moves sub-pixel while a depth coin flip
+    /// decorrelates completely; the difference *is* the flicker, measured.
+    pub flicker: bool,
 }
+
+/// How far `--flicker` moves the camera between the two captures of a pair:
+/// ~5.5 cm of latitude. Small enough that stable geometry shifts well under a
+/// pixel at any shot distance, large enough to change every depth interpolation
+/// in the frame (verified against the 2026-08-29 ghost-pavement fight, which a
+/// 5 cm pair reproduced reliably).
+const FLICKER_NUDGE_DEG: f64 = 5.0e-7;
 
 /// The comparison in an [`Expectation`].
 ///
@@ -444,6 +463,20 @@ pub struct ShotMetrics {
     /// move: forty settled frames at 16 ms and one at 400 average to 25.
     pub frame_ms: f32,
     pub frame_ms_max: f32,
+    /// Pixels whose colour flipped between this capture and its `--flicker`
+    /// twin, after a 3×3 erosion that discards the one-pixel aliasing crawl a
+    /// nudge legitimately causes on silhouettes ([`solid_flips`]). 0 on the
+    /// first capture of a pair and on any run without `--flicker`.
+    ///
+    /// This is the depth-stability number: coplanar surfaces whose ordering the
+    /// depth buffer cannot hold re-roll per pixel under any view change, so a
+    /// centimetre nudge that moves honest geometry sub-pixel lights them up.
+    /// Exact-ish and machine-independent in what it detects (depth resolution is
+    /// geometry, which lavapipe rasterises faithfully) — but not zero on a live
+    /// scene: traffic, pedestrians and drifting cloud shadows move between the
+    /// two captures, so a gate needs a pinned environment (`--time --clouds
+    /// --rain`) and a threshold above that animation floor, not `==0`.
+    pub flicker_px: u32,
     /// What the renderer was asked to draw at the shutter
     /// ([`crate::systems::render_census`]): visible mesh entities, then triangles
     /// in total, in the shadow-casting subset, and per streamer.
@@ -777,7 +810,7 @@ pub struct ShotMetrics {
 /// The order is deliberately not the struct's declaration order (related columns
 /// were grouped as they were added), which is exactly why a row must be built by
 /// name rather than by position.
-const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,\
+const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,flicker_px,\
 draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,\
 tiles_occluded,aerial_tiles,\
 alt_m,space_factor,in_space,\
@@ -922,6 +955,9 @@ pub struct ShotArgs<'a> {
     pub csv: Option<PathBuf>,
     pub dump_state: Option<PathBuf>,
     pub expect: &'a [String],
+    /// Capture each viewpoint twice, ~5 cm apart, and measure the pixels that
+    /// flip — see [`ShotHarness::flicker`].
+    pub flicker: bool,
 }
 
 impl Default for ShotArgs<'_> {
@@ -943,6 +979,7 @@ impl Default for ShotArgs<'_> {
             csv: None,
             dump_state: None,
             expect: &[],
+            flicker: false,
         }
     }
 }
@@ -964,6 +1001,7 @@ impl ShotHarness {
             csv,
             dump_state,
             expect,
+            flicker,
         } = args;
         fn nums(s: &str, want: usize, what: &str) -> Result<Vec<f64>, String> {
             let v: Vec<f64> = s
@@ -1000,9 +1038,28 @@ impl ShotHarness {
         if frames > 0 && shots.len() < 2 {
             return Err("--frames needs at least two --at waypoints to interpolate between".into());
         }
-        let shots = densify_path(&shots, frames);
+        let mut shots = densify_path(&shots, frames);
+        if flicker {
+            // Every viewpoint becomes a pair: itself, then itself nudged north.
+            // Even index = reference, odd = the nudged twin the observer diffs
+            // against it — the pairing the capture path relies on.
+            shots = shots
+                .iter()
+                .flat_map(|s| {
+                    let mut twin = s.clone();
+                    twin.lat += FLICKER_NUDGE_DEG;
+                    [s.clone(), twin]
+                })
+                .collect();
+        }
         let size = parse_size(size).ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
         let expect = parse_expectations(expect)?;
+        // Same rule as an unknown key: without `--flicker` the metric is a
+        // constant 0 and `flicker_px<=N` holds vacuously — a green gate that
+        // measured nothing, which is worse than a startup error.
+        if !flicker && expect.iter().any(|e| e.key == "flicker_px") {
+            return Err("--expect flicker_px needs --flicker, or it gates a constant 0".into());
+        }
         Ok(Self {
             path,
             shots,
@@ -1016,6 +1073,7 @@ impl ShotHarness {
             csv,
             dump_state,
             expect,
+            flicker,
         })
     }
 
@@ -1091,7 +1149,19 @@ impl ShotHarness {
             // Manifest-wide, not per preset: `--shots --expect settled==true` asks
             // that *every* documentation image landed on a finished world, which is
             // the question worth asking of the set as a whole.
-            expect: parse_expectations(expect)?,
+            expect: {
+                let expect = parse_expectations(expect)?;
+                if expect.iter().any(|e| e.key == "flicker_px") {
+                    return Err(
+                        "--expect flicker_px needs the --shot path with --flicker; a preset run never measures it".into(),
+                    );
+                }
+                expect
+            },
+            // A preset run makes documentation images, one file per named view;
+            // doubling each into a nudged twin would overwrite half the set.
+            // The flicker instrument is the plain `--shot` path's.
+            flicker: false,
         })
     }
 
@@ -1269,6 +1339,10 @@ pub struct ShotProgress {
     retried: bool,
     /// Flipped by the capture observer once the PNG is on disk.
     saved: Arc<AtomicBool>,
+    /// The previous capture's RGB8 frame, kept only under `--flicker` so the
+    /// pair's second observer has something to diff against. `Arc<Mutex>` for
+    /// the same reason `saved` is an `Arc`: the closure outlives the borrow.
+    flicker_prev: Arc<std::sync::Mutex<Option<(u32, u32, Vec<u8>)>>>,
     /// Frames left before exiting (drains after the last save).
     exit_in: Option<u32>,
     /// One [`ShotMetrics`] per captured viewpoint, flushed to `--csv`/`--dump-state`
@@ -2520,6 +2594,9 @@ pub fn drive_capture(
             busy: verdict.busy.iter().map(|s| (*s).to_string()).collect(),
             frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
             frame_ms_max: 1000.0 * progress.frame_time_max,
+            // Patched by the capture observer once the pair's second readback
+            // lands — the row is pushed at the shutter, before any pixels exist.
+            flicker_px: 0,
             draws: render.draws,
             tris_total: render.tris_total,
             tris_shadow: render.tris_shadow,
@@ -2708,6 +2785,13 @@ pub fn drive_capture(
             shot_state!(warn);
         }
         for e in &harness.expect {
+            // `flicker_px` does not exist until the pair's second readback lands,
+            // which is after this row is pushed — the capture observer patches
+            // the field and runs these there instead. Checking here would gate
+            // on the placeholder 0 and pass everything.
+            if e.key == "flicker_px" {
+                continue;
+            }
             if let Err(why) = e.check(&m) {
                 progress.unmet += 1;
                 tracing::error!(shot = m.shot, expect = %e, why = %why, "shot expect failed");
@@ -2742,14 +2826,22 @@ fn fire_capture(
     progress.fired = true;
     progress.fired_at = progress.elapsed;
     let saved = progress.saved.clone();
+    let flicker_prev = progress.flicker_prev.clone();
+    let index = progress.index;
     let path = harness.path_for(progress.index);
+    let flicker = harness.flicker;
     let screenshot = match target {
         Some(t) => Screenshot::image(t.0.clone()),
         None => Screenshot::primary_window(),
     };
-    commands
-        .spawn(screenshot)
-        .observe(move |captured: On<ScreenshotCaptured>| {
+    commands.spawn(screenshot).observe(
+        // An observer is a system, so it may take resources beside the event —
+        // which is what lets the flicker diff patch this shot's metrics row:
+        // the row is pushed at the shutter, and only this closure ever sees the
+        // pixels it describes.
+        move |captured: On<ScreenshotCaptured>,
+              harness: Res<ShotHarness>,
+              mut progress: ResMut<ShotProgress>| {
             let (saved, path) = (saved.clone(), path.clone());
             // A preset writes to a named directory (`docs/img/`); create it so a
             // fresh checkout doesn't lose the run to a missing folder.
@@ -2759,18 +2851,108 @@ fn fire_capture(
             match captured.image.clone().try_into_dynamic() {
                 // Alpha carries HDR brightness rather than transparency here
                 // (as in the README capture path), so drop it.
-                Ok(img) => match img.to_rgb8().save(&path) {
-                    Ok(()) => {
-                        tracing::info!(path = %path.display(), "shot harness: saved");
-                        saved.store(true, Ordering::Relaxed);
+                Ok(img) => {
+                    let rgb = img.to_rgb8();
+                    match rgb.save(&path) {
+                        Ok(()) => {
+                            tracing::info!(path = %path.display(), "shot harness: saved");
+                            if flicker {
+                                let (w, h) = (rgb.width(), rgb.height());
+                                let mut prev =
+                                    flicker_prev.lock().unwrap_or_else(|p| p.into_inner());
+                                // Odd index = the nudged twin (`from_cli` builds
+                                // the pairs); diff it against its reference.
+                                if index % 2 == 1 {
+                                    if let Some((pw, ph, pdata)) = prev.as_ref() {
+                                        if *pw == w && *ph == h {
+                                            let flips = solid_flips(
+                                                w as usize,
+                                                h as usize,
+                                                pdata,
+                                                rgb.as_raw(),
+                                            );
+                                            if let Some(m) = progress.metrics.last_mut() {
+                                                m.flicker_px = flips;
+                                            }
+                                            tracing::info!(
+                                                shot = index + 1,
+                                                flicker_px = flips,
+                                                "shot harness: flicker pair measured"
+                                            );
+                                        }
+                                    }
+                                }
+                                *prev = Some((w, h, rgb.into_raw()));
+                            }
+                            // The flicker expectations run here, not at the
+                            // shutter (see `drive_capture`): the field is
+                            // patched a few lines up, and only this closure
+                            // ever sees the pixels. A flicker expectation on a
+                            // run without `--flicker` was refused at startup.
+                            let mut failed = Vec::new();
+                            if let Some(m) = progress.metrics.last() {
+                                for e in harness.expect.iter().filter(|e| e.key == "flicker_px") {
+                                    if let Err(why) = e.check(m) {
+                                        failed.push((m.shot, e.to_string(), why));
+                                    }
+                                }
+                            }
+                            for (shot, expect, why) in failed {
+                                progress.unmet += 1;
+                                tracing::error!(shot, expect, why, "shot expect failed");
+                            }
+                            saved.store(true, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            tracing::error!(path = %path.display(), error = %e, "shot save failed")
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!(path = %path.display(), error = %e, "shot save failed")
-                    }
-                },
+                }
                 Err(e) => tracing::error!(error = %e, "shot decode failed"),
             }
-        });
+        },
+    );
+}
+
+/// Threshold on the per-pixel max-channel difference that counts as a flip.
+/// Well above lighting noise and dither, well below the palette distance between
+/// any two surface groups.
+const FLIP_THRESHOLD: u8 = 40;
+
+/// Count the pixels that changed *as a region* between two same-sized RGB8
+/// frames: a per-pixel threshold on the max channel difference, then a 3×3
+/// erosion so only pixels whose whole neighbourhood flipped survive.
+///
+/// The erosion is what separates the signal from the nudge's own artefacts: a
+/// ~5 cm camera move crawls the aliasing on every silhouette by a fraction of a
+/// pixel, which flips isolated edge pixels in one-pixel-wide lines — while a
+/// depth-order flip repaints a *patch* of one surface in the other's colour.
+/// One-pixel lines cannot contain a 3×3-solid pixel; patches are made of them.
+fn solid_flips(w: usize, h: usize, a: &[u8], b: &[u8]) -> u32 {
+    if w < 3 || h < 3 || a.len() != w * h * 3 || a.len() != b.len() {
+        return 0;
+    }
+    let flip: Vec<bool> = (0..w * h)
+        .map(|i| {
+            let (pa, pb) = (&a[i * 3..i * 3 + 3], &b[i * 3..i * 3 + 3]);
+            pa.iter()
+                .zip(pb)
+                .map(|(x, y)| x.abs_diff(*y))
+                .max()
+                .unwrap_or(0)
+                > FLIP_THRESHOLD
+        })
+        .collect();
+    let mut n = 0;
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let solid = (y - 1..=y + 1).all(|yy| (x - 1..=x + 1).all(|xx| flip[yy * w + xx]));
+            if solid {
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 #[cfg(test)]
@@ -2786,6 +2968,68 @@ mod tests {
             yaw_deg: 0.0,
             ..default()
         }
+    }
+
+    /// A one-pixel line is the aliasing crawl a 5 cm nudge legitimately causes
+    /// on every silhouette; a patch is a surface repainted in another's colour.
+    /// The erosion is the whole difference between an instrument and a noise
+    /// meter, so it gets its own pin.
+    #[test]
+    fn solid_flips_counts_patches_not_edge_crawl() {
+        let (w, h) = (16usize, 16usize);
+        let base = vec![0u8; w * h * 3];
+        // A 5×5 patch of a different colour: 3×3-solid interior = 3×3 = 9.
+        let mut patch = base.clone();
+        for y in 4..9 {
+            for x in 4..9 {
+                patch[(y * w + x) * 3] = 255;
+            }
+        }
+        assert_eq!(solid_flips(w, h, &base, &patch), 9);
+        // A one-pixel-wide line of any length: no 3×3-solid pixel at all.
+        let mut line = base.clone();
+        for y in 0..h {
+            line[(y * w + 8) * 3] = 255;
+        }
+        assert_eq!(solid_flips(w, h, &base, &line), 0);
+        // Sub-threshold change is not a flip.
+        let dim = vec![FLIP_THRESHOLD; w * h * 3];
+        assert_eq!(solid_flips(w, h, &base, &dim), 0);
+        // Degenerate sizes and mismatched buffers answer 0, never panic.
+        assert_eq!(solid_flips(2, 2, &[0; 12], &[255; 12]), 0);
+        assert_eq!(solid_flips(w, h, &base, &base[..3]), 0);
+    }
+
+    #[test]
+    fn flicker_doubles_the_shots_into_nudged_pairs() {
+        let h = ShotHarness::from_cli(ShotArgs {
+            path: PathBuf::from("/tmp/f.png"),
+            at: &["53.0,6.0,100".into(), "53.1,6.1,200".into()],
+            flicker: true,
+            ..default()
+        })
+        .expect("valid");
+        assert_eq!(h.shots.len(), 4);
+        assert_eq!(h.shots[0].lat, 53.0);
+        assert!((h.shots[1].lat - (53.0 + FLICKER_NUDGE_DEG)).abs() < 1e-12);
+        assert_eq!(h.shots[1].lng, h.shots[0].lng);
+        assert_eq!(h.shots[2].lat, 53.1);
+    }
+
+    /// Without `--flicker` the metric is a constant 0 and any `flicker_px`
+    /// expectation holds vacuously — a green gate that measured nothing. That
+    /// has to be a startup error, same as an unknown key.
+    #[test]
+    fn a_flicker_expectation_without_flicker_is_refused() {
+        let err = ShotHarness::from_cli(ShotArgs {
+            path: PathBuf::from("/tmp/f.png"),
+            at: &["53.0,6.0,100".into()],
+            expect: &["flicker_px<=200".into()],
+            ..default()
+        })
+        .err()
+        .expect("must refuse");
+        assert!(err.contains("--flicker"), "{err}");
     }
 
     #[test]
@@ -2919,6 +3163,7 @@ mod tests {
             name: Some("city".into()),
             lat: 0.0,
             lng: 0.0,
+            flicker_px: 0,
             settled: false,
             // Two entries on purpose: `busy` is the one list-valued column, and
             // joining it with a comma would add columns to this row and silently
