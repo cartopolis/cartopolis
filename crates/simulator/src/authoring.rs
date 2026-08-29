@@ -57,6 +57,12 @@ use serde_json::json;
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
+        // Owner-scoped, and therefore *not* under `/api/admin`: exporting your own
+        // build is a thing any signed-in account may do, and an admin token is
+        // neither required nor sufficient (see [`export_content`]).
+        .route("/api/content/export", get(export_content))
+        .route("/api/content/import", post(import_content))
+        .route("/api/content/transfer", post(transfer_content))
         .route("/api/admin/regions", get(list_regions))
         .route("/api/admin/prims", get(list_prims).post(create_prim))
         .route(
@@ -99,7 +105,7 @@ where
 /// = {0,0.4,1} }` is a blue flame with everything else left alone, and so is
 /// `{"color_start": [0,0.4,1]}` — before this, the second was an error listing
 /// the thirteen fields it had not mentioned.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticleSpec {
     /// Which preset the unmentioned fields come from — a one-shot blast, or a
@@ -173,7 +179,7 @@ impl ParticleSpec {
 /// requiring one would make the simplest possible request — "put a red cube
 /// here" — a twenty-field document, and would let a caller write fields that are
 /// not theirs to write.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrimSpec {
     pub region_id: Option<i64>,
@@ -200,6 +206,81 @@ pub struct PrimSpec {
     /// Luau source. Empty string removes the script, exactly as the editor's
     /// empty buffer does. Absent leaves whatever is there.
     pub script: Option<String>,
+}
+
+impl PrimSpec {
+    /// A live prim, described the way an author would have written it.
+    ///
+    /// The inverse of [`apply`], and deliberately lossy in one direction: the id,
+    /// the region and the client-frame `position.x/z` echo are **not** carried.
+    /// An id from one server means nothing on another, a region is chosen by the
+    /// importer's world rather than the exporter's, and x/z are re-derived from
+    /// the geo anchor by every client anyway (ADR-029). What is left is the part
+    /// that is actually about the object.
+    #[must_use]
+    pub fn of(p: &PrimDto, script: Option<String>) -> Self {
+        Self {
+            region_id: None,
+            name: Some(p.name.clone()),
+            shape: Some(p.shape.clone()),
+            latitude: Some(p.geo.latitude),
+            longitude: Some(p.geo.longitude),
+            altitude: Some(p.position.y),
+            // Degrees on this surface, radians on the wire — the same conversion
+            // `apply` does on the way in, so an export re-imports unchanged.
+            rotation: Some([
+                p.rotation.x.to_degrees(),
+                p.rotation.y.to_degrees(),
+                p.rotation.z.to_degrees(),
+            ]),
+            scale: Some(p.scale.to_array()),
+            color: Some(p.color),
+            texture_id: Some(p.texture_id.clone()),
+            surface: Some(p.surface),
+            geometry: Some(PrimGeometry {
+                path_cut_begin: p.path_cut_begin,
+                path_cut_end: p.path_cut_end,
+                hollow: p.hollow,
+                twist_begin: p.twist_begin,
+                twist_end: p.twist_end,
+                taper_x: p.taper_x,
+                taper_y: p.taper_y,
+                top_shear_x: p.top_shear_x,
+                top_shear_y: p.top_shear_y,
+                slice_begin: p.slice_begin,
+                slice_end: p.slice_end,
+            }),
+            particles: Some(p.particles.as_ref().map(ParticleSpec::of)),
+            script,
+        }
+    }
+}
+
+impl ParticleSpec {
+    /// A live emitter, spelled out in full.
+    ///
+    /// Every field is named rather than only the ones that differ from the
+    /// preset: a document has to survive a preset being retuned later, and "the
+    /// fire preset's speed" is not a stable thing to write down.
+    #[must_use]
+    pub fn of(e: &ParticleEffect) -> Self {
+        Self {
+            burst: e.burst,
+            count: Some(e.count),
+            life: Some(e.life),
+            speed: Some(e.speed),
+            spread_deg: Some(e.spread_deg),
+            gravity: Some(e.gravity),
+            source_radius: Some(e.source_radius),
+            size_start: Some(e.size_start),
+            size_end: Some(e.size_end),
+            color_start: Some(e.color_start),
+            color_end: Some(e.color_end),
+            alpha: Some(e.alpha),
+            turbulence: Some(e.turbulence),
+            sequence: Some(e.sequence),
+        }
+    }
 }
 
 /// What a prim looks like on the way out: the authoritative state plus the two
@@ -462,6 +543,230 @@ async fn put_script(
         "scripted": scripted,
         "note": "compile errors and vfLog output arrive on the wire as ScriptOutput, \
                  not in this response",
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Import and export — a person's own build, as a document
+// ---------------------------------------------------------------------------
+
+/// What a caller may take away and bring back.
+///
+/// It is a list of [`PrimSpec`] — the *same* type the create route accepts — so
+/// an export is literally a document you can post back, and there is no second
+/// description of a prim to keep in step with the first. `content.rs` makes the
+/// same choice for the packs the server carries, and for the same reason.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContentDocument {
+    /// Bumped only if the shape stops being readable by an older importer. A
+    /// document is a file somebody keeps, so it has to say what it is.
+    pub version: u32,
+    /// Free text from the exporter — who and when. Ignored on import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported_at: Option<String>,
+    pub prims: Vec<PrimSpec>,
+}
+
+/// The only document version this build writes.
+const CONTENT_DOCUMENT_VERSION: u32 = 1;
+
+/// Most prims one import may create. A document is a file a person can edit, so
+/// this is the ceiling on what one request may cost the region — the per-region
+/// prim budget still applies underneath and is the real limit.
+const MAX_IMPORT_PRIMS: usize = 512;
+
+/// Whose build to export. Absent means the caller's own.
+#[derive(Deserialize, Default)]
+struct ExportQuery {
+    /// An account's username. Admin only.
+    owner: Option<String>,
+    /// Everything in the world, unowned prims included. Admin only.
+    #[serde(default)]
+    all: bool,
+}
+
+/// A build, as a document.
+///
+/// **A player is scoped to their own; an admin is not scoped at all.** Those are
+/// two rules, and they are not in tension: the default for everybody is
+/// `prims.owner = me`, so an ordinary account cannot read somebody else's work
+/// out of this route by any argument it can supply. Reaching past that needs
+/// `?owner=` or `?all=true`, and both are refused without an admin flag — the
+/// operator who can already read `world.db` over ssh and `GET /api/admin/prims`
+/// loses nothing by being able to do it here too, and gains the one thing this
+/// route is actually for: taking a copy of the world before changing it.
+///
+/// A prim with no owner — everything built before schema V15, and everything a
+/// content pack installed — is not in anybody's own export. `?all=true` is the
+/// only way to reach it, which is right: it belongs to the server, and the server
+/// is what an operator administers.
+async fn export_content(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(q): Query<ExportQuery>,
+) -> ApiResult<Json<ContentDocument>> {
+    let (principal, username) = crate::http::require_session(&state, &headers)?;
+    let wants_others = q.all || q.owner.is_some();
+    if wants_others && !crate::http::is_caller_admin(&state, principal)? {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "exporting another account's build needs an admin".into(),
+        ));
+    }
+
+    let rows = if q.all {
+        crate::http::with_db(&state, crate::db::all_prims_with_scripts)?
+    } else {
+        // Resolved to a uuid first, so a username that does not exist is a 404
+        // rather than an empty document that reads as "they have built nothing".
+        let target = match &q.owner {
+            None => principal.to_string(),
+            Some(name) => crate::http::with_db(&state, |c| crate::db::enabled_account_id(c, name))?
+                .ok_or_else(|| {
+                    ApiError(StatusCode::NOT_FOUND, format!("no account called `{name}`"))
+                })?,
+        };
+        crate::http::with_db(&state, |c| crate::db::owned_prims(c, &target))?
+    };
+
+    let prims = rows
+        .into_iter()
+        .map(|(p, script)| PrimSpec::of(&p, script))
+        .collect::<Vec<_>>();
+    tracing::info!(%username, count = prims.len(), all = q.all, owner = ?q.owner, "content exported");
+    Ok(Json(ContentDocument {
+        version: CONTENT_DOCUMENT_VERSION,
+        exported_by: Some(username),
+        exported_at: Some(crate::db::now_iso8601()),
+        prims,
+    }))
+}
+
+#[derive(Deserialize)]
+struct TransferRequest {
+    /// The prims to hand over.
+    prims: Vec<i64>,
+    /// The username to hand them to.
+    to: String,
+}
+
+/// Give prims to another account.
+///
+/// Two callers may do it and they are allowed for different reasons: the **owner**,
+/// because giving your own work away is yours to decide, and an **admin**, because
+/// somebody has to be able to re-home a build whose author has gone.
+///
+/// Unowned prims can only be moved by an admin — there is no owner to consent, and
+/// the server is what an operator administers. An all-or-nothing check: the
+/// permission is verified for every prim in the list *before* anything is written,
+/// so a request naming one prim you own and one you do not moves neither. A partial
+/// transfer would be the worst outcome, because the caller has no way to tell from
+/// the response which half happened.
+async fn transfer_content(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<TransferRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (principal, username) = crate::http::require_session(&state, &headers)?;
+    if body.prims.is_empty() {
+        return Err(bad("name at least one prim to transfer"));
+    }
+    let admin = crate::http::is_caller_admin(&state, principal)?;
+    let to = crate::http::with_db(&state, |c| crate::db::enabled_account_id(c, &body.to))?
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::NOT_FOUND,
+                format!("no enabled account called `{}`", body.to),
+            )
+        })?;
+
+    // Check everything first; write nothing until all of it passes.
+    let me = principal.to_string();
+    for id in &body.prims {
+        let owner = crate::http::with_db(&state, |c| crate::db::prim_owner(c, *id))?;
+        if state.world.read().await.prim(*id).is_none() {
+            return Err(ApiError(StatusCode::NOT_FOUND, format!("no prim {id}")));
+        }
+        if admin {
+            continue;
+        }
+        match owner {
+            Some(o) if o == me => {}
+            Some(_) => {
+                return Err(ApiError(
+                    StatusCode::FORBIDDEN,
+                    format!("prim {id} is not yours to give away"),
+                ))
+            }
+            None => {
+                return Err(ApiError(
+                    StatusCode::FORBIDDEN,
+                    format!("prim {id} belongs to the server; only an admin may re-home it"),
+                ))
+            }
+        }
+    }
+
+    for id in &body.prims {
+        crate::http::with_db(&state, |c| crate::db::set_prim_owner(c, *id, &to))?;
+    }
+    tracing::info!(%username, count = body.prims.len(), to = %body.to, "ownership transferred");
+    Ok(Json(json!({ "transferred": body.prims, "to": body.to })))
+}
+
+/// Create everything in a document, owned by the caller.
+///
+/// Import **adds**; it does not replace. Two reasons. A document has no way to
+/// say which live prim each of its entries *was* — ids are the server's and are
+/// not carried, deliberately, because an id from another server means nothing —
+/// so "replace" would have to guess, and guessing wrong deletes somebody's work.
+/// And importing your own export twice is a reasonable thing to want (a second
+/// copy of a build, somewhere else), which a replacing import makes impossible.
+///
+/// Deleting the old copy first is one `DELETE /api/admin/prims/{id}` per prim and
+/// is the caller's decision to make explicitly.
+async fn import_content(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(doc): Json<ContentDocument>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (principal, username) = crate::http::require_session(&state, &headers)?;
+    if doc.version > CONTENT_DOCUMENT_VERSION {
+        return Err(bad(format!(
+            "this document is version {} and this server reads up to {CONTENT_DOCUMENT_VERSION}",
+            doc.version
+        )));
+    }
+    if doc.prims.is_empty() {
+        return Err(bad("the document has no prims in it"));
+    }
+    if doc.prims.len() > MAX_IMPORT_PRIMS {
+        return Err(bad(format!(
+            "{} prims in one import; the limit is {MAX_IMPORT_PRIMS}",
+            doc.prims.len()
+        )));
+    }
+
+    let mut created = Vec::new();
+    for spec in &doc.prims {
+        // Straight through `create`, so an imported prim is checked exactly as
+        // one an author posts by hand: same shape validation, same geo bounds,
+        // same region budget. A document cannot describe a prim the API would
+        // otherwise refuse.
+        let prim = create(&state, spec).await?;
+        crate::http::with_db(&state, |c| {
+            crate::db::set_prim_owner(c, prim.id, &principal.to_string())
+        })?;
+        store_script(&state, prim.id, spec.script.as_deref()).await?;
+        created.push(json!({ "id": prim.id, "name": prim.name }));
+    }
+    tracing::info!(%username, count = created.len(), "content imported");
+    Ok(Json(json!({
+        "imported": created,
+        "note": "import adds rather than replaces; compile errors arrive on the wire \
+                 as ScriptOutput, not in this response",
     })))
 }
 

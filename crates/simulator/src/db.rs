@@ -358,6 +358,102 @@ pub fn set_prim_origin(conn: &Connection, prim_id: i64, origin: &str) -> anyhow:
     Ok(())
 }
 
+/// The current time, as SQLite's `datetime('now')` renders it.
+///
+/// Asked of SQLite rather than formatted here so an exported timestamp reads the
+/// same as every `created_at` in this schema, and so the crate needs no date
+/// formatting dependency for one string.
+#[must_use]
+pub fn now_iso8601() -> String {
+    time_now().unwrap_or_default()
+}
+
+fn time_now() -> Option<String> {
+    let conn = Connection::open_in_memory().ok()?;
+    conn.query_row("SELECT datetime('now')", [], |r| r.get(0))
+        .ok()
+}
+
+/// Record who built a prim (`V15__prim_owner.sql`).
+///
+/// A separate write for the same reason [`set_prim_origin`] is: `insert_prim` is
+/// reached from the wire, from the admin API and from a content pack, and only
+/// some of those have an owner to name.
+pub fn set_prim_owner(conn: &Connection, prim_id: i64, owner: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE prims SET owner = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, owner],
+    )?;
+    Ok(())
+}
+
+/// Who owns a prim, if anybody does.
+pub fn prim_owner(conn: &Connection, prim_id: i64) -> anyhow::Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT owner FROM prims WHERE id = ?1",
+            rusqlite::params![prim_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// Every prim an account owns, oldest first, with its script source.
+///
+/// The script comes back in the same query rather than one round trip per prim:
+/// an export of a hundred objects would otherwise be a hundred statements, and
+/// the source is exactly the part an export exists to carry.
+pub fn owned_prims(
+    conn: &Connection,
+    owner: &str,
+) -> anyhow::Result<Vec<(PrimDto, Option<String>)>> {
+    let sql = format!(
+        "SELECT {PRIM_COLUMNS}, (SELECT source FROM prim_scripts s WHERE s.prim_id = prims.id)          FROM prims WHERE owner = ?1 ORDER BY id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params![owner], |row| {
+            // The script is one column past the last of `PRIM_COLUMNS`; the
+            // `scripted` flag that `row_to_prim` reads is the one before it.
+            let source: Option<String> = row.get(42)?;
+            Ok((row_to_prim(row)?, source))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every prim in the world with its script, for an admin's whole-world export.
+pub fn all_prims_with_scripts(conn: &Connection) -> anyhow::Result<Vec<(PrimDto, Option<String>)>> {
+    let sql = format!(
+        "SELECT {PRIM_COLUMNS}, (SELECT source FROM prim_scripts s WHERE s.prim_id = prims.id) \
+         FROM prims ORDER BY id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let source: Option<String> = row.get(42)?;
+            Ok((row_to_prim(row)?, source))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// An account's uuid by username, if the account exists and is enabled.
+///
+/// Enabled matters here because this resolves the *target* of an ownership
+/// transfer: handing a build to a disabled account puts it somewhere nobody can
+/// reach, which is a way to lose work rather than to move it.
+pub fn enabled_account_id(conn: &Connection, username: &str) -> anyhow::Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM accounts WHERE username = ?1 AND disabled = 0",
+            rusqlite::params![username],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// Every prim a given content pack installed, oldest first.
 pub fn prim_ids_from(conn: &Connection, origin: &str) -> anyhow::Result<Vec<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM prims WHERE origin = ?1 ORDER BY id")?;

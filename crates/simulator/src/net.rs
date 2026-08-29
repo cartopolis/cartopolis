@@ -568,6 +568,21 @@ pub async fn handle_connection<T: FrameTransport>(
                                 });
                                 match created {
                                     Ok(prim) => {
+                                        // Whose it is (schema V15). Recorded here
+                                        // rather than inside `add_prim` because
+                                        // this is the only one of the three create
+                                        // paths with a person behind it — the
+                                        // admin API and a content pack are the
+                                        // server building, and leave it NULL.
+                                        // Best-effort: a prim that exists with no
+                                        // owner is a prim nobody can export, which
+                                        // is better than refusing a build over a
+                                        // bookkeeping write.
+                                        if let Ok(c) = conn.lock() {
+                                            if let Err(e) = crate::db::set_prim_owner(&c, prim.id, &principal.to_string()) {
+                                                tracing::warn!(prim_id = prim.id, "recording the owner failed: {e:#}");
+                                            }
+                                        }
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
                                         let _ = tx_snap.send(broadcast_msg);

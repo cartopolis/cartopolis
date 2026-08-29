@@ -27,6 +27,19 @@ you can see the request it would have sent.
     tools/author.py content         # what the server can install
     tools/author.py install firebird
 
+    tools/author.py export > my-build.json      # everything you own
+    tools/author.py export --all                # the whole world (admin)
+    tools/author.py export --owner karlos       # somebody else's (admin)
+    tools/author.py import my-build.json        # bring it back, or to another server
+    tools/author.py give 4 5 --to karlos        # hand prims over
+
+These authenticate as a *player* (`CARTO_USER` / `CARTO_PASSWORD`, falling back
+to the admin pair) and default to prims you built. `--all` and `--owner` need an
+admin; an ordinary account cannot reach past itself by any argument. Import
+*adds* rather than replaces — a document cannot say which live prim each entry
+was, so replacing would have to guess, and guessing wrong deletes somebody's
+build.
+
 Two things worth knowing before you use it in anger.
 
 **A script's compile errors do not come back in the HTTP response.** The host
@@ -46,6 +59,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_SIM = "http://127.0.0.1:8080"
@@ -79,9 +93,20 @@ def request(method: str, url: str, token: str | None, body: object | None) -> ob
         raise ApiError(f"cannot reach {url}: {e.reason}") from None
 
 
-def login(base: str) -> str:
-    user = os.environ.get("CARTO_ADMIN_USER")
-    password = os.environ.get("CARTO_ADMIN_PASSWORD")
+def login(base: str, player: bool = False) -> str:
+    """A session token.
+
+    `player` asks for an ordinary account's, which is what export and import
+    take: they are owner-scoped, so signing in as the admin would export the
+    admin's own (usually empty) build rather than yours."""
+    if player:
+        user = os.environ.get("CARTO_USER") or os.environ.get("CARTO_ADMIN_USER")
+        password = os.environ.get("CARTO_PASSWORD") or os.environ.get(
+            "CARTO_ADMIN_PASSWORD"
+        )
+    else:
+        user = os.environ.get("CARTO_ADMIN_USER")
+        password = os.environ.get("CARTO_ADMIN_PASSWORD")
     if not user or not password:
         raise ApiError(
             "set CARTO_ADMIN_USER and CARTO_ADMIN_PASSWORD (the same account you "
@@ -154,7 +179,24 @@ def read_maybe_file(value: str) -> str:
 
 
 def emit(value: object) -> None:
-    print(json.dumps(value, indent=2))
+    write(json.dumps(value, indent=2))
+
+
+def write(text: str) -> None:
+    """Print, tolerating a reader that closed early.
+
+    `author.py export | head` is an obvious thing to type, and without this it
+    ends in a `BrokenPipeError` traceback that looks like the tool failed. The
+    flush-and-swallow is the documented way to end a program whose stdout has
+    gone: the interpreter would otherwise report the same error again at exit."""
+    try:
+        print(text)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader is gone. Point stdout at devnull so the interpreter's own
+        # flush at shutdown has somewhere to go, then leave quietly.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +259,20 @@ def main() -> int:
     dp = sub.add_parser("delete", help="remove a prim, its script and its emitter")
     dp.add_argument("id", type=int)
 
+    ep = sub.add_parser("export", help="write a build out as a document")
+    ep.add_argument("--out", help="file to write (default: stdout)")
+    ep.add_argument("--owner", help="another account's build (admin only)")
+    ep.add_argument(
+        "--all", action="store_true", help="the whole world, unowned prims included (admin only)"
+    )
+
+    gp = sub.add_parser("give", help="transfer prims to another account")
+    gp.add_argument("prims", type=int, nargs="+", help="prim ids")
+    gp.add_argument("--to", required=True, help="the username to hand them to")
+
+    mp = sub.add_parser("import", help="create everything in a document, owned by you")
+    mp.add_argument("document", help="a file written by `export`")
+
     sub.add_parser("content", help="list the content the server can install")
 
     ip = sub.add_parser(
@@ -232,7 +288,10 @@ def main() -> int:
         # `--print` never signs in: showing the request is meant to work with no
         # credentials and no server, which is most of what makes it useful for
         # writing one of these by hand.
-        token = None if args.dry_run else login(base)
+        # Export and import are the caller's own content, so they sign in as a
+        # player rather than as the operator.
+        player = args.command in ("export", "import", "give")
+        token = None if args.dry_run else login(base, player=player)
 
         if args.command == "regions":
             emit(request("GET", f"{base}/api/admin/regions", token, None))
@@ -269,6 +328,46 @@ def main() -> int:
             else:
                 request("DELETE", f"{base}/api/admin/prims/{args.id}", token, None)
                 print(f"prim {args.id} deleted")
+        elif args.command == "export":
+            query = ""
+            if args.all:
+                query = "?all=true"
+            elif args.owner:
+                query = f"?owner={urllib.parse.quote(args.owner)}"
+            doc = request("GET", f"{base}/api/content/export{query}", token, None)
+            text = json.dumps(doc, indent=2)
+            if args.out:
+                with open(args.out, "w", encoding="utf-8") as f:
+                    f.write(text + "\n")
+                print(f"wrote {len(doc['prims'])} prim(s) to {args.out}", file=sys.stderr)
+            else:
+                write(text)
+        elif args.command == "import":
+            try:
+                with open(args.document, encoding="utf-8") as f:
+                    doc = json.load(f)
+            except json.JSONDecodeError as e:
+                # A document is a file a person may have edited by hand, so a
+                # syntax slip in it is an ordinary outcome and deserves a sentence
+                # rather than a stack trace.
+                raise ApiError(f"{args.document} is not valid JSON: {e}") from None
+            except OSError as e:
+                raise ApiError(f"cannot read {args.document}: {e.strerror}") from None
+            if not isinstance(doc, dict) or "prims" not in doc:
+                raise ApiError(
+                    f"{args.document} does not look like an export "
+                    "(no `prims` list) — `export` writes the shape `import` reads"
+                )
+            if args.dry_run:
+                emit({"POST": "/api/content/import", "prims": len(doc.get("prims", []))})
+            else:
+                emit(request("POST", f"{base}/api/content/import", token, doc))
+        elif args.command == "give":
+            body = {"prims": args.prims, "to": args.to}
+            if args.dry_run:
+                emit({"POST": "/api/content/transfer", "body": body})
+            else:
+                emit(request("POST", f"{base}/api/content/transfer", token, body))
         elif args.command == "content":
             emit(request("GET", f"{base}/api/admin/content", token, None))
         elif args.command == "install":

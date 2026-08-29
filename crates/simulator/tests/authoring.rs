@@ -160,6 +160,112 @@ async fn stand_at(c: &mut Client, lat: f64, lng: f64) {
         .unwrap();
 }
 
+/// A session token for an ordinary (non-admin) account.
+///
+/// The same `/api/admin/login` route, which is not a contradiction: it mints from
+/// the one session store the game uses, and it refuses a non-admin. So a player's
+/// token has to come off the wire handshake instead — which is also the honest
+/// test, because that is where a player's token comes from in real life.
+async fn session(handle: &SimHandle, username: &str, password: &str) -> String {
+    let stream = TcpStream::connect(handle.local_addr.to_string())
+        .await
+        .unwrap();
+    let mut c = Framed::new(
+        stream,
+        LengthDelimitedCodec::builder()
+            .max_frame_length(32 << 20)
+            .little_endian()
+            .new_codec(),
+    );
+    let hello = encode_app_frame(&NetMessage::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        auth: AuthCredential::Password {
+            username: username.into(),
+            password: password.into(),
+        },
+    })
+    .unwrap();
+    c.send(Bytes::from(hello)).await.unwrap();
+    match decode_app_frame(&c.next().await.unwrap().unwrap()).unwrap() {
+        NetMessage::ServerHelloAck { session_token, .. } => session_token,
+        other => panic!("expected an ack, got {other:?}"),
+    }
+}
+
+/// The first region the server tells us about.
+async fn first_region(c: &mut Client) -> i64 {
+    recv_until(c, "world snapshot", |m| match m {
+        NetMessage::WorldSnapshot { regions, .. } => regions.first().map(|r| r.id),
+        _ => None,
+    })
+    .await
+}
+
+/// Build a prim over the wire, as a player does — the path that records an owner.
+async fn build(c: &mut Client, region_id: i64, name: &str, lat: f64, lng: f64) -> i64 {
+    let msg = NetMessage::CreatePrim {
+        request_id: 1,
+        region_id,
+        name: name.into(),
+        position: glam::Vec3::new(0.0, 2.0, 0.0),
+        rotation: glam::Vec3::ZERO,
+        scale: glam::Vec3::ONE,
+        color: [0.5, 0.5, 0.5],
+        texture_id: None,
+        shape: "box".into(),
+        surface: cartopolis_core::PrimSurface::default(),
+        geometry: cartopolis_core::PrimGeometry::default(),
+        geo: GeoAnchor {
+            latitude: lat,
+            longitude: lng,
+        },
+        particles: None,
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+    recv_until(c, "prim upsert", |m| match m {
+        NetMessage::PrimUpsert { prim } if prim.name == name => Some(prim.id),
+        _ => None,
+    })
+    .await
+}
+
+async fn set_script(c: &mut Client, prim_id: i64, source: &str) {
+    let msg = NetMessage::SetPrimScript {
+        request_id: 2,
+        prim_id,
+        source: source.into(),
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+    recv_until(c, "the script to compile", |m| match m {
+        NetMessage::ScriptOutput { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+/// Read frames until one matches, discarding the snapshot traffic between.
+async fn recv_until<T>(
+    c: &mut Client,
+    what: &str,
+    mut f: impl FnMut(NetMessage) -> Option<T>,
+) -> T {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let frame = tokio::time::timeout_at(deadline, c.next())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+            .unwrap()
+            .unwrap();
+        if let Some(v) = f(decode_app_frame(&frame).unwrap()) {
+            return v;
+        }
+    }
+}
+
 /// Press a prim, the way walking up to it and pressing E does.
 async fn press(c: &mut Client, prim_id: i64) {
     let msg = NetMessage::TouchPrim {
@@ -344,6 +450,375 @@ async fn an_emitter_can_be_described_by_what_differs_from_the_preset() {
         first + 1,
         "re-authoring a burst should re-arm it: {again}"
     );
+}
+
+/// A player exports their own build and imports it back.
+///
+/// The round trip is the test worth having: an export whose document the import
+/// route will not accept is not an export, and the two halves are only guaranteed
+/// to agree because they are the *same* `PrimSpec` the create route takes.
+#[tokio::test]
+async fn a_player_can_export_their_own_build_and_import_it_back() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+
+    // Built over the wire, which is the path that records an owner.
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let region = first_region(&mut c).await;
+    let prim_id = build(&mut c, region, "Lamp", LAT, LNG).await;
+    set_script(&mut c, prim_id, "function on_touch(id, who) vfSay(who) end").await;
+
+    // Give it something worth carrying, so the document is not trivially equal.
+    let (status, _) = api(
+        "PATCH",
+        format!("{}/api/admin/prims/{prim_id}", base(&handle)),
+        Some(admin.clone()),
+        Some(serde_json::json!({
+            "color": [0.2, 0.6, 0.9],
+            "rotation": [0.0, 90.0, 0.0],
+            "particles": { "color_start": [0.2, 0.6, 4.0] },
+        })),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let (status, doc) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{doc}");
+    assert_eq!(doc["version"], 1);
+    let prims = doc["prims"].as_array().unwrap();
+    assert_eq!(prims.len(), 1, "one owned prim: {doc}");
+    let exported = &prims[0];
+    assert_eq!(exported["name"], "Lamp");
+    assert_eq!(exported["color"], serde_json::json!([0.2, 0.6, 0.9]));
+    // Degrees on this surface, radians on the wire — an export that wrote radians
+    // would re-import as a prim turned by 5157 degrees.
+    assert!(
+        (exported["rotation"][1].as_f64().unwrap() - 90.0).abs() < 1e-3,
+        "rotation should come back in degrees: {exported}"
+    );
+    assert_eq!(exported["particles"]["color_start"][2], 4.0);
+    assert!(
+        exported["script"].as_str().unwrap().contains("on_touch"),
+        "the script is the part an export exists to carry: {exported}"
+    );
+    // Server-assigned facts are deliberately absent: an id from one server means
+    // nothing on another.
+    assert!(exported.get("region_id").is_none_or(|v| v.is_null()));
+
+    // …and it goes straight back in.
+    let (status, back) = api(
+        "POST",
+        format!("{}/api/content/import", base(&handle)),
+        Some(walker.clone()),
+        Some(doc.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "{back}");
+    assert_eq!(back["imported"].as_array().unwrap().len(), 1, "{back}");
+
+    // Import *adds*: there are two now, and the second is owned by the importer,
+    // so a second export sees both.
+    let (_, doc2) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker),
+        None,
+    )
+    .await;
+    assert_eq!(
+        doc2["prims"].as_array().unwrap().len(),
+        2,
+        "import adds rather than replaces: {doc2}"
+    );
+}
+
+/// A player's *own* export carries only their own prims — including the admin's,
+/// whose default scope is no wider than anybody else's.
+///
+/// The default is what matters here. An account cannot read somebody else's build
+/// out of this route by any argument it supplies; reaching further is an explicit
+/// query and an explicit permission (the next test).
+#[tokio::test]
+async fn an_export_defaults_to_the_callers_own_prims() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+
+    // One prim built by `walker` over the wire, two installed by the server.
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let region = first_region(&mut c).await;
+    build(&mut c, region, "Walkers lamp", LAT, LNG).await;
+    let (status, _) = api(
+        "POST",
+        format!("{}/api/admin/content/firebird", base(&handle)),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // The admin has built nothing, so their *own* export is empty — the content
+    // pack's prims belong to the server, not to whoever installed them.
+    let (status, doc) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{doc}");
+    assert!(
+        doc["prims"].as_array().unwrap().is_empty(),
+        "an admin's own export is their own build, which is nothing: {doc}"
+    );
+
+    // Walker gets exactly their own — not the two the content pack installed.
+    let walker = session(&handle, "walker", "walkerpw").await;
+    let (_, mine) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker.clone()),
+        None,
+    )
+    .await;
+    let names: Vec<&str> = mine["prims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Walkers lamp"], "{mine}");
+
+    // And a player cannot reach past themselves by asking.
+    for query in ["?all=true", "?owner=walker"] {
+        let (status, body) = api(
+            "GET",
+            format!("{}/api/content/export{query}", base(&handle)),
+            Some(walker.clone()),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status, 403,
+            "a player must not reach past themselves: {body}"
+        );
+    }
+}
+
+/// An admin can always export — their own, a named account's, or the whole world.
+#[tokio::test]
+async fn an_admin_can_export_anything() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let region = first_region(&mut c).await;
+    build(&mut c, region, "Walkers lamp", LAT, LNG).await;
+    let (status, _) = api(
+        "POST",
+        format!("{}/api/admin/content/firebird", base(&handle)),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // By owner.
+    let (status, theirs) = api(
+        "GET",
+        format!("{}/api/content/export?owner=walker", base(&handle)),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{theirs}");
+    assert_eq!(theirs["prims"].as_array().unwrap().len(), 1, "{theirs}");
+    assert_eq!(theirs["prims"][0]["name"], "Walkers lamp");
+
+    // Everything, which is the only way to reach the server's own prims.
+    let (status, all) = api(
+        "GET",
+        format!("{}/api/content/export?all=true", base(&handle)),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{all}");
+    let names: Vec<&str> = all["prims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"Walkers lamp") && names.iter().any(|n| n.starts_with("Firebird")),
+        "a whole-world export includes unowned prims: {names:?}"
+    );
+
+    // A username nobody has is a 404, not an empty document that reads as
+    // "they have built nothing".
+    let (status, body) = api(
+        "GET",
+        format!("{}/api/content/export?owner=nobody", base(&handle)),
+        Some(admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+}
+
+/// Ownership can be handed over — by the owner, and by an admin.
+#[tokio::test]
+async fn ownership_can_be_transferred() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let region = first_region(&mut c).await;
+    let mine = build(&mut c, region, "Walkers lamp", LAT, LNG).await;
+
+    // The owner gives it to root.
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/content/transfer", base(&handle)),
+        Some(walker.clone()),
+        Some(serde_json::json!({ "prims": [mine], "to": "root" })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    // It is root's now, and walker's export is empty.
+    let (_, roots) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(roots["prims"].as_array().unwrap().len(), 1, "{roots}");
+    let (_, walkers) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker.clone()),
+        None,
+    )
+    .await;
+    assert!(walkers["prims"].as_array().unwrap().is_empty(), "{walkers}");
+
+    // Walker cannot take it back — it is not theirs to give any more.
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/content/transfer", base(&handle)),
+        Some(walker),
+        Some(serde_json::json!({ "prims": [mine], "to": "walker" })),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+
+    // The admin can, because somebody has to be able to re-home a build.
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/content/transfer", base(&handle)),
+        Some(admin),
+        Some(serde_json::json!({ "prims": [mine], "to": "walker" })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A transfer is all-or-nothing: one prim you may not move refuses the request
+/// and leaves the rest where they were.
+///
+/// A partial transfer is the worst outcome available, because the response gives
+/// the caller no way to tell which half happened.
+#[tokio::test]
+async fn a_transfer_moves_all_of_them_or_none() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let region = first_region(&mut c).await;
+    let mine = build(&mut c, region, "Mine", LAT, LNG).await;
+
+    // The pack's prims belong to the server, so walker may move neither.
+    let (status, installed) = api(
+        "POST",
+        format!("{}/api/admin/content/firebird", base(&handle)),
+        Some(admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let theirs = installed["installed"][0]["id"].as_i64().unwrap();
+
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/content/transfer", base(&handle)),
+        Some(walker.clone()),
+        Some(serde_json::json!({ "prims": [mine, theirs], "to": "root" })),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+
+    // …and the one they *did* own has not moved.
+    let (_, still) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker),
+        None,
+    )
+    .await;
+    assert_eq!(
+        still["prims"].as_array().unwrap().len(),
+        1,
+        "the legal half must not have gone through on its own: {still}"
+    );
+}
+
+/// Signing in is the whole gate, and there is no anonymous export.
+#[tokio::test]
+async fn import_and_export_need_a_session() {
+    let (handle, _dir) = server().await;
+    for (method, path) in [("GET", "export"), ("POST", "import")] {
+        let (status, _) = api(
+            method,
+            format!("{}/api/content/{path}", base(&handle)),
+            None,
+            Some(serde_json::json!({"version": 1, "prims": []})),
+        )
+        .await;
+        assert_eq!(
+            status, 401,
+            "{method} /api/content/{path} must need a session"
+        );
+    }
+}
+
+/// A document from a newer server is refused rather than half-read.
+#[tokio::test]
+async fn a_document_from_the_future_is_refused() {
+    let (handle, _dir) = server().await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/content/import", base(&handle)),
+        Some(walker),
+        Some(serde_json::json!({
+            "version": 99,
+            "prims": [{"latitude": LAT, "longitude": LNG}],
+        })),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("99"), "{body}");
 }
 
 /// The API refuses what the renderer would have accepted silently.
