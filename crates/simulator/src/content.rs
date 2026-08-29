@@ -27,7 +27,7 @@
 //! alternative — a second firebird circling the same city every time somebody
 //! re-ran the command — is the more surprising of the two.
 //!
-//! What it matches on is `prims.origin` (`V12__prim_origin.sql`), and that column
+//! What it matches on is `prims.origin` (`V14__prim_origin.sql`), and that column
 //! exists because the obvious cheaper thing does not work. The first version
 //! matched the prim *names* a pack declares, and the pack broke it itself: the
 //! beacon's script renames it to whatever its label currently says, so the second

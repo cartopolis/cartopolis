@@ -95,7 +95,7 @@ body deserialises into, and installing one runs the same handler an author's
 from it or acquire abilities the API does not have.
 
 Installing twice **replaces**, matching on `prims.origin`
-(`V12__prim_origin.sql`). The first version matched the prim *names* the pack
+(`V14__prim_origin.sql`). The first version matched the prim *names* the pack
 declares and the pack broke it itself: the beacon's script renames it to whatever
 its label currently says, so a reinstall found nothing called "Beacon", left the
 old one standing and added another — measured, three prims after two installs. A

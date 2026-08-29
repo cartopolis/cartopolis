@@ -73,7 +73,7 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
     })
 }
 
-/// Decode the `particles` column (see `V11__prim_particles.sql`).
+/// Decode the `particles` column (see `V13__prim_particles.sql`).
 ///
 /// A column that will not parse becomes `None` and a warning, never an error:
 /// the alternative is that one hand-edited row stops the whole world loading,
@@ -345,7 +345,7 @@ pub fn update_prim(
     Ok(Some(prim))
 }
 
-/// Record which content pack installed a prim (`V12__prim_origin.sql`).
+/// Record which content pack installed a prim (`V14__prim_origin.sql`).
 ///
 /// A separate write rather than a column on the insert, because it is not part of
 /// what an author describes: `insert_prim` is reached from the wire, from the
