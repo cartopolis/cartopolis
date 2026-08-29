@@ -47,6 +47,10 @@ const CONFIG_PATH = process.env.CARTO_AUTOPILOT_CONFIG ?? "/home/agent/issue-age
 const STATE_PATH = process.env.CARTO_AUTOPILOT_STATE ?? "/home/agent/issue-agent/autopilot-state.json";
 
 const SHIP = "ship";
+/** How long `agent:running` may sit untouched before it is treated as dead. */
+const STALE_RUN_MS = Number(process.env.CARTO_AUTOPILOT_STALE_HOURS ?? 3) * 3_600_000;
+/** Parked tickets tolerated on top of the open limit before filing stops. */
+const MAX_PARKED = 4;
 const DONE = "agent:done";
 const SHIPPED = "agent:shipped";
 const FAILED = "agent:failed";
@@ -126,6 +130,87 @@ async function jobsFor(sha: string): Promise<[string, string][]> {
     .map((r: any) => [r.status ?? "", r.name ?? ""] as [string, string]);
 }
 
+
+
+const NEEDS_INPUT = "agent:needs-input";
+
+/**
+ * A ticket of ours that stopped to ask is a ticket that stops for ever: nobody
+ * is reading the board, which is the whole premise. So answer it the only way
+ * this lane can — point at the values, and re-arm it.
+ *
+ * The bare trigger label means "implement this now" and skips refinement, which
+ * is right here: the spec was written, the session simply would not choose. It
+ * is done **once** per ticket; a second stop is a real question and is left
+ * alone, because a loop that keeps re-arming the same ticket is a loop that
+ * burns a session every hour on a decision it cannot make.
+ */
+async function rearmParkedTickets() {
+  const open = await api(`/issues?state=open&type=issues&limit=50`);
+  for (const issue of open) {
+    const names = labelsOf(issue);
+    if (!names.includes(FILED_BY_AUTOPILOT) || !names.includes(NEEDS_INPUT)) continue;
+
+    const comments = await api(`/issues/${issue.number}/comments?limit=50`);
+    if (comments.some((c: any) => (c.body ?? "").includes("<!-- autopilot:rearmed -->"))) continue;
+
+    await comment(
+      issue.number,
+      "🤖 **Nobody is going to answer this, so decide it yourself.**\n\n" +
+        "The seven values at the top of [`docs/direction.md`](../src/branch/main/docs/direction.md) " +
+        "are there to settle exactly this: measured over plausible, official sources first, degrade " +
+        "rather than break, add rather than replace, keep the frame budget, ship the smallest thing a " +
+        "machine can judge, and write down what you decided.\n\n" +
+        "Pick the reading those support, record which one you applied in the commit body, and build it. " +
+        "Stop again only for something no one can derive from the repository — a credential, a licence " +
+        "somebody must accept, or a question about what the project is for.\n\n" +
+        "<sub><!-- autopilot:rearmed --></sub>",
+    );
+    await api(`/issues/${issue.number}/labels/${await labelId(NEEDS_INPUT)}`, { method: "DELETE" });
+    await addLabel(issue.number, "agent");
+    log(`#${issue.number}: parked on a question — answered from the values and re-armed`);
+  }
+}
+
+// --- what may not be shipped unattended ---------------------------------------
+//
+// `docs/direction.md` states these as rules; this is the part that enforces
+// them, because a rule an agent reads is a rule an agent can decide it has a
+// good reason to break. Each one is a change no revert of ours can undo:
+//
+// - **the wire protocol** — the frame header carries a version and
+//   `decode_app_frame` refuses a mismatch outright, so a bump locks out every
+//   installed Android app and downloaded desktop binary, and no deploy from
+//   this machine reaches either.
+// - **a database migration** — it runs once against the live world.
+// - **the workflows** — a branch that edits CI can weaken the very check that
+//   is about to judge it.
+// - **the autopilot's own scripts** — same shape, one level up.
+// - **`assetlinks.json`** — the Android App Link is bound to a signing
+//   certificate at *install* time, so getting it wrong is not fixable by
+//   publishing a correction.
+//
+// A ticket that touches one of these keeps its branch and loses its `ship`
+// label: it becomes an ordinary finished branch waiting for a person.
+const FENCED: [RegExp, string][] = [
+  [/^crates\/core\/src\/protocol\.rs$/, "the wire protocol"],
+  [/^crates\/simulator\/migrations\//, "a database migration"],
+  [/^\.forgejo\/workflows\//, "the CI or deploy workflows"],
+  [/^tools\/(autopilot\.ts|deploy-main)$/, "the autopilot's own scripts"],
+  [/assetlinks\.json$/, "the Android App Link certificate"],
+];
+
+async function fencedPaths(branch: string): Promise<string[]> {
+  const cmp = await api(`/compare/main...${encodeURIComponent(branch)}`);
+  const files: string[] = Array.from(new Set((cmp.files ?? []).map((f: any) => f.filename as string)));
+  const hits: string[] = [];
+  for (const f of files) {
+    const rule = FENCED.find(([re]) => re.test(f));
+    if (rule) hits.push(`\`${f}\` — ${rule[1]}`);
+  }
+  return hits;
+}
+
 // --- shipping ----------------------------------------------------------------
 
 async function shipReady(cfg: Config) {
@@ -161,6 +246,20 @@ async function shipReady(cfg: Config) {
         // this is not redundant with it. That state is fine for handing a branch
         // to a person and is not fine for publishing.
         log(`#${n}: ${bad.map(([st, name]) => `${name}=${st}`).join(", ")} — not shipping`);
+        continue;
+      }
+
+      const fenced = await fencedPaths(branch);
+      if (fenced.length) {
+        await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" });
+        await comment(
+          n,
+          `🤖 **Not shipping this one — it touches something the unattended lane may not change:**\n\n` +
+            fenced.map((f) => `- ${f}`).join("\n") +
+            `\n\nThe branch \`${branch}\` is finished and CI passed on it; it is waiting for you to land it. ` +
+            `The reasoning is in \`docs/direction.md\` — these are the changes no revert from here undoes.`,
+        );
+        log(`#${n}: fenced (${fenced.length} path(s)) — left for review`);
         continue;
       }
 
@@ -379,10 +478,35 @@ async function generate(cfg: Config) {
   // does not know>` by returning **every** open issue instead of none, so
   // before this label exists the API's own filter reports the board as full and
   // nothing is ever filed. `shipReady` re-checks its labels for the same reason.
+  // Only tickets that are still *moving* hold a slot. One that failed, or that
+  // stopped to ask a question, is waiting on a person — and with a limit of two
+  // that would mean two dead tickets stop the lane for good, silently, which is
+  // the most likely way this whole thing quietly ends.
+  //
+  // A session that died mid-run leaves `agent:running` behind on purpose (the
+  // watcher will not silently retry an unknown half-finished state), so that
+  // label ages out here rather than counting for ever.
   const open = await api(`/issues?state=open&type=issues&limit=50`);
-  const inFlight = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT));
+  const mine = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT));
+  const stalled = (i: any) => {
+    const names = labelsOf(i);
+    if (names.includes(FAILED) || names.includes(NEEDS_INPUT)) return true;
+    // Finished, and either about to be merged in this same tick or waiting for
+    // a person because it was fenced. Either way it is not work in progress.
+    if (names.includes(DONE)) return true;
+    const age = Date.now() - new Date(i.updated_at).getTime();
+    return names.includes("agent:running") && age > STALE_RUN_MS;
+  };
+  const inFlight = mine.filter((i: any) => !stalled(i));
+  const parked = mine.filter(stalled);
+  if (parked.length) log(`${parked.length} autopilot ticket(s) parked (${parked.map((i: any) => `#${i.number}`).join(", ")}) — not holding a slot`);
   if (inFlight.length >= cfg.maxOpen) {
     return log(`${inFlight.length} autopilot ticket(s) open (limit ${cfg.maxOpen}) — waiting for #${inFlight[0].number}`);
+  }
+  // …but they do bound the sprawl. A lane filing five a day into a board nobody
+  // reads is worse than a lane that stops.
+  if (mine.length >= cfg.maxOpen + MAX_PARKED) {
+    return log(`${mine.length} autopilot ticket(s) open including ${parked.length} parked — filing nothing until some are dealt with`);
   }
 
   let rows: { key: string; source: string; adds: string }[];
@@ -413,7 +537,15 @@ async function generate(cfg: Config) {
       "**Not worth it is a valid answer.** Record it in `docs/direction.md` against this row",
       "with the reason, and close this ticket — that is the result, not a failure.",
       "",
-      "If it is worth doing, follow the shape the surveyed layers already use:",
+"",
+      "**Decide it yourself.** This ticket is not being watched, so a question asked",
+      "here is a ticket that stops. The seven values at the top of `docs/direction.md`",
+      "exist to settle exactly this kind of ambiguity — pick the reading they support,",
+      "say in the commit body which one you applied and why, and build. Only a decision",
+      "that would need something nobody can derive from the repository — a credential, a",
+      "licence somebody must agree to, a choice about what the project is *for* — is a",
+      "reason to stop.",
+      "",      "If it is worth doing, follow the shape the surveyed layers already use:",
       "an extractor under `tools/`, a coverage manifest, a streamer that adds to what",
       "is drawn rather than replacing it, and no unbounded per-frame upload.",
       "",
@@ -471,6 +603,9 @@ async function generate(cfg: Config) {
             "  colour, lighting or feel work, and nothing that needs a camera or a headset.",
             "- **Say what it costs** if you can measure it: bytes per cell, or requests per view.",
             "- Do not touch the goal, the rules, or the list of what is already wired.",
+            "",
+            "**Decide it yourself** — see the values at the top of that file. A candidate you",
+            "are unsure about is one to leave out, not one to ask about.",
             "",
             "Six to ten rows is a good outcome. Fewer, well-checked ones beat a long list of",
             "sources nobody confirmed exists — and if a candidate turns out not to be real, that",
@@ -552,9 +687,11 @@ if (cmd === "status") {
 } else if (cmd === "ship") {
   await shipReady(cfg);
 } else if (cmd === "generate") {
+  await rearmParkedTickets();
   await generate(cfg);
 } else if (cmd === "tick") {
   await shipReady(cfg);
+  await rearmParkedTickets();
   await generate(cfg);
 } else {
   console.error(`unknown command: ${cmd}`);
