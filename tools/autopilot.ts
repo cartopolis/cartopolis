@@ -235,20 +235,6 @@ async function shipReady(cfg: Config) {
       const head = await api(`/branches/${encodeURIComponent(branch)}`);
       const sha = head.commit.id;
 
-      const jobs = await jobsFor(sha);
-      if (!jobs.length) {
-        log(`#${n}: no Actions job ran on ${branch} (${sha.slice(0, 8)}) — not shipping`);
-        continue;
-      }
-      const bad = jobs.filter(([st]) => st !== "success");
-      if (bad.length) {
-        // `agent:done` is also how the watcher records "CI never answered", so
-        // this is not redundant with it. That state is fine for handing a branch
-        // to a person and is not fine for publishing.
-        log(`#${n}: ${bad.map(([st, name]) => `${name}=${st}`).join(", ")} — not shipping`);
-        continue;
-      }
-
       const fenced = await fencedPaths(branch);
       if (fenced.length) {
         await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" });
@@ -263,13 +249,44 @@ async function shipReady(cfg: Config) {
         continue;
       }
 
+      // The pull request comes **before** the check, not after it, and that is
+      // the whole reason this lane's verdicts were empty: `ci.yml` runs on
+      // `main` and on pull requests and deliberately not on a branch push, so
+      // until the request exists there is nothing for CI to have said. The
+      // watcher's `agent:done` inherits that — it means "CI did not answer" for
+      // every ticket this lane files, which is exactly why the real gate is
+      // here rather than on the label.
       const pr = await openOrFindPr(issue, branch);
+
+      const jobs = await jobsFor(sha);
+      if (!jobs.length) {
+        // Either the run has not registered yet — this ticks hourly, so simply
+        // look again — or the change is one CI is configured to skip. The
+        // workflow ignores `docs/**` and `*.md`, and a documentation-only
+        // branch that waits for a verdict waits for ever.
+        const files: string[] = Array.from(
+          new Set(((await api(`/compare/main...${encodeURIComponent(branch)}`)).files ?? []).map((f: any) => f.filename as string)),
+        );
+        const skipped = files.length > 0 && files.every((f) => f.startsWith("docs/") || f.endsWith(".md"));
+        if (!skipped) {
+          log(`#${n}: pull request ${pr.number} open, waiting for CI on ${sha.slice(0, 8)}`);
+          continue;
+        }
+        log(`#${n}: documentation only (${files.length} file(s)) — CI does not run on these, shipping`);
+      } else {
+        const bad = jobs.filter(([st]) => st !== "success");
+        if (bad.length) {
+          log(`#${n}: ${bad.map(([st, name]) => `${name}=${st}`).join(", ")} — not shipping`);
+          continue;
+        }
+      }
+
       log(`#${n}: merging pull request ${pr.number} (${branch} → main)`);
       await mergePr(pr.number);
 
       await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" });
       await addLabel(n, SHIPPED);
-      await comment(n, `🤖 **Merged into \`main\`** as pull request #${pr.number}, on a green run of every Actions job for \`${sha.slice(0, 8)}\`.`);
+      await comment(n, `🤖 **Merged into \`main\`** as pull request #${pr.number} (\`${sha.slice(0, 8)}\`).`);
 
       await deployMain(n);
     } catch (e) {
