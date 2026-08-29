@@ -106,14 +106,20 @@ decides only which frontier item in [`direction.md`](direction.md) has no ticket
 yet, and which finished branch every Actions job passed on. The thinking is
 still ③'s sessions, which refine the ticket and implement it.
 
+The two jobs run on different clocks: a full `tick` (file + ship) hourly, and
+a `ship`-only pass every five minutes in between. Filing is quota-paced anyway,
+but shipping is a handful of API calls, and on one clock a branch whose CI went
+green minutes after a tick sat mergeable for the rest of the hour.
+
 It is a separate container from the watcher for one reason, and it is the same
 reason the watcher has no `config:` volume: ③ spawns sessions whose prompt is
 issue text anyone can write, and the merge token can push to `main`. The
 autopilot holds that token, runs no session, reads no free text, and has no
 clone to be edited in.
 
-**The knob is `/data/agent/state/autopilot.json`**, re-read every tick, so a
-change takes effect within the hour and needs no restart:
+**The knob is `/data/agent/state/autopilot.json`**, re-read on every pass, so a
+change to `ship` takes effect within five minutes, the rest within the hour,
+and none of it needs a restart:
 
 ```json
 { "enabled": false, "ticketsPerDay": 1, "ship": false }
