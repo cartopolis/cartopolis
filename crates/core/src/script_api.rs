@@ -35,6 +35,8 @@ pub enum ScriptGroup {
     Timing,
     /// Noticing what is around the prim.
     Sensing,
+    /// Talking to the other scripts in the region.
+    Messaging,
     /// Facts about the prim, and ending it.
     Lifecycle,
 }
@@ -48,6 +50,7 @@ impl ScriptGroup {
             Self::Chat => "Chat",
             Self::Timing => "Timing",
             Self::Sensing => "Sensing",
+            Self::Messaging => "Messages",
             Self::Lifecycle => "Prim",
         }
     }
@@ -61,6 +64,7 @@ impl ScriptGroup {
             Self::Chat,
             Self::Timing,
             Self::Sensing,
+            Self::Messaging,
             Self::Lifecycle,
         ]
     }
@@ -96,6 +100,13 @@ pub const SCRIPT_EVENTS: &[ScriptFn] = &[
         signature: "on_timer()",
         summary: "Every interval set with vfSetTimerEvent.",
         group: ScriptGroup::Timing,
+    },
+    ScriptFn {
+        name: "on_message",
+        signature: "on_message(channel, text, sender_prim_id)",
+        summary: "Another script in this region sent something on a channel this \
+                  one is listening to.",
+        group: ScriptGroup::Messaging,
     },
 ];
 
@@ -278,6 +289,22 @@ pub const SCRIPT_API: &[ScriptFn] = &[
                   anchor and the avatar's — an avatar whose client has not said \
                   where it is yet is not seen.",
         group: ScriptGroup::Sensing,
+    },
+    // ── Messaging ──
+    ScriptFn {
+        name: "vfSend",
+        signature: "vfSend(channel, text)",
+        summary: "Say something to the other scripts in this region on a numeric \
+                  channel. Nobody in-world hears it, and the sender does not hear \
+                  itself. This is the only way one prim can reach another.",
+        group: ScriptGroup::Messaging,
+    },
+    ScriptFn {
+        name: "vfListen",
+        signature: "vfListen(channel [, on])",
+        summary: "Start hearing a channel as on_message; vfListen(channel, false) \
+                  stops. A script hears nothing until it asks.",
+        group: ScriptGroup::Messaging,
     },
     // ── Prim / lifecycle ──
     ScriptFn {

@@ -139,6 +139,17 @@ const MAX_COMMANDS_PER_TICK: usize = 64;
 /// Shortest repeating timer a script may ask for — one tick at 20 Hz.
 const MIN_TIMER_INTERVAL: f32 = 0.05;
 
+/// Messages one script may send per tick (`vfSend`). Separate from
+/// [`MAX_COMMANDS_PER_TICK`] because it bounds a different thing: a command costs
+/// one wire frame, while a message costs an event queued on *every* listening
+/// script in the region, so the same number would mean very different work.
+const MAX_MESSAGES_PER_TICK: usize = 8;
+
+/// Channels one script may listen on. A ceiling rather than a policy — a script
+/// that wants a thousand channels is describing a design problem, and the set is
+/// walked once per message per slot.
+const MAX_LISTEN_CHANNELS: usize = 16;
+
 /// Something for a script to react to.
 #[derive(Debug, Clone)]
 pub enum ScriptEvent {
@@ -149,6 +160,12 @@ pub enum ScriptEvent {
         avatar_name: String,
     },
     Timer,
+    /// Another script in the same region sent on a channel this one listens to.
+    Message {
+        channel: i64,
+        text: String,
+        sender: i64,
+    },
 }
 
 impl ScriptEvent {
@@ -158,6 +175,7 @@ impl ScriptEvent {
             Self::Start => "on_start",
             Self::Touch { .. } => "on_touch",
             Self::Timer => "on_timer",
+            Self::Message { .. } => "on_message",
         }
     }
 }
@@ -284,6 +302,9 @@ pub struct PrimView {
     /// The prim's geographic anchor (ADR-029) — where it actually is, as opposed
     /// to [`Self::pos`]'s x/z, which are a client-frame echo.
     pub geo: GeoAnchor,
+    /// Which region the prim is in. Not readable by a script; it is what scopes
+    /// `vfSend` (see [`Slot::region_id`]).
+    pub region_id: i64,
     /// Avatars near this prim, nearest first: `(id, name, metres)`.
     ///
     /// Pushed with the view rather than queried, because the host thread has no
@@ -443,6 +464,17 @@ struct Shared {
     timer_request: Cell<Option<f32>>,
     /// Commands dropped this tick because the script exceeded its output budget.
     dropped: Cell<u32>,
+    /// `vfSend` calls made this slice, drained by the scheduler and fanned out to
+    /// the other scripts in the region.
+    ///
+    /// **Not a [`ScriptCommand`]**, and that is the whole design: a message never
+    /// leaves the host thread. It is script-to-script, the simulation has nothing
+    /// to do with it, and routing it out to the tick loop and back would put a
+    /// button's press behind the world's write lock for no reason.
+    outbox: RefCell<Vec<(i64, String)>>,
+    /// `vfListen` calls made this slice — `(channel, on)`, applied by the
+    /// scheduler for the same reason `timer_request` is.
+    listen_changes: RefCell<Vec<(i64, bool)>>,
     /// Simulated seconds since the script started, advanced by the scheduler and
     /// zeroed by `vfResetTime`. Simulated rather than wall-clock so `vfGetTime`
     /// and `vfSleep` agree with the tick that drives them — and so two hosts
@@ -497,6 +529,19 @@ struct Slot {
     first_args: Option<ScriptEvent>,
     /// `(interval, remaining)` for a repeating `on_timer`.
     timer: Option<(f32, f32)>,
+    /// Channels this script has asked to hear (`vfListen`).
+    ///
+    /// Opt-in, as Second Life's `llListen` is: without it every `vfSend` would be
+    /// queued on every script in the region, so one chatty prim would cost every
+    /// other one an event per tick whether or not it cared.
+    listening: std::collections::HashSet<i64>,
+    /// The region this prim is in, refreshed with the view each tick.
+    ///
+    /// Held on the slot rather than read through `shared` at fan-out time because
+    /// the fan-out happens with several slots borrowed at once; it is also the
+    /// only thing that scopes a channel, and a channel that silently crossed
+    /// regions would be a surprising thing to debug.
+    region_id: i64,
     /// A faulted script keeps its source (so the author can see and fix it) but
     /// runs nothing until it is stored again.
     faulted: bool,
@@ -551,6 +596,8 @@ impl Slot {
             view: RefCell::new(PrimView::default()),
             timer_request: Cell::new(None),
             dropped: Cell::new(0),
+            outbox: RefCell::new(Vec::new()),
+            listen_changes: RefCell::new(Vec::new()),
             time: Cell::new(0.0),
         });
 
@@ -636,6 +683,8 @@ impl Slot {
             running: None,
             first_args: None,
             timer: None,
+            listening: std::collections::HashSet::new(),
+            region_id: 0,
             faulted: false,
         })
     }
@@ -733,6 +782,11 @@ impl Slot {
                 avatar_id,
                 avatar_name,
             }) => thread.resume((avatar_id, avatar_name)),
+            Some(ScriptEvent::Message {
+                channel,
+                text,
+                sender,
+            }) => thread.resume((channel, text, sender)),
             Some(_) | None => thread.resume(()),
         };
         let spent = (budget - self.fuel.load(Ordering::Relaxed)).max(0);
@@ -758,6 +812,9 @@ impl Slot {
         self.faulted = true;
         self.pending.clear();
         self.timer = None;
+        // A stopped script must also stop *receiving*: it cannot answer, and the
+        // events would accumulate against its queue until it was stored again.
+        self.listening.clear();
         self.shared.push(ScriptCommand::Output {
             prim_id: self.shared.prim_id,
             level: ScriptLevel::Error,
@@ -1129,6 +1186,37 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         })?,
     )?;
 
+    // ── Messaging ──
+
+    let s = shared.clone();
+    env.set(
+        "vfSend",
+        lua.create_function(move |_, (channel, text): (i64, String)| {
+            let mut out = s.outbox.borrow_mut();
+            if out.len() >= MAX_MESSAGES_PER_TICK {
+                // Counted with the dropped commands rather than raised as an
+                // error: a script that overruns its own send budget is busy, not
+                // broken, and the notice at the end of the tick says so once
+                // instead of faulting it mid-handler.
+                s.dropped.set(s.dropped.get() + 1);
+                return Ok(());
+            }
+            out.push((channel, truncate(&text, MAX_TEXT)));
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfListen",
+        lua.create_function(move |_, (channel, on): (i64, Option<bool>)| {
+            s.listen_changes
+                .borrow_mut()
+                .push((channel, on.unwrap_or(true)));
+            Ok(())
+        })?,
+    )?;
+
     // ── Prim / lifecycle ──
 
     let s = shared.clone();
@@ -1335,7 +1423,8 @@ fn run(rx: Receiver<HostMsg>, tx: Sender<ScriptCommand>) {
             }
             HostMsg::Tick { dt, views } => {
                 for (prim_id, view) in views {
-                    if let Some(slot) = slots.get(&prim_id) {
+                    if let Some(slot) = slots.get_mut(&prim_id) {
+                        slot.region_id = view.region_id;
                         *slot.shared.view.borrow_mut() = view;
                     }
                 }
@@ -1372,6 +1461,15 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
         }
     }
 
+    // Everything `vfSend` produced this tick, gathered across the slice loop and
+    // delivered *after* it. Two reasons it is not delivered inline. The loop holds
+    // one slot mutably, and a listener is another slot. And delivering mid-loop
+    // would make "does this listener see the message this tick or next?" depend on
+    // where the round-robin cursor happened to be — a script's behaviour would
+    // then change with the number of other scripts in the region, which is the
+    // kind of thing that reproduces once a week.
+    let mut posted: Vec<(i64, i64, i64, String)> = Vec::new();
+
     let mut bank = REGION_FUEL_PER_TICK;
     let start = *cursor % ids.len();
     for i in 0..ids.len() {
@@ -1398,6 +1496,22 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
             };
         }
 
+        // `vfListen` calls made in that slice take effect now, as
+        // `vfSetTimerEvent` does.
+        for (channel, on) in slot.shared.listen_changes.borrow_mut().drain(..) {
+            if on {
+                if slot.listening.len() < MAX_LISTEN_CHANNELS {
+                    slot.listening.insert(channel);
+                }
+            } else {
+                slot.listening.remove(&channel);
+            }
+        }
+        let region = slot.region_id;
+        for (channel, text) in slot.shared.outbox.borrow_mut().drain(..) {
+            posted.push((id, region, channel, text));
+        }
+
         let dropped = slot.shared.dropped.replace(0);
         let mut out = std::mem::take(&mut *slot.shared.out.borrow_mut());
         if dropped > 0 {
@@ -1414,6 +1528,31 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
         }
     }
     *cursor = cursor.wrapping_add(1);
+
+    // Fan out. Scoped to the sender's region, because a channel that silently
+    // crossed regions would let one estate's button work another's door — and
+    // **never back to the sender**, which is the one deviation from Second Life
+    // here and is deliberate: a script listening on the channel it sends on is the
+    // ordinary shape (the beacon and the firebird both do it), and hearing
+    // yourself makes that an immediate feedback loop the author did not write.
+    for (sender, region, channel, text) in posted {
+        for id in &ids {
+            if *id == sender {
+                continue;
+            }
+            let Some(slot) = slots.get_mut(id) else {
+                continue;
+            };
+            if slot.faulted || slot.region_id != region || !slot.listening.contains(&channel) {
+                continue;
+            }
+            slot.queue(ScriptEvent::Message {
+                channel,
+                text: text.clone(),
+                sender,
+            });
+        }
+    }
 }
 
 #[cfg(test)]
