@@ -109,6 +109,11 @@ type Tessellated = (
     Option<Vec<SurfaceMesh>>,
     Option<ShoreField>,
     Vec<BridgeDeck>,
+    // The carriageways riding those decks, `(deck index, mesh)`, at `y = 0` and
+    // already cut out of the slab they stand on. They are handed over separately
+    // for the same reason the decks are: neither can be placed until the height
+    // arrives.
+    Vec<(u32, SurfaceMesh)>,
     Vec<StreetLabelLine>,
     // What the cell holds that a player can walk up to: the furniture standing in
     // its streets (which is also what makes those props solid) and its named
@@ -344,6 +349,9 @@ impl Default for MapSurfaces {
 /// A cell's decks, waiting on their heights.
 struct PendingDecks {
     decks: Vec<BridgeDeck>,
+    /// `(deck index, mesh)` — the road surfaces those decks carry, waiting on the
+    /// same heights.
+    roads: Vec<(u32, SurfaceMesh)>,
     /// Cell origin in world metres — the same north-west corner the cell's other
     /// meshes are placed at.
     world: Vec2,
@@ -449,6 +457,7 @@ fn spawn_geometry_task(
                 let mut shore = None;
                 let mut grass = None;
                 let mut decks = Vec::new();
+                let mut deck_roads = Vec::new();
                 let mut labels = Vec::new();
                 let mut cell_places = CellPlaces::default();
                 // **One** parse for all seven consumers. Each of them used to open
@@ -468,8 +477,10 @@ fn spawn_geometry_task(
                     Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m, mesh_bytes) {
                         Ok(mut meshes) => {
                             // Decks first: the road tessellation needs them, since a
-                            // bridge-flagged street's own span belongs to the deck
-                            // that carries it rather than to the ground plane.
+                            // bridge-flagged street's span rides the deck that
+                            // carries it rather than the ground plane — and it
+                            // *cuts itself out* of that deck, which is why the
+                            // slabs come back from `tessellate_roads` changed.
                             match vector_tiles::tessellate_bridges(&tile, tile_m) {
                                 Ok(d) => decks = d,
                                 Err(e) => {
@@ -497,11 +508,19 @@ fn spawn_geometry_task(
                             match vector_tiles::tessellate_roads(
                                 &tile,
                                 tile_m,
-                                &decks,
+                                &mut decks,
                                 mesh_bytes,
                                 surveyed_paths,
                             ) {
-                                Ok(roads) => meshes.extend(roads),
+                                Ok(roads) => {
+                                    meshes.extend(roads.ground);
+                                    // The stretches on a deck cannot be placed
+                                    // yet — they are at y = 0 and the deck's
+                                    // height is measured a few frames from now —
+                                    // so they travel beside the decks and are
+                                    // lifted with them in `resolve_bridge_decks`.
+                                    deck_roads = roads.on_deck;
+                                }
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
                                 }
@@ -704,7 +723,10 @@ fn spawn_geometry_task(
                     }
                 };
                 if let Ok(mut g) = results.lock() {
-                    g.push((cell, (outcome, shore, decks, labels, cell_places, grass)));
+                    g.push((
+                        cell,
+                        (outcome, shore, decks, deck_roads, labels, cell_places, grass),
+                    ));
                 }
             }));
         })
@@ -964,7 +986,7 @@ pub fn update_map_surfaces(
     }
     let deferred = ready.split_off(take);
     surfaces.stream.defer(deferred);
-    for (c, (outcome, shore, decks, street_names, mut cell_places, grass)) in ready {
+    for (c, (outcome, shore, decks, deck_roads, street_names, mut cell_places, grass)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.stream.forget(&c);
@@ -1031,7 +1053,7 @@ pub fn update_map_surfaces(
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
-            let mesh = meshes.add(build_mesh(&sm, wx, wz, &terrain));
+            let mesh = meshes.add(build_mesh(&sm, wx, wz, &terrain, None));
             let world = Vec3::new(wx, sm.group.y_offset(), wz);
             let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                 .translation_to_grid(world.as_dvec3());
@@ -1113,6 +1135,7 @@ pub fn update_map_surfaces(
                 c,
                 PendingDecks {
                     decks,
+                    roads: deck_roads,
                     world: Vec2::new(wx, wz),
                     tile_m,
                 },
@@ -1140,7 +1163,9 @@ pub fn resolve_bridge_decks(
     mut surfaces: ResMut<MapSurfaces>,
     mut height: ResMut<HeightLayer>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    // The same three asset collections `update_map_surfaces` writes: a deck is a
+    // plain material, and the carriageway standing on it is a road one.
+    mut mats: SurfaceMaterials,
     bigspace: Query<Entity, With<BigSpace>>,
     dl: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<TerrainField>,
@@ -1184,10 +1209,20 @@ pub fn resolve_bridge_decks(
             continue;
         };
         let mesh = build_deck_mesh(&pending.decks, &heights);
-        if mesh.indices.is_empty() {
-            continue;
-        }
         let cell_world = pending.world;
+        // The one terrain height the whole structure stands on — read here rather
+        // than left to `build_mesh`, because the carriageways cut out of these
+        // slabs have to be lifted onto *this* number and not onto the field's
+        // answer over their own narrower footprint.
+        let deck_level = if terrain.is_ready() {
+            terrain.level_over(
+                mesh.positions
+                    .iter()
+                    .map(|p| [cell_world.x + p[0], cell_world.y + p[2]]),
+            )
+        } else {
+            0.0
+        };
         // Publish before the mesh is spawned rather than after, so the two cannot
         // disagree about a cell: this is the same `heights` the vertices were built
         // from, and a deck that reached the screen but not the resource is a route
@@ -1214,7 +1249,7 @@ pub fn resolve_bridge_decks(
             .entry(SurfaceGroup::BridgeDeck)
             .or_insert_with(|| {
                 let [r, g, b] = SurfaceGroup::BridgeDeck.base_color();
-                materials.add(StandardMaterial {
+                mats.plain.add(StandardMaterial {
                     base_color: Color::srgb(r, g, b),
                     perceptual_roughness: SurfaceGroup::BridgeDeck.perceptual_roughness(),
                     depth_bias: SurfaceGroup::BridgeDeck.depth_bias(),
@@ -1227,22 +1262,81 @@ pub fn resolve_bridge_decks(
                 })
             })
             .clone();
-        let id = commands
-            .spawn((
-                Mesh3d(meshes.add(build_mesh(&mesh, cell_world.x, cell_world.y, &terrain))),
-                MeshMaterial3d(material),
+        let placement = || {
+            (
                 Transform::from_translation(local),
                 grid_cell,
                 ChildOf(root),
                 MapSurface,
                 crate::components::HideInSpace,
-            ))
-            .id();
+            )
+        };
+        let mut spawned: Vec<Entity> = Vec::with_capacity(pending.roads.len() + 1);
+        // A slab can be cut away to nothing where the carriageway covers the whole
+        // structure — the roads on it still have to be placed, so this skips the
+        // deck rather than the cell.
+        if !mesh.indices.is_empty() {
+            spawned.push(
+                commands
+                    .spawn((
+                        Mesh3d(meshes.add(build_mesh(
+                            &mesh,
+                            cell_world.x,
+                            cell_world.y,
+                            &terrain,
+                            None,
+                        ))),
+                        MeshMaterial3d(material),
+                        placement(),
+                    ))
+                    .id(),
+            );
+        }
+        // …and the carriageways those slabs carry, lifted onto them. Same
+        // materials as any road, so a bridge keeps its tarmac, its lane markings
+        // and its place in the depth ladder all the way across.
+        for (di, sm) in &pending.roads {
+            let Some(&h) = heights.get(*di as usize) else {
+                continue;
+            };
+            let material = surfaces
+                .road_materials
+                .entry(sm.group)
+                .or_insert_with(|| {
+                    let base = road_base_material(sm.group, &mut mats.images);
+                    mats.road.add(RoadMaterial {
+                        base,
+                        extension: RoadDepthExtension {},
+                    })
+                })
+                .clone();
+            spawned.push(
+                commands
+                    .spawn((
+                        Mesh3d(meshes.add(build_mesh(
+                            sm,
+                            cell_world.x,
+                            cell_world.y,
+                            &terrain,
+                            Some(deck_level + h),
+                        ))),
+                        MeshMaterial3d(material),
+                        placement(),
+                    ))
+                    .id(),
+            );
+        }
         if let Some(entities) = surfaces.loaded.get_mut(&c) {
-            entities.push(id);
+            entities.extend(spawned);
         }
         let tallest = heights.iter().copied().fold(0.0f32, f32::max);
-        tracing::debug!(cell = ?c, decks = heights.len(), tallest, "bridge decks placed");
+        tracing::debug!(
+            cell = ?c,
+            decks = heights.len(),
+            roads = pending.roads.len(),
+            tallest,
+            "bridge decks placed"
+        );
     }
 }
 
@@ -1533,7 +1627,18 @@ pub fn apply_road_texture(
 /// * **Roads** carry their own UVs from `tessellate_roads` (across × along the
 ///   carriageway) and keep them: those are what register the lane markings with
 ///   the ribbon, and a positional UV would smear the paint across the map.
-fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mesh {
+fn build_mesh(
+    sm: &SurfaceMesh,
+    wx: f32,
+    wz: f32,
+    terrain: &TerrainField,
+    // A ready-made height for the whole mesh, in place of the terrain. This is how
+    // a carriageway riding a bridge deck follows the *deck* — the deck's own
+    // single level, plus its measured lift — instead of asking the field again
+    // over its own slightly different footprint and landing a few centimetres off
+    // the slab it was cut out of.
+    lift: Option<f32>,
+) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
 
@@ -1566,7 +1671,11 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mes
         Vec::new()
     };
 
-    if terrain.is_ready() {
+    if let Some(y) = lift {
+        for p in &mut positions {
+            p[1] += y;
+        }
+    } else if terrain.is_ready() {
         stand_on_terrain(
             sm.group,
             &mut positions,

@@ -1,17 +1,18 @@
 ---
 topic: routing
 triggers: [routing.rs, RoadGraph, finish, noding, NODE_TOL, level_of, node_levels, node_terminal, dangle, bridge, tunnel, viaduct, layer, interchange, "drove onto the motorway", "route goes up the flyover", grade]
-updated: 2026-08-20
+updated: 2026-08-29
 ---
 
 # Bridges and tunnels in the routing graph
 
 The drawn map has understood grade since the bridge decks landed: `bridges` is its
 own Shortbread polygon layer, `vector_tiles::tessellate_bridges` turns it into
-decks that stand at a measured height, the bridge-flagged street's own span is cut
-out of the ground ribbon so the deck carries it, and tunnels are refused outright by
-both the raster and the geometry. The **routing graph** was flat until 2026-08-20,
-and this note is about why that mattered and what the fix rests on.
+decks that stand at a measured height, the bridge-flagged street's own span leaves
+the ground sheet and is lifted onto that deck (`bridge-heights.md`), and tunnels are
+refused outright by both the raster and the geometry. The **routing graph** was flat
+until 2026-08-20, and this note is about why that mattered and what the fix rests
+on.
 
 ## Why a flat graph invents roads that do not exist
 

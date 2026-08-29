@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
-triggers: [height.rs, map_geometry.rs, AHN, PDOK, bridge, deck, viaduct, elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-07-31
+triggers: [height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
+updated: 2026-08-29
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -50,8 +50,41 @@ in reality are ordinary unflagged ways drawn flat. Two consequences:
 
 The fix that removes the constraint is **sampling the approach profile from AHN
 too** — the embankments are solid earth, so they are in the DTM — and lifting the
-road ribbons with it. Not done. It needs road ribbons to be liftable per feature,
-which the per-class mesh batching currently prevents.
+approach ribbons with it. Not done.
+
+## A deck is the structure, not the road surface
+
+Until 2026-08-29 the span of a bridge-flagged street was simply **dropped** and the
+deck stood in for it. The deck is a flat, untextured `#575659` polygon, so what that
+produced was a bare grey slab at every crossing, with the tarmac, the lane markings
+and the kerb casing stopping dead at one edge and starting again at the other — the
+whole Shortbread `bridges` footprint, parapets included, painted as one blank
+shape. It was invisible as a *bug* because it looked deliberate, and because the
+slab sits at the top of the ground depth ladder (`SurfaceGroup::depth_rung`), so it
+covered the ribbon that was still drawn underneath it.
+
+The span is now kept and lifted: `tessellate_roads` returns it in
+`RoadTessellation::on_deck`, tagged with the deck, and `resolve_bridge_decks` gives
+it the deck's height once AHN answers. Three things make that safe.
+
+- **The carriageway is cut out of the slab**, by the same `road_stitch` pass that
+  makes the ground sheet a partition — the deck goes into the cut as the weakest
+  claim, so it loses exactly the ground the road covers and keeps the verge and the
+  parapet either side. Two coplanar opaque surfaces are otherwise a fight the deck
+  always wins, which is the old bare slab with extra steps.
+- **The split lands on the deck's edge, not on the nearest vertex.** A vertex is
+  where the street bends and a deck edge is where the structure stops; cutting at
+  the vertex left up to a segment of road belonging to neither piece, which only
+  went unnoticed while the slab was drawn over the top of it. `split_by_deck`
+  bisects on `BridgeDeck::contains` — a hole, a self-touching outline and two
+  abutting decks are then all one case.
+- **One height for the road and the slab.** `resolve_bridge_decks` reads
+  `TerrainField::level_over` across the whole deck mesh once and hands that number
+  to both, rather than letting the ribbon ask the field again over its own narrower
+  footprint and land a few centimetres off the thing it was cut out of.
+
+There is no kerb casing on a deck: what lies beside the carriageway up there is the
+structure, and that is the part of the slab the road was cut out of.
 
 ## Storage, if the raster is ever baked instead of proxied
 

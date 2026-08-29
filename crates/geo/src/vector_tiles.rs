@@ -2304,20 +2304,33 @@ const INNER_BACKTRACK_BUDGET: f32 = 0.5;
 ///   notch at every junction; one that always overshoots leaves a flap at every
 ///   dead end. [`street_nodes`] is the difference between the two.
 ///
-/// `decks` are the tile's [`BridgeDeck`]s. Where one of them carries a
-/// bridge-flagged street, that street's ribbon is **left out**: the deck is the
-/// road surface up there, and drawing both would put a carriageway at ground level
-/// under a structure standing several metres above it. Only `bridge` features are
-/// dropped, so the road *under* a viaduct keeps every metre of its own ribbon.
+/// `decks` are the tile's [`BridgeDeck`]s, and a bridge-flagged street that runs
+/// over one **keeps its ribbon** — it comes back in
+/// [`RoadTessellation::on_deck`], tagged with the deck, for the caller to lift to
+/// that deck's measured height. It used to be dropped instead, on the theory that
+/// "the deck is the road surface up there", and the theory does not survive being
+/// looked at: a deck is a flat untextured slab, so every viaduct and every canal
+/// bridge was a bare grey polygon with the lane markings, the tarmac and the kerb
+/// stopping dead at its edge and starting again on the far side. The deck is the
+/// *structure*; the road on it is a road.
+///
+/// So the carriageway is cut **out of** the deck (`decks` is taken by `&mut` for
+/// exactly this), which is why the two can share a plane without a depth fight:
+/// the same partition rule [`crate::road_stitch`] applies to the ground sheet,
+/// applied to the deck. What is left of the slab is the verge and the parapet
+/// either side of the road — which is what a bridge looks like from it.
+///
+/// Only `bridge` features are moved onto a deck, so the road *under* a viaduct
+/// keeps every metre of its own ground-level ribbon.
 pub fn tessellate_roads(
     tile: &TileData,
     tile_m: f32,
-    decks: &[BridgeDeck],
+    decks: &mut [BridgeDeck],
     max_bytes: Option<usize>,
     surveyed_paths: bool,
-) -> Result<Vec<SurfaceMesh>, String> {
+) -> Result<RoadTessellation, String> {
     let Some(meta) = tile.layer("streets") else {
-        return Ok(Vec::new());
+        return Ok(RoadTessellation::default());
     };
     let features = tile.features(meta);
     let extent = TileData::extent(meta);
@@ -2354,6 +2367,11 @@ pub fn tessellate_roads(
     // still tell apart from its neighbours. They are merged into the per-group
     // meshes after the cut.
     let mut staged: Vec<crate::road_stitch::Ribbon> = Vec::new();
+    // …and the stretches that ride a deck, one bucket per deck. They are a
+    // separate sheet at a separate height, so they are cut among themselves and
+    // against their own deck, never against the ground.
+    let mut staged_on_deck: Vec<Vec<crate::road_stitch::Ribbon>> =
+        (0..decks.len()).map(|_| Vec::new()).collect();
 
     for (fi, feature) in features.iter().enumerate() {
         let Some((class, half)) = drawn_street(feature) else {
@@ -2462,32 +2480,34 @@ pub fn tessellate_roads(
                 // Tile units → metres, once, before any geometry is built.
                 let metres: Vec<[f32; 2]> =
                     run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
-                // A bridge's own span belongs to the deck that carries it.
+                // A bridge's span is carried *by* the deck: the same ribbon, at the
+                // deck's height. `split_by_deck` says which stretches those are.
                 let parts = if bridge && !decks.is_empty() {
-                    off_deck_runs(&metres, decks)
+                    split_by_deck(&metres, decks)
                 } else {
-                    vec![metres]
+                    vec![(None, metres)]
                 };
-                // A run that lost part of itself to a deck now ends *at* the deck,
-                // which is not a junction — extending there would push tarmac out
-                // from under the structure.
-                let whole = parts.len() == 1 && parts[0].len() == run.len();
-                for (pi, part) in parts.into_iter().enumerate() {
+                // A run that was split at a deck edge now ends *at* the deck, which
+                // is not a junction — extending there would push tarmac out past
+                // the structure.
+                let whole = parts.len() == 1 && parts[0].1.len() == run.len();
+                for (pi, (on_deck, part)) in parts.into_iter().enumerate() {
                     let ends = if whole {
                         [join_head, join_tail]
                     } else {
                         [EndJoin::default(); 2]
                     };
-                    let mut lay = |group: SurfaceGroup,
-                                   rung: f32,
-                                   priority: u32,
-                                   positions: Vec<[f32; 3]>,
-                                   uvs: Vec<[f32; 2]>,
-                                   indices: Vec<u32>| {
+                    let lay = |sink: &mut Vec<crate::road_stitch::Ribbon>,
+                               group: SurfaceGroup,
+                               rung: f32,
+                               priority: u32,
+                               positions: Vec<[f32; 3]>,
+                               uvs: Vec<[f32; 2]>,
+                               indices: Vec<u32>| {
                         if indices.is_empty() {
                             return;
                         }
-                        staged.push(crate::road_stitch::Ribbon {
+                        sink.push(crate::road_stitch::Ribbon {
                             group,
                             rung,
                             // `road_rung` is the road hierarchy and decides who
@@ -2501,6 +2521,14 @@ pub fn tessellate_roads(
                             uvs,
                             indices,
                         });
+                    };
+                    // A stretch on a deck is staged apart from the ground sheet:
+                    // it is cut against that deck and against the other ribbons
+                    // riding it, never against the roads passing underneath, and
+                    // it is lifted with the deck by the caller.
+                    let sink: &mut Vec<crate::road_stitch::Ribbon> = match on_deck {
+                        Some(d) => &mut staged_on_deck[d],
+                        None => &mut staged,
                     };
                     let mut p = Vec::new();
                     let mut u = Vec::new();
@@ -2517,6 +2545,7 @@ pub fn tessellate_roads(
                         &mut i,
                     );
                     lay(
+                        &mut *sink,
                         SurfaceGroup::Road(class),
                         road_depth_rung(bridge),
                         rung as u32,
@@ -2524,7 +2553,11 @@ pub fn tessellate_roads(
                         u,
                         i,
                     );
-                    if cased {
+                    // No kerb band on a deck: what lies either side of the
+                    // carriageway up there is the structure — its verge and its
+                    // parapet — and that is the part of the deck the carriageway
+                    // is cut out of, not a band this has to draw.
+                    if cased && on_deck.is_none() {
                         // The kerb wraps the fill's stub ends too, so the band
                         // runs around the junction mouth instead of stopping
                         // square at it. A mitred end needs no such treatment —
@@ -2553,6 +2586,7 @@ pub fn tessellate_roads(
                             &mut i,
                         );
                         lay(
+                            &mut *sink,
                             SurfaceGroup::RoadCasing(class),
                             road_depth_rung(bridge),
                             casing_rung as u32,
@@ -2570,6 +2604,78 @@ pub fn tessellate_roads(
     // this the road sheet is a partition: no two ribbons cover one patch, so
     // nothing is left for the depth ladder to arbitrate at ground level.
     crate::road_stitch::stitch(&mut staged);
+
+    // Each deck settles its own little sheet: the ribbons riding it are cut
+    // against each other, and the slab is cut against all of them. The deck goes
+    // in as the lowest-priority ribbon in that cut, so it loses every patch of
+    // ground a carriageway claims and keeps the rest — the verge and the parapet.
+    let mut on_deck: Vec<(u32, SurfaceMesh)> = Vec::new();
+    for (di, ribbons) in staged_on_deck.iter_mut().enumerate() {
+        if ribbons.is_empty() {
+            continue;
+        }
+        let deck = &mut decks[di];
+        // Every road on the deck is lifted one rung so that the deck can sit at
+        // the very bottom of the order and lose to all of them. Shifting the whole
+        // set by one keeps their order among themselves exactly as `road_rung`
+        // decided it — and it is the only way to be *strictly* below a hierarchy
+        // whose own floor is zero.
+        for r in ribbons.iter_mut() {
+            r.priority.0 += 1;
+        }
+        let mut sheet = Vec::with_capacity(ribbons.len() + 1);
+        sheet.push(crate::road_stitch::Ribbon {
+            group: SurfaceGroup::BridgeDeck,
+            rung: 0.0,
+            // The weakest claim there is: `stitch` gives the ground to the
+            // *larger* priority, so this yields to every road above.
+            priority: (0, 0, 0, 0),
+            // The deck and the ribbons on it are one sheet, and `stitch` only
+            // lets a bridge be cut by another bridge — which is exactly the
+            // isolation this wants from the roads passing underneath.
+            bridge: true,
+            // The slab is flat-coloured, so its texture coordinates are never
+            // read; `stitch` still indexes them per vertex, so they are present
+            // and zero rather than absent.
+            uvs: vec![[0.0, 0.0]; deck.positions.len()],
+            positions: std::mem::take(&mut deck.positions),
+            indices: std::mem::take(&mut deck.indices),
+        });
+        sheet.append(ribbons);
+        crate::road_stitch::stitch(&mut sheet);
+        let mut sheet = sheet.into_iter();
+        let carved = sheet.next().expect("the deck was pushed first");
+        deck.positions = carved.positions;
+        deck.indices = carved.indices;
+
+        let mut deck_builders: Vec<RoadBuilder> = Vec::new();
+        for r in sheet {
+            let slot = slot_for(&mut deck_builders, r.group);
+            let (_, positions, uvs, indices, rungs) = &mut deck_builders[slot];
+            let base = positions.len() as u32;
+            positions.extend(r.positions);
+            uvs.extend(r.uvs);
+            indices.extend(r.indices.iter().map(|i| i + base));
+            rungs.resize(positions.len(), r.rung);
+        }
+        for (group, positions, uvs, indices, rungs) in deck_builders {
+            if positions.is_empty() || indices.is_empty() {
+                continue;
+            }
+            on_deck.push((
+                di as u32,
+                SurfaceMesh {
+                    group,
+                    positions,
+                    uvs,
+                    indices,
+                    normals: Vec::new(),
+                    colors: Vec::new(),
+                    rungs,
+                },
+            ));
+        }
+    }
 
     for r in staged {
         let slot = slot_for(&mut builders, r.group);
@@ -2601,50 +2707,126 @@ pub fn tessellate_roads(
         }
     }
 
-    Ok(full
-        .into_iter()
-        .chain(
-            builders
-                .into_iter()
-                .filter(|(_, p, _, i, _)| !p.is_empty() && !i.is_empty())
-                .map(|(group, positions, uvs, indices, rungs)| SurfaceMesh {
-                    group,
-                    positions,
-                    uvs,
-                    indices,
-                    normals: Vec::new(),
-                    colors: Vec::new(),
-                    rungs,
-                }),
-        )
-        .collect())
+    Ok(RoadTessellation {
+        ground: full
+            .into_iter()
+            .chain(
+                builders
+                    .into_iter()
+                    .filter(|(_, p, _, i, _)| !p.is_empty() && !i.is_empty())
+                    .map(|(group, positions, uvs, indices, rungs)| SurfaceMesh {
+                        group,
+                        positions,
+                        uvs,
+                        indices,
+                        normals: Vec::new(),
+                        colors: Vec::new(),
+                        rungs,
+                    }),
+            )
+            .collect(),
+        on_deck,
+    })
 }
 
-/// Split a centre line into the stretches that are **not** on any deck.
+/// What [`tessellate_roads`] hands back: the road sheet that lies on the ground,
+/// and the stretches that ride a bridge deck.
 ///
-/// Per vertex rather than per feature: Shortbread merges ways by attribute, so one
-/// `bridge` feature can be a chain of spans with ordinary road between them, and
-/// dropping the whole feature would erase the road as well as the bridge. The cut
-/// lands on the vertex either side of the structure, so the ribbon stops within a
-/// segment of the deck edge and the deck takes over from there.
-fn off_deck_runs(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<Vec<[f32; 2]>> {
-    let mut runs: Vec<Vec<[f32; 2]>> = Vec::new();
-    let mut cur: Vec<[f32; 2]> = Vec::new();
-    for p in points {
-        if decks.iter().any(|d| d.contains(*p)) {
-            if cur.len() >= 2 {
-                runs.push(std::mem::take(&mut cur));
-            } else {
-                cur.clear();
-            }
-        } else {
-            cur.push(*p);
+/// Two lists rather than one because the second cannot be placed yet. A deck's
+/// height is not in the tile — it is measured from AHN, per deck, some frames
+/// later (`systems::map_geometry::resolve_bridge_decks`) — so the ribbons that
+/// belong to it come back tagged with its index and at `y = 0`, for the caller to
+/// lift with the slab they were cut out of.
+#[derive(Debug, Default)]
+pub struct RoadTessellation {
+    /// Roads at ground level: one mesh per [`SurfaceGroup`], as before.
+    pub ground: Vec<SurfaceMesh>,
+    /// `(deck index, mesh)` — the index is into the `decks` slice that was passed
+    /// in, whose slabs have had these meshes cut out of them.
+    pub on_deck: Vec<(u32, SurfaceMesh)>,
+}
+
+/// Which deck a point stands on, if any.
+fn deck_at(decks: &[BridgeDeck], p: [f32; 2]) -> Option<usize> {
+    decks.iter().position(|d| d.contains(p))
+}
+
+/// How many times the deck boundary is bisected for. Twelve halvings put the seam
+/// within a fifty-metre segment's ten-thousandth — under a centimetre, which is an
+/// order of magnitude finer than the millimetre lattice `road_stitch` then snaps
+/// everything to.
+const DECK_EDGE_BISECTIONS: u32 = 12;
+
+/// Split a centre line into runs, each tagged with the deck it lies on (`None`
+/// for the ones on the ground).
+///
+/// Per **stretch** rather than per feature: Shortbread merges ways by attribute,
+/// so one `bridge` feature can be a chain of spans with ordinary road between
+/// them, and treating the whole feature as one would put the approach roads up on
+/// the structure.
+///
+/// The split lands on the deck's own edge, not on the nearest vertex. Vertices are
+/// where the *street* bends and a deck edge is where the *structure* stops, so the
+/// two coincide only by luck: cutting at the vertex left a stretch of road up to a
+/// segment long belonging to neither piece, which was invisible only for as long as
+/// the deck was drawn as an opaque slab over the top of it. The crossing is found
+/// by bisecting on [`BridgeDeck::contains`] rather than by intersecting the ring,
+/// so a hole, a self-touching outline and two decks that abut are all one case.
+///
+/// A segment that enters *and* leaves a deck between two vertices is still missed —
+/// both its ends agree — but that is a structure narrower than one vertex spacing,
+/// which at z14 is a structure too small to have a deck polygon in the first place.
+fn split_by_deck(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<(Option<usize>, Vec<[f32; 2]>)> {
+    let mut runs: Vec<(Option<usize>, Vec<[f32; 2]>)> = Vec::new();
+    let Some(&first) = points.first() else {
+        return runs;
+    };
+    let mut owner = deck_at(decks, first);
+    let mut cur: Vec<[f32; 2]> = vec![first];
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let next = deck_at(decks, b);
+        if next == owner {
+            cur.push(b);
+            continue;
         }
+        // The edge between them, shared exactly by the run that ends on it and the
+        // run that starts from it — one computation, so the two cannot land apart.
+        let edge = deck_edge_between(decks, a, owner, b);
+        cur.push(edge);
+        if cur.len() >= 2 {
+            runs.push((owner, std::mem::take(&mut cur)));
+        } else {
+            cur.clear();
+        }
+        cur.push(edge);
+        cur.push(b);
+        owner = next;
     }
     if cur.len() >= 2 {
-        runs.push(cur);
+        runs.push((owner, cur));
     }
     runs
+}
+
+/// The point on `a`–`b` where the deck underfoot stops being `owner`.
+fn deck_edge_between(
+    decks: &[BridgeDeck],
+    a: [f32; 2],
+    owner: Option<usize>,
+    b: [f32; 2],
+) -> [f32; 2] {
+    let at = |t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..DECK_EDGE_BISECTIONS {
+        let mid = 0.5 * (lo + hi);
+        if deck_at(decks, at(mid)) == owner {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(0.5 * (lo + hi))
 }
 
 /// Read a boolean Shortbread property (`bridge`, `tunnel`, `oneway`, `link`),
@@ -4126,12 +4308,32 @@ mod bytes {
         super::tessellate_surfaces(&TileData::parse(bytes)?, tile_m, None)
     }
 
+    /// The **ground** sheet only. A test that wants the stretches riding a deck
+    /// asks [`roads_and_decks`] instead, which is also the one that hands back the
+    /// carved slabs.
     pub fn tessellate_roads(
         bytes: &[u8],
         tile_m: f32,
         decks: &[BridgeDeck],
     ) -> Result<Vec<SurfaceMesh>, String> {
-        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks, None, false)
+        let mut decks = decks.to_vec();
+        Ok(
+            super::tessellate_roads(&TileData::parse(bytes)?, tile_m, &mut decks, None, false)?
+                .ground,
+        )
+    }
+
+    /// The whole answer: the road sheet, the on-deck stretches, and the decks as
+    /// the cut left them.
+    pub fn roads_and_decks(
+        bytes: &[u8],
+        tile_m: f32,
+        decks: &[BridgeDeck],
+    ) -> Result<(RoadTessellation, Vec<BridgeDeck>), String> {
+        let mut decks = decks.to_vec();
+        let roads =
+            super::tessellate_roads(&TileData::parse(bytes)?, tile_m, &mut decks, None, false)?;
+        Ok((roads, decks))
     }
 
     pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
@@ -4157,8 +4359,8 @@ mod bytes {
 #[cfg(test)]
 mod tests {
     use super::bytes::{
-        extract_street_labels, ocean_mask, render_mvt, tessellate_bridges, tessellate_roads,
-        tessellate_surfaces, water_shore_field,
+        extract_street_labels, ocean_mask, render_mvt, roads_and_decks, tessellate_bridges,
+        tessellate_roads, tessellate_surfaces, water_shore_field,
     };
     use super::*;
 
@@ -4201,7 +4403,9 @@ mod tests {
             &tessellate_surfaces(GRONINGEN_Z14, tile_m).unwrap(),
         );
         same(
-            &super::tessellate_roads(&tile, tile_m, &[], None, false).unwrap(),
+            &super::tessellate_roads(&tile, tile_m, &mut [], None, false)
+                .unwrap()
+                .ground,
             &tessellate_roads(GRONINGEN_Z14, tile_m, &[]).unwrap(),
         );
         assert_eq!(
@@ -5331,8 +5535,9 @@ mod tests {
         let tile = TileData::parse(GRONINGEN_Z14).expect("fixture");
         let groups = |surveyed: bool| -> Vec<SurfaceGroup> {
             let mut g: Vec<SurfaceGroup> =
-                super::tessellate_roads(&tile, 1472.0, &[], None, surveyed)
+                super::tessellate_roads(&tile, 1472.0, &mut [], None, surveyed)
                     .expect("roads")
+                    .ground
                     .into_iter()
                     .map(|m| m.group)
                     .collect();
@@ -5514,9 +5719,9 @@ mod tests {
             println!("  {n:>3} × {what}");
         }
 
-        // Decks first, exactly as the streamer does it: a bridge's own span is
-        // drawn by the deck, so the ribbons this dumps are the ones that really
-        // reach the ground.
+        // Decks first, exactly as the streamer does it: a bridge's own span rides
+        // the deck at the deck's height, so the ribbons this dumps are the ones
+        // that really reach the ground.
         let decks = tessellate_bridges(tile, tile_m).expect("bridges");
         println!("  {} bridge decks", decks.len());
         let meshes = tessellate_roads(tile, tile_m, &decks).expect("tessellate");
@@ -5663,28 +5868,134 @@ mod tests {
         );
     }
 
-    /// A bridge's own span is drawn by the deck; the road *under* it keeps every
-    /// metre of its ribbon. Getting that backwards would either double the
-    /// carriageway or erase the road beneath a flyover.
+    /// A bridge's span leaves the ground sheet and arrives on the deck — it is
+    /// not *lost*. Getting that backwards is what drew every viaduct as a bare
+    /// grey slab with the markings stopping at its edge.
+    ///
+    /// The road *under* a flyover keeps every metre of its own ribbon, which is
+    /// what the "only a little of it" bound below is watching.
     #[test]
-    fn a_deck_takes_over_from_the_street_it_carries() {
+    fn a_deck_carries_the_street_rather_than_replacing_it() {
         let decks = tessellate_bridges(GRONINGEN_Z14, 1000.0).expect("bridges");
         let bare = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("roads");
-        let with_decks = tessellate_roads(GRONINGEN_Z14, 1000.0, &decks).expect("roads");
+        let (roads, _) = roads_and_decks(GRONINGEN_Z14, 1000.0, &decks).expect("roads");
         let count = |ms: &[SurfaceMesh]| ms.iter().map(|m| m.indices.len()).sum::<usize>();
         assert!(
-            count(&with_decks) < count(&bare),
-            "the decks suppressed no ribbon at all"
+            count(&roads.ground) < count(&bare),
+            "the decks took no ribbon off the ground at all"
         );
         // …but only a little of it: the tile's bridges are a handful of spans, not
         // a fifth of its streets. A big drop here means ordinary roads are being
         // eaten by a deck they merely pass under.
-        let dropped = 1.0 - count(&with_decks) as f32 / count(&bare) as f32;
+        let lifted = 1.0 - count(&roads.ground) as f32 / count(&bare) as f32;
         assert!(
-            dropped < 0.1,
-            "decks removed {:.0}% of the road mesh",
-            dropped * 100.0
+            lifted < 0.1,
+            "decks took {:.0}% of the road mesh off the ground",
+            lifted * 100.0
         );
+        // And every metre of it is on a deck, drawn as a road: a `Road` group with
+        // its texture coordinates intact is the whole point — a deck that carried
+        // only casings, or nothing, is the old bare slab wearing a new type.
+        let on_deck: usize = roads
+            .on_deck
+            .iter()
+            .filter(|(_, m)| matches!(m.group, SurfaceGroup::Road(_)))
+            .map(|(_, m)| m.indices.len())
+            .sum();
+        assert!(on_deck > 0, "no carriageway rides any deck");
+        assert!(
+            roads
+                .on_deck
+                .iter()
+                .all(|(_, m)| m.uvs.len() == m.positions.len()),
+            "an on-deck ribbon lost its texture coordinates"
+        );
+    }
+
+    /// The carriageway is cut **out of** the slab it stands on, so the two share a
+    /// plane with nothing left to arbitrate. If the subtraction silently did
+    /// nothing, the road and the deck would be two coplanar opaque surfaces and
+    /// the deck — which sits at the top of the ground ladder — would win, i.e. the
+    /// bare slab would be back with no other symptom.
+    #[test]
+    fn the_carriageway_is_cut_out_of_the_deck() {
+        let decks = tessellate_bridges(GRONINGEN_Z14, 1000.0).expect("bridges");
+        let (roads, carved) = roads_and_decks(GRONINGEN_Z14, 1000.0, &decks).expect("roads");
+        let area = |d: &BridgeDeck| -> f64 {
+            d.indices
+                .chunks_exact(3)
+                .map(|t| {
+                    let p: Vec<[f32; 3]> = t.iter().map(|i| d.positions[*i as usize]).collect();
+                    f64::from(
+                        ((p[1][0] - p[0][0]) * (p[2][2] - p[0][2])
+                            - (p[2][0] - p[0][0]) * (p[1][2] - p[0][2]))
+                            .abs(),
+                    ) * 0.5
+                })
+                .sum()
+        };
+        let mut carried = 0;
+        for (di, (before, after)) in decks.iter().zip(&carved).enumerate() {
+            let rides = roads.on_deck.iter().any(|(d, _)| *d as usize == di);
+            if !rides {
+                assert!(
+                    (area(after) - area(before)).abs() < 1e-3,
+                    "deck {di} carries no road but was cut anyway"
+                );
+                continue;
+            }
+            carried += 1;
+            assert!(
+                area(after) < area(before),
+                "deck {di} carries a road and kept its whole surface"
+            );
+            // …and it is not cut away entirely: what is left is the verge and the
+            // parapet either side of the carriageway, which is what makes a bridge
+            // read as a structure rather than as a strip of tarmac in mid-air.
+            assert!(
+                area(after) > 0.05 * area(before),
+                "deck {di} lost {:.0}% of its surface to the road on it",
+                100.0 * (1.0 - area(after) / area(before))
+            );
+        }
+        assert!(carried > 0, "no deck in the fixture carries a road");
+    }
+
+    /// The split lands on the deck's edge, not on the nearest vertex — a stretch
+    /// of road belonging to neither piece is exactly the gap the slab used to
+    /// hide.
+    #[test]
+    fn a_street_is_split_at_the_deck_edge_not_at_a_vertex() {
+        // A 20 m square deck at the origin, and a street crossing it in two long
+        // segments whose vertices are nowhere near its edges.
+        let ring = vec![
+            [-10.0, -10.0],
+            [10.0, -10.0],
+            [10.0, 10.0],
+            [-10.0, 10.0],
+            [-10.0, -10.0],
+        ];
+        let deck = BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![ring],
+            min: [-10.0, -10.0],
+            max: [10.0, 10.0],
+        };
+        let line = [[-60.0, 0.0], [0.0, 0.0], [60.0, 0.0]];
+        let runs = split_by_deck(&line, std::slice::from_ref(&deck));
+        let owners: Vec<Option<usize>> = runs.iter().map(|(o, _)| *o).collect();
+        assert_eq!(owners, vec![None, Some(0), None], "on, off, on");
+        // Each seam within a centimetre of x = ±10, and shared exactly by the two
+        // runs that meet there.
+        assert!((runs[0].1.last().unwrap()[0] + 10.0).abs() < 0.01);
+        assert_eq!(runs[0].1.last(), runs[1].1.first());
+        assert!((runs[1].1.last().unwrap()[0] - 10.0).abs() < 0.01);
+        assert_eq!(runs[1].1.last(), runs[2].1.first());
+        // A street that never meets the deck comes back in one piece.
+        let clear = split_by_deck(&[[-60.0, 40.0], [60.0, 40.0]], std::slice::from_ref(&deck));
+        assert_eq!(clear.len(), 1);
+        assert_eq!(clear[0].0, None);
     }
 
     /// Which of two overlapping ribbons wins has to be a property of the *roads*,
