@@ -442,6 +442,9 @@ fn spawn_geometry_task(
             // outside the coverage, which is everywhere the host has not run
             // `tools/bgt_objects.py`.
             let surveyed = crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1).await;
+            // …and its surveyed paving, in a file of its own because it is by far
+            // the heavier half.
+            let paving = crate::systems::surveyed::load_surveyed_paving(cell.0, cell.1).await;
             crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
@@ -478,7 +481,26 @@ fn spawn_geometry_task(
                             // differ only in being lines, so they ride along here
                             // rather than running a second streamer over the same
                             // tiles.
-                            match vector_tiles::tessellate_roads(&tile, tile_m, &decks, mesh_bytes) {
+                            // The surveyed paving goes down first, under the road
+                            // ribbons that will be laid over it — and it is also
+                            // what tells `tessellate_roads` to leave the footways
+                            // and cycle paths alone, since this cell draws those
+                            // as real shapes rather than as constant-width lines.
+                            let paved = crate::systems::surveyed::surveyed_paving(
+                                &paving, cell.0, cell.1, tile_m,
+                            );
+                            let surveyed_paths = !paved.is_empty();
+                            cell_places.surveyed.3 = paved.len();
+                            meshes.extend(crate::systems::paving::build_paving_meshes(
+                                &paved, mesh_bytes,
+                            ));
+                            match vector_tiles::tessellate_roads(
+                                &tile,
+                                tile_m,
+                                &decks,
+                                mesh_bytes,
+                                surveyed_paths,
+                            ) {
                                 Ok(roads) => meshes.extend(roads),
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");

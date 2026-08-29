@@ -27,6 +27,7 @@ use crate::platform::{http, storage};
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind, LineKind, SurveyedLine};
 use crate::systems::osm_buildings::tdbag_url;
+use crate::systems::paving::{PavedArea, PavingKind};
 use crate::systems::scatter::TreeInstance;
 use cartopolis_core::world::tile_to_lat_lng;
 
@@ -82,6 +83,77 @@ const PROP_KINDS: [FurnitureKind; 7] = [
 /// `tools/bgt_objects.py` — **append, never renumber**.
 const LINE_KINDS: [LineKind; 3] = [LineKind::Fence, LineKind::Wall, LineKind::Hedge];
 
+/// The paved forms, in wire order. Mirrors `SURFACE_KINDS` in
+/// `tools/bgt_objects.py` — **append, never renumber**.
+const SURFACE_KINDS: [PavingKind; 8] = [
+    PavingKind::Footway,
+    PavingKind::Cycleway,
+    PavingKind::Parking,
+    PavingKind::Drive,
+    PavingKind::Verge,
+    PavingKind::Island,
+    PavingKind::Paved,
+    PavingKind::Steps,
+];
+
+/// One cell's surveyed paving, as rings of lat/lng: outer ring first, holes after.
+#[derive(Clone, Debug, Default)]
+pub struct SurveyedPaving {
+    pub areas: Vec<(PavingKind, Vec<Vec<(f64, f64)>>)>,
+}
+
+/// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…]],…]}`.
+pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
+    #[derive(serde::Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        surfaces: Vec<(usize, Vec<Vec<(f64, f64)>>)>,
+    }
+    let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    Ok(SurveyedPaving {
+        areas: wire
+            .surfaces
+            .into_iter()
+            // An outer ring under three points is not a surface. The extractor
+            // drops those; a truncated cache entry can produce one.
+            .filter(|(_, rings)| rings.first().is_some_and(|r| r.len() >= 3))
+            .filter_map(|(k, rings)| SURFACE_KINDS.get(k).map(|&kind| (kind, rings)))
+            .collect(),
+    })
+}
+
+/// This cell's paving in the local metre frame, ready to triangulate.
+///
+/// A ring is kept whole or not at all, and a surface whose outer ring leaves the
+/// cell is dropped: the cell that owns the surface's first vertex draws it whole,
+/// and clipping it here would leave a straight edge across the middle of a car
+/// park. Holes that fall outside are dropped individually — a hole that is not
+/// cut is a filled patch, which is wrong but local, where a dropped outer ring
+/// loses the whole surface.
+#[must_use]
+pub fn surveyed_paving(paving: &SurveyedPaving, cx: i64, cy: i64, tile_m: f32) -> Vec<PavedArea> {
+    let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
+        let out: Vec<[f32; 2]> = pts
+            .iter()
+            .filter_map(|&(lat, lng)| to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| [x, z]))
+            .collect();
+        (out.len() == pts.len() && out.len() >= 3).then_some(out)
+    };
+    paving
+        .areas
+        .iter()
+        .filter_map(|(kind, rings)| {
+            let outer = to_local(rings.first()?)?;
+            let mut local = vec![outer];
+            local.extend(rings[1..].iter().filter_map(to_local));
+            Some(PavedArea {
+                kind: *kind,
+                rings: local,
+            })
+        })
+        .collect()
+}
+
 /// One cell's surveyed objects, still in lat/lng as the host sent them.
 #[derive(Clone, Debug, Default)]
 pub struct SurveyedCell {
@@ -126,6 +198,36 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
 
 fn cell_cache_key(cx: i64, cy: i64) -> String {
     format!("bgt/{BGT_ZOOM}/{cx}/{cy}.json")
+}
+
+/// Fetch one cell's **paving**, through the storage cache.
+///
+/// Its own file because it is by far the heaviest part — 1.5 MB against 60 kB of
+/// objects for the densest Groningen cell — and the same split, for the same
+/// reason, as the BAG's buildings and places.
+pub(crate) async fn load_surveyed_paving(cx: i64, cy: i64) -> SurveyedPaving {
+    if !COVERAGE.covers(cx, cy) {
+        return SurveyedPaving::default();
+    }
+    let key = format!("bgt/{BGT_ZOOM}/{cx}/{cy}.surfaces.json");
+    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
+        return parse_surveyed_paving(&cached).unwrap_or_default();
+    }
+    let url = format!(
+        "{}/bgt/{}/{}/{}.surfaces.json",
+        tdbag_url(),
+        BGT_ZOOM,
+        cx,
+        cy
+    );
+    let Ok(bytes) = http::fetch(http::Request::get(url)).await else {
+        return SurveyedPaving::default();
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return SurveyedPaving::default();
+    };
+    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
+    parse_surveyed_paving(&text).unwrap_or_default()
 }
 
 /// Fetch and parse one cell, through the storage cache.
@@ -303,6 +405,55 @@ mod tests {
         let built = surveyed_lines(&cell, cx, cy, 1500.0);
         assert_eq!(built.len(), 1, "only the wholly-inside line survives");
         assert_eq!(built[0].points.len(), 2);
+    }
+
+    #[test]
+    fn parses_paving_and_maps_its_forms() {
+        let paving = parse_surveyed_paving(
+            r#"{"surfaces":[[0,[[[53.2194,6.5665],[53.2195,6.5665],[53.2195,6.5666]]]],
+                            [4,[[[53.2196,6.5667],[53.2197,6.5667],[53.2197,6.5668]]]]]}"#,
+        )
+        .expect("valid cell");
+        assert_eq!(paving.areas[0].0, PavingKind::Footway);
+        assert_eq!(paving.areas[1].0, PavingKind::Verge);
+    }
+
+    /// An outer ring under three points is not a surface.
+    #[test]
+    fn a_degenerate_surface_is_dropped() {
+        let paving =
+            parse_surveyed_paving(r#"{"surfaces":[[0,[[[53.2,6.5],[53.2,6.6]]]],[1,[[]]]]}"#)
+                .expect("valid cell");
+        assert!(paving.areas.is_empty());
+    }
+
+    /// A surface whose outer ring leaves the cell is dropped whole: the cell that
+    /// owns its first vertex draws it, and clipping here would cut a straight
+    /// edge across the middle of a car park.
+    #[test]
+    fn paving_that_leaves_the_cell_is_dropped_whole() {
+        let (cx, cy) = (8490, 5320);
+        let (north, west) = tile_to_lat_lng(cx, cy, BGT_ZOOM);
+        let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, BGT_ZOOM);
+        let (mid_lat, mid_lng) = ((north + south) / 2.0, (west + east) / 2.0);
+        let inside = vec![
+            (mid_lat, mid_lng),
+            (mid_lat + 1e-5, mid_lng),
+            (mid_lat + 1e-5, mid_lng + 1e-5),
+        ];
+        let leaves = vec![
+            (mid_lat, mid_lng),
+            (north + 0.01, mid_lng),
+            (mid_lat, mid_lng + 1e-5),
+        ];
+        let paving = SurveyedPaving {
+            areas: vec![
+                (PavingKind::Footway, vec![inside]),
+                (PavingKind::Footway, vec![leaves]),
+            ],
+        };
+        let built = surveyed_paving(&paving, cx, cy, 1500.0);
+        assert_eq!(built.len(), 1, "only the wholly-inside surface survives");
     }
 
     #[test]

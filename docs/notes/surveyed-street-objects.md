@@ -4,7 +4,7 @@ triggers: [surveyed.rs, bgt_objects.py, scatter.rs, furniture.rs, BGT, trees, la
 updated: 2026-08-28
 ---
 
-# Trees and lampposts that were actually surveyed
+# Streets that were actually surveyed
 
 Two of this client's layers have always said, in their own module notes, that
 they are inventing something. `scatter.rs`: Shortbread's `land` layer carries
@@ -100,14 +100,67 @@ was `pois` — a layer of things people visit. A city's worth of lampposts break
 that: a column is firmly in the way and there is nothing whatever to do with one.
 `world_places::prop_interactable` is the split.
 
+## The paving, and why it does not draw the road
+
+`wegdeel` and `ondersteunendwegdeel` are the road surfaces, and the obvious way
+to use them replaces `tessellate_roads` with the survey's own polygons. That was
+rejected, and not on effort.
+
+What the OSM path draws is not just a shape. Each ribbon carries a road *texture*
+— lane dashes, edge lines, wheel tracks, ballast and sleepers — a kerb casing, and
+a rung on the per-vertex depth ladder that keeps a slip road under its motorway
+and a level crossing under its rails. **The BGT cannot supply any of it**: its own
+road-furniture collections (`weginrichtingselement_lijn` / `_vlak`) come back
+`niet-bgt` on every feature over Groningen, so there are no markings in there to
+draw. Swapping ribbons for polygons trades a marked, ordered network for an
+unmarked flat one and calls it an upgrade because the outline is more accurate.
+
+So the sources are split by what each is good at, and the split is clean because
+they then describe *different ground*:
+
+- **OSM keeps the vehicle network** — carriageways, railways — as textured
+  ribbons, unchanged, everywhere in the world.
+- **The BGT supplies everything beside it**: pavements, cycle paths, parking bays,
+  driveways, verges and traffic islands. OSM draws those as a thin constant-width
+  line or not at all. A pavement is a shape, not a width, and its edge against the
+  tarmac *is* the kerb line.
+
+The one overlap is the footway and cycle network, which OSM does draw as
+`RoadClass::Path`. Over a covered cell those ribbons are suppressed
+(`tessellate_roads`' `surveyed_paths`) and the polygons stand in their place, so
+no ground is drawn twice. `surveyed_paths_drop_the_path_ribbons_and_nothing_else`
+pins both halves: the paths go, everything else stays.
+
+Paving takes its own depth rung, above the ground fills and below the road band.
+That ordering is what makes the mixture safe rather than a z-fight: a surveyed
+pavement and a nominal-width OSM carriageway do not agree to the centimetre about
+where the kerb is, so they overlap here and there — and with the road above, the
+overlap reads as tarmac meeting the kerb, which is what it looks like from the
+pavement.
+
+**Simplification is not optional.** The BGT is a 20 cm survey and its rings are
+correspondingly dense: one page of `ondersteunendwegdeel` over Groningen is 77,202
+vertices, of which **4,792 survive a 10 cm Douglas-Peucker** — 94% of the data is
+collinear filler along straight kerbs. Ten centimetres is far below anything
+visible at any distance this layer is drawn at, and without it a city's paving is
+hundreds of megabytes. With it, Groningen is 95,967 surfaces in 44 MB, and the
+densest cell is 3.8 MB — about what a LoD2.2 building cell costs, which makes this
+the second-heaviest thing the client streams.
+
+Surfaces at a `relatieve_hoogteligging` other than zero are dropped: that is
+paving on a bridge or in a tunnel, and this layer lies flat on the ground, so
+drawing a viaduct's footway at street level would run a pavement through whatever
+is underneath it.
+
 ## What is not read, and why
 
-- **`wegdeel` and the terrain parts** are the road and ground *surfaces*. Taking
-  those means replacing the map's own tessellated geometry rather than adding to
-  it — a far larger change, and one where the OSM path still has to exist beside
-  it for everywhere that is not the Netherlands. It is the single biggest
-  remaining upgrade available from this dataset: real pavements, kerbs and
-  carriageway edges at 20 cm.
+- **The terrain parts** (`begroeidterreindeel`, `onbegroeidterreindeel`) and
+  `waterdeel` are the ground and water *fills*. Those are a different proposition
+  from the paving: the vector tile's own water is what feeds the shore-distance
+  field, the grass mask and the globe's ocean mask, and its `land` polygons are
+  what the tree scatter plants inside. Replacing the fills means keeping the tile
+  parse for all of that anyway, and then reconciling two descriptions of the same
+  ground.
 - **`scheiding_vlak`** is the boundaries that were surveyed as areas rather than
   lines. Its `type` is empty on every feature seen so far, so there is nothing to
   say whether one is a wall, a bank or a planter.

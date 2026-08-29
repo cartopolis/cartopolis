@@ -1346,7 +1346,7 @@ mod tests {
         use crate::vector_tiles::{mesh_upload_bytes, tessellate_roads};
 
         let tile = fixture();
-        let whole = tessellate_roads(&tile, 1472.0, &[], None).expect("roads");
+        let whole = tessellate_roads(&tile, 1472.0, &[], None, false).expect("roads");
         let biggest = whole
             .iter()
             .map(|m| mesh_upload_bytes(m.positions.len(), m.indices.len()))
@@ -1354,7 +1354,7 @@ mod tests {
             .expect("the fixture has streets");
         let ceiling = biggest / 2;
 
-        let split = tessellate_roads(&tile, 1472.0, &[], Some(ceiling)).expect("roads");
+        let split = tessellate_roads(&tile, 1472.0, &[], Some(ceiling), false).expect("roads");
         assert!(
             split.len() > whole.len(),
             "half the largest group ({biggest} B) must have cut something"

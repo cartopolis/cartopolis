@@ -83,6 +83,9 @@ _TO_WGS84 = Transformer.from_crs("EPSG:28992", "EPSG:4326", always_xy=True)
 
 ATTRIBUTION = "Street objects © Kadaster BGT via PDOK (open data)"
 
+#: Metres per degree of latitude, for the local-metre conversions above.
+M_PER_DEG = 111_320.0
+
 # The client-side forms, in wire order. Mirrored by `PROP_KINDS` in
 # `systems::surveyed` — **append, never renumber**.
 PROP_KINDS = ["lamp", "bench", "shelter", "picnic_table", "artwork", "swing",
@@ -105,6 +108,54 @@ LINE_TYPE_FORM = {
     "muur": "wall",
     "geluidsscherm": "wall",
 }
+
+#: Paved-surface forms, in wire order. Mirrored by `SURFACE_KINDS` in
+#: `systems::surveyed` — **append, never renumber**.
+SURFACE_KINDS = ["footway", "cycleway", "parking", "drive", "verge", "island",
+                 "paved", "steps"]
+_SURFACE_IX = {name: i for i, name in enumerate(SURFACE_KINDS)}
+
+#: `wegdeel.functie` / `ondersteunendwegdeel.functie` -> our paved form.
+#:
+#: **The carriageways are deliberately absent.** `rijbaan *`, `spoorbaan` and
+#: `OV-baan` stay with OpenStreetMap, which draws them as textured ribbons with
+#: lane markings, kerb casings and a per-vertex depth ladder — none of which the
+#: BGT can supply, since its own road-marking collection is empty
+#: (`weginrichtingselement_*` is `niet-bgt` on every feature). What the BGT adds is
+#: everything *beside* the carriageway: the pavement, the cycle path, the parking
+#: bay, the verge. OSM draws those as thin constant-width lines or not at all, so
+#: the two sources describe different things and cannot fight over the same ground.
+SURFACE_FUNCTIE_FORM = {
+    # wegdeel
+    "voetpad": "footway",
+    "voetgangersgebied": "footway",
+    "voetpad op trap": "steps",
+    "fietspad": "cycleway",
+    "ruiterpad": "footway",
+    "parkeervlak": "parking",
+    "inrit": "drive",
+    # A transition is a real piece of paving between two functions — an apron at a
+    # junction, the splay of a driveway. It has no function of its own, which is
+    # exactly why it gets the neutral form rather than a guess.
+    "transitie": "paved",
+    # ondersteunendwegdeel
+    "berm": "verge",
+    "verkeerseiland": "island",
+}
+
+#: Simplification tolerance for a surface ring, metres.
+#:
+#: **Measured**: the BGT is a 20 cm survey and its rings are correspondingly
+#: dense — a page of `ondersteunendwegdeel` over Groningen is 77,202 vertices, of
+#: which 4,792 survive a 10 cm Douglas-Peucker. 94% of the data is collinear
+#: filler along straight kerbs. Ten centimetres is well under anything visible at
+#: any camera distance this layer is drawn at, and without it a city's paving is
+#: hundreds of megabytes.
+SIMPLIFY_M = 0.10
+
+#: Smallest surface worth drawing, square metres. Below this a polygon is a sliver
+#: at a junction that cannot be seen and still costs a triangle.
+MIN_AREA_M2 = 1.0
 
 #: How far apart panel instances are laid along a line, metres. Each instance is
 #: one box of the same length, so this is also the panel length — a shorter step
@@ -282,6 +333,115 @@ def collect_lines(bbox, cells, cell_of):
     return n
 
 
+def simplify(ring_m, eps):
+    """Douglas-Peucker over a ring already in metres. Iterative, not recursive:
+    a BGT ring runs to ten thousand points and Python's stack does not."""
+    n = len(ring_m)
+    if n < 3:
+        return ring_m
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        ax, ay = ring_m[i]
+        bx, by = ring_m[j]
+        dx, dy = bx - ax, by - ay
+        seg = math.hypot(dx, dy)
+        best, at = -1.0, -1
+        for k in range(i + 1, j):
+            px, py = ring_m[k]
+            if seg < 1e-12:
+                d = math.hypot(px - ax, py - ay)
+            else:
+                d = abs(dx * (ay - py) - (ax - px) * dy) / seg
+            if d > best:
+                best, at = d, k
+        if best > eps:
+            keep[at] = True
+            stack.append((i, at))
+            stack.append((at, j))
+    return [p for p, k in zip(ring_m, keep) if k]
+
+
+def ring_area_m2(ring_m):
+    """Shoelace area of a ring in metres, unsigned."""
+    a = 0.0
+    for (x1, y1), (x2, y2) in zip(ring_m, ring_m[1:] + ring_m[:1]):
+        a += x1 * y2 - x2 * y1
+    return abs(a) * 0.5
+
+
+def polygon_rings(geom):
+    """A (Multi)Polygon as a list of polygons, each a list of rings of (lng, lat)."""
+    if not geom:
+        return []
+    t, coords = geom.get("type"), geom.get("coordinates") or []
+    if t == "Polygon":
+        return [coords]
+    if t == "MultiPolygon":
+        return list(coords)
+    return []
+
+
+def collect_surfaces(bbox, cells, cell_of):
+    """`wegdeel` + `ondersteunendwegdeel` -> the paving beside the carriageway."""
+    n = dropped_level = 0
+    for collection in ("wegdeel", "ondersteunendwegdeel"):
+        print(f"{collection}…", file=sys.stderr)
+        for feat in items(collection, bbox):
+            props = feat.get("properties") or {}
+            form = SURFACE_FUNCTIE_FORM.get(props.get("functie"))
+            if not form:
+                continue
+            # Ground level only. A `relatieve_hoogteligging` above or below zero is
+            # paving on a bridge or in a tunnel, and this layer lies flat on the
+            # ground: drawing a viaduct's footway at street level would run a
+            # pavement through whatever is underneath it. The bridge decks the map
+            # does draw come from the vector tile's own bridge flags.
+            if props.get("relatieve_hoogteligging"):
+                dropped_level += 1
+                continue
+            for poly in polygon_rings(feat.get("geometry")):
+                out_rings = []
+                lat0 = poly[0][0][1] if poly and poly[0] else None
+                if lat0 is None:
+                    continue
+                scale = math.cos(math.radians(lat0))
+                for ri, ring in enumerate(poly):
+                    # To local metres for both the simplification and the area
+                    # test — a tolerance in degrees is a different distance
+                    # north-south than east-west, and this is a country where that
+                    # ratio is 1.7.
+                    m = [((p[0] - poly[0][0][0]) * scale * M_PER_DEG,
+                          (p[1] - lat0) * M_PER_DEG) for p in ring]
+                    # A GeoJSON ring repeats its first point; simplify the open
+                    # form so the closing vertex cannot anchor a corner that is
+                    # not there.
+                    if len(m) > 1 and m[0] == m[-1]:
+                        m = m[:-1]
+                    kept = simplify(m, SIMPLIFY_M)
+                    if len(kept) < 3:
+                        continue
+                    if ri == 0 and ring_area_m2(kept) < MIN_AREA_M2:
+                        break
+                    back = [[round(lat0 + y / M_PER_DEG, 7),
+                             round(poly[0][0][0] + x / (scale * M_PER_DEG), 7)]
+                            for x, y in kept]
+                    out_rings.append(back)
+                if not out_rings:
+                    continue
+                cell_of(tuple(out_rings[0][0]))["surfaces"].append(
+                    [_SURFACE_IX[form], out_rings])
+                n += 1
+    if dropped_level:
+        print(f"  {dropped_level} surfaces above or below ground level were "
+              f"dropped (bridges and tunnels)", file=sys.stderr)
+    return n
+
+
 def point_of(feat):
     """A feature's (lat, lng) — its first coordinate, which for these point
     collections is its only one."""
@@ -301,7 +461,8 @@ def build(rd_bbox, out_dir, name):
 
     def cell_of(at):
         return cells.setdefault(lat_lng_to_tile(*at),
-                                {"trees": [], "props": [], "lines": []})
+                                {"trees": [], "props": [], "lines": [],
+                                 "surfaces": []})
 
     print("bomen…", file=sys.stderr)
     n_trees = 0
@@ -327,25 +488,36 @@ def build(rd_bbox, out_dir, name):
 
     print("hekken, muren en hagen…", file=sys.stderr)
     n_lines = collect_lines(bbox, cells, cell_of)
+    n_surf = collect_surfaces(bbox, cells, cell_of)
 
     bdir = os.path.join(out_dir, "bgt", str(CACHE_ZOOM))
     written = {k: v for k, v in cells.items()
-               if v["trees"] or v["props"] or v["lines"]}
+               if v["trees"] or v["props"] or v["lines"] or v["surfaces"]}
     for (cx, cy), cell in written.items():
-        _write_json(os.path.join(bdir, str(cx), f"{cy}.json"), cell)
+        # Two files, for the reason `bag_attributes.py` splits its own: the paving
+        # is by far the heaviest part and the objects are wanted without it.
+        objects = {k: cell[k] for k in ("trees", "props", "lines")}
+        if any(objects.values()):
+            _write_json(os.path.join(bdir, str(cx), f"{cy}.json"), objects)
+        if cell["surfaces"]:
+            _write_json(os.path.join(bdir, str(cx), f"{cy}.surfaces.json"),
+                        {"surfaces": cell["surfaces"]})
     _write_json(os.path.join(out_dir, "bgt", "coverage.json"), {
         "name": name, "zoom": CACHE_ZOOM,
         "attribution": ATTRIBUTION, "source": "Kadaster BGT via PDOK OGC API",
         "bbox_rd": list(rd_bbox),
         "kinds": PROP_KINDS,
         "line_kinds": LINE_KINDS,
+        "surface_kinds": SURFACE_KINDS,
         "cells": sorted([cx, cy] for (cx, cy) in written),
         "tree_count": n_trees,
         "prop_count": n_props,
         "line_count": n_lines,
+        "surface_count": n_surf,
     })
     print(f"\nDone: {n_trees} surveyed trees, {n_props} street objects, "
-          f"{n_lines} fences, walls and hedges across {len(written)} cells.")
+          f"{n_lines} fences, walls and hedges, {n_surf} paved surfaces "
+          f"across {len(written)} cells.")
     print(f"Output: {out_dir}/bgt/{CACHE_ZOOM}/  +  {out_dir}/bgt/coverage.json")
 
 
