@@ -113,7 +113,7 @@ autopilot holds that token, runs no session, reads no free text, and has no
 clone to be edited in.
 
 **The knob is `/data/agent/state/autopilot.json`**, re-read every tick, so a
-change takes effect within ten minutes and needs no restart:
+change takes effect within the hour and needs no restart:
 
 ```json
 { "enabled": false, "ticketsPerDay": 1, "ship": false }
@@ -848,7 +848,7 @@ directory". No second mechanism.
 | The two scripts | `autopilot/autopilot.ts`, `autopilot/deploy-main` — copies of `tools/` in this repo |
 | Tokens (`write:issue` **and** `write:repository`) | `autopilot.env`, `0600` — deliberately not `watcher.env` |
 | The knob | `state/autopilot.json`, re-read every tick |
-| Tick interval | the `command:` loop in `docker-compose.yml` (10 min) |
+| Tick interval | the `command:` loop in `docker-compose.yml` (hourly) |
 
 Updating either script is a copy from this repository into `/data/agent/autopilot/`;
 the mount is read-only and the container picks the new file up on its next tick.
