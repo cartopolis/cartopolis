@@ -553,13 +553,22 @@ pub fn drive_traffic(
     >,
     mut frame: Local<u64>,
 ) {
-    let show = layers.traffic_enabled;
-    if !show || net.is_empty() {
+    // One toggle per pool (Layers ▸ Life ▸ Traffic / People). A pool that is off
+    // is hidden and then skipped entirely — it holds its line and its distance
+    // along it, so switching it back on resumes rather than re-places, and a
+    // hidden agent costs neither the scan nor the transform write.
+    let show_cars = layers.cars_visible();
+    let show_people = layers.people_visible();
+    if (!show_cars && !show_people) || net.is_empty() {
         for (.., mut vis) in &mut cars {
             *vis = Visibility::Hidden;
         }
         return;
     }
+    let showing = |kind: AgentKind| match kind {
+        AgentKind::Car => show_cars,
+        AgentKind::Walker => show_people,
+    };
     let (Ok((cam_cell, cam_tf)), Ok(grid)) = (camera.single(), grids.single()) else {
         return;
     };
@@ -582,14 +591,29 @@ pub fn drive_traffic(
     // budget for this layer.
     // One list per pool: a walker offered a motorway would reject it on every
     // recycle, and the two want different answers out of the same ring.
-    let roads = net.near(cam, AgentKind::Car.place_radius(), AgentKind::Car);
-    let paths = net.near(cam, AgentKind::Walker.place_radius(), AgentKind::Walker);
+    // Only for a pool that is on: this is a scan of every line in the loaded
+    // ring, and running it for a hidden pool is the whole per-frame cost of a
+    // layer that was switched off.
+    let roads = if show_cars {
+        net.near(cam, AgentKind::Car.place_radius(), AgentKind::Car)
+    } else {
+        Vec::new()
+    };
+    let paths = if show_people {
+        net.near(cam, AgentKind::Walker.place_radius(), AgentKind::Walker)
+    } else {
+        Vec::new()
+    };
     if roads.is_empty() && paths.is_empty() {
         return;
     }
     let dt = time.delta_secs();
 
     for (i, (mut car, &kind, mut tf, mut cell, mut vis)) in cars.iter_mut().enumerate() {
+        if !showing(kind) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         let candidates: &[LineKey] = match kind {
             AgentKind::Car => &roads,
             AgentKind::Walker => &paths,

@@ -1,8 +1,9 @@
 ---
 topic: ambient-traffic
 triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffic",
-  DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs]
-updated: 2026-08-26
+  DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
+  "Life layer", life_enabled, cars_visible, people_enabled, "layer toggle"]
+updated: 2026-08-29
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -128,16 +129,60 @@ from a range where two cars overlapping for a moment is invisible. Recorded here
 rather than hidden — a car driving through a red light is a known limit, not a
 surprise.
 
-## Its own toggle
+## Its own section: **Life** (2026-08-29)
 
-**Map ▸ Traffic & people**, not the street-furniture one, because it is the only layer
-here that moves: the first thing somebody who finds the motion distracting will
-look for, and the first thing to switch off when judging anything else in a
-still. It rides `Budget::detail_layers`, so a phone starts without it.
+It started as one row, **Map ▸ Traffic & people**, put there because it was not
+the street furniture. But Map's other rows are all things that are *surveyed,
+streamed and then stand still* — canopies, benches, road textures, ground tiles —
+and these move. Motion is a property of its own, and it is the one a viewer either
+wants or does not, independently of everything under it: it is what you switch off
+to judge a still, and what a slow phone gives up first.
 
-`LayerPrefs::traffic` uses the same `serde(default)` helper as its neighbours, so
-a `user.json` written before this existed reads as the tier's default rather than
-as off — an absent key is "not stated", not "the user turned it off".
+So the moving things are their own top-level group, **Life**, sibling to Buildings
+/ Map / Height, with three rows:
+
+- **Traffic** — the cars (`traffic_enabled`).
+- **People** — the walkers (`people_enabled`), split out of the same row. The two
+  pools were always separate and separately sized; somebody judging a street's
+  emptiness wants exactly one of them, and a hidden pool costs a transform write
+  it never makes.
+- **Live vehicles** — the real OVapi feed (`vehicles_enabled`), moved up from
+  under the Public transport *marker* layer, which it also **no longer requires**.
+  That conjunct (`layers[TRANSIT_LAYER].enabled && vehicles_enabled`) was a
+  politeness gate rather than a data dependency — the feed carries its own
+  positions and never reads a stop — and its effect was a checkbox that did
+  nothing at all unless another one, in another section, happened to be ticked.
+  The layer is opt-in already; one opt-in is enough.
+
+The two headings inside the section say which is which — *Generated from the
+streets* over the first two, *Reported by their operators* over the third. Two of
+these three are invented, and a panel that lists them together without saying so
+is claiming the map knows where the cars are.
+
+**The master toggle is read through `cars_visible()` / `people_visible()` /
+`live_vehicles_visible()`, never as `life_enabled` directly.** A group master each
+consumer has to remember to `&&` is one that a consumer will eventually forget,
+and that layer then keeps moving with the group switched off. Four call sites
+use them: the two pools in `drive_traffic`, the vehicle feed's poll and its draw,
+and the road hum (`cars_visible`, because the hum is a road's — a pavement of
+people makes none of it).
+
+Two smaller things went with it. `drive_traffic` skips `DriveNetwork::near` for a
+pool that is off — that scan is the whole per-frame cost of a switched-off layer —
+and the panel's **Reset** button, which restored every other checkbox, now also
+restores traffic, people and `street_detail` (that last one was simply missed: a
+reset that puts back all but one reads as a toggle that has stuck).
+
+Both pools ride `Budget::detail_layers`, so a phone still starts without them;
+`life_enabled` starts on, like the other group masters, because what a fresh
+install starts *with* is decided by the rows under it.
+
+`LayerPrefs::traffic`, `::people` and `::life` use the same `serde(default)`
+helpers as their neighbours, so a `user.json` written before any of them existed
+reads as the tier's default rather than as off — an absent key is "not stated",
+not "the user turned it off". In particular a file predating the split gives the
+walkers the tier default, which is what the single toggle it does carry meant for
+them anyway.
 
 ## Verified, and what is not
 
@@ -171,8 +216,9 @@ Four decisions:
   around 68 Hz that carries furthest — so a faint tone sits under the rush, weak
   enough that no note can be named for it. Its period is forced to divide the
   loop, because a sine that does not close is a click every two seconds.
-- **Silent from the air**, and gated on the same **Traffic & people** toggle:
-  somebody switching the traffic off expects the sound of it to stop too.
+- **Silent from the air**, and gated on **Life ▸ Traffic** (`cars_visible()`):
+  somebody switching the traffic off expects the sound of it to stop too. On the
+  cars alone — a hum is a road's, and the people make none of it.
 
 `soundscape::road_loudness` is pure and tested on every lane, which is why
 `systems::soundscape` is now re-exported unconditionally — the `cfg(feature =
