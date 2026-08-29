@@ -847,3 +847,97 @@ fn the_send_budget_is_bounded() {
     );
     assert!(heard > 0, "the first few should still have gone through");
 }
+
+/// **One vocabulary for an emitter, across both places one can be written.**
+///
+/// A script says `vfParticles{ spread_deg = 20 }` and an HTTP body says
+/// `{"spread_deg": 20}`, and this is the test that keeps that true. They were
+/// spelled differently for a day — the script API took `spread`, `radius`,
+/// `size`, `end_size`, `color`, `end_color` — which meant the same emitter had
+/// two names for six of its twelve fields depending on which surface set it, and
+/// nothing anywhere would have noticed them drifting further apart.
+///
+/// Read out of `ParticleSpec`'s own `Serialize` rather than a second hand-written
+/// list, on the same rule `the_catalogue_matches_the_installed_api` follows: a
+/// list that has to be maintained beside the thing it describes is a list that
+/// will stop describing it.
+#[test]
+fn the_two_authoring_surfaces_use_one_vocabulary() {
+    use std::collections::BTreeSet;
+
+    let http: BTreeSet<String> =
+        match serde_json::to_value(crate::authoring::ParticleSpec::default()).expect("serialise") {
+            serde_json::Value::Object(map) => map.keys().cloned().collect(),
+            other => panic!("ParticleSpec should serialise to an object, got {other:?}"),
+        };
+
+    // What a script may write. Taken from the error the host itself produces for
+    // an unknown key, so it cannot drift from the parser.
+    let slot = Slot::compile(1, "function on_start() end").expect("compile");
+    let lua: BTreeSet<String> = {
+        let err = slot
+            .lua
+            .load("vfParticles({ definitely_not_a_field = 1 })")
+            .set_environment(slot.env.clone())
+            .exec()
+            .expect_err("an unknown rule must be refused");
+        let text = err.to_string();
+        let list = text
+            .split("is not one of: ")
+            .nth(1)
+            .expect("the refusal should list the valid keys")
+            .lines()
+            .next()
+            .unwrap_or_default();
+        list.split(", ").map(|k| k.trim().to_string()).collect()
+    };
+
+    // The two the script API deliberately does not take, and why. `burst` is
+    // decided by *which function* was called (`vfParticles` against
+    // `vfParticleBurst`), and `sequence` is derived from the prim so a re-armed
+    // blast cannot reuse a number a client has already played.
+    let only_http: BTreeSet<String> = http.difference(&lua).cloned().collect();
+    assert_eq!(
+        only_http,
+        ["burst".to_string(), "sequence".to_string()]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        "the admin API has fields a script does not, and these are the two that \
+         are meant to be"
+    );
+
+    let only_lua: BTreeSet<&String> = lua.difference(&http).collect();
+    assert!(
+        only_lua.is_empty(),
+        "a script can set {only_lua:?}, which the admin API has no name for"
+    );
+}
+
+/// The six renamed rules answer with their new name rather than the whole list.
+///
+/// A script written against the old spelling is somebody's real work, and it
+/// fails loudly either way — the point is that the failure says what to do.
+#[test]
+fn an_old_particle_rule_name_says_what_it_is_called_now() {
+    let slot = Slot::compile(1, "function on_start() end").expect("compile");
+    for (old, now) in [
+        ("spread", "spread_deg"),
+        ("radius", "source_radius"),
+        ("size", "size_start"),
+        ("end_size", "size_end"),
+        ("color", "color_start"),
+        ("end_color", "color_end"),
+    ] {
+        let err = slot
+            .lua
+            .load(format!("vfParticles({{ {old} = 1 }})"))
+            .set_environment(slot.env.clone())
+            .exec()
+            .expect_err("an old name must be refused");
+        let text = err.to_string();
+        assert!(
+            text.contains(now),
+            "`{old}` should point at `{now}`, said: {text}"
+        );
+    }
+}

@@ -77,13 +77,13 @@ local FLAME = {
     count = 120,
     life = 1.3,
     speed = 2.2,
-    spread = 26,
+    spread_deg = 26,
     gravity = 2.6,
-    radius = 0.6,
-    size = 1.1,
-    end_size = 0.15,
-    color = { 5.0, 2.2, 0.5 },
-    end_color = { 1.2, 0.1, 0.02 },
+    source_radius = 0.6,
+    size_start = 1.1,
+    size_end = 0.15,
+    color_start = { 5.0, 2.2, 0.5 },
+    color_end = { 1.2, 0.1, 0.02 },
     turbulence = 1.2,
 }
 
@@ -190,7 +190,7 @@ function on_timer()
                 -- Wind the flame up: the fire is the warning.
                 FLAME.count = 200
                 FLAME.speed = 4.0
-                FLAME.size = 1.6
+                FLAME.size_start = 1.6
                 vfParticles(FLAME)
             end
         end
@@ -218,13 +218,13 @@ function on_timer()
                 count = 240,
                 life = 1.4,
                 speed = 18.0,
-                spread = 180,
+                spread_deg = 180,
                 gravity = -9.0,
-                radius = 1.0,
-                size = 2.2,
-                end_size = 0.3,
-                color = { 8.0, 3.6, 1.0 },
-                end_color = { 0.9, 0.12, 0.02 },
+                source_radius = 1.0,
+                size_start = 2.2,
+                size_end = 0.3,
+                color_start = { 8.0, 3.6, 1.0 },
+                color_end = { 0.9, 0.12, 0.02 },
             })
             -- The shell goes, the blast stays: what is left on screen is the
             -- explosion rather than a cylinder standing inside one.
@@ -242,7 +242,7 @@ function on_timer()
         calm_until = now + RELEASE_GRACE_S
         FLAME.count = 120
         FLAME.speed = 2.2
-        FLAME.size = 1.1
+        FLAME.size_start = 1.1
         local x, _, z = vfGetPos()
         vfSetPos(x, ALTITUDE_M, z)
         fly(now)

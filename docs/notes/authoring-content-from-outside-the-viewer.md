@@ -52,13 +52,34 @@ changed a colour. That is not hypothetical: the gizmo and the edit dialog send a
 *whole* prim, and both had to be taught to carry `particles` through, or dragging
 a burning prim put the fire out.
 
-**An emitter is described by what differs from a preset**, on both surfaces. A
-JSON body naming `color_start` alone is a blue flame with the fire preset's other
-eleven fields; so is `vfParticles{ color = {0,0.4,1} }`. That leniency lives in
-`authoring::ParticleSpec` rather than on `ParticleEffect` itself, and it has to:
-`ParticleEffect` is postcard-encoded in every `WorldSnapshot`, postcard is not
-self-describing, and giving its fields serde defaults or `Option`s would change
-what the bytes mean and desync every client.
+**An emitter is described by what differs from a preset**, on both surfaces and
+**in one vocabulary**. A JSON body naming `color_start` alone is a blue flame with
+the fire preset's other eleven fields; so is
+`vfParticles{ color_start = {0,0.4,1} }` — the same twelve names either way.
+
+They were not, for a day: the script API took `spread`, `radius`, `size`,
+`end_size`, `color`, `end_color` while the HTTP body took `spread_deg`,
+`source_radius`, `size_start`, `size_end`, `color_start`, `color_end`. Six of the
+twelve fields had two names depending on which surface set them, which is a thing
+a person has to translate every time they move between a script and a `curl`.
+The longer spelling won for two reasons: the pairs are symmetric (`size_start`
+beside `size_end`, where `size` beside `end_size` is not), and `spread_deg`
+carries its unit in a codebase that has been bitten by degrees and radians
+before. `scripting::tests::the_two_authoring_surfaces_use_one_vocabulary` reads
+the HTTP names out of `ParticleSpec`'s own `Serialize` and the script names out
+of the parser's own error, so neither list is hand-maintained and they cannot
+drift apart again. A script using an old name is refused with its new one rather
+than with the whole list.
+
+Two fields are HTTP-only and meant to be: `burst`, because a script says which it
+wants by calling `vfParticles` or `vfParticleBurst`, and `sequence`, which is
+derived from the prim so a re-armed blast cannot reuse a number a client has
+already played.
+
+The leniency itself lives in `authoring::ParticleSpec` rather than on
+`ParticleEffect`, and it has to: `ParticleEffect` is postcard-encoded in every
+`WorldSnapshot`, postcard is not self-describing, and giving its fields serde
+defaults or `Option`s would change what the bytes mean and desync every client.
 
 ## What it deliberately does not do
 

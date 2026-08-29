@@ -218,9 +218,11 @@ pub const SCRIPT_API: &[ScriptFn] = &[
         name: "vfParticles",
         signature: "vfParticles(rules)",
         summary: "Attach a particle emitter, described by a table of named fields \
-                  (count, life, speed, spread, gravity, radius, size, end_size, \
-                  color, end_color, alpha, turbulence). Anything left out keeps \
-                  the fire preset's value; vfParticles(nil) puts the emitter out.",
+                  (count, life, speed, spread_deg, gravity, source_radius, \
+                  size_start, size_end, color_start, color_end, alpha, \
+                  turbulence) — the same names the admin API takes. Anything left \
+                  out keeps the fire preset's value; vfParticles(nil) puts the \
+                  emitter out.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
