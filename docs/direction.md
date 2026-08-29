@@ -14,6 +14,33 @@ content comes from registries, never from invention. Where a registry covers a
 place, the world is what the registry says; where none does, the world degrades
 to OpenStreetMap and stays standing.
 
+## Values
+
+Seven sentences, and they are here to be *used*: when a ticket is ambiguous,
+these decide it. A session working unattended resolves the question from this
+list and writes down which value it applied. It does not stop to ask.
+
+1. **Measured beats plausible.** Prefer a surveyed fact to a convincing
+   invention, every time — a scattered tree where a real one is registered is
+   the thing this project exists to stop doing.
+2. **Official sources first.** PDOK, the Kadaster, the BAG, the BGT, AHN, 3DBAG
+   — public registers with a licence and an interface. OpenStreetMap is the
+   global fallback, not the preference, and a scrape is a last resort.
+3. **Degrade, never break.** Coverage is national and the world is not. Outside
+   it the ground goes flat and the buildings are extruded footprints; nothing
+   disappears and nothing errors.
+4. **Add, don't replace.** New data joins what is drawn. Substituting a source
+   for a working layer deletes content wherever the new one has no coverage —
+   which is usually exactly where somebody is standing.
+5. **The frame budget is not negotiable.** Every streaming path is bounded per
+   frame, in bytes as well as items. An unbounded upload burst is how this
+   codebase loses a graphics device, and it is not a trade to make for detail.
+6. **Ship the smallest thing a machine can judge.** Counts, placement, settle
+   time, draw calls, memory. If the only way to tell whether it worked is to
+   look at it, it is the wrong size or the wrong ticket.
+7. **Say what you decided.** A choice made from this list goes in the commit
+   body; a fact that will still be true in ten commits goes in `docs/notes/`.
+
 ## Why this makes an unattended lane possible
 
 Most of the last year of work has one shape: *take a public dataset and raise it
