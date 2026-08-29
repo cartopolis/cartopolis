@@ -27,12 +27,29 @@ cosmetic:
   against a count the way the BAG extract checks itself. The guard here is a page
   ceiling that warns when it trips, which is weaker, and there is nothing better
   available.
-- **Every historical version is returned.** This is the one that silently ruins an
-  extract. A page of Groningen tree points is 1000 features of which 485 are
-  current; the rest were retired years ago and carry an entirely ordinary
-  `status: bestaand`. The discriminator is `termination_date`, and without it the
-  map grows a second, ghost set of trees standing where trees used to be. The
-  `datetime` parameter looks like the right filter and returns nothing at all.
+- **Every historical version is returned, in two shapes, and one filter is not
+  enough.** This is the one that silently ruins an extract — twice. A page of
+  Groningen tree points is 1000 features of which 485 are current; the rest were
+  retired years ago and carry an entirely ordinary `status: bestaand`, so
+  `termination_date` looked like the discriminator and became the filter. It only
+  marks objects *removed from reality*. An object that was merely **edited** gets
+  a new version, and every superseded version is marked solely by
+  `eind_registratie` — no termination, `status: bestaand` — so the filter kept
+  them all. On the trees that was invisible (a felled tree is terminated, a
+  re-surveyed one rare); on the paving it was the map's worst z-fight: up to 7
+  coplanar copies of one footway, 79 % of Groningen's paved area covered at
+  least twice, over half of it in *different* tones once materials landed —
+  every copy on the same depth rung, so the pavements shimmered under any
+  camera motion (reported repeatedly as "layers fight for z-index while moving").
+  A feature is current only when **both** fields are empty; exactly one version
+  per `lokaal_id` then survives (measured 2026-08-29: 990 `ondersteunendwegdeel`
+  features → 302 current, all ids distinct, and the remaining overlap between
+  current surfaces is *zero* — BGT is a true partition). Fixed in cartopy's
+  `items()` (every collection walks through it); `parse_surveyed_paving` /
+  `parse_surveyed_cell` also drop exact repeats, because a cell cached with the
+  ghosts in it is never refetched — which is also why the client's cache keys
+  moved to `bgt/v2/`. The `datetime` parameter looks like the right filter and
+  returns nothing at all.
 
 ## Added to the generated layers, never replacing them
 
