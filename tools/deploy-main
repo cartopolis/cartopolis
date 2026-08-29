@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+#
+# Deploy what is on `main` to the public services, in the order they depend on
+# each other.
+#
+#   tools/deploy-main [--sha SHA] [--only sim|web] [--dry-run] [--timeout-min 40]
+#
+# Used by hand, and by the autonomous lane after it merges a ticket
+# (docs/direction.md). It is a script rather than prompt text for the reason
+# notes/agent-verification.md gives: a check written as a sentence is advice,
+# and this one decides whether strangers get a broken server.
+#
+# ## What it refuses
+#
+# **A commit CI has not passed.** Every job that ran for the sha must have
+# concluded `success`, and at least one must have run. A merge whose CI never
+# reported is NOT a pass here — that is the difference between this and the
+# watcher's `agent:done`, which lands a branch for review when CI is silent.
+# Landing a branch on no verdict is recoverable; publishing on no verdict is
+# how a runner outage becomes a public outage.
+#
+# **A `main` that has moved.** `--sha` states which commit the caller believes
+# it is shipping; if `main` has moved on since, this stops. A deploy builds from
+# the branch, so shipping a sha you did not check is shipping something else.
+#
+# ## Order
+#
+# The simulator goes first. Client and server share one wire protocol and
+# `decode_app_frame` refuses a mismatch outright, so a web client one revision
+# ahead of the server cannot connect at all — it reads to a user as the
+# connection being reset. Server first means the window is "the server
+# understands more than the client sends", which is the harmless direction.
+#
+# The Android app is deliberately not here. An install is an act a person
+# performed on their own phone, no deploy from this machine reaches it, and a
+# bad one cannot be taken back — `deploy-android.yml` stays a thing somebody
+# dispatches on purpose.
+
+set -euo pipefail
+
+sha=""
+only=""
+dry=""
+timeout_min=40
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --sha)         sha="$2"; shift 2 ;;
+        --only)        only="$2"; shift 2 ;;
+        --dry-run)     dry=1; shift ;;
+        --timeout-min) timeout_min="$2"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+# Both tokens may arrive either way. Interactively they come from the files a
+# workstation and the `cartopolis-agent` container keep them in; under the
+# autopilot they come from the environment, because that service has no
+# `~/.config` of its own — see the `config:` volume in docker-compose.yml for
+# why that separation is deliberate.
+for f in "$HOME/.config/cartopolis/forgejo.env" "$HOME/.config/cartopolis/forgejo-merge.env"; do
+    [ -f "$f" ] && { set -a; . "$f"; set +a; }
+done
+: "${FORGEJO_TOKEN:?not set — put it in ~/.config/cartopolis/forgejo.env or the environment}"
+: "${FORGEJO_MERGE_TOKEN:?not set — put it in ~/.config/cartopolis/forgejo-merge.env or the environment}"
+API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
+REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
+# The simulator's HTTP surface, on the docker bridge. Not public: Caddy proxies
+# /ws and /api/admin only, so this check runs from the host or any container on
+# that bridge, and not from the outside world.
+HEALTH="${CARTO_SIM_HEALTH:-http://172.17.0.1:4748/api/health}"
+
+api()  { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
+wapi() { curl -sf -H "Authorization: token $FORGEJO_MERGE_TOKEN" -H "Content-Type: application/json" "$@"; }
+py()   { python3 -c "$1"; }
+
+head_of_main() {
+    api "$API/repos/$REPO/branches/main" | py 'import sys,json;print(json.load(sys.stdin)["commit"]["id"])'
+}
+
+# Every job Actions ran for this sha, as "status name". `/actions/tasks` is the
+# per-job list and carries head_sha; the combined commit-status endpoint answers
+# the same question but says nothing at all for a commit whose workflows were
+# skipped by a path filter, which is indistinguishable there from a commit
+# nobody ran.
+jobs_for() {
+    api "$API/repos/$REPO/actions/tasks?limit=50" | py "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('workflow_runs',[]):
+    if r.get('head_sha')=='$1':
+        print(r.get('status',''), r.get('name',''), sep='\t')
+"
+}
+
+# Runs are identified by a monotonic id, so 'the run I just started' is 'the
+# newest run of this workflow with an id above the one I saw before dispatching'.
+# The API's run list carries no head_sha and no timestamp to match on instead.
+newest_run_id() {
+    wapi "$API/repos/$REPO/actions/runs?limit=20" | py "
+import sys,json
+d=json.load(sys.stdin)
+ids=[r['id'] for r in d.get('workflow_runs',[]) if r.get('workflow_id')=='$1']
+print(max(ids) if ids else 0)
+"
+}
+
+run_status() {
+    wapi "$API/repos/$REPO/actions/runs?limit=20" | py "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('workflow_runs',[]):
+    if r.get('id')==$1: print(r.get('status','')); break
+else: print('')
+"
+}
+
+step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# --- the gate ----------------------------------------------------------------
+
+live=$(head_of_main)
+if [ -z "$sha" ]; then sha="$live"; fi
+if [ "$sha" != "$live" ]; then
+    echo "refusing: main is at ${live:0:8}, you asked to ship ${sha:0:8}" >&2
+    echo "a deploy builds from the branch, so it would publish ${live:0:8} either way" >&2
+    exit 1
+fi
+
+step "main is at ${sha:0:8}"
+
+# A merge lands and its `main` run starts seconds later, so "no job yet" and
+# "no job ever" look the same for the first minute. Wait for one to appear, then
+# wait for the ones that are running — but never treat either wait as a pass.
+waited=0
+while :; do
+    mapfile -t rows < <(jobs_for "$sha")
+    pending=0
+    for row in "${rows[@]}"; do
+        case "${row%%$'\t'*}" in waiting|running|blocked) pending=1 ;; esac
+    done
+    [ "${#rows[@]}" -gt 0 ] && [ "$pending" -eq 0 ] && break
+    if [ "$waited" -ge $((timeout_min * 60)) ]; then
+        if [ "${#rows[@]}" -eq 0 ]; then
+            echo "refusing: no Actions job ran for ${sha:0:8} — nothing has verified this commit" >&2
+        else
+            echo "refusing: CI on ${sha:0:8} was still running after $timeout_min min" >&2
+        fi
+        exit 1
+    fi
+    [ "$waited" -eq 0 ] && echo "  waiting for CI on ${sha:0:8}"
+    sleep 20; waited=$((waited + 20))
+done
+
+bad=0
+for row in "${rows[@]}"; do
+    status="${row%%$'\t'*}"; name="${row#*$'\t'}"
+    printf '  %-10s %s\n' "$status" "$name"
+    [ "$status" = "success" ] || bad=1
+done
+[ "$bad" -eq 0 ] || { echo "refusing: CI is not green on ${sha:0:8}" >&2; exit 1; }
+
+if [ -n "$dry" ]; then echo; echo "dry run — would deploy: ${only:-sim then web}"; exit 0; fi
+
+# --- dispatch ----------------------------------------------------------------
+
+deploy() {                       # deploy <workflow-file> <human name>
+    local wf="$1" label="$2" before after waited
+    before=$(newest_run_id "$wf")
+    step "dispatching $label"
+    wapi -X POST -d '{"ref":"main"}' "$API/repos/$REPO/actions/workflows/$wf/dispatches" >/dev/null
+
+    after=$before; waited=0
+    while [ "$after" = "$before" ]; do
+        sleep 5; waited=$((waited + 5))
+        after=$(newest_run_id "$wf")
+        [ "$waited" -lt 120 ] || { echo "no run appeared for $label within 2 min" >&2; return 1; }
+    done
+    echo "  run $after started"
+
+    local st=""
+    while :; do
+        st=$(run_status "$after")
+        case "$st" in
+            success) echo "  $label: success"; return 0 ;;
+            failure|cancelled|skipped) echo "  $label: $st" >&2; return 1 ;;
+        esac
+        sleep 20; waited=$((waited + 20))
+        [ "$waited" -lt $((timeout_min * 60)) ] || { echo "  $label: still $st after $timeout_min min" >&2; return 1; }
+    done
+}
+
+# The published binary is picked up by the host's restarter, so the workflow
+# finishing means "a new binary is on disk", not "it is serving". Ask the
+# running server what it is: the protocol version it reports must be the one
+# this commit's source declares, which is the check that catches a restart that
+# did not happen.
+verify_sim() {
+    local want live_v waited=0
+    # Read the source from `main` over the API, not from a checkout: this runs
+    # where the repository-write token lives, which is deliberately not a place
+    # with a writable clone in it.
+    want=$(api "$API/repos/$REPO/raw/crates/core/src/protocol.rs?ref=main" \
+        | grep -oE 'version: [0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
+    step "verifying the running simulator (expecting protocol $want)"
+    while [ "$waited" -lt 180 ]; do
+        live_v=$(curl -sf --max-time 10 "$HEALTH" | py 'import sys,json;print(json.load(sys.stdin).get("protocol_version",""))' 2>/dev/null || true)
+        if [ "$live_v" = "$want" ]; then echo "  serving protocol $live_v"; return 0; fi
+        sleep 10; waited=$((waited + 10))
+    done
+    echo "  the live server reports protocol '${live_v:-no answer}', wanted $want" >&2
+    return 1
+}
+
+case "$only" in
+    sim) deploy deploy-sim.yml "the simulator" && verify_sim ;;
+    web) deploy deploy-web.yml "the web client" ;;
+    "")  deploy deploy-sim.yml "the simulator" && verify_sim && deploy deploy-web.yml "the web client" ;;
+    *)   echo "--only takes sim or web" >&2; exit 2 ;;
+esac
+
+step "deployed ${sha:0:8}"
