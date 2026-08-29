@@ -46,7 +46,7 @@
 use crate::http::{require_admin, ApiError, ApiResult, HttpState};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use cartopolis_core::{
     encode_app_frame, GeoAnchor, NetMessage, ParticleEffect, PrimDto, PrimGeometry, PrimSurface,
@@ -64,6 +64,8 @@ pub fn routes() -> Router<HttpState> {
             get(get_prim).patch(update_prim).delete(delete_prim),
         )
         .route("/api/admin/prims/{id}/script", put(put_script))
+        .route("/api/admin/content", get(list_content))
+        .route("/api/admin/content/{name}", post(install_content))
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +99,7 @@ where
 /// = {0,0.4,1} }` is a blue flame with everything else left alone, and so is
 /// `{"color_start": [0,0.4,1]}` — before this, the second was an error listing
 /// the thirteen fields it had not mentioned.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticleSpec {
     /// Which preset the unmentioned fields come from — a one-shot blast, or a
@@ -299,7 +301,31 @@ async fn create_prim(
     Json(spec): Json<PrimSpec>,
 ) -> ApiResult<(StatusCode, Json<PrimView>)> {
     let (_, who) = require_admin(&state, &headers)?;
+    let created = create(&state, &spec).await?;
+    tracing::info!(%who, prim_id = created.id, "prim authored");
+    let scripted = store_script(&state, created.id, spec.script.as_deref()).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(PrimView {
+            prim: created,
+            scripted,
+            script: None,
+        }),
+    ))
+}
 
+/// Make one prim from a spec, validated, persisted and announced.
+///
+/// Split out of the handler so a content pack installs prims through *exactly*
+/// the code an author's `POST` runs — same validation, same defaults, same
+/// rollback, same broadcast. A pack that had its own create would be a second
+/// place for "what does an unmentioned field mean?" to be answered, and the two
+/// answers would drift.
+///
+/// The script is deliberately **not** stored here: it draws against a different
+/// budget, and the caller wants to report the prim even when the script is
+/// refused.
+async fn create(state: &HttpState, spec: &PrimSpec) -> ApiResult<PrimDto> {
     // A prim has to be *somewhere*, and there is no sensible default for where:
     // the region's own anchor would drop every scripted object on one spot.
     let (Some(latitude), Some(longitude)) = (spec.latitude, spec.longitude) else {
@@ -343,25 +369,15 @@ async fn create_prim(
         // update on top, which is the same two-step the wire's `CreatePrim` does
         // and for the same reason — `insert_prim` writes defaults, and there is
         // one function that writes the rest.
-        apply(&mut w, &base, &spec).map_err(|e| {
+        apply(&mut w, &base, spec).map_err(|e| {
             // Roll the empty prim back rather than leaving a grey box named
             // "Prim" behind: a create either happened or it did not.
             let _ = w.remove_prim(base.id);
             bad(e)
         })?
     };
-    broadcast_upsert(&state, &created);
-    tracing::info!(%who, prim_id = created.id, "prim authored");
-
-    let scripted = store_script(&state, created.id, spec.script.as_deref()).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(PrimView {
-            prim: created,
-            scripted,
-            script: None,
-        }),
-    ))
+    broadcast_upsert(state, &created);
+    Ok(created)
 }
 
 async fn update_prim(
@@ -444,6 +460,95 @@ async fn put_script(
     Ok(Json(json!({
         "stored": true,
         "scripted": scripted,
+        "note": "compile errors and vfLog output arrive on the wire as ScriptOutput, \
+                 not in this response",
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Content packs
+// ---------------------------------------------------------------------------
+
+async fn list_content(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&state, &headers)?;
+    let packs: Vec<serde_json::Value> = crate::content::packs()
+        .iter()
+        .map(|p| {
+            json!({
+                "name": p.name,
+                "summary": p.summary,
+                "prims": p.prims.iter().filter_map(|s| s.name.clone()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "content": packs })))
+}
+
+/// Install a named pack, replacing anything it installed before.
+///
+/// It goes through [`create`] prim by prim, which is what keeps a pack from being
+/// a second way to make a prim: whatever the API refuses an author, it refuses a
+/// pack. The replace step is not a nicety — without it, running this twice leaves
+/// two firebirds circling the same city and no obvious way to tell which is which.
+async fn install_content(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (_, who) = require_admin(&state, &headers)?;
+    let pack = crate::content::pack(&name).ok_or_else(|| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            format!("no content called `{name}`; GET /api/admin/content lists what there is"),
+        )
+    })?;
+
+    // Out with the old — by *provenance*, not by name.
+    //
+    // Matching on the prim names a pack declares was the first version and it is
+    // broken by the pack itself: the beacon's script renames it to whatever its
+    // label currently says, so a reinstall found no prim called "Beacon", left the
+    // old one standing and added a second. A script may rewrite any field a client
+    // can see; `prims.origin` is one it cannot reach.
+    let doomed = crate::http::with_db(&state, |c| crate::db::prim_ids_from(c, &pack.name))?;
+    let replaced = {
+        let mut w = state.world.write().await;
+        let mut gone = Vec::new();
+        for id in doomed {
+            if w.remove_prim(id).unwrap_or(false) {
+                gone.push(id);
+            }
+        }
+        gone
+    };
+    for id in &replaced {
+        // The VM goes with the prim, and so does the client's copy — a snapshot
+        // is AoI-filtered and carries no removals.
+        state.scripts.unload(*id);
+        if let Ok(frame) = encode_app_frame(&NetMessage::PrimRemoved { id: *id }) {
+            let _ = state.tx_snap.send(frame);
+        }
+    }
+
+    let mut installed = Vec::new();
+    for spec in &pack.prims {
+        let prim = create(&state, spec).await?;
+        // Stamped straight after the create, so a pack that fails partway through
+        // still leaves every prim it did make reachable by the next reinstall
+        // rather than as litter nothing owns.
+        crate::http::with_db(&state, |c| {
+            crate::db::set_prim_origin(c, prim.id, &pack.name)
+        })?;
+        installed.push(json!({ "id": prim.id, "name": prim.name }));
+        store_script(&state, prim.id, spec.script.as_deref()).await?;
+    }
+    tracing::info!(%who, pack = %name, replaced = replaced.len(), "content installed");
+    Ok(Json(json!({
+        "installed": installed,
+        "replaced": replaced,
         "note": "compile errors and vfLog output arrive on the wire as ScriptOutput, \
                  not in this response",
     })))

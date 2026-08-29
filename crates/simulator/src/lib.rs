@@ -11,6 +11,7 @@ pub mod authoring;
 pub mod chat;
 pub mod cli;
 pub mod config;
+pub mod content;
 pub mod db;
 pub mod houses;
 pub mod http;

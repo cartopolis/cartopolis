@@ -19,12 +19,13 @@ you can see the request it would have sent.
     tools/author.py prims
     tools/author.py show 42
     tools/author.py create --lat 53.2194 --lng 6.5665 --alt 45 \\
-        --shape cylinder --name Firebird --script content/firebird.lua
+        --shape cylinder --name Firebird --script my-script.lua
     tools/author.py patch 42 --color 1,0.4,0.1
-    tools/author.py script 42 content/firebird.lua
+    tools/author.py script 42 my-script.lua
     tools/author.py delete 42
 
-    tools/author.py firebird        # the worked example, in one command
+    tools/author.py content         # what the server can install
+    tools/author.py install firebird
 
 Two things worth knowing before you use it in anger.
 
@@ -144,7 +145,7 @@ def spec_from_args(args: argparse.Namespace) -> dict:
 
 def read_maybe_file(value: str) -> str:
     """A path if it is one, otherwise the literal text. Lets `--script` take
-    either `content/firebird.lua` or a one-liner in quotes, which is the
+    either a path to a `.lua` file or a one-liner in quotes, which is the
     difference between trying something out and installing it."""
     if os.path.exists(value):
         with open(value, encoding="utf-8") as f:
@@ -154,64 +155,6 @@ def read_maybe_file(value: str) -> str:
 
 def emit(value: object) -> None:
     print(json.dumps(value, indent=2))
-
-
-# ---------------------------------------------------------------------------
-# The worked example
-# ---------------------------------------------------------------------------
-
-FIREBIRD_SCRIPT = "content/firebird.lua"
-
-# Groningen's Grote Markt, which is where the default region is anchored and
-# where `content/firebird.lua` flies its circle.
-FIREBIRD_LAT, FIREBIRD_LNG = 53.2194, 6.5665
-
-
-def install_firebird(base: str, token: str, dry_run: bool) -> None:
-    """Create the burning thing that circles the city, script and all.
-
-    The emitter is set here as well as by the script's own `vfParticles`, and
-    that is on purpose: a prim authored with one is *already* alight in the
-    snapshot that first carries it, so it looks right in the fraction of a second
-    before the script's `on_start` has run — and it demonstrates that an emitter
-    is an ordinary authored field rather than something only a script can reach."""
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(here, FIREBIRD_SCRIPT)
-    if not os.path.exists(path):
-        raise ApiError(f"cannot find {FIREBIRD_SCRIPT} (looked in {path})")
-    with open(path, encoding="utf-8") as f:
-        source = f.read()
-    spec = {
-        "name": "Firebird",
-        "shape": "cylinder",
-        "latitude": FIREBIRD_LAT,
-        "longitude": FIREBIRD_LNG,
-        "altitude": 45.0,
-        "scale": [1.6, 0.9, 1.6],
-        "color": [0.09, 0.07, 0.06],
-        # Only what differs from the fire preset. The API fills the rest in,
-        # exactly as `vfParticles` does for a rules table — the two authoring
-        # surfaces describe an emitter the same way on purpose.
-        "particles": {
-            "count": 120,
-            "speed": 2.2,
-            "source_radius": 0.6,
-            "size_start": 1.1,
-            "turbulence": 1.2,
-        },
-        "script": source,
-    }
-    if dry_run:
-        emit({"POST": "/api/admin/prims", "body": spec})
-        return
-    created = request("POST", f"{base}/api/admin/prims", token, spec)
-    print(
-        f"firebird is prim {created['id']}, circling {FIREBIRD_LAT},{FIREBIRD_LNG}.\n"
-        "Walk within 45 m of it and stand well back. It deletes itself when it "
-        "goes off — run this again for another one.\n"
-        "Compile errors and vfShout lines arrive in a connected viewer's script "
-        "console, not here."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +217,13 @@ def main() -> int:
     dp = sub.add_parser("delete", help="remove a prim, its script and its emitter")
     dp.add_argument("id", type=int)
 
-    sub.add_parser("firebird", help="install the worked example over Groningen")
+    sub.add_parser("content", help="list the content the server can install")
+
+    ip = sub.add_parser(
+        "install",
+        help="install a named piece of world the server already carries",
+    )
+    ip.add_argument("name", help="e.g. firebird")
 
     args = p.parse_args()
     base = args.sim.rstrip("/")
@@ -320,8 +269,19 @@ def main() -> int:
             else:
                 request("DELETE", f"{base}/api/admin/prims/{args.id}", token, None)
                 print(f"prim {args.id} deleted")
-        elif args.command == "firebird":
-            install_firebird(base, token, args.dry_run)
+        elif args.command == "content":
+            emit(request("GET", f"{base}/api/admin/content", token, None))
+        elif args.command == "install":
+            # Nothing about *what* gets installed is decided here. The prims,
+            # their placement and their scripts live in the simulator
+            # (`crates/simulator/src/content.rs`, scripts embedded at compile
+            # time), because a deployed server has no repository beside it — so
+            # content kept in the tree is content a running server cannot install.
+            url = f"{base}/api/admin/content/{args.name}"
+            if args.dry_run:
+                emit({"POST": f"/api/admin/content/{args.name}"})
+            else:
+                emit(request("POST", url, token, None))
     except ApiError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

@@ -16,7 +16,8 @@ const PRIM_COLUMNS: &str = "id, region_id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude, particles";
+     latitude, longitude, particles, \
+     EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
 
 /// Maps a row selected with [`PRIM_COLUMNS`] (in order) into a [`PrimDto`].
 fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
@@ -62,6 +63,13 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // the way in: a row can predate a tightened limit, or have been edited
         // with sqlite3, and the client hands these numbers straight to a shader.
         particles: parse_particles(row.get::<_, Option<String>>(40)?.as_deref()),
+        // Protocol v21, and read from the database rather than tracked: a
+        // subquery on the row is always right, where a flag maintained beside
+        // `set_prim_script` is one more thing to forget. `SimWorld::set_scripted`
+        // still updates its in-memory copy so the next snapshot is current
+        // without a re-read — the database is what it falls back to being right
+        // from.
+        scripted: row.get(41)?,
     })
 }
 
@@ -335,6 +343,28 @@ pub fn update_prim(
 
     tracing::debug!(prim_id, "prim updated");
     Ok(Some(prim))
+}
+
+/// Record which content pack installed a prim (`V12__prim_origin.sql`).
+///
+/// A separate write rather than a column on the insert, because it is not part of
+/// what an author describes: `insert_prim` is reached from the wire, from the
+/// admin API and from a pack, and only the last of those has an origin to state.
+pub fn set_prim_origin(conn: &Connection, prim_id: i64, origin: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE prims SET origin = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, origin],
+    )?;
+    Ok(())
+}
+
+/// Every prim a given content pack installed, oldest first.
+pub fn prim_ids_from(conn: &Connection, origin: &str) -> anyhow::Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT id FROM prims WHERE origin = ?1 ORDER BY id")?;
+    let ids = stmt
+        .query_map(rusqlite::params![origin], |row| row.get(0))?
+        .collect::<Result<Vec<i64>, _>>()?;
+    Ok(ids)
 }
 
 /// Delete a prim from the database.
