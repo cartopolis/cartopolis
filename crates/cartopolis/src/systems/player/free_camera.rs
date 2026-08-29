@@ -697,6 +697,20 @@ pub fn bloom_intensity(space_factor: f32) -> f32 {
 /// with y = 0. Must match bevy_pbr's `Atmosphere::earth` constant.
 const EARTH_ATMOSPHERE_INNER_RADIUS: f32 = 6_360_000.0;
 
+/// Adapters whose driver was **measured** to miscompile the atmosphere's
+/// shaders, so Automatic sky picks the dome there. One entry per measurement —
+/// never a family or a version range guessed from one. The evidence standard
+/// for adding a line: an on-device probe result pinning the defect, recorded
+/// with a date in `docs/notes/adreno-atmosphere-miscompile.md`. The evidence
+/// for removing one: the atmosphere verified working on that adapter via the
+/// `SkyPreference::Full` override, which deliberately bypasses this list.
+fn driver_denies_atmosphere(adapter_name: &str) -> bool {
+    // OnePlus 15, driver 0842.x, compiler E031.50.19.27, measured 2026-08-29:
+    // a per-inline-site miscompile collapses the sky's march limit while the
+    // identical arithmetic verifies correct inside the integrator.
+    adapter_name.contains("Adreno (TM) 840")
+}
+
 /// Spawn the world [`BigSpace`] root with the camera as its [`FloatingOrigin`]
 /// (ADR-019). Other content currently spawns at the origin (cell 0) and renders
 /// correctly; geo-derived `GridCell` placement arrives with planet-scale streaming.
@@ -836,10 +850,31 @@ pub fn setup_camera(
     // will not draw: it still has to pass `float32_filterable`, because the
     // alternative to refusing is the bind-group validation failure described
     // above, which takes the whole app down.
+    // **…and one driver is denied by measurement, not by family.** The Adreno
+    // 840's driver (the only 840 driver that exists, 0842.x, compiler E031.50)
+    // miscompiles the atmosphere in a way five instrumented device rounds
+    // pinned but could not dodge (2026-08-27..29, `diag/adreno-sky-probe`,
+    // `docs/notes/adreno-atmosphere-miscompile.md`): every ingredient of the
+    // sky's march limit computes correctly inside the integrator — verified on
+    // the device, arm by arm, painted into the sky by a probe build — while
+    // the same arithmetic inlined into the *caller* returns <= 0, through four
+    // structurally different rewrites (branchy, select, step/mix, add/mul/
+    // min/max). A per-inline-site miscompile is not something an application
+    // dodges; every rewrite just moves it. So Automatic picks the dome here.
+    // This is the opposite of the deleted `gpu_affords_atmosphere` table: that
+    // predicted unmeasured hardware from a family name, this records one
+    // measured defect on one measured driver — and `SkyPreference::Full` still
+    // overrides it, so when Qualcomm ships a fixed driver the atmosphere is
+    // one settings flip away, no rebuild, and the fix is discoverable.
+    let denied_driver = driver_denies_atmosphere(&adapter.name)
+        && prefs.sky != crate::resources::SkyPreference::Full;
     let want_sky = !crate::env_flag("CARTO_NO_ATMOSPHERE");
     let asked_for_dome = prefs.sky == crate::resources::SkyPreference::Simple;
-    let want_atmosphere =
-        want_sky && float32_filterable && !asked_for_dome && !crate::env_flag("CARTO_SKY_DOME");
+    let want_atmosphere = want_sky
+        && float32_filterable
+        && !asked_for_dome
+        && !denied_driver
+        && !crate::env_flag("CARTO_SKY_DOME");
     let want_envmap =
         want_atmosphere && prefs.sky_lighting_on() && !crate::env_flag("CARTO_NO_ENVMAP");
     let sky = if want_atmosphere {
@@ -861,6 +896,7 @@ pub fn setup_camera(
         ?sky,
         adapter = %adapter.name,
         float32_filterable,
+        denied_driver,
         preference = ?prefs.sky,
         forced_dome = crate::env_flag("CARTO_SKY_DOME"),
         no_atmosphere = crate::env_flag("CARTO_NO_ATMOSPHERE"),
@@ -2356,6 +2392,21 @@ mod tests {
     /// Bevy-local north for these tests: the anchor frame's +Y (see
     /// `GlobeState::north_axis_local`, which returns the real thing in-app).
     const NORTH: DVec3 = DVec3::Y;
+
+    /// The deny entry matches the adapter string the device actually reports
+    /// (see the `sky chosen` log lines in the note's evidence trail) and
+    /// nothing wider — an 8-series sibling or a desktop GPU must not be
+    /// swept in by a measurement made on one phone.
+    #[test]
+    fn the_driver_deny_list_matches_only_what_was_measured() {
+        assert!(driver_denies_atmosphere("Adreno (TM) 840"));
+        assert!(!driver_denies_atmosphere("Adreno (TM) 830"));
+        assert!(!driver_denies_atmosphere("Adreno (TM) 750"));
+        assert!(!driver_denies_atmosphere(
+            "llvmpipe (LLVM 20.1.2, 256 bits)"
+        ));
+        assert!(!driver_denies_atmosphere("NVIDIA GeForce RTX 4070"));
+    }
 
     /// Writing the *same* projection back must not mark the component changed.
     ///
