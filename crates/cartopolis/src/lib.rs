@@ -1853,6 +1853,7 @@ fn run_client() {
         .init_resource::<systems::osm_buildings::OsmBuildings>()
         .init_resource::<systems::lod22::Lod22Buildings>()
         .init_resource::<systems::building_facts::BuildingFacts>()
+        .init_resource::<systems::interiors::Interiors>()
         .init_resource::<systems::street_detail::StreetDetail>()
         .init_resource::<systems::tall_structures::TallStructures>()
         .init_resource::<systems::collision::BuildingColliders>()
@@ -2166,6 +2167,7 @@ fn run_client() {
                 systems::lod22::update_lod22.after(rendering::spawn_regions),
                 systems::building_facts::update_building_facts,
                 systems::surveyed::prefetch_bgt_coverage,
+                systems::interiors::update_interiors,
             ),
             systems::data_layers::update_data_layers.after(rendering::spawn_regions),
             systems::data_layers::animate_stop_rings
