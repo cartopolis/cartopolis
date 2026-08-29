@@ -103,6 +103,80 @@ script may rewrite any field a client can see; provenance is a fact about the ro
 and is not one of them. `origin` is deliberately not in `PrimDto`: no client has
 any use for it.
 
+## Import, export and transfer are owner-scoped by default
+
+`GET /api/content/export`, `POST /api/content/import` and
+`POST /api/content/transfer` are **not** under `/api/admin`. They authenticate
+with `require_session` — any signed-in account — and the default scope is
+`prims.owner = me` (schema V15).
+
+The default is the security property. An ordinary account cannot read somebody
+else's build out of this route by *any* argument it supplies. Reaching further is
+an explicit query — `?owner=<username>` or `?all=true` — and both are refused
+without an admin flag.
+
+**An admin may always export**, including the whole world. That is not a hole: an
+operator can already read `world.db` over ssh and list everything through
+`/api/admin/prims`, so refusing here would have bought no confidentiality and cost
+the one thing this route is actually good for — taking a copy of the world before
+changing it. `?all=true` is also the only way to reach prims with **no** owner:
+everything built before V15 and everything a content pack installs. Those belong
+to the server, and the server is what an operator administers.
+
+A username that does not exist is a 404 rather than an empty document, because an
+empty document reads as "they have built nothing".
+
+## Transferring ownership
+
+`POST /api/content/transfer` takes `{prims: [id], to: "<username>"}`. Two callers
+may do it, for different reasons: the **owner**, because giving your own work away
+is yours to decide, and an **admin**, because somebody has to be able to re-home a
+build whose author has gone. An unowned prim can only be moved by an admin —
+there is no owner to consent.
+
+**It is all-or-nothing.** Every prim is permission-checked before anything is
+written, so a request naming one you own and one you do not moves neither. A
+partial transfer is the worst outcome available, because the response gives the
+caller no way to tell which half happened.
+
+The target must be an *enabled* account. Handing a build to a disabled one puts it
+somewhere nobody can reach, which is a way to lose work rather than to move it.
+
+Ownership is recorded on the wire's `CreatePrim` path only. The admin API and the
+content packs leave it NULL on purpose: those are the server building, not a
+person. It is deliberately **not** in `PrimDto` — no client has a use for it, and
+putting an account id on an object every observer receives twenty times a second
+is a privacy decision nobody asked for.
+
+**What this does not do**, and should not be mistaken for: it is not an
+authorisation model for *editing*. `UpdatePrim` and `DeletePrim` are still open to
+any connected client, exactly as they were. Owning a prim currently means one
+thing — you can export it.
+
+### The document is a canned request
+
+A `ContentDocument` is `{version, prims: [PrimSpec]}`, and `PrimSpec` is the same
+type the create route accepts, so an export is literally a document you can post
+back. Three things are deliberately dropped on the way out: the id (an id from one
+server means nothing on another), the region (the importer's world chooses), and
+`position.x/z` (a client-frame echo every client re-derives from the geo anchor).
+Rotations are degrees on this surface and radians on the wire — an export that
+wrote radians would re-import as a prim turned by 5157 degrees, which the round
+trip test pins.
+
+An emitter is written out **in full** rather than as the fields that differ from a
+preset, unlike everywhere else. A document is a file somebody keeps, and "the fire
+preset's speed" is not a stable thing to write down — a preset retuned later would
+silently change every stored document.
+
+**Import adds; it does not replace.** A document has no way to say which live prim
+each entry *was*, so replacing would have to guess and guessing wrong deletes
+somebody's work — and importing your own export twice (a second copy of a build,
+somewhere else) is a reasonable thing to want. Deleting the old copy is one
+`DELETE` per prim and is the caller's decision to make out loud. Note this is the
+opposite rule from a content pack, which *does* replace: a pack is identified by
+`prims.origin` and so knows exactly what it installed last time.
+
 ## The tool
 
 `tools/author.py` is a convenience over `curl` and nothing more — the API is the
