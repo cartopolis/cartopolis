@@ -45,6 +45,8 @@ const MERGE_TOKEN = process.env.FORGEJO_MERGE_TOKEN;  // write:repository
 const REPO_ROOT = process.env.AGENT_REPO_ROOT ?? "/home/agent/cartopolis";
 const CONFIG_PATH = process.env.CARTO_AUTOPILOT_CONFIG ?? "/home/agent/issue-agent/autopilot.json";
 const STATE_PATH = process.env.CARTO_AUTOPILOT_STATE ?? "/home/agent/issue-agent/autopilot-state.json";
+/** Written hourly by the host, because this container has no claude login of its own. */
+const EXPIRY_PATH = process.env.CARTO_CLAUDE_EXPIRY ?? "/home/agent/issue-agent/claude-expiry.json";
 
 const SHIP = "ship";
 /** How long `agent:running` may sit untouched before it is treated as dead. */
@@ -90,12 +92,12 @@ async function config(): Promise<Config> {
   }
 }
 
-type State = { day: string; filed: number; keys: string[] };
+type State = { day: string; filed: number; keys: string[]; digestDay?: string };
 
 async function loadState(): Promise<State> {
   try {
     const s = JSON.parse(await Bun.file(STATE_PATH).text());
-    return { day: s.day ?? "", filed: s.filed ?? 0, keys: s.keys ?? [] };
+    return { day: s.day ?? "", filed: s.filed ?? 0, keys: s.keys ?? [], digestDay: s.digestDay };
   } catch {
     return { day: "", filed: 0, keys: [] };
   }
@@ -661,6 +663,112 @@ function requireIssue(res: any): any {
   return res;
 }
 
+
+// --- the daily note -----------------------------------------------------------
+//
+// Nobody is watching the lane, which means silence has to be readable: a loop
+// with nothing to do and a loop that died on Tuesday look identical from the
+// outside. So once a day it says what it did, on one long-lived issue.
+//
+// That issue carries `driven` and NOT the autopilot label — `driven` keeps the
+// watcher off it (it would otherwise try to implement the log), and leaving the
+// autopilot label off keeps it out of the open-ticket count it would otherwise
+// fill by existing.
+
+const LOG_MARKER = "<!-- autopilot:log -->";
+
+async function logIssue(): Promise<any> {
+  const all = await api(`/issues?state=all&type=issues&limit=100`);
+  const found = all.find((i: any) => `${i.body ?? ""}`.includes(LOG_MARKER));
+  if (found) return found;
+  return requireIssue(
+    await api(`/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Autopilot log",
+        labels: await labelIds(["driven"]),
+        body: [
+          "The unattended lane reports here once a day: what it filed, what landed, what",
+          "deployed, what is stuck, and how long the login it runs on has left.",
+          "",
+          "It exists because silence is ambiguous — a loop with nothing to do and a loop",
+          "that stopped look the same from outside. **No new comment for a day means",
+          "something is wrong**, not that nothing happened.",
+          "",
+          "Nothing reads this issue; close it and it will be made again. The lane itself is",
+          "`docs/direction.md` and the knob is `/data/agent/state/autopilot.json`.",
+          "",
+          `<sub>${LOG_MARKER}</sub>`,
+        ].join("\n"),
+      }),
+    }),
+  );
+}
+
+/** Days until the claude.ai login stops refreshing, written by the host timer. */
+async function loginDaysLeft(): Promise<number | null> {
+  try {
+    const d = JSON.parse(await Bun.file(EXPIRY_PATH).text());
+    const ms = Number(d.refreshTokenExpiresAt) - Date.now();
+    return Math.floor(ms / 86_400_000);
+  } catch {
+    return null;
+  }
+}
+
+async function digest(cfg: Config) {
+  const state = await loadState();
+  if (state.digestDay === today()) return;
+
+  const since = Date.now() - 24 * 3_600_000;
+  const recent = (i: any) => new Date(i.updated_at).getTime() >= since;
+
+  const all = await api(`/issues?state=all&type=issues&limit=100`);
+  const mine = all.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT));
+  const filed = mine.filter((i: any) => new Date(i.created_at).getTime() >= since);
+  const closed = mine.filter((i: any) => i.state === "closed" && recent(i));
+  const openNow = mine.filter((i: any) => i.state === "open");
+  // Three states, not two. A finished ticket is waiting on the machine (its
+  // pull request, then the merge and the deploy) and needs nobody; a failed or
+  // parked one is waiting on a person. Reporting both as "stuck" is how a note
+  // meant to make silence readable would instead cry wolf every day.
+  const parked = openNow.filter((i: any) => {
+    const names = labelsOf(i);
+    return names.includes(FAILED) || names.includes(NEEDS_INPUT);
+  });
+  const finished = openNow.filter((i: any) => labelsOf(i).includes(DONE) && !parked.includes(i));
+  const working = openNow.filter((i: any) => !parked.includes(i) && !finished.includes(i));
+
+  const verdict = await mainVerdict();
+  const days = await loginDaysLeft();
+  const list = (xs: any[]) => (xs.length ? xs.map((i: any) => `#${i.number}`).join(", ") : "none");
+
+  const body = [
+    `🤖 **${today()}**`,
+    "",
+    `- **Landed:** ${list(closed)}`,
+    `- **Filed:** ${list(filed)}`,
+    `- **Being built:** ${list(working)}`,
+    `- **Finished, shipping when CI passes:** ${list(finished)}`,
+    `- **Stuck, waiting for you:** ${list(parked)}`,
+    `- **\`main\`:** ${
+      !verdict
+        ? "no completed CI run to read"
+        : verdict.failed.length
+          ? `red on \`${verdict.sha.slice(0, 8)}\` — ${verdict.failed.map(([st, n]) => `${n} (${st})`).join(", ")}`
+          : `green on \`${verdict.sha.slice(0, 8)}\``
+    }`,
+    `- **Login:** ${days === null ? "unknown" : days <= 7 ? `**${days} days left — sign in on the VPS or this all stops**` : `${days} days left`}`,
+    `- **Settings:** ${cfg.ticketsPerDay}/day, ${cfg.maxOpen} at once, shipping ${cfg.ship ? "on" : "off"}`,
+  ].join("\n");
+
+  const issue = await logIssue();
+  await comment(issue.number, body);
+  state.digestDay = today();
+  await saveState(state);
+  log(`posted the daily note on #${issue.number}`);
+}
+
 // --- label plumbing ----------------------------------------------------------
 
 let labelCache: Record<string, number> | null = null;
@@ -701,12 +809,15 @@ if (cmd !== "status" && !MERGE_TOKEN) throw new Error("FORGEJO_MERGE_TOKEN is no
 if (cmd === "status") {
   const state = await loadState();
   console.log(JSON.stringify({ config: cfg, configPath: CONFIG_PATH, state, repo: REPO }, null, 2));
+} else if (cmd === "digest") {
+  await digest(cfg);
 } else if (cmd === "ship") {
   await shipReady(cfg);
 } else if (cmd === "generate") {
   await rearmParkedTickets();
   await generate(cfg);
 } else if (cmd === "tick") {
+  await digest(cfg);
   await shipReady(cfg);
   await rearmParkedTickets();
   await generate(cfg);
