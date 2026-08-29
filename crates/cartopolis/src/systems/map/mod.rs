@@ -4,6 +4,7 @@ pub mod atmosphere_patch;
 pub mod building_facts;
 pub mod building_windows;
 pub mod coverage;
+pub mod dikes;
 pub mod globe;
 pub mod globe_ocean;
 pub mod globe_weather;

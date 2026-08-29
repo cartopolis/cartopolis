@@ -216,6 +216,14 @@ pub struct LayerPrefs {
     /// Street names over the map (`systems::street_labels`).
     #[serde(default = "detail_default")]
     pub street_labels: bool,
+    /// The flood defences, named where they stand (`systems::dikes`).
+    ///
+    /// On by default rather than on the detail tier: it is a handful of names
+    /// written by a layer that is already running, it costs one small file per
+    /// cell, and outside the country that publishes the register there is nothing
+    /// to draw and therefore nothing to pay for.
+    #[serde(default = "yes")]
+    pub flood_defences: bool,
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,
