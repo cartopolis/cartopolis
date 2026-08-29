@@ -31,9 +31,7 @@ use crate::platform::{http, storage};
 use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
-use crate::systems::osm_buildings::{
-    building_palette, lat_lng_to_local, lod22_covers, tdbag_url, MeshData,
-};
+use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, tdbag_url, MeshData};
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` (the cells
@@ -169,10 +167,29 @@ pub struct Lod22Mesh;
 
 /// One building's mesh data as received from the host.
 struct Bldg {
+    /// The BAG **identificatie** — the key `systems::building_facts` joins the
+    /// register's year, use and status on, and the key any other Dutch register or
+    /// BIM model of this building shares. Empty when the host predates the id
+    /// being carried, which every consumer reads as "no facts".
+    id: String,
     /// Vertices as (lat, lng, height-above-own-base).
     p: Vec<(f64, f64, f32)>,
     /// Triangles: indices into `p` plus a roof flag (1 = roof, 0 = wall).
     t: Vec<(usize, usize, usize, u8)>,
+    /// The IFC class this element came from (`IfcWall`, `IfcSlab`, …), for an
+    /// imported model. **Empty for a shell**, which is what tells the two apart
+    /// everywhere below: a shell is one solid per building and collides as a
+    /// footprint, a model is many elements and collides only on its walls.
+    class: String,
+}
+
+/// One parsed cell file: its elements, and — for an imported-model cell — the
+/// buildings it stands in for.
+struct CellFile {
+    elements: Vec<Bldg>,
+    /// BAG ids whose shell this cell replaces (`tools/ifc_lod3.py`). Always empty
+    /// for a LoD2.2 cell.
+    pands: Vec<String>,
 }
 
 /// A built cell: its BigSpace grid cell, the merged mesh **in byte-bounded
@@ -184,10 +201,30 @@ struct Bldg {
 /// nothing downstream — not the one-cell-per-frame cap here, not bevy's upload
 /// budget, which always writes at least one whole asset — can spread an upload
 /// that arrives as a single asset.
+/// A mesh piece and whether it must be drawn double-sided.
+///
+/// True only for an imported model's surfaces. Culling back faces is right for a
+/// shell — half its triangles face away and nothing can ever be behind them — and
+/// wrong for a building you can be inside, where the wall in front of you is
+/// showing you its back.
+type Piece = (Mesh, bool);
+
+/// How many of a cell's buildings the BAG join reached, out of how many were
+/// drawn.
+///
+/// The join's failure mode is that it silently does not happen: the client keeps
+/// drawing every building in the generated palette, which is what it looked like
+/// before the registers existed. That is not hypothetical — the deployed LoD2.2
+/// tree carried the *old* mangled ids for a day after the client learned to read
+/// real ones, and every fact matched nothing at all while the map looked
+/// completely normal. This is the number that says so.
+type DatedCount = (usize, usize);
+
 type Lod22Build = (
     GridCell,
-    Vec<Mesh>,
+    Vec<Piece>,
     Vec<crate::systems::collision::Footprint>,
+    DatedCount,
 );
 
 /// A cell taken off the stream but not fully spawned: the remaining pieces land
@@ -196,7 +233,7 @@ type Lod22Build = (
 struct PartialCell {
     cell: (i64, i64),
     grid_cell: GridCell,
-    pieces: Vec<Mesh>,
+    pieces: Vec<Piece>,
 }
 
 /// Camera-following LoD2.2 mesh streamer. Same shape as the building far-cell
@@ -222,9 +259,22 @@ pub struct Lod22Buildings {
     /// `building_windows::update_building_windows` light every window in the city
     /// by writing a single uniform.
     material: Option<Handle<BuildingMaterial>>,
+    /// The same material with culling off, for imported models. A second handle
+    /// rather than a second lane: they share the window shader, the palette and
+    /// the merging, and differ only in which faces survive.
+    interior_material: Option<Handle<BuildingMaterial>>,
     /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
     /// teardown in [`update_lod22`] runs exactly once per uncheck.
     enabled_was: bool,
+    /// BAG coverage revision these cells were built against
+    /// (`building_facts::coverage_revision`) — 0 while the manifest is still in
+    /// flight, 1 once it has answered. The era palette and the window occupancy
+    /// are baked into vertex colours, so cells built during that gap carry the
+    /// generated look and have to be rebuilt once the answer arrives. It changes
+    /// at most once per process.
+    bag_revision: u32,
+    /// Per-cell BAG join tally ([`DatedCount`]), summed for `--dump-state`.
+    dated: HashMap<(i64, i64), DatedCount>,
     /// Terrain-field revision these cells were built against. The field arrives a
     /// second or two after the anchor, so the first cells are always built on flat
     /// ground and have to be rebuilt onto the measured one.
@@ -247,6 +297,17 @@ impl Lod22Buildings {
     }
 }
 
+impl Lod22Buildings {
+    /// Buildings whose BAG facts were found, and buildings drawn, over the loaded
+    /// cells. See [`DatedCount`] — this is the reading that says whether the
+    /// register join is live at all.
+    pub fn dated(&self) -> (usize, usize) {
+        self.dated
+            .values()
+            .fold((0, 0), |(m, t), (cm, ct)| (m + cm, t + ct))
+    }
+}
+
 impl Default for Lod22Buildings {
     fn default() -> Self {
         Self {
@@ -261,10 +322,13 @@ impl Default for Lod22Buildings {
                 despawns_per_frame: MAX_DESPAWNS_PER_FRAME,
             }),
             cells: HashMap::new(),
+            dated: HashMap::new(),
             no_shadow: HashSet::new(),
             material: None,
+            interior_material: None,
             enabled_was: true,
             terrain_revision: 0,
+            bag_revision: 0,
             partial: None,
         }
     }
@@ -302,10 +366,24 @@ pub fn update_lod22(
     // exactly as a re-anchor does — every base was computed against the field as it
     // stood — so it takes the same path. `sync` runs unconditionally so it adopts
     // the new generation either way.
+    //
+    // The BAG coverage answer lands the same way and is folded into the same
+    // condition: it decides the facade palette and the window occupancy, both of
+    // which are vertex colours, so a cell built before it arrived is as stale as
+    // one built on flat ground. Unlike the terrain it can only change once.
+    crate::systems::building_facts::prefetch_coverage(now);
+    crate::systems::lod3::prefetch_coverage(now);
+    // Both additive manifests are folded in the same way and for the same reason:
+    // one decides a building's colours, the other decides whether it is drawn from
+    // a shell or from a model, and a cell built before either landed has neither.
+    let bag_revision = crate::systems::building_facts::coverage_revision()
+        | (crate::systems::lod3::coverage_revision() << 1);
     let reanchored = lod.stream.sync(stream.anchor_generation);
-    if reanchored || lod.terrain_revision != terrain.revision {
+    if reanchored || lod.terrain_revision != terrain.revision || lod.bag_revision != bag_revision {
         lod.terrain_revision = terrain.revision;
+        lod.bag_revision = bag_revision;
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
+        lod.dated.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -327,6 +405,7 @@ pub fn update_lod22(
         && crate::systems::osm_buildings::tdbag_user_enabled();
     if lod.enabled_was && !enabled {
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
+        lod.dated.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -417,10 +496,32 @@ pub fn update_lod22(
                         return;
                     }
                 };
+                // The cell's BAG facts travel with the mesh job rather than
+                // arriving through the `BuildingFacts` resource on their own
+                // schedule: a year and a use are baked into vertex colours, so
+                // they have to be known on the worker that writes them. It is a
+                // second request that hits the same storage cache as the facts
+                // streamer's, so at worst it is a cache read; at best it is the
+                // fetch the streamer then reads. Uncovered cells return an empty
+                // set without asking anything.
+                let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
+                // …and the imported models for the same cell, on the same terms.
+                let lod3 = crate::systems::lod3::load_lod3_text(cx, cy).await;
                 crate::platform::workers::submit(
                     "lod22",
                     Box::new(move || {
-                        let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
+                        let built = build_lod22_from_text(
+                            &text,
+                            cx,
+                            cy,
+                            ax,
+                            ay,
+                            z,
+                            lat,
+                            &ground,
+                            &facts,
+                            lod3.as_deref(),
+                        );
                         if let Ok(mut g) = results.lock() {
                             g.push(((cx, cy), built));
                         }
@@ -452,7 +553,7 @@ pub fn update_lod22(
         lod.stream.defer(deferred);
         for (c, built) in done {
             match built {
-                Ok(Some((grid_cell, pieces, footprints))) => {
+                Ok(Some((grid_cell, pieces, footprints, dated))) => {
                     // The whole cell's bookkeeping lands with its first frame:
                     // colliders are cheap CPU state (an avatar can bump into a
                     // building a frame before it is drawn, which beats walking
@@ -462,6 +563,7 @@ pub fn update_lod22(
                     colliders.set_cell(c, footprints);
                     lod.stream.succeeded(&c);
                     lod.cells.insert(c, Vec::new());
+                    lod.dated.insert(c, dated);
                     lod.partial = Some(PartialCell {
                         cell: c,
                         grid_cell,
@@ -512,12 +614,30 @@ pub fn update_lod22(
                 })
             })
             .clone();
-        while let Some(mesh) = partial.pieces.first() {
+        let interior_material = lod
+            .interior_material
+            .get_or_insert_with(|| {
+                materials.add(BuildingMaterial {
+                    base: StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 0.95,
+                        // The one difference from the shells' material, and the
+                        // whole reason there are two: you can be inside one of
+                        // these, where the wall in front of you shows its back.
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    },
+                    extension: BuildingWindows::default(),
+                })
+            })
+            .clone();
+        while let Some((mesh, _)) = partial.pieces.first() {
             if !crate::systems::stream_ledger::admit(crate::systems::stream_ledger::mesh_cost(mesh))
             {
                 break;
             }
-            let mesh = partial.pieces.remove(0);
+            let (mesh, inside) = partial.pieces.remove(0);
             // One entity per piece, flat under the same root rather than a parent
             // with children: every consumer — the shadow-LOD toggle,
             // `HideInSpace`, the despawn queue — acts per mesh entity, and a
@@ -525,7 +645,11 @@ pub fn update_lod22(
             // hierarchy with nothing else to do.
             let mut entity = commands.spawn((
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material.clone()),
+                MeshMaterial3d(if inside {
+                    interior_material.clone()
+                } else {
+                    material.clone()
+                }),
                 Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
                 partial.grid_cell,
                 ChildOf(root),
@@ -567,6 +691,7 @@ pub fn update_lod22(
         .copied()
         .collect();
     for c in stale {
+        lod.dated.remove(&c);
         if let Some(entities) = lod.cells.remove(&c) {
             for e in entities {
                 lod.stream.retire(e);
@@ -632,8 +757,26 @@ fn build_lod22_from_text(
     z: u32,
     lat: f64,
     ground: &crate::systems::terrain::TerrainSnapshot,
+    facts: &crate::systems::building_facts::BagCell,
+    lod3_text: Option<&str>,
 ) -> Result<Option<Lod22Build>, String> {
-    let elements = parse_lod22(text)?;
+    let shell = parse_lod22(text)?;
+    // An imported-model cell, when the host serves one. A failure to parse it is
+    // not a failure of the cell: the shells are what this lane exists to draw, and
+    // losing them because somebody's model file is malformed would be the wrong
+    // trade entirely.
+    let models = lod3_text.and_then(|t| match parse_lod22(t) {
+        Ok(cell) => Some(cell),
+        Err(e) => {
+            tracing::warn!(cx, cy, error = %e, "lod3 cell unreadable; drawing the shells");
+            None
+        }
+    });
+    let replaced: HashSet<&str> = models
+        .as_ref()
+        .map(|m| crate::systems::lod3::replaced_pands(&m.pands))
+        .unwrap_or_default();
+    let elements = shell.elements;
     let (north, west) = tile_to_lat_lng(cx, cy, LOD22_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LOD22_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -657,8 +800,16 @@ fn build_lod22_from_text(
     // a dense cell ballooned to three unshared vertices per triangle (~720k for a
     // ~240k-triangle cell) behind a useless identity index buffer.
     let mut buf = MeshData::with_dedup();
+    // Imported models mesh into their own buffer: they are drawn with culling off
+    // (see [`Piece`]) and so cannot share a mesh with the shells.
+    let mut interior = MeshData::with_dedup();
     // One footprint polygon per building, in world XZ (for avatar collision).
     let mut footprints: Vec<crate::systems::collision::Footprint> = Vec::new();
+    // Buildings the register has struck off, for the log line below — a silent
+    // subtraction from the city is exactly the kind of thing to be able to check.
+    let mut struck = 0usize;
+    // How many drawn buildings the BAG join reached, and how many were drawn.
+    let mut dated = (0usize, 0usize);
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -666,13 +817,53 @@ fn build_lod22_from_text(
         if blat < south || blat >= north || blng < west || blng >= east {
             continue;
         }
-        let (wall, roof_tile) = building_palette(blat, blng);
-        let wall = [wall[0], wall[1], wall[2], 1.0];
-        let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], 1.0];
+        // A building somebody has modelled is drawn from the model instead, at
+        // the bottom of this function.
+        if !b.id.is_empty() && replaced.contains(b.id.as_str()) {
+            continue;
+        }
+        // What the register says about this building, when the host serves the
+        // BAG tree and this element carries an id. `None` everywhere else, and
+        // every read below has the old behaviour as its `None` arm.
+        let fact = (!b.id.is_empty()).then(|| facts.building(&b.id)).flatten();
+        dated.1 += 1;
+        if fact.is_some() {
+            dated.0 += 1;
+        }
+        // A pand the register has struck off is not drawn. 3DBAG's solids are a
+        // dated snapshot and the BAG is refreshed far more often, so "demolished"
+        // here means the building came down after the mesh was cut — the one case
+        // where the two sources disagree and the register is certainly right.
+        // Nothing weaker qualifies: a permit is not a demolition and an empty
+        // building is still a building.
+        if matches!(
+            fact.map(|f| f.status),
+            Some(crate::systems::building_facts::BuildingStatus::Demolished)
+                | Some(crate::systems::building_facts::BuildingStatus::NotRealised)
+        ) {
+            struck += 1;
+            continue;
+        }
+        let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_dated(
+            blat,
+            blng,
+            fact.and_then(|f| f.year),
+        );
+        // Alpha is not opacity here — the material is opaque and `alpha_discard`
+        // flattens it — it is the per-building night-occupancy scale the window
+        // shader reads out of `base_color.a`, the same free channel
+        // `globe_ocean` puts its sea mask in. 1.0 for a building we know nothing
+        // about, which is exactly the look this lane had before.
+        let lit = crate::systems::osm_buildings::night_lit_scale(
+            fact.map_or(0, |f| f.uses),
+            fact.map_or(0, |f| f.units),
+        );
+        let wall = [wall[0], wall[1], wall[2], lit];
+        let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
         // `FLAT_ROOF_COLOR` is authored in sRGB; vertex colours multiply in
         // linear space (same exit rule as `building_palette`).
         let flat_lin = crate::systems::scatter::srgb_to_linear_f32(FLAT_ROOF_COLOR);
-        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], 1.0];
+        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], lit];
 
         // World-XZ position of each vertex (before the cell offset); the hull of
         // these is the building's footprint no-go polygon.
@@ -712,13 +903,90 @@ fn build_lod22_from_text(
             buf.tri(a, bb, c, color);
         }
     }
-    let pieces = buf.into_meshes(max_cell_mesh_bytes());
-    Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints)))
+    if struck > 0 {
+        tracing::debug!(
+            cx,
+            cy,
+            struck,
+            "BAG: skipped buildings the register has struck off"
+        );
+    }
+    // …and now the models, element by element. They share the palette and the
+    // ground datum with the shells and differ in three ways: the whole model is
+    // one building rather than one element being one, only its wall-like elements
+    // collide, and its surfaces are drawn from both sides.
+    if let Some(models) = &models {
+        for b in &models.elements {
+            let (blat, blng, _) = b.p[0];
+            let fact = (!b.id.is_empty()).then(|| facts.building(&b.id)).flatten();
+            let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_dated(
+                blat,
+                blng,
+                fact.and_then(|f| f.year),
+            );
+            let lit = crate::systems::osm_buildings::night_lit_scale(
+                fact.map_or(0, |f| f.uses),
+                fact.map_or(0, |f| f.units),
+            );
+            let wall = [wall[0], wall[1], wall[2], lit];
+            let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
+
+            let world_xz: Vec<Vec2> =
+                b.p.iter()
+                    .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+                    .collect();
+            // Only the walls. A slab's footprint is the whole storey, so hulling
+            // one would fill the building with an invisible block — which is
+            // exactly the collider a shell has and a model exists to lose.
+            if crate::systems::lod3::is_solid_class(&b.class) {
+                if let Some(fp) = crate::systems::collision::Footprint::new(
+                    crate::systems::collision::convex_hull_xz(world_xz.clone()),
+                ) {
+                    footprints.push(fp);
+                }
+            }
+            let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
+            let local: Vec<Vec3> =
+                b.p.iter()
+                    .zip(&world_xz)
+                    .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h + base, w.y - oz))
+                    .collect();
+            for &(i, j, k, is_roof) in &b.t {
+                let (a, bb, c) = (local[i], local[j], local[k]);
+                let color = if is_roof == 1 { roof_tile } else { wall };
+                interior.tri(a, bb, c, color);
+            }
+        }
+    }
+
+    let max_bytes = max_cell_mesh_bytes();
+    let mut pieces: Vec<Piece> = buf
+        .into_meshes(max_bytes)
+        .into_iter()
+        .map(|m| (m, false))
+        .collect();
+    pieces.extend(
+        interior
+            .into_meshes(max_bytes)
+            .into_iter()
+            .map(|m| (m, true)),
+    );
+    Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints, dated)))
 }
 
 /// Cache key for a LoD2.2 cell (its own namespace under the cache root).
+///
+/// **The `v2` is a format revision and it is load-bearing.** These cells used to
+/// carry a mangled integer where the BAG identificatie should be, and a client
+/// that already ran holds those in its cache. Nothing about them fails to parse —
+/// the id visitor reads a legacy number and reports "no id" — so a cached cell
+/// keeps a building out of every register join for as long as the entry survives,
+/// while the map looks entirely normal. Measured on 2026-08-28 with the host
+/// serving correct ids: `lod22_dated` was 0 of 75,109 buildings, purely from the
+/// cache. Bump this whenever the element format changes in a way an old entry
+/// cannot express.
 fn cell_cache_key(cx: i64, cy: i64) -> String {
-    format!("buildings/lod22/{}/{}/{}.json", LOD22_ZOOM, cx, cy)
+    format!("buildings/lod22/v2/{}/{}/{}.json", LOD22_ZOOM, cx, cy)
 }
 
 /// Fetch one LoD2.2 cell from the host, cached through the storage seam. Runs on
@@ -751,17 +1019,59 @@ async fn fetch_lod22_text(cx: i64, cy: i64) -> Result<String, String> {
 /// a hand-written seq visitor (an `untagged` enum would buffer each row and
 /// give the win back); the missing-roof-flag row still reads as wall, matching
 /// the old lenient parser.
-fn parse_lod22(text: &str) -> Result<Vec<Bldg>, String> {
+fn parse_lod22(text: &str) -> Result<CellFile, String> {
     #[derive(serde::Deserialize)]
     struct File {
         elements: Vec<El>,
+        /// Only an imported-model cell carries this; a shell cell has no such key
+        /// and `serde` fills the default.
+        #[serde(default)]
+        pands: Vec<String>,
     }
     #[derive(serde::Deserialize)]
     struct El {
         #[serde(default)]
+        id: WireId,
+        #[serde(default)]
         p: Vec<(f64, f64, f32)>,
         #[serde(default)]
         t: Vec<Tri>,
+        /// The IFC class, on an imported model only. Absent on every shell, which
+        /// is what the default is for.
+        #[serde(default)]
+        class: String,
+    }
+    /// The element's BAG id, which is a **string** since the extractor stopped
+    /// mangling it into an integer — and a number in every cell file written
+    /// before that, including the ones already sitting in users' caches (a cache
+    /// entry is evicted when it fails to parse, so a strict `String` here would
+    /// silently re-fetch every cell on the first run after an upgrade). Absent
+    /// entirely in the oldest files, which `Default` reads as "no id".
+    #[derive(Default)]
+    struct WireId(String);
+    impl<'de> serde::Deserialize<'de> for WireId {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl serde::de::Visitor<'_> for V {
+                type Value = WireId;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a BAG identificatie as a string, or a legacy number")
+                }
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<WireId, E> {
+                    Ok(WireId(v.to_string()))
+                }
+                fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<WireId, E> {
+                    // A legacy id joins with nothing — it was the digits of the
+                    // identificatie shifted by the part suffix — so it is dropped
+                    // rather than carried as a key that would never match.
+                    Ok(WireId(String::new()))
+                }
+                fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<WireId, E> {
+                    Ok(WireId(String::new()))
+                }
+            }
+            d.deserialize_any(V)
+        }
     }
     struct Tri(u32, u32, u32, u8);
     impl<'de> serde::Deserialize<'de> for Tri {
@@ -800,8 +1110,16 @@ fn parse_lod22(text: &str) -> Result<Vec<Bldg>, String> {
             }
         }
         if p.len() >= 3 && !t.is_empty() {
-            out.push(Bldg { p, t });
+            out.push(Bldg {
+                id: el.id.0,
+                p,
+                t,
+                class: el.class,
+            });
         }
     }
-    Ok(out)
+    Ok(CellFile {
+        elements: out,
+        pands: file.pands,
+    })
 }

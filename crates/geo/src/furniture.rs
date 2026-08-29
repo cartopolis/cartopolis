@@ -127,6 +127,16 @@ pub enum FurnitureKind {
     /// A swing frame. The token for `leisure=playground`, whose node is the
     /// *centroid* of a play area we have no geometry for; see [`FURNITURE_TABLE`].
     Swing,
+    /// A street light: a column with a head on a short bracket.
+    ///
+    /// **Not** in [`FURNITURE_TABLE`] either, and for the opposite reason to the
+    /// vehicles below — a lamppost is not inferred, it is surveyed, just not by
+    /// the source this module reads. Shortbread's `pois` layer does not carry
+    /// street lighting at all; the BGT surveys every column in the country, and
+    /// `systems::surveyed` lays these from it. It is by a wide margin the most
+    /// numerous object on a street: 651 columns against 54 of everything else in
+    /// one Groningen page.
+    Lamp,
     /// A parked car. **Not** in [`FURNITURE_TABLE`]: no `pois` feature is a car,
     /// and OSM does not survey individual vehicles. It is laid into the `sites`
     /// layer's car parks by [`crate::parking`], which is a different kind of
@@ -517,6 +527,10 @@ pub enum Tone {
     Glass,
     /// Rubber — a tyre.
     Tyre,
+    /// Foliage — a hedge. [`palette::CANOPY`], so a clipped hedge is recognisably
+    /// the same substance as the tree crowns above it rather than a second, near
+    /// green nobody chose.
+    Foliage,
     /// **The instance's own** [`FurnitureInstance::paint`] rather than a tone of
     /// this table's. The one part of the scheme that varies within a form, and the
     /// reason is in that field's docs.
@@ -533,6 +547,7 @@ impl Tone {
             Self::Water => palette::WATER,
             Self::Glass => palette::VEHICLE_GLASS,
             Self::Tyre => palette::VEHICLE_TYRE,
+            Self::Foliage => palette::CANOPY,
             // Answered per instance by [`paint_multiplier`]; this is the no-tint
             // value, so a form using `Paint` without one still draws.
             Self::Paint => palette::FURNITURE,
@@ -634,6 +649,14 @@ mod form {
         part([0.0, 0.26, 0.0], [1.40, 0.02, 1.40], Water),
         part([0.0, 0.55, 0.0], [0.15, 0.55, 0.15], Stone),
     ];
+    /// A 4 m column with the head on a short bracket over the carriageway. The
+    /// bracket is what makes it read as a street light rather than as a post from
+    /// any distance, and it is why the form takes its angle from the path.
+    pub const LAMP: [Part; 3] = [
+        part([0.0, 2.00, 0.0], [0.06, 2.00, 0.06], Metal),
+        part([0.0, 3.98, 0.28], [0.05, 0.04, 0.28], Metal),
+        part([0.0, 3.90, 0.52], [0.14, 0.06, 0.22], Roof),
+    ];
     pub const ARTWORK: [Part; 2] = [
         part([0.0, 0.35, 0.0], [0.45, 0.35, 0.45], Stone),
         part([0.0, 1.10, 0.0], [0.25, 0.40, 0.25], Metal),
@@ -724,11 +747,56 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Fountain => &form::FOUNTAIN,
         FurnitureKind::Artwork => &form::ARTWORK,
         FurnitureKind::Swing => &form::SWING,
+        FurnitureKind::Lamp => &form::LAMP,
         FurnitureKind::Car => &form::CAR,
         FurnitureKind::Bicycle => &form::BICYCLE,
         FurnitureKind::Person => &form::PERSON,
         FurnitureKind::Boat => &form::BOAT,
     }
+}
+
+/// Turn **surveyed** points into oriented furniture instances.
+///
+/// The companion to [`extract_furniture`], for objects that come from a source
+/// this module does not read. The caller supplies tile-local metres and a form —
+/// `systems::surveyed` gets both from the BGT — and everything after that is the
+/// same: the same hashed luma so a street is not one flat grey, and the same
+/// [`WayField`] so a lamp's bracket reaches over the carriageway instead of
+/// pointing at a hashed angle.
+///
+/// It takes the tile for the way field alone. That is the whole reason this lives
+/// here rather than in the client: the field is built from the *`streets`* layer
+/// of the very tile the cell is being meshed from, and exposing it would mean
+/// exporting the field, its scale rule and the trap in its doc comment.
+#[must_use]
+pub fn place_surveyed(
+    tile: &TileData,
+    tile_m: f32,
+    seed: u64,
+    points: &[(f32, f32, FurnitureKind)],
+) -> Vec<FurnitureInstance> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let ways = WayField::build(tile, tile_m);
+    let mut out = Vec::with_capacity(points.len());
+    for (i, &(x, z, kind)) in points.iter().enumerate() {
+        let h = hash3(seed, i as i32, kind as i32);
+        let yaw = kind
+            .takes_angle_from_path()
+            .then(|| ways.facing(x, z, ORIENT_RADIUS_M))
+            .flatten()
+            .unwrap_or_else(|| rand01(h, 0) * std::f32::consts::TAU);
+        out.push(FurnitureInstance {
+            x,
+            z,
+            yaw,
+            kind,
+            luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
+            paint: palette::FURNITURE,
+        });
+    }
+    out
 }
 
 /// Merge a cell's furniture into one group's meshes, each no larger than
@@ -775,6 +843,115 @@ pub fn build_furniture_meshes(
             };
             let tint = [m[0] * item.luma, m[1] * item.luma, m[2] * item.luma, 1.0];
             push_box(&mut buf, item.x, item.z, (sn, cs), p, tint);
+        }
+    }
+    if !buf.positions.is_empty() {
+        out.push(buf.finish(SurfaceGroup::Furniture));
+    }
+    out
+}
+
+/// A surveyed boundary: a fence, a wall or a hedge, as the line it was surveyed
+/// as.
+///
+/// Points are tile-local metres, the frame everything else here works in.
+#[derive(Debug, Clone)]
+pub struct SurveyedLine {
+    pub points: Vec<[f32; 2]>,
+    pub kind: LineKind,
+}
+
+/// The three linear forms. Mirrors `LINE_KINDS` in `tools/bgt_objects.py`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    /// Garden fencing and wire mesh.
+    Fence,
+    /// Masonry, and the noise barriers along a ring road — both a solid slab
+    /// standing on the ground, and telling them apart at this scale would be a
+    /// distinction nobody can see.
+    Wall,
+    /// A clipped hedge.
+    Hedge,
+}
+
+impl LineKind {
+    /// Height, half-thickness and tone, metres.
+    ///
+    /// Measured against the real things rather than stylised: a garden fence is
+    /// waist-to-shoulder, a hedge is trimmed at about the same height and is far
+    /// thicker, a noise barrier is well over head height. Getting these wrong is
+    /// what makes a street read as a model railway.
+    const fn spec(self) -> (f32, f32, Tone) {
+        match self {
+            Self::Fence => (1.2, 0.03, Tone::Wood),
+            Self::Wall => (2.0, 0.09, Tone::Stone),
+            Self::Hedge => (1.1, 0.35, Tone::Foliage),
+        }
+    }
+}
+
+/// Shortest segment worth a box, metres. The survey emits vertices wherever it
+/// found a change of direction, and a few of those are centimetres apart.
+const MIN_SEGMENT_M: f32 = 0.15;
+
+/// Mesh a cell's surveyed boundaries — **one box per surveyed segment**, at that
+/// segment's own length.
+///
+/// Not a resampling. The obvious approach is to walk each line in fixed steps and
+/// stand a panel at each, which is what the point forms above would have made
+/// easy; it is both dearer and worse. Dearer because the survey's own segments
+/// average 6.4 m over Groningen and a 2 m step would triple the box count for the
+/// same fence. Worse because a fixed step cannot land on a corner, so every bend
+/// in a wall gains a gap on the outside and an overlap on the inside.
+///
+/// So each segment becomes one box, turned to run along itself. A corner is then
+/// two boxes meeting at their ends, which reads correctly from any distance this
+/// layer is visible at.
+#[must_use]
+pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Vec<SurfaceMesh> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut buf = MeshBuf::default();
+    for line in lines {
+        let (height, half_thick, tone) = line.kind.spec();
+        let tint = {
+            let m = tone.multiplier();
+            [m[0], m[1], m[2], 1.0]
+        };
+        for pair in line.points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < MIN_SEGMENT_M {
+                continue;
+            }
+            if let Some(max) = max_bytes {
+                if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
+                    out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
+                }
+            }
+            // `push_box` maps the box's local +x onto world `(cos, -sin)`, so the
+            // rotation that lays a box along `(dx, dz)` is this one. Same
+            // convention as [`WayField::facing`], which maps local +z instead —
+            // the two are a quarter turn apart and both are stated where they are
+            // used, because guessing wrong lays every fence across its own line.
+            let (ux, uz) = (dx / len, dz / len);
+            let (sn, cs) = (-uz, ux);
+            let part = Part {
+                at: [0.0, height * 0.5, 0.0],
+                half: [len * 0.5, height * 0.5, half_thick],
+                tone,
+            };
+            push_box(
+                &mut buf,
+                (a[0] + b[0]) * 0.5,
+                (a[1] + b[1]) * 0.5,
+                (sn, cs),
+                &part,
+                tint,
+            );
         }
     }
     if !buf.positions.is_empty() {

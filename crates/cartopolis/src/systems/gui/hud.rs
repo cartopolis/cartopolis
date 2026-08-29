@@ -61,6 +61,15 @@ pub struct HudData {
     /// when Auto weather has a sample to show.
     pub weather_info: Option<(String, String)>,
     pub geo: Option<(f64, f64)>,
+    /// Where the avatar is standing, in words — the BAG's address for the nearest
+    /// unit plus what the register says the building is
+    /// (`systems::interact::InteractState::address`).
+    ///
+    /// That field has said this since the interact layer was written and nothing
+    /// has ever drawn it; the readout it was made for is this one. `None` off the
+    /// Netherlands, away from an address, and in every camera mode but Follow —
+    /// the coordinates below are what the HUD falls back to, as before.
+    pub place: Option<String>,
     pub altitude: Option<f64>,
     /// Authenticated username, if online (ADR-016). Drives the profile chip;
     /// grows into a chat/presence affordance later.
@@ -858,6 +867,25 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         )
                         .on_hover_text(full);
                     }
+                    // Above the coordinates on purpose: a street name is what a
+                    // person reads first, and the decimals are the fallback for
+                    // where there is no name to give.
+                    if let Some(place) = &data.place {
+                        // Truncated, not wrapped. The line is a street, a
+                        // postcode, a use, an area and a year, and a wrapping
+                        // label turns a long one into three rows — which grows
+                        // the anchored box, which is the failure `hud_box_does_not_grow`
+                        // exists to catch. The full text is on hover.
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(place)
+                                    .size(theme::SIZE_CHIP)
+                                    .color(theme::TEXT_DIM),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(place);
+                    }
                     if let Some((lat, lng)) = data.geo {
                         let ns = if lat >= 0.0 { 'N' } else { 'S' };
                         let ew = if lng >= 0.0 { 'E' } else { 'W' };
@@ -943,6 +971,7 @@ pub fn render_hud(
     right_panel: Res<crate::resources::RightPanel>,
     status: Res<StatusHud>,
     map_anchor: Res<MapAnchor>,
+    interact: Res<crate::systems::interact::InteractState>,
 ) {
     // Off unless the ⓘ disc has been pressed (see the module note). Before the
     // panel gate and the data below, both of which cost work every frame.
@@ -997,6 +1026,7 @@ pub fn render_hud(
         geo: cam
             .zip(map_anchor.geo)
             .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf)),
+        place: interact.address.clone(),
         altitude,
         // The heading is not here: it is the compass's, and the compass is
         // `render_map_controls`, which reads the camera itself.
@@ -1196,6 +1226,7 @@ mod tests {
                 "60% cloud · 16°C".to_string(),
             )),
             geo: Some((53.21952, 6.58220)),
+            place: Some("Paterswoldseweg 62 · 9726BG · home · 1915".to_string()),
             altitude: Some(17.0),
             user: Some("dev".to_string()),
         };
@@ -1247,10 +1278,12 @@ mod tests {
         assert!(last.width() < 220.0, "HUD too wide: {}", last.width());
         // 194 pt under the brand theme (was ~173 on egui's stock spacing — the
         // roomier rhythm is the point, and `hud_area` already tightens the box's
-        // own padding back down). The bound is a compactness sanity check, not a
-        // pixel pin: it is the runaway, caught by the stability assert below,
-        // that this test exists for.
-        assert!(last.height() < 200.0, "HUD too tall: {}", last.height());
+        // own padding back down), plus one row since the "where am I" line was
+        // added. The bound is a compactness sanity check, not a pixel pin: it is
+        // the runaway, caught by the stability assert below, that this test exists
+        // for. Note the place line is `truncate()`d for exactly that reason — a
+        // wrapping address would add rows with the text rather than one row.
+        assert!(last.height() < 220.0, "HUD too tall: {}", last.height());
         assert!(last.min.y >= 0.0, "HUD grew off the top: {}", last.min.y);
         assert!(
             screen.contains_rect(last),

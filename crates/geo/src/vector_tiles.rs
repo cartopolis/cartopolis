@@ -314,7 +314,7 @@ pub const DEPTH_BIAS_STEP: f32 = 64.0;
 /// Roads do not get a rung *each* any more — `road_rung` orders them, per vertex,
 /// in the same depth-buffer units this ladder is denominated in. See
 /// [`SurfaceGroup::depth_rung`].
-const ROAD_BAND_FOOT: f32 = 5.0;
+const ROAD_BAND_FOOT: f32 = 6.0;
 
 /// The first group rung above every road rung, in [`DEPTH_BIAS_STEP`] units.
 ///
@@ -1202,6 +1202,10 @@ pub enum SurfaceGroup {
     /// shelters. Same contract as [`Self::Canopy`]: one group, one material, one
     /// mesh per cell, with the per-object variety carried in vertex colours.
     Furniture,
+    /// Surveyed paving beside the carriageway (`crate::paving`) — pavements,
+    /// cycle paths, parking bays, verges. Same one-group contract again: the
+    /// form's tone rides in the vertex colours.
+    Paving,
 }
 
 impl SurfaceGroup {
@@ -1223,6 +1227,10 @@ impl SurfaceGroup {
             // Roads carry their surface in a texture; tinting it would only fight
             // the paint values chosen there, so the material multiplies by white.
             Self::Road(_) => 0xFF_FF_FF,
+            // White for the same reason `Canopy`, `Trunk` and `Furniture` are:
+            // one material for the whole layer, and the form's own tone carried
+            // in the vertex colours (`crate::paving::PavingKind::rgb`).
+            Self::Paving => 0xFF_FF_FF,
             // Same colours the raster path cases with, so the two pipelines'
             // streets keep matching at the ring edge.
             Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
@@ -1273,6 +1281,10 @@ impl SurfaceGroup {
             Self::Grass => -0.0085,
             Self::Forest | Self::Sand => -0.0075,
             Self::Water => -0.0035,
+            // Paving sits between the fills and the roads in height as it does in
+            // depth, and for the same reason: it is laid *on* the ground and
+            // driven *over* at the kerb.
+            Self::Paving => -0.0025,
             // Roads go on top of every natural surface — a street crosses a park,
             // never the other way round.
             Self::Road(_) => -0.0015,
@@ -1336,6 +1348,14 @@ impl SurfaceGroup {
             Self::Grass => 2.0,
             Self::Forest | Self::Sand => 3.0,
             Self::Water => 4.0,
+            // Above the ground fills, below the road band — and that ordering is
+            // what makes the two sources safe to mix. A surveyed pavement and a
+            // nominal-width OSM carriageway do not agree about where the kerb is,
+            // so they overlap by a few tens of centimetres here and there; with
+            // the road above, that overlap reads as tarmac meeting the kerb,
+            // which is what it looks like from the pavement. Level with the road
+            // it would be a z-fight running the length of every street.
+            Self::Paving => 5.0,
             // **Every road group shares one rung, and that is the point.** The
             // road hierarchy — class, then casing, then width, then the tie
             // colouring — used to be split across two ladders denominated
@@ -2294,6 +2314,7 @@ pub fn tessellate_roads(
     tile_m: f32,
     decks: &[BridgeDeck],
     max_bytes: Option<usize>,
+    surveyed_paths: bool,
 ) -> Result<Vec<SurfaceMesh>, String> {
     let Some(meta) = tile.layer("streets") else {
         return Ok(Vec::new());
@@ -2338,6 +2359,14 @@ pub fn tessellate_roads(
         let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
+        // Over a cell whose paving was surveyed, the footways and cycle paths are
+        // drawn from that survey as real shapes (`crate::paving`), so the
+        // constant-width ribbon for the same path must not also be drawn. This is
+        // the one class the two sources both describe; everything else on the
+        // vehicle network stays with OSM, marked and cased, everywhere.
+        if surveyed_paths && class == RoadClass::Path {
+            continue;
+        }
         let bridge = flag_of(feature, "bridge");
         // Kerbed classes get a casing ribbon under the fill; paths and rails
         // have no kerb to draw.
@@ -4102,7 +4131,7 @@ mod bytes {
         tile_m: f32,
         decks: &[BridgeDeck],
     ) -> Result<Vec<SurfaceMesh>, String> {
-        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks, None)
+        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks, None, false)
     }
 
     pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
@@ -4172,7 +4201,7 @@ mod tests {
             &tessellate_surfaces(GRONINGEN_Z14, tile_m).unwrap(),
         );
         same(
-            &super::tessellate_roads(&tile, tile_m, &[], None).unwrap(),
+            &super::tessellate_roads(&tile, tile_m, &[], None, false).unwrap(),
             &tessellate_roads(GRONINGEN_Z14, tile_m, &[]).unwrap(),
         );
         assert_eq!(
@@ -5291,6 +5320,46 @@ mod tests {
         assert_eq!(out.iter().filter(|p| p[0] == 0.0).count(), 2);
         // Entirely outside the tile: nothing survives.
         assert!(clip_ring(&[[-50.0, -50.0], [-10.0, -50.0], [-10.0, -10.0]], 100.0).is_empty());
+    }
+
+    /// Over a cell whose paving was surveyed, the footway and cycle ribbons must
+    /// not be drawn — those two are the only classes both sources describe, and
+    /// drawing them twice puts a constant-width line down the middle of a real
+    /// pavement. Every other class is OSM's and must survive the flag untouched.
+    #[test]
+    fn surveyed_paths_drop_the_path_ribbons_and_nothing_else() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("fixture");
+        let groups = |surveyed: bool| -> Vec<SurfaceGroup> {
+            let mut g: Vec<SurfaceGroup> =
+                super::tessellate_roads(&tile, 1472.0, &[], None, surveyed)
+                    .expect("roads")
+                    .into_iter()
+                    .map(|m| m.group)
+                    .collect();
+            g.sort_by_key(|x| format!("{x:?}"));
+            g.dedup();
+            g
+        };
+        let with_osm = groups(false);
+        let with_survey = groups(true);
+        assert!(
+            with_osm.contains(&SurfaceGroup::Road(RoadClass::Path)),
+            "the fixture must have paths to drop, else this proves nothing"
+        );
+        assert!(!with_survey.contains(&SurfaceGroup::Road(RoadClass::Path)));
+        assert!(!with_survey.contains(&SurfaceGroup::RoadCasing(RoadClass::Path)));
+        for group in &with_osm {
+            if matches!(
+                group,
+                SurfaceGroup::Road(RoadClass::Path) | SurfaceGroup::RoadCasing(RoadClass::Path)
+            ) {
+                continue;
+            }
+            assert!(
+                with_survey.contains(group),
+                "{group:?} is OSM's and must still be drawn"
+            );
+        }
     }
 
     #[test]

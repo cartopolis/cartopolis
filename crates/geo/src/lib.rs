@@ -20,6 +20,7 @@ pub mod mip;
 // boundary) and a different rule for deciding there is anything there at all.
 pub mod moorings;
 pub mod parking;
+pub mod paving;
 // Allocation budgets. `cfg(test)` on purpose: the counting allocator must not
 // exist in a shipped build, and nothing outside the suite reads it.
 #[cfg(test)]

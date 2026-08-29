@@ -1,13 +1,16 @@
 //! `systems::map` — one file per concern; see systems/mod.rs for the map.
 
 pub mod atmosphere_patch;
+pub mod building_facts;
 pub mod building_windows;
+pub mod coverage;
 pub mod globe;
 pub mod globe_ocean;
 pub mod globe_weather;
 pub mod grass;
 pub mod height;
 pub mod lod22;
+pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;
 pub mod osm_buildings;
@@ -20,6 +23,7 @@ pub mod stream_ledger;
 pub mod street_detail;
 pub mod street_furniture;
 pub mod street_labels;
+pub mod surveyed;
 pub mod tall_structures;
 pub mod terrain;
 pub mod tile_loader;

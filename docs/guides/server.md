@@ -552,6 +552,36 @@ Adding the bind mount needs a **recreate** (not reload):
 
 Smoke test: `curl --compressed https://3dbag.cartopolis.org/coverage.json`.
 
+**BAG attributes** (`tools/bag_attributes.py`) — what the buildings *are*, as
+opposed to what shape they are. It pages PDOK's open BAG WFS (no API key; the
+Kadaster's own `api.bag.kadaster.nl` needs one) for `pand` (year built, status,
+use, floor-area range, unit count), `verblijfsobject` (per-unit address and
+entrance point), and `ligplaats`/`standplaats` (houseboat berths and mobile-home
+plots), and writes two files per cell — `site/bag/{14}/{x}/{y}.json` (buildings)
+and `{y}.places.json` (addresses and berths) — plus `site/bag/coverage.json`,
+into the same served tree. Every record is keyed on the BAG identificatie, which
+is the `id` the LoD2.2 meshes now carry. Needs only `pyproj`:
+
+```bash
+cd /data/3dbag && ./venv/bin/python bin/bag_attributes.py --out site --name groningen
+# Groningen: 94,052 buildings, 129,270 addresses, 781 berths, 47 cells, ~20 MB,
+# about ten minutes. The densest cell is 0.53 MB of buildings + 2.0 MB of
+# addresses, which is why they are two files — see the note.
+```
+
+Add a cache header for it beside the others in the `Caddyfile`:
+
+```caddy
+	header /bag/* Cache-Control "public, max-age=86400"
+```
+
+The client streams these through `systems::building_facts` and joins them onto
+the drawn buildings by id — facade colour by era, night window lighting by use,
+and the address readout in the status HUD. Uncovered areas keep the generated
+palette exactly. `docs/notes/building-identity-and-bag.md` has the reasoning and
+the paging trap (this WFS truncates at 1000 features per request whatever you
+ask for, and does not always say so).
+
 **Client wiring:** the client fetches covered z14 cells from
 `CARTO_3DBAG_URL` (default `https://3dbag.cartopolis.org`) and falls back to Overpass
 (OSM) on a 404 — see `osm_buildings.rs`. Attribution

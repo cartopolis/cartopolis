@@ -2367,6 +2367,18 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
                     ui.small(credit);
                 }
+                if let Some(credit) = crate::systems::building_facts::bag_attribution() {
+                    ui.small(credit);
+                }
+                if let Some(credit) = crate::systems::surveyed::bgt_attribution() {
+                    ui.small(credit);
+                }
+                // Unlike the two above, this is not one national dataset with one
+                // licence: a building model belongs to whoever surveyed it, so the
+                // line is whatever the importer was told to record.
+                if let Some(credit) = crate::systems::lod3::lod3_attribution() {
+                    ui.small(credit);
+                }
                 ui.small(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );

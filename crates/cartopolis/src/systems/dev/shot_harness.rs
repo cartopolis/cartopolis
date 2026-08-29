@@ -538,6 +538,36 @@ pub struct ShotMetrics {
     /// below the frame and is frustum-culled — `45 / 0` is that, and it is not a
     /// bug. `n / n` with a bare lawn is the mask; `0 / 0` is the pool.
     pub grass_rendered: usize,
+    /// BAG records currently indexed (`systems::building_facts`): buildings,
+    /// addressed units, and houseboat/mobile-home berths.
+    ///
+    /// The layer's failure mode is silence — a host with no `bag/` tree, a
+    /// coverage manifest that never loaded, or a cell ring that never overlapped
+    /// the covered cells all produce a *correct-looking* city with the generated
+    /// palette and the hashed window lighting. `bag_buildings == 0` over
+    /// Groningen is the only thing that tells those apart from "the facts landed
+    /// and made no difference", and no capture can show it.
+    pub bag_buildings: usize,
+    pub bag_addresses: usize,
+    pub bag_berths: usize,
+    /// Surveyed BGT objects standing in the loaded cells: trees, then street
+    /// objects (`systems::surveyed`). Same reason as the BAG counts above — the
+    /// layer fails by being silently absent, and a street with scattered canopies
+    /// and no lighting is exactly what a working map looks like.
+    pub surveyed_trees: usize,
+    pub surveyed_props: usize,
+    /// Surveyed fences, walls and hedges in the loaded cells.
+    pub surveyed_lines: usize,
+    /// Surveyed paved surfaces — pavements, cycle paths, parking bays, verges.
+    /// Zero over a covered city means the paving never arrived, and the street
+    /// then looks exactly like the one this client always drew.
+    pub surveyed_paving: usize,
+    /// Drawn buildings whose BAG facts were found, and drawn buildings. See
+    /// `lod22::DatedCount`: a ratio near zero over the Netherlands means the join
+    /// is broken — most likely the served meshes and the client disagree about
+    /// what an id is — and the map looks entirely normal while it is.
+    pub lod22_dated: usize,
+    pub lod22_elements: usize,
     /// Mesh entities spawned by the Overpass street-detail layer
     /// (`systems::street_detail`) — surveyed trees, lamps, signals, barriers,
     /// piers, paint. `0` over a city with the layer on means the cells never
@@ -712,7 +742,9 @@ tiles_occluded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,prop_meshes,\
+route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,\
+lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
@@ -1947,6 +1979,14 @@ pub struct ShotReadouts<'w, 's> {
     /// metric.
     street_detail: Res<'w, crate::systems::street_detail::StreetDetail>,
     tall_structures: Res<'w, crate::systems::tall_structures::TallStructures>,
+    /// The BAG attribute index (`systems::building_facts`) — a metric only, never
+    /// a settle input. Nothing waits for it: a building whose facts have not
+    /// landed is drawn with the generated palette, which is a different picture
+    /// but not an unfinished one.
+    bag: Res<'w, crate::systems::building_facts::BuildingFacts>,
+    /// The per-cell places store, for the surveyed counts alone — see
+    /// `ShotMetrics::surveyed_trees`.
+    places: Res<'w, crate::systems::world_places::WorldPlaces>,
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -2306,6 +2346,15 @@ pub fn drive_capture(
             grass_patches: grass.0,
             grass_slots: grass.1,
             grass_rendered: grass.2,
+            bag_buildings: readouts.bag.len(),
+            bag_addresses: readouts.bag.addresses().len(),
+            bag_berths: readouts.bag.berths().len(),
+            surveyed_trees: readouts.places.surveyed().0,
+            surveyed_props: readouts.places.surveyed().1,
+            surveyed_lines: readouts.places.surveyed().2,
+            surveyed_paving: readouts.places.surveyed().3,
+            lod22_dated: readouts.lod22.dated().0,
+            lod22_elements: readouts.lod22.dated().1,
             prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
             traffic_cars: visuals
                 .agents
@@ -2686,6 +2735,15 @@ mod tests {
             globe_albedo: 1.0,
             veg_factor: 0.0,
             grass_patches: 0,
+            bag_buildings: 0,
+            bag_addresses: 0,
+            bag_berths: 0,
+            surveyed_trees: 0,
+            surveyed_props: 0,
+            surveyed_lines: 0,
+            surveyed_paving: 0,
+            lod22_dated: 0,
+            lod22_elements: 0,
             grass_slots: 0,
             grass_rendered: 0,
             prop_meshes: 0,

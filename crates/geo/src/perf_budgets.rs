@@ -447,7 +447,7 @@ fn print_tile_pipeline_time() {
 
     let decks = tessellate_bridges(&tile, NOMINAL_Z14_TILE_M).expect("decks");
     let t = stopwatch::time(|| {
-        tessellate_roads(&tile, NOMINAL_Z14_TILE_M, &decks, None).expect("roads")
+        tessellate_roads(&tile, NOMINAL_Z14_TILE_M, &decks, None, false).expect("roads")
     });
     println!("{}", line("tessellate_roads (groningen z14)", &t));
 

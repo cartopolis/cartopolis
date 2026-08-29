@@ -650,6 +650,48 @@ pub(crate) fn dominant_angle(rings: &[Vec<[f32; 2]>]) -> f32 {
     angle
 }
 
+// ─── Surveyed positions ──────────────────────────────────────────────────────
+/// Turn **surveyed** tree positions into instances, sized by hash.
+///
+/// The module note says the trees here are scattered rather than surveyed
+/// because Shortbread's `land` layer carries canopy *areas* and no individual
+/// trees. That is still true of the tile — but not of the country: the BGT
+/// registers street trees one by one, and `systems::surveyed` streams them.
+///
+/// These are **added to** the scatter rather than replacing it, and the two do
+/// not fight: the scatter plants inside park, wood and garden polygons, while a
+/// surveyed street tree stands on the pavement, which is not one of those. The
+/// registration is also optional content in the BGT and its coverage varies by
+/// municipality — over Groningen it is 2,340 trees, which is a street layer and
+/// not a forest — so a cell that has none must keep its scattered canopies.
+///
+/// Only the position is surveyed. Height, crown and tone are hashed off that
+/// position, in the street-tree range rather than the woodland one: a lime along
+/// a canal is smaller than a tree in a wood and reads wrong at forest scale.
+#[must_use]
+pub fn surveyed_trees(points: &[(f32, f32)], seed: u64) -> Vec<TreeInstance> {
+    /// Height and crown radius of a street tree, metres. Narrower than
+    /// [`veg_profile`]'s woodland band and centred lower.
+    const HEIGHT: (f32, f32) = (6.0, 11.5);
+    const RADIUS: (f32, f32) = (2.2, 3.8);
+
+    points
+        .iter()
+        .enumerate()
+        .map(|(i, &(x, z))| {
+            let h = hash3(seed, i as i32, 0x5EED);
+            TreeInstance {
+                x,
+                z,
+                radius: RADIUS.0 + rand01(h, 0) * (RADIUS.1 - RADIUS.0),
+                height: HEIGHT.0 + rand01(h, 1) * (HEIGHT.1 - HEIGHT.0),
+                tone: rand01(h, 2),
+                luma: 1.0 + (rand01(h, 3) - 0.5) * 0.08,
+            }
+        })
+        .collect()
+}
+
 // ─── Meshing ─────────────────────────────────────────────────────────────────
 
 /// Turn scattered instances into merged [`SurfaceMesh`]es — canopies and trunks,
@@ -1304,7 +1346,7 @@ mod tests {
         use crate::vector_tiles::{mesh_upload_bytes, tessellate_roads};
 
         let tile = fixture();
-        let whole = tessellate_roads(&tile, 1472.0, &[], None).expect("roads");
+        let whole = tessellate_roads(&tile, 1472.0, &[], None, false).expect("roads");
         let biggest = whole
             .iter()
             .map(|m| mesh_upload_bytes(m.positions.len(), m.indices.len()))
@@ -1312,7 +1354,7 @@ mod tests {
             .expect("the fixture has streets");
         let ceiling = biggest / 2;
 
-        let split = tessellate_roads(&tile, 1472.0, &[], Some(ceiling)).expect("roads");
+        let split = tessellate_roads(&tile, 1472.0, &[], Some(ceiling), false).expect("roads");
         assert!(
             split.len() > whole.len(),
             "half the largest group ({biggest} B) must have cut something"

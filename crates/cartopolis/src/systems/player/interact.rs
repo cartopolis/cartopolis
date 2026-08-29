@@ -163,6 +163,8 @@ pub fn track_interaction_target(
     camera_state: Res<CameraState>,
     avatar_state: Res<AvatarState>,
     places: Res<WorldPlaces>,
+    facts: Res<crate::systems::building_facts::BuildingFacts>,
+    anchor: Res<MapAnchor>,
     mut state: ResMut<InteractState>,
 ) {
     if state.last_ttl > 0.0 {
@@ -214,10 +216,163 @@ pub fn track_interaction_target(
 
     // Likewise: `nearest_address` hands back a `&str`, so compare through it and
     // only own the string on the frames the answer actually changes.
-    let address = places.nearest_address(pos, ADDRESS_RADIUS);
+    //
+    // The BAG answer wins where there is one. Both sources are the same register
+    // in the end, but the tile layer carries a number generalised into a vector
+    // tile at one point per building, while `building_facts` carries the
+    // register's own row per *unit*: the point sits at the entrance rather than
+    // the centroid, the street name is spelled out rather than joined from
+    // whatever the tile happened to hold, and the building it belongs to comes
+    // with it. That last part is the readout's new half — the year and the use.
+    let bag = bag_address(&facts, &anchor, &avatar_state);
+    let address = bag
+        .as_deref()
+        .or_else(|| places.nearest_address(pos, ADDRESS_RADIUS));
     if state.address.as_deref() != address {
         state.address = address.map(str::to_owned);
     }
+}
+
+/// The BAG's own line for wherever the avatar is standing: the nearest addressed
+/// unit, and what the register says about the building it is in.
+///
+/// `"Paterswoldseweg 62 · home · 1884"`. `None` outside the BAG coverage, which
+/// is everywhere the host has not run `tools/bag_attributes.py` — the tile-layer
+/// house number then answers as it always did.
+fn bag_address(
+    facts: &crate::systems::building_facts::BuildingFacts,
+    anchor: &MapAnchor,
+    avatar_state: &AvatarState,
+) -> Option<String> {
+    if facts.is_empty() {
+        return None;
+    }
+    // No anchor yet means there is no mapping from world XZ to lat/lng at all,
+    // so there is nothing to look up rather than a place to guess at.
+    let (lat, lng) = world_to_lat_lng(
+        anchor.geo?,
+        avatar_state.position.x as f64,
+        avatar_state.position.z as f64,
+    );
+    let Some(unit) = facts.nearest_address(lat, lng, ADDRESS_RADIUS as f64) else {
+        // No addressed unit in range, but a canal bank has berths on it and they
+        // are addresses with no building — the one kind of place a map drawn from
+        // buildings cannot name at all.
+        return nearest_berth(facts, lat, lng);
+    };
+    let mut line = unit.label()?;
+    if let Some(pc) = &unit.postcode {
+        line.push_str(" · ");
+        line.push_str(pc);
+    }
+    // The unit's own use where the register gives one, else the building's — a
+    // flat above a shop is a home, and saying "shop" for it would be worse than
+    // saying nothing.
+    let building = unit.pand.as_deref().and_then(|id| facts.building(id));
+    let uses = if unit.uses != 0 {
+        unit.uses
+    } else {
+        building.map_or(0, |b| b.uses)
+    };
+    if let Some(what) = crate::systems::building_facts::use_label(uses) {
+        line.push_str(" · ");
+        line.push_str(what);
+    }
+    // The unit's own floor area, or — where the register has none for it — the
+    // spread across the building, which for a block of flats is the honest answer
+    // and for a house is one number anyway.
+    match (
+        unit.area_m2,
+        building.and_then(|b| b.area_m2),
+        building.and_then(|b| b.area_max_m2),
+    ) {
+        (Some(a), _, _) => line.push_str(&format!(" · {a} m²")),
+        (None, Some(a), Some(b)) => line.push_str(&format!(" · {a}–{b} m²")),
+        (None, Some(a), None) => line.push_str(&format!(" · {a} m²")),
+        (None, None, _) => {}
+    }
+    if let Some(year) = building.and_then(|b| b.year) {
+        line.push_str(&format!(" · {year}"));
+    }
+    // Only worth saying when it is *not* the ordinary answer — a building the
+    // register has taken out of use is the kind of thing you would want to know
+    // you were standing in front of.
+    if building.is_some_and(|b| !b.status.standing()) {
+        line.push_str(" · disused");
+    }
+    if let Some(b) = building {
+        push_heritage(&mut line, b);
+    }
+    Some(line)
+}
+
+/// Append what the heritage registers say, if anything: whether the building is
+/// listed, and whether it stands in a protected historic district.
+///
+/// Last on the line and in that order, because they are the rarest facts and the
+/// readout truncates from the right — a house number must never be pushed off by
+/// a district name that applies to half the city centre.
+fn push_heritage(line: &mut String, building: &crate::systems::building_facts::BuildingFact) {
+    if building.monument.is_some() {
+        line.push_str(" · national monument");
+        // The register's own category, in its own language. It is the difference
+        // between "a listed building" and "a listed church", which is most of
+        // what a person wants from the word.
+        if let Some(cat) = &building.monument_category {
+            line.push_str(" (");
+            line.push_str(cat);
+            line.push(')');
+        }
+    }
+    if let Some(district) = &building.district {
+        line.push_str(" · in ");
+        line.push_str(district);
+    }
+}
+
+/// The nearest houseboat berth or mobile-home plot, named.
+///
+/// Linear over the loaded berths, which number in the tens per cell rather than
+/// the thousands — this is the rarer answer and it does not deserve an index.
+fn nearest_berth(
+    facts: &crate::systems::building_facts::BuildingFacts,
+    lat: f64,
+    lng: f64,
+) -> Option<String> {
+    use crate::systems::building_facts::BerthKind;
+    const M_PER_DEG: f64 = 111_320.0;
+    let scale = lat.to_radians().cos();
+    let radius_m = ADDRESS_RADIUS as f64;
+    let mut best: Option<(f64, &crate::systems::building_facts::BerthFact)> = None;
+    for b in facts.berths() {
+        let dy = (b.at.0 - lat) * M_PER_DEG;
+        let dx = (b.at.1 - lng) * M_PER_DEG * scale;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= radius_m * radius_m && best.is_none_or(|(d, _)| d2 < d) {
+            best = Some((d2, b));
+        }
+    }
+    let (_, berth) = best?;
+    let mut line = match (berth.street.as_deref(), berth.number.as_deref()) {
+        (Some(s), Some(n)) => format!("{s} {n}"),
+        (Some(s), None) => s.to_string(),
+        (None, Some(n)) => n.to_string(),
+        (None, None) => String::new(),
+    };
+    if let Some(pc) = &berth.postcode {
+        if !line.is_empty() {
+            line.push_str(" · ");
+        }
+        line.push_str(pc);
+    }
+    if !line.is_empty() {
+        line.push_str(" · ");
+    }
+    line.push_str(match berth.kind {
+        BerthKind::Mooring => "houseboat berth",
+        BerthKind::Plot => "mobile-home plot",
+    });
+    Some(line)
 }
 
 /// E acts on whatever the prompt is offering; the digits play an emote.

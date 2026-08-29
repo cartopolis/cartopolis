@@ -45,10 +45,11 @@ pub use gui::{
     settings, splash, text_touch, theme, ui,
 };
 pub use map::{
-    atmosphere_patch, building_windows, globe, globe_ocean, globe_weather, grass, height, lod22,
-    map_geometry, map_stream, osm_buildings, render_scale, rendering, road_depth, sky, sky_dome,
-    stream_ledger, street_detail, street_furniture, street_labels, tall_structures, terrain,
-    tile_loader, tile_source, vegetation, water, weather, world_places,
+    atmosphere_patch, building_facts, building_windows, coverage, globe, globe_ocean,
+    globe_weather, grass, height, lod22, lod3, map_geometry, map_stream, osm_buildings,
+    render_scale, rendering, road_depth, sky, sky_dome, stream_ledger, street_detail,
+    street_furniture, street_labels, surveyed, tall_structures, terrain, tile_loader, tile_source,
+    vegetation, water, weather, world_places,
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
@@ -63,7 +64,7 @@ pub use player::{
 // but nothing outside it calls in, and an unconditional re-export would be an
 // unused import rather than a convenience.
 pub use cartopolis_geo::{
-    furniture, mip, moorings, parking, places, pois, road_texture, routing, scatter, turf,
+    furniture, mip, moorings, parking, paving, places, pois, road_texture, routing, scatter, turf,
     vector_tiles,
 };
 // **Unconditional since 2026-08-26.** It used to be `cfg(feature = "audio")`,
