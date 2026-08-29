@@ -11,8 +11,11 @@ pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod houses;
 pub mod http;
+pub mod mail;
 pub mod net;
+pub mod registration;
 pub mod scripting;
 pub mod state;
 pub mod textures;
@@ -121,6 +124,23 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     // later and leaving a server that looks healthy and answers nothing.
     let mut http_addr = None;
     if let Some(ref addr) = config.http_listen {
+        // Built before the listener binds, so a mistyped relay or sender address
+        // fails the boot rather than the first registration.
+        let mailer = Arc::new(mail::Mailer::from_config(&config.mail())?);
+        if config.registration_open && !mailer.delivers() {
+            tracing::warn!(
+                "registration is open with no smtp_url configured — verification links will be \
+                 written to this log instead of sent"
+            );
+        }
+        // Frees the usernames of registrations nobody confirmed, and drops the
+        // tokens that have expired. Also runs per registration; here so a server
+        // that never gets another one still converges.
+        if let Ok(guard) = conn.lock() {
+            if let Err(e) = registration::sweep(&guard) {
+                tracing::warn!("registration sweep: {e:#}");
+            }
+        }
         let state = http::HttpState {
             world: world.clone(),
             config: config.clone(),
@@ -129,6 +149,8 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             sessions: sessions.clone(),
             chat: chat.clone(),
             scripts: script_handle.clone(),
+            mailer,
+            registration_throttle: Arc::new(http::RegistrationLimits::default()),
         };
         let http_listener = TcpListener::bind(addr)
             .await

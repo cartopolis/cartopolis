@@ -71,11 +71,22 @@ pub fn open_and_migrate(path: &str) -> anyhow::Result<Connection> {
         std::fs::create_dir_all(parent).with_context(|| format!("create_dir_all {parent:?}"))?;
     }
     let mut conn = Connection::open(path).with_context(|| format!("open sqlite {path}"))?;
-    embedded::migrations::runner()
-        .run(&mut conn)
-        .context("refinery migrate")?;
+    migrate(&mut conn)?;
     seed_default_region(&conn)?;
     Ok(conn)
+}
+
+/// Bring an already-open connection up to the current schema.
+///
+/// Public so a test can build the *real* schema in memory instead of a
+/// hand-written approximation of it — an approximation is how a suite goes on
+/// passing against columns production no longer has, which is exactly what the
+/// account tables did until registration added two more.
+pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {
+    embedded::migrations::runner()
+        .run(conn)
+        .context("refinery migrate")?;
+    Ok(())
 }
 
 fn seed_default_region(conn: &Connection) -> anyhow::Result<()> {
@@ -582,6 +593,9 @@ pub fn erase_account_traces(
         "UPDATE reports SET reporter_id = NULL, reporter_username = ?2 WHERE reporter_id = ?1",
         rusqlite::params![principal, DELETED_ACCOUNT_NAME],
     )?;
+    // A house held by an account that no longer exists is claimable by nobody
+    // and visible to no one — the worst of both, so deletion frees it.
+    crate::houses::erase_for(conn, principal)?;
     Ok(())
 }
 
