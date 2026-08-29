@@ -20,6 +20,11 @@ same `streets` layer the road ribbons, the routing graph and the street labels
 are already built from. Sibling notes: `docs/notes/parked-vehicles.md` and
 `docs/notes/lit-windows.md`.
 
+**These cars stay invented, and that was checked rather than assumed.** The real
+counts are NDW's, and its 20,519 loop detectors sit on motorway mainlines — none
+of them within the 260 m the pool places cars in, at three of the five points
+measured. [ndw-traffic.md](ndw-traffic.md) has the numbers and the reason.
+
 ## `oneway` and `oneway_reverse` are different answers
 
 Shortbread carries both. `vector_tiles::street_style` **ORs them together**, and
