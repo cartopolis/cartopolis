@@ -52,12 +52,18 @@ or the volume for these — that check is the first half of the ticket, and
 |---|---|
 | PDOK aerial imagery | true-colour ground at the scale the drawn map cannot reach |
 | BGT, the remaining layers | the surveyed surfaces not yet read |
-| NWB road network | measured carriageways, and bridge and tunnel geometry |
 | NDW traffic | real vehicle counts in place of invented ambient traffic |
 | Kadaster parcels | plot boundaries — the gardens between the buildings |
 | CBS neighbourhood statistics | how many people are actually there |
 | Rijkswaterstaat water levels | canal and river surfaces at their real height |
 | 3D basisvoorziening | national LoD3, in place of one hand-imported model |
+
+**Checked and not taken.** The interface, licence and volume were confirmed and
+the answer was no. Kept here so the check is not repeated:
+
+| Source | Checked | Why not |
+|---|---|---|
+| NWB road network | 2026-08-29 | Centrelines with administrative attributes. No width, no carriageway polygons, no bridge or tunnel geometry — the row's description was wrong. Its one unique field, `rel_hoogte`, answers a question `grade-separation.md` already closed without it. CC0, so the licence was never the obstacle. [notes/nwb-road-network.md](notes/nwb-road-network.md) |
 
 ## What an unattended session may do
 
