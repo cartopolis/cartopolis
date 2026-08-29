@@ -160,6 +160,17 @@ async fn stand_at(c: &mut Client, lat: f64, lng: f64) {
         .unwrap();
 }
 
+/// Press a prim, the way walking up to it and pressing E does.
+async fn press(c: &mut Client, prim_id: i64) {
+    let msg = NetMessage::TouchPrim {
+        request_id: 0,
+        prim_id,
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+}
+
 /// Poll the prim over the admin API until `done` says yes, or give up.
 ///
 /// Reading it back through the API rather than through the wire on purpose: the
@@ -388,7 +399,148 @@ async fn authoring_needs_an_admin() {
     );
 }
 
-/// The whole demo, in the shape `content/firebird.lua` has it: a scripted prim
+/// The button on the Grote Markt, end to end: install the pack, press the beacon,
+/// watch the firebird come in, press it again and watch it go back out.
+///
+/// This is the one test that exercises **script-to-script messaging**, which is
+/// the whole reason a button can exist at all: every `vf` call acts on the
+/// script's own prim, so a beacon cannot reach a firebird except over a channel.
+/// It is written against the shipped content rather than a fixture on purpose —
+/// the pair only works if they agree about a channel and about what a press
+/// means, and a test with its own two scripts would keep passing while the
+/// installed ones drifted apart.
+#[tokio::test]
+async fn the_beacon_summons_the_firebird_and_sends_it_back() {
+    let (handle, _dir) = server().await;
+    let tok = token(&handle).await;
+
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/admin/content/firebird", base(&handle)),
+        Some(tok.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let installed = body["installed"].as_array().unwrap();
+    assert_eq!(installed.len(), 2, "the pack is a pair: {body}");
+    let beacon = installed
+        .iter()
+        .find(|p| p["name"] == "Beacon")
+        .expect("a beacon")["id"]
+        .as_i64()
+        .unwrap();
+    let firebird = installed
+        .iter()
+        .find(|p| p["name"] == "Firebird")
+        .expect("a firebird")["id"]
+        .as_i64()
+        .unwrap();
+
+    // The beacon asks on startup and the firebird answers, so the label is right
+    // before anybody has pressed anything. That round trip is `vfSend` out and
+    // `on_message` back, and nothing else could have set this string.
+    wait_for(&handle, &tok, beacon, "the beacon to hear back", |p| {
+        p["name"].as_str().is_some_and(|n| n.contains("summon"))
+    })
+    .await;
+
+    // A press is a touch, exactly as walking up to it and pressing E sends one.
+    let mut player = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    press(&mut player, beacon).await;
+
+    // It comes in: over the beacon rather than out on its 180 m circle.
+    let here = wait_for(&handle, &tok, firebird, "the firebird to come in", |p| {
+        let lat = p["geo"]["latitude"].as_f64().unwrap_or(0.0);
+        let lng = p["geo"]["longitude"].as_f64().unwrap_or(0.0);
+        cartopolis_core::ground_distance_m(LAT, LNG, lat, lng) < 20.0
+    })
+    .await;
+    assert!(
+        here["position"][1].as_f64().unwrap() < 20.0,
+        "summoned means low enough to look at, not still at patrol height: {here}"
+    );
+    // And the beacon knows, because the firebird told it.
+    wait_for(&handle, &tok, beacon, "the beacon to say it is here", |p| {
+        p["name"].as_str().is_some_and(|n| n.contains("release"))
+    })
+    .await;
+
+    // Pressing again sends it back out. The same message; the firebird decides
+    // which way, because it is the only one that knows what it is doing.
+    press(&mut player, beacon).await;
+    wait_for(
+        &handle,
+        &tok,
+        firebird,
+        "the firebird to go back out",
+        |p| {
+            let lat = p["geo"]["latitude"].as_f64().unwrap_or(0.0);
+            let lng = p["geo"]["longitude"].as_f64().unwrap_or(0.0);
+            cartopolis_core::ground_distance_m(LAT, LNG, lat, lng) > 150.0
+        },
+    )
+    .await;
+    wait_for(&handle, &tok, beacon, "the beacon to say it is away", |p| {
+        p["name"].as_str().is_some_and(|n| n.contains("summon"))
+    })
+    .await;
+}
+
+/// Installing a pack twice replaces what it installed, and matches on
+/// **provenance** rather than on the prim names it declares.
+///
+/// The name version was the first one and the pack broke it itself: the beacon's
+/// script renames it to whatever its label currently says, so the second install
+/// found nothing called "Beacon", left the old one standing and added another.
+/// Measured, not reasoned about — after two installs there were three prims.
+#[tokio::test]
+async fn reinstalling_a_pack_replaces_what_it_installed_even_after_a_rename() {
+    let (handle, _dir) = server().await;
+    let tok = token(&handle).await;
+    let install = || {
+        let tok = tok.clone();
+        let url = format!("{}/api/admin/content/firebird", base(&handle));
+        async move { api("POST", url, Some(tok), None).await }
+    };
+
+    let (status, first) = install().await;
+    assert_eq!(status, 200, "{first}");
+
+    // Let the beacon's `on_start` run, which is what renames it.
+    wait_for(
+        &handle,
+        &tok,
+        first["installed"][1]["id"].as_i64().unwrap(),
+        "the beacon to rename itself",
+        |p| p["name"].as_str().is_some_and(|n| n != "Beacon"),
+    )
+    .await;
+
+    let (status, second) = install().await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(
+        second["replaced"].as_array().unwrap().len(),
+        2,
+        "both prims should have been replaced, renamed or not: {second}"
+    );
+
+    let (_, listed) = api(
+        "GET",
+        format!("{}/api/admin/prims", base(&handle)),
+        Some(tok),
+        None,
+    )
+    .await;
+    assert_eq!(
+        listed["prims"].as_array().unwrap().len(),
+        2,
+        "two installs should leave one pack, not one and a half: {listed}"
+    );
+}
+
+/// The startle-and-explode path, in the shape the shipped firebird has it: a
+/// scripted prim
 /// flies a circle, notices an avatar, shakes, explodes and removes itself.
 ///
 /// Deliberately one test rather than four. Each step is only meaningful because
@@ -401,7 +553,8 @@ async fn a_scripted_prim_circles_senses_and_explodes() {
 
     // Small numbers so the test is seconds rather than a minute: a 40 m circle, a
     // quick lap, and a shake short enough not to dominate the run. The shape is
-    // `content/firebird.lua`'s exactly.
+    // the shipped firebird's exactly, except that this one ends on `vfDie` —
+    // the shipped one reforms, and `vfDie` is the arm nothing else covers.
     let source = r#"
         local LAT, LNG = 53.2194, 6.5665
         local RADIUS, LAP, NOTICE, SHAKE = 40.0, 4.0, 60.0, 0.4
