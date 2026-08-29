@@ -91,7 +91,16 @@ tools/author.py create --lat 53.2194 --lng 6.5665 --alt 20 \
     --shape sphere --particles '{"color_start": [0.2, 0.6, 4.0]}'
 tools/author.py script 3 mine.lua
 tools/author.py --print patch 3 --color 1,0.4,0.1   # show the request, send nothing
+
+tools/author.py export --out my-build.json         # everything you own
+tools/author.py import my-build.json               # bring it back
 ```
+
+**Export and import are owner-scoped, not admin-scoped.** They sign in as an
+ordinary account (`CARTO_USER` / `CARTO_PASSWORD`) and carry only prims that
+account built — an admin token gets no reach into somebody else's work. Import
+*adds* rather than replaces, because a document cannot say which live prim each
+entry was.
 
 The **content the server installs is the server's**, not the tool's:
 `crates/simulator/src/content.rs` defines each pack and embeds its Luau from

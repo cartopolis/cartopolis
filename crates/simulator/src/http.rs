@@ -645,6 +645,16 @@ pub(crate) fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult
     Ok((principal, username))
 }
 
+/// Whether a principal is an enabled admin *right now*.
+///
+/// Split out of [`require_admin`] because two routes need the answer without
+/// requiring it: `/api/content/export` and `/api/content/transfer` are open to any
+/// signed-in account and merely reach *further* for an admin, so they ask rather
+/// than demand.
+pub(crate) fn is_caller_admin(state: &HttpState, principal: Uuid) -> ApiResult<bool> {
+    with_db(state, |c| auth::is_admin(c, principal))
+}
+
 /// Run a closure with the SQLite connection, mapping a poisoned lock to a 500.
 ///
 /// Every admin handler goes through this rather than locking inline, because the
@@ -902,7 +912,7 @@ async fn remove_account(
 /// The distinction from [`require_admin`] is the whole security model of these
 /// three routes: everything they do is scoped to the principal this returns, so
 /// there is no id in any request body that could name somebody else's claim.
-fn require_session(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
+pub(crate) fn require_session(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

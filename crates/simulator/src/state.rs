@@ -87,6 +87,15 @@ pub struct SimWorld {
     /// no recorded budget and is treated as unlimited — that only happens for a
     /// row inserted outside the migration path.
     caps: HashMap<i64, RegionCaps>,
+    /// Prim id -> the account that built it (schema V15), for the edit and delete
+    /// permission. Absent means nobody owns it, which is how everything built
+    /// before V15 and everything a content pack installed reads.
+    ///
+    /// In memory rather than queried, because `UpdatePrim` arrives at the gizmo's
+    /// drag rate: a permission check that read SQLite twenty times a second per
+    /// dragging client would put the database on the movement path. Loaded once
+    /// at startup and maintained here, exactly as `scripted` is.
+    owners: HashMap<i64, String>,
     /// Prims carrying a script, so the script budget can be counted without
     /// touching the database on every create.
     scripted: HashSet<i64>,
@@ -146,6 +155,7 @@ impl SimWorld {
         conn: Arc<Mutex<rusqlite::Connection>>,
         caps: HashMap<i64, RegionCaps>,
         scripted: HashSet<i64>,
+        owners: HashMap<i64, String>,
     ) -> Self {
         let mut region_sim_origin = HashMap::new();
         let n = regions.len().max(1);
@@ -180,6 +190,7 @@ impl SimWorld {
             conn,
             caps,
             scripted,
+            owners,
             dirty: HashSet::new(),
         }
     }
@@ -628,6 +639,7 @@ impl SimWorld {
             }
             // `db::delete_prim` removed the script row too, so release its budget.
             self.scripted.remove(&prim_id);
+            self.owners.remove(&prim_id);
             self.dirty.remove(&prim_id);
         }
         Ok(deleted)
@@ -683,6 +695,43 @@ impl SimWorld {
             .iter()
             .filter_map(|r| self.capacity(r.id))
             .collect()
+    }
+
+    /// Who owns a prim, if anybody does.
+    #[must_use]
+    pub fn prim_owner(&self, prim_id: i64) -> Option<&str> {
+        self.owners.get(&prim_id).map(String::as_str)
+    }
+
+    /// Record a prim's owner, after it has been written to the database.
+    pub fn set_owner(&mut self, prim_id: i64, owner: &str) {
+        self.owners.insert(prim_id, owner.to_string());
+    }
+
+    /// May `principal` change or delete this prim?
+    ///
+    /// Three rules, and the middle one is the reason this exists at all.
+    ///
+    /// An **admin always may** — the override, and the thing that keeps a build
+    /// whose author has gone from being permanently unmaintainable.
+    ///
+    /// An **owned prim is its owner's**, and nobody else's. Before this,
+    /// `UpdatePrim` and `DeletePrim` were open to any connected client, so
+    /// anything anybody built could be moved, recoloured, rescripted or deleted
+    /// by anybody else.
+    ///
+    /// An **unowned prim belongs to the server**, so only an admin may touch it.
+    /// That is everything built before schema V15 and everything a content pack
+    /// installs, and it is the deliberate side of a real trade: the alternative —
+    /// treating "no owner" as "anybody's" — would leave the firebird and the
+    /// beacon deletable by any passer-by. An operator re-homes a genuinely
+    /// orphaned build with `POST /api/content/transfer`.
+    #[must_use]
+    pub fn may_edit(&self, prim_id: i64, principal: &str, is_admin: bool) -> bool {
+        if is_admin {
+            return true;
+        }
+        self.owners.get(&prim_id).is_some_and(|o| o == principal)
     }
 
     /// Record that a prim gained or lost a script, after the script budget has
@@ -921,6 +970,7 @@ mod tests {
             Arc::new(Mutex::new(conn)),
             caps,
             HashSet::new(),
+            HashMap::new(),
         );
         (world, dir)
     }

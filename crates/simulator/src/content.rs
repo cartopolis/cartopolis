@@ -107,9 +107,24 @@ fn firebird() -> Pack {
                 // this repository uses as its example coordinate.
                 latitude: Some(53.21935),
                 longitude: Some(6.56675),
-                altitude: Some(0.75),
-                scale: Some([1.1, 1.5, 0.16]),
-                color: Some([0.10, 0.13, 0.16]),
+                altitude: Some(1.3),
+                scale: Some([1.6, 2.6, 0.28]),
+                color: Some([1.0, 0.42, 0.08]),
+                // Alight before its own `on_start` runs, for the same reason the
+                // firebird is: the very first snapshot that carries it should
+                // already look like the thing it is.
+                particles: Some(Some(ParticleSpec {
+                    count: Some(70),
+                    life: Some(1.6),
+                    speed: Some(1.1),
+                    spread_deg: Some(16.0),
+                    gravity: Some(1.6),
+                    source_radius: Some(0.35),
+                    size_start: Some(0.55),
+                    size_end: Some(0.08),
+                    turbulence: Some(0.7),
+                    ..ParticleSpec::default()
+                })),
                 script: Some(include_str!("../content/beacon.lua").into()),
                 ..PrimSpec::default()
             },

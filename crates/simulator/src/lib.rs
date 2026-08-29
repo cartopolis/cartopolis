@@ -77,6 +77,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let (regions, prims) = db::load_world(&conn)?;
     let caps = db::load_region_caps(&conn)?;
     let scripts = db::load_prim_scripts(&conn)?;
+    let owners = db::load_prim_owners(&conn)?;
     let conn = Arc::new(std::sync::Mutex::new(conn));
 
     let world = Arc::new(RwLock::new(state::SimWorld::new(
@@ -86,6 +87,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         conn.clone(),
         caps,
         scripts.iter().map(|(id, _)| *id).collect(),
+        owners,
     )));
 
     // Compile the world's stored scripts before the first tick, so a prim that was

@@ -29,15 +29,38 @@ local function label()
     return "Beacon — press to call the firebird"
 end
 
+-- The flame on top of it. A beacon has to be findable from across a square, and
+-- the first version was not: a 1.1 m panel painted (0.10, 0.13, 0.16) is a dark
+-- slab on grey stone, and the person it was built for could not find it. Size and
+-- colour fixed that; the fire is what makes it visible from the far side.
+local MARKER = {
+    count = 70,
+    life = 1.6,
+    speed = 1.1,
+    spread = 16,
+    gravity = 1.6,
+    radius = 0.35,
+    size = 0.55,
+    end_size = 0.08,
+    color = { 4.0, 1.6, 0.3 },
+    end_color = { 0.9, 0.15, 0.03 },
+    alpha = 0.8,
+    turbulence = 0.7,
+}
+
 function on_start()
     vfSetName(label())
-    vfSetColor(0.10, 0.13, 0.16)
+    -- Warm orange rather than near-black, and full bright so it keeps that colour
+    -- at every time of day.
+    vfSetColor(1.0, 0.42, 0.08)
     vfSetGlow(0.35)
     vfSetFullBright(true)
-    -- A panel: wide, tall, thin. It stands on the ground, so half its height up.
-    vfSetScale(1.1, 1.5, 0.16)
+    -- A panel: wide, tall, thin, and tall enough to read as a thing somebody put
+    -- there. It stands on the ground, so half its height up.
+    vfSetScale(1.6, 2.6, 0.28)
     local x, _, z = vfGetPos()
-    vfSetPos(x, 0.75, z)
+    vfSetPos(x, 1.3, z)
+    vfParticles(MARKER)
     vfListen(CHANNEL)
     -- Ask who is out there, so the label is right before anybody presses
     -- anything. A reply may never come — the firebird may not be installed — and
@@ -62,11 +85,15 @@ function on_message(channel, text, sender)
     if text == "here" or text == "patrolling" then
         status = text
         vfSetName(label())
-        -- Lit while it is with you, dim while it is away — the panel is the
-        -- readout as well as the switch.
-        vfSetColor(0.10, 0.13, 0.16)
+        -- Hotter while the firebird is with you, cooler while it is away — the
+        -- panel is the readout as well as the switch. Both stay bright enough to
+        -- find; the state is in the hue, not in whether you can see it.
         if status == "here" then
-            vfSetColor(0.35, 0.16, 0.05)
+            vfSetColor(1.0, 0.72, 0.30)
+            vfSetGlow(0.7)
+        else
+            vfSetColor(1.0, 0.42, 0.08)
+            vfSetGlow(0.35)
         end
     end
 end
