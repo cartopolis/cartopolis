@@ -98,6 +98,39 @@ impl TangentFrame {
 /// any map tile zoom.
 pub const REGION_SIZE: f64 = REGION_SIZE_METERS;
 
+/// Horizontal distance between two geographic points, in metres.
+///
+/// The ENU frame at the first point, which is exact for the ranges anything here
+/// asks about (a script's sensor, an emitter's reach) and needs no special case
+/// at a pole or across the antimeridian — both of which a naive
+/// `Δlat, Δlng · cos(lat)` gets wrong, the second one silently and by the width
+/// of the planet.
+#[must_use]
+pub fn ground_distance_m(lat_a: f64, lng_a: f64, lat_b: f64, lng_b: f64) -> f64 {
+    let frame = TangentFrame::new(lat_a, lng_a, 0.0);
+    let d = frame.geodetic_to_local(lat_b, lng_b, 0.0);
+    d.truncate().length()
+}
+
+/// How many metres a degree of latitude and of longitude are worth at a latitude
+/// — the local scale of the map, which is what turns a distance in metres into
+/// an offset in degrees.
+///
+/// Measured rather than derived from a spherical formula: the two numbers are one
+/// degree stepped in each direction through [`ground_distance_m`], so they carry
+/// the ellipsoid's flattening. The longitude figure collapses to zero at the
+/// poles, which is true and is also a division waiting to happen, so it is
+/// floored at a millimetre per degree.
+#[must_use]
+pub fn degree_scale_m(lat_deg: f64) -> (f64, f64) {
+    // Stepped *towards the equator* near a pole, or the latitude probe runs off
+    // the end of the coordinate system at |lat| > 89.
+    let step = if lat_deg >= 0.0 { -1.0 } else { 1.0 };
+    let per_lat = ground_distance_m(lat_deg, 0.0, lat_deg + step, 0.0);
+    let per_lng = ground_distance_m(lat_deg, 0.0, lat_deg, 1.0);
+    (per_lat.max(1e-3), per_lng.max(1e-3))
+}
+
 /// Which region `(i, j)` a local ENU position falls in (i = East, j = North).
 #[must_use]
 pub fn region_index(east_m: f64, north_m: f64) -> (i64, i64) {
@@ -204,5 +237,44 @@ mod tests {
         assert_relative_eq!(oy, 2.0 * REGION_SIZE, epsilon = 1e-9);
         assert!(regions_adjacent((0, 0), (1, 0)));
         assert!(!regions_adjacent((0, 0), (1, 1)));
+    }
+
+    #[test]
+    fn ground_distance_is_symmetric_and_zero_at_a_point() {
+        assert_relative_eq!(ground_distance_m(LAT, LNG, LAT, LNG), 0.0, epsilon = 1e-6);
+        let a = ground_distance_m(LAT, LNG, LAT + 0.01, LNG + 0.01);
+        let b = ground_distance_m(LAT + 0.01, LNG + 0.01, LAT, LNG);
+        assert_relative_eq!(a, b, epsilon = 1e-3);
+    }
+
+    /// The case a `Δlng · cos(lat)` formula gets wrong by 40,000 km: two points a
+    /// few hundred metres apart with the antimeridian between them.
+    #[test]
+    fn ground_distance_crosses_the_antimeridian() {
+        let d = ground_distance_m(0.0, 179.999, 0.0, -179.999);
+        assert!(d < 500.0, "expected a couple of hundred metres, got {d}");
+    }
+
+    /// The scale a script uses to turn metres into degrees — a degree of latitude
+    /// is ~111 km everywhere, and a degree of longitude shrinks with the cosine.
+    #[test]
+    fn degree_scale_matches_the_textbook_numbers() {
+        let (per_lat, per_lng) = degree_scale_m(LAT);
+        assert!((110_000.0..112_000.0).contains(&per_lat), "{per_lat}");
+        let expected_lng = 111_320.0 * LAT.to_radians().cos();
+        assert_relative_eq!(per_lng, expected_lng, max_relative = 0.01);
+    }
+
+    /// Near a pole the longitude scale collapses; a script dividing by it must
+    /// not divide by zero.
+    #[test]
+    fn degree_scale_is_never_zero() {
+        for lat in [89.999_f64, -89.999, 90.0, -90.0] {
+            let (per_lat, per_lng) = degree_scale_m(lat);
+            assert!(
+                per_lat > 0.0 && per_lng > 0.0,
+                "at {lat}: {per_lat} {per_lng}"
+            );
+        }
     }
 }

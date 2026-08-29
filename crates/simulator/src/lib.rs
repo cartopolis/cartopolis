@@ -7,9 +7,11 @@
 //! solo mode and `--connect` share one client path (see ADR-016 "Solo/dev mode").
 
 pub mod auth;
+pub mod authoring;
 pub mod chat;
 pub mod cli;
 pub mod config;
+pub mod content;
 pub mod db;
 pub mod houses;
 pub mod http;

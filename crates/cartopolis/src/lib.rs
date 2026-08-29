@@ -1725,6 +1725,7 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<sky::CloudMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
+        .add_plugins(MaterialPlugin::<systems::particles::ParticleMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
         // The LoD2.2 buildings' walls, with the window pattern on them
         // (`systems::building_windows`).
@@ -2035,6 +2036,10 @@ fn run_client() {
                 // spawns stands where this shot's camera is actually looking.
                 systems::shot_harness::hold_scripted_chat
                     .after(systems::shot_harness::open_scripted_ui),
+                // After the camera is placed, for the same reason the chat demo
+                // is: the seeded prims stand where this shot is actually looking.
+                systems::shot_harness::hold_scripted_fire
+                    .after(systems::shot_harness::open_scripted_ui),
                 systems::shot_harness::place_camera.before(systems::geo_nav::apply_teleport),
                 systems::shot_harness::place_space_orbit
                     .after(systems::geo_nav::apply_teleport)
@@ -2134,6 +2139,10 @@ fn run_client() {
             sky::setup_clouds,
             sky::setup_globe_clouds,
             sky::setup_rain,
+            // The shared quad pool every particle emitter draws. No ordering: it
+            // only builds a mesh, and `sync_particle_emitters` waits for the
+            // resource rather than assuming it.
+            systems::particles::setup_particle_pool,
         ),
     )
     .add_systems(
@@ -2152,6 +2161,14 @@ fn run_client() {
             rendering::refresh_prim_textures
                 .after(rendering::spawn_prims)
                 .after(network::apply_network_snapshot),
+            // After the snapshot has written the prims' `particles` field, and
+            // after `spawn_prims`, so the emitter child is parented to an entity
+            // that already has its mesh — a `Children` list rewritten in the same
+            // flush as the parent's own components is how an emitter ends up on a
+            // prim that is still being assembled.
+            systems::particles::sync_particle_emitters
+                .after(network::apply_network_snapshot)
+                .after(rendering::spawn_prims),
         ),
     )
     .add_systems(

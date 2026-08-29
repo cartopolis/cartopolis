@@ -1,7 +1,7 @@
 ---
 topic: prim-scripting
-triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "vf.", "sandbox", "fuel", "on_touch"]
-updated: 2026-08-10
+triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "vf.", "sandbox", "fuel", "on_touch", vfSetGeo, vfSensor, vfParticles, vfSend, on_message]
+updated: 2026-08-29
 ---
 
 # What the scripting engine is, and what mlua hands you that Luau does not
@@ -119,21 +119,85 @@ script is descheduled by exactly the mechanism that deschedules one which
 overran. Its clock (`vfGetTime`) is *simulated* time for the same reason fuel is
 counted in instructions: two hosts running the same script should agree.
 
-## `vfSetPos` is durable in y and not in x/z
+## `vfSetPos` is durable in y and not in x/z — `vfSetGeo` is the horizontal one
 
 A prim's horizontal placement is re-derived from its geo anchor
-(`prim_geo::place_geo_prims`), and the lat/lng projection lives in the **client**
-(`geo_nav::world_to_lat_lng`) — the simulator cannot do the conversion, so a
-script's write to `position.x/z` leaves `geo` stale. In practice horizontal
-motion is visible and persists until the map re-anchors or the client reconnects,
-at which point the prim returns to its anchored spot. Height has no second owner
-and stays where a script puts it.
+(`prim_geo::place_geo_prims`), so a script's write to `position.x/z` leaves `geo`
+stale: the motion is visible and persists until the map re-anchors or the client
+reconnects, at which point the prim returns to its anchored spot. Height has no
+second owner and stays where a script puts it.
 
-This is why the editor's template bobs a prim up and down rather than orbiting
-it. Making horizontal motion durable means moving the projection into
-`cartopolis_core` and having the sim update `geo` alongside `position` — which is a
-change to how *every* prim edit works, not just scripted ones, and belongs in its
-own diff.
+**The fix, since protocol 20, is not to make `vfSetPos` durable but to give the
+anchor its own call.** `vfSetGeo(lat, lng)` writes the anchor directly — which is
+the authoritative value, so it survives a re-anchor, a reconnect and a restart —
+and `vfGeoScale(lat)` hands back metres per degree so a script can turn a radius
+into an offset. The firebird in the `firebird` content pack flies a 180 m circle
+with the two of them.
+
+That is a smaller change than the one this note used to propose (move the
+Mercator projection into `cartopolis_core` and have the sim rewrite `geo` from
+`position`), and it is better rather than merely cheaper. The projection the
+client uses is anchored at the *map* anchor, which is a different frame for every
+client and moves when any of them teleports; the sim cannot reproduce it and
+should not try. Naming the geographic coordinate outright means no frame has to
+be reconciled at all — the same reasoning ADR-029 applied to prim placement in
+the first place.
+
+The old advice — that the editor's template bobs a prim up and down rather than
+orbiting it — is why that template is what it is, not a statement that orbiting
+is impossible.
+
+## `vfSensor` is the only thing that can see an avatar, and it needed a wire change
+
+An avatar's *sim* position is metres in its own client's anchored frame. Every
+client anchors somewhere else and re-anchors when it teleports, so two avatars in
+two cities both sit near the origin and "is this avatar near that prim?" has no
+answer in sim space at all. A prim, meanwhile, has carried an absolute
+`GeoAnchor` since ADR-029.
+
+So protocol 20 added the other half: `ClientIntent.geo`, the avatar's own client
+saying where on Earth it is. The sim keeps it, `SimWorld::script_views` measures
+it against each scripted prim's anchor once per tick, and `vfSensor(range)`
+returns the nearest one.
+
+Three consequences worth knowing. The neighbours are **pushed with the view**,
+not queried — the host thread holds no reference to `SimWorld` (that is what
+keeps a script off the tick's write lock), so a sensor reads a snapshot at most
+one tick old, exactly as `vfGetPos` always has. An avatar whose client has not
+sent a fix is **not seen**, which is the honest answer rather than a guessed
+position. And the range is capped at `SENSOR_MAX_RANGE_M` however wide a script
+asks, because the gathering is what costs, not the question.
+
+## One prim reaches another only over a channel
+
+Every `vf` call acts on the script's own prim — `prim_id` is captured by the host
+and is not an argument — so a button cannot reach the thing it controls. That is
+the *authorisation surface* working as designed (there is no argument an author
+can supply that touches somebody else's object) and it also meant a button was
+impossible to build.
+
+`vfSend(channel, text)` and `on_message(channel, text, sender)` are the way
+through, with `vfListen(channel)` to opt in. Four properties, each chosen against
+an alternative:
+
+- **A message never leaves the host thread.** It is not a `ScriptCommand`: the
+  simulation has nothing to do with it, and routing a button press out to the
+  tick loop and back would put it behind the world's write lock for no reason.
+- **Delivery is after the whole round-robin pass, so it lands next tick.**
+  Delivering inline would make "does this listener see it this tick or next?"
+  depend on where the scheduler's cursor happened to be — a script's behaviour
+  would change with the number of other scripts in the region.
+- **Listening is opt-in.** Without it every send would queue an event on every
+  script in the region, so one chatty prim would cost every other one work.
+- **A script does not hear itself**, which is the one deviation from Second Life
+  here. Listening on the channel you send on is the ordinary shape — the beacon
+  and the firebird both do it — and hearing yourself makes that an immediate
+  feedback loop the author did not write.
+
+Channels are scoped to the **region**, because one that silently crossed would
+let an estate's button work its neighbour's door. `MAX_MESSAGES_PER_TICK` bounds a
+sender for a different reason than `MAX_COMMANDS_PER_TICK` does: a command costs
+one wire frame, a message costs an event queued on every listener.
 
 ## The unit of accounting is the region
 

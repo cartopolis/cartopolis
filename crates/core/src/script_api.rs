@@ -33,6 +33,10 @@ pub enum ScriptGroup {
     Chat,
     /// Events over time, and suspending a handler.
     Timing,
+    /// Noticing what is around the prim.
+    Sensing,
+    /// Talking to the other scripts in the region.
+    Messaging,
     /// Facts about the prim, and ending it.
     Lifecycle,
 }
@@ -45,6 +49,8 @@ impl ScriptGroup {
             Self::Appearance => "Appearance",
             Self::Chat => "Chat",
             Self::Timing => "Timing",
+            Self::Sensing => "Sensing",
+            Self::Messaging => "Messages",
             Self::Lifecycle => "Prim",
         }
     }
@@ -57,6 +63,8 @@ impl ScriptGroup {
             Self::Appearance,
             Self::Chat,
             Self::Timing,
+            Self::Sensing,
+            Self::Messaging,
             Self::Lifecycle,
         ]
     }
@@ -93,6 +101,13 @@ pub const SCRIPT_EVENTS: &[ScriptFn] = &[
         summary: "Every interval set with vfSetTimerEvent.",
         group: ScriptGroup::Timing,
     },
+    ScriptFn {
+        name: "on_message",
+        signature: "on_message(channel, text, sender_prim_id)",
+        summary: "Another script in this region sent something on a channel this \
+                  one is listening to.",
+        group: ScriptGroup::Messaging,
+    },
 ];
 
 /// Every function installed into a script's environment.
@@ -109,6 +124,27 @@ pub const SCRIPT_API: &[ScriptFn] = &[
         signature: "vfSetPos(x, y, z)",
         summary: "Move it. Height is durable; horizontal motion lasts until the \
                   map re-anchors (the geo anchor owns x/z).",
+        group: ScriptGroup::Movement,
+    },
+    ScriptFn {
+        name: "vfGetGeo",
+        signature: "vfGetGeo() -> latitude, longitude",
+        summary: "Where this prim is on Earth, in degrees.",
+        group: ScriptGroup::Movement,
+    },
+    ScriptFn {
+        name: "vfSetGeo",
+        signature: "vfSetGeo(latitude, longitude)",
+        summary: "Move it across the map, durably — this writes the prim's own \
+                  geographic anchor, so unlike vfSetPos's x/z it survives a \
+                  re-anchor and a restart. Height stays where vfSetPos put it.",
+        group: ScriptGroup::Movement,
+    },
+    ScriptFn {
+        name: "vfGeoScale",
+        signature: "vfGeoScale(latitude) -> metres_per_degree_lat, metres_per_degree_lng",
+        summary: "The local scale of the map at a latitude, so metres can be \
+                  turned into degrees: lat + north/mlat, lng + east/mlng.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
@@ -178,6 +214,22 @@ pub const SCRIPT_API: &[ScriptFn] = &[
         summary: "Render fully lit whatever the time of day.",
         group: ScriptGroup::Appearance,
     },
+    ScriptFn {
+        name: "vfParticles",
+        signature: "vfParticles(rules)",
+        summary: "Attach a particle emitter, described by a table of named fields \
+                  (count, life, speed, spread, gravity, radius, size, end_size, \
+                  color, end_color, alpha, turbulence). Anything left out keeps \
+                  the fire preset's value; vfParticles(nil) puts the emitter out.",
+        group: ScriptGroup::Appearance,
+    },
+    ScriptFn {
+        name: "vfParticleBurst",
+        signature: "vfParticleBurst(rules)",
+        summary: "The same table, fired once instead of continuously — an \
+                  explosion. Defaults to the blast preset rather than the fire one.",
+        group: ScriptGroup::Appearance,
+    },
     // ── Chat ──
     ScriptFn {
         name: "vfLog",
@@ -227,6 +279,32 @@ pub const SCRIPT_API: &[ScriptFn] = &[
         signature: "vfResetTime()",
         summary: "Put vfGetTime back to zero.",
         group: ScriptGroup::Timing,
+    },
+    // ── Sensing ──
+    ScriptFn {
+        name: "vfSensor",
+        signature: "vfSensor(range_m) -> avatar_id, name, distance_m",
+        summary: "The nearest avatar within range, or nothing at all if there is \
+                  none. Measured on the ground, between the prim's geographic \
+                  anchor and the avatar's — an avatar whose client has not said \
+                  where it is yet is not seen.",
+        group: ScriptGroup::Sensing,
+    },
+    // ── Messaging ──
+    ScriptFn {
+        name: "vfSend",
+        signature: "vfSend(channel, text)",
+        summary: "Say something to the other scripts in this region on a numeric \
+                  channel. Nobody in-world hears it, and the sender does not hear \
+                  itself. This is the only way one prim can reach another.",
+        group: ScriptGroup::Messaging,
+    },
+    ScriptFn {
+        name: "vfListen",
+        signature: "vfListen(channel [, on])",
+        summary: "Start hearing a channel as on_message; vfListen(channel, false) \
+                  stops. A script hears nothing until it asks.",
+        group: ScriptGroup::Messaging,
     },
     // ── Prim / lifecycle ──
     ScriptFn {

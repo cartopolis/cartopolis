@@ -1,6 +1,6 @@
 use anyhow::Context;
 use cartopolis_core::world::{lat_lng_to_tile, REGION_ZOOM_LEVEL};
-use cartopolis_core::{GeoAnchor, PrimDto, PrimGeometry, PrimSurface, RegionDto};
+use cartopolis_core::{GeoAnchor, ParticleEffect, PrimDto, PrimGeometry, PrimSurface, RegionDto};
 use glam::Vec3;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -16,7 +16,8 @@ const PRIM_COLUMNS: &str = "id, region_id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude";
+     latitude, longitude, particles, \
+     EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
 
 /// Maps a row selected with [`PRIM_COLUMNS`] (in order) into a [`PrimDto`].
 fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
@@ -58,7 +59,49 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
             latitude: row.get(38)?,
             longitude: row.get(39)?,
         },
+        // Protocol v20. Sanitised on the way *out* of the database as well as on
+        // the way in: a row can predate a tightened limit, or have been edited
+        // with sqlite3, and the client hands these numbers straight to a shader.
+        particles: parse_particles(row.get::<_, Option<String>>(40)?.as_deref()),
+        // Protocol v21, and read from the database rather than tracked: a
+        // subquery on the row is always right, where a flag maintained beside
+        // `set_prim_script` is one more thing to forget. `SimWorld::set_scripted`
+        // still updates its in-memory copy so the next snapshot is current
+        // without a re-read — the database is what it falls back to being right
+        // from.
+        scripted: row.get(41)?,
     })
+}
+
+/// Decode the `particles` column (see `V13__prim_particles.sql`).
+///
+/// A column that will not parse becomes `None` and a warning, never an error:
+/// the alternative is that one hand-edited row stops the whole world loading,
+/// and "that prim's fire is out" is a failure an operator can see and fix while
+/// "the simulator will not start" is not.
+fn parse_particles(json: Option<&str>) -> Option<ParticleEffect> {
+    let raw = json?;
+    match serde_json::from_str::<ParticleEffect>(raw) {
+        Ok(e) => Some(e.sanitized()),
+        Err(e) => {
+            tracing::warn!("prim particles column is not a valid effect ({e}); ignoring it");
+            None
+        }
+    }
+}
+
+/// Encode an emitter for the `particles` column. Sanitised first, so nothing out
+/// of range is ever written down — a stored value is read by clients that were
+/// not running when it was set.
+fn particles_json(effect: Option<&ParticleEffect>) -> Option<String> {
+    let e = effect?.sanitized();
+    match serde_json::to_string(&e) {
+        Ok(s) => Some(s),
+        Err(err) => {
+            tracing::error!("could not serialise particles: {err}");
+            None
+        }
+    }
 }
 
 mod embedded {
@@ -152,6 +195,7 @@ pub fn insert_prim(
     position: Vec3,
     shape: &str,
     geo: GeoAnchor,
+    particles: Option<&ParticleEffect>,
 ) -> anyhow::Result<PrimDto> {
     // Validate that the region exists
     let region_exists: bool = conn.query_row(
@@ -169,8 +213,8 @@ pub fn insert_prim(
         "INSERT INTO prims (region_id, name, shape, position_x, position_y, position_z,
                             rotation_x, rotation_y, rotation_z, scale_x, scale_y, scale_z,
                             color_r, color_g, color_b, texture_id, latitude, longitude,
-                            created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, datetime('now'), datetime('now'))",
+                            particles, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'), datetime('now'))",
         rusqlite::params![
             region_id,
             "Prim",                   // default name
@@ -190,6 +234,7 @@ pub fn insert_prim(
             None::<String>,           // no texture by default
             geo.latitude,             // ADR-029: geo-anchored placement
             geo.longitude,
+            particles_json(particles),
         ],
     )?;
 
@@ -217,6 +262,7 @@ pub fn update_prim(
     surface: PrimSurface,
     geometry: PrimGeometry,
     geo: GeoAnchor,
+    particles: Option<&ParticleEffect>,
 ) -> anyhow::Result<Option<PrimDto>> {
     // Check if prim exists first
     let exists: bool = conn.query_row(
@@ -245,6 +291,7 @@ pub fn update_prim(
             twist_begin = ?29, twist_end = ?30, taper_x = ?31, taper_y = ?32,
             top_shear_x = ?33, top_shear_y = ?34, slice_begin = ?35, slice_end = ?36,
             latitude = ?37, longitude = ?38,
+            particles = ?39,
             updated_at = datetime('now')
          WHERE id = ?1",
         rusqlite::params![
@@ -286,6 +333,7 @@ pub fn update_prim(
             geometry.slice_end,
             geo.latitude,
             geo.longitude,
+            particles_json(particles),
         ],
     )?;
 
@@ -295,6 +343,28 @@ pub fn update_prim(
 
     tracing::debug!(prim_id, "prim updated");
     Ok(Some(prim))
+}
+
+/// Record which content pack installed a prim (`V14__prim_origin.sql`).
+///
+/// A separate write rather than a column on the insert, because it is not part of
+/// what an author describes: `insert_prim` is reached from the wire, from the
+/// admin API and from a pack, and only the last of those has an origin to state.
+pub fn set_prim_origin(conn: &Connection, prim_id: i64, origin: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE prims SET origin = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, origin],
+    )?;
+    Ok(())
+}
+
+/// Every prim a given content pack installed, oldest first.
+pub fn prim_ids_from(conn: &Connection, origin: &str) -> anyhow::Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT id FROM prims WHERE origin = ?1 ORDER BY id")?;
+    let ids = stmt
+        .query_map(rusqlite::params![origin], |row| row.get(0))?
+        .collect::<Result<Vec<i64>, _>>()?;
+    Ok(ids)
 }
 
 /// Delete a prim from the database.
@@ -641,6 +711,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         // Verify the prim was created
@@ -679,6 +750,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -703,6 +775,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         // Update it
@@ -744,6 +817,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?
         .ok_or_else(|| anyhow::anyhow!("prim not found after update"))?;
 
@@ -802,6 +876,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         assert!(result.is_none());
@@ -826,6 +901,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         // Delete it
@@ -871,6 +947,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         // Update it with a texture
@@ -889,6 +966,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?
         .ok_or_else(|| anyhow::anyhow!("prim not found"))?;
 
@@ -921,6 +999,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
         let prim2 = insert_prim(
             &conn,
@@ -931,6 +1010,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         // Update one
@@ -949,6 +1029,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
         )?;
 
         // Delete the other

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::ProtocolError;
+use crate::particles::ParticleEffect;
 
 /// One wire-protocol revision: what changed and which ADR decided it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +87,16 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         version: 19,
         adr: "",
         summary: "sitting — ClientIntent.seated / AvatarStateDto.seated carry the seat as an offset from the avatar's own position",
+    },
+    ProtocolRevision {
+        version: 20,
+        adr: "",
+        summary: "particles + avatar geo — PrimDto.particles carries an emitter; ClientIntent.geo says where on Earth the avatar is, which is the only frame a script's vfSensor can measure in",
+    },
+    ProtocolRevision {
+        version: 21,
+        adr: "",
+        summary: "PrimDto.scripted — whether a prim carries a script. The client cannot derive it (source never travels in a snapshot) and it is what decides whether walking up to a prim offers to press it",
     },
 ];
 
@@ -284,7 +295,10 @@ impl Default for PrimGeometry {
 /// render-space `GridCell` + local `Transform` from it via the *current* OSM
 /// anchor (`lat_lng_to_world`), so a prim keeps its real-world location across a
 /// re-anchor. Altitude is carried separately in `PrimDto::position.y`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+/// `Default` is null island, and it means "not placed yet" rather than a place —
+/// the one thing that reads it is a script's view of a prim before the first tick
+/// has filled it in, where every sensor answer is "nobody" and that is correct.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 pub struct GeoAnchor {
     pub latitude: f64,
     pub longitude: f64,
@@ -334,6 +348,26 @@ pub struct PrimDto {
     /// Absolute geographic placement (ADR-029 / protocol v10). Every prim is
     /// geo-anchored — there is no legacy fixed-origin placement.
     pub geo: GeoAnchor,
+    /// A particle emitter on this prim, if it has one (protocol v20). `None` is
+    /// the overwhelmingly common case and costs one byte.
+    #[serde(default)]
+    pub particles: Option<ParticleEffect>,
+    /// Whether this prim carries a script (protocol v21).
+    ///
+    /// **The client cannot work this out.** Script source is deliberately kept
+    /// out of `WorldSnapshot` — it is an order of magnitude larger than the rest
+    /// of a prim and of interest to one person — so "does pressing this do
+    /// anything?" has no answer on the client without the server saying. It is
+    /// what `systems::interact` gates its prompt on: offering to press every
+    /// crate in the city would be noise, and offering to press nothing would mean
+    /// a button nobody can find.
+    ///
+    /// It says a script is *stored*, not that it is running: a source that failed
+    /// to compile is stored and faulted, and pressing it does nothing. Reporting
+    /// "stored" is the honest half — the client has no business knowing about a
+    /// compile error on somebody else's object.
+    #[serde(default)]
+    pub scripted: bool,
 }
 
 fn default_path_cut_end() -> f32 {
@@ -506,6 +540,21 @@ pub enum NetMessage {
         /// into range mid-sit is drawn sitting. The sim clears it the moment the
         /// same intent asks to move.
         seated: Option<[f32; 2]>,
+        /// Where this avatar is on Earth (protocol v20), as its own client
+        /// measures it.
+        ///
+        /// **The sim cannot derive this and it is not a second copy of
+        /// `position`.** An avatar's sim-space position is metres in the frame
+        /// its own client's map is anchored in, and every client anchors
+        /// somewhere else and re-anchors when it teleports — so "is this avatar
+        /// near that prim?" is not a question sim space can answer, while a prim
+        /// has carried an absolute `GeoAnchor` since ADR-029. This is the other
+        /// half of that pair, and `vfSensor` is what it exists for.
+        ///
+        /// `None` from a client that does not know yet (before the map has
+        /// anchored) — a sensor simply does not see such an avatar, which is the
+        /// right answer rather than a guessed position.
+        geo: Option<GeoAnchor>,
     },
     ObserverUpdate {
         position: Vec3,
@@ -537,6 +586,9 @@ pub enum NetMessage {
         geometry: PrimGeometry,
         /// Absolute geo placement (ADR-029).
         geo: GeoAnchor,
+        /// A particle emitter to author onto the prim (protocol v20).
+        #[serde(default)]
+        particles: Option<ParticleEffect>,
     },
     /// ADR-017: client sends updated prim state (position, rotation, scale, color, texture, name).
     UpdatePrim {
@@ -556,6 +608,9 @@ pub enum NetMessage {
         geometry: PrimGeometry,
         /// Absolute geo placement (ADR-029).
         geo: GeoAnchor,
+        /// The prim's particle emitter, or `None` to take it off (protocol v20).
+        #[serde(default)]
+        particles: Option<ParticleEffect>,
     },
     /// ADR-017: client requests deletion of a prim by id.
     DeletePrim {
@@ -1114,6 +1169,7 @@ mod tests {
                 jump: false,
                 emote: None,
                 seated,
+                geo: None,
             };
             let b = encode_app_frame(&m).unwrap();
             assert_eq!(decode_app_frame(&b).unwrap(), m);
@@ -1153,6 +1209,7 @@ mod tests {
                 latitude: 53.2194,
                 longitude: 6.5665,
             },
+            particles: Some(crate::particles::ParticleEffect::fire()),
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -1176,6 +1233,7 @@ mod tests {
                 latitude: 53.2194,
                 longitude: 6.5665,
             },
+            particles: None,
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -1340,6 +1398,8 @@ mod tests {
                 latitude: 53.2194,
                 longitude: 6.5665,
             },
+            particles: Some(crate::particles::ParticleEffect::blast()),
+            scripted: true,
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();

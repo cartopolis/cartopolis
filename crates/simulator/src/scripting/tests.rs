@@ -694,3 +694,156 @@ fn die_is_a_command_not_a_side_effect() {
         "expected a Die for prim 1, got {out:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Script-to-script messaging
+// ---------------------------------------------------------------------------
+
+/// Compile a pair of scripts, queue `on_start` for each and run the real
+/// scheduler over them for a few ticks.
+///
+/// It goes through [`step`] rather than delivering an event by hand, because the
+/// fan-out *is* what these tests are about: who hears a message, when, and in
+/// what order is decided there and nowhere else.
+fn talk(a: &str, b: &str, ticks: u32) -> Vec<ScriptCommand> {
+    talk_in_regions((1, a, 1), (2, b, 1), ticks)
+}
+
+/// The same, with each script's prim id and region spelled out.
+fn talk_in_regions(a: (i64, &str, i64), b: (i64, &str, i64), ticks: u32) -> Vec<ScriptCommand> {
+    let (tx, rx) = mpsc::channel();
+    let mut slots: HashMap<i64, Slot> = HashMap::new();
+    for (id, source, region) in [a, b] {
+        let mut slot = Slot::compile(id, source).expect("compile");
+        slot.region_id = region;
+        slot.queue(ScriptEvent::Start);
+        slots.insert(id, slot);
+    }
+    let mut cursor = 0usize;
+    for _ in 0..ticks {
+        step(&mut slots, &mut cursor, 0.05, &tx);
+    }
+    drop(tx);
+    rx.into_iter().collect()
+}
+
+/// Whether any script logged `text`.
+fn logged(out: &[ScriptCommand], text: &str) -> bool {
+    out.iter().any(|c| {
+        matches!(c, ScriptCommand::Output { level, text: t, .. }
+            if *level == ScriptLevel::Info && t == text)
+    })
+}
+
+/// A message reaches a listener, and carries the sender's id.
+#[test]
+fn a_script_can_talk_to_another_script() {
+    let out = talk(
+        "function on_start() vfSend(7, 'ping') end",
+        "function on_start() vfListen(7) end \
+         function on_message(c, t, from) vfLog(t .. ' ' .. c .. ' ' .. from) end",
+        8,
+    );
+    let lines: Vec<String> = out
+        .iter()
+        .filter_map(|c| match c {
+            ScriptCommand::Output { level, text, .. } if *level == ScriptLevel::Info => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines, vec!["ping 7 1".to_string()], "{out:?}");
+}
+
+/// **A script does not hear itself**, which is the one place this deviates from
+/// Second Life and is deliberate: listening on the channel you send on is the
+/// ordinary shape (the beacon and the firebird both do it), and hearing yourself
+/// turns it into a feedback loop the author did not write.
+#[test]
+fn a_script_does_not_hear_its_own_message() {
+    let out = talk(
+        "function on_start() vfListen(7) vfSend(7, 'hello') end \
+         function on_message(c, t, from) vfLog('heard myself') end",
+        "function on_start() end",
+        8,
+    );
+    assert!(!logged(&out, "heard myself"), "{out:?}");
+}
+
+/// Listening is opt-in. Without it every `vfSend` would queue an event on every
+/// script in the region, so one chatty prim would cost every other one work it
+/// never asked for.
+#[test]
+fn a_script_hears_nothing_until_it_listens() {
+    let out = talk(
+        "function on_start() vfSend(7, 'ping') end",
+        "function on_start() end function on_message(c, t, f) vfLog('heard') end",
+        8,
+    );
+    assert!(!logged(&out, "heard"), "{out:?}");
+}
+
+/// A channel is not a public address: a listener on 7 does not hear 8.
+#[test]
+fn channels_are_separate() {
+    let out = talk(
+        "function on_start() vfSend(8, 'ping') end",
+        "function on_start() vfListen(7) end \
+         function on_message(c, t, f) vfLog('heard') end",
+        8,
+    );
+    assert!(!logged(&out, "heard"), "{out:?}");
+}
+
+/// A region is the boundary. A channel that silently crossed one would let an
+/// estate's button work its neighbour's door.
+#[test]
+fn a_message_does_not_leave_its_region() {
+    let out = talk_in_regions(
+        (1, "function on_start() vfSend(7, 'ping') end", 1),
+        (
+            2,
+            "function on_start() vfListen(7) end \
+             function on_message(c, t, f) vfLog('heard') end",
+            2,
+        ),
+        8,
+    );
+    assert!(!logged(&out, "heard"), "{out:?}");
+}
+
+/// `vfListen(channel, false)` stops it again.
+#[test]
+fn listening_can_be_stopped() {
+    let out = talk(
+        "function on_start() vfSetTimerEvent(0.05) end \
+         function on_timer() vfSend(7, 'ping') end",
+        "function on_start() vfListen(7) vfListen(7, false) end \
+         function on_message(c, t, f) vfLog('heard') end",
+        12,
+    );
+    assert!(!logged(&out, "heard"), "{out:?}");
+}
+
+/// A script cannot flood the region: the send budget is per tick, and overrunning
+/// it is reported the way an overrun command budget is rather than faulting the
+/// script mid-handler.
+#[test]
+fn the_send_budget_is_bounded() {
+    let out = talk(
+        "function on_start() for i = 1, 100 do vfSend(7, 'ping') end end",
+        "function on_start() vfListen(7) end \
+         function on_message(c, t, f) vfLog('heard') end",
+        6,
+    );
+    let heard = out
+        .iter()
+        .filter(|c| matches!(c, ScriptCommand::Output { text, .. } if text == "heard"))
+        .count();
+    assert!(
+        heard <= MAX_MESSAGES_PER_TICK,
+        "100 sends in one handler delivered {heard} messages; the cap is {MAX_MESSAGES_PER_TICK}"
+    );
+    assert!(heard > 0, "the first few should still have gone through");
+}

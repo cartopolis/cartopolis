@@ -305,6 +305,12 @@ pub fn handle_gizmo_interaction(
                             surface: edit_dialog.surface,
                             geometry: edit_dialog.geometry(),
                             geo,
+                            // Passed through, never invented: the gizmo moves a
+                            // prim and knows nothing about its emitter, and an
+                            // `UpdatePrim` is a *whole* state — sending `None`
+                            // here would put out a fire every time somebody
+                            // dragged the thing carrying it.
+                            particles: prim.particles,
                         },
                     );
                 }
@@ -394,6 +400,7 @@ pub fn handle_gizmo_interaction(
                         surface: edit_dialog.surface,
                         geometry: edit_dialog.geometry(),
                         geo,
+                        particles: prim.particles,
                     },
                 );
             }

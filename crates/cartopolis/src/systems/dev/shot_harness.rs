@@ -604,6 +604,18 @@ pub struct ShotMetrics {
     /// one that is rendered but unseen is a depth or colour problem.
     pub route_meshes: usize,
     pub route_rendered: usize,
+    /// Particle emitters drawing, and the quads they add up to
+    /// (`systems::particles`).
+    ///
+    /// The geometry half of "is the fire there?", and on this container it is the
+    /// *only* half: colour, blending and brightness are not evidence on a
+    /// software rasteriser (`docs/notes/headless-shots-software-renderer.md`), so
+    /// a capture proves the pipeline built and the emitter exists, and a person
+    /// on a workstation still has to say whether it looks like fire. Zero
+    /// emitters on a prim that carries one is the same class of finding
+    /// `avatar_meshes == 0` was.
+    pub particle_emitters: usize,
+    pub particle_quads: usize,
     /// Mesh entities under the local avatar, and how many the view rendered.
     ///
     /// The same split the route and globe counts make, added because the avatar
@@ -750,7 +762,8 @@ tiles_occluded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
+route_meshes,route_rendered,particle_emitters,particle_quads,\
+grass_patches,grass_slots,grass_rendered,\
 bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,interior_rooms,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
@@ -1357,6 +1370,7 @@ const UI_ELEMENTS: &[&str] = &[
     "chat",
     "sit",
     "locate",
+    "fire",
     "all",
 ];
 
@@ -1569,6 +1583,154 @@ fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
         crate::systems::chat_overlay::ScriptedSpeaker,
         Transform::from_translation(at).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
     ));
+}
+
+/// Seed and hold the `--ui fire` demo: two prims in front of the camera, one
+/// burning and one exploding.
+///
+/// It exists for the reason `--ui chat`'s demo speaker does — a scripted run has
+/// no server, so a feature that only ever arrives on a prim from a script would
+/// otherwise photograph as an empty street, and a feature nobody can photograph
+/// is a feature nobody reviews. What a capture proves here is the *geometry*
+/// half: that the pipeline built, that the emitter exists, that the quads are
+/// placed and in frame (`particle_emitters` / `particle_quads` in
+/// `--dump-state`). Colour, brightness and blending are not evidence on a
+/// software rasteriser — `docs/notes/headless-shots-software-renderer.md`.
+///
+/// **A burst has to be re-armed or it cannot be in the picture at all.** A
+/// capture settles for fifteen virtual seconds and an explosion lasts about one,
+/// so the blast seeded at startup is minutes over by the time the shutter fires.
+/// The sequence is bumped once per lifetime here, which is the same "the seed and
+/// the shutter are seconds apart" problem `hold_scripted_chat` re-stamps its
+/// lines for — and it goes through `ParticleEffect::sequence` rather than round
+/// the side of it, so what is being exercised is the real re-arm path.
+///
+/// The prims follow the camera, again as the demo speaker does and for the same
+/// reason: `--look` does not reliably reach the rendered camera, so anything
+/// parked at a fixed offset photographs an empty street about as often as not.
+pub fn hold_scripted_fire(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    time: Res<Time>,
+    mut commands: Commands,
+    camera: Query<&Transform, (With<FreeCamera>, Without<crate::components::Prim>)>,
+    mut seeded: Query<
+        (
+            &mut Transform,
+            &mut crate::components::Prim,
+            &crate::systems::particles::ScriptedFire,
+        ),
+        Without<FreeCamera>,
+    >,
+) {
+    let want = |k: &str| {
+        let panels = harness.ui_for(progress.index);
+        panels.iter().any(|u| u == k || u == "all")
+    };
+    if !want("fire") {
+        // Not asked for. Anything seeded by an earlier shot in a `--shots` run
+        // goes, or one preset's fire would burn through every image after it —
+        // the same rule `open_scripted_ui` follows for its panels.
+        for (_, mut prim, _) in seeded.iter_mut() {
+            prim.particles = None;
+        }
+        return;
+    }
+    let Ok(cam) = camera.single() else { return };
+    // On the view ray, at a comfortable distance, floored at the ground.
+    //
+    // **Not "on the ground where the ray hits"**, which is what this did first
+    // and is wrong in exactly the case a demo capture is usually taken from: a
+    // camera 25 m up at a shallow pitch meets the ground 180 m away, the clamp
+    // pulls the distance back to 20 m, and forcing the height to ground level
+    // then puts the fire 20 m ahead and 25 m *below* — a 51° depression, outside
+    // an 8°-pitched frustum. Two emitters, 296 quads, nothing in the picture.
+    // Staying on the ray cannot do that: whatever the camera is doing, the point
+    // is in front of it.
+    const GROUND_Y: f32 = 0.05;
+    let forward = cam.forward().as_vec3();
+    let drop = cam.translation.y - GROUND_Y;
+    let hit = (forward.y < -0.05 && drop > 0.0).then(|| drop / -forward.y);
+    let distance = hit.unwrap_or(8.0).clamp(4.0, 20.0);
+    let right = cam.right().as_vec3();
+    // Where each of the two stands. They are put at *different* distances rather
+    // than side by side because a blast reaches about twenty-five metres
+    // (`ParticleEffect::reach_m`) and a flame about five: at one distance the
+    // explosion fills the frame and the fire is a detail inside it, which is a
+    // picture of one feature. `place` is called per emitter below.
+    let place = |away: f32, offset: f32| {
+        let mut p = cam.translation + forward * away + right * offset;
+        p.y = p.y.max(GROUND_Y);
+        p
+    };
+
+    if seeded.is_empty() {
+        // `(distance multiple, sideways metres)`: the flame near and to one side,
+        // the blast well back and to the other.
+        for (burst, offset) in [(false, (1.0_f32, -2.0_f32)), (true, (3.0, 6.0))] {
+            let effect = if burst {
+                cartopolis_core::ParticleEffect::blast()
+            } else {
+                cartopolis_core::ParticleEffect::fire()
+            };
+            commands.spawn((
+                crate::components::Prim {
+                    // Negative, so a seeded prim can never collide with a
+                    // server-assigned id — offline there is no server, and this
+                    // says so rather than relying on there not being one.
+                    id: if burst { -2 } else { -1 },
+                    region_id: 0,
+                    name: if burst { "Blast" } else { "Fire" }.into(),
+                    shape: crate::components::PrimShape::Cylinder,
+                    color: Color::srgb(0.15, 0.13, 0.12),
+                    texture_id: None,
+                    path_cut_begin: 0.0,
+                    path_cut_end: 1.0,
+                    hollow: 0.0,
+                    twist_begin: 0.0,
+                    twist_end: 0.0,
+                    taper_x: 0.0,
+                    taper_y: 0.0,
+                    top_shear_x: 0.0,
+                    top_shear_y: 0.0,
+                    slice_begin: 0.0,
+                    slice_end: 1.0,
+                    surface: cartopolis_core::PrimSurface::default(),
+                    particles: Some(effect),
+                    // A scripted run has no server and so no script; this also
+                    // keeps the seeded prims out of the interact prompt, which
+                    // would otherwise offer to press a thing with nothing behind
+                    // it in every `--ui fire` capture.
+                    scripted: false,
+                },
+                crate::systems::particles::ScriptedFire { burst },
+                Transform::from_translation(place(distance * offset.0, offset.1))
+                    .with_scale(Vec3::new(0.8, 0.3, 0.8)),
+            ));
+        }
+        return;
+    }
+
+    for (mut at, mut prim, marker) in seeded.iter_mut() {
+        at.translation = if marker.burst {
+            place(distance * 3.0, 6.0)
+        } else {
+            place(distance, -2.0)
+        };
+        let Some(effect) = prim.particles.as_mut() else {
+            continue;
+        };
+        if !marker.burst {
+            continue;
+        }
+        // Re-arm once per lifetime, so whenever the shutter fires the blast is
+        // somewhere in its first second.
+        let period = effect.life.max(0.1);
+        let step = (time.elapsed_secs() / period) as u32;
+        if effect.sequence != step {
+            effect.sequence = step;
+        }
+    }
 }
 
 /// Hold the `--ui chat` demo steady: keep the seeded lines fresh, and stand the
@@ -2034,6 +2196,10 @@ pub struct VisualCounts<'w, 's> {
             &'static Visibility,
         ),
     >,
+    /// The particle emitters in the world (`systems::particles`). Bundled here
+    /// rather than added as its own argument for the reason above — the system is
+    /// at Bevy's parameter ceiling.
+    particles: Query<'w, 's, &'static crate::systems::particles::ParticleEmitter>,
 }
 
 pub fn drive_capture(
@@ -2306,6 +2472,8 @@ pub fn drive_capture(
         // Likewise, and it was called three times in the struct literal below —
         // once per column — each walking every pool.
         let grass = readouts.grass.census();
+        // One walk of the emitters, for two columns.
+        let particles = crate::systems::particles::particle_census(&visuals.particles);
         // Absent on a backend that keeps no allocator report; reported as zeros
         // rather than omitted, so a CSV row never changes width.
         let vram = readouts
@@ -2353,6 +2521,8 @@ pub fn drive_capture(
             furniture_factor: readouts.furniture.factor,
             route_meshes: visuals.route.iter().count(),
             route_rendered: visuals.route.iter().filter(|vv| vv.get()).count(),
+            particle_emitters: particles.0 as usize,
+            particle_quads: particles.1 as usize,
             grass_patches: grass.0,
             grass_slots: grass.1,
             grass_rendered: grass.2,
@@ -2469,6 +2639,8 @@ pub fn drive_capture(
                     furniture_factor = format!("{:.3}", m.furniture_factor),
                     route_meshes = m.route_meshes,
                     route_rendered = m.route_rendered,
+                    particle_emitters = m.particle_emitters,
+                    particle_quads = m.particle_quads,
                     grass_patches = m.grass_patches,
                     grass_slots = m.grass_slots,
                     grass_rendered = m.grass_rendered,
@@ -2773,6 +2945,8 @@ mod tests {
             globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
             route_meshes: 0,
             route_rendered: 0,
+            particle_emitters: 0,
+            particle_quads: 0,
             avatar_meshes: 0,
             avatar_rendered: 0,
             ground_m: f32::NAN,

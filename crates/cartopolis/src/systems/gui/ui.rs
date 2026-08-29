@@ -2286,6 +2286,9 @@ pub fn send_prim_mutations(
                     surface: dialog_state.surface,
                     geometry: dialog_state.geometry(),
                     geo,
+                    // Nothing in the create dialog authors an emitter, so a prim
+                    // made here starts without one.
+                    particles: None,
                 },
             );
             tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");
@@ -2325,6 +2328,14 @@ pub fn send_prim_mutations(
                         surface: dialog_state.surface,
                         geometry: dialog_state.geometry(),
                         geo,
+                        // The edit dialog has no emitter field, and `UpdatePrim`
+                        // replaces the whole prim — so the current one is sent
+                        // back, or saving a colour change would put out a fire a
+                        // script had lit.
+                        particles: prim_query
+                            .iter()
+                            .find(|(_, p, ..)| p.id == prim_id)
+                            .and_then(|(_, p, ..)| p.particles),
                     },
                 );
             }

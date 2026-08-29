@@ -1,6 +1,7 @@
 use cartopolis_core::{
-    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
-    PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
+    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage,
+    ParticleEffect, PrimDto, PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS,
+    MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -46,6 +47,20 @@ struct AvatarSim {
     /// Monotonic per-avatar counter. The same emote twice running is two events,
     /// and a receiver that diffed on the emote alone would play only the first.
     emote_sequence: u32,
+    /// The account this avatar is signed in as, for anything that has to *name*
+    /// it — today that is `vfSensor`, which hands a script the name so a prim can
+    /// greet whoever walked up. Set once at the handshake; "Someone" until then,
+    /// which is what a connection that has not authenticated yet is.
+    name: String,
+    /// Where this avatar is on Earth, as its own client last said (protocol 20).
+    ///
+    /// The sim cannot compute this and does not use it to move anything: it is
+    /// the only frame in which "is this avatar near that prim?" has an answer
+    /// (see [`cartopolis_core::NetMessage::ClientIntent`]'s `geo`), and
+    /// `vfSensor` is the one consumer. `None` until a client that knows says so —
+    /// an avatar with no fix is invisible to a sensor, which is the honest
+    /// answer.
+    geo: Option<GeoAnchor>,
     /// Where this avatar's body is drawn relative to [`Self::position`], while it
     /// is sitting on something (`AvatarStateDto::seated`).
     ///
@@ -83,6 +98,34 @@ pub struct SimWorld {
     /// rate, which is 20 disk writes a second per script for state that is
     /// re-derivable and changes again immediately.
     dirty: HashSet<i64>,
+}
+
+/// Furthest a `vfSensor` may see, whatever a script asks for.
+///
+/// A cap on the *gathering*, not on the question: [`SimWorld::script_views`]
+/// measures every located avatar against every scripted prim once a tick, and
+/// without a ceiling a script could ask about a continent and get one. It is
+/// generous next to any plausible in-world use and stingy next to a planet.
+const SENSOR_MAX_RANGE_M: f32 = 4_096.0;
+
+/// Most neighbours carried to one script per tick. `vfSensor` returns the nearest
+/// one, so this only bounds what a future "list everyone" call could ask for —
+/// and bounds the per-tick allocation now, which is the reason it exists.
+const SENSOR_MAX_RESULTS: usize = 16;
+
+/// Ground distance between two geo anchors, in metres, as `f32` for the script
+/// API. Non-finite inputs come back as infinity, which every caller filters out —
+/// there is no distance that means "unknown", so the answer has to be one no
+/// range test accepts.
+fn ground_distance_m(a: GeoAnchor, b: GeoAnchor) -> f32 {
+    if !a.latitude.is_finite()
+        || !a.longitude.is_finite()
+        || !b.latitude.is_finite()
+        || !b.longitude.is_finite()
+    {
+        return f32::INFINITY;
+    }
+    cartopolis_core::ground_distance_m(a.latitude, a.longitude, b.latitude, b.longitude) as f32
 }
 
 /// A region's budget and what is currently drawn against it.
@@ -168,6 +211,8 @@ impl SimWorld {
                 emote: None,
                 emote_age: 0.0,
                 emote_sequence: 0,
+                name: "Someone".to_string(),
+                geo: None,
                 seated: None,
             },
         );
@@ -176,6 +221,13 @@ impl SimWorld {
 
     pub fn remove_avatar(&mut self, id: u64) {
         self.avatars.remove(&id);
+    }
+
+    /// Record who an avatar is, once the handshake knows.
+    pub fn set_avatar_name(&mut self, id: u64, name: &str) {
+        if let Some(a) = self.avatars.get_mut(&id) {
+            a.name = name.to_string();
+        }
     }
 
     /// Place an avatar (protocol 17, `NetMessage::Teleport`): the counterpart of
@@ -228,14 +280,17 @@ impl SimWorld {
         self.observer = p;
     }
 
-    /// Returns a reference to the regions (for testing).
-    #[cfg(test)]
+    /// Every region in the world, in the order they were loaded.
     pub fn regions(&self) -> &[RegionDto] {
         &self.regions
     }
 
-    /// Returns a reference to the prims (for testing).
-    #[cfg(test)]
+    /// Every prim in the world, in id order.
+    ///
+    /// The AoI filter in [`SimWorld::snapshot`] is what a *client* sees; this is
+    /// the whole set, which is what the authoring API lists and what the tests
+    /// assert against. An operator listing a region's contents is not standing
+    /// anywhere in it.
     pub fn prims(&self) -> &[PrimDto] {
         &self.prims
     }
@@ -253,6 +308,7 @@ impl SimWorld {
         jump: bool,
         emote: Option<Emote>,
         seated: Option<[f32; 2]>,
+        geo: Option<GeoAnchor>,
     ) {
         // Every float in an intent must be a real number, or the whole intent is
         // discarded.
@@ -279,6 +335,19 @@ impl SimWorld {
         let Some(av) = self.avatars.get_mut(&avatar_id) else {
             return;
         };
+        // The geographic fix, filtered rather than trusted: a non-finite or
+        // off-globe coordinate is dropped and the last good one kept, because a
+        // sensor reading a NaN latitude would compute a NaN distance and then see
+        // nobody at all, everywhere, for as long as that client stayed connected.
+        if let Some(g) = geo {
+            if g.latitude.is_finite()
+                && g.longitude.is_finite()
+                && g.latitude.abs() <= 90.0
+                && g.longitude.abs() <= 180.0
+            {
+                av.geo = Some(g);
+            }
+        }
         // Horizontal speed is the intent *magnitude* scaled, capped
         // (`motion::sim_speed_for_wish` — the client predicts with the same
         // function). The magnitude is the throttle: a walk, a jog, a sprint and
@@ -463,6 +532,7 @@ impl SimWorld {
         position: Vec3,
         shape: &str,
         geo: GeoAnchor,
+        particles: Option<&ParticleEffect>,
     ) -> Result<PrimDto, String> {
         // Capacity is checked *before* the insert, so the refusal costs no write
         // and the id sequence does not advance on a rejected create.
@@ -481,7 +551,7 @@ impl SimWorld {
                 .conn
                 .lock()
                 .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::insert_prim(&conn_guard, region_id, position, shape, geo)
+            crate::db::insert_prim(&conn_guard, region_id, position, shape, geo, particles)
                 .map_err(|e| format!("insert_prim failed: {}", e))?
         };
         // Add to in-memory list
@@ -505,6 +575,7 @@ impl SimWorld {
         surface: PrimSurface,
         geometry: PrimGeometry,
         geo: GeoAnchor,
+        particles: Option<&ParticleEffect>,
     ) -> Result<PrimDto, String> {
         // Call db::update_prim with a minimal lock
         let prim = {
@@ -524,6 +595,7 @@ impl SimWorld {
                 surface,
                 geometry,
                 geo,
+                particles,
             )
             .map_err(|e| format!("update_prim failed: {}", e))?
             .ok_or_else(|| format!("prim {} not found", prim_id))?
@@ -621,6 +693,14 @@ impl SimWorld {
         } else {
             self.scripted.remove(&prim_id);
         }
+        // And on the prim itself, which is what clients are sent (protocol 21).
+        // `db::row_to_prim` reads the same fact out of `prim_scripts` on every
+        // load, so this is the in-memory copy catching up rather than a second
+        // source of truth — but without it a freshly scripted prim would not be
+        // pressable until the server restarted.
+        if let Some(p) = self.prims.iter_mut().find(|p| p.id == prim_id) {
+            p.scripted = scripted;
+        }
     }
 
     /// Whether `prim_id` may take a script. Replacing an existing one is always
@@ -645,11 +725,37 @@ impl SimWorld {
     }
 
     /// Read-only views of every scripted prim, handed to the host each tick.
+    ///
+    /// The neighbours are computed here rather than answered on demand from the
+    /// script thread, and that is the whole shape of `vfSensor`: the host thread
+    /// holds no reference to `SimWorld` (that is what keeps a script off the tick's
+    /// write lock — see `scripting`'s module note), so anything a script can ask
+    /// about has to have been pushed to it at the barrier. A sensor therefore
+    /// reads a snapshot that is at most one tick old, which is the same freshness
+    /// `vfGetPos` has always had.
     pub fn script_views(&self) -> Vec<(i64, PrimView)> {
+        // Every avatar that has told us where on Earth it is. Gathered once for
+        // the whole pass: a region with 200 scripted prims and 20 avatars would
+        // otherwise rebuild this list 200 times a tick.
+        let located: Vec<(u64, GeoAnchor, String)> = self
+            .avatars
+            .iter()
+            .filter_map(|(id, a)| a.geo.map(|g| (*id, g, a.name.clone())))
+            .collect();
         self.prims
             .iter()
             .filter(|p| self.scripted.contains(&p.id))
             .map(|p| {
+                let mut nearby: Vec<(u64, String, f32)> = located
+                    .iter()
+                    .map(|(id, g, name)| (*id, name.clone(), ground_distance_m(p.geo, *g)))
+                    .filter(|(_, _, d)| d.is_finite() && *d <= SENSOR_MAX_RANGE_M)
+                    .collect();
+                // Nearest first, so `vfSensor(range)` is a prefix scan and the
+                // truncation below drops the ones a script is least likely to
+                // have been asking about.
+                nearby.sort_by(|a, b| a.2.total_cmp(&b.2));
+                nearby.truncate(SENSOR_MAX_RESULTS);
                 (
                     p.id,
                     PrimView {
@@ -661,6 +767,10 @@ impl SimWorld {
                         glow: p.surface.glow,
                         full_bright: p.surface.full_bright,
                         name: p.name.clone(),
+                        particles: p.particles,
+                        geo: p.geo,
+                        region_id: p.region_id,
+                        nearby,
                     },
                 )
             })
@@ -718,6 +828,24 @@ impl SimWorld {
                     Box::new(move |p: &mut PrimDto| p.name = name.clone()),
                 )
             }
+            ScriptCommand::SetGeo {
+                prim_id,
+                latitude,
+                longitude,
+            } => {
+                let geo = GeoAnchor {
+                    latitude: *latitude,
+                    longitude: *longitude,
+                };
+                (*prim_id, Box::new(move |p: &mut PrimDto| p.geo = geo))
+            }
+            ScriptCommand::SetParticles { prim_id, effect } => {
+                let effect = effect.map(|e| e.sanitized());
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.particles = effect),
+                )
+            }
             // Not a field write: the caller routes these to chat, to the editor,
             // and to `remove_prim` respectively.
             ScriptCommand::Say { .. }
@@ -762,6 +890,7 @@ impl SimWorld {
                 p.surface,
                 prim_geometry(p),
                 p.geo,
+                p.particles.as_ref(),
             ) {
                 tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
                 // Keep the promise above: a failed write stays dirty, so a
@@ -816,7 +945,7 @@ mod tests {
             (f32::NAN, f32::NAN, 0.0),
             (1.0, 0.0, f32::NAN),
         ] {
-            world.apply_intent(id, x, z, yaw, false, false, false, false, None, None);
+            world.apply_intent(id, x, z, yaw, false, false, false, false, None, None, None);
             world.step(0.05);
             let p = world.avatar_position(id).expect("still there");
             assert!(
@@ -832,7 +961,9 @@ mod tests {
 
         // And an ordinary intent still moves, so the guard is not simply refusing
         // everything.
-        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None, None);
+        world.apply_intent(
+            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
+        );
         world.step(0.05);
         let p = world.avatar_position(id).expect("still there");
         assert!(p.is_finite());
@@ -872,6 +1003,7 @@ mod tests {
             false,
             None,
             Some([0.4, -0.9]),
+            None,
         );
         assert_eq!(seated(&world), Some([0.4, -0.9]));
 
@@ -887,6 +1019,7 @@ mod tests {
             false,
             None,
             Some([0.4, -0.9]),
+            None,
         );
         assert_eq!(seated(&world), None, "walking away should end the sit");
 
@@ -902,6 +1035,7 @@ mod tests {
             false,
             None,
             Some([0.4, -0.9]),
+            None,
         );
         world.apply_intent(
             id,
@@ -914,6 +1048,7 @@ mod tests {
             false,
             None,
             Some([0.4, -0.9]),
+            None,
         );
         assert_eq!(seated(&world), None, "flying should end the sit");
         world.apply_intent(
@@ -927,6 +1062,7 @@ mod tests {
             false,
             None,
             Some([0.4, -0.9]),
+            None,
         );
         world.apply_intent(
             id,
@@ -939,6 +1075,7 @@ mod tests {
             true,
             None,
             Some([0.4, -0.9]),
+            None,
         );
         assert_eq!(seated(&world), None, "jumping should end the sit");
 
@@ -961,6 +1098,7 @@ mod tests {
                 false,
                 None,
                 Some(bad),
+                None,
             );
             assert_eq!(seated(&world), None, "{bad:?} should have been refused");
         }
@@ -978,7 +1116,9 @@ mod tests {
         let id = world.spawn_avatar();
         // Walking when the jump lands: the carried velocity must not slide the
         // avatar off the destination.
-        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None, None);
+        world.apply_intent(
+            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
+        );
         world.step(0.05);
 
         let dest = Vec3::new(1234.5, 0.05, -987.0);

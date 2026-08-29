@@ -109,6 +109,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/admin/reports/{id}", patch(resolve_report))
         .route("/api/admin/claims", get(list_claims))
         .route("/api/admin/claims/{id}", delete(release_claim))
+        // The authoring surface is a separate module with its own note, mounted
+        // here rather than defined here: it is the same audience and the same
+        // token, and a second listener would double the reverse-proxy config to
+        // separate two route prefixes (see this module's note).
+        .merge(crate::authoring::routes())
         .with_state(state)
 }
 
@@ -547,7 +552,7 @@ async fn resend_verification(
 // ---------------------------------------------------------------------------
 
 /// An error as the API reports it: a status and a message a GUI can show.
-struct ApiError(StatusCode, String);
+pub(crate) struct ApiError(pub StatusCode, pub String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -569,7 +574,7 @@ fn internal(e: anyhow::Error) -> ApiError {
     )
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
 /// Shortest password the API will store.
 ///
@@ -607,7 +612,7 @@ fn check_username(username: &str) -> ApiResult<()> {
 /// the database says whether that person may still do this — so revoking the flag
 /// or disabling the account takes effect on the next request rather than at token
 /// expiry.
-fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
+pub(crate) fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, String)> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -648,7 +653,7 @@ fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult<(Uuid, Str
 /// be held across an `.await`. The tick loop takes the same mutex while holding
 /// the world write lock (see `auth`'s module note), so an admin request that
 /// parked with it held would stall the simulation for everyone.
-fn with_db<T>(
+pub(crate) fn with_db<T>(
     state: &HttpState,
     f: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<T>,
 ) -> ApiResult<T> {

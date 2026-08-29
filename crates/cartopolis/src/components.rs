@@ -46,6 +46,15 @@ pub struct Prim {
     pub slice_end: f32,
     /// Texture surface params (transparency, glow, full-bright, repeats, rotation, offset).
     pub surface: PrimSurface,
+    /// A particle emitter carried on this prim (protocol v20), or `None` for the
+    /// overwhelming majority that have none. `systems::particles` turns it into a
+    /// child entity; nothing else reads it.
+    pub particles: Option<cartopolis_core::ParticleEffect>,
+    /// Whether the server holds a script for this prim (protocol v21). The client
+    /// cannot derive it — source never travels in a snapshot — and
+    /// `systems::interact` is what reads it, to decide whether walking up to this
+    /// thing offers to press it.
+    pub scripted: bool,
 }
 
 /// ADR-029: a prim's absolute geographic placement. Present iff the prim was
