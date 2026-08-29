@@ -61,13 +61,21 @@ pub fn geo_from_world(world: Vec3, map_anchor: &MapAnchor) -> Option<GeoAnchor> 
 /// Place / re-project every geo-anchored prim into the big_space grid.
 ///
 /// Runs each frame but only touches a prim when it needs it: a freshly spawned
-/// geo prim (no `GridCell` yet) or — when the anchor moved — every geo prim. The
-/// altitude (`position.y`) is preserved across the re-projection; only the
-/// horizontal placement follows the anchor.
+/// geo prim (no `GridCell` yet), one whose [`PrimGeo`] changed, or — when the
+/// anchor moved — every geo prim. The altitude (`position.y`) is preserved
+/// across the re-projection; only the horizontal placement follows the anchor.
+///
+/// **The `Changed` arm is what lets a prim move at all.** Before it, a prim was
+/// placed once and then only re-placed on a re-anchor, which was right while the
+/// only way a prim's geo changed was somebody dragging it (and the drag moves the
+/// `Transform` directly). A script writing `vfSetGeo` twenty times a second
+/// updates `PrimGeo` and nothing else: the prim would have sat exactly where it
+/// was first drawn, while the server, the database and every reconnecting client
+/// agreed it had moved.
 pub fn place_geo_prims(
     mut commands: Commands,
     bigspace: Query<Entity, With<BigSpace>>,
-    mut prims: Query<(Entity, &PrimGeo, &mut Transform, Option<&GridCell>), With<Prim>>,
+    mut prims: Query<(Entity, Ref<PrimGeo>, &mut Transform, Option<&GridCell>), With<Prim>>,
     mut last_anchor: Local<Option<(f64, f64, u32)>>,
     map_anchor: Res<MapAnchor>,
 ) {
@@ -82,8 +90,10 @@ pub fn place_geo_prims(
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
 
     for (entity, geo, mut transform, cell) in prims.iter_mut() {
-        // Only work when there's work: a new prim (no cell) or an anchor move.
-        if !anchor_changed && cell.is_some() {
+        // Only work when there's work: a new prim (no cell), a prim whose anchor
+        // was rewritten, or a move of the map anchor everything is projected
+        // against.
+        if !anchor_changed && cell.is_some() && !geo.is_changed() {
             continue;
         }
         // Keep altitude; recompute the horizontal placement from the anchor.

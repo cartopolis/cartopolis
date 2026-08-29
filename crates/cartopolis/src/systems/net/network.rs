@@ -1134,6 +1134,7 @@ fn prim_from_dto(p: &PrimDto) -> Prim {
         slice_begin: p.slice_begin,
         slice_end: p.slice_end,
         surface: p.surface,
+        particles: p.particles,
     }
 }
 
@@ -1267,6 +1268,7 @@ pub fn send_network_intent(
     layers: Res<crate::systems::data_layers::DataLayers>,
     time: Res<Time>,
     osd: Res<crate::systems::map_osd::OsdInput>,
+    map_anchor: Res<crate::resources::MapAnchor>,
     mut last_sent: Local<Option<SentIntent>>,
     mut since_send: Local<f32>,
 ) {
@@ -1457,6 +1459,27 @@ pub fn send_network_intent(
     *since_send = 0.0;
     *last_sent = Some(intent);
 
+    // Where the avatar actually is on Earth (protocol 20). The sim cannot work
+    // this out: its avatar coordinates are metres in *this* client's anchored
+    // frame, and every client anchors somewhere else, so an absolute position is
+    // the only thing a prim's `vfSensor` can measure against a prim's own
+    // `GeoAnchor`. `None` before the map has anchored — a sensor then does not see
+    // this avatar, which beats inventing a position for it.
+    //
+    // Sent with the intent rather than on a clock of its own because it is a
+    // *property of the same movement*: an intent that reports where the avatar is
+    // going and not where it is would be two facts arriving out of step.
+    let geo = map_anchor.geo.map(|anchor| {
+        let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+            anchor,
+            f64::from(avatar_state.position.x),
+            f64::from(avatar_state.position.z),
+        );
+        cartopolis_core::GeoAnchor {
+            latitude: lat,
+            longitude: lng,
+        }
+    });
     let _ = sess.intent_tx.unbounded_send(NetMessage::ClientIntent {
         request_id: 0,
         move_x: v.x,
@@ -1468,6 +1491,7 @@ pub fn send_network_intent(
         jump,
         emote,
         seated,
+        geo,
     });
 }
 

@@ -15,6 +15,7 @@ pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;
 pub mod osm_buildings;
+pub mod particles;
 pub mod render_scale;
 pub mod rendering;
 pub mod road_depth;
