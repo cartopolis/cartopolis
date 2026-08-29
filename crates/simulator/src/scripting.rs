@@ -41,7 +41,7 @@
 //! space. Without that, `sandbox(true)` would make the global table read-only and
 //! every script would fail on its first `function` statement.
 
-use cartopolis_core::ScriptLevel;
+use cartopolis_core::{GeoAnchor, ParticleEffect, ScriptLevel};
 use glam::Vec3;
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, LuaOptions, StdLib, Thread, VmState};
@@ -206,6 +206,21 @@ pub enum ScriptCommand {
         prim_id: i64,
         name: String,
     },
+    /// Move the prim's **geographic anchor** — the durable half of its placement
+    /// (ADR-029). `vfSetPos`'s x/z are re-derived from this by every client, so a
+    /// script that wants a prim to *go* somewhere writes this and a script that
+    /// wants it higher writes `vfSetPos`.
+    SetGeo {
+        prim_id: i64,
+        latitude: f64,
+        longitude: f64,
+    },
+    /// Attach, replace or (with `None`) remove the prim's particle emitter.
+    /// Already sanitised at the API boundary.
+    SetParticles {
+        prim_id: i64,
+        effect: Option<ParticleEffect>,
+    },
     /// Local chat from the prim, heard within `radius` metres.
     Say {
         prim_id: i64,
@@ -237,6 +252,8 @@ impl ScriptCommand {
             | Self::SetGlow { prim_id, .. }
             | Self::SetFullBright { prim_id, .. }
             | Self::SetName { prim_id, .. }
+            | Self::SetGeo { prim_id, .. }
+            | Self::SetParticles { prim_id, .. }
             | Self::Say { prim_id, .. }
             | Self::Output { prim_id, .. }
             | Self::Die { prim_id } => *prim_id,
@@ -261,6 +278,18 @@ pub struct PrimView {
     pub glow: f32,
     pub full_bright: bool,
     pub name: String,
+    /// The emitter currently on the prim, so a script can read what it set and so
+    /// the sequence below has something to count from.
+    pub particles: Option<ParticleEffect>,
+    /// The prim's geographic anchor (ADR-029) — where it actually is, as opposed
+    /// to [`Self::pos`]'s x/z, which are a client-frame echo.
+    pub geo: GeoAnchor,
+    /// Avatars near this prim, nearest first: `(id, name, metres)`.
+    ///
+    /// Pushed with the view rather than queried, because the host thread has no
+    /// access to the world (see the module note on threading) — a sensor is a
+    /// *read of last tick's neighbours*, which is exactly what `vfGetPos` is too.
+    pub nearby: Vec<(u64, String, f32)>,
 }
 
 /// Tick-side → host-thread messages.
@@ -422,6 +451,20 @@ struct Shared {
 }
 
 impl Shared {
+    /// The next value for [`ParticleEffect::sequence`] — one past whatever the
+    /// prim is carrying.
+    ///
+    /// Derived from the prim rather than counted in a private field, so it keeps
+    /// rising across a script restart: a stored effect outlives the VM that set
+    /// it, and a counter that went back to 1 on every recompile would hand a
+    /// client a sequence it had already played, i.e. a blast that does not go off.
+    fn next_sequence(&self) -> u32 {
+        self.view
+            .borrow()
+            .particles
+            .map_or(1, |p| p.sequence.wrapping_add(1))
+    }
+
     fn push(&self, cmd: ScriptCommand) {
         let mut out = self.out.borrow_mut();
         if out.len() >= MAX_COMMANDS_PER_TICK {
@@ -801,6 +844,52 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
+        "vfGetGeo",
+        lua.create_function(move |_, ()| {
+            let g = s.view.borrow().geo;
+            Ok((g.latitude, g.longitude))
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfSetGeo",
+        lua.create_function(move |_, (lat, lng): (f64, f64)| {
+            // The globe's own bounds, not a taste: a latitude past a pole names no
+            // point, and everything downstream (the projection, the distance, the
+            // client's placement) would answer with a number anyway.
+            if !lat.is_finite() || !lng.is_finite() || lat.abs() > 90.0 || lng.abs() > 180.0 {
+                return Err(mlua::Error::RuntimeError(
+                    "expected a latitude in -90..90 and a longitude in -180..180".to_string(),
+                ));
+            }
+            s.push(ScriptCommand::SetGeo {
+                prim_id: s.prim_id,
+                latitude: lat,
+                longitude: lng,
+            });
+            s.view.borrow_mut().geo = GeoAnchor {
+                latitude: lat,
+                longitude: lng,
+            };
+            Ok(())
+        })?,
+    )?;
+
+    env.set(
+        "vfGeoScale",
+        lua.create_function(move |_, lat: f64| {
+            if !lat.is_finite() {
+                return Err(mlua::Error::RuntimeError(
+                    "expected a finite latitude".to_string(),
+                ));
+            }
+            Ok(cartopolis_core::degree_scale_m(lat.clamp(-90.0, 90.0)))
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
         "vfGetRot",
         lua.create_function(move |_, ()| {
             let v = s.view.borrow().rot;
@@ -937,6 +1026,31 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         })?,
     )?;
 
+    // Two entry points, one implementation. The only difference between a fire and
+    // an explosion is `burst` and which preset the unspecified fields come from —
+    // spelling them out twice would be two tables of defaults to keep in step.
+    for (name, burst) in [("vfParticles", false), ("vfParticleBurst", true)] {
+        let s = shared.clone();
+        env.set(
+            name,
+            lua.create_function(move |_, rules: Option<mlua::Table>| {
+                let effect = match rules {
+                    // `vfParticles(nil)` puts it out. There is no `vfParticlesOff`
+                    // because "no rules" already means "no emitter", and a second
+                    // name for it is a second thing to document.
+                    None => None,
+                    Some(t) => Some(effect_from_table(&t, burst, s.next_sequence())?),
+                };
+                s.push(ScriptCommand::SetParticles {
+                    prim_id: s.prim_id,
+                    effect,
+                });
+                s.view.borrow_mut().particles = effect;
+                Ok(())
+            })?,
+        )?;
+    }
+
     // ── Chat ──
 
     let s = shared.clone();
@@ -997,6 +1111,24 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         })?,
     )?;
 
+    // ── Sensing ──
+
+    let s = shared.clone();
+    env.set(
+        "vfSensor",
+        lua.create_function(move |_, range: f32| {
+            let range = finite(range)?.max(0.0);
+            // `nearby` is already nearest-first, so this is the head of the list
+            // and not a scan. Returning nothing at all — rather than a sentinel
+            // distance — is what lets an author write `if id then`.
+            let view = s.view.borrow();
+            match view.nearby.iter().find(|(_, _, d)| *d <= range) {
+                Some((id, name, d)) => Ok((Some(*id), Some(name.clone()), Some(*d))),
+                None => Ok((None, None, None)),
+            }
+        })?,
+    )?;
+
     // ── Prim / lifecycle ──
 
     let s = shared.clone();
@@ -1037,6 +1169,89 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     )?;
 
     Ok(())
+}
+
+/// Read a `vfParticles` rules table into an effect.
+///
+/// Unspecified fields keep the preset's value, which is what makes
+/// `vfParticles{ color = {0,0.4,1} }` a blue flame rather than an error message
+/// about the eleven fields it did not mention. An **unknown** key is an error,
+/// though, and deliberately so: `vfParticles{ lifetime = 3 }` silently emitting
+/// the default 1.4 s is the kind of bug an author cannot see, and this is the
+/// same rule the shot manifest applies to its own keys.
+fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Result<ParticleEffect> {
+    const KEYS: &[&str] = &[
+        "count",
+        "life",
+        "speed",
+        "spread",
+        "gravity",
+        "radius",
+        "size",
+        "end_size",
+        "color",
+        "end_color",
+        "alpha",
+        "turbulence",
+    ];
+    for pair in t.clone().pairs::<mlua::Value, mlua::Value>() {
+        let (k, _) = pair?;
+        let name = k
+            .as_string()
+            .and_then(|s| s.to_str().ok().map(|v| v.to_string()))
+            .unwrap_or_default();
+        if !KEYS.contains(&name.as_str()) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "particle rule `{name}` is not one of: {}",
+                KEYS.join(", ")
+            )));
+        }
+    }
+
+    let base = if burst {
+        ParticleEffect::blast()
+    } else {
+        ParticleEffect::fire()
+    };
+    let num = |key: &str, fallback: f32| -> mlua::Result<f32> {
+        match t.get::<Option<f32>>(key)? {
+            Some(v) => finite(v),
+            None => Ok(fallback),
+        }
+    };
+    let rgb = |key: &str, fallback: [f32; 3]| -> mlua::Result<[f32; 3]> {
+        let Some(c) = t.get::<Option<mlua::Table>>(key)? else {
+            return Ok(fallback);
+        };
+        // Positional, `{1.0, 0.5, 0.1}`, because that is how a colour is written
+        // everywhere else in this API (`vfSetColor(r, g, b)`).
+        Ok([
+            finite(c.get::<Option<f32>>(1)?.unwrap_or(fallback[0]))?,
+            finite(c.get::<Option<f32>>(2)?.unwrap_or(fallback[1]))?,
+            finite(c.get::<Option<f32>>(3)?.unwrap_or(fallback[2]))?,
+        ])
+    };
+
+    Ok(ParticleEffect {
+        count: num("count", f32::from(base.count))?.clamp(0.0, 65_535.0) as u16,
+        life: num("life", base.life)?,
+        speed: num("speed", base.speed)?,
+        spread_deg: num("spread", base.spread_deg)?,
+        gravity: num("gravity", base.gravity)?,
+        source_radius: num("radius", base.source_radius)?,
+        size_start: num("size", base.size_start)?,
+        size_end: num("end_size", base.size_end)?,
+        color_start: rgb("color", base.color_start)?,
+        color_end: rgb("end_color", base.color_end)?,
+        alpha: num("alpha", base.alpha)?,
+        turbulence: num("turbulence", base.turbulence)?,
+        burst,
+        sequence,
+    }
+    // Clamped here, at the boundary, exactly as `vfSetScale` clamps rather than
+    // refuses: a script that asks for a thousand particles gets the ceiling and
+    // keeps running.
+    .sanitized())
 }
 
 /// Reject NaN/infinity at the boundary. A script can produce one with `0/0`, and

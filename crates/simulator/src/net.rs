@@ -331,7 +331,11 @@ pub async fn handle_connection<T: FrameTransport>(
 
     let avatar_id = {
         let mut w = world.write().await;
-        w.spawn_avatar()
+        let id = w.spawn_avatar();
+        // Who this avatar is, for anything that has to name it — `vfSensor` hands
+        // the name to a script so a prim can greet whoever walked up.
+        w.set_avatar_name(id, &username);
+        id
     };
     // From here on, every exit — `?`, break, or unwind — retires the avatar.
     let _cleanup = AvatarGuard {
@@ -487,6 +491,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                 jump,
                                 emote,
                                 seated,
+                                geo,
                                 ..
                             } => {
                                 // The rate limit drops surplus intents, but a jump
@@ -512,6 +517,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                     jump,
                                     emote,
                                     seated,
+                                    geo,
                                 );
                             }
                             NetMessage::ObserverUpdate { position } => {
@@ -549,15 +555,15 @@ pub async fn handle_connection<T: FrameTransport>(
                             }
                             NetMessage::CreatePrim {
                                 request_id, region_id, name, position, rotation, scale,
-                                color, texture_id, shape, surface, geometry, geo,
+                                color, texture_id, shape, surface, geometry, geo, particles,
                             } => {
                                 let mut w = world.write().await;
                                 // Insert with a server-assigned id, then apply the full initial
                                 // authoring state in one update so it is persisted and broadcast.
-                                let created = w.add_prim(region_id, position, &shape, geo).and_then(|prim| {
+                                let created = w.add_prim(region_id, position, &shape, geo, particles.as_ref()).and_then(|prim| {
                                     w.update_prim(
                                         prim.id, position, rotation, scale, color, texture_id,
-                                        &name, surface, geometry, geo,
+                                        &name, surface, geometry, geo, particles.as_ref(),
                                     )
                                 });
                                 match created {
@@ -582,9 +588,9 @@ pub async fn handle_connection<T: FrameTransport>(
                                     }
                                 }
                             }
-                            NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry, geo } => {
+                            NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry, geo, particles } => {
                                 let mut w = world.write().await;
-                                match w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry, geo) {
+                                match w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry, geo, particles.as_ref()) {
                                     Ok(prim) => {
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
@@ -1455,6 +1461,7 @@ mod tests {
                     latitude: 0.0,
                     longitude: 0.0,
                 },
+                None,
             )
         };
 
@@ -1496,6 +1503,7 @@ mod tests {
                         latitude: 0.0,
                         longitude: 0.0,
                     },
+                    None,
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
@@ -1518,6 +1526,7 @@ mod tests {
                     latitude: 0.0,
                     longitude: 0.0,
                 },
+                None,
             )
         };
 
@@ -1555,6 +1564,7 @@ mod tests {
                         latitude: 0.0,
                         longitude: 0.0,
                     },
+                    None,
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
