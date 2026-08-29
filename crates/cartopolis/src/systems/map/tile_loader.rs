@@ -229,7 +229,11 @@ fn evict_cached_tile(key: TileKey, template: &str) {
         let ((z, x, y), _) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
         TileKey::new(x, y, z)
     };
-    let cache_key = crate::systems::tile_source::tile_cache_key(&source, kind);
+    let cache_key = crate::systems::tile_source::tile_cache_key(
+        &source,
+        kind,
+        crate::systems::tile_source::SourceId::of(template),
+    );
     IoTaskPool::get()
         .spawn(async move {
             crate::platform::storage::remove(crate::platform::storage::Namespace::Cache, &cache_key)
@@ -879,8 +883,11 @@ mod tests {
     #[test]
     fn cache_keys_separate_by_kind() {
         let key = TileKey::new(8490, 5319, 14);
-        let raster = crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Raster);
-        let vector = crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Vector);
+        let source = crate::systems::tile_source::SourceId::of("");
+        let raster =
+            crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Raster, source);
+        let vector =
+            crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Vector, source);
         assert_ne!(
             raster, vector,
             "a source switch must not reuse cached bytes"

@@ -256,6 +256,10 @@ pub struct LayerPrefs {
     /// request to a third party's service that only answers over the Netherlands.
     #[serde(default)]
     pub height: bool,
+    /// The aerial basemap (`systems::aerial`). Off for the same reason, and one
+    /// more: it replaces the drawn ground rather than adding to it.
+    #[serde(default)]
+    pub aerial: bool,
     #[serde(default)]
     pub overlays: std::collections::HashMap<String, bool>,
 }
@@ -1355,6 +1359,7 @@ mod tests {
         assert!(prefs.map);
         assert!(prefs.vehicles, "what the file did say is kept");
         assert!(!prefs.height, "the height layer is opt-in");
+        assert!(!prefs.aerial, "the aerial basemap is opt-in");
         assert_eq!(
             prefs.street_labels,
             crate::quality::budget().detail_layers,

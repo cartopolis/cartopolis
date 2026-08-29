@@ -187,6 +187,17 @@ pub struct MapStream {
     /// Bumped whenever the anchor changes (init or re-anchor). Other systems (the
     /// globe, buildings) compare against this to rebuild/reset for the new origin.
     pub anchor_generation: u32,
+    /// Bumped whenever the standing tiles have to be re-fetched — an anchor
+    /// change, or a basemap source change ([`apply_aerial_source`]). This is what
+    /// [`Self::gen_shared`] carries, so a stale in-flight fetch drops itself.
+    ///
+    /// **Separate from [`Self::anchor_generation`] on purpose**, and the
+    /// separation is the difference between retearing one layer and retearing the
+    /// world: sixteen other systems watch the anchor generation and answer a bump
+    /// by rebuilding — every building cell, the terrain field, the interiors, the
+    /// dikes, a fresh weather fetch. Flipping a checkbox over the ground texture
+    /// must not cost the mass mesh churn CLAUDE.md's device-loss entry is about.
+    fetch_generation: u32,
     /// A requested re-anchor target, applied by `apply_reanchor` next frame.
     pending_reanchor: Option<(f64, f64)>,
     /// Finest displayed zoom (driven by camera altitude for LOD); coarser clipmap
@@ -245,6 +256,22 @@ pub struct MapStream {
     /// `ToggleWants` — would be false on every frame a tile finished streaming,
     /// and the holes would only be cut the next time somebody touched a checkbox.
     pub occlusion_revision: u32,
+    /// The aerial-basemap setting the standing tiles were fetched under
+    /// (`data_layers::DataLayers::aerial_enabled`), and the single place the tile
+    /// path asks about it — `update_map_stream` and `apply_stream_textures` both
+    /// read *this* rather than the resource, so a flip mid-frame cannot leave a
+    /// tile fetched from one source and recorded as the other.
+    ///
+    /// `None` until [`apply_aerial_source`] first runs: adopting the setting is
+    /// not a change, and a run that starts with the layer on must not retear a
+    /// pyramid that was never built under the other source.
+    aerial: Option<bool>,
+    /// Standing tiles textured from the aerial source — the count `--dump-state`
+    /// reports as `aerial_tiles`.
+    ///
+    /// Mirrors [`Self::loaded`] and must be maintained wherever that is: a stale
+    /// key here is a number that says the photograph is up when it is not.
+    aerial_ready: HashSet<TileKey>,
 }
 
 /// The clipmap's desired set, cached against the centres that produced it.
@@ -304,6 +331,34 @@ impl MapStream {
     pub fn request_reanchor(&mut self, lat: f64, lng: f64) {
         self.pending_reanchor = Some((lat, lng));
     }
+
+    /// Standing clipmap tiles textured from the aerial source
+    /// (`systems::aerial`) — `aerial_tiles` in the `--shot` metrics.
+    ///
+    /// Textured, not merely wanted: a tile still showing the placeholder has not
+    /// answered the question the number is asked for, which is whether the
+    /// photograph arrived.
+    pub fn aerial_tiles(&self) -> usize {
+        self.aerial_ready.len()
+    }
+
+    /// Is this tile's imagery coming from the aerial source this frame?
+    ///
+    /// A pure function of the key and the adopted toggle, which is what lets the
+    /// dispatch and the texture-apply agree without a second bookkeeping set
+    /// between them: [`apply_aerial_source`] retears everything on a flip, so no
+    /// tile can outlive the answer it was fetched under.
+    fn aerial_for(&self, key: &TileKey) -> bool {
+        self.aerial.unwrap_or(false) && crate::systems::aerial::covers_tile(key)
+    }
+
+    /// Retire the current tile fetch generation, so in-flight jobs drop their
+    /// results instead of texturing tiles that no longer want them.
+    fn bump_fetch_generation(&mut self) {
+        self.fetch_generation = self.fetch_generation.wrapping_add(1);
+        self.gen_shared
+            .store(self.fetch_generation, Ordering::Relaxed);
+    }
 }
 
 /// Apply a pending re-anchor: despawn every loaded tile (its world position is
@@ -330,6 +385,7 @@ pub fn apply_reanchor(
     let retired: Vec<Entity> = tiles.iter().collect();
     stream.tiles.retire_all(retired);
     stream.loaded.clear();
+    stream.aerial_ready.clear();
     // Clear the fetch bookkeeping so the re-streamed tiles request again (served
     // from the byte cache when already fetched); the anchor is unchanged tiles
     // would otherwise be treated as still-in-flight and never re-textured.
@@ -351,10 +407,52 @@ pub fn apply_reanchor(
     // Retire queued fetches from the old anchor: the workers drop any job whose
     // generation doesn't match, so the new anchor's tiles aren't stuck behind
     // hundreds of stale fetches.
-    stream
-        .gen_shared
-        .store(stream.anchor_generation, Ordering::Relaxed);
+    stream.bump_fetch_generation();
     tracing::info!(lat, lng, "map re-anchored");
+}
+
+/// Adopt a change to the aerial basemap toggle, retearing the standing tiles so
+/// they re-stream from the source that is now selected.
+///
+/// The tile *fetch* generation only ([`MapStream::fetch_generation`]), never the
+/// anchor generation: the anchor has not moved, so nothing about the buildings,
+/// the terrain field, the interiors or the weather is stale, and telling them it
+/// is would answer one checkbox with a city's worth of mesh churn.
+///
+/// The teardown is the re-anchor's, minus the parts that belong to an origin
+/// change: the quads are sized by tile metres at the anchor latitude and the
+/// anchor has not moved, so they are kept. Retired tiles go through the same
+/// bounded despawn queue (`MAX_TILE_DESPAWNS_PER_FRAME`) and the re-streamed ones
+/// through the same per-frame upload ceiling; a source switch is a re-fill, not a
+/// burst with its own rules.
+pub fn apply_aerial_source(
+    mut stream: ResMut<MapStream>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    tiles: Query<Entity, With<StreamTile>>,
+) {
+    let want = layers.aerial_enabled;
+    // Compared, not `is_changed()`: `DataLayers` is written by a dozen systems a
+    // frame, so change detection on the resource says nothing about this field.
+    let Some(current) = stream.aerial else {
+        stream.aerial = Some(want);
+        return;
+    };
+    if current == want {
+        return;
+    }
+    stream.aerial = Some(want);
+    // Same order as `apply_reanchor`, and for the same reason: the query
+    // re-collects tiles that a previous teardown already queued, so the queue is
+    // cleared first or an entity is freed twice.
+    stream.tiles.clear_despawn_queue();
+    let retired: Vec<Entity> = tiles.iter().collect();
+    stream.tiles.retire_all(retired);
+    stream.loaded.clear();
+    stream.aerial_ready.clear();
+    stream.tiles.reset();
+    stream.desired = DesiredTiles::default();
+    stream.bump_fetch_generation();
+    tracing::info!(aerial = want, "map basemap source changed");
 }
 
 impl Default for MapStream {
@@ -362,6 +460,7 @@ impl Default for MapStream {
         Self {
             anchor: None,
             anchor_generation: 0,
+            fetch_generation: 0,
             pending_reanchor: None,
             current_zoom: 0,
             loaded: HashMap::new(),
@@ -383,6 +482,8 @@ impl Default for MapStream {
             desired: DesiredTiles::default(),
             occluded: HashSet::new(),
             occlusion_revision: 0,
+            aerial: None,
+            aerial_ready: HashSet::new(),
         }
     }
 }
@@ -412,9 +513,7 @@ pub fn init_map_stream(
     published.geo = stream.anchor;
     stream.current_zoom = z;
     stream.anchor_generation = stream.anchor_generation.wrapping_add(1);
-    stream
-        .gen_shared
-        .store(stream.anchor_generation, Ordering::Relaxed);
+    stream.bump_fetch_generation();
     // The basemap's own background tone, not a neutral grey: only the coarsest ring
     // ever shows this (see `MapBackstop`), and there it should read as blank paper
     // continuous with the tiles around it.
@@ -958,7 +1057,7 @@ pub fn update_map_stream(
     // Expensive, and only when the answer can have changed: the 424-entry desired
     // set and its spawn order. See `DesiredTiles` on why the key is every level's
     // centre rather than just the finest.
-    let key = (centres, stream.anchor_generation);
+    let key = (centres, stream.fetch_generation);
     if stream.desired.key.as_ref() != Some(&key) {
         let (wanted, spawn_order) = clipmap(
             &key.0,
@@ -977,7 +1076,7 @@ pub fn update_map_stream(
     // `DesiredTiles::spawn_order`). Indexed rather than iterated because the body
     // mutably borrows `stream`; `TileKey` is `Copy`, so reading one out costs
     // nothing and no 424-entry clone is needed.
-    let gen = stream.anchor_generation;
+    let gen = stream.fetch_generation;
     for i in 0..stream.desired.spawn_order.len() {
         let key = stream.desired.spawn_order[i];
         let y = stream.desired.wanted[&key];
@@ -1042,14 +1141,21 @@ pub fn update_map_stream(
     {
         let results = stream.tiles.sink();
         let live_gen = stream.gen_shared.clone();
+        let mut jobs: Vec<TileKey> = Vec::new();
         while let Some(key) = stream.tiles.next_job(now) {
-            spawn_map_tile(
-                key,
-                gen,
-                template.clone(),
-                results.clone(),
-                live_gen.clone(),
-            );
+            jobs.push(key);
+        }
+        for key in jobs {
+            // The **only** place a consumer changes basemap source. `map_geometry`,
+            // `globe`, `navigation` and the router keep reading
+            // `OsmTileUrlTemplate`: they want MVT geometry, not pixels, and the
+            // globe would be asking a national service for a planet.
+            let template = if stream.aerial_for(&key) {
+                crate::systems::aerial::template().to_string()
+            } else {
+                template.clone()
+            };
+            spawn_map_tile(key, gen, template, results.clone(), live_gen.clone());
             queued += 1;
         }
     }
@@ -1082,6 +1188,7 @@ pub fn update_map_stream(
         .copied()
         .collect();
     for key in stale {
+        stream.aerial_ready.remove(&key);
         if let Some(entity) = stream.loaded.remove(&key) {
             // Queue rather than despawn inline: a LOD zoom-out retires a whole
             // ring at once, and the per-frame drain keeps the teardown bounded.
@@ -1245,6 +1352,9 @@ pub fn apply_stream_textures(
                 commands
                     .entity(entity)
                     .insert((MeshMaterial3d(mat), StreamTileReady));
+                if stream.aerial_for(&key) {
+                    stream.aerial_ready.insert(key);
+                }
                 stream.tiles.succeeded(&key);
             }
         }
