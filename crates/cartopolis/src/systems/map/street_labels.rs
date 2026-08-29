@@ -202,6 +202,30 @@ pub struct WorldLabelLine {
     /// Ground length, precomputed: the fit test runs over every line in the ring
     /// on every re-place.
     length: f32,
+    /// Where this line's ground actually is, in the anchored frame, when the
+    /// contributor has measured it more finely than [`TerrainField`] can.
+    ///
+    /// `None` for every street, which is the ordinary case and keeps the coarse
+    /// field's answer. `systems::dikes` is the one contributor that fills it: a
+    /// 25 m field flattens a sea dike's crest by about two metres (measured on
+    /// the Lauwersmeerdijk, 2026-08-29), and a name laid on that answer is buried
+    /// inside the embankment it names.
+    pub ground_m: Option<f32>,
+}
+
+impl WorldLabelLine {
+    /// Build a line that is already in the anchored world frame — how a
+    /// contributor that is not a map cell (`systems::dikes`) hands one over.
+    #[must_use]
+    pub fn new(name: String, rank: u8, points: Vec<Vec2>, ground_m: Option<f32>) -> Self {
+        Self {
+            name,
+            rank,
+            length: polyline_len(&points),
+            points,
+            ground_m,
+        }
+    }
 }
 
 /// Street label lines of the live map cells, held for exactly as long as their
@@ -211,6 +235,15 @@ pub struct WorldLabelLine {
 #[derive(Resource, Default)]
 pub struct StreetLabelStore {
     cells: HashMap<(i64, i64), Vec<WorldLabelLine>>,
+    /// The flood defences (`systems::dikes`), held apart from the streets.
+    ///
+    /// A separate list rather than more entries in `cells`, because the two are
+    /// held for different lifetimes by different owners: a street's lines live
+    /// exactly as long as the surface mesh they were parsed out of, while a
+    /// defence's live as long as its own stream's cells and are replaced whole
+    /// when a crest measurement lands. Sharing the cell keys would have one owner
+    /// silently evicting the other's lines.
+    dikes: Vec<WorldLabelLine>,
     /// Bumped on every change. The placer re-runs on a change of this, of the
     /// size band, or of the camera's heading — and on nothing else.
     revision: u32,
@@ -234,6 +267,7 @@ impl StreetLabelStore {
                     rank: l.rank,
                     length: polyline_len(&points),
                     points,
+                    ground_m: None,
                 }
             })
             .collect();
@@ -247,16 +281,36 @@ impl StreetLabelStore {
         }
     }
 
+    /// Replace the flood-defence lines whole.
+    ///
+    /// Wholesale rather than per cell because that is how they change: a crest
+    /// measurement landing rewrites one line's `ground_m`, and the contributor
+    /// rebuilds its list from the stream it owns rather than tracking which cell
+    /// each piece came from.
+    pub fn set_dikes(&mut self, lines: Vec<WorldLabelLine>) {
+        if self.dikes.is_empty() && lines.is_empty() {
+            return;
+        }
+        self.dikes = lines;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub fn clear(&mut self) {
-        if !self.cells.is_empty() {
+        if !self.cells.is_empty() || !self.dikes.is_empty() {
             self.cells.clear();
+            self.dikes.clear();
             self.revision = self.revision.wrapping_add(1);
         }
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.cells.is_empty() && self.dikes.is_empty()
+    }
+
+    /// Every line that can carry a name, streets and defences alike.
+    fn lines(&self) -> impl Iterator<Item = &WorldLabelLine> {
+        self.cells.values().flatten().chain(self.dikes.iter())
     }
 }
 
@@ -307,6 +361,9 @@ struct Placement<'a> {
     /// Baseline direction in world XZ.
     dir: Vec2,
     width_m: f32,
+    /// A ground height measured more finely than the terrain field, when the
+    /// contributor has one — see [`WorldLabelLine::ground_m`].
+    ground_m: Option<f32>,
 }
 
 /// Lay the street names on the ground.
@@ -478,10 +535,14 @@ pub fn update_street_labels(
         // [`LABEL_Y`] is only half a metre of clearance to lose.
         let half = p.dir * p.width_m * 0.5;
         let ends = [p.centre - half, p.centre, p.centre + half];
-        let ground = ends
-            .iter()
-            .map(|s| terrain.at(s.x, s.y))
-            .fold(f32::MIN, f32::max);
+        // A contributor that measured its own ground wins outright: the field is
+        // 25 m per sample and a flood defence's crest is narrower than that, so
+        // sampling it here would bury the name inside the embankment.
+        let ground = p.ground_m.unwrap_or_else(|| {
+            ends.iter()
+                .map(|s| terrain.at(s.x, s.y))
+                .fold(f32::MIN, f32::max)
+        });
         let world = Vec3::new(p.centre.x, ground + LABEL_Y, p.centre.y);
         let (grid_cell, local) = grid.translation_to_grid(world.as_dvec3());
         *cell = grid_cell;
@@ -551,7 +612,7 @@ fn choose_labels<'a>(
     view_at: Vec2,
 ) -> Vec<Placement<'a>> {
     let mut candidates: Vec<Placement<'a>> = Vec::new();
-    for line in store.cells.values().flatten() {
+    for line in store.lines() {
         if line.points[0].distance(view_at) > SELECT_RADIUS_M + line.length {
             continue; // nowhere near the view; cheap enough to test per line
         }
@@ -584,6 +645,7 @@ fn choose_labels<'a>(
             centre,
             dir,
             width_m,
+            ground_m: line.ground_m,
         });
     }
 
@@ -891,6 +953,7 @@ mod tests {
             rank: 3,
             length: polyline_len(&points),
             points,
+            ground_m: None,
         }
     }
 

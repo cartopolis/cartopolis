@@ -539,6 +539,10 @@ pub struct DataLayers {
     /// (`systems::street_labels`). Screen-space text, so this gates the drawing
     /// only — the names are parsed with the cell either way, off the frame loop.
     pub street_labels: bool,
+    /// Feature toggle (under Map): the flood defences, named where they stand
+    /// (`systems::dikes`). Gates both the streaming and the labelling — off, the
+    /// cells are never asked for.
+    pub flood_defences: bool,
     /// Feature toggle (under Map): the Overpass street-detail layer
     /// (`systems::street_detail`) — surveyed trees, street lamps, traffic
     /// signals, zebra paint, barriers, piers. Off tears the cells down, the
@@ -666,6 +670,7 @@ impl DataLayers {
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
             street_labels: self.street_labels,
+            flood_defences: self.flood_defences,
             furniture,
             traffic: self.traffic_enabled,
             people: self.people_enabled,
@@ -739,6 +744,7 @@ impl DataLayers {
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
         self.street_labels = p.street_labels;
+        self.flood_defences = p.flood_defences;
         self.furniture_enabled = p.furniture;
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
@@ -808,6 +814,9 @@ impl Default for DataLayers {
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
+            // Not on the detail tier: a handful of names from a layer that is
+            // already running, and nothing at all outside the Netherlands.
+            flood_defences: true,
             street_detail_enabled: detail,
             // Off by default: it reaches a third party's service and only
             // answers over the Netherlands, so opting in is the honest default.
@@ -2384,6 +2393,11 @@ pub fn render_data_layers_panel(
                     );
                     crate::systems::theme::checkbox(
                         ui,
+                        &mut dl.flood_defences,
+                        egui::RichText::new("Flood defences").size(theme::SIZE_SUB),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
                         &mut dl.street_detail_enabled,
                         egui::RichText::new("Street detail").size(theme::SIZE_SUB),
                     );
@@ -2472,6 +2486,11 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::surveyed::bgt_attribution() {
                     ui.small(credit);
                 }
+                // Its own line rather than folded into the BGT's: the defences
+                // come from the water boards' registers, not the Kadaster's.
+                if let Some(credit) = crate::systems::dikes::dike_attribution() {
+                    ui.small(credit);
+                }
                 // Unlike the two above, this is not one national dataset with one
                 // licence: a building model belongs to whoever surveyed it, so the
                 // line is whatever the importer was told to record.
@@ -2509,6 +2528,7 @@ pub fn render_data_layers_panel(
         dl.roads_textured = fresh.roads_textured;
         dl.water_shading = fresh.water_shading;
         dl.street_labels = fresh.street_labels;
+        dl.flood_defences = fresh.flood_defences;
         // The three that a "reset" used to leave standing. Traffic and people are
         // new here; `street_detail` was simply missed, and a reset that puts back
         // every checkbox but one is worse than none — the one it skips reads as a

@@ -45,7 +45,7 @@ pub use gui::{
     settings, splash, text_touch, theme, ui,
 };
 pub use map::{
-    atmosphere_patch, building_facts, building_windows, coverage, globe, globe_ocean,
+    atmosphere_patch, building_facts, building_windows, coverage, dikes, globe, globe_ocean,
     globe_weather, grass, height, interiors, lod22, lod3, map_geometry, map_stream, osm_buildings,
     particles, render_scale, rendering, road_depth, sky, sky_dome, stream_ledger, street_detail,
     street_furniture, street_labels, surveyed, tall_structures, terrain, tile_loader, tile_source,

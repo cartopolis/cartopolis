@@ -1854,6 +1854,7 @@ fn run_client() {
         .init_resource::<systems::osm_buildings::OsmBuildings>()
         .init_resource::<systems::lod22::Lod22Buildings>()
         .init_resource::<systems::building_facts::BuildingFacts>()
+        .init_resource::<systems::dikes::Dikes>()
         .init_resource::<systems::interiors::Interiors>()
         .init_resource::<systems::street_detail::StreetDetail>()
         .init_resource::<systems::tall_structures::TallStructures>()
@@ -2185,6 +2186,17 @@ fn run_client() {
                 systems::building_facts::update_building_facts,
                 systems::surveyed::prefetch_bgt_coverage,
                 systems::interiors::update_interiors,
+                // The flood defences: stream, measure the crest, hand the names
+                // to the label placer. Chained because each step reads what the
+                // one before it wrote, and the whole run is a few hundred lines
+                // of polyline — the alternative is a name that appears a frame
+                // after the crest it stands on.
+                (
+                    systems::dikes::update_dikes,
+                    systems::dikes::measure_dike_crests,
+                    systems::dikes::feed_dike_labels,
+                )
+                    .chain(),
             ),
             systems::data_layers::update_data_layers.after(rendering::spawn_regions),
             systems::data_layers::animate_stop_rings

@@ -152,6 +152,53 @@ paving on a bridge or in a tunnel, and this layer lies flat on the ground, so
 drawing a viaduct's footway at street level would run a pavement through whatever
 is underneath it.
 
+## What the paving is made of is a second axis, and it was already being fetched
+
+Added 2026-08-29. `PavingKind` answers *what the ground is for* — pavement,
+parking bay, verge — and the survey answers *what it is made of* in a different
+field, which this extractor had been reading past. Colour is a property of the
+substance rather than of the purpose: a brick pavement and a brick parking bay
+are the same colour, so where the register names a material it decides the tone
+and the form's own tone stands down.
+
+Two fields carry it and only one of them is usable as a substance:
+
+- **`plus_fysiek_voorkomen`** names one. Across `wegdeel` as a whole it is filled
+  on about a third of features — but the carriageways are most of that whole and
+  are exactly what this pipeline leaves to OpenStreetMap. On the surfaces it
+  actually keeps, the rate is far better: **2,813 of 3,393, i.e. 83%**, measured
+  on a square kilometre of central Groningen, 2026-08-29.
+- **`fysiek_voorkomen`** is always filled and mostly names a *construction*, not
+  a substance. `open verharding` means "laid in separate elements" and
+  `gesloten verharding` means "continuous" — neither says what the elements are,
+  and over three cities `gesloten verharding` resolved to asphalt 94 times and to
+  concrete 59, so calling it either is wrong a third of the time. Only
+  `groenvoorziening` and `onverhard` are read from it, because those two do name
+  a substance.
+
+What that square kilometre turned out to be, by surface count: 885 concrete
+pavers, 699 fired brick, 558 tiles, 248 asphalt, 200 decorative stone, 128
+concrete, 55 grass, 34 gravel, 580 with nothing said. So the pavements alone
+split three ways — brick, concrete block, slab — where the map had one grey.
+
+The remaining sixth still arrives with no material, and **that has to cost
+nothing**: `None` reproduces the form's tone exactly, which is what keeps the
+layer safe outside the country that publishes the register. It is the same
+contract `building_facts` built on its alpha channel, and there is a test on it.
+
+The material is a **trailing** wire element rather than a field
+(`[kind, rings, material?]`), so the two-element form still reads — which matters
+because a paving cell cached before this existed would otherwise fail to parse,
+and that is every stored cell in the country re-downloading the second heaviest
+thing the client streams.
+
+**One form keeps its own colour: the cycle path.** The register describes
+construction and never colour, and a Dutch cycle path is dyed red whether it was
+laid in asphalt or in brick — `asfalt` being the commonest thing the survey says
+about one. Letting the material speak there would turn the most recognisable
+surface in the country grey along every street. The price is the occasional
+genuinely grey cycle path drawn red, which is much the cheaper error.
+
 ## What is not read, and why
 
 - **The terrain parts** (`begroeidterreindeel`, `onbegroeidterreindeel`) and

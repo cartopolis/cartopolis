@@ -47,6 +47,9 @@ use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, INDEX_BYTES, VERTE
 #[derive(Debug, Clone)]
 pub struct PavedArea {
     pub kind: PavingKind,
+    /// What the survey says it is *made of*, where it says anything.
+    /// `None` reproduces the kind's own tone exactly — see [`PavingMaterial`].
+    pub material: Option<PavingMaterial>,
     /// Outer ring first, holes after. Open rings — no repeated closing vertex.
     pub rings: Vec<Vec<[f32; 2]>>,
 }
@@ -107,6 +110,115 @@ impl PavingKind {
             Self::Steps => 0xBC_B7_AE,
         }
     }
+
+    /// Whether this form keeps its own colour even when the survey names a
+    /// material.
+    ///
+    /// True for exactly one form, and the reason is that the register describes
+    /// *construction* and never colour. A Dutch cycle path is dyed red whether it
+    /// was laid in asphalt or in brick, and `asfalt` is the commonest thing the
+    /// survey says about one — so letting the material speak here would turn the
+    /// most recognisable surface in the country grey along every street. The
+    /// price is the occasional genuinely grey cycle path drawn red, which is the
+    /// cheaper of the two errors by a wide margin.
+    #[must_use]
+    pub fn pins_its_own_tone(self) -> bool {
+        matches!(self, Self::Cycleway)
+    }
+}
+
+/// What a surveyed surface is made of. Mirrors `SURFACE_MATERIALS` in
+/// `tools/bgt_objects.py` — **append, never renumber**.
+///
+/// # Why this is a second axis and not more kinds
+///
+/// [`PavingKind`] answers *what the ground is for* — pavement, parking bay,
+/// verge. This answers *what it is made of*, and the two are independent: a brick
+/// pavement and a brick parking bay are the same colour, and the survey records
+/// them in a different field for that reason. Colour is a property of the
+/// substance, so where the register names one it decides the tone and the kind's
+/// own tone stands down.
+///
+/// **The register is sometimes silent, and silence has to cost nothing.**
+/// Measured on a square kilometre of central Groningen, 2026-08-29: 2,813 of the
+/// 3,393 surfaces this layer draws carry a material, i.e. 83%, and the rest carry
+/// none. (The rate is that high because the surfaces here are the *detailed*
+/// ones — pavements, cycle paths, parking bays. Across `wegdeel` as a whole,
+/// carriageways included, the fine field is filled on about a third, and the
+/// carriageways are the part this layer deliberately leaves to OpenStreetMap.)
+///
+/// So one surface in six still arrives with nothing said about it, `None`
+/// reproduces the old look exactly, and this stays safe to ship outside the
+/// Netherlands where nothing supplies it at all — the same contract
+/// `building_facts`' alpha channel is built on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PavingMaterial {
+    /// `asfalt`. The darkest tone here: a continuous black-top surface.
+    Asphalt,
+    /// `cementbeton`, `beton element` — poured or precast concrete.
+    Concrete,
+    /// `gebakken klinkers`: the fired clay brick a Dutch street is paved in.
+    /// Warm and red-brown, and the reason this whole axis is worth having.
+    Brick,
+    /// `betonstraatstenen`: concrete block pavers. Brick's shape, concrete's
+    /// colour — which is exactly the distinction the map could not draw before.
+    ConcretePaver,
+    /// `tegels`: the pale square slabs a pavement is laid in.
+    Tiles,
+    /// `sierbestrating`, `natuursteen` — decorative and natural stone.
+    Stone,
+    /// `grasklinkers`: the open concrete grid that grass grows through, used for
+    /// overflow parking and fire lanes. Half its area is lawn, so it is toned
+    /// between the two rather than as either.
+    GrassPaver,
+    /// `gras- en kruidachtigen`, and the coarse `groenvoorziening`.
+    Grass,
+    /// `bosplantsoen`, `heesters`, `planten`, `boomschors` — a planted bed
+    /// rather than a lawn. Takes the canopy tone, so a shrub bed is recognisably
+    /// the same substance as the crowns above it (the rule the surveyed hedges
+    /// already follow).
+    Planting,
+    /// `grind`, `split`, `schelpen`, `puin` — loose stone, gravel and shell.
+    Gravel,
+    /// `zand`.
+    Sand,
+    /// The coarse `onverhard`: ground that was surveyed and found to be bare.
+    Unpaved,
+}
+
+impl PavingMaterial {
+    /// sRGB tone, carried per vertex exactly as [`PavingKind::rgb`] is.
+    ///
+    /// Same pale cartographic family as the rest of the map — these separate the
+    /// substances at a first-floor window without striping the street.
+    #[must_use]
+    pub fn rgb(self) -> u32 {
+        match self {
+            Self::Asphalt => 0xAE_AC_A8,
+            Self::Concrete => 0xC4_C2_BC,
+            Self::Brick => 0xC7_A3_92,
+            Self::ConcretePaver => 0xBF_BC_B4,
+            Self::Tiles => 0xC9_C6_BF,
+            Self::Stone => 0xBD_B6_AA,
+            // Half lawn, half concrete grid, and toned as the mixture it is.
+            Self::GrassPaver => 0xB8_C0_A9,
+            Self::Grass => palette::GRASS,
+            Self::Planting => palette::CANOPY,
+            Self::Gravel => 0xC6_BE_AC,
+            Self::Sand => palette::SAND,
+            Self::Unpaved => 0xB9_AC_98,
+        }
+    }
+}
+
+/// The tone one surface is drawn in: its material where the survey names one and
+/// the form does not pin its own colour, otherwise the form's.
+#[must_use]
+pub fn area_rgb(kind: PavingKind, material: Option<PavingMaterial>) -> u32 {
+    match material {
+        Some(m) if !kind.pins_its_own_tone() => m.rgb(),
+        _ => kind.rgb(),
+    }
 }
 
 /// What one triangle costs to upload, in the units the frame budget is in.
@@ -158,7 +270,7 @@ pub fn build_paving_meshes(areas: &[PavedArea], max_bytes: Option<usize>) -> Vec
                 out.push(std::mem::take(&mut buf).finish());
             }
         }
-        let tint = srgb_to_linear(area.kind.rgb());
+        let tint = srgb_to_linear(area_rgb(area.kind, area.material));
         // Unshared vertices per triangle. A shared-vertex mesh would be smaller,
         // but every surface here is flat and faces up, so there is no shading to
         // gain from sharing and the winding fix below needs to own its corners.
@@ -245,6 +357,7 @@ mod tests {
     fn square(kind: PavingKind, size: f32) -> PavedArea {
         PavedArea {
             kind,
+            material: None,
             rings: vec![vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]]],
         }
     }
@@ -291,6 +404,7 @@ mod tests {
     fn a_degenerate_ring_is_skipped_rather_than_drawn() {
         let area = PavedArea {
             kind: PavingKind::Footway,
+            material: None,
             rings: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
         };
         assert!(build_paving_meshes(&[area], None).is_empty());
@@ -326,6 +440,84 @@ mod tests {
             for b in &kinds[i + 1..] {
                 assert_ne!(a.rgb(), b.rgb(), "{a:?} and {b:?} share a tone");
             }
+        }
+    }
+
+    /// Same rule one axis over: two materials that draw the same are two
+    /// materials the wire is carrying for nothing.
+    #[test]
+    fn every_material_has_its_own_tone() {
+        use PavingMaterial::*;
+        let mats = [
+            Asphalt,
+            Concrete,
+            Brick,
+            ConcretePaver,
+            Tiles,
+            Stone,
+            GrassPaver,
+            Grass,
+            Planting,
+            Gravel,
+            Sand,
+            Unpaved,
+        ];
+        for (i, a) in mats.iter().enumerate() {
+            for b in &mats[i + 1..] {
+                assert_ne!(a.rgb(), b.rgb(), "{a:?} and {b:?} share a tone");
+            }
+        }
+    }
+
+    /// The whole safety argument for shipping this outside the Netherlands: a
+    /// surface the register says nothing about must draw exactly as it did before
+    /// the material axis existed.
+    #[test]
+    fn no_material_reproduces_the_form_tone() {
+        for kind in [
+            PavingKind::Footway,
+            PavingKind::Cycleway,
+            PavingKind::Parking,
+            PavingKind::Drive,
+            PavingKind::Verge,
+            PavingKind::Island,
+            PavingKind::Paved,
+            PavingKind::Steps,
+        ] {
+            assert_eq!(area_rgb(kind, None), kind.rgb(), "{kind:?} drifted");
+        }
+    }
+
+    /// And when it does say something, it has to reach the vertex — a material
+    /// that parsed and then changed no pixel is a wire field for nothing.
+    #[test]
+    fn a_named_material_decides_the_tone() {
+        let bare = build_paving_meshes(&[square(PavingKind::Footway, 4.0)], None);
+        let mut brick = square(PavingKind::Footway, 4.0);
+        brick.material = Some(PavingMaterial::Brick);
+        let laid = build_paving_meshes(&[brick], None);
+        assert_ne!(bare[0].colors[0], laid[0].colors[0]);
+        assert_eq!(
+            area_rgb(PavingKind::Footway, Some(PavingMaterial::Brick)),
+            PavingMaterial::Brick.rgb()
+        );
+    }
+
+    /// The one documented exception. A cycle path stays dyed whatever the survey
+    /// says it was laid in, and if that ever stops being true it should stop here
+    /// rather than silently along every street.
+    #[test]
+    fn a_cycle_path_keeps_its_colour_whatever_it_is_made_of() {
+        for m in [
+            PavingMaterial::Asphalt,
+            PavingMaterial::Brick,
+            PavingMaterial::Concrete,
+        ] {
+            assert_eq!(
+                area_rgb(PavingKind::Cycleway, Some(m)),
+                PavingKind::Cycleway.rgb(),
+                "{m:?} overrode the cycle path"
+            );
         }
     }
 }
