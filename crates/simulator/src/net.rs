@@ -278,6 +278,54 @@ impl Drop for AvatarGuard {
     }
 }
 
+/// Refuse an edit, and hand back the truth so the client can undo its guess.
+///
+/// The refusal alone is not enough, and this is the half that is easy to miss.
+/// The edit dialog and the gizmo both apply a change **locally** before the
+/// server answers — deliberately, for the feel of it — so a client whose edit is
+/// refused is left drawing something that never happened: a prim moved where the
+/// world does not have it, or (worse) despawned locally on a delete the server
+/// declined. Nothing would correct it, because `PrimUpsert` is only broadcast
+/// when something *changes*, and a refusal changes nothing.
+///
+/// So the authoritative state follows the refusal. The client deselects on the
+/// 403 and then applies it — in that order, because the client deliberately
+/// ignores upserts for the prim it is currently manipulating.
+async fn refuse_and_correct<T: FrameTransport>(
+    framed: &mut T,
+    request_id: u32,
+    prim_id: i64,
+    truth: Option<cartopolis_core::PrimDto>,
+) -> anyhow::Result<()> {
+    framed
+        .send(Bytes::from(encode_app_frame(&NetMessage::ServerError {
+            request_id,
+            code: 403,
+            message: not_yours(prim_id),
+        })?))
+        .await?;
+    if let Some(prim) = truth {
+        framed
+            .send(Bytes::from(encode_app_frame(&NetMessage::PrimUpsert {
+                prim,
+            })?))
+            .await?;
+    }
+    Ok(())
+}
+
+/// The refusal a client gets for editing something that is not theirs.
+///
+/// One sentence, defined once, because it is sent from four places and a rule
+/// that is explained differently depending on which message tripped it reads as
+/// four different rules.
+fn not_yours(prim_id: i64) -> String {
+    format!(
+        "prim {prim_id} belongs to somebody else. You can change what you built; \
+         an operator can change anything."
+    )
+}
+
 pub async fn handle_connection<T: FrameTransport>(
     mut framed: T,
     world: Arc<RwLock<SimWorld>>,
@@ -328,6 +376,19 @@ pub async fn handle_connection<T: FrameTransport>(
         }
     };
     let session_token = sessions.issue(principal, &username);
+
+    // Whether this connection may override the per-prim owner check below.
+    //
+    // Read once at the handshake rather than per edit, which is the same freshness
+    // `disabled` already has: `Sessions` is keyed by token with no principal index,
+    // so revoking either takes effect on the next `ClientHello` (see `http`'s
+    // module note). One rule, not two.
+    let is_admin = conn
+        .lock()
+        .ok()
+        .and_then(|c| crate::auth::is_admin(&c, principal).ok())
+        .unwrap_or(false);
+    let principal_key = principal.to_string();
 
     let avatar_id = {
         let mut w = world.write().await;
@@ -579,10 +640,15 @@ pub async fn handle_connection<T: FrameTransport>(
                                         // is better than refusing a build over a
                                         // bookkeeping write.
                                         if let Ok(c) = conn.lock() {
-                                            if let Err(e) = crate::db::set_prim_owner(&c, prim.id, &principal.to_string()) {
+                                            if let Err(e) = crate::db::set_prim_owner(&c, prim.id, &principal_key) {
                                                 tracing::warn!(prim_id = prim.id, "recording the owner failed: {e:#}");
                                             }
                                         }
+                                        // …and in the world's own map, which is
+                                        // what `may_edit` reads. Without this the
+                                        // builder could not edit what they had
+                                        // just built until the server restarted.
+                                        w.set_owner(prim.id, &principal_key);
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
                                         let _ = tx_snap.send(broadcast_msg);
@@ -605,6 +671,12 @@ pub async fn handle_connection<T: FrameTransport>(
                             }
                             NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry, geo, particles } => {
                                 let mut w = world.write().await;
+                                if !w.may_edit(prim_id, &principal_key, is_admin) {
+                                    let truth = w.prim(prim_id).cloned();
+                                    drop(w);
+                                    refuse_and_correct(&mut framed, request_id, prim_id, truth).await?;
+                                    return Ok(());
+                                }
                                 match w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry, geo, particles.as_ref()) {
                                     Ok(prim) => {
                                         // Broadcast PrimUpsert to all clients
@@ -627,6 +699,12 @@ pub async fn handle_connection<T: FrameTransport>(
                             }
                             NetMessage::DeletePrim { request_id, prim_id } => {
                                 let mut w = world.write().await;
+                                if !w.may_edit(prim_id, &principal_key, is_admin) {
+                                    let truth = w.prim(prim_id).cloned();
+                                    drop(w);
+                                    refuse_and_correct(&mut framed, request_id, prim_id, truth).await?;
+                                    return Ok(());
+                                }
                                 // Read the region *before* the delete: afterwards the
                                 // prim is gone and there is nothing to ask.
                                 let region_id = w.prim_region(prim_id);
@@ -836,6 +914,13 @@ pub async fn handle_connection<T: FrameTransport>(
                                     let mut w = world.write().await;
                                     if w.prim_region(prim_id).is_none() {
                                         Err(format!("prim {prim_id} not found"))
+                                    } else if !w.may_edit(prim_id, &principal_key, is_admin) {
+                                        // Scripting somebody else's object is the
+                                        // most complete way to take it over —
+                                        // a script can move it, rename it, set it
+                                        // alight and delete it — so this is the
+                                        // same gate as an edit, not a lesser one.
+                                        Err(not_yours(prim_id))
                                     } else if source.is_empty() {
                                         // Removing a script: unload the VM, drop the
                                         // row, release the budget.
@@ -1449,6 +1534,7 @@ mod tests {
             50.0,
             conn.clone(),
             caps,
+            Default::default(),
             Default::default(),
         )));
 

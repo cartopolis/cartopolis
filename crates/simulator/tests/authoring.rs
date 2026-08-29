@@ -49,6 +49,7 @@ async fn server() -> (SimHandle, tempfile::TempDir) {
         let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
         ensure_admin_account(&conn, "root", "adminpass").unwrap();
         ensure_account(&conn, "walker", "walkerpw").unwrap();
+        ensure_account(&conn, "meddler", "meddlerpw").unwrap();
     }
     let config = SimConfig {
         database_path: db,
@@ -226,6 +227,26 @@ async fn build(c: &mut Client, region_id: i64, name: &str, lat: f64, lng: f64) -
         .unwrap();
     recv_until(c, "prim upsert", |m| match m {
         NetMessage::PrimUpsert { prim } if prim.name == name => Some(prim.id),
+        _ => None,
+    })
+    .await
+}
+
+/// Store a script without waiting for the outcome, so the caller can inspect it.
+async fn send_script(c: &mut Client, prim_id: i64, source: &str) {
+    let msg = NetMessage::SetPrimScript {
+        request_id: 2,
+        prim_id,
+        source: source.into(),
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+}
+
+async fn recv_output(c: &mut Client) -> (cartopolis_core::ScriptLevel, String) {
+    recv_until(c, "script output", |m| match m {
+        NetMessage::ScriptOutput { level, text, .. } => Some((level, text)),
         _ => None,
     })
     .await
@@ -819,6 +840,145 @@ async fn a_document_from_the_future_is_refused() {
     .await;
     assert_eq!(status, 400, "{body}");
     assert!(body["error"].as_str().unwrap().contains("99"), "{body}");
+}
+
+/// Ask the server to rename a prim, and report whether it refused.
+///
+/// The name is the probe: it comes back in the `PrimUpsert` either way, so a test
+/// can tell an accepted edit from a refused one *and* check what the server's own
+/// copy says afterwards.
+async fn try_rename(c: &mut Client, prim_id: i64, to: &str) -> Option<(u32, String)> {
+    let msg = NetMessage::UpdatePrim {
+        request_id: 77,
+        prim_id,
+        position: glam::Vec3::new(0.0, 9.0, 0.0),
+        rotation: glam::Vec3::ZERO,
+        scale: glam::Vec3::ONE,
+        color: [1.0, 0.0, 0.0],
+        texture_id: None,
+        name: to.into(),
+        surface: cartopolis_core::PrimSurface::default(),
+        geometry: cartopolis_core::PrimGeometry::default(),
+        geo: GeoAnchor {
+            latitude: LAT,
+            longitude: LNG,
+        },
+        particles: None,
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+    // Either a refusal comes back, or the change is broadcast. Both are answers;
+    // waiting only for one would hang on the other.
+    recv_until(c, "an answer to the edit", |m| match m {
+        NetMessage::ServerError { code, message, .. } => Some(Some((code, message))),
+        NetMessage::PrimUpsert { prim } if prim.id == prim_id && prim.name == to => Some(None),
+        _ => None,
+    })
+    .await
+}
+
+/// **Editing is owner-scoped, and an admin overrides it.**
+///
+/// Before this, `UpdatePrim` and `DeletePrim` were open to any connected client:
+/// anything anybody built could be moved, recoloured, rescripted or deleted by
+/// anybody else. This is the test that says otherwise.
+#[tokio::test]
+async fn only_the_owner_or_an_admin_may_change_a_prim() {
+    let (handle, _dir) = server().await;
+    let addr = handle.local_addr.to_string();
+
+    let mut walker = connect(&addr, "walker", "walkerpw").await;
+    let region = first_region(&mut walker).await;
+    let theirs = build(&mut walker, region, "Walkers lamp", LAT, LNG).await;
+    let _ = region;
+
+    // The owner may change their own.
+    assert!(
+        try_rename(&mut walker, theirs, "Walkers own edit")
+            .await
+            .is_none(),
+        "the owner must be able to edit what they built"
+    );
+
+    // A second player may not.
+    let mut other = connect(&addr, "meddler", "meddlerpw").await;
+    let refused = try_rename(&mut other, theirs, "Stolen").await;
+    let (code, message) = refused.expect("a stranger's edit must be refused");
+    assert_eq!(code, 403, "{message}");
+    assert!(
+        message.contains("somebody else"),
+        "the refusal should say why: {message}"
+    );
+
+    // …and the truth follows it, so the refused client stops drawing the edit it
+    // had already applied locally. Without this a rejected move is permanent on
+    // the screen of whoever tried it.
+    let corrected = recv_until(&mut other, "the authoritative prim", |m| match m {
+        NetMessage::PrimUpsert { prim } if prim.id == theirs => Some(prim),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        corrected.name, "Walkers own edit",
+        "the correction must carry the state the server actually holds, not the \
+         one the refused client tried to write"
+    );
+
+    // …and cannot take it over by scripting it either, which would be the most
+    // complete way around an edit check.
+    send_script(&mut other, theirs, "function on_start() vfDie() end").await;
+    let (level, text) = recv_output(&mut other).await;
+    assert_eq!(level, cartopolis_core::ScriptLevel::Error, "{text}");
+    assert!(text.contains("somebody else"), "{text}");
+
+    // An admin overrides both.
+    let mut root = connect(&addr, "root", "adminpass").await;
+    assert!(
+        try_rename(&mut root, theirs, "Admin override")
+            .await
+            .is_none(),
+        "an admin must be able to change anything"
+    );
+}
+
+/// An unowned prim belongs to the server, so a player may not delete it.
+///
+/// This is the deliberate side of a real trade: treating "no owner" as
+/// "anybody's" would leave the firebird and the beacon deletable by any
+/// passer-by, and everything built before schema V15 is unowned.
+#[tokio::test]
+async fn a_player_cannot_delete_what_the_server_installed() {
+    let (handle, _dir) = server().await;
+    let admin = token(&handle).await;
+    let (status, installed) = api(
+        "POST",
+        format!("{}/api/admin/content/firebird", base(&handle)),
+        Some(admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let beacon = installed["installed"][1]["id"].as_i64().unwrap();
+
+    let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let msg = NetMessage::DeletePrim {
+        request_id: 88,
+        prim_id: beacon,
+    };
+    walker
+        .send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+    let (code, message) = recv_until(&mut walker, "a refusal", |m| match m {
+        NetMessage::ServerError { code, message, .. } => Some((code, message)),
+        NetMessage::PrimRemoved { id } if id == beacon => {
+            panic!("a player deleted a content pack's prim")
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(code, 403, "{message}");
 }
 
 /// The API refuses what the renderer would have accepted silently.

@@ -439,6 +439,20 @@ pub fn all_prims_with_scripts(conn: &Connection) -> anyhow::Result<Vec<(PrimDto,
     Ok(rows)
 }
 
+/// Every prim that has an owner, for the world's in-memory permission map.
+///
+/// Loaded once at startup and maintained in [`crate::state::SimWorld`] thereafter,
+/// on the same rule the scripted set follows: `UpdatePrim` arrives at the gizmo's
+/// drag rate, and a permission check that read the database twenty times a second
+/// per dragging client would put SQLite on the movement path.
+pub fn load_prim_owners(conn: &Connection) -> anyhow::Result<HashMap<i64, String>> {
+    let mut stmt = conn.prepare("SELECT id, owner FROM prims WHERE owner IS NOT NULL")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    Ok(rows)
+}
+
 /// An account's uuid by username, if the account exists and is enabled.
 ///
 /// Enabled matters here because this resolves the *target* of an ownership

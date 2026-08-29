@@ -855,6 +855,20 @@ pub fn apply_network_snapshot(
                 auth.chat
                     .receive(&channel, sender_id, sender_name, body, distance_m);
             }
+            // An edit the server would not allow. The dialog and the gizmo both
+            // applied it locally already — for the feel of it — so the client is
+            // currently drawing something that never happened, and nothing would
+            // correct it: `PrimUpsert` is only broadcast when something changes,
+            // and a refusal changes nothing.
+            //
+            // The server sends the authoritative prim straight after this, and the
+            // deselect here is what lets it land: upserts for the prim the local
+            // user is manipulating are deliberately skipped a few arms down, so
+            // without this the correction would be the one message ignored.
+            NetMessage::ServerError { code, message, .. } if code == 403 => {
+                tracing::warn!(%message, "the server refused an edit");
+                game_state.selected_prim_id = None;
+            }
             NetMessage::ServerError {
                 request_id,
                 message,

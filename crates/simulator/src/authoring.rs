@@ -711,6 +711,7 @@ async fn transfer_content(
 
     for id in &body.prims {
         crate::http::with_db(&state, |c| crate::db::set_prim_owner(c, *id, &to))?;
+        state.world.write().await.set_owner(*id, &to);
     }
     tracing::info!(%username, count = body.prims.len(), to = %body.to, "ownership transferred");
     Ok(Json(json!({ "transferred": body.prims, "to": body.to })))
@@ -756,9 +757,11 @@ async fn import_content(
         // same region budget. A document cannot describe a prim the API would
         // otherwise refuse.
         let prim = create(&state, spec).await?;
-        crate::http::with_db(&state, |c| {
-            crate::db::set_prim_owner(c, prim.id, &principal.to_string())
-        })?;
+        let owner = principal.to_string();
+        crate::http::with_db(&state, |c| crate::db::set_prim_owner(c, prim.id, &owner))?;
+        // The world's map too, or the importer could not edit what they had just
+        // imported until the server restarted (`SimWorld::may_edit`).
+        state.world.write().await.set_owner(prim.id, &owner);
         store_script(&state, prim.id, spec.script.as_deref()).await?;
         created.push(json!({ "id": prim.id, "name": prim.name }));
     }
