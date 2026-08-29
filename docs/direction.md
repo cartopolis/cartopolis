@@ -78,7 +78,6 @@ or the volume for these — that check is the first half of the ticket, and
 
 | Source | What it would add |
 |---|---|
-| BGT, the remaining layers | the surveyed surfaces not yet read |
 | Rijkswaterstaat water levels | canal and river surfaces at their real height |
 | 3D basisvoorziening | national LoD3, in place of one hand-imported model |
 
@@ -91,6 +90,7 @@ the answer was no. Kept here so the check is not repeated:
 | NDW traffic | 2026-08-29 | Real vehicle counts, from 20,519 loop detectors on motorway mainlines. Zero of them fall inside the 260 m radius the ambient cars are placed in at the Grote Markt, the Dam or Domplein, so substituting measurement for the generated traffic empties every city street — value 4. There is no bbox query either, so a per-cell service means re-slicing a national 52 MB file every minute, and a loop carries no `wvk_id` and no OSM id to join on. CC0, so the licence was never the obstacle. [notes/ndw-traffic.md](notes/ndw-traffic.md) |
 | NWB road network | 2026-08-29 | Centrelines with administrative attributes. No width, no carriageway polygons, no bridge or tunnel geometry — the row's description was wrong. Its one unique field, `rel_hoogte`, answers a question `grade-separation.md` already closed without it. CC0, so the licence was never the obstacle. [notes/nwb-road-network.md](notes/nwb-road-network.md) |
 | CBS neighbourhood statistics | 2026-08-29 | A table, not a picture. The only geometry is the buurt outline — an administrative line with nothing standing on it — and **89% of a cell is the statistics table** (257 KB of `buurten` against 27.6 KB of geometry; 244 attributes per feature, 30% of the values suppressed as `-99997`). Every consumer already reads something finer: window occupancy is per building from the BAG, the car and walker pools are sized for "is this street alive" and already denser than the measured car figure, and CBS counts residents and registered vehicles rather than who is on the street. CC0, and small. [notes/cbs-neighbourhood-statistics.md](notes/cbs-neighbourhood-statistics.md) |
+| BGT, the remaining layers | 2026-08-29 | Mostly not taken, five exceptions. Of the **49** collections, seven were already read and **five more are worth reading** — `scheiding_vlak` and `vegetatieobject_lijn` as boundaries, `bord`, `kast` and `bak` as street objects, all forms `crates/geo/src/furniture.rs` already has; the client half of those has landed, the extractor half is `server/pipeline/bgt.ts` in cartopy. The other thirty-seven are not worth it, each reason in [notes/surveyed-street-objects.md](notes/surveyed-street-objects.md); `overbruggingsdeel` and `tunneldeel` (bridge decks, tunnel bodies) are split into a ticket of their own, needing a deck height the register does not carry. Interface unchanged (keyless, cursor-paged, historical versions returned), CC0 1.0 stated by the API itself. |
 
 ## What an unattended session may do
 
