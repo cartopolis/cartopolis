@@ -1,13 +1,14 @@
 ---
 topic: pipeline
-triggers: [3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, cartopy, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
+triggers: [3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, cartopy, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
 updated: 2026-08-29
 ---
 
 # The map's Dutch layers are built in the other repository
 
-`tools/3dbag_extract.py`, `tools/3dbag_lod22.py`, `tools/bag_attributes.py` and
-`tools/bgt_objects.py` are gone from this tree. They are TypeScript in
+`tools/3dbag_extract.py`, `tools/3dbag_lod22.py`, `tools/bag_attributes.py`,
+`tools/bgt_objects.py` and `tools/dikes.py` are gone from this tree. They are
+TypeScript in
 [`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) under `server/`, run
 by an admin console rather than by four ssh commands per city.
 
@@ -31,7 +32,8 @@ libraries with no JS counterpart.
 ## The seam this created, which is worse than the one it removed
 
 **The consumers of these formats are in this repository.** `lod22.rs`,
-`building_facts.rs`, `surveyed.rs` and `osm_buildings.rs` each parse one of them,
+`building_facts.rs`, `surveyed.rs`, `osm_buildings.rs` and `dikes.rs` each parse
+one of them,
 and the producer is now in a repository with a different language and a different
 CI. Nothing checks that the two agree — it is the `src/types.ts` problem cartopy's
 README already describes, four times over and much wider.
@@ -48,8 +50,8 @@ Measured 2026-08-29, over a 1 km square of Groningen
 (`--bbox 233000 582000 234000 583000`), running both implementations against the
 live sources and diffing every output file:
 
-- **`buildings`, `bag`, `bgt`: structurally identical** to a tolerance of 1e-6,
-  across all 28 files. Same file set, same ids, same tags, same counts — 3,126
+- **`buildings`, `bag`, `bgt`, `dikes`: structurally identical** to a tolerance
+  of 1e-6, across all 40 files. Same file set, same ids, same tags, same counts — 3,126
   buildings, 7,586 addresses, 140 berths, 180 monuments, 261 boundaries, 3,258
   paved surfaces on both sides. Vertex positions agreed to 0.02 mm.
 - **`lod22`: the same surface, a different triangulation.** 8,695 buildings on
@@ -61,6 +63,14 @@ live sources and diffing every output file:
 
 That last one is the reason a byte-for-byte comparison is the wrong test for this
 pipeline and a structural one is the right one.
+
+`dikes` and the paving materials were ported later than the rest — they landed on
+`main` while the port was in review, inside the very Python it replaces — and were
+checked the same way against the same square: 12 files, no differences at all.
+That is the failure mode to watch for here. A branch that removes a producer can
+be revert-clean in git and still lose a feature somebody added to it in the
+meantime, because the loss is a *deletion* that merges without a conflict on every
+file but one.
 
 ## The projection is the load-bearing part, and it agrees for a reason
 

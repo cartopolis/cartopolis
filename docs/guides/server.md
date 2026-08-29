@@ -477,7 +477,7 @@ ourselves. Unlike Overpass it is **static, download-once** data: no database, no
 diffs, just preprocessed files behind Caddy. Currently the **city of Groningen**
 is covered.
 
-Four datasets, all landing in one tree and all served by the same Caddy site:
+Five datasets, all landing in one tree and all served by the same Caddy site:
 
 | Path | Source | What the client does with it |
 |---|---|---|
@@ -485,11 +485,12 @@ Four datasets, all landing in one tree and all served by the same Caddy site:
 | `lod22/` | 3DBAG CityJSON LoD2.2 | real roof and wall geometry, as triangles (`lod22.rs`) |
 | `bag/` | PDOK BAG WFS + the RCE heritage layers | year, use, floor areas, addresses, entrance points, monuments (`building_facts.rs`) |
 | `bgt/` | PDOK BGT OGC API | surveyed trees, lampposts, benches, fences, hedges, paving (`surveyed.rs`) |
+| `dikes/` | PDOK IMWA `waterkering` | the dikes, dunes and dams, as named lines (`dikes.rs`) |
 
 ### Where the extractors live
 
-**Not in this repository.** They were four Python scripts under `tools/`, run by
-hand over ssh, and since 2026-08 they are TypeScript in
+**Not in this repository.** They were Python scripts under `tools/`, run by hand
+over ssh, and since 2026-08 they are TypeScript in
 [`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) under `server/`,
 driven by the **Data** tab of the admin GUI at
 [web.cartopolis.org](https://web.cartopolis.org). An operator picks an area,
@@ -498,8 +499,8 @@ the tree currently holds before anything is run.
 
 The reason they moved is the console. The reason to know they moved is the other
 direction: **their output formats are parsed here** — `lod22.rs`,
-`building_facts.rs`, `surveyed.rs` and `osm_buildings.rs` each read one of these
-shapes, and nothing but a person keeps the two repositories in step. cartopy's
+`building_facts.rs`, `surveyed.rs`, `osm_buildings.rs` and `dikes.rs` each read
+one of these shapes, and nothing but a person keeps the two repositories in step. cartopy's
 `server/pipeline/format.test.ts` pins each format against captures of a real run,
 so a change there fails a test rather than reaching a client as an empty layer.
 Change a wire format here and change it there.
@@ -545,6 +546,7 @@ and the `Caddyfile` has:
 	header /lod22/* Cache-Control "public, max-age=86400"
 	header /bag/* Cache-Control "public, max-age=86400"
 	header /bgt/* Cache-Control "public, max-age=86400"
+	header /dikes/* Cache-Control "public, max-age=86400"
 }
 ```
 

@@ -97,7 +97,7 @@ const SURFACE_KINDS: [PavingKind; 8] = [
 ];
 
 /// The surveyed materials, in wire order. Mirrors `SURFACE_MATERIALS` in
-/// `tools/bgt_objects.py` — **append, never renumber**.
+/// cartopy's `bgt.ts` — **append, never renumber**.
 const SURFACE_MATERIALS: [PavingMaterial; 12] = [
     PavingMaterial::Asphalt,
     PavingMaterial::Concrete,

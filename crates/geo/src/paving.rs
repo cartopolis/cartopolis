@@ -128,7 +128,7 @@ impl PavingKind {
 }
 
 /// What a surveyed surface is made of. Mirrors `SURFACE_MATERIALS` in
-/// `tools/bgt_objects.py` — **append, never renumber**.
+/// cartopy's `bgt.ts` — **append, never renumber**.
 ///
 /// # Why this is a second axis and not more kinds
 ///
