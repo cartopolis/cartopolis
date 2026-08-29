@@ -79,7 +79,6 @@ or the volume for these — that check is the first half of the ticket, and
 | Source | What it would add |
 |---|---|
 | BGT, the remaining layers | the surveyed surfaces not yet read |
-| CBS neighbourhood statistics | how many people are actually there |
 | Rijkswaterstaat water levels | canal and river surfaces at their real height |
 | 3D basisvoorziening | national LoD3, in place of one hand-imported model |
 
@@ -91,6 +90,7 @@ the answer was no. Kept here so the check is not repeated:
 | Kadaster parcels | 2026-08-29 | A cadastral boundary is a legal line, not a physical object: **312.4 km** of it over a Groningen cell against **21.9 km** of surveyed fence, wall and hedge the BGT already supplies and `LineKind` already draws — so 93% of it would be an invented object where the register says nothing. The row's description was wrong too: a parcel is the whole plot, and the gardens are the BGT's `begroeidterreindeel`. CC0, and `Perceel` alone is 14.0 MB per cell. [notes/kadaster-parcels.md](notes/kadaster-parcels.md) |
 | NDW traffic | 2026-08-29 | Real vehicle counts, from 20,519 loop detectors on motorway mainlines. Zero of them fall inside the 260 m radius the ambient cars are placed in at the Grote Markt, the Dam or Domplein, so substituting measurement for the generated traffic empties every city street — value 4. There is no bbox query either, so a per-cell service means re-slicing a national 52 MB file every minute, and a loop carries no `wvk_id` and no OSM id to join on. CC0, so the licence was never the obstacle. [notes/ndw-traffic.md](notes/ndw-traffic.md) |
 | NWB road network | 2026-08-29 | Centrelines with administrative attributes. No width, no carriageway polygons, no bridge or tunnel geometry — the row's description was wrong. Its one unique field, `rel_hoogte`, answers a question `grade-separation.md` already closed without it. CC0, so the licence was never the obstacle. [notes/nwb-road-network.md](notes/nwb-road-network.md) |
+| CBS neighbourhood statistics | 2026-08-29 | A table, not a picture. The only geometry is the buurt outline — an administrative line with nothing standing on it — and **89% of a cell is the statistics table** (257 KB of `buurten` against 27.6 KB of geometry; 244 attributes per feature, 30% of the values suppressed as `-99997`). Every consumer already reads something finer: window occupancy is per building from the BAG, the car and walker pools are sized for "is this street alive" and already denser than the measured car figure, and CBS counts residents and registered vehicles rather than who is on the street. CC0, and small. [notes/cbs-neighbourhood-statistics.md](notes/cbs-neighbourhood-statistics.md) |
 
 ## What an unattended session may do
 
