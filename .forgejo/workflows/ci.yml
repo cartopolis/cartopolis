@@ -299,6 +299,12 @@ jobs:
       # not pay for one. The test is a *deny*-list matched against every changed
       # path, so the default for an unrecognised path — `assets/`, `crates/geo/`,
       # `Cargo.lock`, anything new — is to run the smokes. Fail safe, not silent.
+      #
+      # `tools/` is on the list for the same reason `crates/simulator/` is: it is
+      # Python, TypeScript and bash — the extractors, the authoring client, the
+      # autopilot, the deploy script — and not one byte of it is compiled into
+      # the client. It is deliberately *not* in the `paths-ignore` above: a
+      # change there should still get a suite, it just cannot change a frame.
       - name: What is worth running for this commit
         id: scope
         # Through the environment rather than interpolated into the script: a ref
@@ -328,9 +334,9 @@ jobs:
             echo "on the pull-request lane at $(git rev-parse --short HEAD^2). Skipping the suite."
           fi
           if changed=$(git diff --name-only HEAD^1 HEAD 2>/dev/null) && [ -n "$changed" ]; then
-            if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
+            if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|tools/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
               render=false
-              echo "Nothing outside the simulator, the docs and CI changed. Skipping the scene smokes:"
+              echo "Nothing that reaches the renderer changed. Skipping the scene smokes:"
               printf '%s\n' "$changed" | sed 's/^/  /'
             fi
           fi

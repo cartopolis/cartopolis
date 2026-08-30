@@ -97,10 +97,10 @@ changed=$(git diff --name-only "$mb" HEAD)
 #     `docs/`, `*.md`, `.claude/`. A commit inside that set starts no CI run on
 #     `main` either, so compiling the workspace to prove prose is a build this
 #     branch would never have paid for.
-#   * the `What is worth running` step's deny-list adds `crates/simulator/` and
-#     `.forgejo/` and decides only whether the *render smokes* run — the
-#     simulator holds no map data and cannot change a frame, but it very much
-#     has a suite.
+#   * the `What is worth running` step's deny-list adds `crates/simulator/`,
+#     `tools/` and `.forgejo/` and decides only whether the *render smokes* run
+#     — the simulator holds no map data and the tools are Python, TypeScript and
+#     bash, so neither can change a frame, but both very much have a suite.
 #
 # Both are deny-lists, so an unrecognised path (`assets/`, `crates/geo/`,
 # `Cargo.lock`, anything new) runs everything. Fail safe, not silent.
@@ -114,7 +114,7 @@ elif [ "$scope" = "min" ]; then
 elif [ -n "$changed" ]; then
     if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|\.claude/|[^/]*\.md$)'; then
         compile=false; render=false; targets=false
-    elif ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
+    elif ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|tools/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
         render=false; targets=false
     fi
 fi
