@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+#
+# Run CI's gate on this branch, here, before anything reaches `main`.
+#
+#   ./verify-branch [--base origin/main] [--scope auto|min|full] [--only step,step]
+#
+# Every command below is copied from `.forgejo/workflows/ci.yml`. That is the
+# whole design: the branch used to be judged by opening a pull request, which
+# started a 15-25 minute run on a capacity-3 runner shared with nominatim and
+# overpass — and the merge to `main` then started a second one from the same
+# tree. Running the same commands where the code already is removes the first
+# run entirely, and the PR with it.
+#
+# ## Why this is allowed to be the gate
+#
+# `docs/notes/agent-verification.md` says a gate may not depend on anything the
+# agent controls, and its corollary 1 says a check written as prompt text is
+# advice. Both still hold, and this is written to satisfy them:
+#
+#   * **It is a script, not a sentence.** The invocations are fixed here, in the
+#     repository, next to the workflow they mirror. A session cannot narrow
+#     `--workspace` to the one package it was working in, because it does not
+#     choose the argument.
+#   * **It records what it proved.** A pass writes the head sha into
+#     `.git/cartopolis-verified`, and `merge-to-main` refuses a head that has no
+#     receipt. Rebasing or committing moves the sha, so a stale pass cannot be
+#     spent on different code.
+#   * **CI still runs**, on the push to `main` (`ci.yml` has `push: branches:
+#     [main]`), and on `main` it runs *more* than a pull request ever did — the
+#     smokes and both cross-target lanes. What changed is that its verdict
+#     arrives after the landing instead of before it, and a red one is fixed
+#     forward. That is a real weakening and is stated in workflow.md rather than
+#     papered over.
+#
+# What this cannot reproduce is CI's *environment*: a clean checkout, a cold
+# cache, a different rustfmt. The first two do not decide any of these steps and
+# the third is byte-identical to the runner's (measured, ci-does-not-gate-merges).
+# What it genuinely cannot see is anything needing a GPU — colour, exposure,
+# bloom, lighting and device loss are not gateable here or on the runner, for the
+# same reason, and `docs/notes/headless-shots-software-renderer.md` is unchanged.
+#
+# ## Scope
+#
+# `auto` reads the diff against the base and mirrors ci.yml's own deny-list: a
+# commit touching nothing outside `docs/`, `crates/simulator/`, `.forgejo/`,
+# `.claude/` and `*.md` cannot change a frame, so it skips the three render
+# smokes. The
+# cross-target lanes are skipped for the same class of change plus anything that
+# cannot reach a `cfg` — everything skipped is *named on stdout*, because a gate
+# that quietly narrows itself reads as a pass over ground nobody covered.
+
+set -uo pipefail
+
+base="origin/main"
+scope="auto"
+only=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --base)  base="$2"; shift 2 ;;
+        --scope) scope="$2"; shift 2 ;;
+        --only)  only="$2"; shift 2 ;;
+        -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+head=$(git rev-parse HEAD)
+
+# ── Environment ──────────────────────────────────────────────────────────────
+# The container has no ALSA and no in-container sudo; the debs are extracted
+# into a user prefix instead (docs/notes/container-audio.md). `bevy_audio` is a
+# default feature, so without this every cartopolis build dies in `alsa-sys`'
+# build script with a pkg-config error that reads as a missing crate. Harmless
+# where the prefix does not exist — a workstation has the real package.
+alsa="$HOME/opt/alsa/usr/lib/x86_64-linux-gnu"
+if [ -f "$alsa/pkgconfig/alsa.pc" ]; then
+    export PKG_CONFIG_PATH="$alsa/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    export LD_LIBRARY_PATH="$alsa${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+# Mesa lavapipe, exactly as the CI image is configured. Wayland + GLES flickers
+# and there is no compositor here anyway.
+export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
+export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
+tiles="${CARTO_TILE_URL:-https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}}"
+
+# ── What is worth running for this branch ────────────────────────────────────
+git rev-parse --verify -q "$base" >/dev/null || {
+    echo "base $base does not resolve — run: git fetch origin main" >&2; exit 2; }
+mb=$(git merge-base HEAD "$base")
+changed=$(git diff --name-only "$mb" HEAD)
+
+render=true
+targets=true
+if [ "$scope" = "full" ]; then
+    :
+elif [ "$scope" = "min" ]; then
+    render=false; targets=false
+elif [ -n "$changed" ]; then
+    # ci.yml's rule, verbatim in intent: a *deny*-list, so an unrecognised path
+    # (`assets/`, `crates/geo/`, `Cargo.lock`, anything new) runs the smokes.
+    if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
+        render=false; targets=false
+    fi
+fi
+
+echo "branch   $(git rev-parse --abbrev-ref HEAD)"
+echo "head     $head"
+echo "base     $base ($(git rev-parse --short "$mb"))"
+echo "changed  $(printf '%s\n' "$changed" | grep -c .) file(s)"
+$render  || echo "skipping the render smokes: nothing outside the simulator, the docs and CI changed"
+$targets || echo "skipping the wasm and android target checks: same reason"
+
+steps="fmt tests"
+$render  && steps="$steps smoke-orbit smoke-flicker smoke-phone"
+$targets && steps="$steps wasm android"
+[ -n "$only" ] && steps=$(printf '%s' "$only" | tr ',' ' ')
+
+failed=""
+passed=""
+skipped=""
+
+run() {  # run <name> <description>; command comes from stdin
+    local name="$1" desc="$2" t0 t1
+    printf '\n\033[1m==> %s\033[0m — %s\n' "$name" "$desc"
+    t0=$(date +%s)
+    if bash -eo pipefail; then
+        t1=$(date +%s)
+        printf '    \033[32mok\033[0m %ss\n' "$((t1 - t0))"
+        passed="$passed $name"
+    else
+        t1=$(date +%s)
+        printf '    \033[31mFAILED\033[0m %ss\n' "$((t1 - t0))"
+        failed="$failed $name"
+    fi
+}
+
+want() { printf '%s\n' $steps | grep -qx "$1"; }
+
+# ── The gate ─────────────────────────────────────────────────────────────────
+# Order differs from ci.yml on purpose. There, formatting runs *last* because a
+# failing step ends the job and a whitespace error would hide a real one (two
+# months of Android releases were lost that way). Here nothing is hidden: every
+# step runs and the failures are summarised together, so the cheap one goes
+# first and a rustfmt slip is on screen two seconds in rather than ten minutes.
+if want fmt; then
+    run fmt "cargo fmt --check over the owned crates (big_space is a vendored fork)" <<'CMD'
+cargo fmt -p cartopolis -p cartopolis_geo -p cartopolis_core \
+          -p cartopolis_simulator -p cartopolis_android --check
+CMD
+fi
+
+if want tests; then
+    # One invocation, not five: with resolver v2 each `cargo test -p` unifies
+    # features over only its own packages, so five invocations mean five rebuilds
+    # of the shared Bevy stack. ci.yml's own comment measures it at a third of
+    # the job. `--locked` because a Cargo.toml edit arriving without its lockfile
+    # update must fail rather than silently re-resolve.
+    run tests "cargo test --locked --workspace --exclude cartopolis_android" <<'CMD'
+cargo test --locked --workspace --exclude cartopolis_android
+CMD
+fi
+
+# The smokes launch the client. If the workspace did not build there is nothing
+# to launch, and each of these costs up to 15 minutes discovering that.
+if printf '%s' "$failed" | grep -qw tests; then
+    for s in smoke-orbit smoke-flicker smoke-phone; do
+        want "$s" && { skipped="$skipped $s"; }
+    done
+    want smoke-orbit && echo "
+skipping the render smokes: the suite failed, so there is no binary to launch"
+    steps=$(printf '%s\n' $steps | grep -vE '^smoke-' | tr '\n' ' ')
+fi
+
+if want smoke-orbit; then
+    run smoke-orbit "headless orbit capture: a planet is on screen" <<CMD
+timeout 900 cargo run --locked -p cartopolis -- \\
+    --shot /tmp/verify_orbit.png --dump-state /tmp/verify_orbit.json \\
+    --at 53.2194,6.5665,180000 --look=-90,0 \\
+    --size 640x360 --settle 2 --wait 60 \\
+    --expect 'settled==true' --expect 'globe_rendered>0' \\
+    --expect 'draws<=200' --expect 'upload_peak_asset_kb<=8192' || {
+        echo "the metrics behind it:"; cat /tmp/verify_orbit.json 2>/dev/null \\
+            || echo "(no dump: the run died before it captured)"; exit 1; }
+CMD
+fi
+
+if want smoke-flicker; then
+    # Depth stability. A z-fight re-rolls per view matrix, so no single still can
+    # show one — every coplanar-flicker bug in this tree shipped past a green
+    # screenshot job. 1500 is a disaster gate, not a microscope: the settled
+    # floor at this viewpoint is ~500 px of pedestrians and a known wall edge.
+    run smoke-flicker "headless flicker capture: nothing is z-fighting down the street" <<CMD
+timeout 900 cargo run --locked -p cartopolis -- \\
+    --shot /tmp/verify_flicker.png --dump-state /tmp/verify_flicker.json \\
+    --flicker --time 12 --fog 0 --clouds 0 --rain 0 \\
+    --at 53.2194,6.5665,100 --look=-60,0 \\
+    --size 640x360 --settle 2 --wait 120 --hide-ui \\
+    --expect 'settled==true' --expect 'flicker_px<=1500' || {
+        echo "the metrics behind it:"; cat /tmp/verify_flicker.json 2>/dev/null \\
+            || echo "(no dump: the run died before it captured)"; exit 1; }
+CMD
+fi
+
+if want smoke-phone; then
+    # Not a performance variant of the orbit shot: the phone tier takes a
+    # different sky, and that absent `AtmosphereSettings` is what once deleted
+    # the planet on the handset while the tier above kept passing.
+    run smoke-phone "the same frame on the tier Android runs" <<CMD
+CARTO_QUALITY=phone timeout 900 cargo run --locked -p cartopolis -- \\
+    --shot /tmp/verify_phone.png --dump-state /tmp/verify_phone.json \\
+    --at 53.2194,6.5665,180000 --look=-90,0 \\
+    --size 640x360 --settle 2 --wait 60 \\
+    --expect 'settled==true' --expect 'globe_rendered>0' \\
+    --expect 'upload_peak_asset_kb<=8192' || {
+        echo "the metrics behind it:"; cat /tmp/verify_phone.json 2>/dev/null \\
+            || echo "(no dump: the run died before it captured)"; exit 1; }
+CMD
+fi
+
+if want wasm; then
+    # `--features audio` is not optional: dropping the defaults also drops
+    # bevy_audio, and systems::voice's playback half becomes dead code that
+    # `unused = "deny"` turns into nine errors in files you did not touch.
+    # Keep in step with ci.yml's targets lane and index.html's data-cargo-features.
+    run wasm "cargo check for wasm32 (the web client's cfg dimension)" <<'CMD'
+rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown \
+    || rustup target add wasm32-unknown-unknown
+RUSTUP_TOOLCHAIN=nightly \
+RUSTFLAGS="--cfg=web_sys_unstable_apis -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128" \
+cargo check --locked -p cartopolis --no-default-features --features audio \
+    --target wasm32-unknown-unknown
+CMD
+fi
+
+if want android; then
+    # The only thing anywhere that compiles cartopolis_android's real code — the
+    # crate's dependencies are target-gated, so a host build proves nothing about
+    # it. Needs the NDK's clang because blake3's build script runs `cc` at check
+    # time. In this container the toolchain copy and the NDK are under $HOME
+    # (the shared RUSTUP_HOME is root-owned); on the runner they are /opt.
+    run android "cargo check for aarch64-linux-android" <<'CMD'
+# `&&` on its own line would be the last command of a list under `bash -e`,
+# so a missing first candidate would end the step rather than try the second.
+ndk=""
+for c in "$HOME/android-ndk" /opt/android-ndk; do
+    if [ -d "$c" ]; then ndk="$c"; break; fi
+done
+[ -n "$ndk" ] || { echo "no Android NDK at ~/android-ndk or /opt/android-ndk"; exit 1; }
+NDK_BIN="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+if [ -d "$HOME/rustup" ]; then export RUSTUP_HOME="$HOME/rustup"; fi
+rustup target list --installed 2>/dev/null | grep -qx aarch64-linux-android \
+    || rustup target add aarch64-linux-android
+export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
+export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+cargo check --locked -p cartopolis_android --target aarch64-linux-android
+CMD
+fi
+
+# ── Verdict ──────────────────────────────────────────────────────────────────
+echo
+echo "──────────────────────────────────────────────"
+[ -n "$passed"  ] && echo "passed  $(echo $passed)"
+[ -n "$skipped" ] && echo "skipped $(echo $skipped)"
+if [ -n "$failed" ]; then
+    echo "FAILED  $(echo $failed)"
+    echo
+    echo "Fix and re-run — one step at a time with --only $(echo $failed | tr ' ' ',')."
+    rm -f "$(git rev-parse --git-dir)/cartopolis-verified"
+    exit 1
+fi
+
+# The receipt. Keyed on the head sha, so a commit or a rebase after this point
+# invalidates it and merge-to-main asks for the gate again.
+receipt="$(git rev-parse --git-dir)/cartopolis-verified"
+{
+    echo "sha=$head"
+    echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "scope=$scope"
+    echo "steps=$(echo $passed)"
+    echo "base=$(git rev-parse "$mb")"
+} > "$receipt"
+echo "green — receipt written for ${head:0:8}"

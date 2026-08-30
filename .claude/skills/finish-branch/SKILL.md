@@ -30,28 +30,44 @@ sessions. The oldest session file usually holds the design decision; the later
 ones only execute it. If what you are about to merge no longer matches that
 intent, this is a conversation, not a merge.
 
-**3. Merge.** When the worktree is bound to a ticket, this is one command:
+**3. Verify it here.** The branch is judged on this machine now, not by opening
+a pull request:
+
+```bash
+.claude/skills/finish-branch/verify-branch
+```
+
+It runs the commands out of `.forgejo/workflows/ci.yml` — `cargo fmt --check`,
+`cargo test --locked --workspace`, and, when the diff can change a frame, the
+three headless smokes and the wasm/android target checks. It prints what it
+skipped and why, and a pass writes a receipt keyed on the head sha.
+
+**4. Land it.** One command, and it does the verify above if you have not:
 
 ```bash
 .claude/skills/finish-branch/merge-to-main
 ```
 
-It pushes `HEAD` to the bound branch, waits for CI on the pushed head, and opens
-and merges a PR **only on green** — a red run exits non-zero naming the failing
-check, so you fix it and re-run rather than deciding for yourself that it was
-fine. `main` is protected and stays that way: the token can merge a PR but
-cannot push to `main` and holds no admin scope, so this path cannot widen its
-own permissions. `Closes #N` in the PR body closes the issue, which is what
-moves the card to Done.
+It rebases onto `origin/main`, runs the gate, pushes the branch, fast-forwards
+`main` to it and closes the ticket. **No pull request.** `ci.yml` has no push
+trigger on branches, so a PR was the only way to start a run — which meant every
+landing paid for two full 15-25 minute runs of one tree on a capacity-3 runner,
+and the last eight merges before this change spent a median of *zero seconds*
+between opening the PR and merging it. Nobody was reading the verdict it bought.
+
+CI is not switched off: the push to `main` runs it, including the render smokes
+and both cross-target lanes that a pull request never had. What changed is that
+its verdict now arrives **after** the landing. That is a real weakening, it is
+the trade the speed comes from, and a red `main` is fixed forward — see
+[docs/notes/agent-verification.md](../../../docs/notes/agent-verification.md).
 
 Say "merge to main" in the driven lane and this is the step —
-[docs/workflow.md](../../../docs/workflow.md#landing-it-the-driven-lane-merges-its-own-branch-2026-08-10).
+[docs/workflow.md](../../../docs/workflow.md#landing-it-the-driven-lane-verifies-its-own-branch-and-pushes-2026-08-30).
 Follow the `commit` skill's conventions for any fixup commit along the way.
+`--allow-unverified` skips the gate and exists to be visible in a transcript,
+not to be routine.
 
-Without a ticket binding, or when the branch's shape wants a rebase first, do it
-by hand — but the CI-before-merge order is the part that is not optional.
-
-**4. Leave the context ref alone.** There is nothing to clean up. The ref stays
+**5. Leave the context ref alone.** There is nothing to clean up. The ref stays
 keyed on the branch name, which remains meaningful long after the branch itself
 is deleted.
 

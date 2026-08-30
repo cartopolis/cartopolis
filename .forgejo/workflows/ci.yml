@@ -17,6 +17,11 @@ name: CI
 # The cost is that a branch with no PR gets no CI. That is the intended trade:
 # open the PR, which is where a verdict is actually read.
 #
+# `.claude/` is on the same footing as `docs/`: skills, prompts and settings, no
+# compiled byte among them. It was added when the landing path moved into
+# .claude/skills/finish-branch — a change to the script that runs the gate should
+# not itself cost a run of the gate.
+#
 # `paths-ignore` because a Markdown change should not compile Bevy. Eight of the
 # forty commits on `main` before 2026-08-16 touched nothing but `docs/` and
 # `*.md`, and each of those bought two full runs — the PR lane and the merge —
@@ -67,10 +72,12 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - '.claude/**'
   pull_request:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - '.claude/**'
   workflow_dispatch:
 
 # One run per ref: a new push cancels the run its predecessor is still doing.
@@ -321,7 +328,7 @@ jobs:
             echo "on the pull-request lane at $(git rev-parse --short HEAD^2). Skipping the suite."
           fi
           if changed=$(git diff --name-only HEAD^1 HEAD 2>/dev/null) && [ -n "$changed" ]; then
-            if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|[^/]*\.md$)'; then
+            if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
               render=false
               echo "Nothing outside the simulator, the docs and CI changed. Skipping the scene smokes:"
               printf '%s\n' "$changed" | sed 's/^/  /'

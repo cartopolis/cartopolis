@@ -1,60 +1,88 @@
 #!/usr/bin/env bash
 #
-# Land the current worktree's ticket branch into main, via the Forgejo API.
+# Land the current worktree's branch on `main`.
 #
-#   ./merge-to-main [--wait-secs 2400] [--no-wait] [--dry-run]
+#   ./merge-to-main [--scope auto|min|full] [--verify-only] [--dry-run]
+#                   [--allow-unverified]
 #
-# Push HEAD to the bound branch, wait for CI on the pushed head, and merge only
-# if it is green. Prints one status line per poll; exits non-zero with the
-# failing check when CI fails, so the caller can fix and re-run.
+# Rebase onto `origin/main`, run CI's gate locally (`verify-branch`), push the
+# branch, fast-forward `main` to it, and close the ticket. No pull request.
 #
-# Why a PR and not a push: `main` is protected server-side and stays that way.
-# The `cartopolis-agent` token this uses reports `user_can_push: false` and
-# `user_can_merge: true` on main, and carries no admin scope — so it cannot
-# relax the protection it is working within, and an accidental `git push origin
-# main` from any agent still bounces. The PR also leaves the review record and
-# the CI history that a direct push would not.
+# ## Why there is no pull request any more (2026-08-30)
 #
-# Merging with `Closes #N` in the PR body closes the issue, and the watcher
-# moves a closed issue's card to Done (docs/workflow.md, "States") — Forgejo has
-# no kanban API, so that projection is the watcher's job, not this script's.
+# There used to be one, and it was the only way to get a verdict: `ci.yml` has no
+# push trigger on branches, so a branch's run started when its PR was opened.
+# That made every landing cost two full runs of a 15-25 minute workflow on a
+# runner with capacity 3 — once on the pull-request ref, once on the merge commit
+# — for one tree. And it was increasingly not even read: of the eight merges
+# before this change, five went from PR opened to PR merged in under six seconds.
+# The pull request was not a review, it was a way to start a build and then not
+# wait for it.
+#
+# So the verdict moved to where the code already is. `verify-branch` runs the
+# same commands out of the same workflow file, here, and this script refuses a
+# head it has not passed. What lands on `main` has been tested; what it has not
+# been is tested *by something outside this machine* — see that script's header
+# and docs/notes/agent-verification.md, both of which say so in as many words.
+# CI has not been switched off: pushing `main` runs it, with the render smokes
+# and both cross-target lanes that a pull request never had. Its verdict now
+# arrives after the landing, and a red one is fixed forward.
+#
+# ## What it still refuses
+#
+#   * a dirty worktree — commit first, so what is verified is what lands;
+#   * a head with no `verify-branch` receipt (`--allow-unverified` is the escape
+#     hatch, and it exists to be visible in a transcript, not to be routine);
+#   * a `main` that has moved since the rebase — the push is a plain
+#     fast-forward, so a concurrent landing bounces it and you re-run.
+#
+# ## Tokens
+#
+# One, and it is the weaker one. `main` is no longer protected, so the code goes
+# up as an ordinary SSH push under this account; the only API call left closes
+# the ticket, which `forgejo.env`'s `write:issue` token has always been able to
+# do. `forgejo-merge.env`'s repository-write token is no longer used by this
+# path at all.
 
-set -euo pipefail
+set -uo pipefail
 
-wait_secs=2400
+scope="auto"
 dry_run=""
-no_wait=""
+verify_only=""
+allow_unverified=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --wait-secs) wait_secs="$2"; shift 2 ;;
-        --no-wait)   no_wait=1; shift ;;
-        --dry-run)   dry_run=1; shift ;;
+        --scope)             scope="$2"; shift 2 ;;
+        --dry-run)           dry_run=1; shift ;;
+        --verify-only)       verify_only=1; shift ;;
+        --allow-unverified)  allow_unverified=1; shift ;;
+        -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
-for f in "$HOME/.config/cartopolis/forgejo.env" "$HOME/.config/cartopolis/forgejo-merge.env"; do
-    [ -f "$f" ] || { echo "missing $f — see docs/workflow.md" >&2; exit 1; }
-    set -a; . "$f"; set +a
-done
-: "${FORGEJO_TOKEN:?not set}"; : "${FORGEJO_MERGE_TOKEN:?not set}"
-API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
-REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+gitdir=$(git rev-parse --git-dir)
 
-marker="$(git rev-parse --git-dir)/cartopolis-ticket"
-[ -f "$marker" ] || { echo "this worktree is not bound to a ticket — run /ticket" >&2; exit 1; }
-issue=$(sed -n 's/^issue=//p' "$marker" | head -1)
-branch=$(sed -n 's/^branch=//p' "$marker" | head -1)
-[ -n "$issue" ] && [ -n "$branch" ] || { echo "marker is missing issue= or branch=" >&2; exit 1; }
+# ── Who this is ──────────────────────────────────────────────────────────────
+# A ticket binding is no longer required. It was, back when the PR body's
+# `Closes #N` was the only thing that moved a card — but a small fix that never
+# earned a ticket had no way to land, and inventing one to satisfy a script is
+# ceremony of the kind this change is removing. With a marker the issue is
+# closed; without one the branch simply lands.
+marker="$gitdir/cartopolis-ticket"
+issue=""; branch=""
+if [ -f "$marker" ]; then
+    issue=$(sed -n 's/^issue=//p' "$marker" | head -1)
+    branch=$(sed -n 's/^branch=//p' "$marker" | head -1)
+fi
+[ -n "$branch" ] || branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" != "main" ] || { echo "refusing: this worktree is on main itself" >&2; exit 1; }
 
-# Repo write scope; the issue scope lives on the other token.
-merge_api() { curl -sf -H "Authorization: token $FORGEJO_MERGE_TOKEN" -H "Content-Type: application/json" "$@"; }
-issue_api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json" "$@"; }
-
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$1',''))"; }
-
-echo "ticket   #$issue"
 echo "branch   $branch"
+[ -n "$issue" ] && echo "ticket   #$issue" || echo "ticket   (none — landing an unticketed branch)"
 
 if [ -n "$(git status --porcelain)" ]; then
     echo "refusing: uncommitted changes — commit them first" >&2
@@ -62,82 +90,106 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+# ── Rebase onto whatever main is now ─────────────────────────────────────────
+# `main` moves under a session: it is the whole reason `rebase-before-starting`
+# is a standing note. Rebasing rather than merging also means `main` gains the
+# branch's own commits and no merge bubble, so `git log` reads as the sequence of
+# changes it actually is. A conflict stops here — resolving one is a judgement
+# about two people's work and not something to automate.
+echo "==> fetching origin/main"
+git fetch --quiet origin main || { echo "could not fetch origin" >&2; exit 1; }
+if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
+    echo "refusing: HEAD is already exactly origin/main — nothing to land" >&2
+    exit 1
+fi
+if ! git merge-base --is-ancestor origin/main HEAD; then
+    ahead=$(git rev-list --count HEAD ^origin/main)
+    behind=$(git rev-list --count origin/main ^HEAD)
+    echo "==> main has moved: $behind commit(s) to catch up, $ahead of ours — rebasing"
+    if ! git rebase origin/main; then
+        echo "" >&2
+        echo "the rebase conflicts with main — resolve it, then re-run:" >&2
+        echo "    git status; git rebase --continue" >&2
+        echo "if main already landed the same change, that is 'git rebase --skip'," >&2
+        echo "not a merge of two versions of one change." >&2
+        exit 1
+    fi
+    echo "    rebased onto $(git rev-parse --short origin/main)"
+fi
+
 sha=$(git rev-parse HEAD)
 echo "head     $sha"
-[ -n "$dry_run" ] && { echo "(dry run, stopping here)"; exit 0; }
+echo "landing  $(git rev-list --count HEAD ^origin/main) commit(s)"
 
-echo "==> pushing HEAD to $branch"
-git push --force-with-lease origin "HEAD:refs/heads/$branch"
+# ── The gate ─────────────────────────────────────────────────────────────────
+# The receipt is keyed on the sha, so the rebase above invalidates a pass earned
+# before it — which is the point. A verified tree that has since been replayed
+# onto different code has not been verified.
+receipt="$gitdir/cartopolis-verified"
+verified=""
+[ -f "$receipt" ] && verified=$(sed -n 's/^sha=//p' "$receipt" | head -1)
 
-# ── Wait for CI on the pushed head ───────────────────────────────────────────
-# The combined status endpoint aggregates every check for the commit. It reports
-# `pending` both while a run is going and *before any run exists*, so a run that
-# has not been created yet is indistinguishable from one in progress — hence the
-# wait is bounded rather than "until it is not pending".
-if [ -n "$no_wait" ]; then
-    # Only ever on an explicit human instruction. This is the one thing
-    # docs/workflow.md's "the verdict is CI's, not the session's" forbids a
-    # session from choosing for itself, so it is a flag rather than a fallback:
-    # nothing in the script can reach it, and a red run found afterwards is
-    # fixed forward on main.
-    now=$(merge_api "$API/repos/$REPO/commits/$sha/status" | jget state || echo unknown)
-    echo "==> --no-wait: merging without the CI gate (status right now: ${now:-unknown})"
+if [ "$verified" = "$sha" ]; then
+    echo "==> already verified at $(sed -n 's/^at=//p' "$receipt") — steps:$(sed -n 's/^steps=//p' "$receipt")"
+elif [ -n "$allow_unverified" ]; then
+    # Only ever on an explicit human instruction, and loud in the transcript
+    # because it is the one decision this path is not allowed to make for itself.
+    echo "==> --allow-unverified: landing without running the gate"
 else
-echo "==> waiting for CI on $sha (up to ${wait_secs}s)"
-deadline=$(( $(date +%s) + wait_secs ))
-state=""
-while [ "$(date +%s)" -lt "$deadline" ]; do
-    body=$(merge_api "$API/repos/$REPO/commits/$sha/status" || echo '{}')
-    state=$(printf '%s' "$body" | jget state)
-    total=$(printf '%s' "$body" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('statuses',[])))" 2>/dev/null || echo 0)
-    printf '    %s  state=%-8s checks=%s\n' "$(date +%H:%M:%S)" "${state:-none}" "$total"
-    case "$state" in
-        success) break ;;
-        failure|error)
-            echo "==> CI failed:" >&2
-            printf '%s' "$body" | python3 -c '
-import sys,json
-for s in json.load(sys.stdin).get("statuses",[]):
-    print(f"    {s.get(\"status\"):8} {s.get(\"context\")}  {s.get(\"target_url\")}", file=sys.stderr)'
-            exit 1 ;;
-    esac
-    sleep 20
-done
-[ "$state" = "success" ] || { echo "==> CI did not go green within ${wait_secs}s (last: ${state:-none})" >&2; exit 1; }
+    echo "==> running the gate (verify-branch --scope $scope)"
+    "$here/verify-branch" --scope "$scope" || {
+        echo "" >&2
+        echo "not landing: the gate is red. Fix it and re-run." >&2
+        exit 1; }
 fi
 
-# ── Open (or reuse) the PR and merge it ──────────────────────────────────────
-existing=$(merge_api "$API/repos/$REPO/pulls?state=open&limit=50" | python3 -c "
-import sys,json
-b='$branch'
-print(next((str(p['number']) for p in json.load(sys.stdin) if p['head']['ref']==b), ''))")
+[ -n "$verify_only" ] && { echo "--verify-only: stopping before the push"; exit 0; }
+[ -n "$dry_run" ] && { echo "(dry run: would push $branch and fast-forward main to ${sha:0:8})"; exit 0; }
 
-if [ -n "$existing" ]; then
-    pr="$existing"
-    echo "==> reusing open PR #$pr"
-else
-    title=$(issue_api "$API/repos/$REPO/issues/$issue" | jget title)
-    pr=$(python3 -c "
+# ── Land it ──────────────────────────────────────────────────────────────────
+# The branch goes up first and keeps existing: it is the key the agent-context
+# digest is stored under (refs/agent-context/<branch>) and what the autopilot's
+# sweep looks for when it retires a landed ticket's branch.
+echo "==> pushing $branch"
+git push --force-with-lease --quiet origin "HEAD:refs/heads/$branch" || exit 1
+
+# No `--force` anywhere near this one. A plain push is a fast-forward or a
+# rejection, and a rejection here means another session landed between the fetch
+# above and now — the right answer to which is to re-run, not to overwrite them.
+echo "==> fast-forwarding main to ${sha:0:8}"
+if ! git push --quiet origin "HEAD:refs/heads/main"; then
+    echo "" >&2
+    echo "main was updated while this ran. Re-run — the rebase above will pick it up." >&2
+    exit 1
+fi
+echo "    main is now ${sha:0:8}"
+
+# ── The board ────────────────────────────────────────────────────────────────
+# Forgejo closes an issue named by a `Closes #N` in a commit message pushed to
+# the default branch, so this is usually already done by the time it is checked —
+# but the card only moves when the issue is *closed*, and a commit body that did
+# not spell it is not a reason to leave a finished ticket open.
+if [ -n "$issue" ]; then
+    set -a; . "$HOME/.config/cartopolis/forgejo.env"; set +a
+    API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
+    REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
+    api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json" "$@"; }
+    sleep 2
+    st=$(api "$API/repos/$REPO/issues/$issue" | python3 -c "import sys,json;print(json.load(sys.stdin).get('state',''))" 2>/dev/null)
+    if [ "$st" != "closed" ]; then
+        body=$(python3 -c "
 import json,sys
-print(json.dumps({'head':'$branch','base':'main','title':sys.argv[1],
-                  'body':'Closes #$issue'}))" "$title" \
-        | merge_api -X POST -d @- "$API/repos/$REPO/pulls" | jget number)
-    [ -n "$pr" ] || { echo "could not create the PR" >&2; exit 1; }
-    echo "==> opened PR #$pr"
+print(json.dumps({'body': '🤖 **Landed on \`main\`** as \`%s\`.\n\nVerified locally with \`verify-branch\` before the push; CI runs on \`main\` behind it.' % sys.argv[1]}))" "${sha:0:8}")
+        printf '%s' "$body" | api -X POST -d @- "$API/repos/$REPO/issues/$issue/comments" >/dev/null
+        api -X PATCH -d '{"state":"closed"}' "$API/repos/$REPO/issues/$issue" >/dev/null
+        echo "==> closed #$issue"
+    else
+        echo "==> issue #$issue already closed by the commit message"
+    fi
+    echo "    the watcher moves the card to Done within ~30s"
 fi
 
-echo "==> merging PR #$pr into main"
-merge_api -X POST -d "{\"Do\":\"merge\",\"merge_message_field\":\"Closes #$issue\"}" \
-    "$API/repos/$REPO/pulls/$pr/merge" >/dev/null
-echo "    merged"
-
-# The issue should close from the PR body; say so plainly if it did not, since
-# the board projection hangs off the closed state.
-sleep 3
-st=$(issue_api "$API/repos/$REPO/issues/$issue" | jget state)
-echo "==> issue #$issue is $st"
-if [ "$st" != "closed" ]; then
-    echo "    closing it directly"
-    issue_api -X PATCH -d '{"state":"closed"}' "$API/repos/$REPO/issues/$issue" >/dev/null
-fi
-echo "done — the watcher moves the card to Done within ~30s"
+echo
+echo "done. CI is running on main for this commit; read it rather than assuming:"
+echo "    curl -sf -H \"Authorization: token \$FORGEJO_TOKEN\" \\"
+echo "        \"\$FORGEJO_API/repos/\$FORGEJO_REPO/commits/$sha/status\""

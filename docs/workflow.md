@@ -480,7 +480,7 @@ itself into.
 
 `agent:done` means **a branch is waiting for review**, not shipped.
 
-### Landing it: the driven lane merges its own branch (2026-08-10)
+### Landing it: the driven lane verifies its own branch and pushes (2026-08-30)
 
 In the driven lane you are in the room, so the review has already happened in
 conversation. Saying **"merge to main"** is the instruction to land it, and the
@@ -490,48 +490,80 @@ session does it rather than handing back a branch for you to PR by hand:
 .claude/skills/finish-branch/merge-to-main
 ```
 
-It pushes `HEAD` to the bound branch, **waits for CI on the pushed head**, and
-merges only on green — a red run exits non-zero naming the failing check, so the
-session fixes it and re-runs. That preserves the rule above: the session still
-never decides that its own work is correct, it only decides *when to ask*.
+It rebases onto `origin/main`, runs CI's gate **locally**, pushes the branch,
+fast-forwards `main` to it and closes the ticket. There is no pull request.
 
-Three properties are deliberate, and the first is what makes this safe to give an
-agent at all:
+**Why the pull request went.** `ci.yml` has no push trigger on branches, so
+opening a PR was the only way to start a run at all. That made the cost of
+landing anything two full runs of a 15-25 minute workflow, on a runner with
+capacity 3 shared with nominatim and overpass, for one tree — once on the
+pull-request ref and once on the merge commit. And the first of the two was
+increasingly not read: of the eight merges before this change, five went from
+"PR opened" to "PR merged" in under six seconds. A pull request that exists for
+six seconds is not a review, it is a way to start a build and walk away from it.
 
-- **`main` stays protected, and the token cannot unprotect it.** The
-  `cartopolis-agent` account reports `protected: true`, `user_can_push: false`,
-  `user_can_merge: true` on `main`, and its token carries `write:repository`
-  with no admin scope. So an accidental `git push origin main` from any session
-  still bounces, and this path cannot widen its own permissions. The merge goes
-  through a PR, which is also what leaves the review record and the CI history.
-- **The board follows for free.** The PR body carries `Closes #N`, so the merge
-  closes the issue, and the watcher moves a closed issue's card to Done — see
-  [States](#states). Nothing new projects onto the board; Forgejo still has no
-  kanban API.
-- **Two tokens, two scopes.** `forgejo.env` stays `write:issue` only, exactly as
-  its own comment claims; the repository-write token lives beside it in
-  `forgejo-merge.env` (mode 600). Revoke it in Forgejo ▸ `cartopolis-agent` ▸
-  Settings ▸ Applications ▸ delete "agent-merge", and this path stops working
-  while everything else keeps running.
+So the verdict moved to where the code already is:
 
-**The autonomous lane does not get this.** It stops at `agent:done` as before. The
-difference is not the machine, it is the lane: a merge is the one action where a
-wrong inference is expensive to undo, and the driven lane has a person who said
-the word.
+```bash
+.claude/skills/finish-branch/verify-branch
+```
 
-### The verdict is CI's, not the session's
+which runs the same commands out of the same workflow file — `cargo fmt
+--check`, `cargo test --locked --workspace --exclude cartopolis_android`, and,
+when the diff can change a frame, the three headless smokes and the wasm and
+android target checks. It scopes itself with `ci.yml`'s own deny-list (a commit
+touching only `docs/`, `crates/simulator/`, `.forgejo/`, `.claude/` and `*.md`
+cannot change a frame) and it **names on stdout everything it skipped**, because a gate that
+quietly narrows itself reads as a pass over ground nobody covered.
 
-A session that pushes commits does not get `agent:done`. It gets `agent:ci`, and
-the watcher resolves that on a later poll from Forgejo's commit status for the
-pushed head: green → `agent:done`, any failing check → `agent:failed` with the
-job named in a comment.
+Four properties are deliberate:
 
-The reason is the one the post on harness engineering keeps returning to: **an
-evaluator the agent can influence is not an evaluator.** The session reported its
-own success, and its own verification step was the command above — which, until
-2026-08-06, ran zero tests. Two layers of judgement, both inside the loop.
+- **The gate is a script, not a sentence.** `docs/notes/agent-verification.md`
+  corollary 1 — a check written as prompt text is advice — is the reason this is
+  270 lines of bash in the repository rather than a step in a prompt. A session
+  cannot narrow `--workspace` to the package it was working in, because it does
+  not choose the argument.
+- **A pass is a receipt, keyed on the head sha.** `merge-to-main` refuses a head
+  that has none. Committing or rebasing moves the sha, so a pass earned on one
+  tree cannot be spent on another — which matters most right after the rebase
+  the script itself performs.
+- **`main` is a fast-forward, never a force.** A rejection means another session
+  landed in between; the answer is to re-run and let the rebase pick it up, not
+  to overwrite them. No merge commits, so `git log` on `main` reads as the
+  sequence of changes it actually is.
+- **One token, and it is the weaker one.** `main` is no longer protected, so the
+  code goes up as an ordinary SSH push. The only API call left closes the
+  ticket, which `forgejo.env`'s `write:issue` token has always been able to do —
+  the repository-write token in `forgejo-merge.env` is no longer on this path.
 
-Four details are load-bearing:
+**The autonomous lane does not get this.** It stops at `agent:done` as before,
+and the autopilot (`tools/autopilot.ts`) still opens a pull request and reads
+Forgejo's Actions verdict on the branch head before merging. That is not
+inconsistency: it holds no checkout and no build environment — `deploy-main`
+deliberately works from the API alone — so it *cannot* run the gate above, and
+it has no person in the room who said the word. The difference is the lane, not
+the machine.
+
+### The verdict is still CI's, and it now arrives afterwards
+
+CI has not been switched off. The push to `main` runs it, and on `main` it runs
+**more** than a pull request ever did: the three render smokes and both
+cross-target lanes are `main`-only. What changed is when the answer lands.
+
+That is a real weakening and is worth stating plainly rather than dressing up.
+The old rule was that only CI's verdict on the pushed head may end a ticket,
+because an evaluator the agent can influence is not an evaluator. The local gate
+runs the same commands, but it runs them on the machine the agent is on, and it
+cannot reproduce a clean checkout or a cold cache. What is kept of the rule: the
+invocations are fixed in a checked-in script, the pass is recorded against a sha,
+and the independent run still happens — a red `main` is fixed forward, and
+`tools/deploy-main` still refuses to publish a commit whose CI never went green,
+which is the gate that actually protects strangers.
+
+The autonomous lane's own gate is unchanged: a session that pushes commits gets
+`agent:ci`, and the watcher resolves it from Forgejo's commit status for the
+pushed head — green → `agent:done`, any failing check → `agent:failed` with the
+job named in a comment. Four details there are load-bearing:
 
 - **The wait does not hold a slot.** `pollCi` runs in the poll loop, not inline in
   `handleIssue`; blocking there would occupy one of `AGENT_MAX_CONCURRENT` (2) for
