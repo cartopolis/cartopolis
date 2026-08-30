@@ -68,6 +68,10 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //
 // Read on every tick, never cached: this file IS the control surface, and the
 // point of it is that changing it takes effect without restarting anything.
+// Since 2026-08-30 the admin console writes it too — cartopy's
+// `server/autopilot.ts` (the Autopilot tab's sliders) — which makes this Config
+// a hand-synced seam like `AccountRow`: add a field here and add it there, or
+// the console silently strips it on the next save.
 //
 //   { "enabled": false,        // file tickets at all
 //     "ticketsPerDay": 1,      // how many new feature tickets a day
