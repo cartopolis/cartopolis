@@ -70,7 +70,10 @@ today.
 BAG building register, addresses and entrances · BGT street objects and paving ·
 AHN ground relief · OVapi live transit · RCE listed buildings and protected
 districts · a single IFC building model · forecast weather ·
-PDOK aerial imagery (off by default — [notes](notes/aerial-imagery.md)).
+PDOK aerial imagery (off by default — [notes](notes/aerial-imagery.md)) ·
+RVO crop parcels, so a field is drawn as the crop grown on it rather than as one
+generic green — client half only until cartopy's `brp.ts` serves a cell
+([notes](notes/crop-parcels.md)).
 
 **Candidates, unverified.** Nobody has yet confirmed the interface, the licence
 or the volume for these — that check is the first half of the ticket, and
@@ -78,7 +81,6 @@ or the volume for these — that check is the first half of the ticket, and
 
 | Source | What it would add |
 |---|---|
-| RVO crop parcels (BRP), PDOK OGC API | Every agricultural field with the crop grown on it that year, so the country outside the cities stops being one generic green fill: 163 parcels and 501 KB over a farmland cell north of Groningen, 131 parcels and 149 KB over Flevoland arable land, and zero features inside the city, which is the degrade-to-nothing shape the other streamers already have. |
 | Rijkswaterstaat vaarwegmarkeringen, PDOK OGC API | Every buoy and fixed beacon on the national waterways, each carrying its colour pattern and the colour and character of the light it shows, so a river or a canal holds the objects that are really standing in it: 5 floating and 3 fixed marks in 13 KB over a Hollands Diep cell. |
 | ProRail Spoorwegen, PDOK OGC API | Track axes, switches, level crossings and kilometre posts for the whole rail network, none of which the OSM rail ribbons this client already draws carry: 22 track axes and 70 switches, 208 KB, over the Groningen station cell, against one axis and no switches a cell to the north. |
 | Rijkswaterstaat Weggegevens, PDOK OGC API | Surveyed lane counts and posted speed limits per section of the state road network, which is the measured answer to a width this client derives from a road's class: 8 sections and 8.9 KB over an A28 cell, each carrying a lane description such as 2 -> 2 and a limit with the hours it applies. |

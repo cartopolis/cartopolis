@@ -303,11 +303,13 @@ pub struct MapSurfaces {
     /// Terrain-field revision the live cells were tessellated against, so a field
     /// that lands (or goes away) after them rebuilds them onto the right ground.
     terrain_revision: u32,
-    /// BGT coverage revision these cells were built against
-    /// (`surveyed::coverage_revision`) — 0 while the manifest is in flight, 1 once
-    /// it has answered. Surveyed trees and lampposts are merged into these cells'
-    /// meshes, so a cell built during that gap has none of them and nothing would
-    /// revisit it. It changes at most once per process.
+    /// Surveyed-coverage revision these cells were built against — the BGT's
+    /// (`surveyed::coverage_revision`) in bit 0 and the crop register's
+    /// (`crops::coverage_revision`) in bit 1, each 0 while its manifest is in
+    /// flight and 1 once it has answered. Surveyed trees, lampposts and crop
+    /// parcels are merged into these cells' meshes, so a cell built during either
+    /// gap has none of them and nothing would revisit it. Each bit changes at
+    /// most once per process.
     bgt_revision: u32,
     /// Cells whose bridge decks are tessellated but not yet *placed*: their height
     /// is a measurement that arrives from `systems::height` some frames later. Held
@@ -453,6 +455,12 @@ fn spawn_geometry_task(
             // …and its surveyed paving, in a file of its own because it is by far
             // the heavier half.
             let paving = crate::systems::surveyed::load_surveyed_paving(cell.0, cell.1).await;
+            // …and the cell's registered crop parcels, which ride along for the
+            // same reason: they are merged into this cell's meshes, and the
+            // arable ones are a keep-out the grass area is built against. Empty
+            // outside the coverage, which is everywhere the host has not run
+            // cartopy's `brp.ts`.
+            let crop_cell = crate::systems::crops::load_crop_cell(cell.0, cell.1).await;
             crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
@@ -504,6 +512,19 @@ fn spawn_geometry_task(
                             cell_places.surveyed.3 = paved.len();
                             meshes.extend(crate::systems::paving::build_paving_meshes(
                                 &paved, mesh_bytes,
+                            ));
+                            // The registered crops go down over the generic green
+                            // and under everything else on the ground stack
+                            // (`SurfaceGroup::Crop`), so a field takes its own
+                            // colour without disturbing a single road, canal or
+                            // pavement. Held past the mesh build because the
+                            // arable ones are the grass keep-out below.
+                            let parcels = crate::systems::crops::crop_parcels(
+                                &crop_cell, cell.0, cell.1, tile_m,
+                            );
+                            cell_places.surveyed.4 = parcels.len();
+                            meshes.extend(cartopolis_geo::crops::build_crop_meshes(
+                                &parcels, mesh_bytes,
                             ));
                             match vector_tiles::tessellate_roads(
                                 &tile,
@@ -705,7 +726,12 @@ fn spawn_geometry_task(
                             // is already decoded here, and the two keep-out masks
                             // are the same ones the tree scatter builds.
                             if wants.grass {
-                                let area = cartopolis_geo::turf::GrassArea::build(&tile, tile_m);
+                                // The parcels go in as the third keep-out: OSM
+                                // draws farmland as grass, so without the
+                                // register a ploughed field grows a lawn.
+                                let area = cartopolis_geo::turf::GrassArea::build(
+                                    &tile, tile_m, &parcels,
+                                );
                                 if !area.is_empty() {
                                     grass = Some(area);
                                 }
@@ -865,7 +891,12 @@ pub fn update_map_surfaces(
     // those are merged into the cell's own meshes. Unlike the terrain it can only
     // change once, so this costs one rebuild of whatever was standing when the
     // manifest arrived.
-    let bgt_revision = crate::systems::surveyed::coverage_revision();
+    // The crop coverage is folded in beside it — same shape, same one-shot answer,
+    // and the parcels are baked into the same meshes — so the two share a rebuild
+    // rather than costing one each. Two bits of one revision, as `lod22` already
+    // does with the BAG and the LoD3 manifests.
+    let bgt_revision = crate::systems::surveyed::coverage_revision()
+        | (crate::systems::crops::coverage_revision() << 1);
     if surfaces.terrain_revision != terrain.revision || surfaces.bgt_revision != bgt_revision {
         surfaces.terrain_revision = terrain.revision;
         surfaces.bgt_revision = bgt_revision;

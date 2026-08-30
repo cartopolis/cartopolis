@@ -371,10 +371,34 @@ fn to_cell_local(lat: f64, lng: f64, cx: i64, cy: i64, tile_m: f32) -> Option<(f
     if !(west..east).contains(&lng) || !(south..north).contains(&lat) {
         return None;
     }
+    Some(cell_local_unclamped(lat, lng, cx, cy, BGT_ZOOM, tile_m))
+}
+
+/// The projection above without the containment test: the same frame, and an
+/// answer outside `[0, tile_m)` for a point outside the cell.
+///
+/// Shared rather than copied because there is only one right way to do it and two
+/// callers who must agree — the surveyed objects here, which are points and are
+/// binned by containment, and the crop parcels (`systems::crops`), which are wide
+/// polygons binned by centroid. **A parcel that leaves its cell is drawn whole**:
+/// 22 % of the parcels a Groningen farmland cell owns leave it, and 24 % over
+/// Flevoland (measured 2026-08-30, `docs/notes/crop-parcels.md`), so dropping them
+/// the way a stray pavement is dropped would delete a quarter of the country's
+/// fields.
+pub(crate) fn cell_local_unclamped(
+    lat: f64,
+    lng: f64,
+    cx: i64,
+    cy: i64,
+    zoom: u32,
+    tile_m: f32,
+) -> (f32, f32) {
+    let (north, west) = tile_to_lat_lng(cx, cy, zoom);
+    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, zoom);
     // Longitude is linear in the projection; latitude is not, so the north-south
     // fraction is taken in Mercator y rather than in degrees. Over one z14 cell
     // the difference is centimetres — but it is free to be right, and this is the
-    // function every surveyed object's position passes through.
+    // function every surveyed position passes through.
     let merc = |deg: f64| {
         let r = deg.to_radians();
         (r.tan() + 1.0 / r.cos()).ln()
@@ -382,7 +406,7 @@ fn to_cell_local(lat: f64, lng: f64, cx: i64, cy: i64, tile_m: f32) -> Option<(f
     let (my_n, my_s, my) = (merc(north), merc(south), merc(lat));
     let fx = (lng - west) / (east - west);
     let fy = (my_n - my) / (my_n - my_s);
-    Some((fx as f32 * tile_m, fy as f32 * tile_m))
+    (fx as f32 * tile_m, fy as f32 * tile_m)
 }
 
 /// This cell's surveyed trees as instances, ready to join the scattered ones.

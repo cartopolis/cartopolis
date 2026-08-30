@@ -40,7 +40,8 @@ pub struct CellPlaces {
     pub drive_lines: Vec<cartopolis_geo::traffic::DriveLine>,
     /// How much of this cell was **surveyed** rather than generated: trees,
     /// street objects, boundary lines and paved surfaces taken from the BGT
-    /// (`systems::surveyed`).
+    /// (`systems::surveyed`), and crop parcels taken from the RVO's register
+    /// (`systems::crops`).
     ///
     /// A count, not the objects — they are already inside `furniture` and inside
     /// the merged tree meshes by the time this is read. It exists because the
@@ -49,7 +50,7 @@ pub struct CellPlaces {
     /// leave a perfectly ordinary-looking street with scattered canopies and no
     /// lighting, and no capture can tell those apart from "the data arrived and
     /// this street has none". `--dump-state` reports it.
-    pub surveyed: (usize, usize, usize, usize),
+    pub surveyed: (usize, usize, usize, usize, usize),
 }
 
 /// A thing in the world the avatar can walk up to, in anchored world XZ.
@@ -278,7 +279,7 @@ pub struct WorldPlaces {
     /// kept as a running total: the ring is nine cells, so the sum is free, and a
     /// total maintained across insert *and* remove is one missed subtraction away
     /// from a number that only ever grows.
-    surveyed: HashMap<(i64, i64), (usize, usize, usize, usize)>,
+    surveyed: HashMap<(i64, i64), (usize, usize, usize, usize, usize)>,
     /// Solid props as `(centre, radius)` in anchored world XZ, kept per cell for
     /// the same reason.
     props: HashMap<(i64, i64), Vec<(Vec2, f32)>>,
@@ -368,14 +369,14 @@ impl WorldPlaces {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Surveyed trees, street objects, boundary lines and paved surfaces across
-    /// the loaded cells — the "did the BGT data actually reach the meshes?"
-    /// reading. See [`CellPlaces::surveyed`].
-    pub fn surveyed(&self) -> (usize, usize, usize, usize) {
+    /// Surveyed trees, street objects, boundary lines, paved surfaces and crop
+    /// parcels across the loaded cells — the "did the registered data actually
+    /// reach the meshes?" reading. See [`CellPlaces::surveyed`].
+    pub fn surveyed(&self) -> (usize, usize, usize, usize, usize) {
         self.surveyed
             .values()
-            .fold((0, 0, 0, 0), |(t, p, l, s), (ct, cp, cl, cs)| {
-                (t + ct, p + cp, l + cl, s + cs)
+            .fold((0, 0, 0, 0, 0), |(t, p, l, s, c), (ct, cp, cl, cs, cc)| {
+                (t + ct, p + cp, l + cl, s + cs, c + cc)
             })
     }
 
