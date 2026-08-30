@@ -142,6 +142,10 @@ Not everything is refined, and the exceptions are about kind, not cost:
   Per-body levelling would need the tessellator to keep bodies apart (or tag
   their vertex ranges); until then this is the honest description. Displacing a
   lake per-vertex would tip it on its side, which is why the median exists at all.
+  That level is also **the quay, not the water**: AHN is no-data over a canal and
+  the banks are dilated inward to fill it. Putting the real surface there was
+  checked and not taken — the drop is metres and the ground stack cannot hold it
+  ([rijkswaterstaat-water-levels.md](rijkswaterstaat-water-levels.md)).
 * **A bridge deck is straight.** Same treatment as water, for the opposite reason: the
   ground dipping into a valley is exactly what a viaduct does *not* do.
 * **Buildings step, they do not shear.** One height per footprint. 3DBAG vertices are
