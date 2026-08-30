@@ -278,3 +278,27 @@ scaled up — its top holds the tree trunks, the benches and the bridge decks, a
 at 399 rungs × 64 units those would be pulled a metre toward the camera at a
 kilometre. It would also have left 76 % of the road sheet shaded twice, which is
 fill rate a handset does not have.
+
+## The 2026-08-29 recurrence was not the roads at all — check the data before the ladder
+
+"The streets still flicker" came back after everything above, and none of it was
+wrong: the fight was the **surveyed paving layer against itself**. The BGT
+extractor kept every superseded *version* of every pavement (marked only by
+`eind_registratie`, which `termination_date` does not cover), so up to 7
+coplanar copies of one footway shared one depth rung — no ladder can order a
+layer against itself. The full story, the fix and the tripwires are in
+`surveyed-street-objects.md`; the client-side floor is the exact-repeat drop in
+`parse_surveyed_paving` / `parse_surveyed_cell`.
+
+Two standing lessons for the next flicker report:
+
+- **Measure duplication in the data before tuning depth.** Rasterise the layer
+  and count multi-covered area; 79 % of the paved area was covered twice and no
+  amount of rung arithmetic could have said so.
+- **`--flicker` is the instrument now** (see CLAUDE.md): two captures ~5 cm
+  apart, solid flipped pixels reported as `flicker_px`, gated in CI at 1,500
+  against a measured ~500 animation floor. Its caveat is the reason the gate is
+  a disaster gate: identical-geometry copies inside one mesh rasterise
+  deterministically, so a coin flip only shows where the copies *differ* — the
+  sensitive views are shallow, grazing, mid-distance ones, exactly where a low
+  camera looks at a street.
