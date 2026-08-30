@@ -70,12 +70,14 @@ const FILED_BY_AUTOPILOT = "autopilot";
 // point of it is that changing it takes effect without restarting anything.
 //
 //   { "enabled": false,        // file tickets at all
-//     "ticketsPerDay": 1,      // how many new ones a day
+//     "ticketsPerDay": 1,      // how many new feature tickets a day
+//     "qaPerDay": 0,           // how many QA passes a day (0 = the lane is off)
+//     "qaMaxOpen": 3,          // how many QA tickets may be open at once
 //     "ship": false }          // merge and deploy finished ones, or stop at review
 
-type Config = { enabled: boolean; ticketsPerDay: number; maxOpen: number; ship: boolean };
+type Config = { enabled: boolean; ticketsPerDay: number; maxOpen: number; ship: boolean; qaPerDay: number; qaMaxOpen: number };
 
-const DEFAULTS: Config = { enabled: false, ticketsPerDay: 5, maxOpen: 2, ship: false };
+const DEFAULTS: Config = { enabled: false, ticketsPerDay: 5, maxOpen: 2, ship: false, qaPerDay: 0, qaMaxOpen: 3 };
 
 async function config(): Promise<Config> {
   try {
@@ -91,20 +93,22 @@ async function config(): Promise<Config> {
       // base. The day's quota paces the work; this paces the collisions.
       maxOpen: Number.isFinite(raw.maxOpen) ? Math.max(1, Math.floor(raw.maxOpen)) : DEFAULTS.maxOpen,
       ship: Boolean(raw.ship),
+      qaPerDay: Number.isFinite(raw.qaPerDay) ? Math.max(0, Math.floor(raw.qaPerDay)) : DEFAULTS.qaPerDay,
+      qaMaxOpen: Number.isFinite(raw.qaMaxOpen) ? Math.max(1, Math.floor(raw.qaMaxOpen)) : DEFAULTS.qaMaxOpen,
     };
   } catch {
     return DEFAULTS;
   }
 }
 
-type State = { day: string; filed: number; keys: string[]; digestDay?: string };
+type State = { day: string; filed: number; keys: string[]; digestDay?: string; qaFiled: number; qaCursor: number };
 
 async function loadState(): Promise<State> {
   try {
     const s = JSON.parse(await Bun.file(STATE_PATH).text());
-    return { day: s.day ?? "", filed: s.filed ?? 0, keys: s.keys ?? [], digestDay: s.digestDay };
+    return { day: s.day ?? "", filed: s.filed ?? 0, keys: s.keys ?? [], digestDay: s.digestDay, qaFiled: s.qaFiled ?? 0, qaCursor: s.qaCursor ?? 0 };
   } catch {
-    return { day: "", filed: 0, keys: [] };
+    return { day: "", filed: 0, keys: [], qaFiled: 0, qaCursor: 0 };
   }
 }
 
@@ -559,7 +563,9 @@ async function generate(cfg: Config) {
   // watcher will not silently retry an unknown half-finished state), so that
   // label ages out here rather than counting for ever.
   const open = await api(`/issues?state=open&type=issues&limit=50`);
-  const mine = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT));
+  // QA tickets pace themselves in generateQa and hold no feature slot here —
+  // nineteen a day counted against maxOpen would stop this lane outright.
+  const mine = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT) && !labelsOf(i).includes(QA));
   const stalled = (i: any) => {
     const names = labelsOf(i);
     if (names.includes(FAILED) || names.includes(NEEDS_INPUT)) return true;
@@ -696,6 +702,143 @@ async function generate(cfg: Config) {
 
   await saveState(state);
   log("nothing left on the frontier, and the refill ticket is already open");
+}
+
+// --- the QA lane -------------------------------------------------------------
+//
+// The build lane proves a change does what its ticket says; nothing walks the
+// product the way a player does and asks what is MISSING. That class of gap is
+// invisible to CI, because no test fails on a capability nobody wrote — the
+// standing example: registration worked, claiming a house worked, and a
+// registered account still could not claim a house. A QA ticket hands one
+// functionality per session to the watcher with instructions to exercise it
+// headlessly and hunt for expectation gaps; what comes back is filed `qa-gap`
+// issues and a report, never code. Targets come from two queues: everything
+// recently shipped is walked once as a user would meet it, then the standing
+// list in docs/qa/targets.md rotates. QA tickets carry the bare `agent` label,
+// not `autonomous` — refinement would rewrite these instructions into a build
+// spec, which is exactly what a QA pass is not.
+
+const QA = "qa";
+
+async function qaInventory(): Promise<{ key: string; name: string; how: string }[]> {
+  const res = await fetch(`${API}/repos/${REPO}/raw/docs/qa/targets.md?ref=main`, {
+    headers: { Authorization: `token ${TOKEN}` },
+  });
+  if (!res.ok) return [];
+  const rows: { key: string; name: string; how: string }[] = [];
+  for (const line of (await res.text()).split("\n")) {
+    const m = /^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$/.exec(line);
+    if (!m) continue;
+    const [, name, how] = m;
+    if (/^-+$/.test(name) || /^Functionality$/i.test(name)) continue;
+    rows.push({ key: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), name, how });
+  }
+  return rows;
+}
+
+async function shippedRecently(): Promise<any[]> {
+  const closed = await api(`/issues?state=closed&type=issues&labels=${encodeURIComponent(SHIPPED)}&limit=30`);
+  const cutoff = Date.now() - 7 * 86_400_000;
+  return closed.filter(
+    (i: any) => labelsOf(i).includes(SHIPPED) && !labelsOf(i).includes(QA) && new Date(i.closed_at ?? i.updated_at).getTime() > cutoff,
+  );
+}
+
+async function fileQaTicket(state: State, key: string, name: string, intro: string) {
+  const body = [
+    intro,
+    "",
+    "**This is a QA pass, not a build.** Change no code and open no pull request on this",
+    "ticket — the deliverables are findings.",
+    "",
+    "1. **Exercise it for real.** Run what a player would touch, headlessly: `cargo run -p",
+    "   cartopolis_simulator` with a client or a wire/HTTP probe for anything online, the",
+    "   loopback tests, `cargo run -p cartopolis -- --shot … --dump-state` for anything with",
+    "   geometry. CLAUDE.md lists every harness. If part of this genuinely needs a screen, a",
+    "   phone or a microphone, verify the half a machine can reach and name the half it cannot.",
+    "2. **Walk the user's journey, not the happy path.** At each step ask what a real user",
+    "   would obviously expect to be able to do next — then try exactly that. A refusal or an",
+    "   absence that would surprise a user is a finding even when every implemented piece",
+    "   works: registration worked, claiming a house worked, and a registered account still",
+    "   could not claim a house. No test failed; a user hit a wall.",
+    "3. **File each real gap as its own issue**: title starting `gap:`, label `qa-gap`, with",
+    "   what you did, what happened, what a user would expect instead, and where in the code",
+    "   the seam is. Use the Forgejo API with the `FORGEJO_TOKEN` in your environment. Do not",
+    "   label them `autonomous` — a person decides which gaps become work.",
+    "4. **Report and close.** Your final message: what you exercised, what held, what you",
+    "   filed. Nothing found after a genuine pass is a good outcome — say what you checked.",
+    "   Then close this ticket through the API; a QA pass has no branch to merge.",
+    "",
+    "**Decide it yourself.** Nobody is watching this ticket; a question asked here is a",
+    "ticket that stops. Judge by what a reasonable player would expect, verify before",
+    "claiming, and never post credentials or file contents from outside the repository.",
+    "",
+    `<sub>Filed by the autopilot. <!-- autopilot:${key} --></sub>`,
+  ].join("\n");
+
+  const issue = requireIssue(
+    await api(`/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: `QA: ${name}`,
+        body,
+        labels: await labelIds(["agent", FILED_BY_AUTOPILOT, QA]),
+      }),
+    }),
+  );
+  log(`filed #${issue.number}: QA — ${name}`);
+  state.qaFiled++;
+  await saveState(state);
+}
+
+async function generateQa(cfg: Config) {
+  if (!cfg.enabled || !cfg.qaPerDay) return;
+
+  const state = await loadState();
+  if (state.day !== today()) {
+    state.day = today();
+    state.filed = 0;
+    state.qaFiled = 0;
+  }
+  if (state.qaFiled >= cfg.qaPerDay) return log(`qa quota reached: ${state.qaFiled}/${cfg.qaPerDay} today`);
+
+  // Its own open-ticket gate, separate from the feature lane's: QA sessions
+  // change nothing and race nothing, so they only need pacing against the
+  // watcher's concurrency, not against a moving `main`.
+  const open = await api(`/issues?state=open&type=issues&limit=50`);
+  const openQa = open.filter((i: any) => labelsOf(i).includes(QA) && labelsOf(i).includes(FILED_BY_AUTOPILOT));
+  if (openQa.length >= cfg.qaMaxOpen) {
+    return log(`${openQa.length} QA ticket(s) open (limit ${cfg.qaMaxOpen}) — waiting`);
+  }
+
+  // Freshly shipped functionality first — walked once, while nobody has used it
+  // yet, which is when a missing obvious next step costs the least.
+  for (const shipped of await shippedRecently()) {
+    const key = `qa-reverify-${shipped.number}`;
+    if (await alreadyFiled(key)) continue;
+    await fileQaTicket(
+      state,
+      key,
+      `what #${shipped.number} shipped — ${shipped.title}`,
+      `Issue #${shipped.number} (“${shipped.title}”) was built and merged by the unattended lane, and nobody has used it. Walk what it delivered as a player would meet it.`,
+    );
+    return;
+  }
+
+  // Then rotate through the standing functionality list, at most one full pass
+  // per day (the key is dated, so a target repeats tomorrow, not today).
+  const inventory = await qaInventory();
+  if (!inventory.length) return log("no QA inventory — docs/qa/targets.md is missing or has no rows");
+  for (let i = 0; i < inventory.length; i++) {
+    const t = inventory[(state.qaCursor + i) % inventory.length];
+    const key = `qa-${t.key}-${today()}`;
+    if (await alreadyFiled(key)) continue;
+    state.qaCursor = (state.qaCursor + i + 1) % inventory.length;
+    await fileQaTicket(state, key, t.name, `From the standing list in \`docs/qa/targets.md\`: **${t.name}** — ${t.how}.`);
+    return;
+  }
+  log("every QA target has been filed today");
 }
 
 
@@ -847,7 +990,16 @@ async function addLabel(n: number, name: string) {
   await api(`/issues/${n}/labels`, { method: "POST", body: JSON.stringify({ labels: [await labelId(name)] }) });
 }
 
+// Comments land on a public repository, and deployMain posts raw command
+// output — a curl error can echo a URL with a token in it. Scrub the exact
+// values of every secret-shaped variable this process holds before posting.
+// Bare hex is deliberately not matched: commit SHAs are 40-hex too.
+const SECRET_VALUES: string[] = Object.entries(process.env)
+  .filter(([k, v]) => /TOKEN|SECRET|PASSWORD|_KEY/i.test(k) && (v ?? "").length >= 8)
+  .map(([, v]) => v as string);
+
 async function comment(n: number, body: string) {
+  for (const v of SECRET_VALUES) body = body.split(v).join("[redacted]");
   await api(`/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body }) });
 }
 
@@ -869,11 +1021,13 @@ if (cmd === "status") {
 } else if (cmd === "generate") {
   await rearmParkedTickets();
   await generate(cfg);
+  await generateQa(cfg);
 } else if (cmd === "tick") {
   await digest(cfg);
   await shipReady(cfg);
   await rearmParkedTickets();
   await generate(cfg);
+  await generateQa(cfg);
 } else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);
