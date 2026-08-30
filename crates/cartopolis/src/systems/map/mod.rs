@@ -5,6 +5,9 @@ pub mod atmosphere_patch;
 pub mod building_facts;
 pub mod building_windows;
 pub mod coverage;
+// The client half of the crop parcels (`cartopolis_geo::crops` is the pure one),
+// named for the layer rather than the register the way `surveyed` is.
+pub mod crops;
 pub mod dikes;
 pub mod globe;
 pub mod globe_ocean;

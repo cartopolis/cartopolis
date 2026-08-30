@@ -1206,6 +1206,13 @@ pub enum SurfaceGroup {
     /// cycle paths, parking bays, verges. Same one-group contract again: the
     /// form's tone rides in the vertex colours.
     Paving,
+    /// A registered agricultural field, drawn in the tone of the crop grown on it
+    /// (`crate::crops`). Same one-group contract: the crop's tone is per vertex.
+    ///
+    /// It lies *over* [`Self::Grass`] rather than replacing it — the countryside
+    /// keeps its generic green everywhere the register does not reach, which is
+    /// every country but this one.
+    Crop,
 }
 
 impl SurfaceGroup {
@@ -1231,6 +1238,8 @@ impl SurfaceGroup {
             // one material for the whole layer, and the form's own tone carried
             // in the vertex colours (`crate::paving::PavingKind::rgb`).
             Self::Paving => 0xFF_FF_FF,
+            // …and the crop's own tone (`crate::crops::rgb`), same contract.
+            Self::Crop => 0xFF_FF_FF,
             // Same colours the raster path cases with, so the two pipelines'
             // streets keep matching at the ring edge.
             Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
@@ -1279,6 +1288,12 @@ impl SurfaceGroup {
         match self {
             Self::Built => -0.0095,
             Self::Grass => -0.0085,
+            // Half a step above the grass rather than the usual millimetre, and
+            // that is the whole spacing argument: a crop parcel only ever
+            // overlaps `Grass` — the register covers farmland, which OSM draws as
+            // grass — and it is never coplanar with a wood or a beach, so it does
+            // not need a rung of its own between them.
+            Self::Crop => -0.0080,
             Self::Forest | Self::Sand => -0.0075,
             Self::Water => -0.0035,
             // Paving sits between the fills and the roads in height as it does in
@@ -1346,6 +1361,12 @@ impl SurfaceGroup {
         match self {
             Self::Built => 1.0,
             Self::Grass => 2.0,
+            // Half a rung above the grass it is drawn over, for the reason
+            // `y_offset` gives. At [`DEPTH_BIAS_STEP`] that is 32 ULP of margin —
+            // half the ladder's usual step and still two orders above the
+            // rasteriser's own rounding noise — and it keeps every field under
+            // the water (4), under the paving (5) and under the road band.
+            Self::Crop => 2.5,
             Self::Forest | Self::Sand => 3.0,
             Self::Water => 4.0,
             // Above the ground fills, below the road band — and that ordering is
@@ -6292,6 +6313,31 @@ mod tests {
             "water sits {water_gap} m above the land sheets but they are {land_gap} m apart; \
              the contrasty fight should get the widest gap"
         );
+    }
+
+    /// A crop parcel is a fill laid over the generic green, so its whole place in
+    /// the world is "just above grass, below everything grass is already below".
+    /// Get it wrong in either direction and a province of fields either vanishes
+    /// under the lawn it replaces or paints over the canals crossing it.
+    #[test]
+    fn a_crop_parcel_sits_between_the_grass_and_the_wood() {
+        let crop = SurfaceGroup::Crop;
+        assert!(crop.depth_rung() > SurfaceGroup::Grass.depth_rung());
+        assert!(crop.depth_rung() < SurfaceGroup::Forest.depth_rung());
+        assert!(crop.depth_rung() < SurfaceGroup::Water.depth_rung());
+        assert!(crop.depth_rung() < SurfaceGroup::Paving.depth_rung());
+        assert!(crop.depth_rung() < SurfaceGroup::Road(RoadClass::Path).depth_rung());
+        // Height has to agree with depth, or the two orderings cross over in the
+        // middle distance — the bug the road band was built to end.
+        assert!(crop.y_offset() > SurfaceGroup::Grass.y_offset());
+        assert!(crop.y_offset() < SurfaceGroup::Forest.y_offset());
+        // …and it stays inside the millimetre window between the map tile's top
+        // face and the buildings' base.
+        assert!(crop.y_offset() > -0.01 && crop.y_offset() < 0.0);
+        // Half a rung is still 32 ULP at the ladder's step, which is where the
+        // margin claim in `depth_rung` comes from.
+        let gap = crop.depth_bias() - SurfaceGroup::Grass.depth_bias();
+        assert!(gap >= 8.0, "{gap} depth units is inside the rounding noise");
     }
 
     #[test]

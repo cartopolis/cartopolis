@@ -1,7 +1,7 @@
 ---
 topic: pipeline
-triggers: [3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, cartopy, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
-updated: 2026-08-29
+triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, cartopy, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
+updated: 2026-08-30
 ---
 
 # The map's Dutch layers are built in the other repository
@@ -37,6 +37,14 @@ one of them,
 and the producer is now in a repository with a different language and a different
 CI. Nothing checks that the two agree — it is the `src/types.ts` problem cartopy's
 README already describes, four times over and much wider.
+
+**And it now runs in the other direction too.** `systems::crops` parses a format
+whose producer does not exist yet: `server/pipeline/brp.ts` is unwritten, so the
+crop layer draws nothing anywhere until somebody writes it (2026-08-30,
+`crop-parcels.md`). That is the *safe* direction of this seam and the order to
+keep — a client that can read a form the host never sends is inert, while an
+extractor that emits a form no client knows is content silently thrown away. The
+wire format is pinned in `crops.rs`'s `CATEGORIES` and in the follow-up ticket.
 
 The mitigation is `server/pipeline/format.test.ts` over there: each format pinned
 against trimmed captures of a real run, so a renamed key fails a test instead of

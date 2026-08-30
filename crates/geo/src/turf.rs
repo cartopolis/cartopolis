@@ -42,6 +42,7 @@
 
 use std::collections::HashMap;
 
+use crate::crops::CropParcel;
 use crate::scatter::{bucket_range, in_triangle, RoadMask, WaterMask};
 use crate::vector_tiles::{kind_of, land_group, tessellate_polygon, SurfaceGroup, TileData};
 
@@ -80,6 +81,12 @@ const BLADE_CLEARANCE_M: f32 = 0.15;
 /// the same reason: Shortbread's `land` polygons are *not* cut where a path or a
 /// canal runs through them — the road and water layers are simply drawn on top —
 /// so a park's own boundary says nothing about the path across it.
+///
+/// The third is the crop register ([`crate::crops`]), and it fixes something the
+/// first two could not: `farmland` is one of the OSM kinds [`land_group`] calls
+/// [`SurfaceGroup::Grass`], so every arable field in the country grew a lawn.
+/// Nothing in the tile says otherwise — a potato field and a meadow are the same
+/// polygon there — which is exactly why the answer had to come from a register.
 pub struct GrassArea {
     /// Grass-group triangles in the cell's tile-local metre frame.
     tris: Vec<[(f32, f32); 3]>,
@@ -88,6 +95,60 @@ pub struct GrassArea {
     buckets: HashMap<(i32, i32), Vec<u32>>,
     water: WaterMask,
     roads: RoadMask,
+    arable: ArableMask,
+}
+
+/// Where the crop register says the ground is worked rather than grazed.
+///
+/// A bucketed triangle soup like the masks in [`crate::scatter`], and bucketed for
+/// the same reason: the near-field mask is re-rasterised every twenty-odd metres
+/// of walking over 16k texels, and a linear scan over a cell's few thousand parcel
+/// triangles per texel is not a thing to do on a worker.
+#[derive(Default)]
+struct ArableMask {
+    tris: Vec<[(f32, f32); 3]>,
+    buckets: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl ArableMask {
+    /// Matches [`GrassArea::CELL`]: the same kind of soup asked the same question.
+    const CELL: f32 = 16.0;
+
+    fn build(parcels: &[CropParcel], tile_m: f32) -> Self {
+        let mut mask = Self::default();
+        for tri in crate::crops::arable_triangles(parcels) {
+            let idx = mask.tris.len() as u32;
+            mask.tris.push(tri);
+            let (minx, maxx) = (
+                tri[0].0.min(tri[1].0).min(tri[2].0),
+                tri[0].0.max(tri[1].0).max(tri[2].0),
+            );
+            let (minz, maxz) = (
+                tri[0].1.min(tri[1].1).min(tri[2].1),
+                tri[0].1.max(tri[1].1).max(tri[2].1),
+            );
+            for i in bucket_range(minx, maxx, Self::CELL, tile_m) {
+                for j in bucket_range(minz, maxz, Self::CELL, tile_m) {
+                    mask.buckets.entry((i, j)).or_default().push(idx);
+                }
+            }
+        }
+        mask
+    }
+
+    fn blocks(&self, x: f32, z: f32) -> bool {
+        let key = (
+            (x / Self::CELL).floor() as i32,
+            (z / Self::CELL).floor() as i32,
+        );
+        let Some(ids) = self.buckets.get(&key) else {
+            return false;
+        };
+        ids.iter().any(|&id| {
+            let t = self.tris[id as usize];
+            in_triangle((x, z), t[0], t[1], t[2])
+        })
+    }
 }
 
 impl GrassArea {
@@ -100,18 +161,25 @@ impl GrassArea {
     /// Which polygons count is [`land_group`]'s [`SurfaceGroup::Grass`] — one
     /// table, so the blades stand on exactly the polygons that are painted as
     /// grass and never on a forest floor or a beach.
+    ///
+    /// `crops` is this cell's registered agricultural parcels, in the same
+    /// tile-local metre frame; the arable ones are a keep-out. Pass an empty slice
+    /// where there is no register — outside the Netherlands, and on every host
+    /// that has not run the extractor — and the layer behaves exactly as it did
+    /// before crops existed.
     #[must_use]
-    pub fn build(tile: &TileData, tile_m: f32) -> Self {
+    pub fn build(tile: &TileData, tile_m: f32, crops: &[CropParcel]) -> Self {
         use geo_types::Geometry;
 
         let Some(meta) = tile.layer("land") else {
-            // No landuse, so no grass — and therefore no reason to pay for either
-            // keep-out mask, both of which walk a whole layer of the tile.
+            // No landuse, so no grass — and therefore no reason to pay for any
+            // keep-out mask, each of which walks a whole layer of the tile.
             return Self {
                 tris: Vec::new(),
                 buckets: HashMap::new(),
                 water: WaterMask::empty(tile_m),
                 roads: RoadMask::empty(tile_m),
+                arable: ArableMask::default(),
             };
         };
         let extent = TileData::extent(meta);
@@ -121,6 +189,7 @@ impl GrassArea {
             buckets: HashMap::new(),
             water: WaterMask::build(tile, scale, extent, tile_m),
             roads: RoadMask::build(tile, tile_m),
+            arable: ArableMask::build(crops, tile_m),
         };
 
         let mut positions = Vec::new();
@@ -204,6 +273,10 @@ impl GrassArea {
         on_grass
             && !self.water.blocks(x, z, BLADE_CLEARANCE_M)
             && !self.roads.blocks(x, z, BLADE_CLEARANCE_M)
+            // No clearance on this one: a lawn beside a ploughed field runs right
+            // up to the headland, and the parcel boundary is a surveyed line
+            // rather than a generalisation that has to be given room.
+            && !self.arable.blocks(x, z)
     }
 }
 
@@ -449,7 +522,7 @@ mod tests {
     #[test]
     fn a_real_tile_has_grass_and_it_is_not_everywhere() {
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         assert!(!area.is_empty(), "Groningen z14 has parks in it");
         // Sample the cell on a coarse grid: a city tile must come out neither
         // bare (the layer would be invisible) nor solid (it would be planting
@@ -479,7 +552,7 @@ mod tests {
         // this ever regresses, blades grow down the middle of every road through
         // a green.
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         let mut on_road = 0;
         let mut sampled = 0;
         let meta = tile.layer("streets").expect("the fixture has streets");
@@ -516,7 +589,7 @@ mod tests {
         // `land` and `water_polygons` are independent layers and Shortbread draws
         // the water on top. Without the keep-out, a lawn grows across the canal.
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         let meta = tile
             .layer("water_polygons")
             .expect("the fixture has canals in it");
@@ -571,10 +644,54 @@ mod tests {
         );
     }
 
+    /// The value-1 defect this layer fixes, at the point it is fixed: a potato
+    /// field and a meadow are the same `farmland`-ish polygon in the tile, so
+    /// without the register the blades grow on both. Two parcels over the *same*
+    /// ground, so nothing but the register can be the difference.
+    #[test]
+    fn blades_grow_on_a_registered_meadow_and_not_on_a_ploughed_field() {
+        use crate::crops::{CropCategory, CropParcel};
+        let (tile, tile_m) = fixture();
+        // A spot the tile itself calls plantable, so the only thing under test is
+        // the keep-out.
+        let bare = GrassArea::build(&tile, tile_m, &[]);
+        let mut hit = None;
+        'search: for i in 0..200 {
+            for j in 0..200 {
+                let (x, z) = (i as f32 * tile_m / 200.0, j as f32 * tile_m / 200.0);
+                if bare.plantable(x, z) {
+                    hit = Some((x, z));
+                    break 'search;
+                }
+            }
+        }
+        let (hx, hz) = hit.expect("the fixture has plantable grass");
+        let parcel = |category| CropParcel {
+            category,
+            code: 265,
+            rings: vec![vec![
+                [hx - 30.0, hz - 30.0],
+                [hx + 30.0, hz - 30.0],
+                [hx + 30.0, hz + 30.0],
+                [hx - 30.0, hz + 30.0],
+            ]],
+        };
+        let grazed = GrassArea::build(&tile, tile_m, &[parcel(CropCategory::Grassland)]);
+        let ploughed = GrassArea::build(&tile, tile_m, &[parcel(CropCategory::Arable)]);
+        assert!(
+            grazed.plantable(hx, hz),
+            "a registered meadow should still grow blades"
+        );
+        assert!(
+            !ploughed.plantable(hx, hz),
+            "blades grew on an arable parcel"
+        );
+    }
+
     #[test]
     fn the_mask_carries_coverage_and_a_decodable_height() {
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         let placed = [PlacedArea {
             origin: [0.0, 0.0],
             tile_m,
@@ -609,7 +726,7 @@ mod tests {
         // agreed with no cell came back all-zero and looked like a lawn with no
         // grass in it. That is exactly what shipped to the first capture.
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         // Find a spot the area itself calls plantable, then put the window on it.
         let mut hit = None;
         'search: for i in 0..200 {
@@ -647,7 +764,7 @@ mod tests {
         // all-one: an unplanted mask is an unplanted lawn, but an accidentally
         // saturated one is grass growing over the sea.
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         let placed = [PlacedArea {
             origin: [0.0, 0.0],
             tile_m,
@@ -662,7 +779,7 @@ mod tests {
         // The common case: no height layer, so every sample is 0 and the range is
         // degenerate. The span must not be, or the shader divides by zero.
         let (tile, tile_m) = fixture();
-        let area = GrassArea::build(&tile, tile_m);
+        let area = GrassArea::build(&tile, tile_m, &[]);
         let placed = [PlacedArea {
             origin: [0.0, 0.0],
             tile_m,

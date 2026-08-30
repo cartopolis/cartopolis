@@ -2205,6 +2205,7 @@ fn run_client() {
                 systems::lod22::update_lod22.after(rendering::spawn_regions),
                 systems::building_facts::update_building_facts,
                 systems::surveyed::prefetch_bgt_coverage,
+                systems::crops::prefetch_brp_coverage,
                 systems::interiors::update_interiors,
                 // The flood defences: stream, measure the crest, hand the names
                 // to the label placer. Chained because each step reads what the

@@ -41,7 +41,8 @@
 //! where a nominal-width OSM carriageway laps over a surveyed pavement, the
 //! tarmac wins, which is also what it looks like from the pavement.
 
-use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, INDEX_BYTES, VERTEX_BYTES};
+use crate::flat_fill::{build_flat_fills, FlatFill};
+use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh};
 
 /// A surveyed paved surface, in tile-local metres.
 #[derive(Debug, Clone)]
@@ -221,138 +222,29 @@ pub fn area_rgb(kind: PavingKind, material: Option<PavingMaterial>) -> u32 {
     }
 }
 
-/// What one triangle costs to upload, in the units the frame budget is in.
-const TRI_BYTES: usize = 3 * VERTEX_BYTES + 3 * INDEX_BYTES;
-
 /// Triangulate a cell's paving into merged meshes, each no larger than
 /// `max_bytes`.
 ///
 /// One group for all of it, like the furniture and the canopies: the kind rides
-/// in the vertex colour.
+/// in the vertex colour. The triangulation itself is [`crate::flat_fill`], shared
+/// with the crop parcels — the winding rule and the byte cap are the same problem
+/// twice, and were not kept in two copies.
 #[must_use]
 pub fn build_paving_meshes(areas: &[PavedArea], max_bytes: Option<usize>) -> Vec<SurfaceMesh> {
-    if areas.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut buf = Buf::default();
-    for area in areas {
-        let Some(outer) = area.rings.first() else {
-            continue;
-        };
-        if outer.len() < 3 {
-            continue;
-        }
-        // earcut takes one flat coordinate list with the holes appended and their
-        // start indices given separately.
-        let mut flat: Vec<f64> = Vec::with_capacity(outer.len() * 2);
-        for p in outer {
-            flat.push(f64::from(p[0]));
-            flat.push(f64::from(p[1]));
-        }
-        let mut holes = Vec::new();
-        for ring in &area.rings[1..] {
-            if ring.len() < 3 {
-                continue;
-            }
-            holes.push(flat.len() / 2);
-            for p in ring {
-                flat.push(f64::from(p[0]));
-                flat.push(f64::from(p[1]));
-            }
-        }
-        let Ok(tris) = earcutr::earcut(&flat, &holes, 2) else {
-            continue;
-        };
-        if let Some(max) = max_bytes {
-            let step = tris.len() / 3 * TRI_BYTES;
-            if buf.bytes() + step > max && !buf.positions.is_empty() {
-                out.push(std::mem::take(&mut buf).finish());
-            }
-        }
-        let tint = srgb_to_linear(area_rgb(area.kind, area.material));
-        // Unshared vertices per triangle. A shared-vertex mesh would be smaller,
-        // but every surface here is flat and faces up, so there is no shading to
-        // gain from sharing and the winding fix below needs to own its corners.
-        for t in tris.chunks_exact(3) {
-            let p = |i: usize| -> [f32; 3] { [flat[i * 2] as f32, 0.0, flat[i * 2 + 1] as f32] };
-            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-            // Earcut keeps the input ring's orientation, and the survey does not
-            // promise one. A ground surface always faces up, so wind for +Y —
-            // the same rule `tessellate_polygon` follows, and the same failure if
-            // it is skipped: half the paving in the city is invisible from above
-            // and visible from below.
-            let cross = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
-            let base = buf.positions.len() as u32;
-            if cross < 0.0 {
-                buf.push(a, tint);
-                buf.push(b, tint);
-                buf.push(c, tint);
-            } else {
-                buf.push(a, tint);
-                buf.push(c, tint);
-                buf.push(b, tint);
-            }
-            buf.indices.extend([base, base + 1, base + 2]);
-        }
-    }
-    if !buf.positions.is_empty() {
-        out.push(buf.finish());
-    }
-    out
-}
-
-#[derive(Default)]
-struct Buf {
-    positions: Vec<[f32; 3]>,
-    normals: Vec<[f32; 3]>,
-    colors: Vec<[f32; 4]>,
-    indices: Vec<u32>,
-}
-
-impl Buf {
-    fn push(&mut self, p: [f32; 3], tint: [f32; 4]) {
-        self.positions.push(p);
-        self.normals.push([0.0, 1.0, 0.0]);
-        self.colors.push(tint);
-    }
-
-    fn bytes(&self) -> usize {
-        self.positions.len() * VERTEX_BYTES + self.indices.len() * INDEX_BYTES
-    }
-
-    fn finish(self) -> SurfaceMesh {
-        SurfaceMesh {
-            group: SurfaceGroup::Paving,
-            positions: self.positions,
-            indices: self.indices,
-            uvs: Vec::new(),
-            normals: self.normals,
-            colors: self.colors,
-            rungs: Vec::new(),
-        }
-    }
-}
-
-/// One sRGB colour as a linear vertex tint.
-///
-/// Linear because that is where the shader multiplies it into the group's white
-/// base colour — the same exit every other per-vertex palette here takes.
-fn srgb_to_linear(rgb: u32) -> [f32; 4] {
-    let c = |shift: u32| {
-        let v = f32::from((rgb >> shift & 0xFF) as u8) / 255.0;
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    [c(16), c(8), c(0), 1.0]
+    let fills: Vec<FlatFill<'_>> = areas
+        .iter()
+        .map(|a| FlatFill {
+            rings: &a.rings,
+            rgb: area_rgb(a.kind, a.material),
+        })
+        .collect();
+    build_flat_fills(&fills, SurfaceGroup::Paving, max_bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flat_fill::TRI_BYTES;
 
     fn square(kind: PavingKind, size: f32) -> PavedArea {
         PavedArea {

@@ -2513,6 +2513,11 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::surveyed::bgt_attribution() {
                     ui.small(credit);
                 }
+                // Its own line: the crop register is the RVO's, not the
+                // Kadaster's, and it carries its own (public domain) mark.
+                if let Some(credit) = crate::systems::crops::brp_attribution() {
+                    ui.small(credit);
+                }
                 // Its own line rather than folded into the BGT's: the defences
                 // come from the water boards' registers, not the Kadaster's.
                 if let Some(credit) = crate::systems::dikes::dike_attribution() {

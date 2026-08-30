@@ -8,6 +8,13 @@
 //! `cartopolis` re-exports these four modules from `systems`, so client code still
 //! writes `systems::vector_tiles` and does not name this crate directly.
 
+// The crop grown on each registered agricultural field (the RVO's BRP). Split
+// from `paving` — the other surveyed polygon layer — because the two answer
+// different questions and share only the triangulation, which is `flat_fill`.
+pub mod crops;
+// The triangulation both surveyed polygon layers use: rings in, byte-bounded
+// merged meshes out, with the per-polygon tone in the vertex colours.
+mod flat_fill;
 pub mod furniture;
 pub mod mip;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split
