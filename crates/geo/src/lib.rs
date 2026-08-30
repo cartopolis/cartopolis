@@ -26,6 +26,13 @@ pub mod mip;
 // that is split from `furniture`: a different source (the water polygons' own
 // boundary) and a different rule for deciding there is anything there at all.
 pub mod moorings;
+// The buoys and beacons on the national waterways (Rijkswaterstaat's
+// vaarwegmarkeringen). Split from `furniture` for the same reason `moorings` is:
+// a different source and a different claim — a bench is read out of the tile
+// this cell is already made of, and a mark is surveyed by somebody else and
+// fetched. It borrows `furniture`'s mesh buffer so the two end up in one group,
+// one material and one draw call.
+pub mod nav_marks;
 pub mod parking;
 pub mod paving;
 // Allocation budgets. `cfg(test)` on purpose: the counting allocator must not

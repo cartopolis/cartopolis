@@ -19,6 +19,10 @@ pub mod lod22;
 pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;
+// The fetching half of the navigation marks (`cartopolis_geo::nav_marks` is the
+// pure one). Named for the layer rather than for Rijkswaterstaat, the way
+// `surveyed` and `crops` are.
+pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod render_scale;

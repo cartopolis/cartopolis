@@ -3942,6 +3942,47 @@ pub(crate) fn tessellate_polygon(
 /// would put a shoreline in open water.
 pub const WATER_LAYERS: [&str; 2] = ["ocean", "water_polygons"];
 
+/// The layers whose presence means the cell holds water of any kind:
+/// [`WATER_LAYERS`] plus `water_lines`, which is drawn as a ribbon rather than
+/// filled and so is deliberately not in that list.
+pub const WATER_HINT_LAYERS: [&str; 3] = ["ocean", "water_polygons", "water_lines"];
+
+/// Does this **undecoded** tile body mention a water layer at all?
+///
+/// A conservative pre-filter, not a parse, and the asymmetry is the whole point:
+/// a false positive costs a caller one request it did not need, and a false
+/// negative is impossible, because an MVT stores each layer's name verbatim as a
+/// UTF-8 string in the body — a layer that exists cannot fail to be mentioned.
+///
+/// It exists because the decode belongs on a worker and this question has to be
+/// answered before it. `map_geometry` fetches a cell's tile on the I/O pool and
+/// hands the bytes to [`platform::workers`] to parse (ADR-033), so a consumer
+/// that wants to skip a *network request* for a dry cell — `systems::nav_marks`
+/// is the one — cannot wait for [`TileData::parse`] without moving a ~120 ms
+/// decode onto the frame loop on wasm.
+///
+/// [`platform::workers`]: https://code.garage44.eu/jeroen/cartopolis
+#[must_use]
+pub fn body_mentions_water(body: &[u8]) -> bool {
+    WATER_HINT_LAYERS
+        .iter()
+        .any(|name| contains_bytes(body, name.as_bytes()))
+}
+
+/// Naive substring search. The bodies are at most [`MAX_TILE_BYTES`] and the
+/// needles are three short distinctive words, so this is a few hundred
+/// microseconds and needs no dependency.
+fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return false;
+    }
+    let first = needle[0];
+    hay[..=hay.len() - needle.len()]
+        .iter()
+        .enumerate()
+        .any(|(i, b)| *b == first && &hay[i..i + needle.len()] == needle)
+}
+
 /// Rasterise just the water coverage of a tile: `TILE_PX²` bytes, 255 where the
 /// surface is water and 0 where it is land, in the same frame (and under the same
 /// overzoom [`SubTile`]) as [`render_mvt`].
@@ -4452,6 +4493,37 @@ mod tests {
             tile.features(streets).as_ptr(),
             tile.features(streets).as_ptr(),
         ));
+    }
+
+    /// The pre-filter `systems::nav_marks` skips a network request on, checked
+    /// against the two answers that matter: a real canal city says yes, and a
+    /// body with no water layer in it says no.
+    ///
+    /// The direction that must never be wrong is the second one — a false
+    /// negative would silently un-draw a fairway's marks, while a false positive
+    /// only costs a request.
+    #[test]
+    fn the_water_probe_reads_an_undecoded_body() {
+        assert!(
+            body_mentions_water(GRONINGEN_Z14),
+            "a canal city's tile carries water layers"
+        );
+        let dry = synth::tile(&[synth::line_layer(
+            "streets",
+            4096,
+            &[(100, 100), (900, 900)],
+        )]);
+        assert!(
+            TileData::parse(&dry)
+                .expect("dry tile parses")
+                .layer("streets")
+                .is_some(),
+            "the synthetic tile is a tile"
+        );
+        assert!(
+            !body_mentions_water(&dry),
+            "a body with no water layer must not be probed as wet"
+        );
     }
 
     /// The same shape, at a size a real feature could have, still parses — which
