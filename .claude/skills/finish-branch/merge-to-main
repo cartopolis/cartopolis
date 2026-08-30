@@ -150,8 +150,17 @@ fi
 # The branch goes up first and keeps existing: it is the key the agent-context
 # digest is stored under (refs/agent-context/<branch>) and what the autopilot's
 # sweep looks for when it retires a landed ticket's branch.
+# Plain first, `--force-with-lease` only as the fallback. A lease needs a
+# remote-tracking ref to compare against and a branch that has never been pushed
+# has none, so leading with it fails on exactly the common case; and the only
+# reason a plain push is rejected here is the rebase above, which is precisely
+# when overwriting our own branch is what we mean.
 echo "==> pushing $branch"
-git push --force-with-lease --quiet origin "HEAD:refs/heads/$branch" || exit 1
+if ! git push --quiet origin "HEAD:refs/heads/$branch" 2>/dev/null; then
+    git push --force-with-lease --quiet origin "HEAD:refs/heads/$branch" || {
+        echo "could not push the branch" >&2; exit 1; }
+    echo "    (force-with-lease, after the rebase)"
+fi
 
 # No `--force` anywhere near this one. A plain push is a fast-forward or a
 # rejection, and a rejection here means another session landed between the fetch

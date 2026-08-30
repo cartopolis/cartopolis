@@ -25,12 +25,22 @@
 //
 // ## The sequence
 //
-// A ticket the watcher finished carries `agent:done`, which means **CI passed on
-// the pushed branch** — the watcher resolves it from Forgejo's commit status
-// after the session is over, so it is not a verdict the session could influence.
-// `ship` on the same issue is the standing permission to land it. This then:
-// opens a pull request, re-checks every Actions job on the branch head, merges,
-// and hands `main` to tools/deploy-main.
+// A ticket the watcher finished carries `agent:done`; `ship` on the same issue
+// is the standing permission to land it. This then fast-forwards `main` to the
+// branch head and hands `main` to tools/deploy-main.
+//
+// **It opens no pull request** (2026-08-30). It used to, and the request was
+// never a review — it existed to *start a build*, because `ci.yml` has no push
+// trigger on branches and there was otherwise nothing for CI to have said about
+// one. Landing then cost two full runs of one tree on a runner with capacity 3:
+// the request's, and the merge commit's.
+//
+// The branch is still required to be green, by the direct route — a
+// `workflow_dispatch` on the branch ref (`dispatchCi`). One run, not two, and
+// what it judges is exactly what lands, because a fast-forward makes no merge
+// commit. A red branch is parked with `agent:failed` and the failing job named
+// on the ticket, rather than retried hourly for ever with the reason only in
+// this process's log.
 //
 // Nothing here is a judgement about whether the change is *good*. That is the
 // trade docs/direction.md describes: the lane is limited to work whose success
@@ -140,14 +150,52 @@ const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 
 const labelsOf = (issue: any): string[] => (issue.labels ?? []).map((l: any) => l.name);
 
 /** Every Actions job that ran for this commit, as [status, name]. */
+/**
+ * Every Actions task recorded against a commit, as `[status, job name]`.
+ *
+ * Deduped by job name, keeping the newest — the list is newest-first, and a
+ * re-dispatched run adds a second task under the same name whose predecessor's
+ * `failure` is not a verdict on it. `main` currently carries exactly that shape,
+ * so reading every row would call a fixed branch red for ever.
+ */
 async function jobsFor(sha: string): Promise<[string, string][]> {
   const d = await api(`/actions/tasks?limit=50`, {}, MERGE_TOKEN ?? TOKEN);
-  return (d.workflow_runs ?? [])
-    .filter((r: any) => r.head_sha === sha)
-    .map((r: any) => [r.status ?? "", r.name ?? ""] as [string, string]);
+  const seen = new Set<string>();
+  const out: [string, string][] = [];
+  for (const r of d.workflow_runs ?? []) {
+    if (r.head_sha !== sha) continue;
+    const name = r.name ?? "";
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push([r.status ?? "", name]);
+  }
+  return out;
 }
 
-
+/**
+ * Start CI on a branch without opening anything.
+ *
+ * `ci.yml` carries `workflow_dispatch` for an unrelated reason (re-warming the
+ * cache after a skipped `main` run), and it is what makes a branch verdict
+ * reachable at all now that the pull request is gone: `ci.yml` has no push
+ * trigger on branches, so a pushed branch is otherwise never built.
+ *
+ * A dispatched run is **stronger** than the pull-request lane's ever was, in two
+ * ways. It runs everything — the scope step declines to narrow itself for a hand
+ * started run, so both scene smokes and both cross-target lanes run, where a
+ * pull request only ever got the suite and rustfmt. And because the landing is a
+ * fast-forward, the tree that was tested *is* the tree that ends up on `main`; a
+ * merge commit is a commit nobody built, which is why `ci.yml` has a step
+ * comparing its tree against its second parent's.
+ *
+ * Not awaited to completion. A run is 15-25 minutes and this tick has other
+ * tickets to move, so the answer is read on a later one. Re-dispatching is
+ * harmless if it ever happens: `ci.yml`'s `concurrency` cancels a branch's
+ * previous run when a new one starts.
+ */
+async function dispatchCi(branch: string) {
+  await api(`/actions/workflows/ci.yml/dispatches`, { method: "POST", body: JSON.stringify({ ref: branch }) }, MERGE_TOKEN);
+}
 
 const NEEDS_INPUT = "agent:needs-input";
 
@@ -248,7 +296,7 @@ async function shipReady(cfg: Config) {
     // Falling back to the watcher's default keeps an unrefined ticket shippable.
     const branch = /^\s*Branch:\s*`?([A-Za-z0-9._\/-]+)`?\s*$/im.exec(issue.body ?? "")?.[1] ?? `issue-${n}`;
 
-    // Whether mergePr got through — a failure after that point must not tell
+    // Whether the landing got through — a failure after that point must not tell
     // the issue "nothing was merged" (issue #187 was told exactly that, two
     // lines under the comment announcing its own merge).
     let merged = false;
@@ -263,52 +311,81 @@ async function shipReady(cfg: Config) {
           n,
           `🤖 **Not shipping this one — it touches something the unattended lane may not change:**\n\n` +
             fenced.map((f) => `- ${f}`).join("\n") +
-            `\n\nThe branch \`${branch}\` is finished and CI passed on it; it is waiting for you to land it. ` +
+            `\n\nThe branch \`${branch}\` is finished; it is waiting for you to land it. ` +
             `The reasoning is in \`docs/direction.md\` — these are the changes no revert from here undoes.`,
         );
         log(`#${n}: fenced (${fenced.length} path(s)) — left for review`);
         continue;
       }
 
-      // The pull request comes **before** the check, not after it, and that is
-      // the whole reason this lane's verdicts were empty: `ci.yml` runs on
-      // `main` and on pull requests and deliberately not on a branch push, so
-      // until the request exists there is nothing for CI to have said. The
-      // watcher's `agent:done` inherits that — it means "CI did not answer" for
-      // every ticket this lane files, which is exactly why the real gate is
-      // here rather than on the label.
-      const pr = await openOrFindPr(issue, branch);
+      // **The branch has to be green, and a pull request is not how this lane
+      // finds that out any more.** `ci.yml` has no push trigger on branches, so
+      // a pushed branch is never built on its own — which is the entire reason
+      // a request used to be opened here. `workflow_dispatch` starts the same
+      // run against the branch ref with one call and nothing to merge.
+      //
+      // Reading the answer is a *later tick's* job. A run is 15-25 minutes on a
+      // runner with capacity 3; blocking here would hold this pass open for one
+      // ticket while every other one waited.
+      const files: string[] = Array.from(
+        new Set(((await api(`/compare/main...${encodeURIComponent(branch)}`)).files ?? []).map((f: any) => f.filename as string)),
+      );
+      // The same paths `ci.yml` ignores on its triggers. A branch inside that
+      // set would wait for ever for a run that a dispatch *would* start (
+      // `paths-ignore` does not apply to a dispatch) and that would compile the
+      // world to prove prose.
+      const docsOnly =
+        files.length > 0 && files.every((f) => f.startsWith("docs/") || f.startsWith(".claude/") || f.endsWith(".md"));
 
-      const jobs = await jobsFor(sha);
-      if (!jobs.length) {
-        // Either the run has not registered yet — this ticks hourly, so simply
-        // look again — or the change is one CI is configured to skip. The
-        // workflow ignores `docs/**` and `*.md`, and a documentation-only
-        // branch that waits for a verdict waits for ever.
-        const files: string[] = Array.from(
-          new Set(((await api(`/compare/main...${encodeURIComponent(branch)}`)).files ?? []).map((f: any) => f.filename as string)),
-        );
-        const skipped = files.length > 0 && files.every((f) => f.startsWith("docs/") || f.endsWith(".md"));
-        if (!skipped) {
-          log(`#${n}: pull request ${pr.number} open, waiting for CI on ${sha.slice(0, 8)}`);
+      if (docsOnly) {
+        log(`#${n}: documentation only (${files.length} file(s)) — CI does not run on these, landing`);
+      } else {
+        const jobs = await jobsFor(sha);
+        if (!jobs.length) {
+          await dispatchCi(branch);
+          log(`#${n}: asked CI to build ${branch} (${sha.slice(0, 8)}) — landing it when that is green`);
           continue;
         }
-        log(`#${n}: documentation only (${files.length} file(s)) — CI does not run on these, shipping`);
-      } else {
+        const pending = jobs.filter(([st]) => ["running", "waiting", "queued", "blocked"].includes(st));
+        if (pending.length) {
+          log(`#${n}: CI still building ${sha.slice(0, 8)} (${pending.map(([, name]) => name).join(", ")})`);
+          continue;
+        }
         const bad = jobs.filter(([st]) => st !== "success");
         if (bad.length) {
-          log(`#${n}: ${bad.map(([st, name]) => `${name}=${st}`).join(", ")} — not shipping`);
+          // Parked, not retried. The old lane logged this and looked again in an
+          // hour, for ever — a red branch became a ticket that simply stopped
+          // moving, with the reason only in this process's log, which is the one
+          // place nobody is reading.
+          await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" });
+          await addLabel(n, FAILED);
+          await comment(
+            n,
+            `🤖 **Not landing this — CI is red on \`${branch}\`** (\`${sha.slice(0, 8)}\`):\n\n` +
+              bad.map(([st, name]) => `- \`${name}\` — ${st}`).join("\n") +
+              `\n\nFix it on the branch and put \`${SHIP}\` back to land it.`,
+          );
+          log(`#${n}: ${bad.map(([st, name]) => `${name}=${st}`).join(", ")} — parked`);
           continue;
         }
+        log(`#${n}: CI is green on ${sha.slice(0, 8)}`);
       }
 
-      log(`#${n}: merging pull request ${pr.number} (${branch} → main)`);
-      await mergePr(pr.number);
+      // Landing is a ref update, so it is done as one. No pull request is opened
+      // and no merge commit is made: `landOnMain` fast-forwards `main` to the
+      // very commit the run above passed on, which is a stronger guarantee than
+      // the old path gave — a merge commit is a commit nobody built.
+      log(`#${n}: fast-forwarding main to ${sha.slice(0, 8)} (${branch})`);
+      await landOnMain(branch, sha);
       merged = true;
 
       await api(`/issues/${n}/labels/${await labelId(SHIP)}`, { method: "DELETE" });
       await addLabel(n, SHIPPED);
-      await comment(n, `🤖 **Merged into \`main\`** as pull request #${pr.number} (\`${sha.slice(0, 8)}\`).`);
+      await comment(n, `🤖 **Landed on \`main\`** as \`${sha.slice(0, 8)}\` — fast-forwarded from \`${branch}\`, no pull request.`);
+      // The pull request body's `Closes #N` used to do this, and the card only
+      // moves when the issue is closed: the watcher projects a closed issue onto
+      // the board, Forgejo having no kanban API of its own.
+      await api(`/issues/${n}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) });
 
       await deployMain(n);
     } catch (e) {
@@ -338,56 +415,54 @@ async function shipReady(cfg: Config) {
   }
 }
 
-async function openOrFindPr(issue: any, branch: string) {
-  const open = await api(`/pulls?state=open&limit=50`, {}, MERGE_TOKEN);
-  const existing = open.find((p: any) => p.head?.ref === branch);
-  if (existing) return existing;
-  return await api(
-    `/pulls`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        head: branch,
-        base: "main",
-        title: issue.title,
-        // Closes the issue on merge, which is also what moves its card to Done:
-        // the watcher projects a closed issue onto the board, Forgejo has no
-        // kanban API of its own.
-        body: `Closes #${issue.number}\n\nMerged by the autopilot (docs/direction.md) after every Actions job passed on the branch head.`,
-      }),
-    },
-    MERGE_TOKEN,
-  );
+/**
+ * Move `main` to `sha`, with no pull request and no checkout.
+ *
+ * Forgejo's API has no endpoint that fast-forwards a branch — `git/refs` is
+ * read-only and `branches` only creates — so this is done with git, which needs
+ * neither a working tree nor the objects. The commits are already on the server:
+ * a shallow fetch of the branch into a throwaway bare repository is enough to
+ * name the sha, and the push that follows sends an empty pack because the remote
+ * has everything in it already. Measured against this server on 2026-08-30: a
+ * bare, `--depth=1` repository can move a ref this way.
+ *
+ * **Not forced.** A plain push is a fast-forward or a rejection, and a rejection
+ * means either that `main` moved or that this branch was never based on it.
+ * Both are the same instruction to a caller with no checkout — rebase it
+ * somewhere that has one — so both arrive as `MergeConflict`.
+ */
+async function landOnMain(branch: string, sha: string) {
+  const host = API.replace(/\/api\/v1\/?$/, "");
+  const url = `${host}/${REPO}.git`;
+  const dir = `/tmp/autopilot-ff-${sha.slice(0, 12)}`;
+  // Through `http.extraHeader` rather than a token in the URL: a remote URL is
+  // echoed back by git on every error and lands in this process's log.
+  const auth = `Authorization: token ${MERGE_TOKEN}`;
+  await $`rm -rf ${dir}`.quiet();
+  try {
+    await $`git init --bare -q ${dir}`.quiet();
+    await $`git --git-dir=${dir} -c http.extraHeader=${auth} fetch -q --depth=1 ${url} refs/heads/${branch}:refs/landing`.quiet();
+    const got = (await $`git --git-dir=${dir} rev-parse refs/landing`.text()).trim();
+    if (got !== sha) {
+      // The branch moved between reading its head and fetching it. Landing the
+      // newer commit would ship something this tick never looked at.
+      throw new Error(`${branch} moved while landing: expected ${sha.slice(0, 8)}, fetched ${got.slice(0, 8)}`);
+    }
+    const push = await $`git --git-dir=${dir} -c http.extraHeader=${auth} push ${url} ${sha}:refs/heads/main`.quiet().nothrow();
+    if (push.exitCode !== 0) {
+      const err = push.stderr.toString() + push.stdout.toString();
+      if (/non-fast-forward|fetch first|rejected/i.test(err)) {
+        throw new MergeConflict(`\`${branch}\` does not fast-forward onto \`main\` — it needs a rebase`);
+      }
+      throw new Error(`push → ${err.trim()}`);
+    }
+  } finally {
+    await $`rm -rf ${dir}`.quiet().nothrow();
+  }
 }
 
 /** The branch genuinely conflicts with `main`; no amount of retrying merges it. */
 class MergeConflict extends Error {}
-
-async function mergePr(index: number) {
-  // The merge endpoint answers 405 both while Forgejo is still computing
-  // mergeability and for a genuine conflict, and the two are indistinguishable
-  // there. The pull request itself is the tell: `mergeable` flips true within
-  // seconds when computation was the only obstacle, and stays false for ever
-  // on a conflict — so poll that, merge when it says yes, and after five
-  // minutes of "no" call it what it is.
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const pr = await api(`/pulls/${index}`, {}, MERGE_TOKEN);
-    if (pr.mergeable) {
-      const res = await fetch(`${API}/repos/${REPO}/pulls/${index}/merge`, {
-        method: "POST",
-        headers: { Authorization: `token ${MERGE_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ Do: "merge", delete_branch_after_merge: true }),
-      });
-      if (res.ok) return;
-      const body = await res.text();
-      // A 405 despite `mergeable: true` means main moved between the two
-      // calls; anything else is a real refusal.
-      if (res.status !== 405) throw new Error(`merge → ${res.status} ${body}`);
-    }
-    await Bun.sleep(15_000);
-  }
-  throw new MergeConflict(`pull request ${index} never became mergeable — its branch conflicts with \`main\``);
-}
 
 /** Hand `main` to the deploy script; it does its own gating and ordering. */
 async function deployMain(issueNumber: number) {

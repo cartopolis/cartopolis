@@ -536,13 +536,36 @@ Four properties are deliberate:
   ticket, which `forgejo.env`'s `write:issue` token has always been able to do —
   the repository-write token in `forgejo-merge.env` is no longer on this path.
 
-**The autonomous lane does not get this.** It stops at `agent:done` as before,
-and the autopilot (`tools/autopilot.ts`) still opens a pull request and reads
-Forgejo's Actions verdict on the branch head before merging. That is not
-inconsistency: it holds no checkout and no build environment — `deploy-main`
-deliberately works from the API alone — so it *cannot* run the gate above, and
-it has no person in the room who said the word. The difference is the lane, not
-the machine.
+**There are no pull requests left anywhere.** The autopilot
+(`tools/autopilot.ts`) used to open one, and it was never a review either — it
+existed to *start a build*, since `ci.yml` has no push trigger on branches and
+until the request existed there was nothing for CI to have said. It now
+fast-forwards `main` itself: Forgejo's API has no endpoint that moves a branch
+(`git/refs` is read-only), but a push needs neither a working tree nor the
+objects, so a shallow bare clone in `/tmp` is enough. Verified against this
+server on 2026-08-30.
+
+What the two lanes do not share is *how* the branch is judged. The autopilot
+holds no checkout and no build environment — `deploy-main` deliberately works
+from the API alone — so it cannot run `verify-branch`. It still requires the
+branch to be green before landing, by the direct route: `POST
+/actions/workflows/ci.yml/dispatches` with `{"ref": "<branch>"}`. One call, no
+request to open, and the answer read on a later hourly tick rather than waited
+for.
+
+That verdict is **stronger** than the pull request's was, in two ways worth
+naming. A hand-started run declines to narrow itself, so it runs both scene
+smokes and both cross-target lanes, where the pull-request lane only ever ran
+the suite and rustfmt. And because the landing is a fast-forward there is no
+merge commit, so the commit that was tested is precisely the commit that ends up
+on `main` — under the old path what landed was a merge commit nobody had built,
+which is why `ci.yml` carries a step comparing its tree against its second
+parent's.
+
+A red branch is **parked**, not retried: `ship` comes off, `agent:failed` goes
+on, and the failing job is named on the ticket. The old lane logged it and
+looked again in an hour for ever, which turns a red branch into a ticket that
+silently stops moving — with the reason in the one place nobody reads.
 
 ### The verdict is still CI's, and it now arrives afterwards
 

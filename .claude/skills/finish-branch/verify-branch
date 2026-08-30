@@ -91,16 +91,30 @@ git rev-parse --verify -q "$base" >/dev/null || {
 mb=$(git merge-base HEAD "$base")
 changed=$(git diff --name-only "$mb" HEAD)
 
+# Two filters, because ci.yml has two and they are not the same one.
+#
+#   * `paths-ignore` on the triggers decides whether a run happens **at all**:
+#     `docs/`, `*.md`, `.claude/`. A commit inside that set starts no CI run on
+#     `main` either, so compiling the workspace to prove prose is a build this
+#     branch would never have paid for.
+#   * the `What is worth running` step's deny-list adds `crates/simulator/` and
+#     `.forgejo/` and decides only whether the *render smokes* run — the
+#     simulator holds no map data and cannot change a frame, but it very much
+#     has a suite.
+#
+# Both are deny-lists, so an unrecognised path (`assets/`, `crates/geo/`,
+# `Cargo.lock`, anything new) runs everything. Fail safe, not silent.
+compile=true
 render=true
 targets=true
 if [ "$scope" = "full" ]; then
     :
 elif [ "$scope" = "min" ]; then
-    render=false; targets=false
+    compile=false; render=false; targets=false
 elif [ -n "$changed" ]; then
-    # ci.yml's rule, verbatim in intent: a *deny*-list, so an unrecognised path
-    # (`assets/`, `crates/geo/`, `Cargo.lock`, anything new) runs the smokes.
-    if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
+    if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|\.claude/|[^/]*\.md$)'; then
+        compile=false; render=false; targets=false
+    elif ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|\.claude/|[^/]*\.md$)'; then
         render=false; targets=false
     fi
 fi
@@ -109,10 +123,17 @@ echo "branch   $(git rev-parse --abbrev-ref HEAD)"
 echo "head     $head"
 echo "base     $base ($(git rev-parse --short "$mb"))"
 echo "changed  $(printf '%s\n' "$changed" | grep -c .) file(s)"
-$render  || echo "skipping the render smokes: nothing outside the simulator, the docs and CI changed"
-$targets || echo "skipping the wasm and android target checks: same reason"
+if ! $compile; then
+    echo "nothing outside the docs, the notes and .claude changed — ci.yml's own"
+    echo "paths-ignore means no run would start on main for this either, so there"
+    echo "is nothing here to compile. Formatting still runs; it costs two seconds."
+else
+    $render  || echo "skipping the render smokes: nothing outside the simulator, the docs and CI changed"
+    $targets || echo "skipping the wasm and android target checks: same reason"
+fi
 
-steps="fmt tests"
+steps="fmt"
+$compile && steps="$steps tests"
 $render  && steps="$steps smoke-orbit smoke-flicker smoke-phone"
 $targets && steps="$steps wasm android"
 [ -n "$only" ] && steps=$(printf '%s' "$only" | tr ',' ' ')

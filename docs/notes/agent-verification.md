@@ -60,9 +60,15 @@ the gate, and the runner's rustfmt is byte-identical to the container's. The
 honest statement is that `main` is now protected by a script the agent runs, not
 by one it cannot reach.
 
-The autonomous lane keeps the old rule, and not out of caution alone: the
-autopilot holds no checkout and no build environment, so it cannot run the gate
-even if it were trusted to.
+The autonomous lane keeps the old rule in full: it holds no checkout, so it
+cannot run the local gate, and it still lands nothing that CI has not passed.
+What changed there is only the mechanism. Its pull request is gone — it was
+never a review, it existed to start a build, `ci.yml` having no push trigger on
+branches — and the run is now started directly, by dispatching `ci.yml` on the
+branch ref. That is a *stricter* gate than the request was: a dispatched run
+declines to narrow itself and so includes the scene smokes and both
+cross-target lanes, and a fast-forward landing means the commit that passed is
+the commit that lands, where a merge commit is a commit nobody built.
 
 ## Corollary 1 — a check written as prompt text is advice, not a gate
 
