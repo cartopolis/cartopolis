@@ -372,7 +372,7 @@ async function mergePr(index: number) {
       const res = await fetch(`${API}/repos/${REPO}/pulls/${index}/merge`, {
         method: "POST",
         headers: { Authorization: `token ${MERGE_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ Do: "merge", delete_branch_after_merge: false }),
+        body: JSON.stringify({ Do: "merge", delete_branch_after_merge: true }),
       });
       if (res.ok) return;
       const body = await res.text();
@@ -843,6 +843,39 @@ async function generateQa(cfg: Config) {
   log("every QA target has been filed today");
 }
 
+// --- branch sweeping ---------------------------------------------------------
+//
+// A merged ticket used to leave its branch behind for ever: merges passed
+// delete_branch_after_merge: false and nothing else ever deleted one, so the
+// branch list only grew. Merges delete their branch now; this sweeps what
+// predates that, plus anything merged by hand. The safety rule is absolute —
+// a branch is deleted only when `main` already contains everything on it
+// (compare answers zero commits ahead), so nothing unmerged can be lost. A
+// branch whose head moved in the last day is left alone: one just cut from
+// `main` for new work is zero ahead too, and must not vanish mid-session.
+
+async function sweepMergedBranches() {
+  const branches: any[] = [];
+  for (let page = 1; ; page++) {
+    const b = await api(`/branches?page=${page}&limit=50`, {}, MERGE_TOKEN);
+    branches.push(...b);
+    if (b.length < 50) break;
+  }
+  for (const b of branches) {
+    if (b.name === "main" || b.protected) continue;
+    const age = Date.now() - new Date(b.commit?.timestamp ?? Date.now()).getTime();
+    if (age < 24 * 3_600_000) continue;
+    try {
+      const cmp = await api(`/compare/main...${encodeURIComponent(b.name)}`);
+      if ((cmp.total_commits ?? (cmp.commits ?? []).length) > 0) continue;
+      await api(`/branches/${encodeURIComponent(b.name)}`, { method: "DELETE" }, MERGE_TOKEN);
+      log(`swept fully-merged branch ${b.name}`);
+    } catch (e) {
+      log(`could not sweep ${b.name} — ${e instanceof Error ? e.message : e}`);
+    }
+  }
+}
+
 // --- the retrospective -------------------------------------------------------
 //
 // Both other lanes execute; neither ever steps back. Every `retroEveryDays`
@@ -1099,6 +1132,7 @@ if (cmd === "status") {
 } else if (cmd === "tick") {
   await digest(cfg);
   await shipReady(cfg);
+  await sweepMergedBranches();
   await rearmParkedTickets();
   await generate(cfg);
   await generateQa(cfg);
