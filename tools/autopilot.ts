@@ -73,11 +73,12 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //     "ticketsPerDay": 1,      // how many new feature tickets a day
 //     "qaPerDay": 0,           // how many QA passes a day (0 = the lane is off)
 //     "qaMaxOpen": 3,          // how many QA tickets may be open at once
+//     "retroEveryDays": 0,     // file a retrospective every N days (0 = never)
 //     "ship": false }          // merge and deploy finished ones, or stop at review
 
-type Config = { enabled: boolean; ticketsPerDay: number; maxOpen: number; ship: boolean; qaPerDay: number; qaMaxOpen: number };
+type Config = { enabled: boolean; ticketsPerDay: number; maxOpen: number; ship: boolean; qaPerDay: number; qaMaxOpen: number; retroEveryDays: number };
 
-const DEFAULTS: Config = { enabled: false, ticketsPerDay: 5, maxOpen: 2, ship: false, qaPerDay: 0, qaMaxOpen: 3 };
+const DEFAULTS: Config = { enabled: false, ticketsPerDay: 5, maxOpen: 2, ship: false, qaPerDay: 0, qaMaxOpen: 3, retroEveryDays: 0 };
 
 async function config(): Promise<Config> {
   try {
@@ -95,6 +96,7 @@ async function config(): Promise<Config> {
       ship: Boolean(raw.ship),
       qaPerDay: Number.isFinite(raw.qaPerDay) ? Math.max(0, Math.floor(raw.qaPerDay)) : DEFAULTS.qaPerDay,
       qaMaxOpen: Number.isFinite(raw.qaMaxOpen) ? Math.max(1, Math.floor(raw.qaMaxOpen)) : DEFAULTS.qaMaxOpen,
+      retroEveryDays: Number.isFinite(raw.retroEveryDays) ? Math.max(0, Math.floor(raw.retroEveryDays)) : DEFAULTS.retroEveryDays,
     };
   } catch {
     return DEFAULTS;
@@ -565,7 +567,7 @@ async function generate(cfg: Config) {
   const open = await api(`/issues?state=open&type=issues&limit=50`);
   // QA tickets pace themselves in generateQa and hold no feature slot here —
   // nineteen a day counted against maxOpen would stop this lane outright.
-  const mine = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT) && !labelsOf(i).includes(QA));
+  const mine = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT) && !labelsOf(i).includes(QA) && !labelsOf(i).includes(RETRO));
   const stalled = (i: any) => {
     const names = labelsOf(i);
     if (names.includes(FAILED) || names.includes(NEEDS_INPUT)) return true;
@@ -841,6 +843,77 @@ async function generateQa(cfg: Config) {
   log("every QA target has been filed today");
 }
 
+// --- the retrospective -------------------------------------------------------
+//
+// Both other lanes execute; neither ever steps back. Every `retroEveryDays`
+// days one session reads the whole period — what shipped, what stalled, what
+// the QA passes found — and steers, inside hard bounds. The one real authority
+// it holds is promotion: it may move up to three `qa-gap` findings into the
+// build lane, which closes the loop QA opened (a gap is found, judged against
+// the values, and built, with no person in between). Direction itself stays
+// out of reach — docs/direction.md's own rule is that a session proposes
+// changes as a ticket and never rewrites it — and the gap-label requirement
+// matters: labels need write access, so `qa-gap` marks a finding as the lane's
+// own, not text a stranger filed.
+
+const RETRO = "retro";
+
+async function generateRetro(cfg: Config) {
+  if (!cfg.enabled || !cfg.retroEveryDays) return;
+
+  // Deterministic period index instead of a state field: every tick in the
+  // same period computes the same key, and alreadyFiled dedupes.
+  const period = Math.floor(Date.now() / (cfg.retroEveryDays * 86_400_000));
+  const key = `retro-p${period}`;
+  if (await alreadyFiled(key)) return;
+
+  const days = cfg.retroEveryDays;
+  const body = [
+    `Step back and read the last ${days} day(s) of this lane, then steer it. You are not building anything on this ticket.`,
+    "",
+    "1. **Gather.** `docs/direction.md` (the goal and the seven values); every issue closed or",
+    `   filed in the last ${days} day(s) — shipped, failed, parked — and the reports on closed`,
+    "   `qa` tickets; the open `qa-gap` backlog. All of it is on the Forgejo API with the",
+    "   `FORGEJO_TOKEN` in your environment.",
+    "2. **Analyse against the goal.** Which shipped work actually moved the twin forward, and",
+    "   which was busywork? Where did tickets stall, and is the pattern a machinery problem",
+    "   (conflicts, refusals, flakes) rather than a hard ticket? What do the QA findings say",
+    "   players keep hitting? Is the frontier still the highest-value queue, or is the gap",
+    "   backlog now worth more than the next data source?",
+    "3. **Act, inside these bounds and no further:**",
+    "   - **Promote at most three open `qa-gap` issues into the build lane** by adding the",
+    "     `autonomous` label" + (cfg.ship ? " and the `ship` label" : "") + ". Only gaps whose success a machine",
+    "     can judge, and nothing the fences cover — no wire protocol, no database schema, no",
+    "     taste. Only issues already carrying `qa-gap`: that label is the lane vouching for",
+    "     its own finding. Say on each one why it was promoted.",
+    "   - **File a ticket for each machinery problem** you can name precisely (the autopilot,",
+    "     the watcher, CI, the deploy). These are code under `tools/`, which the unattended",
+    "     lane may build but never merge — they land for review, which is the point.",
+    "   - **Propose direction changes as a ticket** titled `proposal: …`, argued from the",
+    "     period you just read. Never edit `docs/direction.md` here and never label a proposal",
+    "     `autonomous` — the direction is the maintainer's, by that file's own first rule.",
+    "4. **Report and close.** Final message: the period in five lines, what you promoted and",
+    "   why, what you filed, what you propose. Then close this ticket through the API.",
+    "",
+    "**Decide it yourself.** Nobody is watching this ticket. Judge by the seven values; a",
+    "promotion you are unsure about is one to leave for the maintainer, not to ask about.",
+    "",
+    `<sub>Filed by the autopilot. <!-- autopilot:${key} --></sub>`,
+  ].join("\n");
+
+  const issue = requireIssue(
+    await api(`/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: `Retrospective: the last ${days} day(s), and what to do differently`,
+        body,
+        labels: await labelIds(["agent", FILED_BY_AUTOPILOT, RETRO]),
+      }),
+    }),
+  );
+  log(`filed #${issue.number}: retrospective for period ${period}`);
+}
+
 
 /**
  * A created issue, or a hard error.
@@ -1022,12 +1095,14 @@ if (cmd === "status") {
   await rearmParkedTickets();
   await generate(cfg);
   await generateQa(cfg);
+  await generateRetro(cfg);
 } else if (cmd === "tick") {
   await digest(cfg);
   await shipReady(cfg);
   await rearmParkedTickets();
   await generate(cfg);
   await generateQa(cfg);
+  await generateRetro(cfg);
 } else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);
