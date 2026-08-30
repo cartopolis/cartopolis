@@ -21,11 +21,14 @@ use std::collections::HashMap;
 
 /// Half the width of the gap a door opens in a building's collider, metres.
 ///
-/// Generous next to a real door leaf, and deliberately: the register's point is
-/// the *unit's* position rather than the doorway's, so it sits somewhere near the
-/// entrance rather than exactly in it, and a tight gap would be a door you have
-/// to hunt for with the keyboard. Wide enough to walk through at a jog, narrow
-/// enough that a terrace of front doors does not become an open colonnade.
+/// Generous next to a real door leaf, and deliberately. The point this is
+/// centred on lies *in* the wall (`building_facts::place_doors_on_facades` puts
+/// it there), so the gap straddles the wall and the depth is not in question —
+/// but the position *along* the wall is still only derived from the unit's own
+/// point, so the doorway sits within a metre or so of the real leaf rather than
+/// on it, and a tight gap would be a door you have to hunt for with the
+/// keyboard. Wide enough to walk through at a jog, narrow enough that a terrace
+/// of front doors does not become an open colonnade.
 pub const DOOR_HALF_WIDTH: f32 = 1.1;
 
 /// How far beyond a wall an ejected avatar is placed (metres).
@@ -88,10 +91,12 @@ impl Footprint {
 
     /// Whether `p` is close enough to one of this building's doors to pass.
     ///
-    /// Half a doorway either side of the register's point. The point is the
-    /// *unit's* position rather than the door leaf's, so it can sit a metre or so
-    /// inside the wall — which is why this is a radius around it and not a test
-    /// against the wall segment.
+    /// Half a doorway either side of the point, in every direction. A radius
+    /// rather than a test against the wall segment because the point is derived
+    /// (`building_facts::place_doors_on_facades`) and is only approximately
+    /// where the leaf is along the wall — and because a radius centred in the
+    /// wall opens it from both sides at once, which is what walking in and back
+    /// out again needs.
     fn in_a_doorway(&self, p: Vec2) -> bool {
         self.doors
             .iter()

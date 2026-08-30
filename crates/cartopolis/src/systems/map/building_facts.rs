@@ -187,9 +187,15 @@ pub struct BuildingFact {
     /// corner it fills in with a collider nobody can walk through. This is the
     /// register's own ring.
     pub footprint: Vec<(f64, f64)>,
-    /// Where this building's addressed units are entered, as lat/lng. The
-    /// register's own points, which is the closest thing to a national
-    /// door-position dataset there is.
+    /// Where this building's addressed units are entered, as lat/lng — a point
+    /// **on** the facade, one per unit.
+    ///
+    /// Derived, not surveyed. The register's own point for a unit is somewhere
+    /// inside it, and nobody publishes door positions at all, so
+    /// [`place_doors_on_facades`] moves each one out to a wall as the cell is
+    /// parsed. Every consumer — the drawn panel in `lod22`, the gap
+    /// `collision::Footprint` opens, and the doorway `interiors` cuts out of the
+    /// room's own wall — wants that point and not the raw one.
     pub doors: Vec<(f64, f64)>,
 }
 
@@ -401,11 +407,206 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
             postcode: b.postcode,
         })
         .collect();
+    place_doors_on_facades(&mut buildings);
     Ok(BagCell {
         buildings,
         addresses,
         berths,
     })
+}
+
+// ─── Putting the register's point on a wall ──────────────────────────────────
+
+/// How far off a wall the inside/outside probe is taken, metres. Well under a
+/// wall's thickness and well over the precision of a ring rounded to 1 cm — the
+/// same probe, for the same reason, as `lod22::nearest_edge_point`.
+const PROBE_M: f64 = 0.05;
+
+/// How far outside a wall the *neighbour* probe is taken, metres. Further out
+/// than [`PROBE_M`]: two abutting pand rings are surveyed independently and
+/// disagree by a few centimetres, so a probe that close to the wall answers the
+/// rounding rather than the question.
+const NEIGHBOUR_PROBE_M: f64 = 0.30;
+
+/// How much of a wall a doorway needs either side of itself, metres. A little
+/// over half the drawn panel (`lod22::DOOR_WIDTH_M`), so a door is never hung
+/// across a corner and the wall it is on is unambiguously the nearest one.
+const DOOR_CLEARANCE_M: f64 = 0.6;
+
+/// A wall shorter than this cannot hold a door at all.
+const MIN_DOOR_WALL_M: f64 = 1.2;
+
+/// Move each register point onto the wall it is a doorway in.
+///
+/// **The BAG has no door positions and nothing else does either.** A
+/// `verblijfsobject`'s point is the *unit's* — required only to lie inside the
+/// pand — and over the Groningen centre cell it sits a median 1.8 m in from the
+/// nearest wall. BGT has no door object, and OpenStreetMap's surveyed
+/// `entrance` nodes number 137 for the whole of central Groningen against ~8,000
+/// buildings. So a doorway has to be *derived*, and the only question is by what
+/// rule.
+///
+/// The rule that was here — draw the panel on whichever wall is nearest — is the
+/// obvious one and it fails on the ordinary Dutch terrace, where the wall
+/// nearest a unit's point is frequently the **party wall** it shares with the
+/// house next door. Measured over 1,289 doors in that cell: 41% of them were
+/// drawn inside the neighbouring building, where the neighbour's own shell hides
+/// them completely, and only 17% opened the collider — `Footprint::in_a_doorway`
+/// is a radius around this point, and from 1.8 m inside the building that circle
+/// never reaches any wall, so a door you *could* see was usually still not one
+/// you could walk through.
+///
+/// So: take the nearest wall whose outside is not inside another building, and
+/// put the point **on** it. That takes visible doors to 99% and, because the
+/// point now lies in the wall, the collider gap straddles it by construction. A
+/// variant that also weighed each wall's distance to the BGT's pavement and
+/// road surfaces was measured against this one and reached 95% street-facing
+/// against 94% — 1.6 points, for a 1.2 MB per-cell dependency inside the mesh
+/// job, so it is not what this does.
+///
+/// Two limits worth knowing. The *along-wall* position is still only the unit's,
+/// so the doorway lands where the facade is nearest the unit rather than at the
+/// real leaf — which is why `collision::DOOR_HALF_WIDTH` stays generous. And a
+/// building's neighbours are only the ones in the same cell file, so a door on a
+/// party wall crossing a cell boundary can still be buried; that is a thin strip
+/// of a 6 km cell and it fails the way it did before rather than worse.
+fn place_doors_on_facades(buildings: &mut HashMap<Arc<str>, BuildingFact>) {
+    /// Grid cell for the neighbour lookup, metres. A few buildings deep, so the
+    /// 3×3 neighbourhood a probe consults is small and always sufficient.
+    const BUCKET_M: f64 = 50.0;
+
+    // A local metre frame. Any reference latitude inside the cell will do — every
+    // distance measured here is tens of metres — so the first ring supplies it.
+    let Some(lat0) = buildings
+        .values()
+        .find_map(|b| b.footprint.first().map(|p| p.0))
+    else {
+        return;
+    };
+    let m_lat = 111_320.0_f64;
+    let m_lng = 111_320.0_f64 * lat0.to_radians().cos();
+    let to_m = |(lat, lng): (f64, f64)| (lng * m_lng, lat * m_lat);
+    let to_deg = |(x, y): (f64, f64)| (y / m_lat, x / m_lng);
+
+    // Every ring once, in metres, plus a bucket index over their bounding boxes.
+    let rings: HashMap<Arc<str>, Vec<(f64, f64)>> = buildings
+        .iter()
+        .filter(|(_, b)| b.footprint.len() >= 3)
+        .map(|(id, b)| (id.clone(), b.footprint.iter().map(|&p| to_m(p)).collect()))
+        .collect();
+    let mut buckets: HashMap<(i64, i64), Vec<&Arc<str>>> = HashMap::new();
+    for (id, ring) in &rings {
+        let (mut lo, mut hi) = (ring[0], ring[0]);
+        for &(x, y) in ring {
+            lo = (lo.0.min(x), lo.1.min(y));
+            hi = (hi.0.max(x), hi.1.max(y));
+        }
+        for bx in (lo.0 / BUCKET_M).floor() as i64..=(hi.0 / BUCKET_M).floor() as i64 {
+            for by in (lo.1 / BUCKET_M).floor() as i64..=(hi.1 / BUCKET_M).floor() as i64 {
+                buckets.entry((bx, by)).or_default().push(id);
+            }
+        }
+    }
+    let in_a_neighbour = |mine: &Arc<str>, p: (f64, f64)| -> bool {
+        let (bx, by) = (
+            (p.0 / BUCKET_M).floor() as i64,
+            (p.1 / BUCKET_M).floor() as i64,
+        );
+        for ox in -1..=1 {
+            for oy in -1..=1 {
+                for id in buckets.get(&(bx + ox, by + oy)).into_iter().flatten() {
+                    if *id != mine && rings.get(*id).is_some_and(|r| point_in_ring(r, p)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+
+    for (id, building) in buildings.iter_mut() {
+        let Some(ring) = rings.get(id) else {
+            continue;
+        };
+        for door in &mut building.doors {
+            if let Some(on_wall) = doorway_on_facade(ring, to_m(*door), |p| in_a_neighbour(id, p)) {
+                *door = to_deg(on_wall);
+            }
+        }
+    }
+}
+
+/// Where on `ring` the doorway for the register point `p` is, or `None` when no
+/// wall of this building can hold one.
+///
+/// Split out from [`place_doors_on_facades`] so the rule can be tested against a
+/// hand-written terrace rather than against a parsed cell.
+fn doorway_on_facade(
+    ring: &[(f64, f64)],
+    p: (f64, f64),
+    buried: impl Fn((f64, f64)) -> bool,
+) -> Option<(f64, f64)> {
+    // Walls, nearest first — so the search stops at the first one that is not a
+    // party wall and the neighbour test runs once or twice rather than per wall.
+    let mut walls: Vec<(f64, (f64, f64), (f64, f64))> = Vec::with_capacity(ring.len());
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        let ab = (b.0 - a.0, b.1 - a.1);
+        let len = (ab.0 * ab.0 + ab.1 * ab.1).sqrt();
+        if len < MIN_DOOR_WALL_M {
+            continue;
+        }
+        // Along the wall, clamped clear of both corners: a panel hung across a
+        // corner would be half inside the building, and a point sitting exactly
+        // on a shared vertex has two nearest walls rather than one.
+        let clear = DOOR_CLEARANCE_M.min(len * 0.5 - 0.01) / len;
+        let t = (((p.0 - a.0) * ab.0 + (p.1 - a.1) * ab.1) / (len * len)).clamp(clear, 1.0 - clear);
+        let at = (a.0 + ab.0 * t, a.1 + ab.1 * t);
+        // Outward, decided by probing rather than by the ring's winding — the
+        // winding is not promised and getting it backwards is silent (it is what
+        // once drew all 113,710 doors on the inside of their own walls).
+        let n = (ab.1 / len, -ab.0 / len);
+        let n = if point_in_ring(ring, (at.0 + n.0 * PROBE_M, at.1 + n.1 * PROBE_M)) {
+            (-n.0, -n.1)
+        } else {
+            n
+        };
+        let d2 = (at.0 - p.0).powi(2) + (at.1 - p.1).powi(2);
+        walls.push((d2, at, n));
+    }
+    walls.sort_by(|a, b| a.0.total_cmp(&b.0));
+    walls
+        .into_iter()
+        .find(|(_, at, n)| {
+            !buried((
+                at.0 + n.0 * NEIGHBOUR_PROBE_M,
+                at.1 + n.1 * NEIGHBOUR_PROBE_M,
+            ))
+        })
+        .map(|(_, at, _)| at)
+}
+
+/// Even-odd ray cast against a ring of metre pairs.
+///
+/// A third copy of a test `collision::Footprint` and `lod22` also carry, and
+/// deliberately: both of those answer about `Vec2` in the anchored world frame,
+/// while this one runs at parse time on `f64` pairs derived straight from
+/// lat/lng, before any anchor exists to convert them against.
+fn point_in_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[j]);
+        if (a.1 > p.1) != (b.1 > p.1) {
+            let x = a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+            if p.0 < x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 // ─── Coverage ────────────────────────────────────────────────────────────────
@@ -882,5 +1083,115 @@ mod tests {
         // the nearest address however far away it is would name the wrong street
         // in the middle of a field.
         assert!(facts.nearest_address(53.2050, 6.5000, 5.0).is_none());
+    }
+
+    /// A terrace: three 6 m × 10 m houses in a row, the middle one's unit point
+    /// 1.5 m in from its own front wall — and therefore *nearer* the party wall
+    /// it shares with its neighbour. The nearest wall is the wrong answer; the
+    /// nearest wall with nobody behind it is the right one.
+    #[test]
+    fn a_doorway_never_lands_on_a_party_wall() {
+        // Metres, x east and y north. Fronts run along y = 0.
+        let house = |x0: f64| vec![(x0, 0.0), (x0 + 6.0, 0.0), (x0 + 6.0, 10.0), (x0, 10.0)];
+        let (left, middle, right) = (house(-6.0), house(0.0), house(6.0));
+        let neighbours = |p: (f64, f64)| point_in_ring(&left, p) || point_in_ring(&right, p);
+
+        // 1.0 m from the party wall at x = 6, 1.5 m from the front wall at y = 0.
+        let p = (5.0, 1.5);
+        let nearest = doorway_on_facade(&middle, p, |_| false).expect("a wall");
+        assert!(
+            (nearest.0 - 6.0).abs() < 0.01,
+            "without the neighbours the nearest wall is the party wall, got {nearest:?}"
+        );
+
+        let at = doorway_on_facade(&middle, p, neighbours).expect("a wall");
+        assert!(
+            at.1.abs() < 0.01,
+            "the doorway should be on the front wall (y = 0), got {at:?}"
+        );
+        assert!(
+            (at.0 - 5.0).abs() < 0.01,
+            "and at the point of that wall nearest the unit, got {at:?}"
+        );
+    }
+
+    /// The whole point of moving the point: it has to end up *in* the wall, or
+    /// `collision::Footprint`'s radius never straddles it and the door cannot be
+    /// walked through.
+    #[test]
+    fn a_doorway_lands_on_the_ring_itself() {
+        let ring = vec![(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)];
+        for p in [(3.0, 2.5), (11.0, 4.0), (6.0, 7.2), (0.5, 0.5)] {
+            let at = doorway_on_facade(&ring, p, |_| false).expect("a wall");
+            let on_edge = at.1.abs() < 1e-9
+                || (at.1 - 8.0).abs() < 1e-9
+                || at.0.abs() < 1e-9
+                || (at.0 - 12.0).abs() < 1e-9;
+            assert!(
+                on_edge,
+                "{p:?} projected to {at:?}, which is not on the ring"
+            );
+        }
+    }
+
+    /// A door hung across a corner would be half inside its own building, and a
+    /// point exactly on a shared vertex has two nearest walls rather than one —
+    /// which is the ambiguity `lod22` then has to resolve to pick a normal.
+    #[test]
+    fn a_doorway_keeps_clear_of_the_corners() {
+        let ring = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let at = doorway_on_facade(&ring, (0.2, 0.2), |_| false).expect("a wall");
+        assert!(
+            at.0 >= DOOR_CLEARANCE_M - 1e-9 && at.1.abs() < 1e-9,
+            "a point in the corner should slide along the wall, got {at:?}"
+        );
+    }
+
+    /// Boxed in on every side, the honest answer is that this building has no
+    /// doorway — not one on a wall the neighbour hides.
+    #[test]
+    fn a_building_with_no_free_wall_gets_no_doorway() {
+        let ring = vec![(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)];
+        assert!(doorway_on_facade(&ring, (2.5, 2.5), |_| true).is_none());
+    }
+
+    /// A wall too short to hold the panel is not a candidate, whatever its
+    /// distance — the chamfered corner of a building is not its front door.
+    #[test]
+    fn a_wall_shorter_than_a_door_is_not_a_candidate() {
+        // A 10 m square with its north-east corner chamfered by 0.5 m.
+        let ring = vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 9.5),
+            (9.5, 10.0),
+            (0.0, 10.0),
+        ];
+        let at = doorway_on_facade(&ring, (9.4, 9.4), |_| false).expect("a wall");
+        let on_chamfer = (at.0 + at.1 - 19.5).abs() < 0.01;
+        assert!(
+            !on_chamfer,
+            "the 0.7 m chamfer cannot hold a door, got {at:?}"
+        );
+    }
+
+    /// The parse runs the placement, so a cell's doors come out on their walls.
+    #[test]
+    fn parsing_a_cell_puts_its_doors_on_the_facade() {
+        let cell = parse_bag_cell(
+            r#"{"streets":[],"buildings":[
+                 {"id":"a","fp":[[53.2000000,6.5000000],[53.2000000,6.5001000],
+                                 [53.2000900,6.5001000],[53.2000900,6.5000000]],
+                  "doors":[[53.2000450,6.5000500]]}],
+                "addresses":[],"berths":[]}"#,
+        )
+        .expect("valid cell");
+        let b = cell.building("a").expect("indexed by id");
+        let (lat, lng) = b.doors[0];
+        let on_edge = (lat - 53.2000000).abs() < 1e-7
+            || (lat - 53.2000900).abs() < 1e-7
+            || (lng - 6.5000000).abs() < 1e-7
+            || (lng - 6.5001000).abs() < 1e-7;
+        assert!(on_edge, "door came out at {lat},{lng}, not on the ring");
     }
 }
