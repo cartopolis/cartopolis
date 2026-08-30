@@ -461,6 +461,21 @@ fn spawn_geometry_task(
             // outside the coverage, which is everywhere the host has not run
             // cartopy's `brp.ts`.
             let crop_cell = crate::systems::crops::load_crop_cell(cell.0, cell.1).await;
+            // …and the cell's navigation marks, on the same terms and with two
+            // gates of their own (`systems::nav_marks`). The water one reads the
+            // *undecoded* body: the parse happens on the worker below, and a
+            // fetch decision cannot wait for it without moving a ~120 ms decode
+            // onto the frame loop on wasm. `wants.furniture` is the third gate —
+            // marks ride that group's mesh, so a run with it off asks for
+            // nothing.
+            let has_water = fetched
+                .as_ref()
+                .is_ok_and(|bytes| vector_tiles::body_mentions_water(bytes));
+            let mark_cell = if wants.furniture {
+                crate::systems::nav_marks::load_marks_cell(cell.0, cell.1, has_water).await
+            } else {
+                crate::systems::nav_marks::MarkCell::default()
+            };
             crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
@@ -673,6 +688,20 @@ fn spawn_geometry_task(
                                         tracing::warn!(cell = ?cell, error = %e, "mooring fill failed");
                                     }
                                 }
+                                // …and the surveyed buoys and beacons standing on
+                                // the water the boats above are inferred from
+                                // (`systems::nav_marks`). Same group, same
+                                // material, same toggle — and **no collider**:
+                                // they are not `FurnitureInstance`s, so nothing
+                                // reaches `collision::sync_prop_colliders`, which
+                                // is the answer a boat gets by the other route.
+                                let marks = crate::systems::nav_marks::cell_marks(
+                                    &mark_cell, cell.0, cell.1, tile_m,
+                                );
+                                cell_places.surveyed.5 = marks.len();
+                                meshes.extend(cartopolis_geo::nav_marks::build_mark_meshes(
+                                    &marks, mesh_bytes,
+                                ));
                             }
                             // …and so do the two layers this tile was decoding
                             // and dropping outright (`docs/notes/vector-tile-unused-layers.md`).

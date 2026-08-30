@@ -1,0 +1,59 @@
+{
+ "type": "FeatureCollection",
+ "numberReturned": 1,
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "benam_cod": "VW-BRW  -0126",
+    "benaming": "W 12D",
+    "e_wgs_gm": "005.51.8474",
+    "e_wgs_gms": "005.51.50.84",
+    "iala_categorie": "2",
+    "inbedrijf": "01-01-2011",
+    "kleurpatr": "X",
+    "kleurpatr_": "L",
+    "licht_kl_c": "3",
+    "licht_klr": "Rood",
+    "n_wgs_gm": "51.51.1045",
+    "n_wgs_gms": "51.51.06.27",
+    "obj_kleur": "Rood",
+    "obj_kleur_": "3",
+    "obj_soort": "LK1800 MM.",
+    "obj_vorm": "stomp",
+    "obj_vorm_c": "2",
+    "objectid": 427,
+    "opgeheven": "#",
+    "racon_code": "#",
+    "s57_id": 1106,
+    "sign_gr_c": "(1)",
+    "sign_groep": "(1)",
+    "sign_kar": "Iso (isophased)",
+    "sign_kar_c": "7",
+    "sign_perio": "4",
+    "tt_kleur": "X",
+    "tt_kleur_c": "L",
+    "tt_klr_pat": "X",
+    "tt_pat_c": "L",
+    "tt_toptek": "X",
+    "v_tt_c": "L",
+    "vaarwater": "BOVEN-RIJN EN WAAL",
+    "vorm_kleur": "stomp Rood",
+    "x_rd": "187859,2447",
+    "x_wgs84": 5.8641222200000005,
+    "y_rd": "429348,9038",
+    "y_wgs84": 51.85174167
+   },
+   "geometry": {
+    "type": "MultiPoint",
+    "coordinates": [
+     [
+      5.864122759056102,
+      51.85174222425082
+     ]
+    ]
+   },
+   "id": "3f25e2d6-7f34-5756-a057-16f1e474b17e"
+  }
+ ]
+}

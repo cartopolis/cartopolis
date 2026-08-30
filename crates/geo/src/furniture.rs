@@ -567,7 +567,10 @@ impl Tone {
 ///
 /// Split out of [`Tone::multiplier`] because [`Tone::Paint`] answers from the
 /// instance rather than from the table, and both need the same conversion.
-fn paint_multiplier(rgb: u32) -> [f32; 3] {
+/// `pub(crate)` for [`crate::nav_marks`], which paints from a register's own
+/// colour vocabulary rather than from [`Tone`] and so cannot go through the
+/// table.
+pub(crate) fn paint_multiplier(rgb: u32) -> [f32; 3] {
     let base = srgb_to_linear_rgb(palette::FURNITURE);
     let want = srgb_to_linear_rgb(rgb);
     [
@@ -581,13 +584,13 @@ fn paint_multiplier(rgb: u32) -> [f32; 3] {
 /// (the side that turns toward the path).
 pub struct Part {
     /// Centre of the box.
-    at: [f32; 3],
+    pub(crate) at: [f32; 3],
     /// Half-extents.
-    half: [f32; 3],
-    tone: Tone,
+    pub(crate) half: [f32; 3],
+    pub(crate) tone: Tone,
 }
 
-const fn part(at: [f32; 3], half: [f32; 3], tone: Tone) -> Part {
+pub(crate) const fn part(at: [f32; 3], half: [f32; 3], tone: Tone) -> Part {
     Part { at, half, tone }
 }
 
@@ -962,23 +965,29 @@ pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Ve
 
 /// What one [`Part`] costs to upload: [`push_box`] emits 24 vertices and 36
 /// indices, flat-shaded, every time.
-const BOX_BYTES: usize = 24 * VERTEX_BYTES + 36 * INDEX_BYTES;
+pub(crate) const BOX_BYTES: usize = 24 * VERTEX_BYTES + 36 * INDEX_BYTES;
 
+/// The accumulator every builder in this group writes into.
+///
+/// `pub(crate)` so [`crate::nav_marks`] can merge into the same group with the
+/// same byte accounting — its forms are round rather than boxes, but a
+/// navigation mark and a bench end up in one mesh, one material and one draw
+/// call, which is the whole reason the group exists.
 #[derive(Default)]
-struct MeshBuf {
-    positions: Vec<[f32; 3]>,
-    normals: Vec<[f32; 3]>,
-    colors: Vec<[f32; 4]>,
-    indices: Vec<u32>,
+pub(crate) struct MeshBuf {
+    pub(crate) positions: Vec<[f32; 3]>,
+    pub(crate) normals: Vec<[f32; 3]>,
+    pub(crate) colors: Vec<[f32; 4]>,
+    pub(crate) indices: Vec<u32>,
 }
 
 impl MeshBuf {
     /// What this buffer will cost to upload, in the units the frame budget is in.
-    fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.positions.len() * VERTEX_BYTES + self.indices.len() * INDEX_BYTES
     }
 
-    fn finish(self, group: SurfaceGroup) -> SurfaceMesh {
+    pub(crate) fn finish(self, group: SurfaceGroup) -> SurfaceMesh {
         SurfaceMesh {
             group,
             positions: self.positions,
@@ -996,7 +1005,14 @@ impl MeshBuf {
 /// Faces are not shared between vertices — a box shaded off averaged corner
 /// normals loses its edges, and a crisp edge is the only thing telling a 40 cm bin
 /// apart from a smudge at this size.
-fn push_box(buf: &mut MeshBuf, ox: f32, oz: f32, (sn, cs): (f32, f32), p: &Part, tint: [f32; 4]) {
+pub(crate) fn push_box(
+    buf: &mut MeshBuf,
+    ox: f32,
+    oz: f32,
+    (sn, cs): (f32, f32),
+    p: &Part,
+    tint: [f32; 4],
+) {
     // Object frame → world: rotate (x, z) about +y, then translate.
     let place = |lx: f32, ly: f32, lz: f32| [ox + lx * cs + lz * sn, ly, oz - lx * sn + lz * cs];
     let rotate = |nx: f32, nz: f32| [nx * cs + nz * sn, 0.0, -nx * sn + nz * cs];
