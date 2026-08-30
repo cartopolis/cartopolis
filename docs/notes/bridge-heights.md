@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
 triggers: [height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -51,6 +51,14 @@ in reality are ordinary unflagged ways drawn flat. Two consequences:
 The fix that removes the constraint is **sampling the approach profile from AHN
 too** — the embankments are solid earth, so they are in the DTM — and lifting the
 approach ribbons with it. Not done.
+
+There is a second place a deck height already exists, and it does not help
+either: the Kadaster's 3D basisvoorziening ships the BGT's
+`Overbruggingsdeel_vlak` with an AHN-draped z (45 decks in the 2 km Groningen
+block, one viaduct running 0.96 → 6.62 m, measured 2026-08-30). It is the same
+AHN measured above, so it supplies a number this note already has, and the
+constraint was never the height — it is the flat approach roads.
+[3d-basisvoorziening.md](3d-basisvoorziening.md)
 
 ## A deck is the structure, not the road surface
 

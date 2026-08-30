@@ -1,7 +1,7 @@
 ---
 topic: buildings
 triggers: [ifc_lod3.py, lod3.rs, IFC, BIM, ifcopenshell, LoD3, interior, hollow]
-updated: 2026-08-28
+updated: 2026-08-30
 ---
 
 # Importing an IFC model as a building
@@ -86,3 +86,10 @@ doorway open.
 - **Openings are geometry, not semantics.** An `IfcDoor` is imported as a solid
   and excluded from collision, so you walk through the door leaf rather than
   around it. Correct enough, and not the same as understanding a door.
+- **There is nothing national to replace this with.** The obvious hope — that the
+  Kadaster's 3D basisvoorziening would supply LoD3 for every building and retire
+  the hand import — was checked 2026-08-30 and does not: it is 3DBAG, its ceiling
+  is LoD 2.2, and its only semantics are wall, roof and ground. No published
+  Dutch LoD3 register exists at all, so a model somebody surveyed remains the
+  only way a building here gets an inside.
+  [3d-basisvoorziening.md](3d-basisvoorziening.md)
