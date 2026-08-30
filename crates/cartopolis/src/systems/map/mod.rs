@@ -5,6 +5,10 @@ pub mod atmosphere_patch;
 pub mod building_facts;
 pub mod building_windows;
 pub mod coverage;
+// The fetching half of the level crossings (`cartopolis_geo::crossings` is the
+// pure one). Named for the layer rather than for ProRail, the way `surveyed`,
+// `crops` and `nav_marks` are.
+pub mod crossings;
 // The client half of the crop parcels (`cartopolis_geo::crops` is the pure one),
 // named for the layer rather than the register the way `surveyed` is.
 pub mod crops;

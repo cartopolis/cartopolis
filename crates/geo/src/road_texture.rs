@@ -151,6 +151,23 @@ pub fn road_class(kind: &str, flags: StreetFlags) -> Option<RoadClass> {
     })
 }
 
+/// Is this `streets` kind track rather than road?
+///
+/// Deliberately beside [`road_class`] so the two cannot drift: it names the same
+/// three kinds that map to [`RoadClass::Rail`], **plus `subway`**, which
+/// `road_class` answers `None` for because it is underground. That difference is
+/// the point of a separate predicate — "do not draw this in 3D" and "this is not
+/// a road" are different questions, and a caller asking the second one about a
+/// subway wants `true`.
+///
+/// The caller is [`crate::crossings`]: a level crossing's registered point sits
+/// *on the track centreline*, so the nearest way to it is always the railway, and
+/// the boom lies across the road.
+#[must_use]
+pub fn is_rail_kind(kind: &str) -> bool {
+    matches!(kind, "rail" | "light_rail" | "tram" | "subway")
+}
+
 /// Carriageway width in **metres** for a `streets` kind — the real width of the
 /// thing, not a cartographic stroke weight. The raster path's widths are in
 /// pixels at the source tile's scale and deliberately exaggerated so a street is

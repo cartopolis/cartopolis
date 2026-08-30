@@ -12,6 +12,12 @@
 // from `paving` — the other surveyed polygon layer — because the two answer
 // different questions and share only the triangulation, which is `flat_fill`.
 pub mod crops;
+// The installations standing on ProRail's registered level crossings. Split from
+// `furniture` on the same terms `nav_marks` is: a different source, fetched
+// rather than read out of the tile this cell is already made of, and a different
+// claim. It borrows `furniture`'s mesh buffer and its way index, so a boom and a
+// bench end up in one group, one material and one draw call.
+pub mod crossings;
 // The triangulation both surveyed polygon layers use: rings in, byte-bounded
 // merged meshes out, with the per-polygon tone in the vertex colours.
 mod flat_fill;

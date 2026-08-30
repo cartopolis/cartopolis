@@ -98,6 +98,14 @@ url: https://www.beeldmateriaal.nl/
 notice: Aerial photography by Beeldmateriaal Nederland, served as Luchtfoto RGB (Open) by PDOK, CC BY 4.0.
 scope: Netherlands only
 
+## ProRail Spoorwegen (PDOK)
+
+role: Level crossings — where they are, and what installation stands on each
+license: CC0 1.0
+url: https://www.prorail.nl/
+notice: Level crossing register by ProRail, served by PDOK.
+scope: Netherlands only
+
 ## OVapi / NDOV
 
 role: Live public-transport departures and vehicle positions

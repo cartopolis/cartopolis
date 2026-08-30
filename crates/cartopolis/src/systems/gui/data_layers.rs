@@ -2533,6 +2533,13 @@ pub fn render_data_layers_panel(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );
                 ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
+                // Not gated on a coverage manifest the way the four above are:
+                // this register is fetched by the client itself and has no
+                // manifest to ask, so the line is static like the two around it.
+                // CC0 compels no attribution — it is here because
+                // `LICENSE-THIRD-PARTY.md` lists the source and this panel is the
+                // layer list's own source note.
+                ui.small("Level crossings: ProRail Spoorwegen, served by PDOK (CC0)");
                 if theme::action_button(ui, "Full credits and licences…").clicked() {
                     about = true;
                 }
