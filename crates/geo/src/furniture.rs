@@ -342,9 +342,46 @@ pub fn extract_furniture(
 
 // ─── Which way does the street run? ──────────────────────────────────────────
 
-/// Every street, path and railway in the tile, bucketed on a uniform grid so
-/// "which way does the nearest one run" costs a 3×3 cell lookup rather than a
-/// scan over the layer.
+/// Which `streets` features a [`WayField`] admits.
+///
+/// The filter is on the *feature*, not on the segment, so it is applied once per
+/// way rather than once per vertex pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WayFilter {
+    /// Every street, path and railway — what the furniture orients against. A
+    /// bench beside a tram line is beside a way like any other.
+    All,
+    /// Everything [`road_texture::is_rail_kind`](crate::road_texture::is_rail_kind)
+    /// calls track. [`crate::crossings`] is the caller and the reason: the
+    /// register puts a level crossing's point *on the rail centreline*, so the
+    /// nearest way is the track every time, and a boom laid along the track is
+    /// the one orientation that is certainly wrong.
+    ExcludingRail,
+}
+
+impl WayFilter {
+    fn admits(self, kind: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::ExcludingRail => !crate::road_texture::is_rail_kind(kind),
+        }
+    }
+
+    /// [`Self::admits`] over a whole feature, reading the `kind` tag **only when
+    /// the answer depends on it**. `All` is what the furniture uses on every
+    /// streamed cell, and it must cost exactly what it did before this filter
+    /// existed: no tag lookup per way.
+    fn admits_feature(self, feature: &Feature) -> bool {
+        match self {
+            Self::All => true,
+            Self::ExcludingRail => self.admits(tag_str(feature, "kind").unwrap_or_default()),
+        }
+    }
+}
+
+/// Every street, path and railway in the tile — or every one the [`WayFilter`]
+/// admits — bucketed on a uniform grid so "which way does the nearest one run"
+/// costs a 3×3 cell lookup rather than a scan over the layer.
 ///
 /// Segments are taken **unclipped**. The clip that
 /// [`clipped_rings`](crate::systems::vector_tiles::clipped_rings) exists for
@@ -354,7 +391,7 @@ pub fn extract_furniture(
 /// with an endpoint outside the tile's own buffer window — which is a bound on
 /// the *index*, not a cartographic judgement, and the reason is in
 /// [`TILE_BUFFER_FRAC`].
-struct WayField {
+pub(crate) struct WayField {
     segs: Vec<([f32; 2], [f32; 2])>,
     buckets: HashMap<(i32, i32), Vec<u32>>,
     /// The cell's ground size, which is what bounds the bucket grid — see
@@ -371,13 +408,23 @@ impl WayField {
     /// extent. It used to be handed the caller's `scale`/`extent`, which is the
     /// `pois` layer's — see [`extract_furniture`].
     fn build(tile: &TileData, tile_m: f32) -> Self {
-        use geo_types::Geometry;
+        Self::build_with(tile, tile_m, WayFilter::All)
+    }
 
-        let mut field = Self {
+    /// An empty field, for a caller that pushes its own ways.
+    pub(crate) fn empty(tile_m: f32) -> Self {
+        Self {
             segs: Vec::new(),
             buckets: HashMap::new(),
             tile_m,
-        };
+        }
+    }
+
+    /// [`Self::build`], with a say in which features count.
+    pub(crate) fn build_with(tile: &TileData, tile_m: f32, filter: WayFilter) -> Self {
+        use geo_types::Geometry;
+
+        let mut field = Self::empty(tile_m);
         let Some(meta) = tile.layer("streets") else {
             return field;
         };
@@ -392,6 +439,12 @@ impl WayField {
             c.x >= -margin && c.y >= -margin && c.x <= extent + margin && c.y <= extent + margin
         };
         for feature in features {
+            // Once per way, not once per segment. An untagged feature has no
+            // `kind` at all, and `""` is not a rail kind — so it stays in, which
+            // is the answer this loop gave before the filter existed.
+            if !filter.admits_feature(feature) {
+                continue;
+            }
             let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
                 Geometry::LineString(ls) => vec![ls],
                 Geometry::MultiLineString(ml) => ml.iter().collect(),
@@ -417,6 +470,19 @@ impl WayField {
             }
         }
         field
+    }
+
+    /// Push one whole way through the [`WayFilter`], the way
+    /// [`Self::build_with`] does — so a test can drive the real filter without
+    /// synthesising an MVT body.
+    #[cfg(test)]
+    pub(crate) fn push_line(&mut self, filter: WayFilter, kind: &str, points: &[[f32; 2]]) {
+        if !filter.admits(kind) {
+            return;
+        }
+        for pair in points.windows(2) {
+            self.push(pair[0], pair[1]);
+        }
     }
 
     fn push(&mut self, a: [f32; 2], b: [f32; 2]) {
@@ -451,6 +517,41 @@ impl WayField {
     /// radius larger than [`Self::CELL`] still finds everything — a bench 20 m off
     /// a road is nearly a full cell away.
     fn facing(&self, x: f32, z: f32, max_r: f32) -> Option<f32> {
+        let (a, b) = self.nearest(x, z, max_r)?;
+        let (wx, wz) = (b[0] - a[0], b[1] - a[1]);
+        // Which side of the way the object is on: the sign of the 2D cross product
+        // of the way with the offset from it. Zero means the object sits *on* the
+        // line, where "toward the way" has no direction — take the left-hand
+        // perpendicular rather than collapsing the rotation to nothing.
+        let (ox, oz) = (x - a[0], z - a[1]);
+        let side = if wx * oz - wz * ox >= 0.0 { 1.0 } else { -1.0 };
+        // Right-hand perpendicular of the way, signed to point back at it.
+        let (fx, fz) = (side * wz, side * -wx);
+        // atan2(x, z) and not (z, x): a yaw of 0 in the object frame points along
+        // +z, so this is the rotation that takes +z onto the facing direction.
+        Some(fx.atan2(fz))
+    }
+
+    /// The yaw that lays an object's local **+z along** the nearest way within
+    /// `max_r` metres, rather than across it. `None` if nothing is in range.
+    ///
+    /// A quarter turn from [`Self::facing`], and the difference is the whole
+    /// point of having both: a bench turns to *look at* the path, and a level
+    /// crossing's masts stand on either side of the road *along* it. The sign is
+    /// unresolved — a way has a digitising direction and a road has no front —
+    /// so this may answer either of the two opposite yaws. Every form built on it
+    /// must therefore be symmetric under a half turn, which the crossings are.
+    pub(crate) fn direction(&self, x: f32, z: f32, max_r: f32) -> Option<f32> {
+        let (a, b) = self.nearest(x, z, max_r)?;
+        let (wx, wz) = (b[0] - a[0], b[1] - a[1]);
+        Some(wx.atan2(wz))
+    }
+
+    /// The endpoints of the nearest admitted segment within `max_r`.
+    ///
+    /// The search widens by whole grid cells until it has covered `max_r`, so a
+    /// radius larger than [`Self::CELL`] still finds everything.
+    fn nearest(&self, x: f32, z: f32, max_r: f32) -> Option<([f32; 2], [f32; 2])> {
         let reach = (max_r / Self::CELL).ceil() as i32;
         let (cx, cz) = (
             (x / Self::CELL).floor() as i32,
@@ -472,22 +573,7 @@ impl WayField {
             }
         }
         let (d2, id) = best?;
-        if d2 > max_r * max_r {
-            return None;
-        }
-        let (a, b) = self.segs[id];
-        let (wx, wz) = (b[0] - a[0], b[1] - a[1]);
-        // Which side of the way the object is on: the sign of the 2D cross product
-        // of the way with the offset from it. Zero means the object sits *on* the
-        // line, where "toward the way" has no direction — take the left-hand
-        // perpendicular rather than collapsing the rotation to nothing.
-        let (ox, oz) = (x - a[0], z - a[1]);
-        let side = if wx * oz - wz * ox >= 0.0 { 1.0 } else { -1.0 };
-        // Right-hand perpendicular of the way, signed to point back at it.
-        let (fx, fz) = (side * wz, side * -wx);
-        // atan2(x, z) and not (z, x): a yaw of 0 in the object frame points along
-        // +z, so this is the rotation that takes +z onto the facing direction.
-        Some(fx.atan2(fz))
+        (d2 <= max_r * max_r).then(|| self.segs[id])
     }
 }
 

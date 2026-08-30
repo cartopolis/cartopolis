@@ -476,6 +476,18 @@ fn spawn_geometry_task(
             } else {
                 crate::systems::nav_marks::MarkCell::default()
             };
+            // …and the cell's registered level crossings, on exactly the same
+            // terms and with the same three gates (`systems::crossings`). The
+            // second one reads the undecoded body for the railway the way the
+            // marks read it for water, and for the same reason.
+            let has_rail = fetched
+                .as_ref()
+                .is_ok_and(|bytes| vector_tiles::body_mentions_rail(bytes));
+            let crossing_cell = if wants.furniture {
+                crate::systems::crossings::load_crossings_cell(cell.0, cell.1, has_rail).await
+            } else {
+                crate::systems::crossings::CrossingCell::default()
+            };
             crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
@@ -701,6 +713,32 @@ fn spawn_geometry_task(
                                 cell_places.surveyed.5 = marks.len();
                                 meshes.extend(cartopolis_geo::nav_marks::build_mark_meshes(
                                     &marks, mesh_bytes,
+                                ));
+                                // …and the installations on ProRail's registered
+                                // level crossings (`systems::crossings`). Same
+                                // group, same material, same toggle, and **no
+                                // collider**, for the reason stated just above
+                                // for the marks.
+                                //
+                                // Placed here rather than in the fetch above
+                                // because the orientation is read off *this*
+                                // tile's `streets` layer, which only exists
+                                // after the parse — a boom lies across the road,
+                                // and the register carries no azimuth at all.
+                                let crossings = cartopolis_geo::crossings::place_crossings(
+                                    &tile,
+                                    tile_m,
+                                    &crate::systems::crossings::cell_crossings(
+                                        &crossing_cell,
+                                        cell.0,
+                                        cell.1,
+                                        tile_m,
+                                    ),
+                                );
+                                cell_places.surveyed.6 = crossings.len();
+                                meshes.extend(cartopolis_geo::crossings::build_crossing_meshes(
+                                    &crossings,
+                                    mesh_bytes,
                                 ));
                             }
                             // …and so do the two layers this tile was decoding

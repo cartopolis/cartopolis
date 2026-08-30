@@ -75,7 +75,11 @@ RVO crop parcels, so a field is drawn as the crop grown on it rather than as one
 generic green — client half only until cartopy's `brp.ts` serves a cell
 ([notes](notes/crop-parcels.md)) ·
 Rijkswaterstaat navigation marks, so a fairway holds the buoys and beacons really
-standing in it ([notes](notes/navigation-marks.md)).
+standing in it ([notes](notes/navigation-marks.md)) ·
+ProRail level crossings, so a road meeting a railway carries the masts, lights and
+booms that are really on it — one of the register's seven collections; the other
+six were checked and rejected
+([notes](notes/prorail-level-crossings.md)).
 
 **Candidates, unverified.** Nobody has yet confirmed the interface, the licence
 or the volume for these — that check is the first half of the ticket, and
@@ -83,7 +87,6 @@ or the volume for these — that check is the first half of the ticket, and
 
 | Source | What it would add |
 |---|---|
-| ProRail Spoorwegen, PDOK OGC API | Track axes, switches, level crossings and kilometre posts for the whole rail network, none of which the OSM rail ribbons this client already draws carry: 22 track axes and 70 switches, 208 KB, over the Groningen station cell, against one axis and no switches a cell to the north. |
 | Rijkswaterstaat Weggegevens, PDOK OGC API | Surveyed lane counts and posted speed limits per section of the state road network, which is the measured answer to a width this client derives from a road's class: 8 sections and 8.9 KB over an A28 cell, each carrying a lane description such as 2 -> 2 and a limit with the hours it applies. |
 | Kadaster BRT geografische namen, PDOK OGC API | The official name register — settlements, districts, water bodies and named buildings, each with geometry and a type — which is what could be named above street level, where the street labels stop and nothing is written on the map at all: 11 names in 4.7 KB over a Groningen cell. |
 | RDW national parking register, opendata.rdw.nl SODA API | Parking garages as places with a known size rather than buildings like any other: position, capacity, height limit and charging points, 237 garages nationally in one 72 KB request, with a second table giving capacity per on-street parking area. |

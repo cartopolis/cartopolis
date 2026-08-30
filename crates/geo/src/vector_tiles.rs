@@ -3969,6 +3969,34 @@ pub fn body_mentions_water(body: &[u8]) -> bool {
         .any(|name| contains_bytes(body, name.as_bytes()))
 }
 
+/// The `streets` `kind` values that are track rather than road. Every one of
+/// them contains `rail` except `tram`, which is why [`body_mentions_rail`] tests
+/// for two needles and not four.
+const RAIL_HINTS: [&str; 2] = ["rail", "tram"];
+
+/// Does this **undecoded** tile body mention a railway at all?
+///
+/// [`body_mentions_water`]'s sibling, for [`crate::crossings`], and it carries
+/// the same asymmetry with one difference worth stating: water is a **layer
+/// name**, while rail is a `kind` **value** inside `streets`. Both are stored
+/// verbatim as UTF-8 in the body — a layer in its name table, a value in its
+/// value table — so a false negative is impossible either way: a tile holding a
+/// `kind = rail` street cannot fail to contain the bytes `rail`.
+///
+/// The false *positives* differ, and are wider here. `light_rail` contains
+/// `rail`, which is wanted; a street **named** "Railroad Avenue", a POI called
+/// "Tramhalte" or an attribute key nobody here reads all match too, and are not.
+/// Each of those costs one request that comes back with no crossings in it —
+/// which is the trade this predicate exists to make, and the right way round: a
+/// missed railway would silently empty a layer, and a spare request over a street
+/// with `tram` in its name would not.
+#[must_use]
+pub fn body_mentions_rail(body: &[u8]) -> bool {
+    RAIL_HINTS
+        .iter()
+        .any(|name| contains_bytes(body, name.as_bytes()))
+}
+
 /// Naive substring search. The bodies are at most [`MAX_TILE_BYTES`] and the
 /// needles are three short distinctive words, so this is a few hundred
 /// microseconds and needs no dependency.
@@ -4324,6 +4352,43 @@ pub(crate) mod synth {
         layer(name, extent, &[feature])
     }
 
+    /// [`line_layer`] with one string tag on the feature — the shape a
+    /// Shortbread `streets` feature really has, where the discriminator is a
+    /// `kind` **value** in the layer's value table rather than the layer's own
+    /// name. [`super::body_mentions_rail`] is the reader that cares.
+    pub fn tagged_line_layer(
+        name: &str,
+        extent: u32,
+        (key, value): (&str, &str),
+        points: &[(i32, i32)],
+    ) -> Vec<u8> {
+        let mut geometry = varint(9);
+        let (mut cx, mut cy) = (0, 0);
+        for (i, &(x, y)) in points.iter().enumerate() {
+            if i == 1 {
+                geometry.extend(varint(((points.len() as u64 - 1) << 3) | 2));
+            }
+            geometry.extend(varint(zigzag(x - cx)));
+            geometry.extend(varint(zigzag(y - cy)));
+            (cx, cy) = (x, y);
+        }
+        let mut feature = varint_field(3, 2); // type = LINESTRING
+                                              // tags: [key index 0, value index 0], packed.
+        let mut tags = varint(0);
+        tags.extend(varint(0));
+        feature.extend(bytes_field(2, &tags));
+        feature.extend(bytes_field(4, &geometry));
+
+        let mut out = bytes_field(1, name.as_bytes());
+        out.extend(bytes_field(2, &feature));
+        out.extend(bytes_field(3, key.as_bytes()));
+        // A `Value` message with its `string_value` (field 1) set.
+        out.extend(bytes_field(4, &bytes_field(1, value.as_bytes())));
+        out.extend(varint_field(5, u64::from(extent)));
+        out.extend(varint_field(15, 2));
+        out
+    }
+
     /// A layer out of already-encoded features.
     pub fn layer(name: &str, extent: u32, features: &[Vec<u8>]) -> Vec<u8> {
         let mut out = bytes_field(1, name.as_bytes());
@@ -4523,6 +4588,56 @@ mod tests {
         assert!(
             !body_mentions_water(&dry),
             "a body with no water layer must not be probed as wet"
+        );
+    }
+
+    /// The rail pre-filter `systems::crossings` skips a network request on.
+    ///
+    /// The direction that must never be wrong is the negative one, and it is
+    /// harder to be sure of here than for water: rail is a `kind` **value**
+    /// rather than a layer name, so this builds a tile whose *only* mention of a
+    /// railway is that value — no layer called anything rail-ish, no other tag —
+    /// and checks the probe still finds it. A body with an ordinary street in it
+    /// and nothing else must answer no, or the layer would fetch the register
+    /// over the whole planet.
+    #[test]
+    fn the_rail_probe_reads_a_kind_value_in_an_undecoded_body() {
+        let railway = synth::tile(&[synth::tagged_line_layer(
+            "streets",
+            4096,
+            ("kind", "rail"),
+            &[(100, 100), (900, 900)],
+        )]);
+        assert!(
+            TileData::parse(&railway)
+                .expect("the railway tile parses")
+                .layer("streets")
+                .is_some(),
+            "the synthetic tile is a tile"
+        );
+        assert!(
+            body_mentions_rail(&railway),
+            "a kind = rail street must never be probed as railless"
+        );
+        // …and the same for a tram, which is the one rail kind whose name does
+        // not contain `rail` and so needs a needle of its own.
+        let tramway = synth::tile(&[synth::tagged_line_layer(
+            "streets",
+            4096,
+            ("kind", "tram"),
+            &[(100, 100), (900, 900)],
+        )]);
+        assert!(body_mentions_rail(&tramway), "a tram is track too");
+
+        let roads = synth::tile(&[synth::tagged_line_layer(
+            "streets",
+            4096,
+            ("kind", "residential"),
+            &[(100, 100), (900, 900)],
+        )]);
+        assert!(
+            !body_mentions_rail(&roads),
+            "a body with no railway in it must not be probed as railed"
         );
     }
 
