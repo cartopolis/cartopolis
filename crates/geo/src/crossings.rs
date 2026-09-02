@@ -497,16 +497,24 @@ mod tests {
         }
     }
 
-    /// Where one installation's mast centre and boom tip sit across the road, in
-    /// metres from the crossing point — **read back off the meshed geometry**,
+    /// How far out one installation's mast stands from the crossing point, and
+    /// how long its bar is — both metres, **read back off the meshed geometry**,
     /// not recomputed, so this measures what is drawn rather than what
     /// `push_crossing` was asked for.
     ///
     /// At `yaw = 0` the object frame is the world frame, so local +x is across
     /// the road and local +z is along it. The two installations stand at
-    /// `±clearance` along, so `z > 0` selects one of them; within it the mast is
-    /// the only box reaching the ground (`y < 0.5`) and the boom the only one
-    /// around [`BOOM_Y`]. Boom tip is `None` for a form that has no boom.
+    /// `±clearance` along, so `z > 0` selects one of them, the `+x` one; within
+    /// it the mast is the only box reaching the ground (`y < 0.5`), and its
+    /// outer face gives the mast centre.
+    ///
+    /// The bar stands **raised**, so its length is a height, not a tip: the
+    /// bands stack in y from [`BOOM_Y`] up, at a fixed x beside the mast, and
+    /// the length is the top of that stack above `BOOM_Y`. The bar's inner face
+    /// is the most inboard geometry an installation has — 0.37 m in from the
+    /// mast centre, against the lamp head's 0.30 m and the mast's own 0.11 m —
+    /// so one x test picks the bands out without having to know which vertices
+    /// belong to which box, and answers `None` for a form that has no boom.
     fn across(crossing: &LevelCrossing) -> (f32, Option<f32>) {
         assert_eq!(crossing.yaw, 0.0, "the frame this reads in");
         let meshes = build_crossing_meshes(std::slice::from_ref(crossing), None);
@@ -522,12 +530,16 @@ mod tests {
             .map(|p| p[0])
             .fold(f32::MIN, f32::max)
             - MAST_HALF_W;
-        let tip = mine
+        // The 1 cm sits well inside the 7 cm between the bar's inner face and
+        // the lamp head's, so it separates them without being a knife edge.
+        let bar_face = mast - (MAST_HALF_W + 2.0 * BOOM_HALF_FACE) + 0.01;
+        let reach = mine
             .iter()
-            .filter(|p| p[1] > 0.5 && p[1] < 1.5)
-            .map(|p| p[0])
-            .reduce(f32::min);
-        (mast, tip)
+            .filter(|p| p[0] < bar_face)
+            .map(|p| p[1])
+            .reduce(f32::max)
+            .map(|top| top - BOOM_Y);
+        (mast, reach)
     }
 
     /// The table's rule, and the acceptance test for it: a code nobody wrote a
@@ -756,8 +768,11 @@ mod tests {
             CrossingKind::MiniBarrier,
             CrossingKind::FullBarrier,
         ] {
-            let (mast_h, road_half, reach) = kind.spec();
-            let reach = reach.expect("a barrier form has a boom");
+            let (mast_h, road_half) = kind.spec();
+            // The reach `push_crossing` derives, on its own terms
+            // (`crossings.rs:394-397`): a multiple of the half-carriageway, plus
+            // the verge the mast stands back by.
+            let reach = kind.boom_span().expect("a barrier form has a boom") * road_half + VERGE_M;
             let c = crossing(kind, 2);
             // Yaw 0, so the object's local x is the world's: `push_box`'s
             // rotation is the identity and the across-road axis is `x - c.x`.
@@ -786,7 +801,7 @@ mod tests {
             // The bar stands flush beside its mast, never inside it. Measured on
             // the +side installation, where inboard is −x: the mast's inner face
             // against the bar's outer face.
-            let mx = road_half + 0.5;
+            let mx = road_half + VERGE_M;
             let mast_inner = mx - MAST_HALF_W;
             let bar_outer = (mx - (MAST_HALF_W + BOOM_HALF_FACE)) + BOOM_HALF_FACE;
             assert!(
@@ -810,8 +825,8 @@ mod tests {
     /// makes "the mesh reaches `BOOM_Y + reach`" a statement about the boom.
     #[test]
     fn a_lights_crossing_is_two_masts_and_two_lamps() {
-        let (mast_h, road_half, boom) = CrossingKind::Lights.spec();
-        assert!(boom.is_none());
+        let (mast_h, road_half) = CrossingKind::Lights.spec();
+        assert!(CrossingKind::Lights.boom_span().is_none());
         let c = crossing(CrossingKind::Lights, 2);
         let meshes = build_crossing_meshes(&[c], None);
         // Four boxes, 24 vertices each — no boom bands.
@@ -828,7 +843,7 @@ mod tests {
         // Across the road, the lamp head's 0.30 m half-width off the mast at
         // `road_half + 0.5`; up, the top of that head; along, the clearance plus
         // the mast's own half-width.
-        let across = road_half + 0.5 + 0.30;
+        let across = road_half + VERGE_M + 0.30;
         let along = clearance_m(2) + MAST_HALF_W;
         for (got, want) in [
             (lo[0], c.x - across),
@@ -901,14 +916,17 @@ mod tests {
             yaw: 0.0,
             ..placed[0]
         };
-        let (mast, tip) = across(&crossing);
+        let (mast, reach) = across(&crossing);
         assert!(
             (mast - 6.0).abs() < 1e-3,
             "the mast should stand 0.5 m outside an 11 m road's kerb, got {mast}"
         );
+        // A half barrier bars the entry half, so the bar is as long as the mast
+        // stands out: lowered, its tip would meet the centreline.
         assert!(
-            tip.expect("a half barrier has a boom").abs() < 1e-3,
-            "the boom tip should land on the centreline, got {tip:?}"
+            (reach.expect("a half barrier has a boom") - 6.0).abs() < 1e-3,
+            "the bar should be 6.0 m long, so it meets the centreline when \
+             lowered, got {reach:?}"
         );
     }
 
@@ -932,7 +950,7 @@ mod tests {
             }],
         );
         assert_eq!(placed[0].road_half, Some(1.1), "cycleway is 2.2 m wide");
-        let (mast, tip) = across(&LevelCrossing {
+        let (mast, reach) = across(&LevelCrossing {
             yaw: 0.0,
             ..placed[0]
         });
@@ -940,23 +958,28 @@ mod tests {
             (mast - 1.6).abs() < 1e-3,
             "the mini form should get narrower, not just the big forms wider: {mast}"
         );
-        assert!(tip.expect("a boom").abs() < 1e-3, "{tip:?}");
+        assert!(
+            (reach.expect("a boom") - 1.6).abs() < 1e-3,
+            "the bar should shrink with the mast, to 1.6 m: {reach:?}"
+        );
     }
 
-    /// A full barrier bars the **whole** road, so its tip lands on the far kerb
-    /// rather than on the centreline — the one form whose reach is not the same
-    /// multiple of the half-width.
+    /// A full barrier bars the **whole** road, so its bar is long enough to
+    /// reach the far kerb rather than the centreline — the one form whose reach
+    /// is not the same multiple of the half-width.
     #[test]
     fn a_full_barrier_reaches_the_far_kerb() {
         let crossing = LevelCrossing {
             road_half: Some(5.5),
             ..crossing(CrossingKind::FullBarrier, 1)
         };
-        let (mast, tip) = across(&crossing);
+        let (mast, reach) = across(&crossing);
         assert!((mast - 6.0).abs() < 1e-3, "{mast}");
+        // 2 × 5.5 + the verge: from a mast 6.0 m out, that is the far kerb at
+        // −5.5 m once the bar is lowered.
         assert!(
-            (tip.expect("a boom") + 5.5).abs() < 1e-3,
-            "the tip should reach the far kerb at -5.5 m, got {tip:?}"
+            (reach.expect("a boom") - 11.5).abs() < 1e-3,
+            "the bar should be 11.5 m long, enough to cross the whole road, got {reach:?}"
         );
     }
 
@@ -974,14 +997,14 @@ mod tests {
             (CrossingKind::FullBarrier, 4.0, Some(7.5)),
             (CrossingKind::Lights, 4.0, None),
         ] {
-            let (mast, tip) = across(&crossing(kind, 1));
+            let (mast, drawn) = across(&crossing(kind, 1));
             assert!((mast - mast_x).abs() < 1e-3, "{kind:?}: mast at {mast}");
             match reach {
                 Some(r) => {
-                    let tip = tip.expect("a boom");
-                    assert!((tip - (mast_x - r)).abs() < 1e-3, "{kind:?}: tip at {tip}");
+                    let drawn = drawn.expect("a boom");
+                    assert!((drawn - r).abs() < 1e-3, "{kind:?}: bar {drawn} m long");
                 }
-                None => assert!(tip.is_none(), "{kind:?} should have no boom"),
+                None => assert!(drawn.is_none(), "{kind:?} should have no boom"),
             }
         }
     }
