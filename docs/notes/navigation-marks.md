@@ -112,6 +112,13 @@ body. A false positive costs one request; a false negative is impossible.
 The Furniture toggle is a third gate, applied by `map_geometry`: with the layer
 off, nothing is fetched at all.
 
+A fourth is about the *service* rather than the cell — a 3 s bound on each
+request and a per-service breaker with a minute's cooldown, because this fetch
+sits between the cell's tile and its tessellation worker and the register owns
+none of what waits behind it. It is shared with the level crossings and is
+written down once, in
+[optional-layers-on-the-critical-path.md](optional-layers-on-the-critical-path.md).
+
 ## Two rejected alternatives
 
 **A cartopy extractor.** The four other Dutch registers are extracted by

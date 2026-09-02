@@ -111,6 +111,12 @@ corners contains Brussels and Cologne, and each of those costs one empty request
 if a cell there has a railway in its tile. A gate tight enough to exclude them
 would clip Zeeland, which is the wrong trade in the wrong direction.
 
+There is a further gate that is about the *service* rather than the cell — a 3 s
+bound on the request and a per-service breaker with a minute's cooldown, because
+this fetch sits between the cell's tile and its tessellation worker. It is shared
+with the navigation marks and is written down once, in
+[optional-layers-on-the-critical-path.md](optional-layers-on-the-critical-path.md).
+
 ## The census, 2026-08-30
 
 `overweg_type` (3,917, 100% filled):

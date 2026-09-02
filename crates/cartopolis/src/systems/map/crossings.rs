@@ -38,6 +38,14 @@
 //!    group's mesh, its material and its altitude fade, so a run with furniture
 //!    off asks for nothing at all.
 //!
+//! A fourth is about the service rather than the cell, and is `nav_marks`'
+//! reasoning again: this fetch sits between the cell's tile body and its
+//! tessellation worker, so a slow `api.pdok.nl` costs the ground, the roads and
+//! the buildings rather than the barriers. The request carries
+//! [`http::OPTIONAL_LAYER_TIMEOUT`], and a failure trips [`CROSSINGS_BREAKER`] —
+//! a separate instance from the marks one, because the two registers are
+//! published by different bodies and only share a host.
+//!
 //! # Three things the register says that it does not mean
 //!
 //! All three are recorded in the note as well, because each one is invisible when
@@ -189,16 +197,36 @@ pub fn covers(cx: i64, cy: i64) -> bool {
         && north >= CROSSINGS_LAT.0
 }
 
-/// Both of the gates this module owns, as one predicate: is this cell worth a
-/// request at all?
+/// The cell's own two gates: could this cell hold a registered crossing?
 ///
-/// Split out of [`load_crossings_cell`] so the rule can be asserted without a
-/// runtime and without reaching the network — which is the only way to test "no
-/// request was issued". The third gate, the Furniture toggle, belongs to the
-/// caller.
-fn should_fetch(cx: i64, cy: i64, tile_has_rail: bool) -> bool {
+/// True of the cell forever, so this is also what decides whether the cache is
+/// consulted at all — a foreign or railless cell must cost neither a request nor
+/// a storage lookup.
+fn cell_may_hold_crossings(cx: i64, cy: i64, tile_has_rail: bool) -> bool {
     covers(cx, cy) && tile_has_rail
 }
+
+/// Every gate this module owns, as one predicate: is this cell worth a
+/// *request*?
+///
+/// The cell's own two, plus the service's outage gate. Split out of
+/// [`load_crossings_cell`] so the rule can be asserted without a runtime and
+/// without reaching the network — which is the only way to test "no request was
+/// issued"; `breaker` and `now` are injected for the same reason. The remaining
+/// gate, the Furniture toggle, belongs to the caller.
+fn should_fetch(
+    cx: i64,
+    cy: i64,
+    tile_has_rail: bool,
+    breaker: &http::Breaker,
+    now: web_time::Instant,
+) -> bool {
+    cell_may_hold_crossings(cx, cy, tile_has_rail) && !breaker.is_open_at(now)
+}
+
+/// ProRail's crossings service, held off for a minute after it fails. Its own
+/// instance: RWS's marks service sits behind the same host and fails separately.
+pub(crate) static CROSSINGS_BREAKER: http::Breaker = http::Breaker::new();
 
 fn cache_key(cx: i64, cy: i64) -> String {
     format!("features/crossings/v1/{CROSSING_ZOOM}/{cx}/{cy}.json")
@@ -285,21 +313,40 @@ pub fn parse_items(text: &str) -> Result<Vec<(f64, f64, CrossingKind, u8)>, Stri
 /// and an empty answer all produce the same empty cell, which is the bare
 /// railway this client already drew.
 pub(crate) async fn load_crossings_cell(cx: i64, cy: i64, tile_has_rail: bool) -> CrossingCell {
-    if !should_fetch(cx, cy, tile_has_rail) {
+    if !cell_may_hold_crossings(cx, cy, tile_has_rail) {
         return CrossingCell::default();
     }
     let key = cache_key(cx, cy);
+    // The cache is read before the breaker is consulted, not after: a cell whose
+    // crossings are already on disk costs the service nothing, and an outage
+    // must not blank cells that were complete before it started.
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return decode_cell(&cached).unwrap_or_default();
     }
+    if !should_fetch(
+        cx,
+        cy,
+        tile_has_rail,
+        &CROSSINGS_BREAKER,
+        web_time::Instant::now(),
+    ) {
+        return CrossingCell::default();
+    }
 
-    let Ok(text) = http::fetch_string(http::Request::get(items_url(cx, cy))).await else {
+    // Nothing is written to the cache on a failed or unreadable answer: a
+    // poisoned key is never re-fetched, so an empty cell cached under one is
+    // worse than a cell that is asked for again. What *is* remembered is that
+    // the service failed, which is the breaker rather than the cache.
+    let request = http::Request::get(items_url(cx, cy)).timeout(http::OPTIONAL_LAYER_TIMEOUT);
+    let Ok(text) = http::fetch_string(request).await else {
+        CROSSINGS_BREAKER.trip();
         return CrossingCell::default();
     };
     let mut crossings = match parse_items(&text) {
         Ok(read) => read,
         Err(e) => {
             tracing::warn!(error = %e, "level crossings unreadable");
+            CROSSINGS_BREAKER.trip();
             return CrossingCell::default();
         }
     };
@@ -446,20 +493,73 @@ mod tests {
     /// returns the same empty cell either way.
     #[test]
     fn no_request_is_made_outside_the_envelope_or_off_the_rails() {
-        assert!(should_fetch(GRONINGEN_RAIL.0, GRONINGEN_RAIL.1, true));
+        let (breaker, now) = (http::Breaker::new(), web_time::Instant::now());
+        assert!(should_fetch(
+            GRONINGEN_RAIL.0,
+            GRONINGEN_RAIL.1,
+            true,
+            &breaker,
+            now
+        ));
         assert!(
-            !should_fetch(GRONINGEN_RAIL.0, GRONINGEN_RAIL.1, false),
+            !should_fetch(GRONINGEN_RAIL.0, GRONINGEN_RAIL.1, false, &breaker, now),
             "a cell with no railway in its tile must not be asked about"
         );
+        assert!(!cell_may_hold_crossings(
+            GRONINGEN_RAIL.0,
+            GRONINGEN_RAIL.1,
+            false
+        ));
         // Rome, Reykjavík and a point in the Atlantic — all outside the
         // register's envelope, so a railway in the tile buys them nothing.
         for (lat, lng) in [(41.9, 12.5), (64.1, -21.9), (30.0, -40.0)] {
             let (cx, cy) = cartopolis_core::world::lat_lng_to_tile(lat, lng, CROSSING_ZOOM);
             assert!(
-                !should_fetch(cx, cy, true),
+                !should_fetch(cx, cy, true, &breaker, now),
                 "{lat},{lng} is not in the Dutch rail register"
             );
         }
+    }
+
+    /// The gate the outage adds: a cell that would otherwise ask is refused for
+    /// a minute after the service failed, and asks again after it.
+    #[test]
+    fn a_failed_service_is_not_asked_again_until_the_cooldown_passes() {
+        let breaker = http::Breaker::new();
+        let now = web_time::Instant::now();
+        let (cx, cy) = GRONINGEN_RAIL;
+        assert!(should_fetch(cx, cy, true, &breaker, now));
+
+        breaker.trip_at(now);
+        assert!(
+            !should_fetch(cx, cy, true, &breaker, now),
+            "a cell was asked about while the service was known to be down"
+        );
+        assert!(should_fetch(
+            cx,
+            cy,
+            true,
+            &breaker,
+            now + http::BREAKER_COOLDOWN
+        ));
+    }
+
+    /// One breaker per service, not one per host. RWS publishes the navigation
+    /// marks and ProRail the crossings; they answer from the same `api.pdok.nl`
+    /// and can fail apart, so an outage on one must not blank the other.
+    ///
+    /// This is the one test that touches the two process-wide statics, which is
+    /// safe because nothing else in the suite reads them — every other assertion
+    /// injects a breaker of its own.
+    #[test]
+    fn one_registers_outage_does_not_gate_the_other() {
+        let now = web_time::Instant::now();
+        crate::systems::nav_marks::MARKS_BREAKER.trip_at(now);
+        assert!(crate::systems::nav_marks::MARKS_BREAKER.is_open_at(now));
+        assert!(
+            !CROSSINGS_BREAKER.is_open_at(now),
+            "the crossings service was held off by the marks service failing"
+        );
     }
 
     /// The envelope is the *register's*, not the collection document's — which
