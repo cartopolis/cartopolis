@@ -107,6 +107,37 @@ draw. Resuming is the same message with `active: true`, and the next tick's
 snapshot is the resynchronisation — there is no catch-up and no ack, because a
 snapshot is the whole state.
 
+## What it can hold across, and what it cannot
+
+**The connection survives the app being *stopped*. It does not survive the
+activity being *destroyed*, and it never could.**
+
+While the app is merely off screen the activity is retained, the process is
+retained with it, and the socket in `network.rs`'s own thread never notices —
+that is the ordinary case and the one the feature is for. Android may instead
+destroy the activity outright: under memory pressure, with the developer option
+"Don't keep activities", or when the back gesture writes `AppExit`
+(`lib.rs::handle_back_gesture`) and the glue answers by calling
+`ANativeActivity_finish`. In each of those the *process* used to stay, because
+this service was holding it up.
+
+That is worse than losing the connection, and it is what a user reported on
+2026-08-30 as "I click the notification and the app stays black".
+`ANativeActivity_onCreate` starts a **fresh `android_main` thread for every
+activity instance** (android-activity 0.6.1, `native_activity/glue.rs`), and
+`bevy::android::ANDROID_APP` is a `OnceLock` that `bevy_winit` clones straight
+into its event-loop builder. So the second entry silently kept the *dead* window
+handle, built its event loop on an activity that no longer existed, and was
+handed no window and no events. Nothing errored. The app was simply black, with
+the service still running and the notification still in the shade.
+
+`android_main` therefore ends the process when `run()` returns, and the
+once-per-process claim is now enforced rather than assumed
+(`crates/cartopolis_android/src/lib.rs`). Anything that wants the process to
+outlive its activity has to solve the window handle first; until then, a held
+connection is a thing that survives a screen going off, not a thing that
+survives Android reclaiming the activity.
+
 ## What is verified, and what is not
 
 Verified on the API 34 emulator (arm64 APK through `ndk-translation`) and by
@@ -114,6 +145,12 @@ Verified on the API 34 emulator (arm64 APK through `ndk-translation`) and by
 
 - the service starts, the notification is posted, and the process is no longer a
   cached one after the activity goes away;
+
+That emulator lane is **gone as of 2026-09-02** and none of it can be re-run
+there: the arm64 APK aborts in `ndk_translation` before a frame, and an x86_64
+build takes the emulator's own Vulkan process down at device creation. The
+black-screen fix above is therefore reasoned from android-activity's glue and
+bevy's window setup, and has **not** been watched working on a device.
 - an idle client is sent no snapshots and still receives chat;
 - coming back resumes snapshots;
 - a client that never mentions presence is treated as active.
