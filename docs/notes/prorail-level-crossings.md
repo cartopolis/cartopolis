@@ -195,9 +195,10 @@ Two constraints shaped it. **`WayFilter::All` still reads no tags**: that is the
 path every streamed cell's furniture takes, and it answers no width at all, which
 is why the width is per-filter rather than per-field. And **everything across the
 road is derived from that one half-width**: the mast stands `half + 0.5` from the
-centre, a half barrier's boom reaches back `half + 0.5` so its tip meets the
-centreline, and a full barrier's reaches `2 × half + 0.5` so its tip meets the far
-kerb.
+centre, a half barrier's bar is `half + 0.5` long, so it meets the centreline when
+lowered, and a full barrier's is `2 × half + 0.5`, so it meets the far kerb. These
+are bar *lengths*, not places a tip lands: the booms are drawn raised (see below),
+so that length stands up the mast rather than out over the road.
 
 The fallback, for a way with no `kind`, a kind `road_class` refuses, or a tunnel
 (`drawn_street` declines all three), is the form's old constant — so a tile with
