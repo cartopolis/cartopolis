@@ -377,6 +377,22 @@ impl WayFilter {
             Self::ExcludingRail => self.admits(tag_str(feature, "kind").unwrap_or_default()),
         }
     }
+
+    /// Half the carriageway this client *draws* for the feature, metres — the
+    /// second thing a filtered lookup can answer, beside the direction.
+    ///
+    /// Only for a filter that already reads the tags: `All` answers `None`
+    /// unconditionally, which is what keeps the rule above true. `None` also
+    /// means "the width is not known" —
+    /// [`drawn_street`](crate::vector_tiles::drawn_street) refuses a tunnel and
+    /// any kind with no road class, and both fall back exactly as an untagged
+    /// way does.
+    fn half_width(self, feature: &Feature) -> Option<f32> {
+        match self {
+            Self::All => None,
+            Self::ExcludingRail => crate::vector_tiles::drawn_street(feature).map(|(_, half)| half),
+        }
+    }
 }
 
 /// Every street, path and railway in the tile — or every one the [`WayFilter`]
@@ -393,6 +409,10 @@ impl WayFilter {
 /// [`TILE_BUFFER_FRAC`].
 pub(crate) struct WayField {
     segs: Vec<([f32; 2], [f32; 2])>,
+    /// Half the carriageway of the way each segment came off, metres, parallel
+    /// to [`Self::segs`]. `None` where the way's `kind` was never read (the
+    /// [`WayFilter::All`] path) or is not drawn as a carriageway at all.
+    halves: Vec<Option<f32>>,
     buckets: HashMap<(i32, i32), Vec<u32>>,
     /// The cell's ground size, which is what bounds the bucket grid — see
     /// [`bucket_range`](crate::scatter::bucket_range).
@@ -415,6 +435,7 @@ impl WayField {
     pub(crate) fn empty(tile_m: f32) -> Self {
         Self {
             segs: Vec::new(),
+            halves: Vec::new(),
             buckets: HashMap::new(),
             tile_m,
         }
@@ -445,6 +466,9 @@ impl WayField {
             if !filter.admits_feature(feature) {
                 continue;
             }
+            // Once per way too, and only on a filter that is already paying for
+            // the tags — see [`WayFilter::half_width`].
+            let half = filter.half_width(feature);
             let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
                 Geometry::LineString(ls) => vec![ls],
                 Geometry::MultiLineString(ml) => ml.iter().collect(),
@@ -465,6 +489,7 @@ impl WayField {
                     field.push(
                         [w[0].x * scale, w[0].y * scale],
                         [w[1].x * scale, w[1].y * scale],
+                        half,
                     );
                 }
             }
@@ -480,17 +505,24 @@ impl WayField {
         if !filter.admits(kind) {
             return;
         }
+        // The same width the tile-side path resolves, from the kind alone — a
+        // synthesised way carries no flags. `All` reads no kind, here as there.
+        let half = match filter {
+            WayFilter::All => None,
+            WayFilter::ExcludingRail => crate::vector_tiles::drawn_half_width(kind),
+        };
         for pair in points.windows(2) {
-            self.push(pair[0], pair[1]);
+            self.push(pair[0], pair[1], half);
         }
     }
 
-    fn push(&mut self, a: [f32; 2], b: [f32; 2]) {
+    fn push(&mut self, a: [f32; 2], b: [f32; 2], half: Option<f32>) {
         if (b[0] - a[0]).abs() < 1e-4 && (b[1] - a[1]).abs() < 1e-4 {
             return;
         }
         let idx = self.segs.len() as u32;
         self.segs.push((a, b));
+        self.halves.push(half);
         let (minx, maxx) = (a[0].min(b[0]), a[0].max(b[0]));
         let (minz, maxz) = (a[1].min(b[1]), a[1].max(b[1]));
         // Clamped to the tile's own grid, which is the backstop for the window
@@ -517,7 +549,7 @@ impl WayField {
     /// radius larger than [`Self::CELL`] still finds everything — a bench 20 m off
     /// a road is nearly a full cell away.
     fn facing(&self, x: f32, z: f32, max_r: f32) -> Option<f32> {
-        let (a, b) = self.nearest(x, z, max_r)?;
+        let (a, b) = self.segs[self.nearest(x, z, max_r)?];
         let (wx, wz) = (b[0] - a[0], b[1] - a[1]);
         // Which side of the way the object is on: the sign of the 2D cross product
         // of the way with the offset from it. Zero means the object sits *on* the
@@ -533,7 +565,8 @@ impl WayField {
     }
 
     /// The yaw that lays an object's local **+z along** the nearest way within
-    /// `max_r` metres, rather than across it. `None` if nothing is in range.
+    /// `max_r` metres, rather than across it, and the half-carriageway of that
+    /// same way. `None` if nothing is in range.
     ///
     /// A quarter turn from [`Self::facing`], and the difference is the whole
     /// point of having both: a bench turns to *look at* the path, and a level
@@ -541,17 +574,32 @@ impl WayField {
     /// unresolved — a way has a digitising direction and a road has no front —
     /// so this may answer either of the two opposite yaws. Every form built on it
     /// must therefore be symmetric under a half turn, which the crossings are.
-    pub(crate) fn direction(&self, x: f32, z: f32, max_r: f32) -> Option<f32> {
-        let (a, b) = self.nearest(x, z, max_r)?;
+    ///
+    /// One lookup answering both is deliberate: a level crossing is oriented
+    /// against a road and then has to be *sized* for it, and asking twice could
+    /// pick two different roads. The width is `None` whenever the field does not
+    /// know it — see [`WayFilter::half_width`] — and every caller must have a
+    /// fallback for that.
+    pub(crate) fn direction_and_width(
+        &self,
+        x: f32,
+        z: f32,
+        max_r: f32,
+    ) -> Option<(f32, Option<f32>)> {
+        let id = self.nearest(x, z, max_r)?;
+        let (a, b) = self.segs[id];
         let (wx, wz) = (b[0] - a[0], b[1] - a[1]);
-        Some(wx.atan2(wz))
+        Some((wx.atan2(wz), self.halves[id]))
     }
 
-    /// The endpoints of the nearest admitted segment within `max_r`.
+    /// The index of the nearest admitted segment within `max_r`.
+    ///
+    /// An index rather than the endpoints, because [`Self::halves`] is parallel
+    /// to [`Self::segs`] and a caller may want either or both.
     ///
     /// The search widens by whole grid cells until it has covered `max_r`, so a
     /// radius larger than [`Self::CELL`] still finds everything.
-    fn nearest(&self, x: f32, z: f32, max_r: f32) -> Option<([f32; 2], [f32; 2])> {
+    fn nearest(&self, x: f32, z: f32, max_r: f32) -> Option<usize> {
         let reach = (max_r / Self::CELL).ceil() as i32;
         let (cx, cz) = (
             (x / Self::CELL).floor() as i32,
@@ -573,7 +621,7 @@ impl WayField {
             }
         }
         let (d2, id) = best?;
-        (d2 <= max_r * max_r).then(|| self.segs[id])
+        (d2 <= max_r * max_r).then_some(id)
     }
 }
 
@@ -1330,12 +1378,8 @@ mod tests {
         // One way running east along z = 0. A bench two metres south of it must
         // look north, and one two metres north of it must look south — in both
         // cases with its long axis running east–west, along the way.
-        let mut ways = WayField {
-            segs: Vec::new(),
-            buckets: HashMap::new(),
-            tile_m: 200.0,
-        };
-        ways.push([0.0, 0.0], [100.0, 0.0]);
+        let mut ways = WayField::empty(200.0);
+        ways.push([0.0, 0.0], [100.0, 0.0], None);
 
         let south = ways.facing(50.0, 2.0, ORIENT_RADIUS_M).expect("a path");
         let (front, axis) = frame(south);
@@ -1354,14 +1398,10 @@ mod tests {
         // street direction points its long axis at the kerb. Whatever the way's
         // bearing, the front must come out perpendicular to it.
         for (dx, dz) in [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (-3.0, 1.0), (2.0, -5.0)] {
-            let mut ways = WayField {
-                segs: Vec::new(),
-                buckets: HashMap::new(),
-                // Wide enough that the grid clamp cannot reach the ±150 m
-                // segments below; this test is about angles, not bounds.
-                tile_m: 600.0,
-            };
-            ways.push([-dx * 50.0, -dz * 50.0], [dx * 50.0, dz * 50.0]);
+            // Wide enough that the grid clamp cannot reach the ±150 m
+            // segments below; this test is about angles, not bounds.
+            let mut ways = WayField::empty(600.0);
+            ways.push([-dx * 50.0, -dz * 50.0], [dx * 50.0, dz * 50.0], None);
             let yaw = ways.facing(3.0, 3.0, ORIENT_RADIUS_M).expect("a path");
             let (front, _) = frame(yaw);
             let len = (dx * dx + dz * dz).sqrt();
@@ -1399,6 +1439,41 @@ mod tests {
         );
     }
 
+    /// The field carries a half-carriageway per segment, and **only for a filter
+    /// that was already reading the tags**.
+    ///
+    /// `All` is the furniture's path over every streamed cell and must keep
+    /// costing no tag lookup per way, which is the rule stated on
+    /// [`WayFilter::admits_feature`]. So it answers no width at all, and
+    /// `crossings` — the one caller that wants one — is also the one already
+    /// paying for the `kind`.
+    #[test]
+    fn only_a_filtered_field_carries_a_width() {
+        let bytes = synth::tile(&[synth::tagged_line_layer(
+            "streets",
+            4096,
+            ("kind", "secondary"),
+            &[(0, 2048), (4095, 2048)],
+        )]);
+        let tile = TileData::parse(&bytes).expect("parse");
+
+        let filtered = WayField::build_with(&tile, 400.0, WayFilter::ExcludingRail);
+        assert_eq!(
+            filtered.direction_and_width(200.0, 200.0, 30.0),
+            Some((std::f32::consts::FRAC_PI_2, Some(5.5))),
+            "a secondary road is 11 m wide, so half of it is 5.5"
+        );
+
+        let unfiltered = WayField::build_with(&tile, 400.0, WayFilter::All);
+        assert_eq!(
+            unfiltered
+                .direction_and_width(200.0, 200.0, 30.0)
+                .map(|(_, half)| half),
+            Some(None),
+            "the unfiltered field read a kind tag it must not pay for"
+        );
+    }
+
     /// One wild endpoint has to be enough to drop a segment.
     ///
     /// `mvt-reader` clips its coordinate cursor at `i32::MAX` and never to the
@@ -1421,12 +1496,8 @@ mod tests {
         // …and the grid clamp bounds `push` even if a segment ever gets past the
         // window, which is the half that makes this a guarantee rather than a
         // filter that has to be complete.
-        let mut field = WayField {
-            segs: Vec::new(),
-            buckets: HashMap::new(),
-            tile_m: TILE_M,
-        };
-        field.push([0.0, 0.0], [2.1e9, 2.1e9]);
+        let mut field = WayField::empty(TILE_M);
+        field.push([0.0, 0.0], [2.1e9, 2.1e9], None);
         assert!(
             field.buckets.len() < 20_000,
             "{} buckets from one segment",

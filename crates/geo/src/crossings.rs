@@ -101,6 +101,11 @@ const BOOM_BANDS: usize = 3;
 /// Height of the boom above the road, metres — where a raised boom's pivot sits.
 const BOOM_Y: f32 = 1.05;
 
+/// How far outside the kerb a mast stands, metres. Just clear of the
+/// carriageway, so a boom sweeps over the road rather than a mast standing in
+/// it.
+const VERGE_M: f32 = 0.5;
+
 const MAST_HALF_W: f32 = 0.11;
 const BOOM_HALF_H: f32 = 0.13;
 const BOOM_HALF_T: f32 = 0.08;
@@ -190,19 +195,43 @@ pub fn crossing_kind(overweg_type: &str) -> Option<CrossingKind> {
 }
 
 impl CrossingKind {
-    /// Mast height, half the carriageway the installation stands beside, and the
-    /// boom's reach — all metres, `None` for a form with no boom.
+    /// Mast height, and the half-carriageway to size the installation for when
+    /// the road's own width is not known — both metres.
     ///
     /// Measured rather than stylised, on the terms
     /// [`furniture::parts`](crate::furniture::parts) states: a boom really does
     /// sit about a metre off the road, and a crossing built at a doll's-house
     /// scale is worse than none.
-    const fn spec(self) -> (f32, f32, Option<f32>) {
+    ///
+    /// The **height** belongs to the form and stays here: a mini installation on
+    /// a wide road is still a mini installation. The **width** does not — it is
+    /// the road's, and [`LevelCrossing::road_half`] carries the real one off the
+    /// same tile segment the yaw came from. What is left here is the fallback,
+    /// which is what these numbers always were: 3.5 m describes a 7 m road, i.e.
+    /// a residential street, for every `AHOB`, `HAHOB`, `AOB` and lights
+    /// installation in the country.
+    const fn spec(self) -> (f32, f32) {
         match self {
-            Self::HalfBarrier => (3.1, 3.5, Some(4.0)),
-            Self::MiniBarrier => (2.4, 1.6, Some(2.1)),
-            Self::FullBarrier => (3.1, 3.5, Some(7.6)),
-            Self::Lights => (3.1, 3.5, None),
+            Self::HalfBarrier | Self::FullBarrier | Self::Lights => (3.1, 3.5),
+            Self::MiniBarrier => (2.4, 1.6),
+        }
+    }
+
+    /// How far a boom reaches back across the road from its mast, as a multiple
+    /// of the half-carriageway. `None` for a form with no boom.
+    ///
+    /// A multiple rather than a length, because the number that matters is where
+    /// the **tip** lands: a half barrier bars the entry half, so its tip meets
+    /// the centreline (`1.0` × half, plus the [`VERGE_M`] the mast stands back
+    /// by); a full barrier bars the whole width, so its tip reaches the far kerb
+    /// (`2.0` ×). At the fallback half-width that is 4.0 m and 2.1 m unchanged,
+    /// and 7.5 m for the full barrier against a tabulated 7.6 — the 10 cm is the
+    /// accepted cost of deriving the number instead of writing it down.
+    const fn boom_span(self) -> Option<f32> {
+        match self {
+            Self::HalfBarrier | Self::MiniBarrier => Some(1.0),
+            Self::FullBarrier => Some(2.0),
+            Self::Lights => None,
         }
     }
 }
@@ -235,6 +264,14 @@ pub struct LevelCrossing {
     pub yaw: f32,
     pub kind: CrossingKind,
     pub tracks: u8,
+    /// Half the carriageway of the road the yaw came from, metres — the same
+    /// tile segment, resolved in one lookup so the two cannot disagree.
+    ///
+    /// `None` when the field could not answer (the way carries no `kind`, or
+    /// its kind is not drawn as a carriageway), and then the form's own fallback
+    /// in [`CrossingKind::spec`] is used, which is what every crossing used
+    /// before this was carried.
+    pub road_half: Option<f32>,
 }
 
 /// Turn the cell's register points into oriented crossings, using the tile's own
@@ -251,6 +288,11 @@ pub struct LevelCrossing {
 /// is a real loss — a service crossing over a farm track OSM does not carry goes
 /// undrawn — and it is the honest one: the alternative is an installation at an
 /// angle nothing measured.
+///
+/// The same lookup answers how *wide* that road is, and it has to be the same
+/// one: asking a second time could pick a different way, and a crossing sized
+/// for one road and turned to another is worse than either mistake alone. See
+/// [`LevelCrossing::road_half`].
 #[must_use]
 pub fn place_crossings(
     tile: &TileData,
@@ -270,13 +312,14 @@ fn place_crossings_against(roads: &WayField, points: &[CrossingPoint]) -> Vec<Le
         .iter()
         .filter_map(|p| {
             roads
-                .direction(p.x, p.z, ORIENT_RADIUS_M)
-                .map(|yaw| LevelCrossing {
+                .direction_and_width(p.x, p.z, ORIENT_RADIUS_M)
+                .map(|(yaw, road_half)| LevelCrossing {
                     x: p.x,
                     z: p.z,
                     yaw,
                     kind: p.kind,
                     tracks: p.tracks,
+                    road_half,
                 })
         })
         .collect()
@@ -332,12 +375,19 @@ fn clearance_m(tracks: u8) -> f32 {
 }
 
 fn push_crossing(buf: &mut MeshBuf, crossing: &LevelCrossing) {
-    let (mast_h, road_half, boom) = crossing.kind.spec();
+    let (mast_h, fallback_half) = crossing.kind.spec();
+    // The road's own half-width where the tile gave one, the form's fallback
+    // where it did not. Everything across the road is derived from this one
+    // number, so a mast on the verge and a boom that reaches the centreline
+    // cannot come apart.
+    let road_half = crossing.road_half.unwrap_or(fallback_half);
     let clearance = clearance_m(crossing.tracks);
     let (sn, cs) = crossing.yaw.sin_cos();
-    // Just outside the carriageway, so a boom sweeps over the road rather than a
-    // mast standing in it.
-    let mast_x = road_half + 0.5;
+    let mast_x = road_half + VERGE_M;
+    let boom = crossing
+        .kind
+        .boom_span()
+        .map(|span| span * road_half + VERGE_M);
 
     // Two installations, one on each approach, on opposite sides of the road —
     // which is how a half barrier really stands, each boom covering the half its
@@ -427,7 +477,41 @@ mod tests {
             yaw: 0.0,
             kind,
             tracks,
+            road_half: None,
         }
+    }
+
+    /// Where one installation's mast centre and boom tip sit across the road, in
+    /// metres from the crossing point — **read back off the meshed geometry**,
+    /// not recomputed, so this measures what is drawn rather than what
+    /// `push_crossing` was asked for.
+    ///
+    /// At `yaw = 0` the object frame is the world frame, so local +x is across
+    /// the road and local +z is along it. The two installations stand at
+    /// `±clearance` along, so `z > 0` selects one of them; within it the mast is
+    /// the only box reaching the ground (`y < 0.5`) and the boom the only one
+    /// around [`BOOM_Y`]. Boom tip is `None` for a form that has no boom.
+    fn across(crossing: &LevelCrossing) -> (f32, Option<f32>) {
+        assert_eq!(crossing.yaw, 0.0, "the frame this reads in");
+        let meshes = build_crossing_meshes(std::slice::from_ref(crossing), None);
+        let mine: Vec<[f32; 3]> = meshes[0]
+            .positions
+            .iter()
+            .filter(|p| p[2] - crossing.z > 0.0)
+            .map(|p| [p[0] - crossing.x, p[1], p[2] - crossing.z])
+            .collect();
+        let mast = mine
+            .iter()
+            .filter(|p| p[1] < 0.5)
+            .map(|p| p[0])
+            .fold(f32::MIN, f32::max)
+            - MAST_HALF_W;
+        let tip = mine
+            .iter()
+            .filter(|p| p[1] > 0.5 && p[1] < 1.5)
+            .map(|p| p[0])
+            .reduce(f32::min);
+        (mast, tip)
     }
 
     /// The table's rule, and the acceptance test for it: a code nobody wrote a
@@ -520,7 +604,9 @@ mod tests {
             "residential",
             &[[200.0, 0.0], [200.0, 400.0]],
         );
-        let yaw = field.direction(200.0, 100.0, ORIENT_RADIUS_M).unwrap();
+        let (yaw, _) = field
+            .direction_and_width(200.0, 100.0, ORIENT_RADIUS_M)
+            .unwrap();
         assert!(
             yaw.sin().abs() > 0.99,
             "expected the east–west track, got yaw {yaw}"
@@ -600,13 +686,15 @@ mod tests {
         let tile = TileData::parse(&rail_only).expect("the tile parses");
         let excluding = WayField::build_with(&tile, 400.0, WayFilter::ExcludingRail);
         assert!(
-            excluding.direction(200.0, 100.0, ORIENT_RADIUS_M).is_none(),
+            excluding
+                .direction_and_width(200.0, 100.0, ORIENT_RADIUS_M)
+                .is_none(),
             "the rail was indexed despite the filter"
         );
         let everything = WayField::build_with(&tile, 400.0, WayFilter::All);
         assert!(
             everything
-                .direction(200.0, 100.0, ORIENT_RADIUS_M)
+                .direction_and_width(200.0, 100.0, ORIENT_RADIUS_M)
                 .is_some(),
             "the unfiltered field lost the way too, so this proves nothing"
         );
@@ -619,8 +707,8 @@ mod tests {
     /// two barrier forms with wildly different tallies mesh identically.
     #[test]
     fn the_boom_count_comes_from_the_form_not_the_register() {
-        assert!(CrossingKind::HalfBarrier.spec().2.is_some());
-        assert!(CrossingKind::Lights.spec().2.is_none());
+        assert!(CrossingKind::HalfBarrier.boom_span().is_some());
+        assert!(CrossingKind::Lights.boom_span().is_none());
         // Same form, same geometry — there is no per-instance boom count to vary.
         let a = build_crossing_meshes(&[crossing(CrossingKind::HalfBarrier, 1)], None);
         let b = build_crossing_meshes(&[crossing(CrossingKind::HalfBarrier, 1)], None);
@@ -639,6 +727,163 @@ mod tests {
         assert!(clearance_m(2) > clearance_m(1));
         assert_eq!(clearance_m(u8::MAX), clearance_m(MAX_TRACKS as u8));
         assert!(clearance_m(MAX_TRACKS as u8) < 40.0);
+    }
+
+    /// The whole point of the change: a crossing takes its width off the road it
+    /// bars, through the path production takes.
+    ///
+    /// The Peizerweg is OSM `highway = secondary`, which `road_width_m` answers
+    /// 11.0 m for — the ribbon this client actually draws. Sized for the old
+    /// tabulated 7 m road, both masts stood ~1.5 m inside the kerb and each boom
+    /// covered under half the carriageway.
+    ///
+    /// Driven through `synth` + `WayField::build_with` rather than through
+    /// `push_line`, so a build that never reads the tags is caught here as
+    /// `the_tile_side_filter_reads_the_kind_tag` catches it for the filter.
+    #[test]
+    fn a_wide_road_gets_a_wide_crossing() {
+        use crate::vector_tiles::synth;
+
+        // One `secondary` road running north–south down the middle of a 400 m
+        // cell, and the crossing point on it.
+        let tile = TileData::parse(&synth::tile(&[synth::tagged_line_layer(
+            "streets",
+            4096,
+            ("kind", "secondary"),
+            &[(2048, 0), (2048, 4095)],
+        )]))
+        .expect("the tile parses");
+        let roads = WayField::build_with(&tile, 400.0, WayFilter::ExcludingRail);
+        let placed = place_crossings_against(
+            &roads,
+            &[CrossingPoint {
+                x: 200.0,
+                z: 100.0,
+                kind: CrossingKind::HalfBarrier,
+                tracks: 1,
+            }],
+        );
+        assert_eq!(placed.len(), 1);
+        assert_eq!(
+            placed[0].road_half,
+            Some(5.5),
+            "the width did not come off the tile"
+        );
+
+        // `place_crossings` leaves the yaw sign unresolved, and `across` reads
+        // in the object frame, so normalise to yaw 0 — the geometry is the same
+        // under a half turn by construction.
+        let crossing = LevelCrossing {
+            yaw: 0.0,
+            ..placed[0]
+        };
+        let (mast, tip) = across(&crossing);
+        assert!(
+            (mast - 6.0).abs() < 1e-3,
+            "the mast should stand 0.5 m outside an 11 m road's kerb, got {mast}"
+        );
+        assert!(
+            tip.expect("a half barrier has a boom").abs() < 1e-3,
+            "the boom tip should land on the centreline, got {tip:?}"
+        );
+    }
+
+    /// The same derivation the other way round: the commonest small form was
+    /// sized for a 3.2 m path and stands on cycleways two metres wide.
+    #[test]
+    fn a_narrow_road_gets_a_narrow_crossing() {
+        let mut field = WayField::empty(400.0);
+        field.push_line(
+            WayFilter::ExcludingRail,
+            "cycleway",
+            &[[200.0, 0.0], [200.0, 400.0]],
+        );
+        let placed = place_crossings_against(
+            &field,
+            &[CrossingPoint {
+                x: 200.0,
+                z: 100.0,
+                kind: CrossingKind::MiniBarrier,
+                tracks: 1,
+            }],
+        );
+        assert_eq!(placed[0].road_half, Some(1.1), "cycleway is 2.2 m wide");
+        let (mast, tip) = across(&LevelCrossing {
+            yaw: 0.0,
+            ..placed[0]
+        });
+        assert!(
+            (mast - 1.6).abs() < 1e-3,
+            "the mini form should get narrower, not just the big forms wider: {mast}"
+        );
+        assert!(tip.expect("a boom").abs() < 1e-3, "{tip:?}");
+    }
+
+    /// A full barrier bars the **whole** road, so its tip lands on the far kerb
+    /// rather than on the centreline — the one form whose reach is not the same
+    /// multiple of the half-width.
+    #[test]
+    fn a_full_barrier_reaches_the_far_kerb() {
+        let crossing = LevelCrossing {
+            road_half: Some(5.5),
+            ..crossing(CrossingKind::FullBarrier, 1)
+        };
+        let (mast, tip) = across(&crossing);
+        assert!((mast - 6.0).abs() < 1e-3, "{mast}");
+        assert!(
+            (tip.expect("a boom") + 5.5).abs() < 1e-3,
+            "the tip should reach the far kerb at -5.5 m, got {tip:?}"
+        );
+    }
+
+    /// Where the field cannot answer a width — an untagged way, a kind
+    /// `road_class` refuses, a tunnel — every form is placed exactly where it
+    /// was before the width was carried. This is the compatibility half, and it
+    /// is what makes the change safe on a tile with no usable `kind` tags at all.
+    #[test]
+    fn an_unknown_width_falls_back_to_the_old_numbers() {
+        for (kind, mast_x, reach) in [
+            (CrossingKind::HalfBarrier, 4.0, Some(4.0)),
+            (CrossingKind::MiniBarrier, 2.1, Some(2.1)),
+            // 7.5 against the old table's 7.6: the 10 cm is the accepted cost of
+            // deriving the reach from the half-width.
+            (CrossingKind::FullBarrier, 4.0, Some(7.5)),
+            (CrossingKind::Lights, 4.0, None),
+        ] {
+            let (mast, tip) = across(&crossing(kind, 1));
+            assert!((mast - mast_x).abs() < 1e-3, "{kind:?}: mast at {mast}");
+            match reach {
+                Some(r) => {
+                    let tip = tip.expect("a boom");
+                    assert!((tip - (mast_x - r)).abs() < 1e-3, "{kind:?}: tip at {tip}");
+                }
+                None => assert!(tip.is_none(), "{kind:?} should have no boom"),
+            }
+        }
+    }
+
+    /// A tunnel and an unclassified kind are both "no width known", not zero — a
+    /// zero would put both masts on the centreline and collapse the booms.
+    #[test]
+    fn a_kind_with_no_road_class_answers_no_width() {
+        let mut field = WayField::empty(400.0);
+        // Admitted by the filter (it is not rail), refused by `road_class`.
+        field.push_line(
+            WayFilter::ExcludingRail,
+            "elevator",
+            &[[200.0, 0.0], [200.0, 400.0]],
+        );
+        let placed = place_crossings_against(
+            &field,
+            &[CrossingPoint {
+                x: 200.0,
+                z: 100.0,
+                kind: CrossingKind::HalfBarrier,
+                tracks: 1,
+            }],
+        );
+        assert_eq!(placed.len(), 1, "the way still orients the crossing");
+        assert_eq!(placed[0].road_half, None);
     }
 
     /// A crossing with no road near it is dropped rather than drawn at a guessed

@@ -3024,6 +3024,19 @@ pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
     Some((road_class(kind, flags)?, road_width_m(kind, flags) * 0.5))
 }
 
+/// The half-width [`drawn_street`] would answer for a way of this `kind` with no
+/// flags set, `None` on a kind it refuses.
+///
+/// The kind-only half of the same rule, for a caller holding a class name rather
+/// than a decoded feature — `WayField::push_line`, which synthesises ways in
+/// tests. It shares the two functions above rather than restating a number, so a
+/// width edit cannot land on one path and miss the other.
+#[cfg(test)]
+pub(crate) fn drawn_half_width(kind: &str) -> Option<f32> {
+    let flags = StreetFlags::default();
+    road_class(kind, flags).map(|_| road_width_m(kind, flags) * 0.5)
+}
+
 /// One road arriving at one node, as [`street_nodes`] records it.
 #[derive(Clone, Copy)]
 struct NodeArm {
