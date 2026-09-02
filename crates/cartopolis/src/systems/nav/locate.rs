@@ -113,6 +113,26 @@ pub struct LocateTracking {
     /// Provider trouble worth telling the user about — a denied permission, a
     /// device with no magnetometer. Shown in the button's hover text.
     pub error: Option<String>,
+    /// How much this frame's position can be trusted — the *same* classifier
+    /// driver mode's chip reads (`driver::gps_quality`), for the reason its own
+    /// note gives: the button and the navigation card answer one question about
+    /// one watch, and two copies of the rule would eventually disagree on one
+    /// screen at one moment.
+    ///
+    /// It exists because [`Self::active`] was doing two jobs and could only say
+    /// one of them. The button lights on the *press* — before the permission
+    /// dialog, before a cold GNSS start, and equally over a receiver that was
+    /// refused — so "lit" never meant "working", and there was nowhere else to
+    /// look: [`Self::gps_fix`] was set and rendered nowhere, and the accuracy was
+    /// parsed by both providers and read by neither outside driver mode.
+    pub gps: crate::systems::driver::GpsQuality,
+    /// When the last *new* fix landed, for the staleness rung.
+    ///
+    /// A wall clock and not a frame count, because what it measures is the
+    /// receiver going quiet rather than the app being busy. `GpsFix` carries no
+    /// timestamp of its own — see `driver`'s note on why freshness is inferred
+    /// from the value changing.
+    last_fix_at: Option<web_time::Instant>,
     /// The press is still owed its jump: the next fix places the camera outright
     /// rather than nudging it. Armed by [`Self::enter`] and disarmed by whichever
     /// path actually moved the view, so a button pressed before the first fix
@@ -157,6 +177,12 @@ impl LocateTracking {
         self.recenter = true;
         self.last_place = None;
         self.last_fix = None;
+        // Not `NoProvider`: the press is the moment the wait begins, and a button
+        // that lit with no caption for the length of a cold GNSS start is the gap
+        // this field was added to close. `track_device_pose` overwrites it on the
+        // next frame with the real answer, including on a desktop.
+        self.gps = crate::systems::driver::GpsQuality::Waiting;
+        self.last_fix_at = None;
         // Unset rather than read off the camera: the first frame then treats
         // "already in Follow" as an arrival and arms the rig, so the button's own
         // press needs no special case beyond this one.
@@ -186,6 +212,11 @@ impl LocateTracking {
         self.last_fix = Some(fix);
         self.heading = heading;
         self.error = None;
+        // The capture is of a *working* receiver, so it carries the accuracy the
+        // seeded fix claims — otherwise `--ui locate` would photograph the button
+        // in its searching state beside a marker that has plainly found itself.
+        self.gps = crate::systems::driver::GpsQuality::Good(fix.accuracy_m as f32);
+        self.last_fix_at = Some(web_time::Instant::now());
     }
 
     /// Stop tracking and drop both subscriptions.
@@ -202,6 +233,8 @@ impl LocateTracking {
         self.recenter = false;
         self.last_place = None;
         self.last_fix = None;
+        self.gps = crate::systems::driver::GpsQuality::default();
+        self.last_fix_at = None;
         self.in_follow = false;
         tracing::info!("stopped tracking this device");
     }
@@ -380,6 +413,14 @@ const HEADING_MIN_SCREEN: f32 = 0.75;
 /// where tracking was on, working, and completely invisible: the camera moved to
 /// sit over the fix and then nothing said which patch of roof was you.
 ///
+/// **The accuracy halo is drawn in every mode including Follow**, and that is not
+/// an inconsistency with the paragraph above. An avatar standing on the fix says
+/// *where*; it cannot say *how well*, and a fix good to four metres and one good
+/// to four hundred put the avatar down with identical confidence. That was the
+/// state of the whole feature until this: the button lit, the position moved, and
+/// nothing anywhere on screen distinguished a receiver locked on from one that
+/// had been refused permission.
+///
 /// **Painted, not meshed, and the reasons are `place_pins`' verbatim.** A marker
 /// sized in metres vanishes from altitude and is a tower at street level; this one
 /// must read from both. It also has to work in the space tier, where the flat
@@ -406,9 +447,14 @@ pub fn render_locate_arrow(
 ) {
     // Driver mode draws its own arrow, in the world, and owns the screen besides.
     // Two "you are here" markers is one too many.
-    if !tracking.active || driver.active || camera_state.mode == CameraMode::Avatar {
+    if !tracking.active || driver.active {
         return;
     }
+    // Follow mode keeps its exemption from the *marker* and loses it for the
+    // halo. The avatar is the marker there — placed on the fix and turned by the
+    // compass — but nothing about the avatar says how well the fix placed it, so
+    // that view had no on-map evidence of the receiver working at all.
+    let want_marker = camera_state.mode != CameraMode::Avatar;
     let (Some(fix), Some(anchor)) = (tracking.last_fix, map_anchor.geo) else {
         return;
     };
@@ -475,13 +521,84 @@ pub fn render_locate_arrow(
         (dir.length() >= HEADING_MIN_SCREEN).then(|| dir.normalized())
     });
 
+    // The accuracy halo, measured the same way the heading is: project a second
+    // point the reported radius away and take the distance between them on
+    // screen. Doing the arithmetic in *screen* points rather than converting
+    // metres by a scale factor is what makes one expression right in the tilted
+    // Earth orbit, the free camera and the globe alike — the projection already
+    // knows about the tier and the perspective foreshortening, and a hand-rolled
+    // metres-per-point would have to learn both again. Due east, arbitrarily:
+    // the halo is a circle, so any bearing gives the same radius, and the small
+    // error from projecting a circle as one is far below the accuracy it draws.
+    let accuracy_px = tracking.gps.accuracy_m().and_then(|m| {
+        let (lat, lng) = step_along_bearing(fix.lat, fix.lng, 90.0, f64::from(m));
+        Some((project(lat, lng)? - here).length())
+    });
     let painter = ctx
         .layer_painter(egui::LayerId::new(
             egui::Order::Middle,
             egui::Id::new("locate_arrow"),
         ))
         .with_clip_rect(map_rect);
-    paint_device_marker(&painter, here, facing);
+    paint_accuracy_halo(&painter, here, accuracy_px, map_rect);
+    if want_marker {
+        paint_device_marker(&painter, here, facing);
+    }
+}
+
+/// The smallest halo worth drawing, in screen points. Below this it is inside the
+/// marker and says nothing the marker does not — and a ring hugging the arrow
+/// reads as part of the icon rather than as a claim about precision.
+const HALO_MIN_PTS: f32 = ARROW_HALF_LENGTH * 1.6;
+/// The largest, as a fraction of the map's shorter side. A network-derived fix
+/// indoors reports kilometres, which at street zoom is a disc many screens wide:
+/// drawn faithfully it is a flat wash of colour over the whole map, which reads as
+/// a rendering fault rather than as uncertainty. Clamped, it reads as what it is —
+/// "further than this view can show" — and the caption under the button carries
+/// the number the clamp threw away.
+const HALO_MAX_FRACTION: f32 = 0.45;
+
+/// The circle of "somewhere in here", around the point drawn as "exactly there".
+///
+/// **This is the one signal that says the receiver is working *and* how well**,
+/// and it is the reason a map app's blue dot has had one since the first of them.
+/// The marker alone cannot: a dot placed from a 4 m fix and a dot placed from a
+/// four-minute-old kilometre-wide guess are the same dot, drawn with the same
+/// confidence, and the second one is the state a phone is in indoors, in a tunnel
+/// and for the whole of a cold start.
+///
+/// Nothing is drawn when the halo is smaller than the marker: a fix that good has
+/// no uncertainty worth showing, and the absence *is* the report.
+fn paint_accuracy_halo(
+    painter: &egui::Painter,
+    here: egui::Pos2,
+    radius: Option<f32>,
+    map_rect: egui::Rect,
+) {
+    use crate::systems::theme;
+    let Some(radius) = radius.filter(|r| r.is_finite() && *r >= HALO_MIN_PTS) else {
+        return;
+    };
+    let radius = radius.min(map_rect.width().min(map_rect.height()) * HALO_MAX_FRACTION);
+    // A wash and a hairline rather than a filled disc: the halo lies over the map
+    // the marker is being read against, and anything heavier hides the street the
+    // fix is claiming to be on. The alpha is low enough that overlapping it with
+    // the route line, a place pin or the avatar leaves all of them legible.
+    painter.circle_filled(
+        here,
+        radius,
+        egui::Color32::from_rgba_unmultiplied(
+            theme::ACCENT.r(),
+            theme::ACCENT.g(),
+            theme::ACCENT.b(),
+            26,
+        ),
+    );
+    painter.circle_stroke(
+        here,
+        radius,
+        egui::Stroke::new(1.0, theme::ACCENT_RING.gamma_multiply(0.55)),
+    );
 }
 
 /// Paint the marker: the navigation kite when a heading is known, a plain disc
@@ -667,15 +784,33 @@ pub fn track_device_pose(
     // ── Position ──
     let fix = tracking.watch.as_ref().and_then(LocationWatch::latest);
     tracking.gps_fix = fix.is_some();
+    // Read here rather than in the heading section below, where it used to live:
+    // the classification a line further down needs to know about a refused
+    // permission, and an error discovered after the position has been applied is
+    // an error the button reports one frame late.
+    let gps_error = tracking.watch.as_ref().and_then(LocationWatch::error);
     // A report we have not applied yet, as opposed to the same one being read
     // again — see [`LocateTracking::last_fix`].
     let fix_is_new = fix.is_some_and(|f| tracking.last_fix != Some(f));
     // Read before it is overwritten: the globe arm follows the *rotation between
     // two fixes*, which needs the one being replaced.
     let previous_geo = tracking.last_fix.map(|f| (f.lat, f.lng));
+    let now = web_time::Instant::now();
     if fix_is_new {
         tracking.last_fix = fix;
+        tracking.last_fix_at = Some(now);
     }
+    // Freshness is inferred from the value *changing*, not from an age: `GpsFix`
+    // carries no timestamp. `driver`'s note on the same line explains why that is
+    // a compromise and why `GPS_STALE_S` is generous because of it.
+    tracking.gps = crate::systems::driver::gps_quality(
+        LocationWatch::available(),
+        gps_error.is_some(),
+        fix.map(|f| f.accuracy_m),
+        tracking
+            .last_fix_at
+            .map(|t| now.duration_since(t).as_secs_f32()),
+    );
     if let (Some(fix), Some(anchor)) = (fix, map_anchor.geo) {
         // Near or far, exactly as driver mode decides it: a *move* is a write and
         // a *jump* is a teleport, because nothing on the write path re-anchors the
@@ -744,11 +879,7 @@ pub fn track_device_pose(
     let heading = tracking.compass.as_ref().and_then(OrientationWatch::latest);
     // Location first: a denied position is the more consequential of the two, and
     // the button's caption holds one message.
-    let error = tracking
-        .watch
-        .as_ref()
-        .and_then(LocationWatch::error)
-        .or_else(|| tracking.compass.as_ref().and_then(OrientationWatch::error));
+    let error = gps_error.or_else(|| tracking.compass.as_ref().and_then(OrientationWatch::error));
     tracking.heading = heading;
     tracking.error = error;
 

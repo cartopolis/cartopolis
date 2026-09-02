@@ -416,7 +416,17 @@ pub enum GpsQuality {
     Stale,
     /// Arriving, but no better than this many metres ([`GPS_POOR_M`]).
     Poor(f32),
-    Good,
+    /// Arriving, at this reported accuracy in metres.
+    ///
+    /// **It carries the number even though nothing about driving needs it.**
+    /// `Good` was a unit variant while the only consumer was [`Self::chip`],
+    /// whose whole rule is that a healthy receiver says nothing. The locate
+    /// button is the opposite case: the one thing a person standing still with
+    /// the button lit wants to know is that the GPS *is* working, and "±4 m" is
+    /// the only evidence of that which is not also true of a receiver that has
+    /// never reported. A second field on the state holding the same metres would
+    /// be two places to keep in step.
+    Good(f32),
 }
 
 impl GpsQuality {
@@ -435,18 +445,93 @@ impl GpsQuality {
     #[must_use]
     pub fn chip(self) -> Option<String> {
         match self {
-            Self::NoProvider | Self::Good => None,
+            Self::NoProvider | Self::Good(_) => None,
             Self::Waiting => Some("Waiting for GPS…".to_string()),
             Self::Error => None, // the provider's own message is shown instead
             Self::Stale => Some("GPS signal lost — showing the last position".to_string()),
             Self::Poor(m) => Some(format!("Poor GPS signal (±{m:.0} m)")),
         }
     }
+
+    /// The line under the locate button — the terse form of the same fact.
+    ///
+    /// **Not [`Self::chip`], and the difference is the whole point.** The chip is
+    /// an exception report: it appears when something is wrong and is silent when
+    /// the receiver is healthy, which is right for a navigation card that already
+    /// has a manoeuvre on it. Under the locate button that rule produces a lit
+    /// button with nothing beside it in *every* state — searching, locked on,
+    /// permission denied — which is the complaint this exists to answer. So this
+    /// one always says something while tracking, and says the accuracy when there
+    /// is nothing wrong.
+    ///
+    /// `None` only where there is genuinely nothing to report: a build with no
+    /// provider at all, where the button follows the avatar and an accuracy would
+    /// be an invented number.
+    #[must_use]
+    pub fn caption(self) -> Option<String> {
+        match self {
+            Self::NoProvider => None,
+            Self::Waiting => Some("Searching…".to_string()),
+            // Short because it sits under a 40 pt disc; the provider's own
+            // sentence is still on the hover text and in driver mode's card.
+            Self::Error => Some("No GPS".to_string()),
+            Self::Stale => Some("No signal".to_string()),
+            Self::Poor(m) | Self::Good(m) => Some(format_accuracy(m)),
+        }
+    }
+
+    /// The reported accuracy in metres, where the state has one.
+    #[must_use]
+    pub const fn accuracy_m(self) -> Option<f32> {
+        match self {
+            Self::Poor(m) | Self::Good(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Whether a usable position is in hand right now — what the locate button
+    /// fills its arrow on.
+    ///
+    /// **Not `accuracy_m().is_some()`, and the difference is a whole platform.**
+    /// [`Self::NoProvider`] has no accuracy because there is no receiver to
+    /// report one, not because it is still looking: on a desktop the button
+    /// follows the avatar and always knows exactly where that is. Deriving the
+    /// fill from the accuracy would have drawn every desktop run in the searching
+    /// state forever, waiting for a satellite that was never coming.
+    ///
+    /// [`Self::Poor`] counts. The fix is genuinely in hand and merely loose,
+    /// which the ring's colour and the halo's size both say; a hollow arrow there
+    /// would claim there is no position at all.
+    #[must_use]
+    pub const fn has_position(self) -> bool {
+        !matches!(self, Self::Waiting | Self::Error | Self::Stale)
+    }
+}
+
+/// A horizontal accuracy, written the way a map app writes it.
+///
+/// Rounded to whole metres below a kilometre and to kilometres above, because the
+/// figure is a confidence and not a measurement: "±1,247 m" claims four
+/// significant digits about a number whose own error bar is most of it. A
+/// kilometre-scale accuracy is what a network-derived fix reports indoors, so it
+/// is a state a phone reaches often rather than a curiosity.
+#[must_use]
+pub fn format_accuracy(metres: f32) -> String {
+    if metres >= 1000.0 {
+        format!("±{:.0} km", metres / 1000.0)
+    } else {
+        format!("±{metres:.0} m")
+    }
 }
 
 /// Classify a fix. Pure, so the states that only occur on a phone in a tunnel are
 /// checkable on a desktop with no receiver.
-fn gps_quality(
+///
+/// Shared with [`crate::systems::locate`] rather than copied into it: the locate
+/// button and the navigation card answer the same question about the same watch,
+/// and two classifiers would eventually disagree about whether the GPS is
+/// working — on one screen, at the same moment.
+pub(crate) fn gps_quality(
     available: bool,
     error: bool,
     accuracy_m: Option<f64>,
@@ -467,7 +552,7 @@ fn gps_quality(
     if accuracy_m > GPS_POOR_M {
         return GpsQuality::Poor(accuracy_m as f32);
     }
-    GpsQuality::Good
+    GpsQuality::Good(accuracy_m as f32)
 }
 
 /// Whether the guidance cues sound — the field a Settings row binds to.
@@ -3639,12 +3724,14 @@ mod tests {
         assert_eq!(gps_quality(true, false, None, None), GpsQuality::Waiting);
         assert!(GpsQuality::Waiting.chip().is_some());
 
-        // A good fix says nothing at all.
+        // A good fix says nothing at all *on the driving card* — and carries its
+        // accuracy anyway, because the locate button's whole job is to say so.
         assert_eq!(
             gps_quality(true, false, Some(6.0), Some(0.5)),
-            GpsQuality::Good
+            GpsQuality::Good(6.0)
         );
-        assert!(GpsQuality::Good.chip().is_none());
+        assert!(GpsQuality::Good(6.0).chip().is_none());
+        assert_eq!(GpsQuality::Good(6.0).caption().as_deref(), Some("±6 m"));
 
         // Poor and stale both stand the reroute down: a corridor refetch triggered
         // by tunnel-mouth noise costs seconds at the worst possible moment.
@@ -3660,6 +3747,49 @@ mod tests {
             gps_quality(true, true, Some(5.0), Some(0.1)),
             GpsQuality::Error
         );
+    }
+
+    /// The locate button's caption must say something in **every** tracking state.
+    ///
+    /// This is the inversion of the chip's rule and the reason the two are
+    /// separate methods. A phone cannot reach a tooltip, so the caption is the
+    /// only place the button's state is legible there — and a healthy receiver
+    /// falling silent is exactly the complaint the caption exists to answer: a lit
+    /// button with nothing beside it looks identical whether the GPS is locked on
+    /// or was refused permission ten minutes ago.
+    #[test]
+    fn the_locate_caption_speaks_in_every_state_a_provider_can_reach() {
+        for state in [
+            GpsQuality::Waiting,
+            GpsQuality::Error,
+            GpsQuality::Stale,
+            GpsQuality::Poor(80.0),
+            GpsQuality::Good(4.0),
+        ] {
+            assert!(
+                state.caption().is_some_and(|c| !c.is_empty()),
+                "{state:?} left the button with no caption"
+            );
+        }
+        // The one silence, and it is honest: a desktop has no receiver, so an
+        // accuracy there would be a number nothing measured.
+        assert!(GpsQuality::NoProvider.caption().is_none());
+
+        // The accuracy is the positive evidence — "it is working, this well".
+        assert_eq!(GpsQuality::Good(4.0).caption().as_deref(), Some("±4 m"));
+        assert_eq!(GpsQuality::Poor(80.0).caption().as_deref(), Some("±80 m"));
+        assert_eq!(GpsQuality::Good(4.0).accuracy_m(), Some(4.0));
+        assert_eq!(GpsQuality::Waiting.accuracy_m(), None);
+    }
+
+    /// A kilometre-scale accuracy is an ordinary indoor reading, not a curiosity,
+    /// and "±1247 m" claims four significant digits about a confidence interval.
+    #[test]
+    fn a_coarse_accuracy_is_written_in_kilometres() {
+        assert_eq!(format_accuracy(4.4), "±4 m");
+        assert_eq!(format_accuracy(999.0), "±999 m");
+        assert_eq!(format_accuracy(1247.0), "±1 km");
+        assert_eq!(format_accuracy(12_400.0), "±12 km");
     }
 
     /// The cue ladder: once per band per manoeuvre, re-armed by the next one, and

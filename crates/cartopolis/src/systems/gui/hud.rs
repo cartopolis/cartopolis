@@ -36,6 +36,7 @@ use big_space::prelude::GridCell;
 
 use crate::components::FreeCamera;
 use crate::resources::CameraState;
+use crate::systems::driver::GpsQuality;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::camera_geo;
 use crate::systems::theme;
@@ -278,6 +279,13 @@ fn column_x(size: f32) -> f32 {
 /// out of the cycle. Derived from [`crate::systems::locate::LocateTracking`] —
 /// not from the camera, which can drop follow-and-rotate on its own and would
 /// leave the button unlit over a running GNSS radio.
+///
+/// **The signal is a separate axis and deliberately not a third variant here.**
+/// What the button *does* is a two-state toggle; how well the receiver is doing
+/// is a report, carried by [`crate::systems::driver::GpsQuality`] and passed to
+/// [`locate_overlay`] beside this. Folding them into one enum would put "the user
+/// pressed it" and "a satellite answered" on the same ladder, and the click
+/// handler would then have to pick which rungs mean *on*.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LocateState {
     /// Not tracking — a click starts it.
@@ -290,18 +298,47 @@ pub enum LocateState {
 }
 
 /// Draws the GPS/locate button beneath the compass (Organic-Maps style) and
-/// returns true when clicked. The icon is a navigation "location arrow": a hollow
-/// muted outline when off and a filled amber arrow while tracking.
-/// Drawn from primitives, like the compass — egui's bundled font carries few
-/// emoji, so a glyph would risk rendering as tofu.
+/// returns true when clicked. The icon is a navigation "location arrow", drawn
+/// from primitives like the compass — egui's bundled font carries few emoji, so a
+/// glyph would risk rendering as tofu.
 ///
-/// `hover` is the whole caption, because what tracking *means* depends on what
-/// the device could actually answer with: a phone reporting a heading, a phone
-/// that has refused the permission and a desktop that has no sensor at all are
-/// three different situations behind one lit button, and the tooltip is where
-/// they are told apart.
-fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState, hover: &str) -> bool {
+/// **Three looks, from two inputs.** `state` is the toggle and decides lit or
+/// unlit; `gps` is the report and decides everything else — the arrow is hollow
+/// with a travelling arc while the receiver is searching, filled once a position
+/// is in hand, and the ring turns from amber to the warning ochre when the fix is
+/// poor, stale or refused. Before that split the button filled on the *press*,
+/// so a phone still waiting out a permission dialog and a phone locked onto six
+/// satellites were the same picture.
+///
+/// **The caption under the disc is the half that reaches a phone.** `hover` says
+/// all of this in a sentence and no touch device can ever read it: there is no
+/// hover on a phone, and this is the platform the feature exists for. So
+/// [`GpsQuality::caption`] repeats the essential word or two under the button,
+/// where a thumb can see it without pressing anything.
+fn locate_overlay(
+    ctx: &egui::Context,
+    top: f32,
+    state: LocateState,
+    gps: GpsQuality,
+    hover: &str,
+) -> bool {
     let mut clicked = false;
+    let on = matches!(state, LocateState::Tracking);
+    // Amber while the receiver is behaving, the warning ochre while it is not.
+    // The ring is the right carrier for this and the arrow is not: the arrow says
+    // *what the button does*, and a control whose icon changed shape with the
+    // signal would read as a different button every time you walked into a
+    // tunnel. `WARN` rather than a red — a poor fix is a caveat, not a fault, and
+    // the map is still usable throughout.
+    let tone = match (on, gps) {
+        (false, _) => theme::ACCENT_RING,
+        (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => theme::WARN,
+        (true, _) => theme::AMBER,
+    };
+    // Read before the `Area`'s closure, not inside it: `Context::input` takes the
+    // context lock, and taking it again from within a closure the context is
+    // already running is the shape that deadlocks.
+    let time = ctx.input(|i| i.time);
     egui::Area::new(egui::Id::new("locate_overlay"))
         // Directly under the compass, centred on its column.
         .anchor(
@@ -313,10 +350,6 @@ fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState, hover: &str
             // open panels and every other engaged control take, and the reserved
             // amber ring — which is exactly how the compass says "north-up held"
             // one disc above. Both are states the app is *holding* for you.
-            let (tone, on) = match state {
-                LocateState::Off => (theme::ACCENT_RING, false),
-                LocateState::Tracking => (theme::AMBER, true),
-            };
             let (resp, face) = theme::map_disc(ui, LOCATE_SIZE, on, tone, egui::Sense::click());
             let p = ui.painter();
             let c = face.center;
@@ -328,7 +361,13 @@ fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState, hover: &str
                 c + egui::vec2(0.0, 0.30 * s),
                 c + egui::vec2(0.62 * s, 0.72 * s),
             ];
-            if on {
+            // **Filled means a fix is in hand.** Lit-and-hollow is the searching
+            // state, and giving it a look of its own is the whole point: the
+            // button used to fill on the *press*, which is before the permission
+            // dialog and before a cold GNSS start, so the one moment a person is
+            // asking "is this working?" was the one moment the button could not
+            // answer.
+            if gps.has_position() {
                 p.add(egui::Shape::convex_polygon(
                     arrow,
                     face.ink,
@@ -339,10 +378,81 @@ fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState, hover: &str
                 outline.push(outline[0]);
                 p.add(egui::Shape::line(outline, egui::Stroke::new(1.6, face.ink)));
             }
+            if matches!(gps, GpsQuality::Waiting) {
+                paint_search_sweep(p, c, face.radius, time);
+            }
+            // The caption, and it is the half that reaches a phone at all: every
+            // other report this button can make is in `hover`, and a touch device
+            // has no hover. Under the disc rather than beside it, so the column
+            // keeps its single centre line (`column_x`).
+            if let Some(caption) = gps.caption().filter(|_| on) {
+                halo_text(p, egui::pos2(c.x, c.y + face.radius + 8.0), &caption, tone);
+            }
             resp.clone().on_hover_text(hover);
             clicked = resp.clicked();
         });
     clicked
+}
+
+/// How long one turn of the searching sweep takes, in seconds. Slow enough to
+/// read as "working on it" rather than as a spinner demanding attention — this
+/// wait is routinely thirty seconds and occasionally two minutes.
+const SEARCH_SWEEP_PERIOD_S: f64 = 2.4;
+/// The arc's length, as a fraction of the full circle.
+const SEARCH_SWEEP_ARC: f32 = 0.22;
+
+/// A short arc travelling round the disc's ring while the receiver is searching.
+///
+/// **Motion, because stillness is what the old button got wrong.** A static
+/// hollow arrow is a perfectly good "no fix yet" and is indistinguishable from a
+/// button that has hung — which, for a feature whose failure mode has been a
+/// permission dialog that never appeared, is the exact ambiguity to remove. A
+/// thing that is moving is a thing that is still trying.
+///
+/// Drawn as line segments rather than an arc primitive because epaint has no
+/// stroked-arc shape, and as a *ring* rather than a rotating icon so the arrow
+/// underneath keeps pointing up: the icon states what the button is for, and only
+/// the chrome around it reports on the sensor.
+fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, time: f64) {
+    use std::f32::consts::TAU;
+    const STEPS: usize = 12;
+    let phase = ((time / SEARCH_SWEEP_PERIOD_S).fract() as f32) * TAU;
+    let points: Vec<egui::Pos2> = (0..=STEPS)
+        .map(|i| {
+            let a = phase + TAU * SEARCH_SWEEP_ARC * (i as f32 / STEPS as f32);
+            centre + egui::vec2(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(2.2, theme::AMBER),
+    ));
+}
+
+/// Small text over the map, legible on both white paper and dark water.
+///
+/// The halo idiom is the scale bar's, and for its reason: a filled plate behind
+/// something this small reads as a piece of chrome that has come loose. Four
+/// offset copies rather than a stroke, because epaint's text has no outline —
+/// diagonals as well as axes, or the halo thins to nothing at the corners of a
+/// glyph.
+fn halo_text(painter: &egui::Painter, at: egui::Pos2, text: &str, ink: egui::Color32) {
+    let font = egui::FontId::proportional(theme::SIZE_TINY);
+    for dx in [-1.0, 0.0, 1.0] {
+        for dy in [-1.0, 0.0, 1.0] {
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            }
+            painter.text(
+                at + egui::vec2(dx, dy),
+                egui::Align2::CENTER_CENTER,
+                text,
+                font.clone(),
+                theme::OVERLAY,
+            );
+        }
+    }
+    painter.text(at, egui::Align2::CENTER_CENTER, text, font, ink);
 }
 
 /// The locate button's caption: what pressing it will do, or — while it is lit —
@@ -361,10 +471,33 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
         }
         LocateState::Off => "Center on my location and follow my heading".to_string(),
         LocateState::Tracking => {
-            let mut s = match tracking.heading {
+            // The position first: it is what the button is for, and until this
+            // line the caption reported only the *compass*, so a phone with a
+            // perfect fix and no magnetometer said "Following — this device has
+            // no compass" and never once mentioned the GPS.
+            let mut s = match tracking.gps {
+                GpsQuality::Good(m) => format!(
+                    "Tracking this device — position to {}",
+                    crate::systems::driver::format_accuracy(m)
+                ),
+                GpsQuality::Poor(m) => format!(
+                    "Tracking this device — position only to {}",
+                    crate::systems::driver::format_accuracy(m)
+                ),
+                GpsQuality::Waiting => "Tracking this device — waiting for a fix".to_string(),
+                GpsQuality::Stale => {
+                    "Tracking this device — no fix recently, showing the last one".to_string()
+                }
+                // `NoProvider` is every desktop, where the button follows the
+                // avatar and there is no receiver to describe; `Error` has the
+                // provider's own sentence appended below and must not be
+                // pre-empted by a vaguer one.
+                GpsQuality::NoProvider | GpsQuality::Error => "Tracking this device".to_string(),
+            };
+            s.push_str(" — ");
+            s.push_str(&match tracking.heading {
                 Some(h) => {
-                    let mut line =
-                        format!("Tracking this device — heading {}°", h.bearing_deg.round());
+                    let mut line = format!("heading {}°", h.bearing_deg.round());
                     // Only iOS reports one, and only once the magnetometer has
                     // settled. A wide figure here is the explanation for a map
                     // that is pointing *nearly* the right way.
@@ -373,11 +506,9 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
                     }
                     line
                 }
-                None if OrientationWatch::available() => {
-                    "Tracking this device — waiting for the compass".to_string()
-                }
-                None => "Following — this device has no compass".to_string(),
-            };
+                None if OrientationWatch::available() => "waiting for the compass".to_string(),
+                None => "this device has no compass".to_string(),
+            });
             if let Some(error) = &tracking.error {
                 // Appended rather than replacing: the mode really is on, and a
                 // caption that said only "denied" over a lit button would leave
@@ -697,7 +828,13 @@ pub fn render_map_controls(
             LocateState::Off
         };
         let hover = locate_hover(state, &tracking);
-        if locate_overlay(egui.ctx(), column + theme::OSD_GAP, state, &hover) {
+        if locate_overlay(
+            egui.ctx(),
+            column + theme::OSD_GAP,
+            state,
+            tracking.gps,
+            &hover,
+        ) {
             match state {
                 // Recenter, in the view the user is already in. The button used to
                 // force Follow on the way in, which made "where am I" a one-way
@@ -1336,5 +1473,59 @@ mod tests {
         let failed = locate_hover(LocateState::Tracking, &t);
         assert!(failed.contains("Location permission denied"), "{failed}");
         assert!(failed.contains("stop"), "{failed}");
+    }
+
+    /// The hover text must name the **position** as well as the compass.
+    ///
+    /// It used to describe only the heading, so a phone holding a four-metre fix
+    /// and lacking a magnetometer read "Following — this device has no compass":
+    /// a caption that mentions the one sensor that is not working and never the
+    /// one that is. That is the same silence the button's own caption exists to
+    /// break, one layer up.
+    #[test]
+    fn the_locate_caption_reports_the_position_not_only_the_compass() {
+        use crate::systems::locate::LocateTracking;
+
+        let mut t = LocateTracking::default();
+        t.gps = GpsQuality::Good(4.0);
+        let good = locate_hover(LocateState::Tracking, &t);
+        assert!(good.contains("±4 m"), "{good}");
+
+        t.gps = GpsQuality::Waiting;
+        let waiting = locate_hover(LocateState::Tracking, &t);
+        assert!(waiting.contains("waiting for a fix"), "{waiting}");
+
+        t.gps = GpsQuality::Poor(90.0);
+        let poor = locate_hover(LocateState::Tracking, &t);
+        assert!(poor.contains("only to ±90 m"), "{poor}");
+
+        t.gps = GpsQuality::Stale;
+        let stale = locate_hover(LocateState::Tracking, &t);
+        assert!(stale.contains("last one"), "{stale}");
+    }
+
+    /// The disc fills on a *fix*, never on the press.
+    ///
+    /// This is the whole complaint the three rungs answer: the button lit the
+    /// instant it was tapped — ahead of the permission dialog and ahead of a cold
+    /// GNSS start that can run to minutes — so the one moment somebody is asking
+    /// "is this working?" was the one moment the button could not tell them.
+    #[test]
+    fn the_button_fills_only_once_a_fix_is_in_hand() {
+        for searching in [GpsQuality::Waiting, GpsQuality::Error, GpsQuality::Stale] {
+            assert!(
+                !searching.has_position(),
+                "{searching:?} would draw as a solid arrow"
+            );
+        }
+        // Poor fills too, and says so in the ring rather than the icon: the fix is
+        // genuinely in hand, it is simply loose — and an icon that changed shape
+        // with the signal would read as a different button in every tunnel.
+        assert!(GpsQuality::Poor(90.0).has_position());
+        assert!(GpsQuality::Good(4.0).has_position());
+        // And a desktop fills, which is the case a fill derived from the accuracy
+        // would have got backwards: no receiver is not the same as still looking.
+        assert!(GpsQuality::NoProvider.has_position());
+        assert!(GpsQuality::NoProvider.accuracy_m().is_none());
     }
 }
