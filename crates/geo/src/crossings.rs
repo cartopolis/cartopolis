@@ -102,7 +102,14 @@ const BOOM_BANDS: usize = 3;
 const BOOM_Y: f32 = 1.05;
 
 const MAST_HALF_W: f32 = 0.11;
-const BOOM_HALF_H: f32 = 0.13;
+/// Half the width of the bar's painted face — 0.26 m across. Named for the face
+/// rather than for a height or a width because the bar stands *raised*: the face
+/// lies across the road on local x, and the bar's length runs up local y. A
+/// constant named for one attitude is how a reader concludes the bar is in the
+/// other one.
+const BOOM_HALF_FACE: f32 = 0.13;
+/// Half the bar's thickness — 0.16 m through, on the along-road axis in either
+/// attitude.
 const BOOM_HALF_T: f32 = 0.08;
 
 /// The two colours a boom is banded in, and the colour of a lamp.
@@ -371,17 +378,26 @@ fn push_crossing(buf: &mut MeshBuf, crossing: &LevelCrossing) {
         let Some(reach) = boom else {
             continue;
         };
-        // The boom runs from the mast toward the road, so its far end is at
-        // `mx - side * reach`.
+        // The boom stands raised: the bands are stacked in **y** from the pivot
+        // at `BOOM_Y` up to `BOOM_Y + reach`, at the mast's own along-road
+        // position, so nothing hangs over the carriageway. `push_box` takes a yaw
+        // and no tilt, so the 90° turn is expressed by swapping the first two
+        // half-extents — the 0.26 m face still lies across the road, the 0.16 m
+        // thickness still along it, and the bar's *length* moves to y.
+        //
+        // Across the road the bar sits one mast-half plus one bar-half inboard of
+        // the mast centre, so it stands flush beside the mast rather than inside
+        // it.
         let band = reach / BOOM_BANDS as f32;
+        let boom_x = mx - side * (MAST_HALF_W + BOOM_HALF_FACE);
         for b in 0..BOOM_BANDS {
-            let centre = mx - side * (band * (b as f32 + 0.5));
+            let centre = BOOM_Y + band * (b as f32 + 0.5);
             push(
                 buf,
                 crossing,
                 (sn, cs),
-                [centre, BOOM_Y, along],
-                [band * 0.5, BOOM_HALF_H, BOOM_HALF_T],
+                [boom_x, centre, along],
+                [BOOM_HALF_FACE, band * 0.5, BOOM_HALF_T],
                 if b % 2 == 0 { BOOM_RED } else { BOOM_WHITE },
             );
         }
@@ -628,6 +644,114 @@ mod tests {
         // …and a boom form is strictly more geometry than a lights-only one.
         let lights = build_crossing_meshes(&[crossing(CrossingKind::Lights, 1)], None);
         assert!(a[0].positions.len() > lights[0].positions.len());
+    }
+
+    /// A boom stands **up**, not across.
+    ///
+    /// This is the assertion the module was missing: a boom lying flat is a
+    /// crossing that reads as permanently closed to traffic with nothing coming,
+    /// and it is what shipped — the bands were stacked along local x at a
+    /// constant `BOOM_Y`, ending within half a metre of the road's centreline.
+    /// Every existing test passes with the bar in either attitude
+    /// (`every_form_meshes` counts triangles, `the_byte_cap_splits_between_crossings`
+    /// counts bytes, `the_boom_count_comes_from_the_form_not_the_register` counts
+    /// vertices), so nothing but a shot could tell them apart.
+    ///
+    /// Two facts separate them without having to identify which vertices belong
+    /// to which box: nothing stands over the carriageway, and the mesh reaches
+    /// the top of the raised bar in y. A `Lights` crossing tops out at its lamp
+    /// head, which is what makes the second one a statement about the boom.
+    #[test]
+    fn a_raised_boom_stands_clear_of_the_road() {
+        for kind in [
+            CrossingKind::HalfBarrier,
+            CrossingKind::MiniBarrier,
+            CrossingKind::FullBarrier,
+        ] {
+            let (mast_h, road_half, reach) = kind.spec();
+            let reach = reach.expect("a barrier form has a boom");
+            let c = crossing(kind, 2);
+            // Yaw 0, so the object's local x is the world's: `push_box`'s
+            // rotation is the identity and the across-road axis is `x - c.x`.
+            let meshes = build_crossing_meshes(&[c], None);
+            assert_eq!(meshes.len(), 1, "{kind:?}");
+
+            let clear = road_half - 0.25;
+            let top = meshes[0]
+                .positions
+                .iter()
+                .fold(f32::MIN, |hi, p| hi.max(p[1]));
+            for p in &meshes[0].positions {
+                assert!(
+                    (p[0] - c.x).abs() >= clear,
+                    "{kind:?}: a vertex at x {} is over the carriageway (clear {clear} m)",
+                    p[0] - c.x
+                );
+            }
+            assert!(
+                top >= BOOM_Y + reach - 0.05,
+                "{kind:?}: the mesh tops out at {top} m, below a raised boom's \
+                 {} m — the bar is still lying flat",
+                BOOM_Y + reach
+            );
+
+            // The bar stands flush beside its mast, never inside it. Measured on
+            // the +side installation, where inboard is −x: the mast's inner face
+            // against the bar's outer face.
+            let mx = road_half + 0.5;
+            let mast_inner = mx - MAST_HALF_W;
+            let bar_outer = (mx - (MAST_HALF_W + BOOM_HALF_FACE)) + BOOM_HALF_FACE;
+            assert!(
+                mast_inner - bar_outer >= -1e-4,
+                "{kind:?}: the bar overlaps the mast by {} m",
+                bar_outer - mast_inner
+            );
+            // …and the lamp head, not the boom, is what a `Lights` crossing
+            // reaches, so the check above cannot be satisfied by the mast.
+            assert!(
+                BOOM_Y + reach > mast_h + 0.32,
+                "{kind:?}: the boom does not clear the lamp head"
+            );
+        }
+    }
+
+    /// A crossing with no boom is untouched by the attitude change, pinned as an
+    /// absolute box rather than against a golden file: two masts and two lamp
+    /// heads, topping out at the lamp rather than at a bar. It is the control for
+    /// the test above — a form that reaches only `mast_h + 0.32` in y is what
+    /// makes "the mesh reaches `BOOM_Y + reach`" a statement about the boom.
+    #[test]
+    fn a_lights_crossing_is_two_masts_and_two_lamps() {
+        let (mast_h, road_half, boom) = CrossingKind::Lights.spec();
+        assert!(boom.is_none());
+        let c = crossing(CrossingKind::Lights, 2);
+        let meshes = build_crossing_meshes(&[c], None);
+        // Four boxes, 24 vertices each — no boom bands.
+        assert_eq!(meshes[0].positions.len(), 4 * 24);
+
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for p in &meshes[0].positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+        // Across the road, the lamp head's 0.30 m half-width off the mast at
+        // `road_half + 0.5`; up, the top of that head; along, the clearance plus
+        // the mast's own half-width.
+        let across = road_half + 0.5 + 0.30;
+        let along = clearance_m(2) + MAST_HALF_W;
+        for (got, want) in [
+            (lo[0], c.x - across),
+            (hi[0], c.x + across),
+            (lo[1], 0.0),
+            (hi[1], mast_h + 0.32),
+            (lo[2], c.z - along),
+            (hi[2], c.z + along),
+        ] {
+            assert!((got - want).abs() < 1e-4, "bounds moved: {got} != {want}");
+        }
     }
 
     /// The track count only ever moves the two installations apart, and it is
