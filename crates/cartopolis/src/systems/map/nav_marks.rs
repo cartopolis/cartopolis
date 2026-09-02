@@ -46,6 +46,19 @@
 //! The Layers panel's Furniture toggle is a third gate, applied by the caller:
 //! marks ride that group's mesh, its material and its altitude fade, so a run
 //! with furniture off asks for nothing at all.
+//!
+//! # …and a fourth, once the service has failed
+//!
+//! Those three are about the cell. The fourth is about the *service*: this fetch
+//! sits between the cell's tile body and its tessellation worker, so a slow
+//! `api.pdok.nl` costs the ground, the roads and the buildings rather than the
+//! buoys. Two bounds, both in `platform::http`. Every request here carries
+//! [`http::OPTIONAL_LAYER_TIMEOUT`] instead of the 20 s a fetcher inherits by
+//! not asking, and a failure trips [`MARKS_BREAKER`], which holds the service
+//! off for a minute — because nothing is cached on failure (see
+//! [`load_marks_cell`]), and `map_geometry` re-runs the whole task on every
+//! retear, so without it each re-anchor and each layer toggle re-pays the wait
+//! for every cell in the ring.
 
 use cartopolis_geo::nav_marks::{
     ColourPattern, FixedForm, MarkColour, MarkForm, MarkKind, MarkShape, NavMark, Topmark,
@@ -283,17 +296,44 @@ pub fn covers(cx: i64, cy: i64) -> bool {
     west <= MARKS_LON.1 && east >= MARKS_LON.0 && south <= MARKS_LAT.1 && north >= MARKS_LAT.0
 }
 
-/// Both gates, as one predicate: is this cell worth a request at all?
+/// The cell's own two gates: is this cell one the register could have marks in?
 ///
-/// Split out of [`load_marks_cell`] so the rule can be asserted without a
-/// runtime and without reaching the network — which is the only way to test "no
-/// request was issued".
-fn should_fetch(cx: i64, cy: i64, tile_has_water: bool) -> bool {
+/// True of the cell forever, so this is also what decides whether the cache is
+/// consulted at all — a foreign or dry cell must cost neither a request nor a
+/// storage lookup.
+fn cell_may_hold_marks(cx: i64, cy: i64, tile_has_water: bool) -> bool {
     covers(cx, cy) && tile_has_water
 }
 
+/// Every gate, as one predicate: is this cell worth a *request*?
+///
+/// The cell's own two, plus the service's outage gate. Split out of
+/// [`load_marks_cell`] so the rule can be asserted without a runtime and without
+/// reaching the network — which is the only way to test "no request was issued".
+/// `breaker` and `now` are injected for the same reason.
+fn should_fetch(
+    cx: i64,
+    cy: i64,
+    tile_has_water: bool,
+    breaker: &http::Breaker,
+    now: web_time::Instant,
+) -> bool {
+    cell_may_hold_marks(cx, cy, tile_has_water) && !breaker.is_open_at(now)
+}
+
+/// RWS's marks service, held off for a minute after it fails. Its own instance:
+/// ProRail's crossings service sits behind the same host and fails separately.
+pub(crate) static MARKS_BREAKER: http::Breaker = http::Breaker::new();
+
 fn cache_key(cx: i64, cy: i64) -> String {
     format!("features/marks/v1/{MARK_ZOOM}/{cx}/{cy}.json")
+}
+
+/// One collection's `items` answer, on the optional-layer bound rather than the
+/// 20 s a fetcher inherits by not asking.
+async fn fetch_collection(collection: &str, cx: i64, cy: i64) -> Result<String, String> {
+    let url = items_url(collection, cx, cy);
+    http::fetch_string(http::Request::get(url).timeout(http::OPTIONAL_LAYER_TIMEOUT)).await
 }
 
 fn items_url(collection: &str, cx: i64, cy: i64) -> String {
@@ -406,27 +446,53 @@ pub fn parse_items(text: &str, floating: bool) -> Result<Vec<(f64, f64, MarkForm
 /// and an empty answer all produce the same empty cell, which is the water this
 /// client already drew.
 pub(crate) async fn load_marks_cell(cx: i64, cy: i64, tile_has_water: bool) -> MarkCell {
-    if !should_fetch(cx, cy, tile_has_water) {
+    if !cell_may_hold_marks(cx, cy, tile_has_water) {
         return MarkCell::default();
     }
     let key = cache_key(cx, cy);
+    // The cache is read before the breaker is consulted, not after: a cell whose
+    // marks are already on disk costs the service nothing, and an outage must
+    // not blank cells that were complete before it started.
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return decode_cell(&cached).unwrap_or_default();
     }
+    if !should_fetch(
+        cx,
+        cy,
+        tile_has_water,
+        &MARKS_BREAKER,
+        web_time::Instant::now(),
+    ) {
+        return MarkCell::default();
+    }
+
+    // Both collections in flight together rather than one after the other, so a
+    // cell's wait is one service's answer and not two of them end to end. On
+    // wasm that is real overlap; natively `http::fetch` is a blocking `ureq`
+    // call with no await point in it (`platform::http`'s module note), so the
+    // two still land in sequence there and the bound below is what caps the
+    // total.
+    let (floating, fixed) = futures_lite::future::zip(
+        fetch_collection(COLLECTIONS[0], cx, cy),
+        fetch_collection(COLLECTIONS[1], cx, cy),
+    )
+    .await;
 
     let mut marks = Vec::new();
-    for (i, collection) in COLLECTIONS.iter().enumerate() {
-        let url = items_url(collection, cx, cy);
-        let Ok(text) = http::fetch_string(http::Request::get(url)).await else {
-            // Nothing is written to the cache on a partial answer: half a cell
-            // cached under a key that will never be re-fetched is worse than a
-            // cell that is asked for again.
+    for (i, answer) in [floating, fixed].into_iter().enumerate() {
+        // Nothing is written to the cache on a partial answer: half a cell
+        // cached under a key that will never be re-fetched is worse than a cell
+        // that is asked for again. What *is* remembered is that the service
+        // failed, which is the breaker rather than the cache.
+        let Ok(text) = answer else {
+            MARKS_BREAKER.trip();
             return MarkCell::default();
         };
         match parse_items(&text, i == 0) {
             Ok(read) => marks.extend(read),
             Err(e) => {
-                tracing::warn!(collection, error = %e, "navigation marks unreadable");
+                tracing::warn!(collection = COLLECTIONS[i], error = %e, "navigation marks unreadable");
+                MARKS_BREAKER.trip();
                 return MarkCell::default();
             }
         }
@@ -523,20 +589,65 @@ mod tests {
     /// world would pay two round trips to be told no.
     #[test]
     fn a_foreign_or_dry_cell_asks_for_nothing() {
+        let (breaker, now) = (http::Breaker::new(), web_time::Instant::now());
         // Outside the envelope: a z14 cell over Warsaw, and one mid-Atlantic.
         // Neither asks, however much water the tile carries.
         for (cx, cy) in [(9130_i64, 5350_i64), (7000, 5400)] {
             assert!(!covers(cx, cy), "({cx}, {cy}) is not in the register");
-            assert!(!should_fetch(cx, cy, true));
+            assert!(!should_fetch(cx, cy, true, &breaker, now));
+            assert!(!cell_may_hold_marks(cx, cy, true));
         }
         // Inside the envelope, and wet: the one case that asks.
         assert!(covers(WAAL.0, WAAL.1));
-        assert!(should_fetch(WAAL.0, WAAL.1, true));
+        assert!(should_fetch(WAAL.0, WAAL.1, true, &breaker, now));
         // Inside the envelope and dry — Groningen's Grote Markt is in the
         // register's bbox and has no water in its cell, and the register has no
         // marks there. It must cost nothing rather than two empty answers.
         assert!(covers(GRONINGEN.0, GRONINGEN.1));
-        assert!(!should_fetch(GRONINGEN.0, GRONINGEN.1, false));
+        assert!(!should_fetch(
+            GRONINGEN.0,
+            GRONINGEN.1,
+            false,
+            &breaker,
+            now
+        ));
+        assert!(!cell_may_hold_marks(GRONINGEN.0, GRONINGEN.1, false));
+    }
+
+    /// The fourth gate: once the service has failed, the cell that would
+    /// otherwise ask is refused for a minute — and then asks again.
+    ///
+    /// Asserted on the predicate with an injected breaker and an injected
+    /// instant, because "no request was issued" is not observable from the
+    /// other side of an `async fn` that returns the same empty cell either way,
+    /// and because a test that reached for the wall clock would have to sleep a
+    /// minute to see the far side of the cooldown.
+    #[test]
+    fn a_failed_service_is_not_asked_again_until_the_cooldown_passes() {
+        let breaker = http::Breaker::new();
+        let now = web_time::Instant::now();
+        assert!(should_fetch(WAAL.0, WAAL.1, true, &breaker, now));
+
+        breaker.trip_at(now);
+        assert!(
+            !should_fetch(WAAL.0, WAAL.1, true, &breaker, now),
+            "a cell was asked about while the service was known to be down"
+        );
+        assert!(!should_fetch(
+            WAAL.0,
+            WAAL.1,
+            true,
+            &breaker,
+            now + http::BREAKER_COOLDOWN - std::time::Duration::from_secs(1)
+        ));
+        assert!(
+            should_fetch(WAAL.0, WAAL.1, true, &breaker, now + http::BREAKER_COOLDOWN),
+            "the breaker never reopened"
+        );
+        // The cell's own gates are untouched by it: an outage does not make a
+        // dry cell worth asking about once the service is back.
+        assert!(cell_may_hold_marks(WAAL.0, WAAL.1, true));
+        assert!(!cell_may_hold_marks(GRONINGEN.0, GRONINGEN.1, false));
     }
 
     /// The two ways the register says "nothing here". Getting either wrong is

@@ -25,6 +25,29 @@ pub const USER_AGENT: &str =
 /// Default per-request timeout when a caller does not set one.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Per-request bound for an **optional third-party layer** — one whose absence
+/// costs its own decoration and nothing else, but whose fetch sits on the
+/// critical path of something that matters.
+///
+/// The case this exists for is `systems::nav_marks` and `systems::crossings`:
+/// both are awaited inside `map_geometry::spawn_geometry_task`, between the
+/// cell's own tile body and the tessellation worker, so a slow `api.pdok.nl`
+/// does not read as "no buoys today" — it reads as no ground, no roads and no
+/// buildings, for as long as the request takes. On [`DEFAULT_TIMEOUT`] that is
+/// 20 s per request, and the native fetch holds an `IoTaskPool` thread for all
+/// of it (the native `CONNECT_TIMEOUT` caps only the connect phase).
+///
+/// **3 s**, from the measurement in #267: a cold start over Groningen made 18
+/// requests to that service in 1.70 s — median 82 ms, worst 186 ms. Sixteen
+/// times the observed worst case still delivers for a service that is merely
+/// slow, while a dead one costs three seconds rather than twenty.
+///
+/// Native only, and knowingly: `ehttp` ignores `Request::timeout` in the browser
+/// (see the wasm `imp`), which is a pre-existing gap shared with
+/// `transit_vehicles`, `weather` and `globe_weather`. [`Breaker`] is what bounds
+/// the damage there.
+pub const OPTIONAL_LAYER_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Hard cap on a response body, so a runaway or hostile upstream cannot exhaust
 /// memory. 64 MiB comfortably covers the largest thing we fetch (a dense 3DBAG
 /// LoD2.2 cell decompresses past 10 MB).
@@ -197,6 +220,80 @@ pub mod stats {
     }
 }
 
+/// How long a tripped [`Breaker`] stays open before the next request is allowed
+/// through. 60 s, matching `tall_structures::RETRY_AFTER_SECS`, which is the
+/// in-tree precedent for "a third party said no; come back later".
+pub const BREAKER_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// A process-wide outage gate for one upstream service.
+///
+/// The problem it solves is not a slow request — [`OPTIONAL_LAYER_TIMEOUT`] is
+/// that — but a *repeated* one. `map_geometry` rebuilds every cell in the ring
+/// on a re-anchor, a terrain-field revision, a coverage revision or any
+/// detail-layer toggle, and neither optional layer caches a failure (deliberately:
+/// a poisoned cache key is never re-fetched, so half a cell written under one is
+/// worse than a cell asked for again). Without a gate, each retear re-pays the
+/// full wait for every cell.
+///
+/// So the failure is remembered per **service** rather than per cell: any fetch
+/// or parse failure trips the breaker, and while it is open the layer's
+/// `should_fetch` answers `false` and no request is issued at all. One instance
+/// per module — RWS's marks service and ProRail's crossings service can fail
+/// independently even though both sit behind `api.pdok.nl`.
+///
+/// The decision is a **pure predicate over an injected instant**
+/// ([`Breaker::is_open_at`]), so a caller's gate can be asserted with no runtime
+/// and no network — the same reason both layers split `should_fetch` out in the
+/// first place. The clock is `web_time`: `std::time::Instant::now()` panics on
+/// wasm, which is the one platform where this gate is the *only* bound (`ehttp`
+/// ignores the request timeout there).
+pub struct Breaker {
+    /// When the breaker was last tripped, if it has been.
+    tripped_at: std::sync::Mutex<Option<web_time::Instant>>,
+}
+
+impl Breaker {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            tripped_at: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Record a failure. The breaker is open from `now` until
+    /// [`BREAKER_COOLDOWN`] has passed.
+    pub fn trip_at(&self, now: web_time::Instant) {
+        if let Ok(mut slot) = self.tripped_at.lock() {
+            *slot = Some(now);
+        }
+    }
+
+    /// [`Breaker::trip_at`] with the current clock.
+    pub fn trip(&self) {
+        self.trip_at(web_time::Instant::now());
+    }
+
+    /// Is the service still being held off at `now`?
+    #[must_use]
+    pub fn is_open_at(&self, now: web_time::Instant) -> bool {
+        self.tripped_at
+            .lock()
+            .ok()
+            .and_then(|slot| *slot)
+            // `checked_duration_since`, not `-`: `Instant` subtraction panics
+            // when the argument is later, and an injected instant is free to be
+            // one. `None` reads as closed, which costs one request.
+            .and_then(|at| now.checked_duration_since(at))
+            .is_some_and(|since| since < BREAKER_COOLDOWN)
+    }
+}
+
+impl Default for Breaker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Fetch the response body as bytes. `Err` carries a human-readable message, to
 /// match the `Result<_, String>` shape the fetchers already use.
 ///
@@ -321,6 +418,67 @@ mod imp {
             body_started.elapsed().as_micros() as u64,
         );
         Ok(buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of the optional-layer bound is that it is *shorter* than
+    /// the one a fetcher inherits by not asking.
+    #[test]
+    fn the_optional_layer_bound_is_shorter_than_the_default() {
+        assert!(OPTIONAL_LAYER_TIMEOUT < DEFAULT_TIMEOUT);
+        assert_eq!(
+            Request::get("http://example.invalid/").timeout,
+            DEFAULT_TIMEOUT
+        );
+        assert_eq!(
+            Request::get("http://example.invalid/")
+                .timeout(OPTIONAL_LAYER_TIMEOUT)
+                .timeout,
+            OPTIONAL_LAYER_TIMEOUT
+        );
+    }
+
+    /// The gate, as a pure function of an injected instant: no runtime, no
+    /// network, no wall clock. A fresh breaker lets everything through; a
+    /// tripped one holds the service off for exactly the cooldown and then
+    /// reopens.
+    #[test]
+    fn a_tripped_breaker_reopens_after_the_cooldown() {
+        let now = web_time::Instant::now();
+        let breaker = Breaker::new();
+        assert!(
+            !breaker.is_open_at(now),
+            "a fresh breaker holds nothing off"
+        );
+
+        breaker.trip_at(now);
+        assert!(breaker.is_open_at(now));
+        assert!(breaker.is_open_at(now + BREAKER_COOLDOWN - Duration::from_secs(1)));
+        assert!(!breaker.is_open_at(now + BREAKER_COOLDOWN));
+        assert!(!breaker.is_open_at(now + BREAKER_COOLDOWN + Duration::from_secs(1)));
+
+        // …and a second failure inside the window restarts it, rather than
+        // letting the first trip's deadline stand.
+        let later = now + Duration::from_secs(30);
+        breaker.trip_at(later);
+        assert!(breaker.is_open_at(now + BREAKER_COOLDOWN));
+        assert!(!breaker.is_open_at(later + BREAKER_COOLDOWN));
+    }
+
+    /// One instance per service: two upstreams behind one host fail
+    /// independently, so tripping one must not hold the other off.
+    #[test]
+    fn breakers_are_independent_of_one_another() {
+        let now = web_time::Instant::now();
+        let one = Breaker::new();
+        let other = Breaker::default();
+        one.trip_at(now);
+        assert!(one.is_open_at(now));
+        assert!(!other.is_open_at(now));
     }
 }
 

@@ -468,25 +468,37 @@ fn spawn_geometry_task(
             // onto the frame loop on wasm. `wants.furniture` is the third gate —
             // marks ride that group's mesh, so a run with it off asks for
             // nothing.
+            //
+            // …and the cell's registered level crossings, on exactly the same
+            // terms and with the same gates (`systems::crossings`). Its second
+            // one reads the undecoded body for the railway the way the marks
+            // read it for water, and for the same reason.
+            //
+            // Both gate reads happen here, *before* either future is polled, so
+            // the two can be awaited together: these are the only two awaits in
+            // this task that reach a host we do not own, and running them end to
+            // end means a cell's ground waits on one third party's answer twice
+            // over (#267). Natively that is presentation rather than overlap —
+            // `http::fetch` is a blocking `ureq` call with no await point in it
+            // — and what bounds the wait there is `http::OPTIONAL_LAYER_TIMEOUT`
+            // on each request plus each service's breaker.
             let has_water = fetched
                 .as_ref()
                 .is_ok_and(|bytes| vector_tiles::body_mentions_water(bytes));
-            let mark_cell = if wants.furniture {
-                crate::systems::nav_marks::load_marks_cell(cell.0, cell.1, has_water).await
-            } else {
-                crate::systems::nav_marks::MarkCell::default()
-            };
-            // …and the cell's registered level crossings, on exactly the same
-            // terms and with the same three gates (`systems::crossings`). The
-            // second one reads the undecoded body for the railway the way the
-            // marks read it for water, and for the same reason.
             let has_rail = fetched
                 .as_ref()
                 .is_ok_and(|bytes| vector_tiles::body_mentions_rail(bytes));
-            let crossing_cell = if wants.furniture {
-                crate::systems::crossings::load_crossings_cell(cell.0, cell.1, has_rail).await
+            let (mark_cell, crossing_cell) = if wants.furniture {
+                futures_lite::future::zip(
+                    crate::systems::nav_marks::load_marks_cell(cell.0, cell.1, has_water),
+                    crate::systems::crossings::load_crossings_cell(cell.0, cell.1, has_rail),
+                )
+                .await
             } else {
-                crate::systems::crossings::CrossingCell::default()
+                (
+                    crate::systems::nav_marks::MarkCell::default(),
+                    crate::systems::crossings::CrossingCell::default(),
+                )
             };
             crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
