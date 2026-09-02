@@ -131,7 +131,8 @@ recorded here so the next reader knows they were considered rather than missed.
 `karakter` (100% filled): `Openbare overweg` 2,022 · `Onbekend` 587 ·
 `Dienstoverpad` 557 · private 263 · `Niet-openbare overweg met een openbaar
 karakter` 214 · `Openbare overweg (voetpad)` 158 · … Not read: the form comes
-from `overweg_type`, and the road's own width is already in the tile.
+from `overweg_type`, and the road's own width is already in the tile — which is
+now a statement about the code and not only about the data. See below.
 
 `aantal_sporen` (100% filled): 1 → 2,091 · 2 → 1,269 · 3 → 232 · 4 → 126 ·
 0 → 68 · 5 → 48 · up to 14. It sets how far apart the two installations stand
@@ -140,7 +141,7 @@ crossing over no track — and the count is clamped at 16.
 
 `vri` (road signals present): `Ja` on 24. Not read.
 
-## Orientation comes from the road, and the rail has to be excluded to get it
+## Orientation *and width* come from the road, and the rail has to be excluded to get either
 
 The collection's own description says it plainly: *"Dit punt is dus niet het
 midden van een overweg maar een punt op de spoorhartlijn in de buurt van een
@@ -163,6 +164,49 @@ A crossing with **no non-rail way in range is dropped**, not drawn at a guessed
 angle — a real loss (a service crossing over a farm track OSM does not carry goes
 undrawn) and the honest one. `level_crossings` in `--dump-state` therefore counts
 what is on screen rather than what came back from the register.
+
+### The same lookup answers how wide that road is
+
+`CrossingKind::spec` used to return a constant half-carriageway per form, and
+every form but the mini one used 3.5 m — a 7 m road, for every `AHOB`, `HAHOB`,
+`AOB` and lights installation in the country. The Peizerweg is OSM
+`highway=secondary`, which `road_texture::road_width_m` answers **11 m** for, and
+that is the ribbon this client draws. So both masts stood about a metre and a
+half *inside* the kerb, on the asphalt, and each 4 m boom covered well under half
+the carriageway. It was wrong the other way for the commonest small form:
+`AHOB-MINI` (381 features) assumed 1.6 m where a cycleway is 2.2 m wide and a
+footway 1.8 m.
+
+The width was already within reach of the lookup that gives the yaw, so
+`WayField` now carries a half-carriageway per segment and `direction_and_width`
+returns it beside the direction. It has to be the **same** segment: asking twice
+could pick two different roads, and a crossing sized for one and turned to
+another is worse than either mistake alone. The number is
+`vector_tiles::drawn_street`'s own — the very function the ribbon's width comes
+from — so the installation and the tarmac under it cannot drift.
+
+Two constraints shaped it. **`WayFilter::All` still reads no tags**: that is the
+path every streamed cell's furniture takes, and it answers no width at all, which
+is why the width is per-filter rather than per-field. And **everything across the
+road is derived from that one half-width**: the mast stands `half + 0.5` from the
+centre, a half barrier's boom reaches back `half + 0.5` so its tip meets the
+centreline, and a full barrier's reaches `2 × half + 0.5` so its tip meets the far
+kerb.
+
+The fallback, for a way with no `kind`, a kind `road_class` refuses, or a tunnel
+(`drawn_street` declines all three), is the form's old constant — so a tile with
+no usable tags draws exactly what it drew before. The one number that moved
+there is the full barrier's reach, 7.5 m against a tabulated 7.6: the 10 cm is
+the accepted cost of deriving the reach instead of writing it down.
+
+Not done, deliberately: no plausibility clamp on the resolved width. The nearest
+non-rail way within 30 m might be a road running *parallel* to the track rather
+than the one crossing it — but that is already how the yaw is chosen, so the
+width is exactly as trustworthy as the orientation this layer already ships, and
+bounding one and not the other would be arbitrary. `lanes` stays unread too:
+`road_width_m` classifies on `kind` and two flags, so the Peizerweg's `lanes=3`
+changes nothing. This makes the crossing agree with the ribbon the client draws,
+not with OSM's lane count.
 
 ## What is not drawn, and why
 
