@@ -306,12 +306,19 @@ type DatedCount = (usize, usize);
 /// with viewpoints is how an afternoon goes.
 type DoorCount = usize;
 
+/// Each drawn shell's BAG id and its measured storey datum, metres above its own
+/// base. See [`shell_datum_height`] — this is the only place in the client that
+/// knows how tall a building actually is, because the height only exists in the
+/// LoD2.2 geometry and is thrown away the moment the mesh is merged.
+type ShellHeights = Vec<(String, f32)>;
+
 type Lod22Build = (
     GridCell,
     Vec<Piece>,
     Vec<crate::systems::collision::Footprint>,
     DatedCount,
     DoorCount,
+    ShellHeights,
 );
 
 /// A cell taken off the stream but not fully spawned: the remaining pieces land
@@ -364,6 +371,10 @@ pub struct Lod22Buildings {
     dated: HashMap<(i64, i64), DatedCount>,
     /// Per-cell tally of doors drawn ([`DoorCount`]).
     doors: HashMap<(i64, i64), DoorCount>,
+    /// Each loaded shell's storey datum, metres ([`shell_datum_height`]), keyed
+    /// by BAG identificatie. Per cell so it is evicted with the cell it was
+    /// measured from, exactly as the colliders are.
+    heights: HashMap<(i64, i64), HashMap<String, f32>>,
     /// Terrain-field revision these cells were built against. The field arrives a
     /// second or two after the anchor, so the first cells are always built on flat
     /// ground and have to be rebuilt onto the measured one.
@@ -400,6 +411,17 @@ impl Lod22Buildings {
     pub fn doors(&self) -> usize {
         self.doors.values().sum()
     }
+
+    /// How tall a building's shell is, metres above its own base — the datum
+    /// `systems::interiors` divides into storeys. `None` for a building whose
+    /// LoD2.2 cell is not loaded, which every caller must read as "one storey",
+    /// because that is the answer this layer gave before it could ask.
+    ///
+    /// Linear in loaded cells (a handful) and a hash lookup in each; called once
+    /// per building when the interior set is rebuilt, not per frame.
+    pub fn shell_height(&self, id: &str) -> Option<f32> {
+        self.heights.values().find_map(|c| c.get(id).copied())
+    }
 }
 
 impl Default for Lod22Buildings {
@@ -418,6 +440,7 @@ impl Default for Lod22Buildings {
             cells: HashMap::new(),
             dated: HashMap::new(),
             doors: HashMap::new(),
+            heights: HashMap::new(),
             no_shadow: HashSet::new(),
             material: None,
             interior_material: None,
@@ -480,6 +503,7 @@ pub fn update_lod22(
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.dated.clear();
         lod.doors.clear();
+        lod.heights.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -503,6 +527,7 @@ pub fn update_lod22(
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.dated.clear();
         lod.doors.clear();
+        lod.heights.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -650,7 +675,7 @@ pub fn update_lod22(
         lod.stream.defer(deferred);
         for (c, built) in done {
             match built {
-                Ok(Some((grid_cell, pieces, footprints, dated, doors))) => {
+                Ok(Some((grid_cell, pieces, footprints, dated, doors, heights))) => {
                     // The whole cell's bookkeeping lands with its first frame:
                     // colliders are cheap CPU state (an avatar can bump into a
                     // building a frame before it is drawn, which beats walking
@@ -662,6 +687,7 @@ pub fn update_lod22(
                     lod.cells.insert(c, Vec::new());
                     lod.dated.insert(c, dated);
                     lod.doors.insert(c, doors);
+                    lod.heights.insert(c, heights.into_iter().collect());
                     lod.partial = Some(PartialCell {
                         cell: c,
                         grid_cell,
@@ -791,6 +817,7 @@ pub fn update_lod22(
     for c in stale {
         lod.dated.remove(&c);
         lod.doors.remove(&c);
+        lod.heights.remove(&c);
         if let Some(entities) = lod.cells.remove(&c) {
             for e in entities {
                 lod.stream.retire(e);
@@ -910,6 +937,11 @@ fn build_lod22_from_text(
     // How many drawn buildings the BAG join reached, and how many were drawn.
     let mut dated = (0usize, 0usize);
     let mut drawn_doors = 0usize;
+    // How tall each drawn shell is, for `systems::interiors` to divide into
+    // storeys. Measured here because this is the only lane that ever sees the
+    // height: it arrives on the vertices, is baked into a merged mesh, and is
+    // unrecoverable from anything downstream.
+    let mut heights: ShellHeights = Vec::new();
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -943,6 +975,14 @@ fn build_lod22_from_text(
         ) {
             struck += 1;
             continue;
+        }
+        // Only a shell has a storey datum worth taking. An imported model is many
+        // elements and brings its own floors (`systems::lod3`), so measuring one
+        // would report the height of a wall panel as the height of a building.
+        if b.class.is_empty() && !b.id.is_empty() {
+            if let Some(h) = shell_datum_height(&b.p, &b.t) {
+                heights.push((b.id.clone(), h));
+            }
         }
         let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_dated(
             blat,
@@ -1128,7 +1168,55 @@ fn build_lod22_from_text(
             .into_iter()
             .map(|m| (m, true)),
     );
-    Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints, dated, drawn_doors)))
+    Ok(
+        (!pieces.is_empty()).then_some((
+            grid_cell,
+            pieces,
+            footprints,
+            dated,
+            drawn_doors,
+            heights,
+        )),
+    )
+}
+
+/// The height a building's storeys are counted against, metres above its own
+/// base — or `None` for a soup with no roof to measure.
+///
+/// **Not the maximum vertex height, which is the ridge.** A pitched Dutch house
+/// carries three or four metres of roof over its top ceiling, so dividing the
+/// ridge by a storey invents a floor in the rafters. This is the 70th percentile
+/// of the roof surface's own vertices — the same datum 3DBAG publishes as
+/// `b3_h_dak_70p`, which is what it publishes *because* it approximates the
+/// eaves on a pitched roof and is exact on a flat one.
+///
+/// Vertices are taken from the roof triangles rather than from `p` wholesale: the
+/// wall vertices run from the ground up, so including them would drag the
+/// percentile down by however much wall the building has, i.e. by its height.
+fn shell_datum_height(p: &[(f64, f64, f32)], t: &[(usize, usize, usize, u8)]) -> Option<f32> {
+    let mut hs: Vec<f32> = Vec::new();
+    for &(i, j, k, is_roof) in t {
+        if is_roof != 1 {
+            continue;
+        }
+        for ix in [i, j, k] {
+            if let Some(&(_, _, h)) = p.get(ix) {
+                hs.push(h);
+            }
+        }
+    }
+    // A cell that predates the roof flag tags nothing, and a flat-roofed solid is
+    // the same height whichever vertices are taken; falling back to all of them
+    // beats answering "no height" and flattening the building to one storey.
+    if hs.is_empty() {
+        hs.extend(p.iter().map(|&(_, _, h)| h));
+    }
+    if hs.is_empty() {
+        return None;
+    }
+    hs.sort_by(f32::total_cmp);
+    let at = ((hs.len() - 1) as f32 * 0.7).round() as usize;
+    Some(hs[at].max(0.0))
 }
 
 /// Cache key for a LoD2.2 cell (its own namespace under the cache root).

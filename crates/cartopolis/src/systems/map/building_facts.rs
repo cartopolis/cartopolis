@@ -800,7 +800,10 @@ impl BuildingFacts {
         self.buildings.is_empty()
     }
 
-    /// Every building whose outline starts within `max_m` of a (lat, lng).
+    /// Every building whose outline starts within `max_m` of a (lat, lng), with
+    /// its identificatie — the key the caller joins the LoD2.2 shell height on
+    /// (`lod22::Lod22Buildings::shell_height`), which is what says how many
+    /// storeys fit inside.
     ///
     /// Linear over the index — tens of thousands of buildings, walked when the
     /// avatar has moved fifteen metres rather than per frame, which is a fraction
@@ -808,13 +811,14 @@ impl BuildingFacts {
     /// outline's **first vertex** rather than to a centroid: a building is metres
     /// across and this radius is seventy, so the difference cannot change an
     /// answer that matters, and a centroid would cost a pass over every ring.
-    pub fn near(&self, lat: f64, lng: f64, max_m: f64) -> Vec<&BuildingFact> {
+    pub fn near(&self, lat: f64, lng: f64, max_m: f64) -> Vec<(&str, &BuildingFact)> {
         const M_PER_DEG: f64 = 111_320.0;
         let scale = lat.to_radians().cos();
         let max2 = max_m * max_m;
         self.buildings
-            .values()
-            .filter(|b| {
+            .iter()
+            .map(|(id, b)| (&**id, b))
+            .filter(|(_, b)| {
                 let Some(&(blat, blng)) = b.footprint.first() else {
                     return false;
                 };

@@ -1596,6 +1596,7 @@ pub fn smooth_online_avatar_display(
     time: Res<Time>,
     mut avatar_query: Query<&mut Transform, With<Avatar>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    floors: Res<crate::systems::interiors::InteriorFloors>,
     mut health: ResMut<crate::resources::NetPredictionHealth>,
     // The age this system saw last frame, so the gap a snapshot closed can be read
     // off the frame it resets on. A `Local` and not a field on the resource: it is
@@ -1665,7 +1666,10 @@ pub fn smooth_online_avatar_display(
         // reason — smoothing a lifted position toward a flat target would drag the
         // avatar back into the hillside every frame, and the two would fight for as
         // long as you stood on a slope.
-        display.y -= avatar_state.terrain_lift;
+        // Both lifts come off, for the reason the comment above gives: what is
+        // smoothed toward a flat target has to be flat itself, or the avatar is
+        // dragged back down through the storey it is standing on every frame.
+        display.y -= avatar_state.terrain_lift + avatar_state.floor_lift;
         // Match the sim's ground clamp (`state::step`, y >= 0) so a fly-down
         // prediction doesn't dip through the floor and bounce back.
         if display.y < 0.0 {
@@ -1687,7 +1691,18 @@ pub fn smooth_online_avatar_display(
             display.lerp(target, reconcile)
         };
         avatar_state.terrain_lift = terrain.at(flat.x, flat.z);
-        avatar_state.display_position = flat + Vec3::Y * avatar_state.terrain_lift;
+        // The storey, on top of the ground. Sampled from `flat` — the reconciled
+        // sim position, which is the frame `interiors` builds its rooms in and the
+        // frame `send_network_intent` resolves collision in — so the floor the
+        // avatar stands on is the floor it can see and the wall it just walked
+        // through.
+        let floor = crate::systems::interiors::step_floor_lift(
+            &floors,
+            &mut avatar_state,
+            Vec2::new(flat.x, flat.z),
+            dt,
+        );
+        avatar_state.display_position = flat + Vec3::Y * (avatar_state.terrain_lift + floor);
         // What the follow camera leads by. The predicted velocity is the honest
         // answer online: it is precisely the rate `display_position` advances at
         // between snapshots, which is what the rig is trying to keep up with.
@@ -1719,6 +1734,7 @@ pub fn handle_avatar_movement(
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    floors: Res<crate::systems::interiors::InteriorFloors>,
     // How long Space has been held this press, and whether the hold has already
     // been spent on a flight toggle (so it fires once, not every frame past the
     // threshold).
@@ -1994,7 +2010,18 @@ pub fn handle_avatar_movement(
     // ground level itself rather than as a display offset the way it does online
     // (`smooth_online_avatar_display`): lifting the transform after the fact would
     // read as airborne on the next frame and gravity would take it straight back.
-    let ground_y = GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z);
+    // The storey the avatar is standing on, if it is indoors. Same shape as the
+    // terrain above it — the ground level is whatever is under your feet, and a
+    // first-floor slab is as much "the ground" as a hillside is. Sampled in the
+    // frame `interiors` built its rooms in, which is this transform's.
+    let floor = crate::systems::interiors::step_floor_lift(
+        &floors,
+        &mut avatar_state,
+        Vec2::new(transform.translation.x, transform.translation.z),
+        delta_time,
+    );
+    let ground_y =
+        GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z) + floor;
     if avatar_state.is_flying {
         // Ramped, not switched — `motion::step_fly_vertical`, the same curve the
         // sim runs and `send_network_intent` predicts. Descent stops asking once

@@ -1874,6 +1874,7 @@ fn run_client() {
         .init_resource::<systems::building_facts::BuildingFacts>()
         .init_resource::<systems::dikes::Dikes>()
         .init_resource::<systems::interiors::Interiors>()
+        .init_resource::<systems::interiors::InteriorFloors>()
         .init_resource::<systems::street_detail::StreetDetail>()
         .init_resource::<systems::tall_structures::TallStructures>()
         .init_resource::<systems::collision::BuildingColliders>()

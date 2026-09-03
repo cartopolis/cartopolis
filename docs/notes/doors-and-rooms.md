@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow]
-updated: 2026-08-30
+triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow, storeys, stairs, floor_lift, InteriorFloors, shell_datum_height, cell_cache_key]
+updated: 2026-09-03
 ---
 
 # Doors, and what is behind them
@@ -117,10 +117,13 @@ single LoD2.2 cell carries.
 
 Three things are load-bearing:
 
-- **One storey, not the full height.** The register says how many units a building
-  holds, never where its floors are. A room is the ground floor at a nominal
-  ceiling; above that ceiling is the shell, unchanged. A full-height empty volume
-  would be a sixteen-metre shaft with a front door, which is not a thing.
+- **A storey at a time, never the full height in one volume.** A full-height empty
+  volume would be a sixteen-metre shaft with a front door, which is not a thing.
+  This started as *one* storey, because the register says how many units a
+  building holds and never where its floors are; the shell's own geometry does
+  say how much building there is to divide, and "Storeys, and where the count
+  comes from" below is how that is now read. Each storey is still a room at a
+  nominal ceiling, and what is above the top one is the shell, unchanged.
 - **The walls are inset** from the outline, so they stand inside the shell's own
   walls rather than in the same plane, where the two would z-fight the length of
   every room. The inset is an *edge* offset with a corner join, not a vertex push
@@ -155,3 +158,136 @@ few seconds of a session.
 An imported IFC model brings its own doors: `IfcDoor` is imported and
 `lod3::is_solid_class` excludes it from collision, so a modelled doorway is
 already open. All of the above is for the shells.
+
+## A published fix that nobody could see
+
+The door work landed on 2026-08-30 and an APK carrying it was installed on
+2026-09-02. There were still no doors, and the app was not at fault.
+
+`building_facts::cell_cache_key` had **no format version in it**, and the cache
+has no revalidation — a hit is served and the host is never asked. The BAG cells
+gained `doors` and `fp` when the extractor was re-run on 2026-08-29, so any
+client that had already visited a city held a copy of that city from before, and
+would hold it forever. Both fields are `#[serde(default)]`, so nothing failed:
+the cell parsed, every building came out with no entrance and no outline,
+`lod22` drew no door, `interiors` built no room, and the map looked exactly as it
+always had. Updating the app could not touch it. Reinstalling would have.
+
+`lod22`'s key already carried a `v2` for precisely this, and its own comment
+records the same bug happening there with the mangled ids. The BAG key now
+carries one too. **The rule is that a cache key with no version is a bug the
+moment the file it names can gain a field**, and the tell is always the same
+shape: the new code is provably right, the deployed data is provably right, and
+the two never meet.
+
+## Storeys, and where the count comes from
+
+A room used to be the ground floor and nothing else, because "the register says
+how many units a building holds, never where its floors are". That is still true
+of the register. It is not true of the *geometry*: a LoD2.2 vertex carries its
+height above the building's own base, so the shell says how much building there
+is to divide, and `lod22::shell_datum_height` measures it as the cell is parsed.
+
+**Not the maximum vertex height, which is the ridge.** A pitched Dutch house
+carries three or four metres of roof over its top ceiling, so dividing the ridge
+by a storey invents a floor in the rafters. The datum is the 70th percentile of
+the *roof* surface's own vertices — the same number 3DBAG publishes as
+`b3_h_dak_70p`, and it publishes it because it approximates the eaves on a
+pitched roof and is exact on a flat one. Wall vertices are excluded because they
+run from the ground up, so including them drags the percentile down by however
+much wall the building has, i.e. by its height.
+
+**The obvious alternative lost on a measurement.** The BAG ships each unit's
+floor area and how many units a building holds, so `units × area / footprint` is
+a storey count that needs no geometry at all and no new plumbing. Over the 6,342
+buildings in Groningen's centre cell where both answers exist, the two agree on
+**32.5 %** of buildings, and the area estimate is systematically lower — the
+register's `gebruiksoppervlakte` is *usable* area, which excludes the walls, the
+stairwell and the low half of an attic. That is a bias, and it could be
+corrected. What cannot be corrected is that floor area does not know how tall
+the building is: the stack has to fit **under the roof**, and only the height
+can promise that. `storeys_for` therefore floors the datum, and
+`no_storey_ever_reaches_above_the_shell_that_holds_it` walks every shell height
+from 3 to 30 m to pin it.
+
+The join runs the other way from every other fact in this area: the BAG cell
+carries the outline and the doors, and the *height* comes from the LoD2.2 lane,
+which is the only one that ever sees it. A building whose shell has not landed
+yet reads as one storey — the old behaviour — and gains its floors on the
+rebuild the growing facts index triggers anyway.
+
+## The stairs, and why a floor nobody can reach is not a floor
+
+Stacking rooms is the easy half and on its own it is a lie: the upper storeys
+would be visible through the stairwell and reachable only by flying. So a
+building gets its extra storeys **only if a flight fits in it**, and one that
+does not keeps its ground floor whatever its height says.
+
+The flight is straight and stands against the longest wall. Both are what let
+the same footprint stack on every storey: a flight that wandered would need its
+own well on each floor and its own answer for where the one above starts. Where
+it sits on that wall is fixed — centred — rather than chosen, because a
+staircase that moved when the avatar walked fifteen metres would be a
+poltergeist. It is checked against the ring on **both** axes, because a corridor
+has a wall long enough for the run and no depth at all to put the flight in, and
+the length test alone passes it.
+
+The well is a **bite out of the boundary, not an island in the slab**. That is
+the reason for putting the flight against a wall and not merely a consequence:
+an interior hole would have to be a second ring strictly inside the first, and a
+well that stops five centimetres short of the wall leaves a nib of floor hanging
+over it. `notch_ring` walks the outline, detours around the flight when it
+reaches the wall it is on, and carries on — which keeps the result a simple
+polygon.
+
+That did retire the fan triangulation. A fan about the centroid is right on the
+near-convex outline a footprint usually is, and a notched slab is exactly the
+shape it gets wrong — and it gets it wrong by **filling the well back in**, so
+the stairs arrive under a lid while the metric, the collider and the geometry all
+still say the hole is there. It is earcut now, which the client already had.
+
+## Standing on the first floor
+
+`InteriorFloors` is a **ground level, not a collider**. `BuildingColliders`
+answers "may I move here" in two dimensions; a stack of floors poses the other
+question, "how high is the ground", and answering it with more 2D polygons cannot
+work.
+
+Three things are load-bearing.
+
+- **A surface more than `STEP_UP_M` above you cannot pick you up.** The ceiling
+  over your head and the storey above it are both surfaces directly above you.
+  Only the flight rises *continuously* out of the floor you are standing on, so
+  only the flight can take you up — which is what makes the stairs the way up
+  rather than decoration over a lift.
+- **The flight supports you as a ramp, not as sixteen treads.** The treads are
+  drawn because a ramp does not read as a staircase, but walking one riser at a
+  time is a bob at every step and a foot through every tread.
+- **It enters where the terrain does, and for the same reason.** The sim holds no
+  building geometry and never will, so the wire, the prediction and the
+  reconciliation all stay on the flat plane it actually simulates, and only what
+  you see and walk on stands on the storey. `AvatarState::floor_lift` is a
+  separate field from `terrain_lift` rather than one summed number because they
+  are *found* differently: the terrain is a field sampled anywhere, and this is
+  the answer to "may I be raised onto that", which depends on where you already
+  are.
+
+Stepping off a landing is a **fall**, and the avatar's own `vertical_velocity`
+cannot express one: in the sim's frame the avatar is standing on the ground the
+whole way down, so it is the ground that drops. `floor_lift` therefore falls
+under the same gravity as everything else and rises instantly, which is the
+difference between a step and a drop stated once.
+
+## What the storeys do not do yet
+
+- **The flight is not solid from its open side.** Where the ramp is more than a
+  step above you, you are not lifted onto it — so between roughly a tenth and a
+  half of the run you can walk into the treads rather than under them. Past that
+  the flight is over your head and walking under the stairs is correct. The
+  soffit is drawn for that reason: without it the flight is invisible from below
+  and the storey above shows straight through it.
+- **The rooms are still bare.** No internal partitions, no furniture, no light of
+  their own — a storey is one volume the size of the building.
+- **Nothing has run on a phone.** The support field is CPU state and costs
+  nothing, but the triangle count is several times what a single-storey set cost
+  and the layer has never been measured on a handset.

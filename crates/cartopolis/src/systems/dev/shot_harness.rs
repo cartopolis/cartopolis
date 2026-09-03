@@ -606,6 +606,12 @@ pub struct ShotMetrics {
     /// doors: zero here with a building in front of you means walking in would
     /// put you inside a shell whose walls are culled away.
     pub interior_rooms: usize,
+    /// Storeys standing across those rooms (`interiors::InteriorFloors::storeys`).
+    /// Equal to `interior_rooms` means every building was found too short, or too
+    /// small to hold a staircase, to be divided — which is exactly what this layer
+    /// did before it could count storeys, so the two readings together are what
+    /// say whether the division is live at all.
+    pub interior_storeys: usize,
     /// Doors drawn on facades from the register's entrance points
     /// (`lod22::DoorCount`).
     pub building_doors: usize,
@@ -857,7 +863,7 @@ orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,building_doors,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -2293,6 +2299,8 @@ pub struct ShotReadouts<'w, 's> {
     places: Res<'w, crate::systems::world_places::WorldPlaces>,
     /// The near-camera interior layer, for its room count alone.
     interiors: Res<'w, crate::systems::interiors::Interiors>,
+    /// The same layer's support field, for its storey tally.
+    interior_floors: Res<'w, crate::systems::interiors::InteriorFloors>,
     /// The flood defences, for their two counts alone — see
     /// `ShotMetrics::flood_defences`.
     dikes: Res<'w, crate::systems::dikes::Dikes>,
@@ -2681,6 +2689,7 @@ pub fn drive_capture(
             flood_defences: readouts.dikes.len(),
             flood_defences_measured: readouts.dikes.measured(),
             interior_rooms: readouts.interiors.rooms(),
+            interior_storeys: readouts.interior_floors.storeys(),
             building_doors: readouts.lod22.doors(),
             lod22_dated: readouts.lod22.dated().0,
             lod22_elements: readouts.lod22.dated().1,
@@ -3253,6 +3262,7 @@ mod tests {
             flood_defences: 0,
             flood_defences_measured: 0,
             interior_rooms: 0,
+            interior_storeys: 0,
             building_doors: 0,
             lod22_dated: 0,
             lod22_elements: 0,

@@ -1141,6 +1141,28 @@ pub struct AvatarState {
     /// carries it). Stripped before each reconciliation so prediction and
     /// correction are compared on the same flat plane.
     pub terrain_lift: f32,
+    /// Metres of *interior floor* under the avatar — which storey of a building it
+    /// is standing on (`systems::interiors::InteriorFloors`). Zero outdoors and on
+    /// a ground floor, which is every case this client had before buildings had
+    /// storeys.
+    ///
+    /// It enters exactly where [`Self::terrain_lift`] does and for the same
+    /// reason: the sim holds no building geometry and never will, so the wire, the
+    /// prediction and the reconciliation all stay on the flat plane it actually
+    /// simulates and only what you see — and what you walk on — stands on the
+    /// storey. The two are separate rather than one summed lift because they are
+    /// found differently: the terrain is a field sampled anywhere, and this is the
+    /// answer to "may I be raised onto that", which depends on where you already
+    /// are.
+    pub floor_lift: f32,
+    /// Downward speed of `floor_lift` while it is falling, m/s.
+    ///
+    /// Stepping off a landing has to be a fall rather than a snap, and the
+    /// avatar's own `vertical_velocity` cannot do it: in the sim's frame the
+    /// avatar is standing on the ground the whole way down, so it is the ground
+    /// that has to drop. Under the same gravity, so a storey and a kerb fall at
+    /// the same rate.
+    pub floor_drop_speed: f32,
     /// Online client-side prediction: the world-space velocity most recently sent
     /// to the sim (after collision steering + fly scaling), replicating the sim's
     /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
@@ -1275,6 +1297,8 @@ impl Default for AvatarState {
             position: p,
             display_position: p,
             terrain_lift: 0.0,
+            floor_lift: 0.0,
+            floor_drop_speed: 0.0,
             predicted_velocity: Vec3::ZERO,
             velocity: Vec3::ZERO,
             fly_vertical: 0.0,

@@ -57,8 +57,46 @@ const INTERIOR_RADIUS: f32 = 70.0;
 /// [`INTERIOR_RADIUS`] so a room is never wanted before it exists.
 const REBUILD_STEP_M: f32 = 15.0;
 
-/// Ceiling height, metres. A nominal Dutch storey.
+/// Floor-to-ceiling height, metres. A nominal Dutch storey.
 const CEILING_M: f32 = 2.9;
+
+/// Floor-to-floor height, metres — the ceiling plus the slab and joists over it.
+/// This is the rise one flight climbs and the pitch the storeys stack at.
+const STOREY_M: f32 = 3.2;
+
+/// Most storeys stacked in one building. Nothing in Groningen's centre cell
+/// reaches it (the tallest shell there divides into seven), but the datum comes
+/// from a survey and a survey can carry a chimney or a mast on a building's
+/// record; a tower block of rooms nobody will enter is not worth the triangles.
+const MAX_STOREYS: usize = 8;
+
+/// Horizontal length of one flight, metres. With [`STOREY_M`] over it that is a
+/// 43° pitch — steep, and correct: a Dutch staircase is steep because the houses
+/// are narrow, and a shallower flight simply does not fit in the rooms this layer
+/// is mostly built over.
+const STAIR_RUN_M: f32 = 3.4;
+
+/// Width of a flight, metres.
+const STAIR_WIDTH_M: f32 = 0.95;
+
+/// How much of a wall must be left over at each end of a flight, metres. Without
+/// it a staircase can be laid corner to corner along a wall exactly its own
+/// length, which puts the top landing in the corner of the room.
+const STAIR_END_CLEAR_M: f32 = 0.4;
+
+/// Treads in one flight. [`STAIR_RUN_M`] and [`STOREY_M`] over this are a
+/// 21 cm going and a 20 cm rise.
+const STAIR_STEPS: usize = 16;
+
+/// How far above the level the avatar is standing on a surface may be and still
+/// be stepped onto, metres.
+///
+/// This is what makes a stack of floors behave like floors: the ceiling over your
+/// head is a surface directly above you and the storey above it is another, and
+/// neither may pick you up. Only the flight rises continuously out of the floor
+/// you are on, so only the flight can take you up — which is the whole point of
+/// there being one.
+const STEP_UP_M: f32 = 0.3;
 
 /// How far the room's walls stand inside the register's outline, metres —
 /// roughly a real wall's thickness, and enough that the inner surface can never
@@ -108,7 +146,9 @@ pub fn update_interiors(
     mut interiors: ResMut<Interiors>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut floors: ResMut<InteriorFloors>,
     facts: Res<BuildingFacts>,
+    lod22: Res<crate::systems::lod22::Lod22Buildings>,
     anchor: Res<MapAnchor>,
     stream: Res<MapStream>,
     avatar: Res<AvatarState>,
@@ -139,9 +179,9 @@ pub fn update_interiors(
     interiors.anchor_generation = stream.anchor_generation;
 
     let mut buf = RoomMesh::default();
-    let mut rooms = 0usize;
+    let mut built: Vec<Room> = Vec::new();
     let (lat, lng) = world_to_lat_lng(geo, f64::from(here.x), f64::from(here.y));
-    for building in facts.near(lat, lng, f64::from(INTERIOR_RADIUS)) {
+    for (id, building) in facts.near(lat, lng, f64::from(INTERIOR_RADIUS)) {
         if building.footprint.len() < 3 || building.doors.is_empty() {
             continue;
         }
@@ -161,11 +201,22 @@ pub fn update_interiors(
                 Vec2::new(x as f32, z as f32)
             })
             .collect();
-        if build_room(&mut buf, &ring, &doors) {
-            rooms += 1;
-        }
+        // How tall the shell is, from the only lane that ever knows: the height
+        // is on the LoD2.2 vertices and nowhere else. `None` while that cell is
+        // still in flight, which reads as one storey — so a building gains its
+        // upper floors when its shell lands, on the rebuild the growing facts
+        // index triggers anyway.
+        let Some(room) = plan_room(&ring, lod22.shell_height(id)) else {
+            continue;
+        };
+        build_room(&mut buf, &room, &doors);
+        built.push(room);
     }
-    interiors.rooms = rooms;
+    interiors.rooms = built.len();
+    // Published before the mesh is: the support field and the geometry are the
+    // same rooms and must never be a frame apart, or the avatar stands on a floor
+    // that has just been rebuilt somewhere else.
+    floors.rooms = built;
 
     if let Some(old) = interiors.entity.take() {
         // `try_despawn`: the whole set is one entity and this system is the only
@@ -206,35 +257,333 @@ pub fn update_interiors(
     interiors.entity = Some(id);
 }
 
-/// Build one building's ground-floor room into `buf`. `false` if the outline was
-/// too small to stand in.
-fn build_room(buf: &mut RoomMesh, ring: &[Vec2], doors: &[Vec2]) -> bool {
-    let inset = inset_ring(ring, WALL_INSET_M);
-    if inset.len() < 3 || ring_area(&inset) < MIN_ROOM_M2 {
-        return false;
-    }
-    // Walls, inward-facing, with the doorways left out.
-    //
-    // Which way is "inward" is **probed, not assumed**. The register does not
-    // promise a winding, and the identical assumption in `lod22`'s door placement
-    // was wrong in this frame — every door in the city was drawn inside its own
-    // wall and the count said they existed. A wall facing the wrong way fails the
-    // same silent way: the room is built, the metric counts it, and standing in it
-    // you see straight out through the walls.
-    for i in 0..inset.len() {
-        let (a, b) = (inset[i], inset[(i + 1) % inset.len()]);
-        let Some(inward) = inward_normal(&inset, a, b) else {
-            continue;
-        };
-        for (from, to) in segments_between_doors(a, b, doors) {
-            buf.wall(from, to, inward);
-        }
-    }
-    buf.slab(&inset, FLOOR_Y, FLOOR_COLOR, true);
-    buf.slab(&inset, CEILING_M, CEILING_COLOR, false);
-    true
+/// A building's interior, as the support field and the mesh builder both see it.
+///
+/// Held in the same frame `update_interiors` builds in — anchored world XZ,
+/// exactly the value `AvatarState::position` carries — so the floor you stand on
+/// and the floor you can see are derived from one ring and cannot disagree.
+pub struct Room {
+    /// The inset outline: where the room's walls stand.
+    ring: Vec<Vec2>,
+    /// How many storeys are stacked in it, at least one.
+    storeys: usize,
+    /// The flight that reaches them, absent in a building too small to hold one
+    /// (in which case `storeys` is 1 — a floor nobody can reach is not a floor).
+    stair: Option<Stair>,
 }
 
+/// One straight flight, repeated identically on every storey it serves.
+///
+/// Straight, and against a wall, because those two together are what let the same
+/// footprint stack: a flight that wandered would need its own stairwell on each
+/// floor and its own answer for where the one above starts.
+#[derive(Clone, Copy)]
+struct Stair {
+    /// The foot of the flight, on the wall line, at the edge of its width.
+    foot: Vec2,
+    /// Unit vector of ascent, along the wall.
+    dir: Vec2,
+    /// Unit vector across the flight, pointing into the room.
+    side: Vec2,
+    /// Horizontal length of the flight, metres.
+    run: f32,
+}
+
+impl Stair {
+    /// Where a point lies on the flight: `(fraction of the run, metres across)`,
+    /// or `None` if it is not over the flight at all.
+    fn local(&self, p: Vec2) -> Option<(f32, f32)> {
+        let rel = p - self.foot;
+        let along = rel.dot(self.dir);
+        let across = rel.dot(self.side);
+        (along >= 0.0 && along <= self.run && across >= 0.0 && across <= STAIR_WIDTH_M)
+            .then(|| (along / self.run, across))
+    }
+
+    /// The four corners of the flight's footprint, anticlockwise from the foot at
+    /// the wall. This is both the stairwell cut out of every floor above and the
+    /// area the support field ramps over, which is the point of there being one.
+    fn rect(&self) -> [Vec2; 4] {
+        let w = self.side * STAIR_WIDTH_M;
+        let r = self.dir * self.run;
+        [self.foot, self.foot + r, self.foot + r + w, self.foot + w]
+    }
+}
+
+/// Every room standing, and the height of the surface under any point in one.
+///
+/// Written by [`update_interiors`] and read by the avatar's two movement paths —
+/// which is what makes an upper storey a place rather than a picture. It is
+/// deliberately not a set of colliders: `collision::BuildingColliders` answers
+/// "may I move here", in two dimensions, and this answers "how high is the
+/// ground", which is the question a stack of floors actually poses.
+#[derive(Resource, Default)]
+pub struct InteriorFloors {
+    rooms: Vec<Room>,
+}
+
+impl InteriorFloors {
+    /// The highest interior surface under `p` that can be reached from `from`,
+    /// metres above the ground plane; 0 when there is nothing there, which is the
+    /// ordinary outdoors and the answer this whole layer used to give everywhere.
+    ///
+    /// `from` is the level the avatar is already standing at, and it is what makes
+    /// this a floor rather than a lift: a surface more than [`STEP_UP_M`] above
+    /// you is something to walk under, not something to be raised onto. Reaching
+    /// the storey above is therefore only ever possible up the flight, whose ramp
+    /// rises continuously out of the floor you are on.
+    pub fn support(&self, p: Vec2, from: f32) -> f32 {
+        let mut best = 0.0f32;
+        for room in &self.rooms {
+            if !point_in_ring(&room.ring, p) {
+                continue;
+            }
+            let on_stair = room.stair.and_then(|s| s.local(p));
+            for k in 0..room.storeys {
+                let level = storey_floor_y(k);
+                // A floor with the stairwell cut out of it is not a floor where
+                // the hole is — that hole is how you came up, and standing on it
+                // would be standing on the gap.
+                if k > 0 && on_stair.is_some() {
+                    continue;
+                }
+                if level <= from + STEP_UP_M && level > best {
+                    best = level;
+                }
+            }
+            // The flight, as a ramp rather than as sixteen steps. The treads are
+            // drawn because a ramp reads as a ramp, but walking a staircase one
+            // riser at a time is a bob at every step and a foot through every
+            // tread; the surface the avatar stands on is the line they lie on.
+            if let Some((t, _)) = on_stair {
+                for k in 0..room.storeys.saturating_sub(1) {
+                    let level = storey_floor_y(k) + t * STOREY_M;
+                    if level <= from + STEP_UP_M && level > best {
+                        best = level;
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// Storeys standing across the set, for `--dump-state`. One per room is the
+    /// old behaviour, so a reading equal to the room count means nothing was
+    /// found tall enough to divide.
+    pub fn storeys(&self) -> usize {
+        self.rooms.iter().map(|r| r.storeys).sum()
+    }
+}
+
+/// Advance the avatar's interior floor level one frame, and answer where it now
+/// is (metres above the ground plane).
+///
+/// Called from **both** movement paths with the frame each one already works in —
+/// offline from the transform, online from the reconciled sim position — because
+/// that is how the collider frame is chosen there too, and a floor derived in a
+/// different frame from the walls around it would be a storey you fall through in
+/// one run mode and hover over in the other.
+///
+/// Rising is immediate: a step up is a step, and the [`STEP_UP_M`] cap in
+/// [`InteriorFloors::support`] has already refused anything that is not one.
+/// Falling is not, because stepping off a landing is a fall — the avatar's own
+/// `vertical_velocity` cannot express it, since in the sim's flat frame it is
+/// standing on the ground the whole way down, so it is the ground that drops.
+pub fn step_floor_lift(
+    floors: &InteriorFloors,
+    avatar: &mut AvatarState,
+    at: Vec2,
+    dt: f32,
+) -> f32 {
+    let target = floors.support(at, avatar.floor_lift);
+    if target >= avatar.floor_lift {
+        avatar.floor_lift = target;
+        avatar.floor_drop_speed = 0.0;
+    } else {
+        avatar.floor_drop_speed += cartopolis_core::motion::GRAVITY * dt;
+        avatar.floor_lift = (avatar.floor_lift - avatar.floor_drop_speed * dt).max(target);
+        if avatar.floor_lift <= target {
+            avatar.floor_drop_speed = 0.0;
+        }
+    }
+    avatar.floor_lift
+}
+
+/// The floor level of storey `k`, metres above the ground plane.
+fn storey_floor_y(k: usize) -> f32 {
+    k as f32 * STOREY_M + FLOOR_Y
+}
+
+/// How many storeys fit inside a shell `height_m` metres tall.
+///
+/// `floor`, not `round`, and against the eaves datum rather than the ridge
+/// (`lod22::shell_datum_height`): the whole stack has to fit *under* the roof,
+/// because a room whose ceiling pokes out through the tiles is worse than a
+/// building with one room in it. The top ceiling lands at `n·STOREY_M − 0.3`,
+/// which is under the datum by construction whatever the building is.
+///
+/// `None` — a shell whose LoD2.2 cell has not landed — is one storey, which is
+/// what this layer built before it could ask.
+fn storeys_for(height_m: Option<f32>) -> usize {
+    let Some(h) = height_m else {
+        return 1;
+    };
+    ((h / STOREY_M).floor() as usize).clamp(1, MAX_STOREYS)
+}
+
+/// Lay out one building's interior: inset the outline, and find somewhere to put
+/// the stairs. `None` if the outline is too small to stand in.
+fn plan_room(ring: &[Vec2], height_m: Option<f32>) -> Option<Room> {
+    let inset = inset_ring(ring, WALL_INSET_M);
+    if inset.len() < 3 || ring_area(&inset) < MIN_ROOM_M2 {
+        return None;
+    }
+    let wanted = storeys_for(height_m);
+    let stair = (wanted > 1).then(|| find_stair(&inset)).flatten();
+    Some(Room {
+        // A building with nowhere to put a flight gets its ground floor and
+        // nothing else. The alternative — stacking the storeys anyway — is rooms
+        // that can only be reached by flying, which is not what a floor is.
+        storeys: if stair.is_some() { wanted } else { 1 },
+        stair,
+        ring: inset,
+    })
+}
+
+/// Put a straight flight against the longest wall of a room, or `None` if none of
+/// them can hold one.
+///
+/// The longest wall because that is the one most likely to have the run free, and
+/// against a wall because a flight in the middle of a room needs a balustrade on
+/// both sides and a reason. Which end it starts from is fixed (centred on the
+/// wall) rather than chosen, so the answer is the same every rebuild — a
+/// staircase that moved when you walked fifteen metres would be a poltergeist.
+fn find_stair(ring: &[Vec2]) -> Option<Stair> {
+    let n = ring.len();
+    let mut best: Option<(f32, Stair)> = None;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let len = (b - a).length();
+        if len < STAIR_RUN_M + 2.0 * STAIR_END_CLEAR_M {
+            continue;
+        }
+        let dir = (b - a) / len;
+        let Some(side) = inward_normal(ring, a, b) else {
+            continue;
+        };
+        let foot = a + dir * ((len - STAIR_RUN_M) * 0.5);
+        let stair = Stair {
+            foot,
+            dir,
+            side,
+            run: STAIR_RUN_M,
+        };
+        // The room has to be deep enough here to take the flight, not merely long
+        // enough along the wall: a corridor five metres long and one wide has a
+        // wall that passes the length test and no room for a staircase at all.
+        if !stair.rect().iter().all(|&c| point_in_ring(ring, c)) {
+            continue;
+        }
+        if best.is_none_or(|(l, _)| len > l) {
+            best = Some((len, stair));
+        }
+    }
+    best.map(|(_, s)| s)
+}
+
+/// Build one room's storeys into `buf`.
+fn build_room(buf: &mut RoomMesh, room: &Room, doors: &[Vec2]) {
+    let ring = &room.ring;
+    // The floor of every storey above the ground has the stairwell cut out of it,
+    // and so does the ceiling under it — a stairwell capped by the ceiling of the
+    // room it rises out of is a flight into a lid.
+    let notched = room
+        .stair
+        .filter(|_| room.storeys > 1)
+        .and_then(|s| notch_ring(ring, &s));
+    for k in 0..room.storeys {
+        let floor_y = storey_floor_y(k);
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            let Some(inward) = inward_normal(ring, a, b) else {
+                continue;
+            };
+            // Only the ground floor is cut for a door. The register's entrances
+            // are at street level and nothing above it opens onto anything.
+            let pieces = if k == 0 {
+                segments_between_doors(a, b, doors)
+            } else {
+                vec![(a, b)]
+            };
+            for (from, to) in pieces {
+                buf.wall(from, to, inward, floor_y, floor_y + CEILING_M);
+            }
+        }
+        let floor_ring = if k == 0 {
+            ring.as_slice()
+        } else {
+            notched.as_deref().unwrap_or(ring)
+        };
+        let ceiling_ring = if k + 1 == room.storeys {
+            ring.as_slice()
+        } else {
+            notched.as_deref().unwrap_or(ring)
+        };
+        buf.slab(floor_ring, floor_y, FLOOR_COLOR, true);
+        buf.slab(ceiling_ring, floor_y + CEILING_M, CEILING_COLOR, false);
+    }
+    if let Some(stair) = room.stair {
+        for k in 0..room.storeys.saturating_sub(1) {
+            buf.flight(&stair, storey_floor_y(k));
+        }
+    }
+}
+
+/// The ring with the stairwell taken out of it.
+///
+/// The flight stands against a wall, so the well it needs is a **bite out of the
+/// boundary** rather than an island in the middle of the slab: the ring is walked
+/// as before until it reaches the wall the stairs are on, then detours around
+/// them and carries on. That keeps the result a simple polygon, which is the
+/// whole reason for putting the flight against a wall in the first place — an
+/// interior hole would have to be a separate ring, strictly inside, and a
+/// stairwell that stops five centimetres short of the wall leaves a nib of floor
+/// hanging over it.
+///
+/// `None` when the flight is not on any of this ring's edges, which cannot happen
+/// for a stair this ring produced and is the honest answer if one ever arrives
+/// from somewhere else.
+fn notch_ring(ring: &[Vec2], stair: &Stair) -> Option<Vec<Vec2>> {
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let len = (b - a).length();
+        if len <= f32::EPSILON {
+            continue;
+        }
+        let dir = (b - a) / len;
+        // The flight's own wall: the one it points along and sits on.
+        if dir.dot(stair.dir) < 0.999 || (stair.foot - a).perp_dot(dir).abs() > 0.01 {
+            continue;
+        }
+        let t0 = (stair.foot - a).dot(dir);
+        let corners = stair.rect();
+        let mut out = Vec::with_capacity(n + 4);
+        for (j, &p) in ring.iter().enumerate() {
+            out.push(p);
+            if j == i {
+                // Anticlockwise around the well, from the near corner on the wall
+                // to the far one, so the detour keeps the ring's own direction.
+                out.push(a + dir * t0);
+                out.push(corners[3]);
+                out.push(corners[2]);
+                out.push(a + dir * (t0 + stair.run));
+            }
+        }
+        return Some(out);
+    }
+    None
+}
 /// Smallest room worth building, square metres — below this the outline is a
 /// porch or a bin store and the avatar could not stand in it anyway.
 const MIN_ROOM_M2: f32 = 4.0;
@@ -390,11 +739,11 @@ struct RoomMesh {
 }
 
 impl RoomMesh {
-    /// One wall panel, facing the way it is told to.
-    fn wall(&mut self, a: Vec2, b: Vec2, inward: Vec2) {
+    /// One wall panel between two heights, facing the way it is told to.
+    fn wall(&mut self, a: Vec2, b: Vec2, inward: Vec2, bottom: f32, top: f32) {
         let normal = [inward.x, 0.0, inward.y];
         let base = self.positions.len() as u32;
-        for (p, y) in [(a, FLOOR_Y), (b, FLOOR_Y), (b, CEILING_M), (a, CEILING_M)] {
+        for (p, y) in [(a, bottom), (b, bottom), (b, top), (a, top)] {
             self.positions.push([p.x, y, p.y]);
             self.normals.push(normal);
             self.colors.push(WALL_COLOR);
@@ -411,44 +760,140 @@ impl RoomMesh {
         }
     }
 
-    /// The floor or the ceiling: the ring triangulated as a fan about its
-    /// centroid.
+    /// The floor or the ceiling.
     ///
-    /// A fan rather than earcut because a room's outline is a building footprint —
-    /// eight or nine points and very nearly convex — and a fan on one of those is
-    /// correct. The concave case is a slightly wrong floor in a room whose ceiling
-    /// is 2.9 m over your head, which is not worth a dependency here.
+    /// **Earcut, not the fan this used to be.** A fan about the centroid is
+    /// correct on the near-convex outline a building footprint usually is, which
+    /// is why it was good enough while a room was one storey with no hole in it.
+    /// A slab with a stairwell bitten out of its edge is exactly the shape a fan
+    /// gets wrong, and it gets it wrong by *filling the well in* — a floor drawn
+    /// over the hole the flight comes up through, in a room where the metric,
+    /// the collider and the stairs all still say the hole is there.
     fn slab(&mut self, ring: &[Vec2], y: f32, color: [f32; 4], up: bool) {
-        let centre = ring.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / ring.len() as f32;
+        if ring.len() < 3 {
+            return;
+        }
+        let flat: Vec<f64> = ring
+            .iter()
+            .flat_map(|p| [f64::from(p.x), f64::from(p.y)])
+            .collect();
+        let Ok(tris) = earcutr::earcut(&flat, &[], 2) else {
+            return;
+        };
         let normal = if up {
             [0.0, 1.0, 0.0]
         } else {
             [0.0, -1.0, 0.0]
         };
         let base = self.positions.len() as u32;
-        self.positions.push([centre.x, y, centre.y]);
-        self.normals.push(normal);
-        self.colors.push(color);
         for p in ring {
             self.positions.push([p.x, y, p.y]);
             self.normals.push(normal);
             self.colors.push(color);
         }
-        for i in 0..ring.len() as u32 {
-            let (b, c) = (base + 1 + i, base + 1 + (i + 1) % ring.len() as u32);
-            // Wind so the face points the way its normal says. A floor lit from
-            // beneath is the giveaway that this was guessed rather than derived.
-            let (p, q, r) = (
-                Vec2::new(centre.x, centre.y),
-                ring[i as usize],
-                ring[((i + 1) as usize) % ring.len()],
-            );
-            let cross = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+        for t in tris.chunks_exact(3) {
+            let (a, b, c) = (ring[t[0]], ring[t[1]], ring[t[2]]);
+            // Earcut keeps the input ring's winding and no register promises one,
+            // so each triangle is wound to agree with the normal it was given. A
+            // floor lit from beneath is the giveaway that this was guessed.
+            let cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            let (i, j, k) = (t[0] as u32, t[1] as u32, t[2] as u32);
             if (cross < 0.0) == up {
-                self.indices.extend([base, b, c]);
+                self.indices.extend([base + i, base + j, base + k]);
             } else {
-                self.indices.extend([base, c, b]);
+                self.indices.extend([base + i, base + k, base + j]);
             }
+        }
+    }
+
+    /// One flight of stairs, rising `STOREY_M` from `bottom`.
+    ///
+    /// Treads and risers, plus a closed soffit and one open side. Both of those
+    /// are load-bearing rather than decoration: nothing in this layer is
+    /// double-sided, so a flight of bare treads is invisible from underneath and
+    /// the storey above is visible straight through it — and standing under the
+    /// stairs is somewhere the avatar routinely ends up, because the support
+    /// field will not lift it onto a flight more than a step above its head.
+    fn flight(&mut self, stair: &Stair, bottom: f32) {
+        let going = stair.run / STAIR_STEPS as f32;
+        let rise = STOREY_M / STAIR_STEPS as f32;
+        let across = stair.side * STAIR_WIDTH_M;
+        let up = [0.0, 1.0, 0.0];
+        for s in 0..STAIR_STEPS {
+            let y = bottom + (s + 1) as f32 * rise;
+            let front = stair.foot + stair.dir * (s as f32 * going);
+            let back = front + stair.dir * going;
+            // The tread, walked on from above.
+            self.quad(
+                [front, back, back + across, front + across],
+                [y, y, y, y],
+                up,
+                WALL_COLOR,
+            );
+            // The riser, seen from the foot of the flight.
+            let n = [-stair.dir.x, 0.0, -stair.dir.y];
+            self.quad(
+                [front, front + across, front + across, front],
+                [y - rise, y - rise, y, y],
+                n,
+                FLOOR_COLOR,
+            );
+        }
+        // The soffit: one sloped quad under the whole flight, facing down.
+        //
+        // Its normal is **perpendicular to the ramp and pointing away from the
+        // treads**, which is not the same as "roughly downward" and is easy to
+        // write as neither. `slope` runs along the flight; turning it a quarter
+        // turn in the vertical plane the flight lies in gives the underside, and
+        // the sign is what makes it the *under*side.
+        let top = stair.foot + stair.dir * stair.run;
+        let slope = Vec2::new(stair.run, STOREY_M).normalize();
+        let down = Vec3::new(stair.dir.x * slope.y, -slope.x, stair.dir.y * slope.y);
+        self.quad(
+            [stair.foot, stair.foot + across, top + across, top],
+            [bottom, bottom, bottom + STOREY_M, bottom + STOREY_M],
+            [down.x, down.y, down.z],
+            FLOOR_COLOR,
+        );
+        // The open side, as the right triangle the flight's profile is. The other
+        // side is the wall the flight stands against and needs nothing.
+        let side_n = [stair.side.x, 0.0, stair.side.y];
+        self.quad(
+            [
+                stair.foot + across,
+                top + across,
+                top + across,
+                stair.foot + across,
+            ],
+            [bottom, bottom, bottom + STOREY_M, bottom],
+            side_n,
+            FLOOR_COLOR,
+        );
+    }
+
+    /// Four corners at four heights, wound to face `normal`. A degenerate corner
+    /// pair (a triangle written as a quad) costs one empty triangle and saves the
+    /// callers above a second entry point.
+    fn quad(&mut self, p: [Vec2; 4], y: [f32; 4], normal: [f32; 3], color: [f32; 4]) {
+        let base = self.positions.len() as u32;
+        for i in 0..4 {
+            self.positions.push([p[i].x, y[i], p[i].y]);
+            self.normals.push(normal);
+            self.colors.push(color);
+        }
+        // Wound against the normal it was given rather than assumed from the
+        // corner order, which is the same rule `wall` follows and for the same
+        // reason: the caller derives its corners from a ring whose winding is not
+        // promised.
+        let n = Vec3::new(normal[0], normal[1], normal[2]);
+        let e1 = Vec3::new(p[1].x - p[0].x, y[1] - y[0], p[1].y - p[0].y);
+        let e2 = Vec3::new(p[2].x - p[0].x, y[2] - y[0], p[2].y - p[0].y);
+        if e1.cross(e2).dot(n) >= 0.0 {
+            self.indices
+                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        } else {
+            self.indices
+                .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
         }
     }
 
@@ -558,10 +1003,20 @@ mod tests {
         }
     }
 
+    /// A room big enough to hold a staircase, for the storey tests below. 12 m
+    /// square: comfortably over `STAIR_RUN_M` plus its end clearances on a side.
+    fn tall_room(height: Option<f32>) -> Room {
+        plan_room(&square(12.0), height).expect("a 12 m square is a room")
+    }
+
     #[test]
     fn a_room_builds_a_floor_a_ceiling_and_walls() {
         let mut buf = RoomMesh::default();
-        assert!(build_room(&mut buf, &square(10.0), &[Vec2::new(5.0, 0.0)]));
+        build_room(
+            &mut buf,
+            &plan_room(&square(10.0), None).expect("a 10 m square is a room"),
+            &[Vec2::new(5.0, 0.0)],
+        );
         let up = buf.normals.iter().filter(|n| n[1] > 0.9).count();
         let down = buf.normals.iter().filter(|n| n[1] < -0.9).count();
         let side = buf.normals.iter().filter(|n| n[1].abs() < 0.1).count();
@@ -571,8 +1026,286 @@ mod tests {
     /// A cupboard is not a room.
     #[test]
     fn a_footprint_too_small_to_stand_in_gets_nothing() {
+        assert!(plan_room(&square(1.0), Some(12.0)).is_none());
+    }
+
+    /// The whole stack has to fit *under* the roof. A ceiling poking out through
+    /// the tiles is worse than a building with one room in it, and it is the
+    /// failure a `round` here would produce on every second building.
+    #[test]
+    fn no_storey_ever_reaches_above_the_shell_that_holds_it() {
+        for tenths in 30..300u32 {
+            let h = tenths as f32 / 10.0;
+            let n = storeys_for(Some(h));
+            let top_ceiling = storey_floor_y(n - 1) + CEILING_M;
+            assert!(
+                n == 1 || top_ceiling <= h,
+                "{n} storeys in a {h} m shell puts a ceiling at {top_ceiling} m"
+            );
+        }
+    }
+
+    /// A shell whose LoD2.2 cell has not landed reads as one storey — the answer
+    /// this layer gave everywhere before it could ask, so a building gains its
+    /// floors when its geometry arrives rather than being wrong until then.
+    #[test]
+    fn an_unmeasured_shell_is_one_storey() {
+        assert_eq!(storeys_for(None), 1);
+        assert_eq!(storeys_for(Some(2.0)), 1, "shorter than a storey");
+        assert_eq!(storeys_for(Some(9.3)), 2, "the median Groningen shell");
+        assert_eq!(storeys_for(Some(1000.0)), MAX_STOREYS);
+    }
+
+    /// A floor nobody can reach is not a floor. A building with no wall long
+    /// enough for a flight keeps its ground floor whatever the register says
+    /// about its height.
+    #[test]
+    fn a_building_with_nowhere_for_stairs_stays_one_storey() {
+        // Big enough to stand in (`MIN_ROOM_M2`), and no wall on it reaches
+        // `STAIR_RUN_M` plus its end clearances.
+        let small = square(2.8);
+        let room = plan_room(&small, Some(20.0)).expect("still a room");
+        assert!(room.stair.is_none());
+        assert_eq!(room.storeys, 1);
+    }
+
+    /// The stair must lie inside the room on *both* axes. A corridor has a wall
+    /// long enough for the run and no depth to put the flight in, and the length
+    /// test alone passes it.
+    #[test]
+    fn a_corridor_is_long_enough_for_a_flight_and_too_narrow_for_one() {
+        let corridor = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(9.0, 0.0),
+            Vec2::new(9.0, 1.2),
+            Vec2::new(0.0, 1.2),
+        ];
+        let room = plan_room(&corridor, Some(20.0)).expect("still a room");
+        assert!(
+            room.stair.is_none(),
+            "a 1.2 m corridor cannot hold a {STAIR_WIDTH_M} m flight"
+        );
+    }
+
+    /// The ceiling over your head and the storey above it are both surfaces
+    /// directly above you, and neither may pick you up. Only the flight rises out
+    /// of the floor you are standing on — which is what makes the stairs the way
+    /// up rather than a decoration over a lift.
+    #[test]
+    fn standing_on_the_ground_floor_is_not_lifted_to_the_one_above() {
+        let room = tall_room(Some(20.0));
+        assert!(room.storeys >= 3, "a 20 m shell should hold storeys");
+        let floors = InteriorFloors { rooms: vec![room] };
+        // A spot in the middle of the room, clear of the stairs.
+        let middle = Vec2::new(6.0, 6.0);
+        assert!(
+            floors.support(middle, 0.0) < STOREY_M,
+            "the floor above is not a step up"
+        );
+        assert!(
+            (floors.support(middle, 0.0) - FLOOR_Y).abs() < 1e-4,
+            "the ground floor is"
+        );
+    }
+
+    /// Walking the flight from the bottom has to arrive at the floor above, and
+    /// arrive *at* it — a ramp that stops short leaves you standing in the well.
+    #[test]
+    fn the_flight_reaches_the_storey_above_and_carries_you_onto_it() {
+        let room = tall_room(Some(20.0));
+        let stair = room.stair.expect("a 12 m square holds a flight");
+        let floors = InteriorFloors { rooms: vec![room] };
+        let mut at = FLOOR_Y;
+        // Sixty samples up the run, each reached from the last — the walk, not a
+        // teleport to the top.
+        for i in 0..=60 {
+            let t = i as f32 / 60.0;
+            let p = stair.foot + stair.dir * (t * stair.run) + stair.side * (STAIR_WIDTH_M * 0.5);
+            let next = floors.support(p, at);
+            assert!(
+                next >= at - 1e-3,
+                "the flight dropped from {at} to {next} at t={t}"
+            );
+            at = next;
+        }
+        let expected = storey_floor_y(1);
+        assert!(
+            (at - expected).abs() < 1e-3,
+            "the top of the flight is {at}, the floor above is {expected}"
+        );
+    }
+
+    /// The hole the flight comes up through is not somewhere to stand. Without
+    /// this the well is floored over and the stairs arrive under a lid.
+    #[test]
+    fn the_stairwell_is_not_a_floor_on_the_storey_it_opens_into() {
+        let room = tall_room(Some(20.0));
+        let stair = room.stair.expect("a flight");
+        let floors = InteriorFloors { rooms: vec![room] };
+        // Standing on the first floor, over the middle of the well.
+        let over_well =
+            stair.foot + stair.dir * (stair.run * 0.5) + stair.side * (STAIR_WIDTH_M * 0.5);
+        let from = storey_floor_y(1);
+        let held = floors.support(over_well, from);
+        assert!(
+            held < from,
+            "the well held the avatar up at {held} instead of letting it down"
+        );
+    }
+
+    /// The well is cut out of the slab the flight rises into, and it is cut by
+    /// *removing* area — a fan triangulation fills it back in, which is what this
+    /// asserts against.
+    #[test]
+    fn the_upper_floor_has_the_stairwell_taken_out_of_it() {
+        let room = tall_room(Some(20.0));
+        let stair = room.stair.expect("a flight");
+        let notched = notch_ring(&room.ring, &stair).expect("the flight is on a wall");
+        let whole = ring_area(&room.ring);
+        let cut = ring_area(&notched);
+        let well = STAIR_RUN_M * STAIR_WIDTH_M;
+        assert!(
+            (whole - cut - well).abs() < 0.05,
+            "cut {:.2} m² out of {whole:.2} m², expected {well:.2} m²",
+            whole - cut
+        );
+    }
+
+    /// The soffit closes the flight from underneath, and "roughly downward" is
+    /// not the same as perpendicular to it. Written the obvious way the normal
+    /// came out 0.998 *along* the ramp and pointing up, which faces the surface
+    /// the wrong way — so the underside is open, and since nothing here is
+    /// double-sided the storey above shows straight through the stairs. The
+    /// picture that would have caught it is one taken from under a staircase.
+    #[test]
+    fn the_underside_of_a_flight_faces_down_and_across_it() {
+        let room = tall_room(Some(20.0));
+        let stair = room.stair.expect("a flight");
         let mut buf = RoomMesh::default();
-        assert!(!build_room(&mut buf, &square(1.0), &[Vec2::new(0.5, 0.0)]));
-        assert!(buf.indices.is_empty());
+        buf.flight(&stair, FLOOR_Y);
+        // The ramp's own direction: along the flight and up.
+        let along =
+            Vec3::new(stair.dir.x * stair.run, STOREY_M, stair.dir.y * stair.run).normalize();
+        let soffit = buf
+            .normals
+            .iter()
+            .map(|n| Vec3::new(n[0], n[1], n[2]))
+            .find(|n| n.y < -0.1 && n.y > -0.99)
+            .expect("no downward-and-sloped face under the flight");
+        assert!(
+            along.dot(soffit).abs() < 1e-3,
+            "the soffit normal {soffit:?} is not perpendicular to the ramp"
+        );
+        assert!(soffit.y < 0.0, "the soffit faces up: {soffit:?}");
+    }
+
+    /// Nothing a room is built from may land outside the building holding it, on
+    /// any of the awkward outlines a register actually ships.
+    ///
+    /// This is the check a picture cannot make. An interior is drawn single-sided
+    /// and facing in, so a slab or a flight that escapes its own walls is
+    /// invisible from every angle you would think to photograph it from, and
+    /// shows up only as something odd hanging over the street from one particular
+    /// spot. Concave rings are where it would come from: the inset of an L or a U
+    /// is where an offset can fold, and earcut on a folded ring emits triangles
+    /// outside it.
+    #[test]
+    fn no_part_of_a_room_lands_outside_the_building() {
+        let shapes: Vec<(&str, Vec<Vec2>)> = vec![
+            ("square", square(14.0)),
+            (
+                "L",
+                vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(14.0, 0.0),
+                    Vec2::new(14.0, 6.0),
+                    Vec2::new(6.0, 6.0),
+                    Vec2::new(6.0, 14.0),
+                    Vec2::new(0.0, 14.0),
+                ],
+            ),
+            (
+                "U",
+                vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(16.0, 0.0),
+                    Vec2::new(16.0, 12.0),
+                    Vec2::new(11.0, 12.0),
+                    Vec2::new(11.0, 5.0),
+                    Vec2::new(5.0, 5.0),
+                    Vec2::new(5.0, 12.0),
+                    Vec2::new(0.0, 12.0),
+                ],
+            ),
+            (
+                "canal house, deep and narrow",
+                vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(5.2, 0.0),
+                    Vec2::new(5.2, 13.0),
+                    Vec2::new(0.0, 13.0),
+                ],
+            ),
+        ];
+        for (name, outline) in shapes {
+            let Some(room) = plan_room(&outline, Some(20.0)) else {
+                continue;
+            };
+            let mut buf = RoomMesh::default();
+            build_room(&mut buf, &room, &[]);
+            let top = storey_floor_y(room.storeys - 1) + CEILING_M;
+            for v in &buf.positions {
+                // A shade of tolerance: the inset ring is inside the outline by
+                // `WALL_INSET_M`, so anything at all outside is a fold, not a
+                // rounding error.
+                assert!(
+                    point_in_ring(&outline, Vec2::new(v[0], v[2])),
+                    "{name}: a vertex at ({}, {}) is outside the building",
+                    v[0],
+                    v[2]
+                );
+                assert!(
+                    v[1] >= -1e-3 && v[1] <= top + 1e-3,
+                    "{name}: a vertex at {} m is outside 0..{top} m",
+                    v[1]
+                );
+            }
+        }
+    }
+
+    /// Nothing outside a building is on any floor, whatever is stacked inside it.
+    #[test]
+    fn outdoors_has_no_interior_floor() {
+        let floors = InteriorFloors {
+            rooms: vec![tall_room(Some(20.0))],
+        };
+        assert_eq!(floors.support(Vec2::new(-50.0, -50.0), 0.0), 0.0);
+    }
+
+    /// Every storey is built, not just counted — the metric and the geometry are
+    /// the same rooms, and a tally that outran the mesh would be a floor you fall
+    /// through.
+    #[test]
+    fn a_stack_of_storeys_builds_a_slab_for_each_of_them() {
+        let room = tall_room(Some(20.0));
+        let storeys = room.storeys;
+        let mut buf = RoomMesh::default();
+        build_room(&mut buf, &room, &[]);
+        let mut levels: Vec<f32> = buf
+            .positions
+            .iter()
+            .zip(&buf.normals)
+            .filter(|(_, n)| n[1] > 0.9)
+            .map(|(p, _)| p[1])
+            .collect();
+        levels.sort_by(f32::total_cmp);
+        levels.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+        for k in 0..storeys {
+            let want = storey_floor_y(k);
+            assert!(
+                levels.iter().any(|&y| (y - want).abs() < 1e-3),
+                "no floor at {want} m; up-facing levels are {levels:?}"
+            );
+        }
     }
 }
