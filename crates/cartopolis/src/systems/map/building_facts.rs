@@ -674,8 +674,23 @@ impl BagPart {
     }
 }
 
+/// Cache key for one of a cell's BAG files.
+///
+/// **The `v2` is a format revision and it is the reason doors ever appear.** This
+/// key had no version, and the cache has no revalidation: a hit is served and the
+/// host is never asked. So a client that loaded a city before the extractor
+/// started shipping `doors` and `fp` — the BAG cells were regenerated with them on
+/// 2026-08-29 — held a doorless copy of that cell **forever**, and no amount of
+/// updating the app could dislodge it. Both new fields are `#[serde(default)]`, so
+/// nothing fails: the cell parses, every building comes out with no entrance and
+/// no outline, `lod22` draws no door, `interiors` builds no room, and the map
+/// looks exactly as it did before any of it was written. That is what a published
+/// APK carrying the fix looked like on a phone that had already been to Groningen.
+///
+/// `lod22` learned this the same way and carries the same `v2` for the same
+/// reason. Bump it whenever a cell gains a field a reader would miss.
 fn cell_cache_key(cx: i64, cy: i64, part: BagPart) -> String {
-    format!("buildings/bag/{BAG_ZOOM}/{cx}/{cy}.{}", part.suffix())
+    format!("buildings/bag/v2/{BAG_ZOOM}/{cx}/{cy}.{}", part.suffix())
 }
 
 /// Fetch one of a cell's attribute files, through the storage cache.
