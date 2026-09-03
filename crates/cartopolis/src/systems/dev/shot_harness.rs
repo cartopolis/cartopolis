@@ -649,6 +649,20 @@ pub struct ShotMetrics {
     /// what this client always drew, so a capture over a level crossing cannot
     /// say which of the five answered no.
     pub level_crossings: usize,
+    /// Collider circles the streamed world publishes — every prop, parked
+    /// vehicle and crossing mast in `WorldPlaces::props()`, i.e. what
+    /// `collision::sync_prop_colliders` is about to hand the avatar.
+    ///
+    /// The collider index is invisible to a capture, which is how a settled shot
+    /// with `level_crossings = 3` on screen photographed three installations
+    /// nothing could walk into. Counted here because this is the only half of
+    /// "drawn *and* solid" a headless run can assert: read against
+    /// `level_crossings`, it separates the two.
+    ///
+    /// It is a count of the whole index, not of the crossings' share — a per-layer
+    /// tally would need the store to remember where each circle came from, which
+    /// nothing else needs.
+    pub prop_colliders: usize,
     /// Drawn buildings whose BAG facts were found, and drawn buildings. See
     /// `lod22::DatedCount`: a ratio near zero over the Netherlands means the join
     /// is broken — most likely the served meshes and the client disagree about
@@ -843,7 +857,7 @@ orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,flood_defences,flood_defences_measured,interior_rooms,building_doors,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -2663,6 +2677,7 @@ pub fn drive_capture(
             crop_parcels: readouts.places.surveyed().4,
             nav_marks: readouts.places.surveyed().5,
             level_crossings: readouts.places.surveyed().6,
+            prop_colliders: readouts.places.props().count(),
             flood_defences: readouts.dikes.len(),
             flood_defences_measured: readouts.dikes.measured(),
             interior_rooms: readouts.interiors.rooms(),
@@ -2779,6 +2794,7 @@ pub fn drive_capture(
                     grass_rendered = m.grass_rendered,
                     nav_marks = m.nav_marks,
                     level_crossings = m.level_crossings,
+                    prop_colliders = m.prop_colliders,
                     prop_meshes = m.prop_meshes,
                     traffic_cars = m.traffic_cars,
                     traffic_walkers = m.traffic_walkers,
@@ -3233,6 +3249,7 @@ mod tests {
             crop_parcels: 0,
             nav_marks: 0,
             level_crossings: 0,
+            prop_colliders: 0,
             flood_defences: 0,
             flood_defences_measured: 0,
             interior_rooms: 0,

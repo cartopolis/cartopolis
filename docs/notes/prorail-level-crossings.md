@@ -1,7 +1,7 @@
 ---
 topic: prorail-level-crossings
-triggers: [crossings.rs, overweg, ProRail, Spoorwegen, spooras, wissel, kilometrering, "level crossing", overwegbomen, AHOB, AOB, azimut, levenscyclus_status, aantal_sporen, body_mentions_rail, WayFilter]
-updated: 2026-08-30
+triggers: [crossings.rs, overweg, ProRail, Spoorwegen, spooras, wissel, kilometrering, "level crossing", overwegbomen, AHOB, AOB, azimut, levenscyclus_status, aantal_sporen, body_mentions_rail, WayFilter, mast_centres, CellPlaces, prop_colliders]
+updated: 2026-09-03
 ---
 
 # ProRail level crossings (PDOK Spoorwegen, `overweg`)
@@ -222,10 +222,64 @@ not with OSM's lane count.
   rather than measured — value 1.
 - **Animation.** A boom that lowers needs a train, and there is no train. The
   booms stand raised, which is what a crossing looks like almost all the time.
-- **Colliders.** Crossings are not `FurnitureInstance`s and reach nothing in
-  `collision::sync_prop_colliders`, exactly as the navigation marks do not.
+- **A collider on the raised bar, or on the lamp head.** The **masts are solid**
+  since 2026-09-03 — see below — but the circle sits on the mast centre and
+  nothing else. The bar's inner face is 0.37 m inboard of that centre against the
+  circle's 0.25 m, so 0.12 m of it is uncovered; widening or re-centring the
+  circle to swallow that was considered and left, because the bar starts 1.05 m
+  off the ground while a prop collider is a height-free circle. An avatar
+  clipping the corner of a raised bar it could walk under is the better of the
+  two errors.
 - **A Layers toggle of its own.** Crossings ride the existing Furniture toggle,
-  because they are that group's mesh, material and altitude fade.
+  because they are that group's mesh, material and altitude fade. That is also
+  what turns the colliders off: `collision::sync_prop_colliders` clears every prop
+  when the layer is off, and the crossings are only placed under `wants.furniture`
+  at all, so collision matches what is drawn with no second gate.
+
+## The masts are solid, and the buoys are not
+
+Until 2026-09-03 this section said crossings get no collider "exactly as the
+navigation marks do not". That precedent was wrong here, and the reason is in
+`world_places::prop_radius`: a moored boat gets radius **0** because it sits on
+water the avatar cannot walk on, so a circle there is an invisible wall in the
+middle of a canal, and a navigation mark is that same case. A crossing mast is
+0.22 m square and 3.1 m tall and stands on a verge `VERGE_M` = 0.5 m outside the
+kerb of a street the avatar walks along — the **lamp column's** case, which the
+same table gives 0.25 m and this reason: walking through one is one of those small
+things that tells you the world is a drawing. So a mast gets the lamp column's
+radius, named as `world_places::CROSSING_MAST_RADIUS` beside it.
+
+How, without making crossings furniture: a **bare collider channel**,
+`CellPlaces::colliders` — solid and silent circles that reach the collider index
+and can never become an `Interactable`, for the reason a lamp gets no prompt. A
+`FurnitureKind` variant would have meant a mesh recipe nothing calls (crossings
+have their own builder) plus three arms in `world_places` existing only to say
+"never reached". Publishing through `BuildingColliders::set_feature_cell` was also
+rejected: `street_detail` owns that key space on the same z14 grid, so two
+producers would clobber each other's cells.
+
+`crossings::mast_centres` is where the positions come from, and the point of it is
+that there is **one** derivation: `push_crossing` places its boxes off the same
+`Layout`, through the same `furniture::place_ground` rotation, so the circle
+cannot drift off the post on the next edit to either. A geo test reads the mast
+centres back off the built mesh at four yaws and asserts the helper agrees — a
+yaw-0 check would pass with the rotation's sign flipped, which is the mistake
+`interiors`' door normals made twice.
+
+The collider index is invisible to a capture, which is how a settled shot with
+`level_crossings = 3` on screen photographed three installations nothing could
+walk into. `ShotMetrics::prop_colliders` counts `WorldPlaces::props()` so a
+headless run can at least assert the circles exist beside the count of what is
+drawn. Only a walk-up on a workstation shows that the mast actually stops the
+avatar.
+
+Worst case per cell: `MAX_CROSSINGS_PER_CELL` is 200, so 400 circles; the densest
+cell the register holds is 8, i.e. 16 — negligible against the linear scan in
+`BuildingColliders::in_prop`.
+
+**Ambient traffic is unaffected.** `systems::traffic` references neither
+`BuildingColliders` nor `WorldPlaces` — cars follow `DriveLine`s and consult no
+collider at all — so they still drive through a crossing. That is a separate gap.
 
 ## Deferred measurements
 

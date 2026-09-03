@@ -31,6 +31,17 @@ pub struct CellPlaces {
     /// client invented. They are the same `FurnitureInstance` because they are
     /// the same forms and the same mesh builder.
     pub vehicles: Vec<FurnitureInstance>,
+    /// Bare collider circles — `(tile-local centre, radius in metres)` — for
+    /// things that are **solid and silent**: they stop the avatar and they never
+    /// become an [`Interactable`], for the reason a lamp column gets no prompt
+    /// (see `prop_interactable`).
+    ///
+    /// The level-crossing masts arrive this way. They are not
+    /// `FurnitureInstance`s and should not become them — the crossings have their
+    /// own mesh builder, so a `FurnitureKind` for one would be a form with a mesh
+    /// recipe nothing calls plus three arms here that exist only to say "never
+    /// reached".
+    pub colliders: Vec<(Vec2, f32)>,
     pub pois: Vec<Poi>,
     pub addresses: Vec<Address>,
     /// Drivable centrelines for `systems::traffic`. Carried here rather than in
@@ -246,6 +257,17 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
     }
 }
 
+/// Radius (m) of the circle standing on a level crossing's mast
+/// (`cartopolis_geo::crossings::mast_centres`).
+///
+/// The lamp column's, for the lamp column's reason: a mast is 0.22 m square and
+/// 3.1 m tall, standing on a verge half a metre outside the kerb of a street the
+/// avatar walks along, and walking through one is one of those small things that
+/// tells you the world is a drawing. It lives here rather than in `crossings`
+/// because a collider radius is a client judgement and every one of them is in
+/// this file.
+pub const CROSSING_MAST_RADIUS: f32 = 0.25;
+
 /// A parked vehicle as collider circles in the anchored world frame.
 ///
 /// Two circles down the long axis rather than the one every other prop gets: a
@@ -341,6 +363,14 @@ impl WorldPlaces {
         // Solid, but never interactable — `CellPlaces::vehicles` says why.
         for v in &places.vehicles {
             vehicle_circles(v, origin + Vec2::new(v.x, v.z), &mut props);
+        }
+        // …and the bare circles, which are solid and silent by construction: they
+        // reach `props` and nothing else, so no crossing mast can grow a prompt
+        // without somebody deciding it should.
+        for (at, radius) in &places.colliders {
+            if *radius > 0.0 {
+                props.push((origin + *at, *radius));
+            }
         }
 
         self.cells.insert(cell, interactables);
@@ -621,6 +651,59 @@ mod tests {
             ends.iter().any(|p| p.y > 0.5) && ends.iter().any(|p| p.y < -0.5),
             "one circle each side of the centre: {ends:?}"
         );
+    }
+
+    /// A crossing mast is solid and silent: it lands in the collider index at the
+    /// cell's own origin, and walking up to it offers nothing. A prompt on a mast
+    /// would be the lamppost mistake again — a city's worth of objects there is
+    /// nothing to do with.
+    #[test]
+    fn a_crossing_mast_is_solid_but_never_promptable() {
+        let mut places = WorldPlaces::default();
+        places.insert_cell(
+            (3, 4),
+            1000.0,
+            -500.0,
+            CellPlaces {
+                colliders: vec![
+                    (Vec2::new(10.0, 20.0), CROSSING_MAST_RADIUS),
+                    (Vec2::new(14.0, 24.0), CROSSING_MAST_RADIUS),
+                ],
+                ..Default::default()
+            },
+        );
+        assert_eq!(places.props().count(), 2);
+        let circles: Vec<(Vec2, f32)> = places.props().copied().collect();
+        assert!(
+            circles.contains(&(Vec2::new(1010.0, -480.0), CROSSING_MAST_RADIUS)),
+            "the mast did not land at the cell's origin: {circles:?}"
+        );
+        assert!(
+            places.nearest(Vec2::new(1010.0, -480.0), 5.0).is_none(),
+            "a mast must never grow a prompt"
+        );
+    }
+
+    /// The masts go out with their cell, on the same path as everything else — a
+    /// wall standing where a crossing is no longer drawn is the failure this
+    /// prevents, and it is worse than a stale prompt because nothing draws it.
+    #[test]
+    fn retiring_a_cell_removes_its_crossing_colliders() {
+        let mut places = WorldPlaces::default();
+        places.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            CellPlaces {
+                colliders: vec![(Vec2::new(1.0, 1.0), CROSSING_MAST_RADIUS)],
+                ..Default::default()
+            },
+        );
+        assert_eq!(places.props().count(), 1);
+        let before = places.revision;
+        places.remove_cell(&(0, 0));
+        assert_eq!(places.props().count(), 0);
+        assert_ne!(places.revision, before, "consumers must be told");
     }
 
     /// A bike is short enough for the one circle every other prop gets.
