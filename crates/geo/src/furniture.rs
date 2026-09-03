@@ -1134,6 +1134,19 @@ impl MeshBuf {
     }
 }
 
+/// Object frame → world on the ground plane: rotate `(x, z)` about +y, then
+/// translate by the object's own position.
+///
+/// Split out of [`push_box`] rather than left as its closure because a layer that
+/// has to know *where its own boxes landed* — `crossings`, for the collider on a
+/// mast — must not carry a second copy of this rotation. A sign error in a copy is
+/// invisible in a still frame and lands the collider on the wrong side of the
+/// road; this tree has already paid for that mistake twice
+/// (`interiors`' door normals).
+pub(crate) fn place_ground(ox: f32, oz: f32, (sn, cs): (f32, f32), lx: f32, lz: f32) -> [f32; 2] {
+    [ox + lx * cs + lz * sn, oz - lx * sn + lz * cs]
+}
+
 /// Emit one yaw-rotated box: 6 flat-shaded faces, 24 vertices, 12 triangles.
 ///
 /// Faces are not shared between vertices — a box shaded off averaged corner
@@ -1148,7 +1161,10 @@ pub(crate) fn push_box(
     tint: [f32; 4],
 ) {
     // Object frame → world: rotate (x, z) about +y, then translate.
-    let place = |lx: f32, ly: f32, lz: f32| [ox + lx * cs + lz * sn, ly, oz - lx * sn + lz * cs];
+    let place = |lx: f32, ly: f32, lz: f32| {
+        let [wx, wz] = place_ground(ox, oz, (sn, cs), lx, lz);
+        [wx, ly, wz]
+    };
     let rotate = |nx: f32, nz: f32| [nx * cs + nz * sn, 0.0, -nx * sn + nz * cs];
 
     // (normal, and the four corners of that face as ±1 in the box's own axes)

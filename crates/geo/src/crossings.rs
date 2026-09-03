@@ -48,9 +48,20 @@
 //!   drawing it would be plausible rather than measured.
 //! * **Animation.** A boom that lowers needs a train, and there is no train. The
 //!   booms stand raised, which is what a crossing looks like almost all the time.
-//! * **Colliders.** Crossings are not [`FurnitureInstance`](crate::furniture::FurnitureInstance)s
-//!   and reach nothing in `collision::sync_prop_colliders`, exactly as the
-//!   navigation marks do not.
+//! * **A collider on the bar.** The masts *are* solid — [`mast_centres`] hands
+//!   their positions to the client, which makes one circle per mast — but the
+//!   raised bar is not covered by it: it hangs 0.12 m further inboard than the
+//!   circle reaches and starts a metre off the ground, and props are height-free
+//!   circles. Crossings are still not
+//!   [`FurnitureInstance`](crate::furniture::FurnitureInstance)s; they publish
+//!   bare colliders instead, because a furniture form would need a mesh recipe
+//!   nothing uses.
+//!
+//! That is where this layer parts from [`nav_marks`](crate::nav_marks), which it
+//! otherwise follows. A buoy gets no collider because it stands on water the
+//! avatar cannot walk on, so a circle there is an invisible wall in the middle of
+//! a canal. A crossing mast stands on a verge half a metre outside the kerb of a
+//! street the avatar walks along — the lamp-column case, not the buoy case.
 
 use crate::furniture::{paint_multiplier, MeshBuf, Part, Tone, WayField, WayFilter, BOX_BYTES};
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
@@ -381,35 +392,105 @@ fn clearance_m(tracks: u8) -> f32 {
     (tracks - 1.0) * TRACK_SPACING_M * 0.5 + SETBACK_M
 }
 
+/// Where one of a crossing's two installations stands, in the crossing's own
+/// object frame: local +x across the road, local +z along it.
+#[derive(Clone, Copy)]
+struct Installation {
+    /// ±1 — the side of the road this mast stands on. The bar hangs inboard of
+    /// its mast, so it is the sign that puts it there.
+    side: f32,
+    /// The mast centre across the road.
+    x: f32,
+    /// The whole installation's position along the road.
+    z: f32,
+}
+
+/// Every number one crossing is placed from, derived once.
+///
+/// It exists so that the boxes [`push_crossing`] meshes and the mast centres
+/// [`mast_centres`] hands to the collider index come out of **one** derivation.
+/// A second copy of `road_half + VERGE_M` is a collider that sits where the mast
+/// used to be after the next edit to either.
+struct Layout {
+    mast_h: f32,
+    /// How far a bar reaches from its pivot, `None` for a form with no boom.
+    boom: Option<f32>,
+    /// The two approaches, on opposite sides of the road — which is how a half
+    /// barrier really stands, each boom covering the half its own approach drives
+    /// on. Being diagonal also means the pair reads as one installation from any
+    /// angle rather than as two identical posts.
+    installations: [Installation; 2],
+}
+
+impl Layout {
+    fn of(crossing: &LevelCrossing) -> Self {
+        let (mast_h, fallback_half) = crossing.kind.spec();
+        // The road's own half-width where the tile gave one, the form's fallback
+        // where it did not. Everything across the road is derived from this one
+        // number, so a mast on the verge and a boom that reaches the centreline
+        // cannot come apart.
+        let road_half = crossing.road_half.unwrap_or(fallback_half);
+        let clearance = clearance_m(crossing.tracks);
+        let mast_x = road_half + VERGE_M;
+        Self {
+            mast_h,
+            boom: crossing
+                .kind
+                .boom_span()
+                .map(|span| span * road_half + VERGE_M),
+            installations: [
+                Installation {
+                    side: 1.0,
+                    x: mast_x,
+                    z: clearance,
+                },
+                Installation {
+                    side: -1.0,
+                    x: -mast_x,
+                    z: -clearance,
+                },
+            ],
+        }
+    }
+}
+
+/// Where this crossing's two masts stand, in **tile-local metres** — the frame
+/// [`LevelCrossing::x`] and [`LevelCrossing::z`] are in.
+///
+/// The collider half of the layer: a mast is 0.22 m square and 3.1 m tall, and it
+/// stands on a verge beside a street the avatar walks along, so walking through
+/// one is exactly the thing `world_places::prop_radius` gives a lamp column its
+/// 0.25 m for. The navigation marks keep their zero for the reason a moored boat
+/// has one — a mark stands on water nobody can walk on — and that is what
+/// separates the two cases.
+///
+/// **Two centres for every form**, [`CrossingKind::Lights`] included: a lights
+/// installation is a mast with a lamp head on it, and only the boom is missing.
+/// The numbers are read off the same [`Layout`] `push_crossing` meshes from and
+/// rotated by the same [`place_ground`](crate::furniture::place_ground) call
+/// `push_box` applies, so the circle cannot drift off the post it stands for.
+///
+/// Nothing here covers the raised bar: it hangs 0.12 m further inboard and starts
+/// [`BOOM_Y`] off the ground, and these colliders are height-free circles.
+#[must_use]
+pub fn mast_centres(crossing: &LevelCrossing) -> [[f32; 2]; 2] {
+    let rot = crossing.yaw.sin_cos();
+    Layout::of(crossing)
+        .installations
+        .map(|inst| crate::furniture::place_ground(crossing.x, crossing.z, rot, inst.x, inst.z))
+}
+
 fn push_crossing(buf: &mut MeshBuf, crossing: &LevelCrossing) {
-    let (mast_h, fallback_half) = crossing.kind.spec();
-    // The road's own half-width where the tile gave one, the form's fallback
-    // where it did not. Everything across the road is derived from this one
-    // number, so a mast on the verge and a boom that reaches the centreline
-    // cannot come apart.
-    let road_half = crossing.road_half.unwrap_or(fallback_half);
-    let clearance = clearance_m(crossing.tracks);
+    let layout = Layout::of(crossing);
+    let mast_h = layout.mast_h;
     let (sn, cs) = crossing.yaw.sin_cos();
-    let mast_x = road_half + VERGE_M;
-    let boom = crossing
-        .kind
-        .boom_span()
-        .map(|span| span * road_half + VERGE_M);
 
-    // Two installations, one on each approach, on opposite sides of the road —
-    // which is how a half barrier really stands, each boom covering the half its
-    // own approach drives on. Being diagonal also means the pair reads as one
-    // installation from any angle rather than as two identical posts.
-    for (i, along) in [clearance, -clearance].into_iter().enumerate() {
-        // ±1: the side of the road this mast stands on.
-        let side = if i == 0 { 1.0 } else { -1.0 };
-        let mx = mast_x * side;
-
+    for inst in layout.installations {
         push(
             buf,
             crossing,
             (sn, cs),
-            [mx, mast_h * 0.5, along],
+            [inst.x, mast_h * 0.5, inst.z],
             [MAST_HALF_W, mast_h * 0.5, MAST_HALF_W],
             palette::FURNITURE_METAL,
         );
@@ -420,12 +501,12 @@ fn push_crossing(buf: &mut MeshBuf, crossing: &LevelCrossing) {
             buf,
             crossing,
             (sn, cs),
-            [mx, mast_h + 0.16, along],
+            [inst.x, mast_h + 0.16, inst.z],
             [0.30, 0.16, 0.10],
             LAMP_RED,
         );
 
-        let Some(reach) = boom else {
+        let Some(reach) = layout.boom else {
             continue;
         };
         // The boom stands raised: the bands are stacked in **y** from the pivot
@@ -439,14 +520,14 @@ fn push_crossing(buf: &mut MeshBuf, crossing: &LevelCrossing) {
         // the mast centre, so it stands flush beside the mast rather than inside
         // it.
         let band = reach / BOOM_BANDS as f32;
-        let boom_x = mx - side * (MAST_HALF_W + BOOM_HALF_FACE);
+        let boom_x = inst.x - inst.side * (MAST_HALF_W + BOOM_HALF_FACE);
         for b in 0..BOOM_BANDS {
             let centre = BOOM_Y + band * (b as f32 + 0.5);
             push(
                 buf,
                 crossing,
                 (sn, cs),
-                [boom_x, centre, along],
+                [boom_x, centre, inst.z],
                 [BOOM_HALF_FACE, band * 0.5, BOOM_HALF_T],
                 if b % 2 == 0 { BOOM_RED } else { BOOM_WHITE },
             );
@@ -540,6 +621,136 @@ mod tests {
             .reduce(f32::max)
             .map(|top| top - BOOM_Y);
         (mast, reach)
+    }
+
+    /// The two mast centres **read back off the meshed geometry**, in tile-local
+    /// metres, at any yaw — the independent measurement [`mast_centres`] is
+    /// checked against.
+    ///
+    /// Only the masts reach the ground: a lamp head sits at `mast_h` and a boom
+    /// band starts at [`BOOM_Y`], so `y < 0.5` picks out the two mast boxes and
+    /// nothing else. Each contributes twelve vertices at `y = 0`, symmetric about
+    /// its own centre, so a group's centroid *is* that centre.
+    ///
+    /// The two groups are separated without consulting the helper — the masts sit
+    /// diametrically opposite through the crossing point, so the sign of the dot
+    /// product against the farthest ground vertex splits them — or this would
+    /// measure the helper against itself.
+    fn meshed_mast_centres(crossing: &LevelCrossing) -> [[f32; 2]; 2] {
+        let meshes = build_crossing_meshes(std::slice::from_ref(crossing), None);
+        assert_eq!(meshes.len(), 1);
+        let ground: Vec<[f32; 2]> = meshes[0]
+            .positions
+            .iter()
+            .filter(|p| p[1] < 0.5)
+            .map(|p| [p[0] - crossing.x, p[2] - crossing.z])
+            .collect();
+        assert_eq!(
+            ground.len(),
+            24,
+            "two mast boxes, twelve ground corners each"
+        );
+
+        let axis = *ground
+            .iter()
+            .max_by(|a, b| (a[0] * a[0] + a[1] * a[1]).total_cmp(&(b[0] * b[0] + b[1] * b[1])))
+            .expect("a mast reaches the ground");
+        let mut sides: [Vec<[f32; 2]>; 2] = [Vec::new(), Vec::new()];
+        for p in &ground {
+            let i = usize::from(p[0] * axis[0] + p[1] * axis[1] < 0.0);
+            sides[i].push(*p);
+        }
+        sides.map(|group| {
+            assert_eq!(group.len(), 12, "a mast box lost corners to the split");
+            let n = group.len() as f32;
+            let sum = group
+                .iter()
+                .fold([0.0f32; 2], |a, p| [a[0] + p[0], a[1] + p[1]]);
+            [crossing.x + sum[0] / n, crossing.z + sum[1] / n]
+        })
+    }
+
+    /// A pair of points equals another pair, in either order, to a millimetre.
+    fn same_pair(got: [[f32; 2]; 2], want: [[f32; 2]; 2]) -> bool {
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-3;
+        (near(got[0], want[0]) && near(got[1], want[1]))
+            || (near(got[0], want[1]) && near(got[1], want[0]))
+    }
+
+    /// The collider follows the mast, at a yaw where getting the rotation the
+    /// wrong way round would show.
+    ///
+    /// This is the whole safety of the collider channel: `mast_centres` publishes
+    /// numbers no capture can see, so nothing but this test says the circle is on
+    /// the post rather than across the road from it. A yaw-0 check would pass with
+    /// the rotation's sign flipped — the failure this module's siblings have
+    /// already paid for twice (`interiors`' door normals).
+    #[test]
+    fn the_mast_centres_are_where_the_masts_are_meshed() {
+        for yaw in [0.0, 0.7, -1.9, 2.6] {
+            for kind in [
+                CrossingKind::HalfBarrier,
+                CrossingKind::MiniBarrier,
+                CrossingKind::FullBarrier,
+                CrossingKind::Lights,
+            ] {
+                let c = LevelCrossing {
+                    yaw,
+                    road_half: Some(5.5),
+                    ..crossing(kind, 3)
+                };
+                let want = meshed_mast_centres(&c);
+                let got = mast_centres(&c);
+                assert!(
+                    same_pair(got, want),
+                    "{kind:?} at yaw {yaw}: collider at {got:?}, mast at {want:?}"
+                );
+            }
+        }
+    }
+
+    /// Every form gets two mast colliders — `Lights` included, which is the one
+    /// that could plausibly be skipped: it has no boom, but it has the same two
+    /// masts and lamp heads standing on the same verge.
+    #[test]
+    fn every_form_has_two_mast_colliders() {
+        for kind in [
+            CrossingKind::HalfBarrier,
+            CrossingKind::MiniBarrier,
+            CrossingKind::FullBarrier,
+            CrossingKind::Lights,
+        ] {
+            let c = crossing(kind, 2);
+            let [a, b] = mast_centres(&c);
+            // Across the road at the verge, along it at the clearance — the two
+            // numbers the masts are placed from, in the frame yaw 0 makes the
+            // object frame.
+            let (_, fallback) = kind.spec();
+            let across = fallback + VERGE_M;
+            let along = clearance_m(2);
+            assert!(
+                (a[0] - (c.x + across)).abs() < 1e-4 && (a[1] - (c.z + along)).abs() < 1e-4,
+                "{kind:?}: {a:?}"
+            );
+            assert!(
+                (b[0] - (c.x - across)).abs() < 1e-4 && (b[1] - (c.z - along)).abs() < 1e-4,
+                "{kind:?}: {b:?}"
+            );
+        }
+    }
+
+    /// A wider road moves the collider out with the mast — the width is carried
+    /// through one derivation, so a crossing on an 11 m road cannot get a mast on
+    /// the verge and a circle in the carriageway.
+    #[test]
+    fn the_collider_takes_the_roads_width_too() {
+        let narrow = mast_centres(&crossing(CrossingKind::HalfBarrier, 1));
+        let wide = mast_centres(&LevelCrossing {
+            road_half: Some(5.5),
+            ..crossing(CrossingKind::HalfBarrier, 1)
+        });
+        assert!((narrow[0][0] - 44.0).abs() < 1e-3, "{narrow:?}");
+        assert!((wide[0][0] - 46.0).abs() < 1e-3, "{wide:?}");
     }
 
     /// The table's rule, and the acceptance test for it: a code nobody wrote a

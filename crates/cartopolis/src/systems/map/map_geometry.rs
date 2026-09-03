@@ -56,7 +56,7 @@ use crate::systems::vector_tiles::ShoreField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
 use crate::systems::vegetation::VegetationLod;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
-use crate::systems::world_places::{CellPlaces, WorldPlaces};
+use crate::systems::world_places::{CellPlaces, WorldPlaces, CROSSING_MAST_RADIUS};
 use cartopolis_core::world::tile_to_meters;
 use cartopolis_core::TileKey;
 use cartopolis_core::{tile_source_kind, TileSourceKind};
@@ -728,9 +728,13 @@ fn spawn_geometry_task(
                                 ));
                                 // …and the installations on ProRail's registered
                                 // level crossings (`systems::crossings`). Same
-                                // group, same material, same toggle, and **no
-                                // collider**, for the reason stated just above
-                                // for the marks.
+                                // group, same material, same toggle — but the
+                                // masts are **solid**, unlike the marks above.
+                                // A buoy stands on water the avatar cannot walk
+                                // on; a crossing mast stands on a verge half a
+                                // metre outside the kerb of a street it walks
+                                // along, which is the lamp column's case, so it
+                                // gets the lamp column's circle.
                                 //
                                 // Placed here rather than in the fetch above
                                 // because the orientation is read off *this*
@@ -748,6 +752,18 @@ fn spawn_geometry_task(
                                     ),
                                 );
                                 cell_places.surveyed.6 = crossings.len();
+                                // The two masts of each, as bare circles: the
+                                // positions come off the same derivation the
+                                // boxes are meshed from, so the collider cannot
+                                // drift off the post
+                                // (`crossings::mast_centres`). Nothing else on
+                                // an installation is solid — the raised bar
+                                // starts a metre off the ground and these are
+                                // height-free circles.
+                                cell_places.colliders.extend(crossings.iter().flat_map(|c| {
+                                    cartopolis_geo::crossings::mast_centres(c)
+                                        .map(|[x, z]| (Vec2::new(x, z), CROSSING_MAST_RADIUS))
+                                }));
                                 meshes.extend(cartopolis_geo::crossings::build_crossing_meshes(
                                     &crossings,
                                     mesh_bytes,
