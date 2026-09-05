@@ -15,11 +15,19 @@
 use std::sync::{Arc, Mutex};
 
 /// Where a pick has got to. `poll` hands `Ready` over exactly once.
+///
+/// **Two variants are `allow(dead_code)` and the reason is the Android arm.**
+/// There, `start` returns an error and nothing else ever runs, so neither the
+/// bytes nor a dismissal can be constructed — and `-D unused` turns that into a
+/// build failure on that target alone, which `cargo check` on the host never
+/// sees. [`crate::platform::photo`]'s `Cancelled` carries the same annotation for
+/// the same reason. The asymmetry is a fact about the platform, not a loose end.
 pub enum Outcome {
     Pending,
     /// The file's bytes, unexamined. Whether it is a model at all is the
     /// simulator's to decide — it is the one that has to parse it anyway, and a
     /// second opinion here would be a second set of limits to keep in step.
+    #[allow(dead_code)]
     Ready(Vec<u8>),
     /// The user backed out. Not an error.
     #[allow(dead_code)]
