@@ -23,6 +23,42 @@ That is a scene where **every surface in the world has the same finish** and
 what separates a render from a photograph, and neither is about geometry — the
 geometry was already surveyed.
 
+## These two are capability settings, not tier settings
+
+They were tier fields first (`Budget::ambient_occlusion`, `Budget::light_shafts`)
+and that was wrong. A tier is a guess about the *class* of machine, resolved
+before a renderer exists — which is the same mistake `gpu_affords_atmosphere`
+made and `free_camera::setup_camera`'s sky block spends thirty lines explaining.
+Both of these have a real capability behind them that the device can be asked
+about directly:
+
+- **Ambient occlusion** is a compute pass, so it needs a backend with a compute
+  stage (`Capabilities::compute_shaders`, read off
+  `limits().max_compute_workgroup_size_x`, which is 0 on WebGL2).
+- **Light shafts** need an adapter that rasterises in hardware and a shadow map
+  to cut the shafts out of.
+
+`AppPrefs::ambient_occlusion` / `light_shafts` are `Option<bool>` on the same
+pattern as `shadows` and `sky_lighting`, except that `None` resolves against the
+*adapter* rather than against `quality::budget()`. An explicit `Some(true)` still
+has to pass the capability test — asking for a pass the backend cannot run does
+not make it appear, exactly as `SkyPreference::Full` still has to pass
+`FLOAT32_FILTERABLE`.
+
+Both apply **immediately**, from Settings ▸ Graphics.
+`systems::render_features::apply_render_features` owns adding and removing every
+component involved, and the camera spawn deliberately inserts none of them — two
+places that can disagree about one component is how a setting comes to read "on"
+over a scene that does not have it. That live toggle is safe here and is not safe
+for the sky: an `Atmosphere` cannot be removed without tearing down GPU resources
+still in flight, while an occlusion pass and a fog volume are pipeline state that
+bevy respecialises on the next frame.
+
+One trap in the removal: `ScreenSpaceAmbientOcclusion` carries
+`#[require(DepthPrepass, NormalPrepass)]`, and **bevy does not remove a required
+component when the requiring one goes** — so switching occlusion off has to drop
+both prepasses by hand, or the run keeps paying for two passes nothing reads.
+
 ## Ambient occlusion costs the multisampling, and that is not optional
 
 `ScreenSpaceAmbientOcclusion` reads a depth and a normal prepass, neither of
@@ -91,10 +127,15 @@ origin, so its global translation is ~0 whatever grid cell it is in.
 
 Only the sun gets `VolumetricLight`. The moon's illuminance is four orders of
 magnitude down and a second volumetric light doubles the march's shadow work for
-something nobody would see. And `handset_guarded` forces `light_shafts: false` on
-Android whatever rung was chosen — a per-pixel shadow-sampled march on a tiled
-mobile GPU is a property of the machine, not a judgement about the picture, which
-is that function's test for what belongs in it.
+something nobody would see.
+
+There is **no Android special case**, deliberately. A handset will resolve
+Automatic to on and a shadowed per-pixel march at panel resolution will cost it —
+Settings ▸ Graphics is where that gets turned off, by the person holding the
+device, which is the whole reason these two are reachable from the phone at all.
+If a measurement on a real handset says Automatic should answer differently
+there, that belongs in `AppPrefs::light_shafts_on` as a *measured* refusal beside
+the software-adapter one, not as a tier field.
 
 ## Roughness is now three multiplied things, and they must stay multiplicative
 
@@ -170,11 +211,11 @@ Measured 2026-09-04 in this container (Mesa lavapipe, `--shots --only city`):
 - Desktop rung, ambient occlusion *and* light shafts: did not finish in ten
   minutes.
 
-So `setup_camera` refuses `VolumetricFog` when the adapter is a CPU rasteriser
+So `AppPrefs::light_shafts_on` refuses when the adapter is a CPU rasteriser
 (`Capabilities::software_renderer`, the same answer that already clamps the
-sample count), and `light_shafts::setup_light_shafts` refuses the fog volume for
-the same reason — a volume with no pass to consume it is not free, since bevy
-extracts and uniform-buffers every `FogVolume` in the world.
+sample count), and refuses an explicit `Some(true)` with it. `render_features`
+then spawns no fog volume either — a volume with no pass to consume it is not
+free, since bevy extracts and uniform-buffers every `FogVolume` in the world.
 
 Ambient occlusion is deliberately **kept** there, at three seconds a frame. It is
 what compiles the prepass, and the prepass is the thing most likely to break —

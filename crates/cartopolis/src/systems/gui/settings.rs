@@ -914,6 +914,15 @@ fn graphics_tab(
         .color(theme::TEXT_DIM),
     );
 
+    // Read before the rows below, because `tri_state` borrows `prefs` mutably and
+    // the label beside each row has to say what "Automatic" resolved to.
+    let caps = crate::quality::capabilities();
+    let ao_possible = caps.is_some_and(|caps| caps.compute_shaders);
+    let shafts_possible_adapter = caps.is_some_and(|caps| !caps.software_renderer);
+    let shadows_now = prefs.shadows_on();
+    let prefs_ao_default = ao_possible;
+    let prefs_shafts_default = shafts_possible_adapter && shadows_now;
+
     ui.add_space(6.0);
     // Two things can hold this one down, so they are reported separately rather
     // than collapsed into one disabled state with a single reason: the cubemap is
@@ -940,6 +949,54 @@ fn graphics_tab(
              next start."
         } else {
             "Needs the full atmosphere — the simple sky has nothing to reflect."
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+
+    ui.add_space(6.0);
+    // Both of these fall back to the **adapter**, not to the tier, so the
+    // "Automatic" value shown beside the checkbox is what this machine can do
+    // rather than what its class is assumed to want. Passing the resolved answer
+    // as the default is what keeps the row honest when the capability says no: a
+    // run with no compute stage shows Automatic = off, and ticking the box
+    // explicitly still shows off, because asking cannot make the pass exist.
+    tri_state(
+        ui,
+        &mut prefs.ambient_occlusion,
+        prefs_ao_default,
+        "Ambient occlusion",
+    );
+    ui.label(
+        egui::RichText::new(if ao_possible {
+            "Darkens the ground where a wall, a kerb or a tree trunk meets it. \
+             Costs a depth pass, a normal pass and a compute pass, and turns \
+             multisampling off — an edge filter replaces it. Applies immediately."
+        } else {
+            "Needs a compute shader, which this graphics backend does not have."
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+
+    ui.add_space(6.0);
+    tri_state(
+        ui,
+        &mut prefs.light_shafts,
+        prefs_shafts_default,
+        "Light shafts",
+    );
+    ui.label(
+        egui::RichText::new(if !shafts_possible_adapter {
+            "Needs a hardware graphics adapter — this one rasterises on the CPU, \
+             where the ray march does not finish."
+        } else if !shadows_now {
+            "Needs shadows: without a shadow map there is nothing to cut a shaft \
+             out of, and the effect is a flat wash."
+        } else {
+            "Sunlight picked out by the air, in the volume around you. The most \
+             expensive setting here — a ray march that samples the sun's shadows \
+             at every step. Applies immediately."
         })
         .small()
         .color(theme::TEXT_DIM),

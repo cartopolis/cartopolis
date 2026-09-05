@@ -2154,10 +2154,6 @@ fn run_client() {
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.
             systems::sky_dome::setup_sky_dome.after(systems::free_camera::setup_camera),
-            // The fog volume the sun's shafts are marched through. After the
-            // camera for the same reason the car pool is: it parents itself to
-            // the `BigSpace` root, which `setup_camera` is what creates.
-            systems::light_shafts::setup_light_shafts.after(systems::free_camera::setup_camera),
             spawn_avatar_entity,
             sky::setup_sky,
             sky::setup_stars,
@@ -2418,6 +2414,12 @@ fn run_client() {
                 // landed dry until the rain next moved.
                 systems::wet_surfaces::apply_wet_surfaces
                     .after(systems::map_geometry::update_map_surfaces),
+                // Ambient occlusion and the light shafts, reconciled with what
+                // Settings ▸ Graphics currently asks for. After the camera, which
+                // is the entity it writes and which measures the capability half
+                // of the answer.
+                systems::render_features::apply_render_features
+                    .after(systems::free_camera::camera_controls),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
             // bake its OSM skin in the background. Nested to stay under the

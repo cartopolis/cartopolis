@@ -32,6 +32,7 @@ pub mod map_stream;
 pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
+pub mod render_features;
 pub mod render_scale;
 pub mod rendering;
 pub mod road_depth;

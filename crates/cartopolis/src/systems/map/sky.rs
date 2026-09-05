@@ -84,7 +84,7 @@ pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shad
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
     let (sun_color, illuminance) =
         sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
-    let mut sun = commands.spawn((
+    commands.spawn((
         DirectionalLight {
             color: sun_color,
             illuminance,
@@ -114,21 +114,11 @@ pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shad
         },
         SunLight,
     ));
-    // The sun is the only light this scene ever draws shafts from, and the marker
-    // is what lets `systems::light_shafts`' fog volume sample its shadow map.
-    //
-    // Inserted **after** the spawn and only on the tier that asked for it, rather
-    // than being a field in the tuple above: the component is what makes the
-    // volumetric pass do per-sample shadow lookups, so on a rung with
-    // `light_shafts: false` (or with shadows off entirely, where there is nothing
-    // to sample) its presence would be a cost with no picture behind it.
-    //
-    // The moon deliberately does not get one. A second volumetric light doubles
-    // the march's shadow work for a light whose illuminance is four orders of
-    // magnitude down — the shafts would be arithmetic, not something anybody sees.
-    if shadows && quality::budget().light_shafts {
-        sun.insert(bevy::light::VolumetricLight);
-    }
+    // `VolumetricLight` — the marker that makes this light cast shafts — is
+    // **not** set here. It rides the Graphics setting, which can change while the
+    // app runs, so `render_features::apply_render_features` owns adding and
+    // removing it; this function is called again on every shadow toggle and would
+    // be a second place that could disagree.
 }
 
 /// Apparent diameter of the sun disk, in radians (the true value is 0.0093).

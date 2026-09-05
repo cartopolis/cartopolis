@@ -1,13 +1,10 @@
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use bevy::anti_alias::fxaa::Fxaa;
 use bevy::camera::Exposure;
 use bevy::light::atmosphere::ScatteringMedium;
-use bevy::light::{
-    AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster, VolumetricFog,
-};
+use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
 use bevy::math::{DQuat, DVec3};
-use bevy::pbr::{AtmosphereSettings, ScreenSpaceAmbientOcclusion};
+use bevy::pbr::AtmosphereSettings;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
@@ -772,6 +769,13 @@ pub fn setup_camera(
     // The web and a software adapter both advertise sample counts of 1 and 4 only
     // — see the `Msaa` comment at the camera spawn.
     let restricted_sample_counts = cfg!(target_arch = "wasm32") || software_renderer;
+    // Kept for `render_features::apply_render_features`, which has to answer the
+    // same question every time the occlusion setting is flipped and cannot
+    // re-derive it — the restriction is a fact about this surface as well as this
+    // adapter.
+    commands.insert_resource(crate::systems::render_features::RestrictedSampleCounts(
+        restricted_sample_counts,
+    ));
     let budget = crate::quality::budget();
 
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
@@ -836,6 +840,12 @@ pub fn setup_camera(
     crate::quality::init_capabilities(crate::quality::Capabilities {
         float32_filterable,
         software_renderer,
+        // WebGL2 has no compute stage, so bevy's ambient-occlusion pass cannot
+        // exist there whatever anyone asks for. Read off the adapter's downlevel
+        // flags rather than off `cfg!(target_arch = "wasm32")`, for the reason the
+        // sample-count comment gives at length: the web build targets WebGPU now,
+        // and a platform test would refuse a pass the browser can actually run.
+        compute_shaders: render_device.limits().max_compute_workgroup_size_x > 0,
         vsync_paced: matches!(
             primary_window.iter().next().map(|w| w.present_mode),
             Some(
@@ -966,7 +976,12 @@ pub fn setup_camera(
             // requires `Msaa::Off` for; all three now resolve in
             // `quality::Budget::main_pass_msaa` so the answer here and the
             // decision to add `Fxaa` below cannot disagree.
-            budget.main_pass_msaa(restricted_sample_counts),
+            //
+            // Spawned with the answer the preference gives *now*;
+            // `render_features::apply_render_features` keeps it in step if the
+            // setting is flipped later, since a sample count and an occlusion
+            // pass cannot both be on.
+            budget.main_pass_msaa(restricted_sample_counts, prefs.ambient_occlusion_on()),
             // Explicit, because Bevy's required-component default is
             // `TonyMcMapface` and that samples a 3D LUT. On a tier with no `Hdr`
             // camera — no atmosphere, no bloom, i.e. the phone — bevy_pbr sets
@@ -1017,52 +1032,13 @@ pub fn setup_camera(
                 ..Bloom::NATURAL
             });
         }
-        // Ambient occlusion: the contact darkening that seats an object on the
-        // thing it stands on. See `quality::Budget::ambient_occlusion` for why
-        // this is the largest single change to how the city reads, and for what
-        // it costs (two prepasses, a compute pass, and the multisampling).
-        //
-        // `ScreenSpaceAmbientOcclusion` carries `#[require(DepthPrepass,
-        // NormalPrepass)]`, so both are added by the component and neither is
-        // spelled out here — worth knowing before adding a second consumer of
-        // either, because removing this component would take them away again.
-        if budget.ambient_occlusion {
-            cam.insert(ScreenSpaceAmbientOcclusion::default());
-        }
-        // …and the edge filter that pays for it, on exactly the runs where the
-        // samples went away. `wants_edge_filter` is false on a rung that never
-        // asked for multisampling in the first place, so the phone does not
-        // quietly gain a full-screen pass.
-        if budget.wants_edge_filter(restricted_sample_counts) {
-            cam.insert(Fxaa::default());
-        }
-        // Light shafts. The component only enables the *pass*; what it marches
-        // through is a `FogVolume`, which `systems::light_shafts` spawns and keeps
-        // over the camera, and what cuts the shafts out is the sun's shadow map,
-        // which `sky::setup_sky` marks with `VolumetricLight`. All three have to
-        // be present or this is an expensive way to render nothing.
-        // …and not on a CPU rasteriser, whatever the rung says. A 48-step march
-        // with a shadow lookup at every step is minutes per frame under lavapipe
-        // (measured 2026-09-04: a single `cargo shots` preset did not finish in
-        // ten), and lighting is not evidence there in the first place — so this
-        // would be a long wait for a picture no conclusion may be drawn from. The
-        // same `software_renderer` answer already decides the sample count.
-        if budget.light_shafts && !software_renderer {
-            cam.insert(VolumetricFog {
-                // Bevy's default is 64. The volume here is kilometres across
-                // rather than a room, so the samples are spread thin and the
-                // banding shows; 48 with the jitter below reads cleaner than 64
-                // without it, and costs less.
-                step_count: 48,
-                // Dithers the ray start so the banding becomes noise. Bevy's own
-                // note says this is meant to pair with temporal anti-aliasing,
-                // which this client deliberately does not have — but the fog is
-                // low-frequency and slow, so the noise reads as fog grain rather
-                // than as crawl.
-                jitter: 0.5,
-                ..default()
-            });
-        }
+        // Ambient occlusion, the edge filter that pays for it, and the light
+        // shafts are **not** inserted here. All three are capability-and-
+        // preference answers that can change while the app runs (Settings ▸
+        // Graphics), so one system owns adding and removing them and this spawn
+        // would only be a second place that could disagree with it — see
+        // `systems::render_features`, which runs from `Startup` as well as on
+        // change and so has them on before the first frame.
         // Atmospheric distance fog: distant buildings fade into haze, sun-side
         // glow, driven by the dev panel (apply_distance_fog). It is one more
         // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14

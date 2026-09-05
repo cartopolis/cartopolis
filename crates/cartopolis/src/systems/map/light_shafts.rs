@@ -44,7 +44,7 @@
 
 use bevy::light::FogVolume;
 use bevy::prelude::*;
-use big_space::prelude::{BigSpace, GridCell};
+use big_space::prelude::GridCell;
 
 use crate::components::FreeCamera;
 use crate::resources::DevPanelState;
@@ -56,7 +56,7 @@ pub struct ShaftVolume;
 /// Edge length of the volume, in metres.
 ///
 /// Chosen against the step count rather than against the scene: at
-/// `VolumetricFog::step_count` = 48 this is a sample every ~12 m, which is fine
+/// `render_features::MARCH_STEPS` = 48 this is a sample every ~12 m, which is fine
 /// for something as low-frequency as fog. Doubling it would halve the sample
 /// density and put visible slabs across the frame — so if this grows, the step
 /// count has to grow with it.
@@ -72,34 +72,15 @@ const CLEAR_DENSITY: f32 = 0.012;
 /// Density at the heaviest rain, before `fog_density` is applied.
 const RAIN_DENSITY: f32 = 0.055;
 
-/// Spawn the volume once, inside the big-space root so it shares the camera's
-/// frame.
+/// Spawn the volume, inside the big-space root so it shares the camera's frame.
 ///
-/// A `Startup` system that no-ops on the tiers that do not march it, rather than
-/// a spawn guarded at the call site: the budget is the one place that decides,
-/// and a volume with no camera pass to consume it is invisible but not free —
-/// bevy still extracts and uniform-buffers every `FogVolume` in the world.
-pub fn setup_light_shafts(mut commands: Commands, root: Query<Entity, With<BigSpace>>) {
-    // The budget's answer, and the adapter's. Both have to agree, and the second
-    // is why this reads `capabilities()` rather than the budget alone:
-    // `free_camera::setup_camera` refuses the camera's `VolumetricFog` on a CPU
-    // rasteriser (see there), and a volume with no pass to consume it is not free
-    // — bevy still extracts and uniform-buffers every `FogVolume` in the world.
-    //
-    // `capabilities()` is `Some` by the time this runs because it is ordered after
-    // `setup_camera`, which is what measures it. Treating `None` as "no shafts" is
-    // the safe way round if that ordering is ever broken: a missing volume is a
-    // missing effect, while a march with nothing to march through is cost with no
-    // picture.
-    let caps = crate::quality::capabilities();
-    if !crate::quality::budget().light_shafts || caps.is_none_or(|caps| caps.software_renderer) {
-        return;
-    }
-    let Ok(root) = root.single() else {
-        // No big space yet is not an error worth logging every launch — the
-        // camera owns the root and this runs in the same startup set.
-        return;
-    };
+/// Called by `render_features::apply_render_features` rather than from a
+/// `Startup` system of its own, because the answer it depends on — the adapter's
+/// capability and the person's preference — can change while the app runs, and
+/// because a volume with no camera pass to consume it is not free: bevy extracts
+/// and uniform-buffers every `FogVolume` in the world whether or not anything
+/// marches through it.
+pub fn spawn_volume(commands: &mut Commands, root: Entity) {
     commands.entity(root).with_children(|parent| {
         parent.spawn((
             FogVolume {
@@ -162,12 +143,11 @@ mod tests {
     /// warns about, so the relation is pinned rather than described.
     #[test]
     fn the_volume_is_sampled_at_least_every_fifteen_metres() {
-        // `free_camera::setup_camera` asks for 48 steps.
-        let steps = 48.0;
+        let steps = f64::from(crate::systems::render_features::MARCH_STEPS);
+        let per_sample = f64::from(VOLUME_EDGE_M) / steps;
         assert!(
-            VOLUME_EDGE_M / steps <= 15.0,
-            "{VOLUME_EDGE_M} m over {steps} steps is {} m per sample",
-            VOLUME_EDGE_M / steps
+            per_sample <= 15.0,
+            "{VOLUME_EDGE_M} m over {steps} steps is {per_sample} m per sample"
         );
     }
 
