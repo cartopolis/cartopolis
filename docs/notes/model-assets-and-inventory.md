@@ -106,14 +106,30 @@ which is right when the wire and the API share a hostname — and
 because a wrong base fails as a network error instead of as "this server did not
 say".
 
-### Deployment: `cartopolis.org` needs an `/api/` route
+### Deployment: `cartopolis.org` proxies three prefixes, not `/api/*`
 
-As of 2026-09-05 the Caddy block for `cartopolis.org` handles `/ws`, `/go` and the
-static client, and **nothing else** — `/api/*` is only proxied on
-`web.cartopolis.org`, where cartopy lives. So a client connected to
-`cartopolis.org` will fetch no models until that host proxies the asset routes to
-`172.17.0.1:4748` as well. It is a narrow addition (the asset, inventory and
-library paths, not the admin ones) and it has not been made.
+Added to the Caddy block on 2026-09-05. Alongside `/ws`, the host now proxies
+`/api/assets`, `/api/inventory` and `/api/library` (each bare and with `/*`) to
+the same upstream, `172.17.0.1:4748`.
+
+**Not `/api/*`,** and that is the point: the same prefix carries `/api/admin/*` —
+accounts, reports, claims, curation — which belongs on `web.cartopolis.org` where
+the operator GUI is, and has no business being reachable from the page every
+player loads. Anything else under `/api` on this host falls through to the file
+server and 404s.
+
+The two 404s are worth telling apart when checking it. A path that reached the
+simulator carries a `via: 1.1 Caddy` header (added by `reverse_proxy`); one that
+fell through to the file server carries `server: Caddy` instead. Both are `404`
+with an empty body, so the status alone proves nothing:
+
+```
+curl -sS -D - -o /dev/null https://cartopolis.org/api/library | grep -i '^via:'
+```
+
+Both prefixes are listed bare *and* with a wildcard because Caddy's `path`
+matcher is exact per token: `/api/inventory*` would also match
+`/api/inventoryfoo`, and `/api/inventory/*` alone would miss the listing itself.
 
 ## Loading it on the client is an asset *source*, not a download
 

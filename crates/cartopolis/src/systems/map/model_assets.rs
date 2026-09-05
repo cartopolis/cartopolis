@@ -106,6 +106,14 @@ pub fn have_endpoint() -> bool {
 #[must_use]
 pub fn derive_api_base(addr: &str) -> Option<String> {
     let addr = addr.trim().trim_end_matches('/');
+    // An empty address means *this page's own origin* — the web build's default,
+    // and what `network::ws_url` reads it as. The base is then the empty string,
+    // so every request below is a relative URL the browser resolves against the
+    // page. Falling through to the bare-hostname arm would build `https://` and
+    // fetch nothing, with a network error for an explanation.
+    if addr.is_empty() {
+        return Some(String::new());
+    }
     if let Some(rest) = addr.strip_prefix("wss://") {
         let host = rest.split('/').next().unwrap_or(rest);
         return Some(format!("https://{host}"));
@@ -398,5 +406,14 @@ mod tests {
     fn a_loopback_address_derives_nothing() {
         assert_eq!(derive_api_base("127.0.0.1:4747"), None);
         assert_eq!(derive_api_base("localhost:4747"), None);
+    }
+
+    /// The web build's default server field is empty, meaning this page's own
+    /// origin. The base has to be empty with it, so the requests are relative —
+    /// the alternative builds the string `https://` and fetches nothing.
+    #[test]
+    fn an_empty_address_is_this_page() {
+        assert_eq!(derive_api_base("").as_deref(), Some(""));
+        assert_eq!(derive_api_base("   ").as_deref(), Some(""));
     }
 }
