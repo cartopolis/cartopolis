@@ -35,6 +35,18 @@
 //! camera the user cannot move while the button is lit, with nothing on screen to
 //! say why.
 //!
+//! **And "however far the fix moved" is measured per frame, not per fix**
+//! (`driver::FixGlide`). A receiver reports about once a second and the screen
+//! draws sixty times in that second; applying each report the moment it lands
+//! spends all of a second's movement on one frame in sixty, which is what a
+//! marker that "updates slowly" actually is. The glide spreads it, and — this is
+//! the part that has to be got right in one place — *everything* downstream then
+//! measures its own step from the glided position: the arrow projects it
+//! ([`LocateTracking::display_geo`]), the flat camera arms nudge by the
+//! difference between two of them, and the globe arm rotates the planet by the
+//! arc between them. Hand any one of those the raw fix while the others glide and
+//! it moves against the map instead of with it.
+//!
 //! **It is deliberately not driver mode.** `systems::driver` does all of this and
 //! a great deal more — it needs a solved route, strips the map to a navigation
 //! display, takes the camera rig, narrates manoeuvres and reroutes when you leave
@@ -70,9 +82,9 @@ use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::location::{GpsFix, LocationWatch};
 use crate::platform::orientation::{DeviceHeading, OrientationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
-use crate::systems::driver::DriverState;
+use crate::systems::driver::{DriverState, FixGlide};
 use crate::systems::free_camera::cell_origin;
-use crate::systems::geo_nav::{GeoNavState, Teleport};
+use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
 
 /// The world-XZ yaw that puts a compass bearing up the screen.
 ///
@@ -94,9 +106,10 @@ pub fn yaw_from_bearing(bearing_rad: f32) -> f32 {
 ///
 /// The watches live here rather than being started once at boot so that nothing
 /// polls a sensor no one is looking at — an open GNSS watch keeps the browser's
-/// location indicator lit and the radio warm, and a magnetometer at 20 Hz is a
-/// measurable share of a phone's idle power. Dropping the resource's `Option`s is
-/// the whole unsubscribe protocol, on both platforms.
+/// location indicator lit and the radio warm, and a magnetometer running fast
+/// enough to turn an arrow smoothly is a measurable share of a phone's idle
+/// power. Dropping the resource's `Option`s is the whole unsubscribe protocol, on
+/// both platforms.
 #[derive(Resource, Default)]
 pub struct LocateTracking {
     /// The switch the locate button toggles, and the single source of truth for
@@ -153,6 +166,20 @@ pub struct LocateTracking {
     /// that a fix also reaches the sim: without it every frame would send a
     /// placement (`driver::place_avatar`).
     last_fix: Option<GpsFix>,
+    /// Spreads the step between two fixes over the frames between them, so the
+    /// arrow and the map under it move continuously rather than once a second —
+    /// see [`FixGlide`].
+    glide: FixGlide,
+    /// Where the arrow is currently *drawn*, as (lat, lng): the glided position,
+    /// not the raw fix.
+    ///
+    /// Two consumers, and they must agree or the marker and the map it sits on
+    /// move to different clocks. `render_locate_arrow` projects it, and the
+    /// camera arms measure this frame's step from it — the globe's especially,
+    /// which rotates the whole planet by the arc between the previous value and
+    /// this one and would swing by a whole fix's worth on *every* frame if it
+    /// were handed the raw pair instead.
+    display_geo: Option<(f64, f64)>,
     /// Was the camera in Avatar mode last frame? The rotate-follow rig is armed
     /// on the *transition* into it, so switching to Follow with the button lit
     /// turns the view exactly as pressing the button there would have — while a
@@ -177,6 +204,8 @@ impl LocateTracking {
         self.recenter = true;
         self.last_place = None;
         self.last_fix = None;
+        self.glide.reset();
+        self.display_geo = None;
         // Not `NoProvider`: the press is the moment the wait begins, and a button
         // that lit with no caption for the length of a cold GNSS start is the gap
         // this field was added to close. `track_device_pose` overwrites it on the
@@ -217,6 +246,13 @@ impl LocateTracking {
         // in its searching state beside a marker that has plainly found itself.
         self.gps = crate::systems::driver::GpsQuality::Good(fix.accuracy_m as f32);
         self.last_fix_at = Some(web_time::Instant::now());
+        // The seeded fix *is* where the arrow goes — there is no provider behind
+        // it and so nothing to glide from. Written here rather than left to
+        // `track_device_pose` because a capture is one settled frame and the
+        // arrow would otherwise fall back to the raw fix, which is the same
+        // coordinate but by a different route: a scripted run should photograph
+        // the field the live path fills in.
+        self.display_geo = Some((fix.lat, fix.lng));
     }
 
     /// Stop tracking and drop both subscriptions.
@@ -233,6 +269,8 @@ impl LocateTracking {
         self.recenter = false;
         self.last_place = None;
         self.last_fix = None;
+        self.glide.reset();
+        self.display_geo = None;
         self.gps = crate::systems::driver::GpsQuality::default();
         self.last_fix_at = None;
         self.in_follow = false;
@@ -458,6 +496,13 @@ pub fn render_locate_arrow(
     let (Some(fix), Some(anchor)) = (tracking.last_fix, map_anchor.geo) else {
         return;
     };
+    // Where the marker goes is the *glided* position, not the raw fix: the avatar
+    // and the camera were placed there this frame (`track_device_pose`), and an
+    // arrow drawn at the fix instead would slide back and forth against the map
+    // under it between one report and the next. `last_fix` is still what the
+    // heading and the accuracy come from — those are properties of the report,
+    // not of where the interpolation has got to.
+    let (here_lat, here_lng) = tracking.display_geo.unwrap_or((fix.lat, fix.lng));
     let Ok((cam, cam_cell, cam_tf)) = cameras.single() else {
         return;
     };
@@ -491,7 +536,7 @@ pub fn render_locate_arrow(
             .ok()
             .map(|p| to_ui(p))
     };
-    let Some(here) = project(fix.lat, fix.lng) else {
+    let Some(here) = project(here_lat, here_lng) else {
         return; // over the horizon, behind the camera, or off the flat frame
     };
     if !map_rect.contains(here) {
@@ -510,12 +555,12 @@ pub fn render_locate_arrow(
         .filter(|b| b.is_finite());
     let facing = bearing.and_then(|b| {
         let distance = crate::systems::place_pins::place_delta(
-            &globe, anchor, cam_world, in_space, fix.lat, fix.lng, &terrain,
+            &globe, anchor, cam_world, in_space, here_lat, here_lng, &terrain,
         )?
         .length();
         let probe =
             (distance * HEADING_PROBE_FRACTION).clamp(HEADING_PROBE_MIN_M, HEADING_PROBE_MAX_M);
-        let (lat, lng) = step_along_bearing(fix.lat, fix.lng, b, probe);
+        let (lat, lng) = step_along_bearing(here_lat, here_lng, b, probe);
         let ahead = project(lat, lng)?;
         let dir = ahead - here;
         (dir.length() >= HEADING_MIN_SCREEN).then(|| dir.normalized())
@@ -531,7 +576,7 @@ pub fn render_locate_arrow(
     // the halo is a circle, so any bearing gives the same radius, and the small
     // error from projecting a circle as one is far below the accuracy it draws.
     let accuracy_px = tracking.gps.accuracy_m().and_then(|m| {
-        let (lat, lng) = step_along_bearing(fix.lat, fix.lng, 90.0, f64::from(m));
+        let (lat, lng) = step_along_bearing(here_lat, here_lng, 90.0, f64::from(m));
         Some((project(lat, lng)? - here).length())
     });
     let painter = ctx
@@ -753,6 +798,8 @@ pub fn track_device_pose(
     // The globe's own frame. Only the space tier reads it, and only to turn a
     // (lat, lng) into a direction from the planet's centre.
     globe: Res<crate::systems::globe::GlobeState>,
+    // The frame's length, for the glide between two fixes.
+    time: Res<Time>,
 ) {
     // Two ways this ends without the button being pressed again.
     //
@@ -792,9 +839,6 @@ pub fn track_device_pose(
     // A report we have not applied yet, as opposed to the same one being read
     // again — see [`LocateTracking::last_fix`].
     let fix_is_new = fix.is_some_and(|f| tracking.last_fix != Some(f));
-    // Read before it is overwritten: the globe arm follows the *rotation between
-    // two fixes*, which needs the one being replaced.
-    let previous_geo = tracking.last_fix.map(|f| (f.lat, f.lng));
     let now = web_time::Instant::now();
     if fix_is_new {
         tracking.last_fix = fix;
@@ -830,11 +874,23 @@ pub fn track_device_pose(
             // was measured in no longer exists.
             tracking.recenter = false;
             tracking.last_place = None;
+            tracking.glide.reset();
+            tracking.display_geo = None;
         } else {
+            // Spread the step between two fixes over the frames between them (see
+            // [`FixGlide`]). Everything below measures its own step from
+            // `display_geo`, so the arrow, the avatar and all three camera arms
+            // advance on one clock — the frame's — rather than lurching together
+            // once a second.
+            let (wx, wz) = lat_lng_to_world(anchor, fix.lat, fix.lng);
+            let (gx, gz) = tracking
+                .glide
+                .advance((wx, wz), fix_is_new, now, time.delta_secs());
+            let (glat, glng) = world_to_lat_lng(anchor, gx, gz);
+            let previous_geo = tracking.display_geo.replace((glat, glng));
             crate::systems::driver::place_avatar(
-                anchor,
-                fix.lat,
-                fix.lng,
+                gx,
+                gz,
                 &mut avatar_state,
                 &mut avatars,
                 if fix_is_new { online.as_deref() } else { None },
@@ -863,8 +919,8 @@ pub fn track_device_pose(
                     };
                     let tracked = TrackedFix {
                         place,
-                        lat: fix.lat,
-                        lng: fix.lng,
+                        lat: glat,
+                        lng: glng,
                         previous,
                     };
                     if move_camera_to_place(&mut camera_state, &mut cameras, &globe, &tracked) {

@@ -92,6 +92,15 @@
 //! whatever the app was looking at — is applied as a teleport, which re-anchors
 //! the map and brings the camera and every streamer with it.
 //!
+//! **A fix is applied over the frames that follow it, not on the one it lands
+//! on** ([`FixGlide`]). The receiver reports about once a second and the screen
+//! draws sixty times in that second, so placing the arrow the moment a report
+//! arrives spends a whole second's movement on one frame in sixty — the display
+//! is not short of information, it is delivering all of it at once. Every reading
+//! taken downstream of the position is smoothed by this for free: the measured
+//! course, the progress along the route and the chase camera all come off the
+//! avatar's own transform.
+//!
 //! **Heading is a course over ground, not a facing.** The avatar's yaw is bound
 //! to the camera azimuth by `avatar::handle_avatar_movement` (W walks into the
 //! view), so reading it back would make the arrow point up the screen forever —
@@ -748,6 +757,10 @@ pub struct DriverState {
     camera_save: Option<CameraSave>,
     /// Previous position and when it was sampled, for the measured speed/course.
     last_sample: Option<(DVec3, Instant)>,
+    /// Spreads the step between two fixes over the frames between them — see
+    /// [`FixGlide`]. Not `pub`: it is where the marker *is*, and everything else
+    /// already reads that off the avatar.
+    glide: FixGlide,
     /// Set on entry: the avatar is put on the route's start before the first frame
     /// of driving (see `drive_driver_mode`).
     snap_pending: bool,
@@ -777,6 +790,7 @@ impl DriverState {
         self.progress = None;
         self.speed_ms = 0.0;
         self.last_sample = None;
+        self.glide.reset();
         self.gps_error = None;
         self.gps_fix = false;
         self.gps = GpsQuality::default();
@@ -827,6 +841,7 @@ impl DriverState {
         self.armed = false;
         self.watch = None;
         self.progress = None;
+        self.glide.reset();
         self.gps_fix = false;
         self.gps = GpsQuality::default();
         self.snap = None;
@@ -1076,12 +1091,22 @@ pub fn drive_driver_mode(
                 lng = fix.lng,
                 "device fix is far from the anchored world — teleporting rather than warping the avatar"
             );
+            // The world is about to be re-anchored under the marker, so the frame
+            // the glide's last position was measured in stops existing.
+            driver.glide.reset();
             nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None).silently());
         } else {
+            // Spread the step between two fixes over the frames between them —
+            // see [`FixGlide`]. Everything downstream reads the avatar's own
+            // position, so the arrow, the chase camera, the measured course and
+            // the progress along the route all become continuous together.
+            let (wx, wz) = lat_lng_to_world(anchor, fix.lat, fix.lng);
+            let (gx, gz) = driver
+                .glide
+                .advance((wx, wz), fix_is_new, now, time.delta_secs());
             place_avatar(
-                anchor,
-                fix.lat,
-                fix.lng,
+                gx,
+                gz,
                 &mut avatar_state,
                 &mut avatars,
                 if fix_is_new { online.as_deref() } else { None },
@@ -1095,6 +1120,7 @@ pub fn drive_driver_mode(
         // brings the camera with it.
         driver.snap_pending = false;
         if let Some(start) = driver.geom.as_ref().and_then(|g| g.points.first()).copied() {
+            driver.glide.reset();
             nav.pending_teleport = Some(Teleport::geo(start[0], start[1], None).silently());
         }
     }
@@ -1357,7 +1383,7 @@ impl DriverState {
 }
 
 /// Put the avatar (and so the arrow, the camera and the progress readout) at a
-/// geographic position within the current anchor frame.
+/// position within the current anchor frame.
 ///
 /// Shared with [`crate::systems::locate`], which follows a device fix with no
 /// route under it: the near/far rule below is about the *world* being anchored,
@@ -1400,15 +1426,18 @@ impl DriverState {
 /// intents closer together than 50 ms. One placement per report is what makes it
 /// an unrated message rather than a stream, which is also why the sim does not
 /// rate-limit teleports.
+/// **The position is in absolute anchored world metres, not degrees**, because
+/// both callers put it through [`FixGlide`] first and the glide works in metres —
+/// degrees are anisotropic, so interpolating in them would move the marker faster
+/// east-west than north-south by the cosine of the latitude. `lat_lng_to_world`
+/// is one line at each call site and there is nothing to gain by doing it twice.
 pub(crate) fn place_avatar(
-    anchor: (f64, f64, u32),
-    lat: f64,
-    lng: f64,
+    wx: f64,
+    wz: f64,
     avatar_state: &mut AvatarState,
     avatars: &mut Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
     online: Option<&OnlineSession>,
 ) {
-    let (wx, wz) = lat_lng_to_world(anchor, lat, lng);
     let (cell, local) = placement(wx, wz, avatar_state.position.y);
     if let Ok((mut c, mut tf)) = avatars.single_mut() {
         *c = cell;
@@ -1425,6 +1454,124 @@ pub(crate) fn place_avatar(
             },
         );
         avatar_state.teleport_hold = Some(Instant::now());
+    }
+}
+
+/// The shortest fix interval the glide will believe, in seconds, and the longest.
+///
+/// The floor stops a provider that reports twice in one millisecond — the
+/// framework does coalesce and re-deliver — from setting a cadence the glide then
+/// tries to hold. The ceiling is what makes a *missed* report behave sensibly:
+/// without it, one two-second gap teaches the glide to spend two seconds on every
+/// later fix, and the marker settles into a permanent crawl behind a receiver that
+/// has gone back to reporting normally.
+const GLIDE_MIN_INTERVAL_S: f32 = 0.15;
+const GLIDE_MAX_INTERVAL_S: f32 = 1.5;
+
+/// Ground speed (m/s) above which a step between two fixes is not travel.
+///
+/// A re-anchor moves the whole world frame by kilometres and a teleport by more;
+/// both reach here as an enormous jump in the target, and gliding through one
+/// would send the marker sailing across the map for a second. The same rule
+/// `drive_driver_mode` uses on its own samples, and for the same reason: past this
+/// the only honest thing to do is arrive.
+const GLIDE_IMPLAUSIBLE_MS: f64 = 200.0;
+
+/// Where the marker is drawn *between* two fixes.
+///
+/// **A receiver reports about once a second and a screen draws sixty times in
+/// that second, so without this the map moves in one visible jerk per fix.** That
+/// is what "the update rate seems low" is: not a lack of information — the fixes
+/// are as frequent as the hardware makes them — but all of the frame's worth of
+/// movement being spent on one frame in sixty. The polling underneath stays as
+/// fast as it can (`platform::android::POLL_INTERVAL`); this only decides how the
+/// distance between two real reports is spread over the frames between them.
+///
+/// **It interpolates and does not extrapolate, and that choice costs one fix
+/// interval of lag.** The marker is aimed to arrive at fix *N*'s position at the
+/// moment fix *N+1* is expected, so it is always showing where the device was
+/// about half a second ago rather than guessing where it is now. Dead reckoning
+/// along the reported course and speed would have no lag at all and is what a
+/// racing display would do — and it overshoots every stop, every junction and
+/// every corner, then has to be pulled back. Being consistently half a second
+/// behind is a smaller lie than being intermittently ten metres wrong in a
+/// direction you are no longer travelling.
+///
+/// The arrival deadline is what makes the motion *even*. An exponential ease
+/// toward the fix — the obvious first cut — covers most of the gap in the first
+/// few frames and then crawls, so each fix reads as a lurch followed by a pause,
+/// which is the original complaint with extra steps.
+#[derive(Default)]
+pub(crate) struct FixGlide {
+    /// Where the marker is being drawn, in absolute anchored world metres. `None`
+    /// before the first fix, which is what makes that one a placement rather than
+    /// a slide.
+    shown: Option<(f64, f64)>,
+    /// When the last *new* fix landed, and the cadence measured from the one
+    /// before it. Together they say how long is left to arrive.
+    fix_at: Option<Instant>,
+    interval_s: f32,
+}
+
+impl FixGlide {
+    /// Forget where the marker was. Called wherever the frame it was measured in
+    /// stops existing — a teleport, a re-anchor, entering or leaving the mode —
+    /// so the next fix is placed outright instead of glided to from a coordinate
+    /// that now means somewhere else.
+    pub(crate) fn reset(&mut self) {
+        self.shown = None;
+        self.fix_at = None;
+        self.interval_s = 0.0;
+    }
+
+    /// Advance one frame toward `target` (absolute anchored world metres) and
+    /// return where to draw. `is_new_fix` distinguishes a report we have not seen
+    /// from the provider republishing the last one, which it does on every frame
+    /// (`LocationWatch::latest` is a level, not an event).
+    pub(crate) fn advance(
+        &mut self,
+        target: (f64, f64),
+        is_new_fix: bool,
+        now: Instant,
+        dt: f32,
+    ) -> (f64, f64) {
+        if is_new_fix {
+            // The cadence is measured rather than assumed: it differs between the
+            // web and Android, between providers, and between a cold start and a
+            // warm one, and a hard-coded second would be wrong on all of them.
+            if let Some(previous) = self.fix_at {
+                let measured = now.duration_since(previous).as_secs_f32();
+                self.interval_s = measured.clamp(GLIDE_MIN_INTERVAL_S, GLIDE_MAX_INTERVAL_S);
+            }
+            self.fix_at = Some(now);
+        }
+        let Some(shown) = self.shown else {
+            // The first fix of a session, or the first after a reset: arrive.
+            self.shown = Some(target);
+            return target;
+        };
+        let gap = ((target.0 - shown.0).powi(2) + (target.1 - shown.1).powi(2)).sqrt();
+        let elapsed = self
+            .fix_at
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f32());
+        // Not travel — see [`GLIDE_IMPLAUSIBLE_MS`]. Measured against the time the
+        // gap opened up in, so the rule is a speed and not a distance: 30 m is an
+        // ordinary second on a motorway and an impossible one on a pavement.
+        if gap > f64::from(elapsed.max(self.interval_s).max(dt)) * GLIDE_IMPLAUSIBLE_MS {
+            self.shown = Some(target);
+            return target;
+        }
+        // How much of what is left to cover belongs to this frame. Once the next
+        // fix is overdue this is 1 and the marker simply sits on the last known
+        // position, which is the honest picture of a receiver that has gone quiet.
+        let remaining = (self.interval_s - elapsed).max(dt);
+        let step = f64::from((dt / remaining).clamp(0.0, 1.0));
+        let next = (
+            shown.0 + (target.0 - shown.0) * step,
+            shown.1 + (target.1 - shown.1) * step,
+        );
+        self.shown = Some(next);
+        next
     }
 }
 
@@ -4052,5 +4199,79 @@ mod tests {
             CHIP_BOTTOM > PILL_BOTTOM + 24.0,
             "the chip sits in the Re-centre button's row"
         );
+    }
+
+    /// The whole point of the glide: between two fixes the marker must cover the
+    /// ground *evenly*. An exponential ease passes every "it gets there" test and
+    /// still lurches, so this asserts the per-frame steps are alike — which is the
+    /// property a person actually sees.
+    #[test]
+    fn a_glide_spreads_one_fix_evenly_over_the_frames_after_it() {
+        let mut glide = FixGlide::default();
+        let mut t = Instant::now();
+        let dt = 1.0 / 60.0;
+        let step = Duration::from_secs_f32(dt);
+
+        // The first fix of a session is placed outright, so pressing the button
+        // still centres rather than sliding in from wherever the avatar stood.
+        assert_eq!(glide.advance((0.0, 0.0), true, t, dt), (0.0, 0.0));
+
+        // A second fix, a second later and 10 m east. It teaches the glide the
+        // cadence *and* is the first one gliding applies to: from here the marker
+        // is aimed to arrive as the next report is due.
+        t += Duration::from_secs_f32(1.0);
+        let mut x = glide.advance((10.0, 0.0), true, t, dt).0;
+        let first_step = x;
+        assert!(
+            first_step > 0.0 && first_step < 0.5,
+            "one frame took {first_step} m of a 10 m fix — that is the lurch this exists to remove"
+        );
+        for frame in 1..30 {
+            t += step;
+            let next = glide.advance((10.0, 0.0), false, t, dt).0;
+            let moved = next - x;
+            assert!(
+                (moved - first_step).abs() < first_step * 0.5,
+                "frame {frame} moved {moved} m against a first frame of {first_step} m"
+            );
+            x = next;
+        }
+        assert!(
+            x > 4.0 && x < 10.0,
+            "half a second in, the marker should be about half way, not {x}"
+        );
+
+        // Once the next fix is overdue the marker sits on the last known position
+        // rather than inventing one — a receiver that has gone quiet is a receiver
+        // that has gone quiet.
+        t += Duration::from_secs_f32(1.0);
+        assert_eq!(glide.advance((10.0, 0.0), false, t, dt).0, 10.0);
+    }
+
+    /// A re-anchor and a teleport both arrive here as an enormous jump in the
+    /// target. Gliding through one would sail the marker across the map.
+    #[test]
+    fn a_glide_arrives_rather_than_travelling_an_impossible_step() {
+        let mut glide = FixGlide::default();
+        let mut t = Instant::now();
+        let dt = 1.0 / 60.0;
+        glide.advance((0.0, 0.0), true, t, dt);
+        t += Duration::from_secs_f32(1.0);
+        glide.advance((5.0, 0.0), true, t, dt);
+        t += Duration::from_secs_f32(1.0);
+        // A whole grid cell away: not travel at any speed a vehicle reaches.
+        assert_eq!(glide.advance((10_000.0, 0.0), true, t, dt), (10_000.0, 0.0));
+    }
+
+    /// A reset must make the next fix a placement again, or the marker glides in
+    /// from a coordinate that belonged to a frame which no longer exists.
+    #[test]
+    fn a_reset_makes_the_next_fix_a_placement() {
+        let mut glide = FixGlide::default();
+        let t = Instant::now();
+        let dt = 1.0 / 60.0;
+        glide.advance((0.0, 0.0), true, t, dt);
+        glide.reset();
+        assert_eq!(glide.advance((60.0, 40.0), true, t, dt), (60.0, 40.0));
     }
 }
