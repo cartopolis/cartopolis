@@ -93,6 +93,35 @@ impl MaterialExtension for RoadDepthExtension {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        // **This hook runs for the prepass too, and must do nothing there.**
+        //
+        // Bevy calls the material's `specialize` from `PrepassPipelineSpecializer`
+        // as well as from the main material pipeline — its own source carries the
+        // comment "it's possible to change something that would break the prepass
+        // but be fine in the main pass", and this is that case. The prepass
+        // compiles **bevy's** vertex shader (`prepass_vertex_shader` is left at
+        // the default, for the reason above), which declares a different set of
+        // vertex inputs; replacing the buffer layout with the one our shader wants
+        // leaves that shader with a location nothing supplies.
+        //
+        // The failure is not subtle and is not survivable: `RenderPipeline with
+        // 'pbr_prepass_pipeline' label is invalid` at `Queue::submit`, which
+        // `lib.rs::handle_render_error` halts the renderer on — i.e. the app draws
+        // nothing for the rest of the process. It stayed latent for as long as
+        // this client had no prepass at all, and appeared the moment ambient
+        // occlusion required one (`quality::Budget::ambient_occlusion`, which
+        // pulls in `DepthPrepass` + `NormalPrepass`).
+        //
+        // Matched on the label because that is the only thing here that
+        // distinguishes the two calls: the mesh key carries the prepass *bits* in
+        // both, since the main pass is told which prepasses exist.
+        if descriptor
+            .label
+            .as_ref()
+            .is_some_and(|label| label.contains("prepass"))
+        {
+            return Ok(());
+        }
         // The vertex shader declares the rung at `RUNG_SHADER_LOCATION`, so the
         // buffer layout has to supply it or the pipeline fails validation.
         let vertex_layout = layout.0.get_layout(&[
