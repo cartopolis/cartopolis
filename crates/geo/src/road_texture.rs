@@ -88,6 +88,34 @@ impl RoadClass {
         ]
     }
 
+    /// Where the tyres run, as positions across the carriageway (0 = left kerb,
+    /// 1 = right kerb).
+    ///
+    /// Traffic polishes the two ribbons under a vehicle's wheels and leaves the
+    /// strip between them and the gutters beside them coarse. On a road that has
+    /// carried traffic for a season this is the most visible variation in the
+    /// surface — it is what you see picked out by a low sun or by headlights, and
+    /// it is the reason a road photographs as two light bands rather than as one
+    /// flat tone.
+    ///
+    /// Positions are per *lane*, at roughly the track width of an ordinary car
+    /// against the lane width. A path has no vehicles and a railway has no tyres,
+    /// so both are empty and the [`surface`](RoadTexture::surface) map leaves
+    /// them uniform.
+    fn wheel_paths(self) -> &'static [f32] {
+        match self {
+            // Three lanes each way, so six lanes across the full width; only the
+            // inner four are used enough to show.
+            Self::Motorway => &[0.22, 0.30, 0.38, 0.62, 0.70, 0.78],
+            // One direction, three lanes across the whole texture.
+            Self::Carriageway => &[0.20, 0.30, 0.50, 0.60, 0.72, 0.82],
+            // One lane each way.
+            Self::Major => &[0.18, 0.34, 0.66, 0.82],
+            Self::Minor => &[0.24, 0.40, 0.60, 0.76],
+            Self::Path | Self::Rail => &[],
+        }
+    }
+
     /// Surface roughness for the material. Tarmac is not quite matte — a wet-ish
     /// sheen at a grazing angle is most of what separates it from painted ground.
     #[must_use]
@@ -222,6 +250,23 @@ pub struct RoadTexture {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The same texels again as a glTF-style metallic-roughness map: **G is
+    /// roughness, B is metallic**, R and A unused. Sampled linearly, never as
+    /// sRGB — these are material coefficients, not a colour.
+    ///
+    /// This is what stops a street being one uniform finish. Three things vary
+    /// across it, and each is something you can see on a real road at a grazing
+    /// angle: traffic **polishes the wheel paths**, so the two ribbons a car's
+    /// tyres run along are glossier than the coarse tarmac between and beside
+    /// them; **paint is smoother than the surface it is painted on**, which is
+    /// why a wet line flares before the road around it does; and a **rail head is
+    /// bare steel**, i.e. metallic and near-smooth, against ballast and timber
+    /// that are neither.
+    ///
+    /// It is generated in the same loop as the colour, from the same coverage
+    /// values, so the two cannot drift out of registration — a marking is exactly
+    /// as smooth as it is white.
+    pub surface: Vec<u8>,
 }
 
 /// One painted band running along the road, positioned in `u`.
@@ -238,6 +283,29 @@ struct Marking {
 }
 
 impl Marking {
+    /// How smooth this band is, against the tarmac's 1.0.
+    ///
+    /// Derived from the colour rather than carried as a field, so the two dozen
+    /// `solid`/`dashed` call sites above stay as short as they are: there are
+    /// exactly two materials painted onto a road here, traffic paint and the
+    /// steel of a rail head, and the colour already says which.
+    fn roughness(&self) -> f32 {
+        if self.color == STEEL {
+            0.22
+        } else {
+            0.62
+        }
+    }
+
+    /// Only a rail is metal. Paint on tarmac is a dielectric like the tarmac.
+    fn metallic(&self) -> f32 {
+        if self.color == STEEL {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
     fn solid(u: f32, half_u: f32, color: [u8; 3]) -> Self {
         Self {
             u,
@@ -336,7 +404,9 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
     };
 
     let len_m = class.texture_length_m();
+    let wheels = class.wheel_paths();
     let mut rgba = Vec::with_capacity((TEX_W * TEX_H * 4) as usize);
+    let mut surface = Vec::with_capacity((TEX_W * TEX_H * 4) as usize);
 
     for y in 0..TEX_H {
         // Metres along the road at this row's *span*, for the dash coverage.
@@ -348,12 +418,25 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
             let u1 = (x + 1) as f32 / TEX_W as f32;
 
             let mut rgb = shade(base, grain, x, y);
+            // The surface map is built beside the colour from the same coverage
+            // values — see `RoadTexture::surface`. 1.0 is the class's own
+            // roughness; the wheel paths take it down, paint and steel take it
+            // down further, and only a rail head is ever metallic.
+            let mut rough = 1.0 - wheel_polish(&wheels, u0, u1);
+            // The same grain that dapples the colour, at a quarter weight. Without
+            // it a polished wheel path is a smooth band with a hard edge, which
+            // reads as a decal rather than as wear.
+            rough *= 1.0 - grain * 0.25 * (hash2(x, y) * 2.0 - 1.0);
+            let mut metal = 0.0;
 
             // Sleepers first: the rails are painted on top of them.
             if class == RoadClass::Rail {
                 let cover = sleeper_coverage(u0, u1, v0, v1);
                 if cover > 0.0 {
                     rgb = mix(rgb, shade(SLEEPER, 0.10, x, y), cover);
+                    // Creosoted timber, which is if anything rougher than the
+                    // ballast around it.
+                    rough = rough * (1.0 - cover) + cover;
                 }
             }
 
@@ -371,10 +454,23 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
                     // Paint wears; keep the class's grain so a line is not a
                     // perfectly flat slab against a noisy surface.
                     rgb = mix(rgb, shade(m.color, grain * 0.4, x, y), cover);
+                    // Thermoplastic is a smoother surface than the tarmac under
+                    // it, and a rail head is smoother again and made of metal.
+                    // Blended by the same coverage as the colour, so an
+                    // analytically anti-aliased line edge is anti-aliased here too
+                    // rather than stepping a texel early.
+                    rough = rough * (1.0 - cover) + m.roughness() * cover;
+                    metal = metal * (1.0 - cover) + m.metallic() * cover;
                 }
             }
 
             rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 0xFF]);
+            surface.extend_from_slice(&[
+                0xFF,
+                to_u8(rough.clamp(MIN_ROUGHNESS, 1.0)),
+                to_u8(metal.clamp(0.0, 1.0)),
+                0xFF,
+            ]);
         }
     }
 
@@ -382,7 +478,46 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
         width: TEX_W,
         height: TEX_H,
         rgba,
+        surface,
     }
+}
+
+/// Lowest roughness any texel of a road may reach.
+///
+/// A floor rather than a preference. `perceptual_roughness` multiplies this map,
+/// and `systems::wet_surfaces` lowers that scalar again in the rain — so a texel
+/// allowed to reach 0 would be a perfect mirror on a wet night, which is a bug
+/// that only appears in one weather at one time of day.
+const MIN_ROUGHNESS: f32 = 0.18;
+
+/// How polished this texel is by traffic, 0 (untouched) to 1 (in a wheel path).
+///
+/// A raised cosine rather than a band, so a wheel path fades into the coarse
+/// tarmac beside it the way a real one does. `HALF_TRACK_U` is half the width of
+/// one polished ribbon in `u`.
+fn wheel_polish(wheels: &[f32], u0: f32, u1: f32) -> f32 {
+    /// Half-width of a polished ribbon, across the road.
+    const HALF_TRACK_U: f32 = 0.055;
+    /// How far the roughness falls inside one. Kept modest: a wheel path is
+    /// smoother than the road, not a different material.
+    const DEPTH: f32 = 0.34;
+
+    let u = (u0 + u1) * 0.5;
+    let mut best: f32 = 0.0;
+    for &centre in wheels {
+        let d = (u - centre).abs() / HALF_TRACK_U;
+        if d < 1.0 {
+            // cos² falloff: 1 at the centre, 0 and flat-tangent at the edge.
+            let t = ((1.0 - d) * std::f32::consts::FRAC_PI_2).sin();
+            best = best.max(t * t);
+        }
+    }
+    best * DEPTH
+}
+
+/// Quantise a 0..1 coefficient to a texel.
+fn to_u8(v: f32) -> u8 {
+    (v * 255.0 + 0.5) as u8
 }
 
 /// Sleeper bands: 0.35 m of timber every 0.6 m, stopping short of the ballast
@@ -476,6 +611,67 @@ mod tests {
         RoadClass::Path,
         RoadClass::Rail,
     ];
+
+    /// The surface map must be the same size and shape as the colour, or the
+    /// mip chain built from it lands on a different grid and the two sample out
+    /// of registration.
+    #[test]
+    fn the_surface_map_matches_the_colour_map() {
+        for class in CLASSES {
+            let t = road_texture(class);
+            assert_eq!(t.surface.len(), t.rgba.len(), "{class:?}");
+            assert_eq!(
+                t.surface.len(),
+                (t.width * t.height * 4) as usize,
+                "{class:?}"
+            );
+        }
+    }
+
+    /// Nothing may reach a perfect mirror — see `MIN_ROUGHNESS`, and note the
+    /// scalar in the material lowers this again in the rain.
+    #[test]
+    fn no_texel_is_a_mirror() {
+        for class in CLASSES {
+            let t = road_texture(class);
+            let floor = to_u8(MIN_ROUGHNESS);
+            for texel in t.surface.chunks_exact(4) {
+                assert!(texel[1] >= floor, "{class:?} roughness {}", texel[1]);
+            }
+        }
+    }
+
+    /// Only a railway is metal. A metallic road surface would take its colour
+    /// from the environment map instead of from its own tarmac, which on a
+    /// software renderer with no environment map is simply black.
+    #[test]
+    fn only_the_rails_are_metallic() {
+        for class in CLASSES {
+            let t = road_texture(class);
+            let metal = t.surface.chunks_exact(4).any(|texel| texel[2] > 8);
+            assert_eq!(metal, class == RoadClass::Rail, "{class:?}");
+        }
+    }
+
+    /// The wheel paths must actually be smoother than the tarmac beside them,
+    /// which is the whole of what this map buys on an ordinary street. Compared
+    /// against the *gutter*, which no wheel runs in on any class.
+    #[test]
+    fn traffic_polishes_the_wheel_paths() {
+        let t = road_texture(RoadClass::Minor);
+        let row = (TEX_H / 2) as usize;
+        let at = |u: f32| {
+            let x = (u * TEX_W as f32) as usize;
+            t.surface[(row * TEX_W as usize + x) * 4 + 1]
+        };
+        // 0.24 is a wheel path for `Minor`; 0.5 is the crown between them.
+        assert!(
+            at(0.24) < at(0.5),
+            "wheel path {} should be smoother than the crown {}",
+            at(0.24),
+            at(0.5)
+        );
+    }
 
     #[test]
     fn every_class_generates_a_well_formed_opaque_texture() {
