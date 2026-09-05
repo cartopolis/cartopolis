@@ -150,15 +150,39 @@ picking, selection and the context menu query on, so a model prim stays pickable
 with no edit at any of those sites. What it is picked against is the same unit box
 the procedural shapes use.
 
+## Curating it
+
+The operator half is a **Models tab in cartopy** (`src/components/pages/library`),
+talking to `/api/admin/library` and `/api/admin/assets`. It lists the catalogue
+with the unreviewed entries first, edits a name, a category and a credit line,
+takes a model down, and shows the stored files with what still refers to each.
+
+That is a **sixth hand-synced seam** between the two repositories, alongside the
+five in [where-the-map-data-is-built.md](where-the-map-data-is-built.md):
+cartopy's `LibraryEntry` and `StoredAsset` in `src/types.ts` describe what
+`library::CuratorEntry` and `library::StoredAsset` serialise here, and nothing but
+a person keeps them in step.
+
+Categories are a fixed list on the cartopy side because the in-world picker groups
+by them, and a curator typing `furniture ` once makes a second category nobody can
+find. They are stored as free text on the server, which is the looser of the two —
+worth knowing before relying on the set being closed.
+
 ## What is not done
 
 - **No thumbnails.** The simulator cannot render — no GPU, and deliberately no
   Bevy — so a picture has to come from somewhere else: the uploading client (which
   has a renderer and an offscreen path already, in the shot harness), or a curator
-  attaching one from cartopy. The picker lists a name, a category and a triangle
-  count and is usable without.
-- **No collider.** A model prim is picked against its unit box and walked through.
-  The obvious fix is the flattened outline, the way `lod22` hulls a building.
+  attaching one from cartopy. Either is a second asset kind to store, serve and
+  moderate, which is why neither was done with the first version. The picker lists
+  a name, a category and a triangle count and is usable without.
+- **No collider — but no prim has one.** A model prim is picked against its unit
+  box and walked through, and so is every procedural prim: nothing in the client
+  feeds a prim into `collision::BuildingColliders`, which carries building
+  footprints and street furniture only. So this is parity rather than a gap models
+  introduced, and fixing it is a change to *prims*, not to models. The obvious
+  shape when somebody does it is the flattened outline, the way `lod22` hulls a
+  building.
 - **No level of detail.** A model is refused if it is too heavy rather than
   simplified.
 - **No starter library.** Kenney's packs are still CC0 (checked 2026-09-05) and
