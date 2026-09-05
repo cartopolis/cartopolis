@@ -297,7 +297,21 @@ jobs:
       # to know whether the cache was cold.
       - name: sccache stats
         if: always()
-        run: sccache --show-stats
+        # **A diagnostic may not fail a deploy.** On 2026-09-05 this exact
+        # command ended a web publish: the wasm build had finished and trunk had
+        # written the distribution, and `--show-stats` then answered "Failed to
+        # read response header … Mismatch of client/server versions?" and exited
+        # 2 — so the threading check, the pre-compression and the publish never
+        # ran, and a good artifact was thrown away over the answer to "how did
+        # the cache do?".
+        #
+        # Why the server stopped answering is **not established**. It is not a
+        # stale server shared between lanes: each container has its own network
+        # namespace, so each has its own. What is established is that every
+        # compile had already succeeded, so whatever happened to the server
+        # happened after the work. Print the stats, say so when they cannot be
+        # printed, and let the checks that actually inspect the artifact decide.
+        run: sccache --show-stats || echo "sccache could not report its stats — the build above is unaffected"
 
       - name: Verify the archive
         run: |
