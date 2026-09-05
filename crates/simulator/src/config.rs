@@ -27,9 +27,30 @@ pub struct SimConfig {
     /// Placeholders `{z}`, `{x}`, `{y}` for client tile fetch (ADR-004 / ADR-014).
     #[serde(default = "default_osm_tile_url_template")]
     pub osm_tile_url_template: String,
+    /// Where clients should reach this server's HTTP surface, told to each one in
+    /// the handshake (`ServerHelloAck::api_base_url`).
+    ///
+    /// Empty is the default and means "say nothing", which leaves the client to
+    /// derive it from the address it connected to — right for the common case
+    /// where the reverse proxy serves the wire and the API on one hostname. Set
+    /// it when they are not the same, which includes every deployment where the
+    /// listener below is bound to a private address.
+    ///
+    /// No trailing slash; the client appends `/api/...`.
+    #[serde(default)]
+    pub api_base_url: String,
     /// Directory from which *.png texture files are served to clients.
     #[serde(default = "default_texture_dir")]
     pub texture_dir: String,
+    /// Directory holding uploaded model assets, one `.glb` per content hash
+    /// (`assets`, `library`).
+    ///
+    /// Beside the database rather than inside it. `world.db` is written on the
+    /// tick path, and a few megabytes per row makes every backup, every
+    /// migration and every `VACUUM` carry the whole model library; `texture_dir`
+    /// already sets the precedent that bulk content is a directory.
+    #[serde(default = "default_asset_dir")]
+    pub asset_dir: String,
     /// Words masked in chat (`cartopolis_core::moderation`).
     ///
     /// Defaults to the built-in seed list. An operator replaces it wholesale —
@@ -135,6 +156,10 @@ fn default_texture_dir() -> String {
     "data/textures".into()
 }
 
+fn default_asset_dir() -> String {
+    "data/assets".into()
+}
+
 fn default_moderation_words() -> Vec<String> {
     cartopolis_core::moderation::DEFAULT_WORDS
         .iter()
@@ -151,7 +176,9 @@ impl Default for SimConfig {
             tick_hz: default_tick_hz(),
             aoi_radius: default_aoi(),
             osm_tile_url_template: default_osm_tile_url_template(),
+            api_base_url: String::new(),
             texture_dir: default_texture_dir(),
+            asset_dir: default_asset_dir(),
             moderation_words: default_moderation_words(),
             moderation_words_file: None,
             registration_open: default_registration_open(),

@@ -612,6 +612,9 @@ pub fn render_chat_transcript(
             message,
             reason: ReportReason::Harassment,
             note: String::new(),
+            // Raised from a chat line, so it is about what somebody said rather
+            // than about an object they put in the street.
+            asset: None,
         });
     }
 }

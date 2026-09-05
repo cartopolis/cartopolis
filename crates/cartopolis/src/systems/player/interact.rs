@@ -889,6 +889,7 @@ mod prim_prompt_tests {
                     shape: PrimShape::Box,
                     color: Color::WHITE,
                     texture_id: None,
+                    model: None,
                     path_cut_begin: 0.0,
                     path_cut_end: 1.0,
                     hollow: 0.0,

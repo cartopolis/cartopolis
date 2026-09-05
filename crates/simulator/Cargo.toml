@@ -43,6 +43,13 @@ lettre = { version = "0.11", default-features = false, features = [
 # compiles perfectly, dies when somebody registers.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 glam.workspace = true
+# Parsing an uploaded model, to count what is in it before it is stored
+# (`assets::inspect`). Already in the tree — `bevy_gltf` builds it for the client
+# — so naming it here costs the dependency graph nothing new.
+gltf = { version = "1.4", default-features = false, features = ["utils"] }
+# Reading a texture's dimensions out of its header, which is the only way to tell
+# a small file from a small *image*: a decompression bomb is tiny on disk.
+image.workspace = true
 mlua.workspace = true
 refinery = { workspace = true }
 rusqlite.workspace = true

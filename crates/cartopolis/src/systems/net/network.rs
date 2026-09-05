@@ -38,6 +38,7 @@ pub struct AuthWriteback<'w> {
 }
 use crate::systems::avatar::AIRBORNE_EPS;
 use crate::systems::locomotion;
+use crate::systems::model_assets;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
@@ -673,6 +674,7 @@ pub fn apply_network_snapshot(
                 principal_id,
                 username,
                 session_token,
+                api_base_url,
                 ..
             } => {
                 local_sim_id.0 = Some(your_avatar_id);
@@ -680,6 +682,32 @@ pub fn apply_network_snapshot(
                 auth.identity.principal_id = Some(principal_id);
                 auth.identity.username = Some(username);
                 auth.chat.my_id = Some(your_avatar_id);
+                // Where this server's model store is, so `sim://` paths resolve
+                // (protocol v22). The server's own answer wins; a server that says
+                // nothing leaves the client to derive one from the address it was
+                // given, which is right whenever the wire and the API share a
+                // hostname and impossible when they do not.
+                let api_base = if api_base_url.is_empty() {
+                    auth.connect_addr
+                        .as_ref()
+                        .and_then(|a| model_assets::derive_api_base(&a.0))
+                } else {
+                    Some(api_base_url)
+                };
+                match api_base {
+                    Some(base) if !session_token.is_empty() => {
+                        model_assets::set_endpoint(&base, &session_token);
+                    }
+                    _ => {
+                        // Said once, at the point it is decided. Otherwise the
+                        // symptom is every model prim drawing nothing, with the
+                        // explanation nowhere.
+                        tracing::info!(
+                            "this server did not say where its model store is;                              prims wearing a model will not be drawn"
+                        );
+                        model_assets::clear_endpoint();
+                    }
+                }
                 // Persist the token for silent reconnect to external sims (ADR-016).
                 if let (Some(cauth), Some(caddr)) = (&auth.connect_auth, &auth.connect_addr) {
                     if cauth.persist_token && !session_token.is_empty() {
@@ -1136,6 +1164,7 @@ fn prim_from_dto(p: &PrimDto) -> Prim {
         shape: PrimShape::from_str(&p.shape),
         color: Color::srgb(p.color[0], p.color[1], p.color[2]),
         texture_id: p.texture_id.clone(),
+        model: p.model.clone(),
         path_cut_begin: p.path_cut_begin,
         path_cut_end: p.path_cut_end,
         hollow: p.hollow,

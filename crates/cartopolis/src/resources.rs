@@ -95,6 +95,8 @@ pub enum RightPanel {
     Chat,
     Appearance,
     Script,
+    /// Models: the inventory, the shared library, and putting one in the world.
+    Models,
     Settings,
     /// Version, build and the third-party notices. Not a nicety: ODbL
     /// (OpenStreetMap and everything derived from it), CC BY 4.0 (3DBAG, MET
@@ -136,6 +138,7 @@ impl RightPanel {
             Self::Chat => "Nearby chat",
             Self::Appearance => "Appearance",
             Self::Script => "Script",
+            Self::Models => "Models",
             Self::Settings => "Settings",
             Self::About => "About",
         }
@@ -166,6 +169,11 @@ impl RightPanel {
             Self::Chat => icons::CHAT,
             Self::Appearance => icons::APPEARANCE,
             Self::Script => icons::SCRIPT,
+            // The crate, out of the street-furniture end of the icon set. A
+            // model is a thing in a box until you put it somewhere, and the set
+            // already carries this glyph — a new one means re-subsetting the
+            // font, which is a build step this does not need.
+            Self::Models => icons::CABINET,
             Self::Settings => icons::SETTINGS,
             Self::About => icons::ABOUT,
         }
@@ -1082,6 +1090,13 @@ pub struct EditDialogState {
     pub color: [f32; 3],
     pub texture_id: Option<String>,
     pub texture_picker_open: bool,
+    /// The model asset this prim wears, if it wears one (protocol v22).
+    ///
+    /// Carried through the dialog even though nothing in the dialog edits it,
+    /// which is not optional: `UpdatePrim` sends a prim's whole state, so a field
+    /// the dialog forgets is a field the next Apply clears. Taking a model off is
+    /// done from the picker, by setting this to `None`.
+    pub model: Option<String>,
     pub path_cut_begin: f32,
     pub path_cut_end: f32,
     pub hollow: f32,
@@ -1099,6 +1114,7 @@ pub struct EditDialogState {
     pub original_scale: [f32; 3],
     pub original_color: [f32; 3],
     pub original_texture_id: Option<String>,
+    pub original_model: Option<String>,
     pub original_path_cut_begin: f32,
     pub original_path_cut_end: f32,
     pub original_hollow: f32,
@@ -1121,6 +1137,7 @@ impl Default for EditDialogState {
             color: [0.0; 3],
             texture_id: None,
             texture_picker_open: false,
+            model: None,
             path_cut_begin: 0.0,
             path_cut_end: 1.0,
             hollow: 0.0,
@@ -1134,6 +1151,7 @@ impl Default for EditDialogState {
             original_scale: [0.0; 3],
             original_color: [0.0; 3],
             original_texture_id: None,
+            original_model: None,
             original_path_cut_begin: 0.0,
             original_path_cut_end: 1.0,
             original_hollow: 0.0,

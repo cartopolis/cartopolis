@@ -253,6 +253,7 @@ async fn a_report_is_acknowledged_and_stored_for_the_operator() {
             reason: ReportReason::Harassment,
             note: "followed me for ten minutes".into(),
             message: Some("the line as bob saw it".into()),
+            asset: None,
         },
     )
     .await;
@@ -287,6 +288,7 @@ async fn a_report_is_acknowledged_and_stored_for_the_operator() {
             reason: ReportReason::Other,
             note: String::new(),
             message: None,
+            asset: None,
         },
     )
     .await;

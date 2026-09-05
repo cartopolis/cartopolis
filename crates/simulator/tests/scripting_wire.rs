@@ -123,6 +123,7 @@ async fn create_prim(c: &mut Client, region_id: i64) -> i64 {
                 longitude: 0.0,
             },
             particles: None,
+            model: None,
         },
     )
     .await;

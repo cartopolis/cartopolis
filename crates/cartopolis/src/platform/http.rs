@@ -92,6 +92,14 @@ pub fn upstream_url(name: &str, origin: &str, path: &str) -> String {
 pub enum Method {
     Get,
     Post,
+    /// Undo an action a `Post` made — taking a model back out of the shared
+    /// library, throwing an inventory item away.
+    ///
+    /// Here rather than modelled as a `Post` to a `/delete` path because the API
+    /// on the other side is an ordinary REST surface that cartopy also talks to,
+    /// and inventing a second spelling for one of its two callers is how the two
+    /// stop matching.
+    Delete,
 }
 
 /// One HTTP request. Build with [`Request::get`] / [`Request::post`] and the
@@ -123,6 +131,14 @@ impl Request {
     pub fn post(url: impl Into<String>) -> Self {
         Self {
             method: Method::Post,
+            ..Self::get(url)
+        }
+    }
+
+    /// A DELETE for `url`.
+    pub fn delete(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Delete,
             ..Self::get(url)
         }
     }
@@ -373,6 +389,7 @@ mod imp {
         let mut builder = match req.method {
             Method::Get => AGENT.get(&req.url),
             Method::Post => AGENT.post(&req.url),
+            Method::Delete => AGENT.delete(&req.url),
         };
         builder = builder.timeout(req.timeout);
 
@@ -493,6 +510,12 @@ mod imp {
         let mut request = match req.method {
             Method::Get => ehttp::Request::get(&req.url),
             Method::Post => ehttp::Request::post(&req.url, req.body.clone().unwrap_or_default()),
+            // `ehttp` has no constructor for it, so the method is set on a GET.
+            Method::Delete => {
+                let mut r = ehttp::Request::get(&req.url);
+                r.method = "DELETE".into();
+                r
+            }
         };
         for (name, value) in &req.headers {
             request.headers.insert(name, value);

@@ -165,6 +165,35 @@ const MIN_SCRIPT_STORE_INTERVAL: Duration = Duration::from_millis(1000);
 /// through and only bites on a loop.
 const SCRIPT_STORE_BURST: u32 = 5;
 
+/// Whether a prim may be given this model, and why not when it may not.
+///
+/// Checked when the model is *set* rather than when it is drawn, and refused
+/// rather than stored. A hash this server has never held is a typo, a guess, or a
+/// model from somebody else's server; storing it makes a prim that no client can
+/// ever draw, and — because a model that is merely still downloading looks exactly
+/// the same from the client — one that nobody can tell apart from a slow one.
+///
+/// `None` is always allowed: that is a prim wearing its procedural shape, which
+/// is every prim that existed before protocol 22.
+fn check_model(conn: &Arc<Mutex<rusqlite::Connection>>, model: Option<&str>) -> Result<(), String> {
+    let Some(hash) = model else {
+        return Ok(());
+    };
+    let Ok(c) = conn.lock() else {
+        return Err("the model store is unavailable".to_string());
+    };
+    match crate::library::model_is_available(&c, hash) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("this server does not have that model".to_string()),
+        // A database error is not a refusal of the model, and saying "no such
+        // model" here would send a builder looking for a fault in their upload.
+        Err(e) => {
+            tracing::warn!("could not check model {hash}: {e:#}");
+            Err("could not check that model just now".to_string())
+        }
+    }
+}
+
 /// Tell every client what a region's budget and usage now are.
 ///
 /// Broadcast rather than answered to the actor alone: the budget is shared, so a
@@ -415,6 +444,7 @@ pub async fn handle_connection<T: FrameTransport>(
         username,
         session_token,
         osm_tile_url_template: config.osm_tile_url_template.clone(),
+        api_base_url: config.api_base_url.clone(),
     })?;
     framed.send(Bytes::from(ack)).await?;
 
@@ -616,16 +646,25 @@ pub async fn handle_connection<T: FrameTransport>(
                             }
                             NetMessage::CreatePrim {
                                 request_id, region_id, name, position, rotation, scale,
-                                color, texture_id, shape, surface, geometry, geo, particles,
+                                color, texture_id, shape, surface, geometry, geo, particles, model,
                             } => {
+                                // A model this server does not hold is refused rather than
+                                // stored: the alternative is a prim in the street that no
+                                // client can ever draw, and nothing to tell that apart from
+                                // a download which has not finished yet. Folded into
+                                // `created` rather than answered separately, so the refusal
+                                // travels the same `ServerError` path every other failed
+                                // create already uses.
                                 let mut w = world.write().await;
                                 // Insert with a server-assigned id, then apply the full initial
                                 // authoring state in one update so it is persisted and broadcast.
-                                let created = w.add_prim(region_id, position, &shape, geo, particles.as_ref()).and_then(|prim| {
-                                    w.update_prim(
-                                        prim.id, position, rotation, scale, color, texture_id,
-                                        &name, surface, geometry, geo, particles.as_ref(),
-                                    )
+                                let created = check_model(&conn, model.as_deref()).and_then(|()| {
+                                    w.add_prim(region_id, position, &shape, geo, particles.as_ref(), model.as_deref()).and_then(|prim| {
+                                        w.update_prim(
+                                            prim.id, position, rotation, scale, color, texture_id,
+                                            &name, surface, geometry, geo, particles.as_ref(), model.as_deref(),
+                                        )
+                                    })
                                 });
                                 match created {
                                     Ok(prim) => {
@@ -669,7 +708,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                     }
                                 }
                             }
-                            NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry, geo, particles } => {
+                            NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry, geo, particles, model } => {
                                 let mut w = world.write().await;
                                 if !w.may_edit(prim_id, &principal_key, is_admin) {
                                     let truth = w.prim(prim_id).cloned();
@@ -677,7 +716,13 @@ pub async fn handle_connection<T: FrameTransport>(
                                     refuse_and_correct(&mut framed, request_id, prim_id, truth).await?;
                                     return Ok(());
                                 }
-                                match w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry, geo, particles.as_ref()) {
+                                // Same fold as the create above: a model this server does
+                                // not hold is a refusal, and it goes back on the path an
+                                // update already has for one.
+                                let updated = check_model(&conn, model.as_deref()).and_then(|()| {
+                                    w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry, geo, particles.as_ref(), model.as_deref())
+                                });
+                                match updated {
                                     Ok(prim) => {
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
@@ -1111,7 +1156,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                 let frame = encode_app_frame(&NetMessage::BlockedList { usernames: list })?;
                                 framed.send(Bytes::from(frame)).await?;
                             }
-                            NetMessage::ReportUser { request_id, username: subject, reason, note, message } => {
+                            NetMessage::ReportUser { request_id, username: subject, reason, note, message, asset } => {
                                 let subject = subject.trim().to_string();
                                 let accepted = !subject.is_empty()
                                     && !subject.eq_ignore_ascii_case(&display_name)
@@ -1122,10 +1167,16 @@ pub async fn handle_connection<T: FrameTransport>(
                                         m.chars().take(cartopolis_core::MAX_REPORT_MESSAGE_LEN).collect()
                                     });
                                     let principal_id = principal.to_string();
+                                    // A hash that is not one is dropped rather than
+                                    // stored: the report still stands against the
+                                    // person, and a garbage value in this column
+                                    // would send an operator looking for a model
+                                    // that never existed.
+                                    let asset = asset.filter(|a| crate::assets::is_hash(a));
                                     if let Ok(c) = conn.lock() {
                                         match crate::db::insert_report(
                                             &c, &principal_id, &display_name, &subject,
-                                            reason.as_str(), &note, message.as_deref(),
+                                            reason.as_str(), &note, message.as_deref(), asset.as_deref(),
                                         ) {
                                             // At `warn`, and with the subject in it,
                                             // because on a small deployment the log
@@ -1563,6 +1614,7 @@ mod tests {
                     longitude: 0.0,
                 },
                 None,
+                None,
             )
         };
 
@@ -1605,6 +1657,7 @@ mod tests {
                         longitude: 0.0,
                     },
                     None,
+                    None,
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
@@ -1627,6 +1680,7 @@ mod tests {
                     latitude: 0.0,
                     longitude: 0.0,
                 },
+                None,
                 None,
             )
         };
@@ -1665,6 +1719,7 @@ mod tests {
                         latitude: 0.0,
                         longitude: 0.0,
                     },
+                    None,
                     None,
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;

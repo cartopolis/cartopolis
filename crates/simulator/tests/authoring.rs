@@ -221,6 +221,7 @@ async fn build(c: &mut Client, region_id: i64, name: &str, lat: f64, lng: f64) -
             longitude: lng,
         },
         particles: None,
+        model: None,
     };
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
@@ -864,6 +865,7 @@ async fn try_rename(c: &mut Client, prim_id: i64, to: &str) -> Option<(u32, Stri
             longitude: LNG,
         },
         particles: None,
+        model: None,
     };
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await

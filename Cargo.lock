@@ -2256,6 +2256,8 @@ dependencies = [
  "figment",
  "futures-util",
  "glam",
+ "gltf",
+ "image",
  "lettre",
  "mlua",
  "refinery",

@@ -1824,6 +1824,7 @@ pub fn hold_scripted_fire(
                     shape: crate::components::PrimShape::Cylinder,
                     color: Color::srgb(0.15, 0.13, 0.12),
                     texture_id: None,
+                    model: None,
                     path_cut_begin: 0.0,
                     path_cut_end: 1.0,
                     hollow: 0.0,

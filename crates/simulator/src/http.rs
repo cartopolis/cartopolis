@@ -116,6 +116,10 @@ pub fn router(state: HttpState) -> Router {
         // token, and a second listener would double the reverse-proxy config to
         // separate two route prefixes (see this module's note).
         .merge(crate::authoring::routes())
+        // Model assets, inventories and the shared library. Mounted here for the
+        // same reason the authoring surface is: one listener, one token, one
+        // reverse-proxy prefix to configure.
+        .merge(crate::library::routes())
         .with_state(state)
 }
 
@@ -570,7 +574,7 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
-fn internal(e: anyhow::Error) -> ApiError {
+pub(crate) fn internal(e: anyhow::Error) -> ApiError {
     // Logged in full, reported in outline: the chain names table and column
     // names, and the caller is a browser.
     tracing::warn!("admin api: {e:#}");

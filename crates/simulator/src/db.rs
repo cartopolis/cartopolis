@@ -16,8 +16,29 @@ const PRIM_COLUMNS: &str = "id, region_id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude, particles, \
+     latitude, longitude, particles, model, \
      EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
+
+/// How many columns [`PRIM_COLUMNS`] selects.
+///
+/// A named number because two queries append a column *after* it and read that
+/// column by index. Adding `model` moved the script source from 42 to 43 and
+/// broke every export with a `500` — the row index is a fact about this list, so
+/// it is derived from the list rather than written out beside it. Counting
+/// commas works because no column in `PRIM_COLUMNS` contains one; the test below
+/// is what keeps that true.
+const PRIM_COLUMN_COUNT: usize = {
+    let bytes = PRIM_COLUMNS.as_bytes();
+    let mut i = 0;
+    let mut commas = 0;
+    while i < bytes.len() {
+        if bytes[i] == b',' {
+            commas += 1;
+        }
+        i += 1;
+    }
+    commas + 1
+};
 
 /// Maps a row selected with [`PRIM_COLUMNS`] (in order) into a [`PrimDto`].
 fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
@@ -63,13 +84,18 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // the way in: a row can predate a tightened limit, or have been edited
         // with sqlite3, and the client hands these numbers straight to a shader.
         particles: parse_particles(row.get::<_, Option<String>>(40)?.as_deref()),
+        // Protocol v22. Not validated on the way out: `net.rs` refuses a hash the
+        // store does not hold at the point it is *set*, and a row whose file was
+        // later removed draws the placeholder — which is the honest picture, and
+        // cheaper than a store lookup per prim per snapshot.
+        model: row.get(41)?,
         // Protocol v21, and read from the database rather than tracked: a
         // subquery on the row is always right, where a flag maintained beside
         // `set_prim_script` is one more thing to forget. `SimWorld::set_scripted`
         // still updates its in-memory copy so the next snapshot is current
         // without a re-read — the database is what it falls back to being right
         // from.
-        scripted: row.get(41)?,
+        scripted: row.get(42)?,
     })
 }
 
@@ -196,6 +222,7 @@ pub fn insert_prim(
     shape: &str,
     geo: GeoAnchor,
     particles: Option<&ParticleEffect>,
+    model: Option<&str>,
 ) -> anyhow::Result<PrimDto> {
     // Validate that the region exists
     let region_exists: bool = conn.query_row(
@@ -213,8 +240,8 @@ pub fn insert_prim(
         "INSERT INTO prims (region_id, name, shape, position_x, position_y, position_z,
                             rotation_x, rotation_y, rotation_z, scale_x, scale_y, scale_z,
                             color_r, color_g, color_b, texture_id, latitude, longitude,
-                            particles, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'), datetime('now'))",
+                            particles, model, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, datetime('now'), datetime('now'))",
         rusqlite::params![
             region_id,
             "Prim",                   // default name
@@ -235,6 +262,7 @@ pub fn insert_prim(
             geo.latitude,             // ADR-029: geo-anchored placement
             geo.longitude,
             particles_json(particles),
+            model,
         ],
     )?;
 
@@ -263,6 +291,7 @@ pub fn update_prim(
     geometry: PrimGeometry,
     geo: GeoAnchor,
     particles: Option<&ParticleEffect>,
+    model: Option<&str>,
 ) -> anyhow::Result<Option<PrimDto>> {
     // Check if prim exists first
     let exists: bool = conn.query_row(
@@ -292,6 +321,7 @@ pub fn update_prim(
             top_shear_x = ?33, top_shear_y = ?34, slice_begin = ?35, slice_end = ?36,
             latitude = ?37, longitude = ?38,
             particles = ?39,
+            model = ?40,
             updated_at = datetime('now')
          WHERE id = ?1",
         rusqlite::params![
@@ -334,6 +364,7 @@ pub fn update_prim(
             geo.latitude,
             geo.longitude,
             particles_json(particles),
+            model,
         ],
     )?;
 
@@ -416,7 +447,7 @@ pub fn owned_prims(
         .query_map(rusqlite::params![owner], |row| {
             // The script is one column past the last of `PRIM_COLUMNS`; the
             // `scripted` flag that `row_to_prim` reads is the one before it.
-            let source: Option<String> = row.get(42)?;
+            let source: Option<String> = row.get(PRIM_COLUMN_COUNT)?;
             Ok((row_to_prim(row)?, source))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -432,7 +463,7 @@ pub fn all_prims_with_scripts(conn: &Connection) -> anyhow::Result<Vec<(PrimDto,
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
         .query_map([], |row| {
-            let source: Option<String> = row.get(42)?;
+            let source: Option<String> = row.get(PRIM_COLUMN_COUNT)?;
             Ok((row_to_prim(row)?, source))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -670,17 +701,19 @@ pub fn insert_report(
     reason: &str,
     note: &str,
     message: Option<&str>,
+    subject_asset: Option<&str>,
 ) -> anyhow::Result<i64> {
     conn.execute(
-        "INSERT INTO reports (reporter_id, reporter_username, subject_username, reason, note, message) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO reports (reporter_id, reporter_username, subject_username, reason, note, message, subject_asset) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             reporter_id,
             reporter_username,
             subject_username,
             reason,
             note,
-            message
+            message,
+            subject_asset
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -803,6 +836,32 @@ mod tests {
         Ok((conn, tempdir))
     }
 
+    /// The two export queries append a column after `PRIM_COLUMNS` and read it by
+    /// index. That index is derived from the list, and this is what says the
+    /// derivation is right — adding `model` to the list is exactly what broke it
+    /// when the index was a literal, and every export answered `500`.
+    #[test]
+    fn the_column_count_matches_the_column_list() {
+        let counted = PRIM_COLUMNS.split(',').count();
+        assert_eq!(
+            PRIM_COLUMN_COUNT, counted,
+            "the const and the list have to agree"
+        );
+        // And no column may contain a comma of its own, or counting them is not
+        // counting columns. The `EXISTS (SELECT …)` subquery is the one to watch.
+        assert!(
+            !PRIM_COLUMNS.contains("(SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id),"),
+            "a comma inside a column expression would break the count"
+        );
+        for column in PRIM_COLUMNS.split(',') {
+            assert_eq!(
+                column.matches('(').count(),
+                column.matches(')').count(),
+                "unbalanced brackets in `{column}` mean a comma split a column in half"
+            );
+        }
+    }
+
     #[test]
     fn test_insert_prim() -> anyhow::Result<()> {
         let (conn, _temp) = test_db()?;
@@ -821,6 +880,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?;
 
@@ -861,6 +921,7 @@ mod tests {
                 longitude: 0.0,
             },
             None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -885,6 +946,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?;
 
@@ -927,6 +989,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?
         .ok_or_else(|| anyhow::anyhow!("prim not found after update"))?;
@@ -987,6 +1050,7 @@ mod tests {
                 longitude: 0.0,
             },
             None,
+            None,
         )?;
 
         assert!(result.is_none());
@@ -1011,6 +1075,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?;
 
@@ -1058,6 +1123,7 @@ mod tests {
                 longitude: 0.0,
             },
             None,
+            None,
         )?;
 
         // Update it with a texture
@@ -1076,6 +1142,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?
         .ok_or_else(|| anyhow::anyhow!("prim not found"))?;
@@ -1110,6 +1177,7 @@ mod tests {
                 longitude: 0.0,
             },
             None,
+            None,
         )?;
         let prim2 = insert_prim(
             &conn,
@@ -1120,6 +1188,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?;
 
@@ -1139,6 +1208,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            None,
             None,
         )?;
 

@@ -402,6 +402,16 @@ pub fn spawn_prims(
     texture_cache: Res<PrimTextureCache>,
 ) {
     for (entity, prim, transform) in prim_query.iter() {
+        // A prim wearing a model gets no mesh of its own: `model_assets` hangs the
+        // glTF scene off it as a child. `PrimMesh` goes on regardless, and that is
+        // deliberate — it is what `picking` and every other consumer query on, so
+        // a model prim stays selectable, editable and touchable with no edit at
+        // any of those sites. What it is picked against is the unit box the
+        // procedural shapes use, which is the prim's own scale.
+        if prim.model.is_some() {
+            commands.entity(entity).insert((*transform, PrimMesh));
+            continue;
+        }
         let mesh_handle = cached_prim_mesh(prim, &mut meshes, &mut mesh_cache);
         let material_handle =
             cached_prim_material(prim, &mut materials, &mut material_cache, &texture_cache);

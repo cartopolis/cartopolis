@@ -88,6 +88,13 @@ pub struct ReportDraft {
     pub message: Option<String>,
     pub reason: ReportReason,
     pub note: String,
+    /// The model asset the report is about, when it was raised from an object
+    /// rather than from a chat line (protocol v22).
+    ///
+    /// The subject stays the person — an operator acts on accounts — and this
+    /// says *which file*, so hiding it reaches every prim wearing it rather than
+    /// the one the reporter was standing in front of.
+    pub asset: Option<String>,
 }
 
 pub struct ChatChannel {
@@ -506,6 +513,9 @@ pub fn render_chat_panel(
             message,
             reason: ReportReason::Harassment,
             note: String::new(),
+            // Raised from a chat line, so it is about what somebody said rather
+            // than about an object they put in the street.
+            asset: None,
         });
     }
 
@@ -718,6 +728,7 @@ fn render_report_dialog(
                 reason: draft.reason,
                 note: draft.note.clone(),
                 message: draft.message.clone(),
+                asset: draft.asset.clone(),
             },
         );
     }

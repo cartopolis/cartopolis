@@ -29,6 +29,7 @@ pub mod android;
 pub mod audio;
 pub mod http;
 pub mod location;
+pub mod model_file;
 pub mod orientation;
 pub mod photo;
 pub mod storage;

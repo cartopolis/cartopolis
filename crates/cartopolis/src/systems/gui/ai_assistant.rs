@@ -588,8 +588,10 @@ fn run_tool(
                     geometry: geom.geometry(),
                     geo,
                     // The assistant has no vocabulary for an emitter; a prim it
-                    // makes has none.
+                    // makes has none. Nor for a model — it builds from the shape
+                    // set, which is what its tool schema offers.
                     particles: None,
+                    model: None,
                 },
             );
             format!("Created '{}' (sent to server)", prim_name)
@@ -670,6 +672,7 @@ fn run_tool(
                     // mention: `UpdatePrim` replaces the whole prim, so an
                     // unmentioned emitter must be re-sent or it is removed.
                     particles: existing.and_then(|(_, p, _)| p.particles),
+                    model: existing.and_then(|(_, p, _)| p.model.clone()),
                 },
             );
             format!("Updated prim {} (sent to server)", prim_id)

@@ -6,6 +6,7 @@
 //! auth handshake an external sim uses. There is deliberately no in-memory bypass:
 //! solo mode and `--connect` share one client path (see ADR-016 "Solo/dev mode").
 
+pub mod assets;
 pub mod auth;
 pub mod authoring;
 pub mod chat;
@@ -15,6 +16,7 @@ pub mod content;
 pub mod db;
 pub mod houses;
 pub mod http;
+pub mod library;
 pub mod mail;
 pub mod net;
 pub mod registration;

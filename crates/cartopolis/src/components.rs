@@ -24,6 +24,13 @@ pub struct Prim {
     pub shape: PrimShape,
     pub color: Color,
     pub texture_id: Option<String>,
+    /// A stored model asset that stands in for [`Self::shape`] (protocol v22).
+    ///
+    /// The value is the asset hash the simulator serves the file under, which is
+    /// also the whole of the address — `systems::model_assets` turns it into a
+    /// `sim://` asset path. `None` is every prim before this existed and every
+    /// prim built from the shape menu since.
+    pub model: Option<String>,
     /// Fraction of the path to start at (0.0–1.0, default 0.0). Maps to angular sweep for cylinder/cone.
     pub path_cut_begin: f32,
     /// Fraction of the path to end at (0.0–1.0, default 1.0).

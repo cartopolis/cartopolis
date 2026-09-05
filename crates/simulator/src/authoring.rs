@@ -198,6 +198,15 @@ pub struct PrimSpec {
     pub color: Option<[f32; 3]>,
     #[serde(default, deserialize_with = "present")]
     pub texture_id: Option<Option<String>>,
+    /// A stored model asset's hash, or an explicit `null` to take it off and go
+    /// back to the procedural shape.
+    ///
+    /// Unlike the wire, this is **not** checked against the store. An author is an
+    /// operator with a token, the check exists to stop a builder mistyping a hash
+    /// into an undrawable prim, and an authoring script that seeds a world before
+    /// uploading its models to it is a legitimate order to do things in.
+    #[serde(default, deserialize_with = "present")]
+    pub model: Option<Option<String>>,
     pub surface: Option<PrimSurface>,
     pub geometry: Option<PrimGeometry>,
     /// A particle emitter; `null` takes an existing one off.
@@ -236,6 +245,7 @@ impl PrimSpec {
             scale: Some(p.scale.to_array()),
             color: Some(p.color),
             texture_id: Some(p.texture_id.clone()),
+            model: Some(p.model.clone()),
             surface: Some(p.surface),
             geometry: Some(PrimGeometry {
                 path_cut_begin: p.path_cut_begin,
@@ -443,6 +453,7 @@ async fn create(state: &HttpState, spec: &PrimSpec) -> ApiResult<PrimDto> {
                 // exist, and `apply` below writes every authored field onto it in
                 // one update. Passing it twice would mean two places deciding what
                 // an unmentioned field means.
+                None,
                 None,
             )
             .map_err(bad)?;
@@ -905,6 +916,10 @@ fn apply(
         Some(v) => v.clone(),
         None => base.texture_id.clone(),
     };
+    let model = match &spec.model {
+        Some(v) => v.clone(),
+        None => base.model.clone(),
+    };
     let particles = match &spec.particles {
         Some(v) => v.as_ref().map(|s| s.resolve(base.particles.as_ref())),
         None => base.particles,
@@ -945,6 +960,7 @@ fn apply(
         geometry,
         geo,
         particles.as_ref(),
+        model.as_deref(),
     )
 }
 

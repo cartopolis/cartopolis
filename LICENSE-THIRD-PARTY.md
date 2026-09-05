@@ -131,9 +131,20 @@ notice: Global cloud cover from the NOAA Global Forecast System.
 ## Quaternius — Ultimate Modular Men / Women
 
 role: Avatar characters (glTF, per-slot head/top/legs/feet)
-license: CC0 1.0
+license: CC0 1.0, as published when these files were obtained on 2026-07-22
 url: https://quaternius.com/
 notice: Avatar characters by Quaternius (Ultimate Modular Men / Women), CC0. Consider supporting the work at https://www.patreon.com/quaternius.
+
+The licence version is recorded here because the page at that URL no longer says
+CC0. Quaternius published the "Quaternius Asset License v1.0" on 2026-08-28,
+which permits use in a product and **forbids redistributing the asset files
+themselves** as a standalone asset or asset pack — which is what a public
+repository of `.gltf` files is. Its section 7 says changes do not apply
+retroactively and the version in force when the assets were obtained governs, and
+these files entered this repository on 2026-07-22, five weeks earlier, under CC0.
+
+So what is here is fine and stays. **Anything downloaded from Quaternius from now
+on is not**, and must not be added to `assets/`.
 
 ## HYG Database
 

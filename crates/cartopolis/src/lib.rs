@@ -1,4 +1,4 @@
-use bevy::asset::AssetPlugin;
+use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::light::DirectionalLightShadowMap;
 // Used on every target except wasm, but for opposite reasons: desktop disables it
 // in favour of `tracing_subscriber`, Android reconfigures it. See `run`.
@@ -1691,6 +1691,16 @@ fn run_client() {
         None => default_plugins,
     };
 
+    // Models a person uploaded to the simulator, reachable as `sim://<hash>.glb`
+    // (`systems::model_assets`). Registered **before** the plugin group, because
+    // `AssetPlugin::build` consumes the registered sources — a source added after
+    // it is silently never used, and the symptom is a model that fails to load
+    // with a path error naming a scheme nothing has heard of.
+    app.register_asset_source(
+        model_assets::SOURCE,
+        bevy::asset::io::AssetSourceBuilder::new(|| Box::new(model_assets::SimAssetReader)),
+    );
+
     app.add_plugins(default_plugins)
         // `BigSpaceTimingStatsPlugin` is disabled rather than the group being
         // swapped for `BigSpaceMinimalPlugins`, and the difference matters: the
@@ -1982,6 +1992,7 @@ fn run_client() {
         app.add_audio_source::<systems::voice::VoiceStream>();
     }
     app.init_resource::<systems::script_editor::ScriptEditorState>();
+    app.init_resource::<systems::model_library::ModelLibraryState>();
     app.init_resource::<resources::RightPanel>();
     app.init_resource::<systems::session::SessionState>();
     let screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
@@ -2180,6 +2191,15 @@ fn run_client() {
                 .after(network::apply_network_snapshot)
                 .before(rendering::spawn_prims),
             rendering::spawn_prims.after(network::apply_network_snapshot),
+            // After `spawn_prims`, for the same reason the particle emitters are:
+            // this hangs a child off the prim, and a `Children` list written in
+            // the same flush as the parent's own components is how a scene ends up
+            // on an entity that is still being assembled. It also *removes*
+            // `PrimMesh` when a model is taken off, which hands the prim back to
+            // `spawn_prims` on the following frame.
+            model_assets::attach_prim_models
+                .after(network::apply_network_snapshot)
+                .after(rendering::spawn_prims),
             rendering::rebuild_prim_meshes.after(rendering::spawn_prims),
             rendering::refresh_prim_textures
                 .after(rendering::spawn_prims)
@@ -2197,7 +2217,16 @@ fn run_client() {
     .add_systems(
         Update,
         (
-            systems::tile_loader::load_region_tiles,
+            // Nested, and only because Bevy's system tuples top out at twenty
+            // elements: this one was at the limit and the next addition to it will
+            // need the same treatment. Nothing about the grouping is meaningful.
+            (
+                // Drains finished model-library requests and the file picker. Not
+                // in the panel, because both outlive it being open: an upload
+                // started and then the panel closed must still land.
+                systems::model_library::poll_model_library,
+                systems::tile_loader::load_region_tiles,
+            ),
             rendering::update_region_materials,
             systems::osm_buildings::update_buildings.after(rendering::spawn_regions),
             // Nested as one element to stay under Bevy's per-tuple system limit.
@@ -2748,6 +2777,7 @@ fn run_client() {
                 systems::navigation::render_route_sheet,
                 systems::chat::render_chat_panel,
                 systems::script_editor::render_script_panel,
+                systems::model_library::render_model_library_panel,
                 systems::ui::render_avatar_chooser,
                 systems::settings::render_settings_panel,
                 systems::settings::render_about_panel,

@@ -213,6 +213,12 @@ pub fn render_main_menu(
                                 crate::resources::RightPanel::Appearance,
                                 crate::resources::RightPanel::Assistant,
                                 crate::resources::RightPanel::Chat,
+                                // Models is a cupboard you go to, not a place you
+                                // navigate between — same argument as Appearance
+                                // above. Only in a session: the inventory belongs
+                                // to an account on a server, and offline there is
+                                // neither.
+                                crate::resources::RightPanel::Models,
                                 crate::resources::RightPanel::Settings,
                                 // About carries the attribution the map data's licences
                                 // require, so it must be reachable from the running app,
@@ -221,8 +227,11 @@ pub fn render_main_menu(
                             ]
                             .into_iter()
                             .filter(|p| {
-                                *p != crate::resources::RightPanel::Chat
-                                    || sign_in.session.is_online()
+                                !matches!(
+                                    p,
+                                    crate::resources::RightPanel::Chat
+                                        | crate::resources::RightPanel::Models
+                                ) || sign_in.session.is_online()
                             }) {
                                 // Same glyph the panel's own header wears, so the menu
                                 // entry and the badge it opens are recognisably one thing.
@@ -1167,6 +1176,7 @@ pub fn populate_edit_dialog(edit_dialog: &mut EditDialogState, prim: &Prim, tran
     let scale_v = transform.scale;
     edit_dialog.scale = [scale_v.x, scale_v.y, scale_v.z];
     edit_dialog.texture_id = prim.texture_id.clone();
+    edit_dialog.model = prim.model.clone();
     edit_dialog.path_cut_begin = prim.path_cut_begin;
     edit_dialog.path_cut_end = prim.path_cut_end;
     edit_dialog.hollow = prim.hollow;
@@ -1190,6 +1200,7 @@ pub fn populate_edit_dialog(edit_dialog: &mut EditDialogState, prim: &Prim, tran
     edit_dialog.original_rotation = edit_dialog.rotation;
     edit_dialog.original_scale = edit_dialog.scale;
     edit_dialog.original_texture_id = prim.texture_id.clone();
+    edit_dialog.original_model = prim.model.clone();
     edit_dialog.original_path_cut_begin = prim.path_cut_begin;
     edit_dialog.original_path_cut_end = prim.path_cut_end;
     edit_dialog.original_hollow = prim.hollow;
@@ -1431,6 +1442,7 @@ pub fn render_context_menu(
                     edit_dialog.color = [0.5, 0.5, 0.5]; // neutral gray
                     edit_dialog.shape = "box".to_string();
                     edit_dialog.texture_id = None;
+                    edit_dialog.model = None;
                     edit_dialog.texture_picker_open = false;
                     edit_dialog.path_cut_begin = 0.0;
                     edit_dialog.path_cut_end = 1.0;
@@ -2192,6 +2204,7 @@ fn push_revert(game_state: &mut GameState, dialog: &EditDialogState) {
             scale: dialog.original_scale,
             color: dialog.original_color,
             original_texture_id: dialog.original_texture_id.clone(),
+            original_model: dialog.original_model.clone(),
             path_cut_begin: dialog.original_path_cut_begin,
             path_cut_end: dialog.original_path_cut_end,
             hollow: dialog.original_hollow,
@@ -2289,6 +2302,7 @@ pub fn send_prim_mutations(
                     // Nothing in the create dialog authors an emitter, so a prim
                     // made here starts without one.
                     particles: None,
+                    model: dialog_state.model.clone(),
                 },
             );
             tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");
@@ -2336,6 +2350,7 @@ pub fn send_prim_mutations(
                             .iter()
                             .find(|(_, p, ..)| p.id == prim_id)
                             .and_then(|(_, p, ..)| p.particles),
+                        model: dialog_state.model.clone(),
                     },
                 );
             }
@@ -2350,6 +2365,7 @@ pub fn send_prim_mutations(
 
                     prim.name = dialog_state.name.clone();
                     prim.shape = PrimShape::from_str(&dialog_state.shape);
+                    prim.model = dialog_state.model.clone();
                     prim.color = Color::srgb(
                         dialog_state.color[0],
                         dialog_state.color[1],
@@ -2416,6 +2432,10 @@ pub fn send_prim_mutations(
                     prim.shape = PrimShape::from_str(&revert.shape);
                     prim.color = Color::srgb(revert.color[0], revert.color[1], revert.color[2]);
                     prim.texture_id = revert.original_texture_id.clone();
+                    // Reverting the model too: `attach_prim_models` watches the
+                    // component, so putting the old hash back is the whole of
+                    // undoing a model swap.
+                    prim.model = revert.original_model.clone();
                     prim.path_cut_begin = revert.path_cut_begin;
                     prim.path_cut_end = revert.path_cut_end;
                     prim.hollow = revert.hollow;

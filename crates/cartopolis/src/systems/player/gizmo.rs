@@ -311,6 +311,11 @@ pub fn handle_gizmo_interaction(
                             // here would put out a fire every time somebody
                             // dragged the thing carrying it.
                             particles: prim.particles,
+                            // The same argument, and the same source: the model is
+                            // read off the prim, not off the dialog, because the
+                            // gizmo can be dragging something the dialog was never
+                            // opened on.
+                            model: prim.model.clone(),
                         },
                     );
                 }
@@ -401,6 +406,7 @@ pub fn handle_gizmo_interaction(
                         geometry: edit_dialog.geometry(),
                         geo,
                         particles: prim.particles,
+                        model: prim.model.clone(),
                     },
                 );
             }

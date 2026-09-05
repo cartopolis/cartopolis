@@ -98,6 +98,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "PrimDto.scripted — whether a prim carries a script. The client cannot derive it (source never travels in a snapshot) and it is what decides whether walking up to a prim offers to press it",
     },
+    ProtocolRevision {
+        version: 22,
+        adr: "",
+        summary: "model assets — PrimDto/CreatePrim/UpdatePrim carry an optional `model`, the hash of a glTF binary the sim stores; ServerHelloAck says where to fetch one; ReportUser can name one",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -320,6 +325,26 @@ pub struct PrimDto {
     /// Optional texture key from standard library (ADR-017).
     #[serde(default)]
     pub texture_id: Option<String>,
+    /// A stored model asset that stands in for [`Self::shape`] (protocol v22).
+    ///
+    /// The value is an asset hash — the name the simulator stores the glTF
+    /// binary under, and the whole of the address: the client fetches
+    /// `/api/assets/{model}.glb` and, because a file named by its own content
+    /// can never change, caches it forever.
+    ///
+    /// **A hash and not an inventory item id.** An item is a person's *named
+    /// reference* to a file and it can be renamed, moved to a folder or thrown
+    /// away; the prim in the street must not go blank when it is. Two prims made
+    /// from two people's copies of the same bench also carry the same value here,
+    /// which is what lets the client hold one mesh for both.
+    ///
+    /// Every other field keeps its meaning when this is set — the scale, the
+    /// rotation, the geo anchor, the colour tint, the script and the particles
+    /// are all about the object, not about how its surface is generated. The
+    /// deformation set (hollow, twist, taper) is the exception: it describes the
+    /// procedural shape and is ignored.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub path_cut_begin: f32,
     #[serde(default = "default_path_cut_end")]
@@ -506,6 +531,23 @@ pub enum NetMessage {
         /// ADR-014: operator tile URL; `{z}/{x}/{y}` placeholders. Empty = client default.
         #[serde(default)]
         osm_tile_url_template: String,
+        /// Where this server's HTTP surface is, for the client to fetch model
+        /// assets from (protocol v22). Empty means "work it out from the address
+        /// you connected to".
+        ///
+        /// **The server has to say, because the client cannot derive it.** The
+        /// wire arrives over a TCP port or a WebSocket path, and the HTTP listener
+        /// is a separate bind that an operator points a reverse proxy at — on the
+        /// deployed sim the two are different ports behind different hostnames,
+        /// and against a development sim on this machine the HTTP port is whatever
+        /// `--http-listen` was given. Guessing produces a client that silently
+        /// fetches nothing.
+        ///
+        /// It is the same shape of answer as `osm_tile_url_template` beside it:
+        /// the server telling a client where its services are, rather than the
+        /// client assuming.
+        #[serde(default)]
+        api_base_url: String,
     },
     ServerError {
         request_id: u32,
@@ -589,6 +631,9 @@ pub enum NetMessage {
         /// A particle emitter to author onto the prim (protocol v20).
         #[serde(default)]
         particles: Option<ParticleEffect>,
+        /// A stored model asset to draw instead of `shape` (protocol v22).
+        #[serde(default)]
+        model: Option<String>,
     },
     /// ADR-017: client sends updated prim state (position, rotation, scale, color, texture, name).
     UpdatePrim {
@@ -611,6 +656,10 @@ pub enum NetMessage {
         /// The prim's particle emitter, or `None` to take it off (protocol v20).
         #[serde(default)]
         particles: Option<ParticleEffect>,
+        /// The prim's model asset, or `None` to go back to the procedural shape
+        /// (protocol v22).
+        #[serde(default)]
+        model: Option<String>,
     },
     /// ADR-017: client requests deletion of a prim by id.
     DeletePrim {
@@ -781,6 +830,15 @@ pub enum NetMessage {
         note: String,
         /// The reported message, if the report was raised from a chat line.
         message: Option<String>,
+        /// The model asset the report is about, if it was raised from an object
+        /// rather than from a person or a chat line (protocol v22).
+        ///
+        /// The subject stays a username — the uploader is still who an operator
+        /// may need to act on — and this rides alongside so that acting on one
+        /// report reaches every prim wearing that file, rather than the single one
+        /// the reporter happened to be standing in front of.
+        #[serde(default)]
+        asset: Option<String>,
     },
     /// Server confirms a report was filed. `accepted = false` means it was
     /// refused (unknown subject, or reporting yourself) — the client says so
@@ -1202,6 +1260,7 @@ mod tests {
             scale: Vec3::ONE,
             color: [0.5, 0.5, 0.5],
             texture_id: None,
+            model: None,
             shape: "box".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
@@ -1226,6 +1285,7 @@ mod tests {
             scale: Vec3::new(2.0, 2.0, 2.0),
             color: [1.0, 0.0, 0.0],
             texture_id: Some("brick".into()),
+            model: Some("2f8a1c".into()),
             name: "My Prim".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
@@ -1382,6 +1442,7 @@ mod tests {
             scale: Vec3::new(1.5, 1.5, 1.5),
             color: [0.0, 1.0, 0.0],
             texture_id: Some("grass".into()),
+            model: None,
             path_cut_begin: 0.0,
             path_cut_end: 1.0,
             hollow: 0.0,

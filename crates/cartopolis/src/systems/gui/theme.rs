@@ -2671,8 +2671,9 @@ mod tests {
             6 => P::Chat,
             7 => P::Appearance,
             8 => P::Script,
-            9 => P::Settings,
-            10 => P::About,
+            9 => P::Models,
+            10 => P::Settings,
+            11 => P::About,
             _ => return None,
         };
         let back = match panel {
@@ -2685,8 +2686,9 @@ mod tests {
             P::Chat => 6,
             P::Appearance => 7,
             P::Script => 8,
-            P::Settings => 9,
-            P::About => 10,
+            P::Models => 9,
+            P::Settings => 10,
+            P::About => 11,
         };
         assert_eq!(back, i, "panel_at's two tables disagree at {i}");
         Some(panel)

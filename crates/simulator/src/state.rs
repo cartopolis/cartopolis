@@ -544,6 +544,7 @@ impl SimWorld {
         shape: &str,
         geo: GeoAnchor,
         particles: Option<&ParticleEffect>,
+        model: Option<&str>,
     ) -> Result<PrimDto, String> {
         // Capacity is checked *before* the insert, so the refusal costs no write
         // and the id sequence does not advance on a rejected create.
@@ -562,8 +563,16 @@ impl SimWorld {
                 .conn
                 .lock()
                 .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::insert_prim(&conn_guard, region_id, position, shape, geo, particles)
-                .map_err(|e| format!("insert_prim failed: {}", e))?
+            crate::db::insert_prim(
+                &conn_guard,
+                region_id,
+                position,
+                shape,
+                geo,
+                particles,
+                model,
+            )
+            .map_err(|e| format!("insert_prim failed: {}", e))?
         };
         // Add to in-memory list
         self.prims.push(prim.clone());
@@ -587,6 +596,7 @@ impl SimWorld {
         geometry: PrimGeometry,
         geo: GeoAnchor,
         particles: Option<&ParticleEffect>,
+        model: Option<&str>,
     ) -> Result<PrimDto, String> {
         // Call db::update_prim with a minimal lock
         let prim = {
@@ -607,6 +617,7 @@ impl SimWorld {
                 geometry,
                 geo,
                 particles,
+                model,
             )
             .map_err(|e| format!("update_prim failed: {}", e))?
             .ok_or_else(|| format!("prim {} not found", prim_id))?
@@ -940,6 +951,7 @@ impl SimWorld {
                 prim_geometry(p),
                 p.geo,
                 p.particles.as_ref(),
+                p.model.as_deref(),
             ) {
                 tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
                 // Keep the promise above: a failed write stays dirty, so a
