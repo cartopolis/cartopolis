@@ -1190,6 +1190,7 @@ mod tests {
             username: "dev".into(),
             session_token: "deadbeef".into(),
             osm_tile_url_template: String::new(),
+            api_base_url: String::new(),
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -1349,6 +1350,7 @@ mod tests {
                 reason: ReportReason::Harassment,
                 note: "followed me across three regions".into(),
                 message: Some("the line they sent".into()),
+                asset: None,
             },
             NetMessage::ReportUser {
                 request_id: 5,
@@ -1356,6 +1358,9 @@ mod tests {
                 reason: ReportReason::Other,
                 note: String::new(),
                 message: None,
+                // The other shape a report has since protocol 22: raised from an
+                // object rather than a chat line.
+                asset: Some("d0".repeat(32)),
             },
             NetMessage::ReportAck {
                 request_id: 4,
