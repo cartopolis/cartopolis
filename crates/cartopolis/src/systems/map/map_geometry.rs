@@ -902,6 +902,29 @@ impl MapSurfaces {
             .clone()
     }
 
+    /// Every plain ground material this run has created, with the group that owns
+    /// it. `systems::wet_surfaces` walks these to ramp the ground between a dry
+    /// and a wet look; it needs the group as well as the handle because only the
+    /// hard surfaces take the full treatment.
+    pub(crate) fn ground_materials(
+        &self,
+    ) -> impl Iterator<Item = (SurfaceGroup, &Handle<StandardMaterial>)> {
+        self.materials
+            .iter()
+            .map(|(group, handle)| (*group, handle))
+    }
+
+    /// The same, for the road groups — they carry `RoadDepthExtension`, so their
+    /// handles live in a different asset store with the `StandardMaterial` nested
+    /// inside (see `systems::road_depth`).
+    pub(crate) fn road_materials(
+        &self,
+    ) -> impl Iterator<Item = (SurfaceGroup, &Handle<RoadMaterial>)> {
+        self.road_materials
+            .iter()
+            .map(|(group, handle)| (*group, handle))
+    }
+
     /// Retire every live cell (used on a re-anchor, or when the source stops being
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
@@ -1663,6 +1686,17 @@ fn road_base_material(group: SurfaceGroup, images: &mut Assets<Image>) -> Standa
             SurfaceGroup::Road(class) => Some(images.add(road_surface_image(class))),
             _ => None,
         },
+        // The roughness/metallic half of the same generated surface: polished
+        // wheel paths, smoother paint, and a metal rail head (see
+        // `RoadTexture::surface`). It multiplies `perceptual_roughness` below
+        // rather than replacing it, so the class's own finish is still what sets
+        // the level and this only varies it across the carriageway — and
+        // `systems::wet_surfaces` keeps working, because that lowers the same
+        // scalar.
+        metallic_roughness_texture: match group {
+            SurfaceGroup::Road(class) => Some(images.add(road_material_image(class))),
+            _ => None,
+        },
         perceptual_roughness: group.perceptual_roughness(),
         depth_bias: group.depth_bias(),
         ..default()
@@ -1688,6 +1722,36 @@ fn road_surface_image(class: RoadClass) -> Image {
         data,
         mip_count,
         TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+        ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            address_mode_w: ImageAddressMode::Repeat,
+            anisotropy_clamp: 8,
+            ..ImageSamplerDescriptor::linear()
+        }),
+    )
+}
+
+/// The roughness/metallic map that goes with [`road_surface_image`].
+///
+/// Two differences from its sibling and both are load-bearing. The format is
+/// **`Rgba8Unorm`, not sRGB** — these are material coefficients, and running them
+/// through the sRGB decode would bend every one of them toward zero (a stored
+/// 0.62 would arrive as 0.34, i.e. a road markedly glossier than intended). And
+/// there is no anisotropy: it is sampled at the same rate as the colour, which
+/// already carries the filtering that matters.
+fn road_material_image(class: RoadClass) -> Image {
+    use bevy::render::render_resource::TextureFormat;
+
+    let t = road_texture(class);
+    let (data, mip_count) = crate::systems::mip::build_mip_chain(t.width, t.height, t.surface);
+    crate::systems::tile_loader::image_from_mip_chain(
+        t.width,
+        t.height,
+        data,
+        mip_count,
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::default(),
         ImageSampler::Descriptor(ImageSamplerDescriptor {
             address_mode_u: ImageAddressMode::Repeat,
@@ -1730,9 +1794,15 @@ pub fn apply_road_texture(
         };
         if want_textured {
             material.base.base_color_texture = Some(images.add(road_surface_image(class)));
+            material.base.metallic_roughness_texture = Some(images.add(road_material_image(class)));
             material.base.base_color = Color::WHITE;
         } else {
             material.base.base_color_texture = None;
+            // The roughness map goes with it. Leaving it bound would keep the
+            // wheel paths and the rail head's metal on a road that has just been
+            // flattened to one colour, which is a stranger picture than either
+            // side of the toggle is meant to produce.
+            material.base.metallic_roughness_texture = None;
             let [r, g, b] = class.flat_color();
             material.base.base_color = Color::srgb(r, g, b);
         }

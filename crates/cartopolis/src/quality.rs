@@ -94,6 +94,35 @@ pub struct Budget {
     /// `AtmosphereEnvironmentMapLight`: a sky-driven IBL cubemap re-baked **every
     /// frame**, plus its mip chain.
     pub sky_ibl: bool,
+    /// Screen-space ambient occlusion: the contact darkening where two surfaces
+    /// meet.
+    ///
+    /// **The single largest "this is a model" tell this renderer had.** Every
+    /// material in the scene is a base colour at one roughness, lit by a sun, a
+    /// sky and an ambient term, and an ambient term by construction reaches into
+    /// a doorway, under a kerb and behind a tree trunk exactly as brightly as it
+    /// reaches an open field. So nothing in the city was ever seated on anything:
+    /// a lamp post met the pavement at a hairline, and a building met the ground
+    /// at a hairline, and the eye reads that as two objects overlapping rather
+    /// than one standing on the other.
+    ///
+    /// It costs a depth prepass, a normal prepass and a compute pass — and it
+    /// costs the main pass's multisampling, which is the part that is not
+    /// obvious: `ScreenSpaceAmbientOcclusion` requires [`Msaa::Off`] and bevy
+    /// warns and carries on if it does not get it. `setup_camera` resolves that
+    /// rather than leaving two fields to contradict each other, and adds `Fxaa`
+    /// where it takes the samples away.
+    pub ambient_occlusion: bool,
+    /// Volumetric fog: light shafts through the fog volume that follows the
+    /// camera (`systems::light_shafts`).
+    ///
+    /// A full-screen ray march at `VolumetricFog::step_count` samples, each of
+    /// which reads the sun's shadow cascades — so it is the most expensive thing
+    /// on this list and the only one whose cost scales with the shadow settings
+    /// above it. Desktop only, and it needs [`Self::shadows`]: without a shadow
+    /// map there is nothing to cut the shaft out of and the effect is a flat
+    /// wash.
+    pub light_shafts: bool,
     /// Trees, street furniture, street labels, textured roads and the animated
     /// water shader. Individually modest, collectively a large slice of both the
     /// draw list and the per-cell meshing the main thread does while streaming.
@@ -369,6 +398,8 @@ impl Budget {
             shadows: true,
             bloom: true,
             sky_ibl: true,
+            ambient_occlusion: true,
+            light_shafts: true,
             detail_layers: true,
             radius_bias: 0,
             per_frame_divisor: 1,
@@ -414,6 +445,17 @@ impl Budget {
             tier: Tier::Balanced,
             shadows: true,
             bloom: true,
+            // Kept, and it is the cheapest thing on this rung's list to keep:
+            // this tier already runs `Msaa::Off`, so AO costs it the two prepasses
+            // and the compute pass and takes nothing away. It is also the setting
+            // whose absence reads as a different scene rather than a softer one,
+            // which is this rung's whole test.
+            ambient_occlusion: true,
+            // Gone. A per-pixel march that samples the shadow cascades is the one
+            // effect here whose cost is multiplied by the shadow settings this
+            // rung has already cut back, and a light shaft is atmosphere rather
+            // than shape.
+            light_shafts: false,
             // The one bake that happens *every frame*, plus its mip chain. Its
             // contribution is low-frequency ambient light, which is the least
             // missed thing on this list.
@@ -469,6 +511,8 @@ impl Budget {
             shadows: false,
             bloom: false,
             sky_ibl: false,
+            ambient_occlusion: false,
+            light_shafts: false,
             detail_layers: false,
             radius_bias: 1,
             per_frame_divisor: 2,
@@ -568,6 +612,44 @@ impl Budget {
     pub fn per_frame(&self, base: usize) -> usize {
         (base / self.per_frame_divisor).max(1)
     }
+
+    /// The sample count the main pass actually gets, with every clamp applied.
+    ///
+    /// [`Self::msaa`] is what the *tier* asks for; three things can overrule it,
+    /// and until this existed they were three separate expressions at the camera
+    /// with nothing keeping them in step.
+    ///
+    /// * `restricted` — the web and a software adapter both permit only 1 and 4
+    ///   samples, and an unsupported request does not degrade, it fails to create
+    ///   the main texture and renders nothing (see [`Self::msaa`]). That is a
+    ///   property of *this run's surface and adapter*, so the caller answers it.
+    /// * [`Self::ambient_occlusion`] — bevy's SSAO node requires `Msaa::Off` and
+    ///   merely warns if it does not get it, so a rung asking for both would
+    ///   silently get the multisampling and no occlusion at all.
+    ///
+    /// Returning the answer from one function is what makes
+    /// [`wants_edge_filter`](Self::wants_edge_filter) truthful: the edge filter
+    /// has to go on exactly when the samples went away.
+    #[must_use]
+    pub fn main_pass_msaa(&self, restricted: bool) -> Msaa {
+        if self.ambient_occlusion || restricted {
+            Msaa::Off
+        } else {
+            self.msaa
+        }
+    }
+
+    /// Whether this run should carry `Fxaa`.
+    ///
+    /// Exactly when the main pass ends up with one sample and the scene is still
+    /// worth filtering — i.e. when something took the multisampling away. A rung
+    /// that never had any (the phone) does **not** gain a full-screen pass here:
+    /// it gave up edge quality on purpose and an extra pass is the thing it has
+    /// least of.
+    #[must_use]
+    pub fn wants_edge_filter(&self, restricted: bool) -> bool {
+        self.msaa != Msaa::Off && self.main_pass_msaa(restricted) == Msaa::Off
+    }
 }
 
 static BUDGET: OnceLock<Budget> = OnceLock::new();
@@ -585,6 +667,8 @@ pub fn init(preferred: Option<&str>) {
             shadows = resolved.shadows,
             bloom = resolved.bloom,
             sky_ibl = resolved.sky_ibl,
+            ambient_occlusion = resolved.ambient_occlusion,
+            light_shafts = resolved.light_shafts,
             detail_layers = resolved.detail_layers,
             msaa = resolved.msaa.samples(),
             space_raymarch = resolved.space_raymarch,
@@ -622,6 +706,8 @@ pub fn report_budget() {
         shadows = resolved.shadows,
         bloom = resolved.bloom,
         sky_ibl = resolved.sky_ibl,
+        ambient_occlusion = resolved.ambient_occlusion,
+        light_shafts = resolved.light_shafts,
         detail_layers = resolved.detail_layers,
         msaa = resolved.msaa.samples(),
         space_raymarch = resolved.space_raymarch,
@@ -732,6 +818,21 @@ pub struct Capabilities {
     /// window rather than off the platform is what stops that rule from having to
     /// be restated for every new target.
     pub vsync_paced: bool,
+    /// The adapter is a CPU rasteriser — Mesa lavapipe in this container and in
+    /// CI, or a driver-less machine that fell back to one.
+    ///
+    /// Recorded rather than re-derived, because three places now need the same
+    /// answer and one of them (`systems::light_shafts`) runs long after the
+    /// adapter has been queried. It already decided the sample count
+    /// (`Budget::main_pass_msaa`, whose `restricted` argument this feeds); it now
+    /// also decides whether a per-pixel ray march is attempted at all.
+    ///
+    /// **This is not "software is slow, so cut quality".** Colour, exposure and
+    /// lighting are not evidence on a CPU rasteriser at all
+    /// (`docs/notes/headless-shots-software-renderer.md`), so a volumetric march
+    /// there is minutes of frame time spent on a picture nobody may draw a
+    /// conclusion from.
+    pub software_renderer: bool,
 }
 
 static CAPABILITIES: OnceLock<Capabilities> = OnceLock::new();
@@ -746,6 +847,7 @@ pub fn init_capabilities(caps: Capabilities) {
         tracing::info!(
             float32_filterable = caps.float32_filterable,
             vsync_paced = caps.vsync_paced,
+            software_renderer = caps.software_renderer,
             "device capabilities measured"
         );
     }
@@ -907,6 +1009,16 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         upload_bytes_per_frame: Some(ceiling),
         tile_px: budget.tile_px.min(HANDSET_TILE_PX),
         radius_bias: budget.radius_bias.max(1),
+        // A per-pixel ray march that samples the shadow cascades, on a tiled
+        // mobile GPU, at the full panel resolution. This is a property of the
+        // machine and not a judgement about the picture, which is the test for
+        // what belongs in this function: a handset that asks for the desktop rung
+        // is asking for the desktop's *content*, and there is no reading of that
+        // request under which it also wants sixty-four shadowed samples per
+        // fragment. Ambient occlusion is deliberately **not** guarded here — two
+        // prepasses and a compute pass is an ordinary cost that a person choosing
+        // a higher rung can have.
+        light_shafts: false,
         ..budget
     }
 }
@@ -1112,6 +1224,14 @@ mod tests {
                 "shadow_distance_m: {name}"
             );
             assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
+            assert!(
+                !lower.ambient_occlusion || upper.ambient_occlusion,
+                "ambient_occlusion: {name}"
+            );
+            assert!(
+                !lower.light_shafts || upper.light_shafts,
+                "light_shafts: {name}"
+            );
             // A LUT tonemapper is the expensive one, and it is only affordable on
             // a rung whose camera is `Hdr` — where the curve is one pass rather
             // than per fragment. Tying the two together here is what stops a

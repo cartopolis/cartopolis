@@ -19,6 +19,9 @@ pub mod globe_weather;
 pub mod grass;
 pub mod height;
 pub mod interiors;
+// The fog volume the sun's light shafts are marched through; the camera and the
+// sun carry the other two halves (`free_camera::setup_camera`, `sky`).
+pub mod light_shafts;
 pub mod lod22;
 pub mod lod3;
 pub mod map_geometry;
@@ -46,4 +49,6 @@ pub mod tile_source;
 pub mod vegetation;
 pub mod water;
 pub mod weather;
+// The ground's answer to the rain the sky already draws.
+pub mod wet_surfaces;
 pub mod world_places;

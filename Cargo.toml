@@ -64,6 +64,17 @@ bevy = { version = "0.19", default-features = false, features = [
     # without it, spawning panics on the first unregistered component type.
     "reflect_auto_register",
     "bevy_animation",
+    # FXAA, and it is the price of ambient occlusion rather than a taste.
+    # `ScreenSpaceAmbientOcclusion` refuses to run unless `Msaa` is `Off` (it
+    # reads a depth and a normal prepass, neither of which is multisampled), so
+    # switching AO on takes the desktop rung's 2× multisampling with it. With no
+    # anti-aliasing at all in the graph that trade is a bad one — a city is
+    # railings, window reveals and roof edges, which is the worst case for
+    # aliasing — so the rung that gains AO gains a post-process edge filter in
+    # the same breath. FXAA and not TAA: this world re-anchors its whole
+    # coordinate frame as you move (`big_space`), and a history buffer indexed by
+    # last frame's motion vectors is precisely what that breaks.
+    "bevy_anti_alias",
     # `bevy_animation` only enables the animation crate; the glTF *loader's*
     # clip parsing is behind bevy_gltf's own `bevy_animation` feature, wired via
     # this umbrella feature. Without it `GltfAssetLabel::Animation(n)` loads zero
@@ -102,9 +113,10 @@ bevy = { version = "0.19", default-features = false, features = [
     #   format the tree does not contain. This is the only one of the three that
     #   was costing anything.
     # * `smaa_luts` is `bevy_anti_alias?/smaa_luts` + `ktx2` + `bevy_image/zstd`.
-    #   `bevy_anti_alias` is not enabled, so the weak dependency never fired, and
-    #   `tonemapping_luts` above already pulls the other two. Nothing in
-    #   `crates/cartopolis` mentions `Smaa`, `Fxaa` or `Taa`.
+    #   `tonemapping_luts` above already pulls the other two, so this only ever
+    #   bought SMAA's own lookup textures. Still off: `bevy_anti_alias` is enabled
+    #   now (above) but the client uses `Fxaa`, which needs no LUT at all. Adding
+    #   it back is only worth it if somebody switches the edge filter to `Smaa`.
     # * `default_font` is `bevy_text?/default_font`, and `bevy_text` is not enabled
     #   either — the UI is egui, which carries its own font (`systems::theme`). A
     #   pure no-op.

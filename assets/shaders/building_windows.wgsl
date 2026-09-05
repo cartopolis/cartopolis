@@ -74,6 +74,20 @@ const WALL_NORMAL_Y: f32 = 0.42;
 /// 3,200, and 32 windows is ~80 m, wider than almost any single facade.
 const HASH_PERIOD: f32 = 32.0;
 
+/// Roughness of a pane, against the wall's own (0.95 — as matte as the parameter
+/// goes).
+///
+/// Not near zero. A perfectly smooth pane mirrors the sky, and with no
+/// screen-space reflection behind it that arrives as a flat block of sky colour
+/// with a hard edge on every window in the city. At this value the pane takes a
+/// long specular highlight and a sheen of the environment map, which is what
+/// glass does at the distances anybody looks at these buildings from.
+const GLASS_ROUGHNESS: f32 = 0.14;
+
+/// Reflectance of a pane, against bevy's 0.5 dielectric default (~4% at normal
+/// incidence). Glass sits nearer 8%.
+const GLASS_REFLECTANCE: f32 = 0.72;
+
 /// Cheap 2D value hash. Not for cryptography and not for a large domain — it is
 /// asked for one number per window per frame.
 fn hash2(p: vec2<f32>) -> f32 {
@@ -211,6 +225,34 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.material.emissive += vec4<f32>(
             lit.rgb * (emissive * glow.x * glow.y),
             0.0,
+        );
+
+        // Glass is not plaster, and until this every square metre of every
+        // building in the country carried one roughness. That is the flatness you
+        // see on a facade at any hour: a window took the sun exactly as dully as
+        // the wall around it, so a street of windows had no highlights in it at
+        // all and the whole elevation read as one printed sheet.
+        //
+        // `pane` and not `inside`, deliberately — `pane` is the same
+        // distance-blurred coverage the colour uses, so at range the windows
+        // converge on the wall's own finish instead of leaving a grid of glints
+        // sparkling across the far half of the city. That is the identical
+        // argument the `blur` comment above makes for the emissive, and getting
+        // it wrong here would undo it there.
+        //
+        // Reflectance rises with it: glass reflects appreciably more at normal
+        // incidence than a rendered or brick wall, and it is that — not the
+        // roughness alone — that puts the sky into the upper floors of a building
+        // seen from across a square.
+        pbr_input.material.perceptual_roughness = mix(
+            pbr_input.material.perceptual_roughness,
+            GLASS_ROUGHNESS,
+            pane,
+        );
+        pbr_input.material.reflectance = mix(
+            pbr_input.material.reflectance,
+            vec3<f32>(GLASS_REFLECTANCE),
+            pane,
         );
     }
 

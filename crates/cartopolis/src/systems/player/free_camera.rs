@@ -1,10 +1,13 @@
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use bevy::anti_alias::fxaa::Fxaa;
 use bevy::camera::Exposure;
 use bevy::light::atmosphere::ScatteringMedium;
-use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
+use bevy::light::{
+    AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster, VolumetricFog,
+};
 use bevy::math::{DQuat, DVec3};
-use bevy::pbr::AtmosphereSettings;
+use bevy::pbr::{AtmosphereSettings, ScreenSpaceAmbientOcclusion};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
@@ -766,6 +769,9 @@ pub fn setup_camera(
     // see the `Msaa` comment below. Detect it rather than keying off the headless
     // run, so `cargo shots` on a real GPU keeps its 2×.
     let software_renderer = adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu;
+    // The web and a software adapter both advertise sample counts of 1 and 4 only
+    // — see the `Msaa` comment at the camera spawn.
+    let restricted_sample_counts = cfg!(target_arch = "wasm32") || software_renderer;
     let budget = crate::quality::budget();
 
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
@@ -829,6 +835,7 @@ pub fn setup_camera(
     // several places downstream have to get the *same* answer.
     crate::quality::init_capabilities(crate::quality::Capabilities {
         float32_filterable,
+        software_renderer,
         vsync_paced: matches!(
             primary_window.iter().next().map(|w| w.present_mode),
             Some(
@@ -954,11 +961,12 @@ pub fn setup_camera(
             // `cfg!(target_arch = "wasm32")`, so Android — which answers "native"
             // to every cfg in this tree — was handed a 2× that a Vulkan
             // implementation is under no obligation to support.
-            if cfg!(target_arch = "wasm32") || software_renderer {
-                Msaa::Off
-            } else {
-                budget.msaa
-            },
+            //
+            // The third clamp is ambient occlusion, which bevy's SSAO node
+            // requires `Msaa::Off` for; all three now resolve in
+            // `quality::Budget::main_pass_msaa` so the answer here and the
+            // decision to add `Fxaa` below cannot disagree.
+            budget.main_pass_msaa(restricted_sample_counts),
             // Explicit, because Bevy's required-component default is
             // `TonyMcMapface` and that samples a 3D LUT. On a tier with no `Hdr`
             // camera — no atmosphere, no bloom, i.e. the phone — bevy_pbr sets
@@ -1007,6 +1015,52 @@ pub fn setup_camera(
             cam.insert(Bloom {
                 intensity: bloom_intensity(0.0),
                 ..Bloom::NATURAL
+            });
+        }
+        // Ambient occlusion: the contact darkening that seats an object on the
+        // thing it stands on. See `quality::Budget::ambient_occlusion` for why
+        // this is the largest single change to how the city reads, and for what
+        // it costs (two prepasses, a compute pass, and the multisampling).
+        //
+        // `ScreenSpaceAmbientOcclusion` carries `#[require(DepthPrepass,
+        // NormalPrepass)]`, so both are added by the component and neither is
+        // spelled out here — worth knowing before adding a second consumer of
+        // either, because removing this component would take them away again.
+        if budget.ambient_occlusion {
+            cam.insert(ScreenSpaceAmbientOcclusion::default());
+        }
+        // …and the edge filter that pays for it, on exactly the runs where the
+        // samples went away. `wants_edge_filter` is false on a rung that never
+        // asked for multisampling in the first place, so the phone does not
+        // quietly gain a full-screen pass.
+        if budget.wants_edge_filter(restricted_sample_counts) {
+            cam.insert(Fxaa::default());
+        }
+        // Light shafts. The component only enables the *pass*; what it marches
+        // through is a `FogVolume`, which `systems::light_shafts` spawns and keeps
+        // over the camera, and what cuts the shafts out is the sun's shadow map,
+        // which `sky::setup_sky` marks with `VolumetricLight`. All three have to
+        // be present or this is an expensive way to render nothing.
+        // …and not on a CPU rasteriser, whatever the rung says. A 48-step march
+        // with a shadow lookup at every step is minutes per frame under lavapipe
+        // (measured 2026-09-04: a single `cargo shots` preset did not finish in
+        // ten), and lighting is not evidence there in the first place — so this
+        // would be a long wait for a picture no conclusion may be drawn from. The
+        // same `software_renderer` answer already decides the sample count.
+        if budget.light_shafts && !software_renderer {
+            cam.insert(VolumetricFog {
+                // Bevy's default is 64. The volume here is kilometres across
+                // rather than a room, so the samples are spread thin and the
+                // banding shows; 48 with the jitter below reads cleaner than 64
+                // without it, and costs less.
+                step_count: 48,
+                // Dithers the ray start so the banding becomes noise. Bevy's own
+                // note says this is meant to pair with temporal anti-aliasing,
+                // which this client deliberately does not have — but the fog is
+                // low-frequency and slow, so the noise reads as fog grain rather
+                // than as crawl.
+                jitter: 0.5,
+                ..default()
             });
         }
         // Atmospheric distance fog: distant buildings fade into haze, sun-side

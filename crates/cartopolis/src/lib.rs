@@ -1919,6 +1919,7 @@ fn run_client() {
         // handle out of `Assets<WaterMaterial>`.
         .init_resource::<systems::water::WaterSeaState>()
         .init_resource::<systems::vegetation::VegetationLod>()
+        .init_resource::<systems::wet_surfaces::DrySurfaces>()
         .init_resource::<systems::grass::GrassAreas>()
         .init_resource::<systems::grass::GrassPatches>()
         .init_resource::<systems::street_furniture::FurnitureLod>()
@@ -2153,6 +2154,10 @@ fn run_client() {
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.
             systems::sky_dome::setup_sky_dome.after(systems::free_camera::setup_camera),
+            // The fog volume the sun's shafts are marched through. After the
+            // camera for the same reason the car pool is: it parents itself to
+            // the `BigSpace` root, which `setup_camera` is what creates.
+            systems::light_shafts::setup_light_shafts.after(systems::free_camera::setup_camera),
             spawn_avatar_entity,
             sky::setup_sky,
             sky::setup_stars,
@@ -2406,6 +2411,13 @@ fn run_client() {
                 // grass areas it plants into — a frame's lag there is a frame of
                 // bare ground on a cell that just streamed in.
                 systems::grass::update_grass.after(systems::map_geometry::update_map_surfaces),
+                // Wet the hard ground when it rains. Same ordering and the same
+                // reason as the two ramps above: it repaints materials that the
+                // surface build is what creates, so running it first would ramp
+                // whatever existed last frame and leave a cell that has just
+                // landed dry until the rain next moved.
+                systems::wet_surfaces::apply_wet_surfaces
+                    .after(systems::map_geometry::update_map_surfaces),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
             // bake its OSM skin in the background. Nested to stay under the
@@ -2666,7 +2678,17 @@ fn run_client() {
                 // coverage — see `systems::building_windows`.
                 systems::building_windows::update_building_windows,
                 // Track the camera after it has been positioned this frame.
-                sky::update_star_sky.after(systems::free_camera::camera_controls),
+                // Nested to stay under the per-tuple system limit, as elsewhere in
+                // this file. Both track the camera and both must run after it has
+                // moved this frame.
+                (
+                    sky::update_star_sky.after(systems::free_camera::camera_controls),
+                    // The fog volume the light shafts are marched through: placed
+                    // from the camera's transform, so a frame's lag here is a
+                    // frame of shafts centred where the viewer used to be.
+                    systems::light_shafts::follow_camera
+                        .after(systems::free_camera::camera_controls),
+                ),
                 sky::update_moon.after(systems::free_camera::camera_controls),
                 (
                     sky::update_horizon_haze.after(systems::free_camera::camera_controls),
