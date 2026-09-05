@@ -397,11 +397,23 @@ mod android {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    /// How often a sample is asked for, in microseconds. 20 Hz: the view eases
-    /// toward this at ~8/s (`systems::locate`), so a faster stream would be
-    /// filtered away, and a magnetometer at full rate is a measurable share of a
-    /// phone's idle power.
-    const SAMPLE_PERIOD_US: i32 = 50_000;
+    /// How often a sample is asked for, in microseconds. 60 Hz.
+    ///
+    /// **This was 20 Hz, and the reason given for it was only true of one of the
+    /// two consumers.** The argument was that the view eases toward the bearing at
+    /// ~8/s (`free_camera`'s follow-and-rotate rig), so anything faster is
+    /// filtered away — which holds for the *camera* and does not hold at all for
+    /// the device arrow (`locate::render_locate_arrow`), which paints the reported
+    /// bearing raw, every frame. At 20 Hz a phone turned at a brisk 90°/s moves
+    /// that arrow in 4.5° steps three to six frames apart, which is exactly what
+    /// "the update rate seems low" looks like. At 60 Hz the step is 1.5° and lands
+    /// on roughly every frame of a 60 Hz screen.
+    ///
+    /// This is a *hint*: the framework clamps to what the sensor and the app's
+    /// current foreground state allow, so a device that only manages 20 Hz simply
+    /// keeps managing 20 Hz. The extra power is bounded by the subscription —
+    /// nothing here runs unless the locate button is lit or a drive is on.
+    const SAMPLE_PERIOD_US: i32 = 16_666;
 
     /// How long the looper waits for a sample before checking the cancel flag.
     const POLL_MS: i32 = 100;

@@ -294,6 +294,25 @@ const FOLLOW_RATE: f32 = 12.0;
 const FOLLOW_LEAD_MAX: f32 = 80.0;
 /// Default follow distance — a comfortable third-person framing of the avatar.
 pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
+/// How fast follow-and-rotate swings the boom round to the avatar's own facing,
+/// per second (exponential).
+///
+/// Gentle on purpose: the avatar's facing is itself already the output of a turn
+/// that eases (`avatar::advance_facing`), and the thing being tracked is a model
+/// on screen, so a fast rig here would whip the whole view round on every change
+/// of direction.
+const FOLLOW_ROTATE_RATE: f32 = 8.0;
+/// …and how fast it swings round to a **compass** bearing.
+///
+/// Twice as fast, because the target is a different kind of thing. A compass
+/// bearing is not a smoothed consequence of the keys held — it is the user's own
+/// hand, already gyro-fused by the platform, and the picture is expected to
+/// follow it the way the view out of a window does. At 8/s the map trailed a
+/// phone turned briskly by an eighth of a turn and took most of a second to
+/// settle, which reads as the compass being slow rather than as the view being
+/// smooth. Still an ease and not an assignment: sensor noise about a held bearing
+/// would otherwise be a shimmer across the whole map.
+const COMPASS_ROTATE_RATE: f32 = 16.0;
 /// Wheel-notch zoom rate (fraction of the target distance per notch);
 /// exponential so the step scales with altitude, like Google Earth. Kept gentle —
 /// the glide (`ZOOM_GLIDE_RATE`) supplies the sense of speed, so per-notch this
@@ -1459,7 +1478,15 @@ pub fn camera_controls(
                     if d > std::f32::consts::PI {
                         d -= std::f32::consts::TAU;
                     }
-                    let a = 1.0 - (-8.0_f32 * delta_time).exp();
+                    // The compass gets the faster of the two rates — see
+                    // [`COMPASS_ROTATE_RATE`] for why the two targets deserve
+                    // different treatment rather than one shared number.
+                    let rate = if heading.is_some() {
+                        COMPASS_ROTATE_RATE
+                    } else {
+                        FOLLOW_ROTATE_RATE
+                    };
+                    let a = 1.0 - (-rate * delta_time).exp();
                     // Snap the last sliver so azimuth (and thus the whole follow rig)
                     // actually settles when standing still, instead of creeping toward
                     // the target forever and pinning the floating-origin propagation.

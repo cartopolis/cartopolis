@@ -1625,9 +1625,23 @@ const PENDING_INTENT_FLAG_MUTABLE: i32 = 0x0200_0000;
 /// intersect: a name the framework just told us about cannot be one it rejects.
 const PROVIDERS: [&str; 3] = ["fused", "gps", "network"];
 
-/// How often the cached fix is re-read. GNSS reports at ~1 Hz; polling faster buys
-/// nothing but JNI calls.
-const POLL_INTERVAL: Duration = Duration::from_millis(1000);
+/// How often the cached fix is re-read.
+///
+/// **This was 1000 ms, on the reasoning that GNSS reports at ~1 Hz so polling
+/// faster buys nothing but JNI calls. That is wrong, and it costs half a second.**
+/// Our poll and the provider's stream are two unsynchronised 1 Hz clocks: a fix
+/// written to the cache just after a poll is not read until the next one, so the
+/// latency added by the polling alone is uniform on 0–1000 ms — a mean of 500 ms
+/// — and it *beats*, so the arrow moves in an irregular pattern of one-second and
+/// two-second steps rather than a steady tick. Reading four times per provider
+/// interval brings the added mean latency to ~125 ms and makes the step rate the
+/// receiver's own.
+///
+/// The cost is real and small: one `getLastKnownLocation` per usable provider per
+/// tick (three at most, see [`PROVIDERS`]) plus one `elapsedRealtimeNanos`, on a
+/// thread that is attached to the JVM for its whole life precisely so a poll is
+/// not an attach. It runs only while something holds a [`LocationWatch`].
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// How long we keep asking `checkSelfPermission` after putting the dialog up.
 const PERMISSION_WAIT: Duration = Duration::from_secs(120);
 /// The **first** fix we publish must be at most this old. A cached position from
@@ -1666,7 +1680,16 @@ fn stale_accuracy_m(accuracy_m: f64, age_s: f64) -> f64 {
 }
 /// Requested update period, milliseconds. This is a *hint* to the provider and the
 /// framework is free to be slower.
-const UPDATE_INTERVAL_MS: i64 = 1000;
+///
+/// 500 ms rather than the 1000 it was. GNSS hardware on a current handset runs at
+/// several hertz and the platform reports at whatever the most demanding client
+/// asked for, so asking for 1 Hz was asking for the floor and getting it — while
+/// what this drives is a moving arrow, where the difference between one update a
+/// second and two is the difference between a step and a slide. Asking for much
+/// less than the hardware can give would only be answered at the hardware's rate
+/// anyway, so this is not a bid for a rate nobody has; it is not asking for the
+/// slowest one on offer.
+const UPDATE_INTERVAL_MS: i64 = 500;
 
 /// Set while the system's runtime-permission dialog is up.
 ///
