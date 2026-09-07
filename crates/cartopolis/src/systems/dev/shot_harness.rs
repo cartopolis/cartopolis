@@ -604,6 +604,10 @@ pub struct ShotMetrics {
     /// one number could not tell a city that answered from a city with no
     /// register whose BGT cell happens to be full.
     pub municipal_trees: usize,
+    /// Street objects a city's own register put in the loaded cells. Counted
+    /// apart from `surveyed_props` for the same reason as the trees: over ground
+    /// a city covers, the BGT's copies of the kinds it supplies are not read.
+    pub municipal_props: usize,
     pub surveyed_props: usize,
     /// Surveyed fences, walls and hedges in the loaded cells.
     pub surveyed_lines: usize,
@@ -869,7 +873,7 @@ orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -2687,6 +2691,7 @@ pub fn drive_capture(
             bag_berths: readouts.bag.berths().len(),
             surveyed_trees: readouts.places.surveyed().0,
             municipal_trees: readouts.places.surveyed().7,
+            municipal_props: readouts.places.surveyed().8,
             surveyed_props: readouts.places.surveyed().1,
             surveyed_lines: readouts.places.surveyed().2,
             surveyed_paving: readouts.places.surveyed().3,
@@ -3261,6 +3266,7 @@ mod tests {
             bag_berths: 0,
             surveyed_trees: 0,
             municipal_trees: 0,
+            municipal_props: 0,
             surveyed_props: 0,
             surveyed_lines: 0,
             surveyed_paving: 0,

@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [municipal.rs, TreeRegister, REGISTERS, bomen, municipal trees, Groningen trees, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE]
-updated: 2026-09-05
+triggers: [municipal.rs, Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, cache fingerprint]
+updated: 2026-09-07
 ---
 
 # The trees a city surveys, where the country's register is empty
@@ -45,6 +45,30 @@ Its only vegetation is areas, in the `land` layer, and `scatter.rs` plants over
 `forest`, `wood`, `park`, `garden`, `scrub` and `heath`. The strip along the kade
 is tagged `grass`, which is on none of those lists, which is exactly why it
 rendered as lawn.
+
+## What a register produces: shapes the client already has
+
+The rule that stops this growing a vocabulary of its own. The client can already
+stand four kinds of thing on the ground — a tree with a height, a prop with a
+`FurnitureKind`, a paved polygon, a boundary line — and each has a builder. A
+register's parser normalises into one of those and nothing else; whatever the city
+knows that does not fit is dropped **at the parser**, where the city's vocabulary
+is still understood, not carried inward as a field only one city fills.
+
+So `RegisteredCell` mirrors `SurveyedCell`: one vector per shape, not one enum
+with variants. The consumers genuinely differ — trees are merged into the canopy
+meshes, props go through `furniture::place_surveyed`, which faces each one at the
+nearest street. A city's lamp post is turned to the kerb by the code that turns a
+bench, for free.
+
+Street lighting was the second source added, and it is what proved the shape. It
+is also the largest hole this fills: the client drew no street lighting anywhere,
+because the tile schema has none and the national register's pole collection is
+empty over central Groningen — the same hole as the trees, one layer over. The
+city's own carries 493 columns in one cell, of which 481 are `Lichtmast`; the
+8 ground spots, 3 tunnel lights and 1 clock are **refused**, because a ground spot
+drawn as a four-metre column is worse than not drawing it. That is why the reader
+returns an `Option`.
 
 ## Why the abstraction is per city and not per country
 
@@ -91,9 +115,15 @@ register covers, the city is the source and the BGT's trees are not read; the
 cell's BGT *props* and *lines* still are, because no city register here carries
 those. The scatter is untouched either way.
 
-The two counts are reported separately (`surveyed_trees` and `municipal_trees` in
-`--dump-state`) for the same reason they are not added: one number could not tell
-"the city answered" from "no city register here and the BGT's cell is full".
+Suppression is **per kind, not per cell**, which is what `Source::supplies`
+declares. Groningen registers trees and lamp posts and says nothing about
+benches, so suppressing the whole BGT cell over its ground would delete the
+benches in order to fix the trees.
+
+The counts are reported separately (`surveyed_trees` / `municipal_trees` and
+`surveyed_props` / `municipal_props` in `--dump-state`) for the same reason they
+are not added: one number could not tell "the city answered" from "no city
+register here and the BGT's cell is full".
 
 ## The height band is the reason to bother beyond coverage
 
@@ -116,6 +146,73 @@ it is a sapling the register does not carry; `"24 m. en hoger"` a little above i
 floor. Bands are read off the numbers in the string rather than matched against a
 table of the eight spellings seen today, because the register is a city's
 operational database and a ninth band costs nothing to add there.
+
+## The cache invalidates itself
+
+Nothing revalidates a stored cell — the sweep is by size, not by age — so a reader
+that changes and a key that does not is a permanent wrong answer. This tree has
+shipped exactly that: `surveyed::cell_cache_key` carries a hand-bumped `v2`
+because a fix to the extractor could not reach cells already written under `v1`,
+and every install kept its ghost pavements until the key moved.
+
+A constant somebody has to remember to bump is the same bug waiting. So the key
+carries a **fingerprint of the reader's own behaviour**: each source's reader is
+run at startup over a fixture page embedded beside its register, the normalised
+result is hashed together with the layer and attribute names, and that hash is a
+path segment. Change the layer name, the attribute, the height bands, or which
+lamp types are refused, and the key moves and the old entries are never read
+again. Nothing to remember.
+
+The fingerprint is FNV-1a rather than `DefaultHasher`, deliberately: the number
+goes into a cache key that must mean the same thing on every platform and every
+build, and std makes no stability promise about its hashers across releases. It
+is logged at startup per source, because "why did every cell re-download after
+that release?" is otherwise unanswerable from a log, and the answer is always
+this number.
+
+**Its one limit, stated plainly: the fixture is the contract.** A reader change on
+an input the fixture does not contain will not move the fingerprint. The fixture
+is sized to carry every branch each source decides on, and two tests hold that
+line — one asserting every source reads something out of its register's fixture,
+one asserting an altered reader fingerprints differently from the real one.
+
+`CACHE_GENERATION` survives as the second axis and stays a hand-bumped constant,
+because it is for what a fingerprint cannot see: a change to the stored *format*,
+which invalidates every source of every city at once.
+
+## What it costs — and the cost is latency, not bytes
+
+The first version of this note said a dense cell was 1.3 MB. That was the
+decompressed size and it is not what crosses the network: the server gzips, and
+`ureq` is built with its `gzip` feature so it asks for that and inflates
+transparently. Measured 2026-09-07 over the densest Groningen tree cell:
+
+| | decompressed | on the wire |
+|---|---|---|
+| GeoJSON, all 15 fields | 751 kB | — |
+| GeoJSON, `propertyName` trimmed to two | 324 kB | **27 kB** |
+| the same as CSV | 120 kB | 17 kB |
+
+So bytes are a non-issue, and CSV was measured and **not** adopted: it saves
+10 kB on the wire and costs a hand-rolled WKT parser, against a JSON parse that is
+already far below the ~120 ms an MVT rasterise costs on the same worker.
+
+What is real is that every source is one more request standing between a cell's
+ground and its mesh job, so they are fetched **together**. Natively that is
+presentation rather than overlap — `http::fetch` is a blocking `ureq` call with no
+await point in it, the same thing `map_geometry` records about the two optional
+layers it already zips — and on wasm it is a real overlap. On both it is what
+stops a second source doubling the wait.
+
+Two more things chosen for cost: the request carries `propertyName` so it asks for
+the geometry and the one attribute the reader looks at (615 bytes a tree against
+265), and `CARTO_NO_MUNICIPAL=1` turns the whole layer off for a bisecting
+capture, read once through a `LazyLock` rather than as an environment lookup per
+cell on the mesh path.
+
+**Multiple layers in one request does not work here.** GeoServer answers a
+`typeNames` list with two entries with a 400, so one request per source is forced
+and concurrency is the only lever.
 
 ## Things that were checked and are not problems
 

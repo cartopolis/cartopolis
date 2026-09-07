@@ -98,12 +98,12 @@ url: https://www.beeldmateriaal.nl/
 notice: Aerial photography by Beeldmateriaal Nederland, served as Luchtfoto RGB (Open) by PDOK, CC BY 4.0.
 scope: Netherlands only
 
-## Bomen gemeente Groningen
+## Gemeente Groningen open data
 
-role: Street trees — position and height band, where the national register is empty
+role: Street trees and street lighting — position, height band and lamp type, where the national register is empty
 license: CC BY 4.0
 url: https://data.groningen.nl/dataset/bomen-gemeente-groningen
-notice: Street trees: Bomen gemeente Groningen (CC BY 4.0).
+notice: Street trees and lighting: gemeente Groningen (CC BY 4.0).
 scope: Gemeente Groningen only
 
 The first entry of a kind that will have more: a *municipal* register, read

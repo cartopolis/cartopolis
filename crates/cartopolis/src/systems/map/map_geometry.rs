@@ -42,6 +42,7 @@ use crate::systems::grass::GrassAreas;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::moorings;
+use crate::systems::municipal;
 use crate::systems::parking;
 use crate::systems::places;
 use crate::systems::road_depth::{RoadDepthExtension, RoadMaterial};
@@ -461,10 +462,10 @@ fn spawn_geometry_task(
             // BGT cell above: this one reaches a *city's* server, not ours, and a
             // dense cell of it is 1.3 MB. Asking a third party for a layer that
             // is switched off is the one cost here worth not paying.
-            let registered = if wants.trees {
-                crate::systems::municipal::load_registered_trees(cell.0, cell.1).await
+            let registered = if wants.trees || wants.furniture {
+                crate::systems::municipal::load_registered_cell(cell.0, cell.1).await
             } else {
-                Vec::new()
+                crate::systems::municipal::RegisteredCell::default()
             };
             // …and its surveyed paving, in a file of its own because it is by far
             // the heavier half.
@@ -623,20 +624,19 @@ fn spawn_geometry_task(
                                         // count by an order of magnitude, so
                                         // planting both puts a second lime a
                                         // metre from the first.
-                                        let city =
-                                            crate::systems::municipal::registered_trees(
-                                                &registered,
-                                                cell.0,
-                                                cell.1,
-                                                tile_m,
-                                                veg_seed(cell),
-                                            );
+                                        let city = municipal::registered_trees(
+                                            &registered,
+                                            cell.0,
+                                            cell.1,
+                                            tile_m,
+                                            veg_seed(cell),
+                                        );
                                         cell_places.surveyed.7 = city.len();
-                                        if crate::systems::municipal::register_for(
-                                            cell.0, cell.1,
-                                        )
-                                        .is_none()
-                                        {
+                                        if !municipal::supersedes(
+                                            cell.0,
+                                            cell.1,
+                                            municipal::Supply::Trees,
+                                        ) {
                                             let planted =
                                                 crate::systems::surveyed::surveyed_trees(
                                                     &surveyed,
@@ -676,16 +676,37 @@ fn spawn_geometry_task(
                                         // in it at all, and a lamppost is the most
                                         // numerous thing on a street by a wide
                                         // margin.
-                                        let placed = crate::systems::surveyed::surveyed_props(
-                                            &surveyed,
+                                        let mut placed =
+                                            crate::systems::surveyed::surveyed_props(
+                                                &surveyed,
+                                                &tile,
+                                                cell.0,
+                                                cell.1,
+                                                tile_m,
+                                                veg_seed(cell),
+                                            );
+                                        // A city that registers its own lamp
+                                        // posts is the authority on them here, so
+                                        // the BGT's copies are dropped — but only
+                                        // those. The city says nothing about
+                                        // benches, and suppressing the whole cell
+                                        // would delete them to fix the lighting.
+                                        let by_city = municipal::supplied_props(cell.0, cell.1);
+                                        if !by_city.is_empty() {
+                                            placed.retain(|p| !by_city.contains(&p.kind));
+                                        }
+                                        cell_places.surveyed.1 = placed.len();
+                                        items.extend(placed);
+                                        let city_props = municipal::registered_props(
+                                            &registered,
                                             &tile,
                                             cell.0,
                                             cell.1,
                                             tile_m,
                                             veg_seed(cell),
                                         );
-                                        cell_places.surveyed.1 = placed.len();
-                                        items.extend(placed);
+                                        cell_places.surveyed.8 = city_props.len();
+                                        items.extend(city_props);
                                         // …and the surveyed boundaries, which are
                                         // lines rather than point props and so get
                                         // their own builder — one box per surveyed
