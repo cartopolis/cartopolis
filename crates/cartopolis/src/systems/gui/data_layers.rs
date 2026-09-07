@@ -2513,6 +2513,13 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::surveyed::bgt_attribution() {
                     ui.small(credit);
                 }
+                // A line per city whose own register has actually answered. These
+                // are the only credits here that are a **licence condition** and
+                // not a courtesy: the national registers around them are CC0,
+                // these are CC BY, and the layer may not ship without them.
+                for credit in crate::systems::municipal::attributions() {
+                    ui.small(credit);
+                }
                 // Its own line: the crop register is the RVO's, not the
                 // Kadaster's, and it carries its own (public domain) mark.
                 if let Some(credit) = crate::systems::crops::brp_attribution() {

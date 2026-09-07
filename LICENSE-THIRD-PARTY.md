@@ -98,6 +98,20 @@ url: https://www.beeldmateriaal.nl/
 notice: Aerial photography by Beeldmateriaal Nederland, served as Luchtfoto RGB (Open) by PDOK, CC BY 4.0.
 scope: Netherlands only
 
+## Bomen gemeente Groningen
+
+role: Street trees — position and height band, where the national register is empty
+license: CC BY 4.0
+url: https://data.groningen.nl/dataset/bomen-gemeente-groningen
+notice: Street trees: Bomen gemeente Groningen (CC BY 4.0).
+scope: Gemeente Groningen only
+
+The first entry of a kind that will have more: a *municipal* register, read
+because the national one (the BGT, above) leaves its point collections optional
+and central Groningen fills none of them. `systems::municipal` holds one entry
+per city; each new city is a new heading here, with its own licence, because
+these are separate publications by separate bodies and only some of them are CC0.
+
 ## ProRail Spoorwegen (PDOK)
 
 role: Level crossings — where they are, and what installation stands on each

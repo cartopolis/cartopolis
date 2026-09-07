@@ -17,6 +17,14 @@
 //! its scattered canopies or the map would lose its parks in exchange for a
 //! handful of limes.
 //!
+//! **A city's own register supersedes the trees here.** The BGT's point
+//! collections are optional content and the hole they leave is in the middle of
+//! a city, not at its edges — over the cell covering the study quay in Groningen
+//! this register holds no trees at all and the city's holds 3,018. So where
+//! `systems::municipal` has an entry, that entry is the source for trees and the
+//! `trees` field below is not read; the props and lines still are, since no city
+//! register carries those. `docs/notes/municipal-registers.md` has the counts.
+//!
 //! There is no streamer here and no resource. The data is consumed inside
 //! `map_geometry`'s existing per-cell worker, beside the scatter it joins, for
 //! the reason `building_facts` gives about `lod22`: this ends up baked into a
@@ -366,12 +374,30 @@ pub(crate) async fn load_surveyed_cell(cx: i64, cy: i64) -> SurveyedCell {
 /// bit-identical between Python and Rust, and a lamppost on the boundary would
 /// otherwise land a whole cell away.
 fn to_cell_local(lat: f64, lng: f64, cx: i64, cy: i64, tile_m: f32) -> Option<(f32, f32)> {
-    let (north, west) = tile_to_lat_lng(cx, cy, BGT_ZOOM);
-    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, BGT_ZOOM);
+    cell_local(lat, lng, cx, cy, BGT_ZOOM, tile_m)
+}
+
+/// [`to_cell_local`] at an explicit zoom, for the other producers of surveyed
+/// points that bin on the same rule — `systems::municipal`'s city registers.
+///
+/// Shared rather than copied for the reason [`cell_local_unclamped`] gives: the
+/// containment test and the projection have to agree, and two callers who each
+/// wrote their own is how they stop agreeing.
+#[must_use]
+pub(crate) fn cell_local(
+    lat: f64,
+    lng: f64,
+    cx: i64,
+    cy: i64,
+    zoom: u32,
+    tile_m: f32,
+) -> Option<(f32, f32)> {
+    let (north, west) = tile_to_lat_lng(cx, cy, zoom);
+    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, zoom);
     if !(west..east).contains(&lng) || !(south..north).contains(&lat) {
         return None;
     }
-    Some(cell_local_unclamped(lat, lng, cx, cy, BGT_ZOOM, tile_m))
+    Some(cell_local_unclamped(lat, lng, cx, cy, zoom, tile_m))
 }
 
 /// The projection above without the containment test: the same frame, and an
@@ -418,10 +444,15 @@ pub fn surveyed_trees(
     tile_m: f32,
     seed: u64,
 ) -> Vec<TreeInstance> {
-    let points: Vec<(f32, f32)> = cell
+    // No measured height: the BGT registers a tree as a point and says nothing
+    // about how big it is. A city's own register does, which is what
+    // `systems::municipal` carries the third element for.
+    let points: Vec<(f32, f32, Option<f32>)> = cell
         .trees
         .iter()
-        .filter_map(|&(lat, lng)| to_cell_local(lat, lng, cx, cy, tile_m))
+        .filter_map(|&(lat, lng)| {
+            to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| (x, z, None))
+        })
         .collect();
     crate::systems::scatter::surveyed_trees(&points, seed)
 }

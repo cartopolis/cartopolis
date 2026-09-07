@@ -43,6 +43,9 @@ pub mod stream_ledger;
 pub mod street_detail;
 pub mod street_furniture;
 pub mod street_labels;
+// A city's own registers, where the national ones are silent — named for whose
+// survey it is rather than for what it carries, the way `surveyed` is.
+pub mod municipal;
 pub mod surveyed;
 pub mod tall_structures;
 pub mod terrain;

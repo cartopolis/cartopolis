@@ -452,6 +452,20 @@ fn spawn_geometry_task(
             // outside the coverage, which is everywhere the host has not run
             // cartopy's `bgt.ts`.
             let surveyed = crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1).await;
+            // …and, where the city this cell falls in publishes a tree register
+            // of its own, that register — which supersedes the BGT's trees below
+            // rather than joining them (`systems::municipal` says why). Empty
+            // everywhere no city in `municipal::REGISTERS` reaches.
+            //
+            // Gated on `wants.trees` rather than filtered afterwards, unlike the
+            // BGT cell above: this one reaches a *city's* server, not ours, and a
+            // dense cell of it is 1.3 MB. Asking a third party for a layer that
+            // is switched off is the one cost here worth not paying.
+            let registered = if wants.trees {
+                crate::systems::municipal::load_registered_trees(cell.0, cell.1).await
+            } else {
+                Vec::new()
+            };
             // …and its surveyed paving, in a file of its own because it is by far
             // the heavier half.
             let paving = crate::systems::surveyed::load_surveyed_paving(cell.0, cell.1).await;
@@ -602,15 +616,39 @@ fn spawn_geometry_task(
                                         // pavement, and the registration is
                                         // optional content whose coverage varies
                                         // by municipality.
-                                        let planted = crate::systems::surveyed::surveyed_trees(
-                                            &surveyed,
-                                            cell.0,
-                                            cell.1,
-                                            tile_m,
-                                            veg_seed(cell),
-                                        );
-                                        cell_places.surveyed.0 = planted.len();
-                                        trees.extend(planted);
+                                        // A city's own register, where there is
+                                        // one, is read *instead of* the BGT's
+                                        // trees — the two describe the same
+                                        // trees and the city's is the fuller
+                                        // count by an order of magnitude, so
+                                        // planting both puts a second lime a
+                                        // metre from the first.
+                                        let city =
+                                            crate::systems::municipal::registered_trees(
+                                                &registered,
+                                                cell.0,
+                                                cell.1,
+                                                tile_m,
+                                                veg_seed(cell),
+                                            );
+                                        cell_places.surveyed.7 = city.len();
+                                        if crate::systems::municipal::register_for(
+                                            cell.0, cell.1,
+                                        )
+                                        .is_none()
+                                        {
+                                            let planted =
+                                                crate::systems::surveyed::surveyed_trees(
+                                                    &surveyed,
+                                                    cell.0,
+                                                    cell.1,
+                                                    tile_m,
+                                                    veg_seed(cell),
+                                                );
+                                            cell_places.surveyed.0 = planted.len();
+                                            trees.extend(planted);
+                                        }
+                                        trees.extend(city);
                                         meshes.extend(scatter::build_vegetation_meshes(
                                             &trees,
                                             mesh_bytes,

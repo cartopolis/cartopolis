@@ -598,6 +598,12 @@ pub struct ShotMetrics {
     /// layer fails by being silently absent, and a street with scattered canopies
     /// and no lighting is exactly what a working map looks like.
     pub surveyed_trees: usize,
+    /// Trees a **city's own** register put in the loaded cells
+    /// (`systems::municipal`). Counted apart from `surveyed_trees` and not added
+    /// to it: over a cell a city covers, the BGT's trees are not read at all, so
+    /// one number could not tell a city that answered from a city with no
+    /// register whose BGT cell happens to be full.
+    pub municipal_trees: usize,
     pub surveyed_props: usize,
     /// Surveyed fences, walls and hedges in the loaded cells.
     pub surveyed_lines: usize,
@@ -863,7 +869,7 @@ orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -2680,6 +2686,7 @@ pub fn drive_capture(
             bag_addresses: readouts.bag.addresses().len(),
             bag_berths: readouts.bag.berths().len(),
             surveyed_trees: readouts.places.surveyed().0,
+            municipal_trees: readouts.places.surveyed().7,
             surveyed_props: readouts.places.surveyed().1,
             surveyed_lines: readouts.places.surveyed().2,
             surveyed_paving: readouts.places.surveyed().3,
@@ -3253,6 +3260,7 @@ mod tests {
             bag_addresses: 0,
             bag_berths: 0,
             surveyed_trees: 0,
+            municipal_trees: 0,
             surveyed_props: 0,
             surveyed_lines: 0,
             surveyed_paving: 0,

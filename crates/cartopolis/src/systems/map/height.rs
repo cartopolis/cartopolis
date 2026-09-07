@@ -618,11 +618,13 @@ pub fn wgs84_to_rd(lat: f64, lng: f64) -> [f64; 2] {
     [x, y]
 }
 
-/// **RD New** → WGS84, the same approximation run the other way. Nothing in the
-/// client converts back — it earns its place in the round-trip test, whose two
-/// coefficient sets are transcribed independently, so it catches a mistyped
-/// forward coefficient that a one-way check would happily accept.
-#[allow(dead_code)]
+/// **RD New** → WGS84, the same approximation run the other way.
+///
+/// Read by `systems::municipal`, whose city registers answer in RD metres and
+/// have to be put back on the map in degrees. It also earns its place in the
+/// round-trip test, whose two coefficient sets are transcribed independently, so
+/// it catches a mistyped forward coefficient that a one-way check would happily
+/// accept.
 #[must_use]
 pub fn rd_to_wgs84(x: f64, y: f64) -> (f64, f64) {
     let dx = (x - 155_000.0) / 100_000.0;

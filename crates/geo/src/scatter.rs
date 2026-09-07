@@ -665,26 +665,50 @@ pub(crate) fn dominant_angle(rings: &[Vec<[f32; 2]>]) -> f32 {
 /// municipality — over Groningen it is 2,340 trees, which is a street layer and
 /// not a forest — so a cell that has none must keep its scattered canopies.
 ///
-/// Only the position is surveyed. Height, crown and tone are hashed off that
-/// position, in the street-tree range rather than the woodland one: a lime along
-/// a canal is smaller than a tree in a wood and reads wrong at forest scale.
+/// The third element is the tree's **measured** height in metres, where the
+/// register that supplied the point also measured one — the BGT does not, a
+/// municipal register (`systems::municipal`) usually does. `None` keeps exactly
+/// the old behaviour: height, crown and tone hashed off the position, in the
+/// street-tree range rather than the woodland one, because a lime along a canal
+/// is smaller than a tree in a wood and reads wrong at forest scale.
+///
+/// A measured height is used as given and the crown is scaled to it rather than
+/// drawn from the band. The band is 6–11.5 m and a registered black poplar is
+/// routinely 21 — clamping a real measurement into a guessed range would throw
+/// away the only thing the better register knows. The crown/height ratio is the
+/// one the band already implies (~0.3), jittered, so an unmeasured tree and a
+/// measured one of the same height are drawn the same way.
 #[must_use]
-pub fn surveyed_trees(points: &[(f32, f32)], seed: u64) -> Vec<TreeInstance> {
+pub fn surveyed_trees(points: &[(f32, f32, Option<f32>)], seed: u64) -> Vec<TreeInstance> {
     /// Height and crown radius of a street tree, metres. Narrower than
     /// [`veg_profile`]'s woodland band and centred lower.
     const HEIGHT: (f32, f32) = (6.0, 11.5);
     const RADIUS: (f32, f32) = (2.2, 3.8);
+    /// Crown radius as a fraction of height, for a tree whose height is known.
+    const CROWN_RATIO: (f32, f32) = (0.28, 0.36);
 
     points
         .iter()
         .enumerate()
-        .map(|(i, &(x, z))| {
+        .map(|(i, &(x, z, measured))| {
             let h = hash3(seed, i as i32, 0x5EED);
+            let (height, radius) = match measured {
+                // A register that answers with a nonsense height is answering
+                // with nothing: fall back rather than plant a 0 m tree.
+                Some(m) if m.is_finite() && m > 0.5 => (
+                    m,
+                    m * (CROWN_RATIO.0 + rand01(h, 0) * (CROWN_RATIO.1 - CROWN_RATIO.0)),
+                ),
+                _ => (
+                    HEIGHT.0 + rand01(h, 1) * (HEIGHT.1 - HEIGHT.0),
+                    RADIUS.0 + rand01(h, 0) * (RADIUS.1 - RADIUS.0),
+                ),
+            };
             TreeInstance {
                 x,
                 z,
-                radius: RADIUS.0 + rand01(h, 0) * (RADIUS.1 - RADIUS.0),
-                height: HEIGHT.0 + rand01(h, 1) * (HEIGHT.1 - HEIGHT.0),
+                radius,
+                height,
                 tone: rand01(h, 2),
                 luma: 1.0 + (rand01(h, 3) - 0.5) * 0.08,
             }
