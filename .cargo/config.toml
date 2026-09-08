@@ -79,3 +79,10 @@ rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]
 #   cargo shots --only globe,route
 #   cargo shots --size 2560x1440 --csv /tmp/shots.csv
 shots = ["run", "-p", "cartopolis", "--", "--shots"]
+
+# Run the performance suite from `docs/perf.toml` — every scenario flown, settled,
+# captured and then measured twice. Extra flags pass through:
+#   cargo perf --only orbit
+#   cargo perf --features perf        # + GPU passes and allocation columns
+# `docs/notes/performance-suite.md` says what each column may be trusted for.
+perf = ["run", "-p", "cartopolis", "--", "--perf"]

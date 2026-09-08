@@ -71,6 +71,31 @@ default = ["audio"]
 audio = ["bevy/bevy_audio", "bevy/wav", "dep:cpal"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
+# The performance suite's deep instruments (`systems::perf`, `cargo perf`).
+#
+# Three things, none of which a shipped build should carry:
+#
+# * `bevy/trace` puts a tracing span around every system run. **`bevy/debug` is not
+#   optional beside it**: without it `DebugName::type_name` returns the literal
+#   `<Enable the debug feature to see the name>` and every span carries that as its
+#   name, so a per-system table collapses into one row. Measured before the feature
+#   was added, so this is a fixed bug and not a caution; upstream's own
+#   `trace_chrome` pulls `debug` in for the same reason.
+# * The counting allocator from `cartopolis_geo::perf`, installed as this binary's
+#   `#[global_allocator]`. Allocation traffic is the one performance number that is
+#   exact and machine-independent, and there is no way to get it without a branch
+#   on every allocation in the process.
+# * Bevy's own diagnostic plugins, which add per-frame work to the render app.
+#
+# The suite runs *without* this feature and reports its other columns; the ones it
+# cannot measure come back absent rather than zero, which is the difference between
+# "not instrumented" and "costs nothing".
+perf = [
+    "bevy/trace",
+    "bevy/debug",
+    "bevy/sysinfo_plugin",
+    "cartopolis_geo/perf",
+]
 # Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
 # codegen bug, or a host that really does predate AVX2 — not for shipped builds,
 # where it silently costs several times the tile raster throughput.

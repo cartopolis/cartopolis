@@ -1425,6 +1425,57 @@ pub struct ShotProgress {
     /// red CI job hands back the PNG and the metrics that explain it. The count is
     /// what turns into a non-zero exit at the end.
     unmet: usize,
+    /// The performance suite is measuring this viewpoint and the run must not
+    /// advance yet (`systems::perf`).
+    ///
+    /// **These three fields are the entire coupling between the two harnesses.** A
+    /// perf run is a capture run with a measurement window after each shutter;
+    /// everything else it needs — the teleport, the settle test, the camera hold,
+    /// the pinned weather, the worker quiesce — is this file's, and duplicating any
+    /// of it would create a second state machine to keep in step with this one.
+    pub(crate) perf_hold: bool,
+    /// The window closed and the run may advance. Needed because `saved` is a
+    /// one-shot: by the time the measurement finishes there is no flag left.
+    pub(crate) perf_release: bool,
+    /// The shutter fired while the suite was holding the run.
+    ///
+    /// **Set by `drive_capture` rather than read off `saved`, and that is a fix.**
+    /// `saved` is an `AtomicBool` flipped from the capture's own observer and
+    /// consumed here with a `swap`; a reader ordered ahead of that still loses
+    /// whenever the flip lands *between* the two systems in one frame. That is not
+    /// a rare interleaving — it is what happened on the first run: the PNG was
+    /// written, the run advanced, and the suite's steady window never opened, so it
+    /// exited 0 having written no report. Handing the edge over cannot race.
+    perf_captured: bool,
+}
+
+impl ShotProgress {
+    /// Which viewpoint the run is on.
+    pub(crate) fn shot_index(&self) -> usize {
+        self.index
+    }
+
+    /// Whether the teleport for the current viewpoint has been issued — the
+    /// opening edge of the suite's `load` window.
+    pub(crate) fn is_placed(&self) -> bool {
+        self.placed
+    }
+
+    /// Whether the settle test has answered for the current viewpoint.
+    ///
+    /// The closing edge of the `load` window, and deliberately *not* the capture
+    /// landing: between the verdict and the shutter this harness quiesces the
+    /// worker pool and waits on a GPU readback, both its own bookkeeping. Measuring
+    /// them as streaming cost would put tens of seconds of harness into the one
+    /// window that is meant to be what a teleport costs.
+    pub(crate) fn verdict_reached(&self) -> bool {
+        self.verdict.is_some()
+    }
+
+    /// Whether the shutter has fired for the viewpoint the suite is holding.
+    pub(crate) fn perf_captured(&self) -> bool {
+        self.perf_captured
+    }
 }
 
 /// True while a scripted capture is configured — the run condition the user
@@ -2429,7 +2480,19 @@ pub fn drive_capture(
     // Capture landed: on to the next viewpoint, or done. The CPU pool was paused
     // for the readback (see below); release it here so the next shot's streamers —
     // and the jobs parked during this one — start again.
-    if progress.saved.swap(false, Ordering::Relaxed) {
+    //
+    // `perf_release` is the second way in, for a `--perf` run: the suite holds the
+    // run for a measurement window after the shutter, and by the time that window
+    // closes the one-shot `saved` flag is long consumed. See `ShotProgress::perf_hold`.
+    let landed = progress.saved.swap(false, Ordering::Relaxed);
+    if landed || progress.perf_release {
+        if progress.perf_hold {
+            // Measuring; hand the suite the shutter edge rather than letting it
+            // race for `saved`, which has just been consumed above.
+            progress.perf_captured = true;
+            return;
+        }
+        progress.perf_release = false;
         crate::platform::workers::set_paused(false);
         progress.index += 1;
         if progress.index >= harness.shots.len() {
@@ -2441,6 +2504,7 @@ pub fn drive_capture(
             progress.fired = false;
             progress.retried = false;
             progress.verdict = None;
+            progress.perf_captured = false;
         }
         return;
     }

@@ -95,6 +95,30 @@ struct Cli {
     #[arg(long, value_name = "FILE", num_args = 0..=1)]
     shots: Option<Option<PathBuf>>,
 
+    /// Run the performance suite (`docs/perf.toml` unless a path is given).
+    ///
+    /// Each scenario is flown, settled and captured exactly as `--shots` does, and
+    /// then measured twice: over the streaming burst that filled it (`load`) and
+    /// over a run of settled frames (`steady`). The report is JSON.
+    ///
+    /// Build with `--features perf` to add the two things Bevy's own diagnostics
+    /// cannot give: allocation traffic, and per-render-pass GPU statistics — of
+    /// which `fragment_shader_invocations` is the one that transfers to a handset,
+    /// being a count of fill rather than a time.
+    ///
+    /// Bare `--perf` uses the checked-in manifest, exactly as `--shots` does.
+    #[arg(long, value_name = "MANIFEST", num_args = 0..=1)]
+    perf: Option<Option<PathBuf>>,
+
+    /// Where the performance report goes. Defaults to `perf.json` in the
+    /// temporary directory.
+    #[arg(long, value_name = "PATH")]
+    perf_out: Option<PathBuf>,
+
+    /// Frames in every `steady` window, overriding the manifest.
+    #[arg(long, value_name = "N")]
+    perf_frames: Option<u32>,
+
     /// Restrict a `--shots` run to these preset names (comma-separated).
     #[arg(long, value_name = "NAMES", value_delimiter = ',')]
     only: Vec<String>,
@@ -223,9 +247,36 @@ struct Cli {
 /// places one or more ad-hoc viewpoints from `--at`/`--look`. Both are built
 /// here, before the app, because the result decides whether the run gets a
 /// window at all and how big its surface is.
-fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHarness>, String> {
+type ScriptedRun = (
+    Option<systems::shot_harness::ShotHarness>,
+    Option<systems::perf::PerfRun>,
+);
+
+fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
     use systems::shot_harness::{ShotHarness, DEFAULT_SETTLE, DEFAULT_SIZE, DEFAULT_WAIT};
 
+    // `--perf` first: a *third* way in, building both a capture harness to fly the
+    // scenarios and the suite that measures them. An alternative to the other two
+    // rather than a modifier of them, because a perf run pins its own size, settle
+    // and weather — `--perf --shot` would have to decide which manifest won, and
+    // every answer to that is surprising.
+    if let Some(manifest) = cli.perf.clone() {
+        if cli.shot.is_some() || cli.shots.is_some() {
+            return Err("--perf, --shots and --shot are alternatives; pass one".into());
+        }
+        let path = manifest.unwrap_or_else(|| PathBuf::from(systems::perf::DEFAULT_MANIFEST));
+        let (harness, run) = systems::perf::build(
+            &path,
+            &cli.only,
+            cli.size.as_deref(),
+            cli.perf_frames,
+            cli.perf_out
+                .clone()
+                .unwrap_or_else(|| std::env::temp_dir().join("perf.json")),
+        )
+        .map_err(|e| format!("--perf: {e}"))?;
+        return Ok((Some(harness), Some(run)));
+    }
     if let Some(manifest) = cli.shots.clone() {
         if cli.shot.is_some() {
             return Err("--shots and --shot are alternatives; pass one".into());
@@ -242,14 +293,14 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
             cli.dump_state.clone(),
             &cli.expect,
         )
-        .map(Some)
+        .map(|h| (Some(h), None))
         .map_err(|e| format!("--shots: {e}"));
     }
     if !cli.only.is_empty() {
         return Err("--only names presets from a --shots manifest".into());
     }
     let Some(path) = cli.shot.clone() else {
-        return Ok(None);
+        return Ok((None, None));
     };
     ShotHarness::from_cli(systems::shot_harness::ShotArgs {
         path,
@@ -267,7 +318,7 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
         expect: &cli.expect,
         flicker: cli.flicker,
     })
-    .map(Some)
+    .map(|h| (Some(h), None))
     .map_err(|e| format!("--shot: {e}"))
 }
 
@@ -1353,7 +1404,7 @@ fn run_client() {
     // manifest can set the render size, and a windowless run needs that size to
     // stand a `HeadlessSurface` in for the missing `Window`. A bad manifest or
     // `--at` therefore fails here with a message, not as a black run.
-    let harness = match build_shot_harness(&cli) {
+    let (harness, perf_run) = match build_shot_harness(&cli) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("{e}");
@@ -2112,6 +2163,48 @@ fn run_client() {
                     .after(systems::ui::drive_screenshots),
             ),
         );
+    }
+
+    // The performance suite rides the harness above: same teleport, same settle
+    // test, same shutter. All it adds is when to measure.
+    if let Some(run) = perf_run {
+        // Bevy's own diagnostics, which is most of what the suite reports. None of
+        // these asks anything new of the device: `WgpuSettings` defaults to
+        // `Functionality` priority, under which `initialize_renderer` already
+        // enables every feature the adapter offers — so the GPU queries are there
+        // if the hardware has them, and the columns come back absent if not.
+        //
+        // Behind the `perf` feature because each adds per-frame work — the render
+        // ones add it to the render app — and a shipped build should carry none of
+        // it.
+        #[cfg(feature = "perf")]
+        app.add_plugins((
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+            bevy::diagnostic::EntityCountDiagnosticsPlugin::default(),
+            // Process CPU and memory, both as **percentages** (of one core, and of
+            // total system memory). Needs `bevy/sysinfo_plugin`, which pulls the
+            // `sysinfo` crate — acceptable only because it enters a profiling build
+            // alone. Its own docs warn the sample is not taken per frame and may be
+            // stale, so it is a trend rather than a reading.
+            bevy::diagnostic::SystemInformationDiagnosticsPlugin,
+            bevy::render::diagnostic::RenderDiagnosticsPlugin,
+            bevy::render::diagnostic::MeshAllocatorDiagnosticPlugin,
+        ));
+        app.insert_resource(run)
+            .init_resource::<systems::perf::PerfProgress>()
+            .init_resource::<systems::perf::MeshChurn>()
+            .add_systems(
+                Update,
+                (
+                    systems::perf::count_mesh_churn,
+                    // **Before `drive_capture`**, which is load-bearing: the
+                    // capture path consumes its `saved` flag with a swap, so a
+                    // system that needs to see the capture land has to look first.
+                    systems::perf::drive_perf_window,
+                )
+                    .chain()
+                    .before(systems::shot_harness::drive_capture),
+            );
     }
 
     // Per-window OS icon via winit (Windows + Linux/X11; a no-op on Wayland and

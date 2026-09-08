@@ -1,0 +1,95 @@
+# The performance suite's scenarios.
+#
+#     cargo perf                       # every scenario → /tmp/perf.json
+#     cargo perf --only orbit,city     # a subset
+#     cargo perf --features perf       # + the GPU passes and allocation columns
+#
+# `cargo perf` is an alias for `cargo run -p cartopolis -- --perf`, so it takes the
+# rest of the shot harness's flags too (`--size`, `--settle`, `--wait`).
+#
+# This is *not* `docs/shots.toml` with different numbers. That manifest picks views
+# because they look good in a README; every entry here is picked because it costs
+# differently from its neighbours, and a scenario measuring the same thing as the
+# one above it should be deleted rather than kept for coverage.
+#
+# Two windows are measured per scenario:
+#
+#   load    teleport → settle verdict. The streaming burst — fetches, decodes, mesh
+#           builds, uploads. What a teleport or a cold start costs.
+#   steady  frames after the shutter, with the world *meant* to be settled. Check
+#           `quiet` in the report before reading it as an idle number: at city
+#           altitude the settle test passes while the vector tile streamer is still
+#           trickling, and the harness warns when that happens.
+#
+# Read `docs/notes/performance-suite.md` before adding a row, and before believing
+# a timing column: this container rasterises on a CPU, so frame times and GPU
+# milliseconds are host properties. Fragment-shader invocations, allocation counts,
+# draw counts and residency are not.
+
+# Pinned because a scripted run never sees the server handshake that supplies a
+# tile source, and the built-in fallback is the *raster* basemap — on which `city`
+# would measure a scene with no vector geometry at all.
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+
+# Small on purpose. The suite measures per-frame *work* — allocations, draw calls,
+# uploads, ECS time — almost none of which scales with resolution, while the CPU
+# rasteriser's cost does. Raise it with `--size` when the question is about fill;
+# note that fragment-shader invocations then scale with it, which is the check that
+# the fill counter is working at all.
+size = "640x360"
+
+settle = 2.0
+wait = 90.0
+steady_frames = 60
+
+[[scenario]]
+name = "orbit"
+description = """
+The space tier with nothing streaming: per-pixel cost only, and the one scenario \
+whose steady window reliably goes `quiet`. This is the control — a change that \
+moves it moved the shaders or the sky, because there is no map geometry here to \
+move — and it is the only scenario cheap enough for CI on a CPU rasteriser."""
+mode = "earth"
+at = [53.2194, 6.5665, 180000]
+look = [-90.0, 0.0]
+time = 12.0
+clouds = 0.0
+rain = 0.0
+fog = 0.0
+
+[[scenario]]
+name = "low-orbit"
+description = """
+The globe filling the screen — the reported case of 84 fps with the planet small \
+and 24 fps with it large, at ~120 draws and 8k triangles with nothing streaming. \
+That cost survives an empty census, so it is per-pixel. Clouds are pinned ON: this \
+scenario exists to hold that cost still, and `CARTO_NO_CLOUDS=1` is the A/B — \
+against `fragment_invocations`, never against a timing."""
+mode = "earth"
+at = [53.2194, 6.5665, 1000000]
+look = [-90.0, 0.0]
+time = 12.0
+clouds = 0.4
+rain = 0.0
+fog = 0.0
+
+[[scenario]]
+name = "city"
+description = """
+Groningen from 3 km, oblique — draw calls, 3DBAG cells, the clipmap and its \
+occlusion culling. Also where residency is worst: ~950 MB on the desktop rung, of \
+which geometry is the majority. Its steady window does **not** go quiet on this \
+container, so read it as a streaming measurement and watch the `quiet` flag."""
+at = [53.2194, 6.5665, 3000]
+look = [-30.0, 35.0]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
+steady_frames = 30
+
+# Deliberately only three, and all three have been run. A ground-level pair and a
+# route view were drafted and removed before anyone ran them: on this container a
+# 3 km city view already takes minutes to settle and still is not quiet, so a 100 m
+# view is a scenario nobody would wait for. Add them back alongside a host that can
+# settle them — an entry here is a claim that the viewpoint has been measured.

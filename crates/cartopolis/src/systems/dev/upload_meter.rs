@@ -91,6 +91,23 @@ pub struct UploadMeter {
     /// pipeline memory, and no allocator overhead. It is the term this code
     /// controls, which is the only term worth reporting.
     pub resident_bytes: usize,
+    /// The same total split by what it is made of: textures against geometry.
+    ///
+    /// **The split is what makes the number actionable and the total alone is
+    /// not.** Residency is what a driver refuses when it refuses an allocation,
+    /// and over Groningen it reaches ~1 GB — but "reduce residency" is not a change
+    /// anyone can make. The two halves have different knobs: `Budget::tile_px` is
+    /// the raster size and moves only the textures, while `Budget::radius_bias` is
+    /// how many cells are held at all and moves both. Measured 2026-09-07, the
+    /// desktop rung holds 410 MB of texture against 544 MB of geometry, and the
+    /// handset rung 78 against 292 — so on a phone the texture lever is nearly
+    /// spent and geometry is 79 % of what is left.
+    ///
+    /// Maintained by the same difference as the total, from the two maps below
+    /// that were already being kept: this exposes a split that existed and was
+    /// being discarded, rather than measuring anything new.
+    pub resident_image_bytes: usize,
+    pub resident_mesh_bytes: usize,
     /// The high-water mark of [`Self::resident_bytes`], which is the number a
     /// report needs: a run that peaks at 900 MB and settles at 300 has already
     /// asked the driver for 900.
@@ -131,6 +148,18 @@ impl UploadMeter {
     #[must_use]
     pub fn peak_asset_kb(&self) -> usize {
         self.peak_asset_bytes / 1024
+    }
+
+    /// Resident textures, in kB. See [`Self::resident_image_bytes`].
+    #[must_use]
+    pub fn resident_image_kb(&self) -> usize {
+        self.resident_image_bytes / 1024
+    }
+
+    /// Resident geometry, in kB.
+    #[must_use]
+    pub fn resident_mesh_kb(&self) -> usize {
+        self.resident_mesh_bytes / 1024
     }
 
     /// What the streamed content occupies right now, in kB.
@@ -218,6 +247,11 @@ pub fn measure_uploads(
     // Taken apart so the residency bookkeeping can borrow the two counters and the
     // size map at once; `meter` is put back together at the end of each loop body.
     let (mut resident, mut peak_resident) = (meter.resident_bytes, meter.peak_resident_bytes);
+    // The same accounting kept per kind. `account` maintains a peak this split has
+    // no use for, so each gets a throwaway one rather than a second function.
+    let (mut resident_images, mut resident_meshes) =
+        (meter.resident_image_bytes, meter.resident_mesh_bytes);
+    let (mut unused_peak_a, mut unused_peak_b) = (0usize, 0usize);
     for event in image_events.read() {
         // A removal is the only way residency ever comes *down*, and it carries no
         // size — hence the map. Handled before the add/modify filter below because
@@ -253,6 +287,7 @@ pub fn measure_uploads(
         bytes += asset;
         let previous = meter.images.insert(id, asset);
         UploadMeter::account(&mut resident, &mut peak_resident, previous, asset);
+        UploadMeter::account(&mut resident_images, &mut unused_peak_a, previous, asset);
     }
     let mut unmeasured = 0usize;
     for event in mesh_events.read() {
@@ -260,6 +295,7 @@ pub fn measure_uploads(
             // A removal is the same bookkeeping with a new size of zero.
             let previous = meter.meshes.remove(&id);
             UploadMeter::account(&mut resident, &mut peak_resident, previous, 0);
+            UploadMeter::account(&mut resident_meshes, &mut unused_peak_b, previous, 0);
             continue;
         }
         let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
@@ -288,6 +324,7 @@ pub fn measure_uploads(
                 bytes += n;
                 let previous = meter.meshes.insert(id, n);
                 UploadMeter::account(&mut resident, &mut peak_resident, previous, n);
+                UploadMeter::account(&mut resident_meshes, &mut unused_peak_b, previous, n);
             }
             None => unmeasured += 1,
         }
@@ -295,6 +332,8 @@ pub fn measure_uploads(
     meter.unmeasured_meshes += unmeasured;
     meter.resident_bytes = resident;
     meter.peak_resident_bytes = peak_resident;
+    meter.resident_image_bytes = resident_images;
+    meter.resident_mesh_bytes = resident_meshes;
 
     meter.frame_bytes = bytes;
     meter.peak_frame_bytes = meter.peak_frame_bytes.max(bytes);

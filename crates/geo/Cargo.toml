@@ -24,6 +24,14 @@ path = "src/lib.rs"
 # `rustflags`, so a doc-test would build without target-cpu=x86-64-v3.
 doctest = false
 
+[features]
+# Expose `perf` — the counting allocator and the `Cost` region measurement —
+# outside this crate's own test binary. Enabled by `cartopolis/perf`, which
+# installs the allocator as the client binary's `#[global_allocator]`. Off by
+# default: armed or not, a counting allocator is a read and a branch on every
+# allocation in the process, and a shipped build must not pay it.
+perf = []
+
 [dependencies]
 earcutr.workspace = true
 geo-types.workspace = true
