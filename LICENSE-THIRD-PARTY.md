@@ -100,10 +100,10 @@ scope: Netherlands only
 
 ## Gemeente Groningen open data
 
-role: Street trees and street lighting — position, height band and lamp type, where the national register is empty
+role: Street trees, street lighting, waste containers, charge points and fountains — where the national register is empty
 license: CC BY 4.0
 url: https://data.groningen.nl/dataset/bomen-gemeente-groningen
-notice: Street trees and lighting: gemeente Groningen (CC BY 4.0).
+notice: Street objects: gemeente Groningen open data (CC BY 4.0).
 scope: Gemeente Groningen only
 
 The first entry of a kind that will have more: a *municipal* register, read

@@ -114,7 +114,7 @@ const REGISTER_ZOOM: u32 = 14;
 /// The stored *format*'s generation — see the module note. Bump it when
 /// [`write_normalised`] changes shape, and only then; a reader change moves its
 /// own fingerprint without touching this.
-const CACHE_GENERATION: &str = "v1";
+const CACHE_GENERATION: &str = "v2";
 
 /// Most objects one cell may take from one source.
 ///
@@ -152,6 +152,38 @@ pub struct RegisteredProp {
     pub lat: f64,
     pub lng: f64,
     pub kind: FurnitureKind,
+    /// sRGB body colour, where the register says something the form can show.
+    ///
+    /// `None` means "the colour this form has always been"
+    /// (`furniture::default_paint`), which is what every object without a
+    /// colour vocabulary of its own gets. The one that has one today is the
+    /// bottle bank: its fraction is the whole point of the object, and a green
+    /// one and a blue one are the same six boxes in two colours.
+    pub paint: Option<u32>,
+}
+
+/// What a source's reader decides about one feature: which form it takes, and
+/// what colour if the register said.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    pub kind: FurnitureKind,
+    pub paint: Option<u32>,
+}
+
+impl Placed {
+    /// The common case: a form the register names and no colour with it.
+    #[must_use]
+    pub const fn plain(kind: FurnitureKind) -> Self {
+        Self { kind, paint: None }
+    }
+
+    #[must_use]
+    pub const fn painted(kind: FurnitureKind, paint: u32) -> Self {
+        Self {
+            kind,
+            paint: Some(paint),
+        }
+    }
 }
 
 /// One cell's registered objects, still in lat/lng, one vector per shape.
@@ -180,12 +212,8 @@ impl RegisteredCell {
 /// four-metre column is worse than not drawing it, so [`Yields::Props`] answers
 /// `None` for those.
 pub enum Yields {
-    Trees {
-        height: fn(Fields) -> Option<f32>,
-    },
-    Props {
-        kind: fn(Fields) -> Option<FurnitureKind>,
-    },
+    Trees { height: fn(Fields) -> Option<f32> },
+    Props { kind: fn(Fields) -> Option<Placed> },
 }
 
 /// One layer of one city's register.
@@ -518,12 +546,12 @@ pub fn registered_props(
     tile_m: f32,
     seed: u64,
 ) -> Vec<FurnitureInstance> {
-    let points: Vec<(f32, f32, FurnitureKind)> = cell
+    let points: Vec<(f32, f32, FurnitureKind, Option<u32>)> = cell
         .props
         .iter()
         .filter_map(|p| {
             crate::systems::surveyed::cell_local(p.lat, p.lng, cx, cy, REGISTER_ZOOM, tile_m)
-                .map(|(x, z)| (x, z, p.kind))
+                .map(|(x, z)| (x, z, p.kind, p.paint))
         })
         .collect();
     crate::systems::furniture::place_surveyed(tile, tile_m, seed, &points)
@@ -538,7 +566,7 @@ pub fn registered_props(
 /// and not a guess at it.
 const GRONINGEN: Register = Register {
     id: "groningen",
-    attribution: "Street trees and lighting: gemeente Groningen (CC BY 4.0)",
+    attribution: "Street objects: gemeente Groningen open data (CC BY 4.0)",
     bounds: (53.1074, 6.4635, 53.3156, 6.7626),
     url: groningen_url,
     parse: parse_geoserver_rd,
@@ -563,14 +591,90 @@ const GRONINGEN: Register = Register {
                 // has a form here; a ground spot drawn as one would be a
                 // four-metre post standing where there is a light in the paving.
                 kind: |f| match f.str("LICHTPUNT_SOORT") {
-                    Some("Lichtmast") => Some(FurnitureKind::Lamp),
+                    Some("Lichtmast") => Some(Placed::plain(FurnitureKind::Lamp)),
                     _ => None,
                 },
             },
             supplies: &[Supply::Prop(FurnitureKind::Lamp)],
         },
+        Source {
+            id: "containers",
+            layer: "geo-data:CONTAINERS",
+            attribute: "FRACTIE",
+            yields: Yields::Props {
+                // The fraction is not a new *form* — a bottle bank and a paper
+                // bank are the same six boxes — so it is a colour, which is what
+                // `FurnitureInstance::paint` already exists for. Four kinds would
+                // have meant four meshes and four table entries.
+                kind: |f| {
+                    Some(Placed::painted(
+                        FurnitureKind::Recycling,
+                        fraction_colour(f.str("FRACTIE")?)?,
+                    ))
+                },
+            },
+            supplies: &[Supply::Prop(FurnitureKind::Recycling)],
+        },
+        Source {
+            id: "fountains",
+            layer: "geo-data:Fonteinen_gemeente_Groningen",
+            attribute: "SOORT_KUNSTWERK",
+            yields: Yields::Props {
+                // The layer is `Fontein` on every feature seen; the match is
+                // still on the value rather than a blanket accept, because the
+                // collection is the city's *kunstwerken* register and a
+                // different `SOORT` appearing in it later is a thing we have no
+                // form for, not a fountain.
+                kind: |f| match f.str("SOORT_KUNSTWERK") {
+                    Some("Fontein") => Some(Placed::plain(FurnitureKind::Fountain)),
+                    _ => None,
+                },
+            },
+            supplies: &[Supply::Prop(FurnitureKind::Fountain)],
+        },
+        Source {
+            id: "chargers",
+            layer: "geo-data:Laadpalen_gemeente_Groningen",
+            attribute: "STATUS_LAADPAAL",
+            yields: Yields::Props {
+                // A charge point is a box on a plinth, which is `Cabinet`.
+                //
+                // `STATUS_LAADPAAL` is `Bestaande laadpaal` on all 611 in the
+                // city and nothing else, so this accepts that one value and
+                // refuses the rest — the *safe* direction for a register with a
+                // one-word vocabulary today. A city that later files planned or
+                // withdrawn units in the same layer would otherwise have them
+                // drawn as posts standing where there is nothing, and a missing
+                // charge point is a smaller wrong than an invented one.
+                kind: |f| match f.str("STATUS_LAADPAAL") {
+                    Some("Bestaande laadpaal") => Some(Placed::plain(FurnitureKind::Cabinet)),
+                    _ => None,
+                },
+            },
+            supplies: &[Supply::Prop(FurnitureKind::Cabinet)],
+        },
     ],
 };
+
+/// What a Dutch waste fraction is painted, in sRGB.
+///
+/// The city's own vocabulary, not the app's palette — the same footing
+/// `nav_marks` paints its buoys on, which take a register's colours rather than
+/// the furniture table's. `RESTAFVAL` is the painted steel a bottle bank was
+/// already drawn in, so the commonest container by far (46 of 63 in one cell) is
+/// unchanged; the three sorted fractions take the colours the lids actually are
+/// here.
+fn fraction_colour(fraction: &str) -> Option<u32> {
+    Some(match fraction {
+        "RESTAFVAL" => 0x9A_98_93,
+        "PAPIER" => 0x3E_5E_8C,
+        "GLAS" => 0x3F_6B_4A,
+        "TEXTIEL" => 0xB5_6A_36,
+        // An unknown fraction is still a container and is still worth drawing —
+        // in the default steel, which says only "a bottle bank", which is true.
+        _ => return Some(0x9A_98_93),
+    })
+}
 
 /// The page every Groningen reader is fingerprinted over. Carries both sources'
 /// attributes and every branch either of them decides on: a closed height band,
@@ -578,13 +682,21 @@ const GRONINGEN: Register = Register {
 /// that are refused.
 const GRONINGEN_FIXTURE: &str = r#"{"type":"FeatureCollection","features":[
   {"geometry":{"type":"Point","coordinates":[234729.772,582447.843]},
-   "properties":{"BOOMHOOGTE":"15 tot 18 m.","LICHTPUNT_SOORT":"Lichtmast"}},
+   "properties":{"BOOMHOOGTE":"15 tot 18 m.","LICHTPUNT_SOORT":"Lichtmast",
+                 "FRACTIE":"RESTAFVAL","SOORT_KUNSTWERK":"Fontein",
+                 "STATUS_LAADPAAL":"Bestaande laadpaal"}},
   {"geometry":{"type":"Point","coordinates":[234800.0,582500.0]},
-   "properties":{"BOOMHOOGTE":"tot 6 m.","LICHTPUNT_SOORT":"Grondspot"}},
+   "properties":{"BOOMHOOGTE":"tot 6 m.","LICHTPUNT_SOORT":"Grondspot",
+                 "FRACTIE":"PAPIER","SOORT_KUNSTWERK":"Brug",
+                 "STATUS_LAADPAAL":"Bestaande laadpaal"}},
   {"geometry":{"type":"Point","coordinates":[234850.0,582550.0]},
-   "properties":{"BOOMHOOGTE":"24 m. en hoger","LICHTPUNT_SOORT":"Klok"}},
+   "properties":{"BOOMHOOGTE":"24 m. en hoger","LICHTPUNT_SOORT":"Klok",
+                 "FRACTIE":"GLAS","SOORT_KUNSTWERK":null,
+                 "STATUS_LAADPAAL":"Ingetrokken"}},
   {"geometry":{"type":"Point","coordinates":[234900.0,582600.0]},
-   "properties":{"BOOMHOOGTE":null,"LICHTPUNT_SOORT":"Lichtmast"}}]}"#;
+   "properties":{"BOOMHOOGTE":null,"LICHTPUNT_SOORT":"Lichtmast",
+                 "FRACTIE":"TEXTIEL","SOORT_KUNSTWERK":"Fontein",
+                 "STATUS_LAADPAAL":null}}]}"#;
 
 /// One cell of one Groningen layer, as GeoJSON in RD metres.
 ///
@@ -733,8 +845,13 @@ fn parse_geoserver_rd(text: &str, yields: &Yields) -> Result<RegisteredCell, Str
                 height_m: height(fields),
             }),
             Yields::Props { kind } => {
-                if let Some(kind) = kind(fields) {
-                    cell.props.push(RegisteredProp { lat, lng, kind });
+                if let Some(placed) = kind(fields) {
+                    cell.props.push(RegisteredProp {
+                        lat,
+                        lng,
+                        kind: placed.kind,
+                        paint: placed.paint,
+                    });
                 }
             }
         }
@@ -768,7 +885,7 @@ fn height_band_m(band: &str) -> Option<f32> {
 
 // ─── The normalised form ─────────────────────────────────────────────────────
 
-/// `{"t":[[lat,lng,height|null],…],"p":[[lat,lng,"kind"],…]}` — what the cache
+/// `{"t":[[lat,lng,height|null],…],"p":[[lat,lng,"kind",paint|null],…]}` — what the cache
 /// holds, what the fingerprint is taken over, and the only shape anything outside
 /// a register's own parser ever sees.
 ///
@@ -803,11 +920,17 @@ fn write_normalised(cell: &RegisteredCell) -> String {
         }
         let _ = write!(
             out,
-            "[{:.7},{:.7},\"{}\"]",
+            "[{:.7},{:.7},\"{}\",",
             p.lat,
             p.lng,
             prop_token(p.kind)
         );
+        match p.paint {
+            Some(c) => {
+                let _ = write!(out, "{c}]");
+            }
+            None => out.push_str("null]"),
+        }
     }
     out.push_str("]}");
     out
@@ -819,7 +942,7 @@ fn parse_normalised(text: &str) -> Result<RegisteredCell, String> {
         #[serde(default)]
         t: Vec<(f64, f64, Option<f32>)>,
         #[serde(default)]
-        p: Vec<(f64, f64, String)>,
+        p: Vec<(f64, f64, String, Option<u32>)>,
     }
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
     Ok(RegisteredCell {
@@ -831,8 +954,13 @@ fn parse_normalised(text: &str) -> Result<RegisteredCell, String> {
         props: wire
             .p
             .into_iter()
-            .filter_map(|(lat, lng, token)| {
-                prop_kind(&token).map(|kind| RegisteredProp { lat, lng, kind })
+            .filter_map(|(lat, lng, token, paint)| {
+                prop_kind(&token).map(|kind| RegisteredProp {
+                    lat,
+                    lng,
+                    kind,
+                    paint,
+                })
             })
             .collect(),
     })
@@ -902,7 +1030,11 @@ mod tests {
         let (cx, cy) = STUDY_CELL;
         assert!(supersedes(cx, cy, Supply::Trees));
         assert!(supersedes(cx, cy, Supply::Prop(FurnitureKind::Lamp)));
+        assert!(supersedes(cx, cy, Supply::Prop(FurnitureKind::Recycling)));
+        // Groningen registers no benches, bins or shelters, so those keep coming
+        // from the national register and the tile over its ground.
         assert!(!supersedes(cx, cy, Supply::Prop(FurnitureKind::Bench)));
+        assert!(!supersedes(cx, cy, Supply::Prop(FurnitureKind::Bin)));
         assert!(!supersedes(8425, 5405, Supply::Trees));
     }
 
@@ -1130,6 +1262,76 @@ mod tests {
         assert!(cell.props.iter().all(|p| p.kind == FurnitureKind::Lamp));
     }
 
+    /// Containers: one form, four colours. The fraction is what says what goes
+    /// in the thing, and it is the reason `paint` exists on the wire at all.
+    #[test]
+    fn a_container_page_colours_each_fraction() {
+        let page = r#"{"numberReturned":5,"numberMatched":5,"features":[
+            {"geometry":{"type":"Point","coordinates":[234231.0,582950.0]},
+             "properties":{"FRACTIE":"RESTAFVAL"}},
+            {"geometry":{"type":"Point","coordinates":[234232.0,582951.0]},
+             "properties":{"FRACTIE":"PAPIER"}},
+            {"geometry":{"type":"Point","coordinates":[234233.0,582952.0]},
+             "properties":{"FRACTIE":"GLAS"}},
+            {"geometry":{"type":"Point","coordinates":[234234.0,582953.0]},
+             "properties":{"FRACTIE":"TEXTIEL"}},
+            {"geometry":{"type":"Point","coordinates":[234235.0,582954.0]},
+             "properties":{"FRACTIE":"ONBEKEND"}}]}"#;
+        let source = GRONINGEN
+            .sources
+            .iter()
+            .find(|s| s.id == "containers")
+            .expect("a container source");
+        let cell = parse_geoserver_rd(page, &source.yields).expect("a valid page");
+        assert_eq!(
+            cell.props.len(),
+            5,
+            "an unknown fraction is still a container"
+        );
+        assert!(cell
+            .props
+            .iter()
+            .all(|p| p.kind == FurnitureKind::Recycling));
+        let colours: Vec<_> = cell.props.iter().map(|p| p.paint).collect();
+        // Household waste keeps the steel a bottle bank was already drawn in, so
+        // the commonest container by far does not change appearance at all.
+        assert_eq!(colours[0], Some(0x9A_98_93));
+        assert_eq!(colours[4], Some(0x9A_98_93), "unknown falls back to steel");
+        // The three sorted fractions are each their own colour, and distinct.
+        let sorted = [colours[1], colours[2], colours[3]];
+        assert_eq!(
+            sorted
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "paper, glass and textile must not share a colour"
+        );
+        assert!(sorted.iter().all(|c| *c != Some(0x9A_98_93)));
+    }
+
+    /// A charge point layer whose vocabulary is one word today. Anything else is
+    /// refused, because a post drawn where a planned unit will go is worse than a
+    /// missing one.
+    #[test]
+    fn a_charger_page_keeps_only_existing_posts() {
+        let page = r#"{"numberReturned":3,"numberMatched":3,"features":[
+            {"geometry":{"type":"Point","coordinates":[235022.0,582977.0]},
+             "properties":{"STATUS_LAADPAAL":"Bestaande laadpaal"}},
+            {"geometry":{"type":"Point","coordinates":[235023.0,582978.0]},
+             "properties":{"STATUS_LAADPAAL":"Ingetrokken"}},
+            {"geometry":{"type":"Point","coordinates":[235024.0,582979.0]},
+             "properties":{"STATUS_LAADPAAL":null}}]}"#;
+        let source = GRONINGEN
+            .sources
+            .iter()
+            .find(|s| s.id == "chargers")
+            .expect("a charger source");
+        let cell = parse_geoserver_rd(page, &source.yields).expect("a valid page");
+        assert_eq!(cell.props.len(), 1);
+        assert_eq!(cell.props[0].kind, FurnitureKind::Cabinet);
+    }
+
     /// The cache round trip, both shapes at once. A height that survives as
     /// `None` is the case that would otherwise turn every unmeasured tree into a
     /// zero-metre one.
@@ -1148,18 +1350,32 @@ mod tests {
                     height_m: None,
                 },
             ],
-            props: vec![RegisteredProp {
-                lat: 53.225_2,
-                lng: 6.578_2,
-                kind: FurnitureKind::Lamp,
-            }],
+            props: vec![
+                RegisteredProp {
+                    lat: 53.225_2,
+                    lng: 6.578_2,
+                    kind: FurnitureKind::Lamp,
+                    paint: None,
+                },
+                // A colour has to survive the round trip too: a bottle bank that
+                // came back grey would be the fraction silently lost.
+                RegisteredProp {
+                    lat: 53.225_3,
+                    lng: 6.578_3,
+                    kind: FurnitureKind::Recycling,
+                    paint: Some(0x3E_5E_8C),
+                },
+            ],
         };
         let back = parse_normalised(&write_normalised(&cell)).expect("round trip");
         assert_eq!(back.trees.len(), 2);
         assert_eq!(back.trees[0].height_m, Some(16.5));
         assert_eq!(back.trees[1].height_m, None);
-        assert_eq!(back.props.len(), 1);
+        assert_eq!(back.props.len(), 2);
         assert_eq!(back.props[0].kind, FurnitureKind::Lamp);
+        assert_eq!(back.props[0].paint, None);
+        assert_eq!(back.props[1].kind, FurnitureKind::Recycling);
+        assert_eq!(back.props[1].paint, Some(0x3E_5E_8C));
         assert!((back.trees[0].lat - cell.trees[0].lat).abs() < 1e-6);
     }
 

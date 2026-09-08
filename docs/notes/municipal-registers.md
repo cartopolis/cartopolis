@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [municipal.rs, Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, cache fingerprint]
-updated: 2026-09-07
+triggers: [municipal.rs, Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, FRACTIE, containers, laadpalen, fonteinen, cache fingerprint]
+updated: 2026-09-08
 ---
 
 # The trees a city surveys, where the country's register is empty
@@ -69,6 +69,54 @@ city's own carries 493 columns in one cell, of which 481 are `Lichtmast`; the
 8 ground spots, 3 tunnel lights and 1 clock are **refused**, because a ground spot
 drawn as a four-metre column is worse than not drawing it. That is why the reader
 returns an `Option`.
+
+## What is read from Groningen today
+
+Five sources, counted over the whole municipality:
+
+| source | count | becomes | notes |
+|---|---|---|---|
+| trees | 126,060 | tree with a height | eight height bands |
+| street lighting | ~12,500 in the loaded ring | `Lamp` | 481 columns per 493 points; ground spots, tunnel lights and a clock refused |
+| waste containers | 1,962 | `Recycling`, coloured | 1,277 household, 379 paper, 208 glass, 98 textile |
+| charge points | 611 | `Cabinet` | one status value today; anything else refused |
+| fountains | 34 | `Fountain` | all `Fontein` |
+
+Left on the table deliberately: **play equipment** (98 items in one cell) is a
+per-item register with a typed vocabulary — parcours, fitness, balance element,
+climbing frame, and a bench — and mapping it needs a judgement about *forms*, not
+about data. Parking bays (1,549 polygons in one cell) are the first polygon
+source and would exercise the paving shape, which no register uses yet. Traffic
+lights have no form in the furniture table. The city's own copy of the national
+topography is not read at all: we have the national one.
+
+## The fraction is a colour, not a kind
+
+The container layer is the case that shaped how attributes are carried. Glass,
+paper, textile and household waste differ by **colour, not by form** — a bottle
+bank and a paper bank are the same six boxes — so four kinds would have meant
+four meshes and four entries in the furniture table for one object.
+
+`FurnitureInstance::paint` already existed for exactly this: a per-instance sRGB
+body colour on a shared mesh and material, added so a car park's worth of cars
+would not all be one grey. `nav_marks` already paints from a register's own
+colour vocabulary rather than from the furniture table's tones, which is the same
+footing these colours sit on. Two changes made it reach containers: the recycling
+form's body tone became `Paint`, and `furniture::default_paint` returns the
+painted steel that body used to be — so an *unpainted* container, which is every
+one that comes from OpenStreetMap, looks exactly as it did.
+
+**Household waste keeps the steel**, which matters because it is 1,277 of the
+1,962: the commonest container in the city does not change appearance at all, and
+the three sorted fractions are the ones that gain a colour.
+
+## Suppression has to reach the tile, not only the national register
+
+Trees and lamp posts exist in the national register and not in the map tiles, so
+suppressing the national copy was enough. A container is in **both** — the tile's
+points layer carries `amenity=recycling` — so filtering only the national
+register would still have drawn every container twice. The kinds a city supplies
+are now filtered out of the tile-derived furniture as well.
 
 ## Why the abstraction is per city and not per country
 

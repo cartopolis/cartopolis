@@ -322,8 +322,7 @@ pub fn extract_furniture(
             yaw,
             kind,
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
-            // No form here has a `Paint` part; this is the no-tint value.
-            paint: palette::FURNITURE,
+            paint: default_paint(kind),
         });
         if out.len() >= MAX_FURNITURE_PER_CELL {
             truncated = true;
@@ -748,8 +747,12 @@ mod form {
         part([0.0, 0.40, 0.0], [0.18, 0.40, 0.18], Metal),
         part([0.0, 0.84, 0.0], [0.21, 0.04, 0.21], Roof),
     ];
+    /// The body is `Paint` rather than `Metal` because a bottle bank's colour is
+    /// what says *what goes in it*, and a register that knows the fraction can
+    /// say so — see [`super::default_paint`], which keeps an instance that does
+    /// not know looking exactly like the painted steel it was.
     pub const RECYCLING: [Part; 2] = [
-        part([0.0, 0.70, 0.0], [0.75, 0.70, 0.65], Metal),
+        part([0.0, 0.70, 0.0], [0.75, 0.70, 0.65], Paint),
         part([0.0, 1.44, 0.0], [0.78, 0.05, 0.68], Roof),
     ];
     pub const SHELTER: [Part; 7] = [
@@ -910,14 +913,14 @@ pub fn place_surveyed(
     tile: &TileData,
     tile_m: f32,
     seed: u64,
-    points: &[(f32, f32, FurnitureKind)],
+    points: &[(f32, f32, FurnitureKind, Option<u32>)],
 ) -> Vec<FurnitureInstance> {
     if points.is_empty() {
         return Vec::new();
     }
     let ways = WayField::build(tile, tile_m);
     let mut out = Vec::with_capacity(points.len());
-    for (i, &(x, z, kind)) in points.iter().enumerate() {
+    for (i, &(x, z, kind, paint)) in points.iter().enumerate() {
         let h = hash3(seed, i as i32, kind as i32);
         let yaw = kind
             .takes_angle_from_path()
@@ -930,10 +933,25 @@ pub fn place_surveyed(
             yaw,
             kind,
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
-            paint: palette::FURNITURE,
+            paint: paint.unwrap_or_else(|| default_paint(kind)),
         });
     }
     out
+}
+
+/// The body colour a form is drawn in when nothing has said otherwise.
+///
+/// Only [`Tone::Paint`] parts read it, so for every other form this is the
+/// no-tint value it always was. [`FurnitureKind::Recycling`] is the exception:
+/// its body became `Paint` so a register that knows the fraction can colour it,
+/// and this is the painted steel it looked like before that — an unpainted bottle
+/// bank must not change appearance just because it *could* now be coloured.
+#[must_use]
+pub fn default_paint(kind: FurnitureKind) -> u32 {
+    match kind {
+        FurnitureKind::Recycling => palette::FURNITURE_METAL,
+        _ => palette::FURNITURE,
+    }
 }
 
 /// Merge a cell's furniture into one group's meshes, each no larger than

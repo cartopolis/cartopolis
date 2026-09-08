@@ -492,11 +492,15 @@ pub fn surveyed_props(
     tile_m: f32,
     seed: u64,
 ) -> Vec<FurnitureInstance> {
-    let points: Vec<(f32, f32, FurnitureKind)> = cell
+    // No paint: the BGT registers a street object's position and form and says
+    // nothing about its colour. A city's own register sometimes does — a bottle
+    // bank's fraction — which is what `systems::municipal` fills the fourth
+    // element for.
+    let points: Vec<(f32, f32, FurnitureKind, Option<u32>)> = cell
         .props
         .iter()
         .filter_map(|&(lat, lng, kind)| {
-            to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| (x, z, kind))
+            to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| (x, z, kind, None))
         })
         .collect();
     crate::systems::furniture::place_surveyed(tile, tile_m, seed, &points)

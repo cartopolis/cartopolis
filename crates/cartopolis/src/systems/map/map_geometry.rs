@@ -694,6 +694,13 @@ fn spawn_geometry_task(
                                         let by_city = municipal::supplied_props(cell.0, cell.1);
                                         if !by_city.is_empty() {
                                             placed.retain(|p| !by_city.contains(&p.kind));
+                                            // …and the same for the ones read out
+                                            // of the tile's own `pois`. A bottle
+                                            // bank is in OpenStreetMap *and* in
+                                            // the city's register, so filtering
+                                            // only the national register would
+                                            // still draw every container twice.
+                                            items.retain(|p| !by_city.contains(&p.kind));
                                         }
                                         cell_places.surveyed.1 = placed.len();
                                         items.extend(placed);
