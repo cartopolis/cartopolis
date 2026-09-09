@@ -1136,7 +1136,17 @@ async function generateFocus(cfg: Config, state: State): Promise<void> {
     }
     const posted = await planFromTicket(ticket.number);
     if (!posted) return log(`#${ticket.number} is planning the focus — no plan posted yet`);
-    if (!(await storePlan(posted))) {
+    // A write that cannot happen must not take the tick with it: the QA and
+    // retrospective lanes run after this one, and an unwritable control file
+    // (a volume mounted read-only) would otherwise stop all three every hour
+    // with a stack trace as the only explanation.
+    let stored: boolean;
+    try {
+      stored = await storePlan(posted);
+    } catch (e) {
+      return log(`could not store the plan from #${ticket.number} — is ${CONFIG_PATH} writable from here? ${e instanceof Error ? e.message : e}`);
+    }
+    if (!stored) {
       return log(`#${ticket.number} posted a plan but the console's list is no longer empty — keeping the console's`);
     }
     log(`stored ${posted.length} plan item(s) from #${ticket.number}`);

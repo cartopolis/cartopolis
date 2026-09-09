@@ -56,6 +56,13 @@ it rather than filing the work twice. **Filing twice is the one mistake this
 lane cannot take back**, which is why the marker and not the stamp is the
 authority.
 
+**The autopilot's config volume has to be writable by it**, which it did not
+have to be before. If it is mounted read-only the planning ticket is still
+filed and its answer can never be stored, so the lane sits there filing nothing
+— it says so on every pass (`could not store the plan … is <path> writable from
+here?`) and does not take the QA and retrospective lanes down with it, which is
+the only reason that failure is survivable rather than an hourly stack trace.
+
 A plan is stored only while the console's list is empty — otherwise a second
 planning session would overwrite an evening's ordering. Asking for a fresh plan
 is therefore *clearing the list*, plus a `planRevision` bump so the dedupe key
