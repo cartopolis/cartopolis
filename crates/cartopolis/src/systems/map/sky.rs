@@ -1604,6 +1604,7 @@ pub(crate) fn update_clouds(
         With<Clouds>,
     >,
     mut materials: ResMut<Assets<CloudMaterial>>,
+    adaptive: Res<crate::systems::adaptive_quality::AdaptiveQuality>,
     mut clouds_disabled: Local<Option<bool>>,
 ) {
     let Ok((cell, cam, cam_local, fog)) = camera.single() else {
@@ -1624,7 +1625,8 @@ pub(crate) fn update_clouds(
     // `CARTO_NO_CLOUDS` covers both tiers, or the switch would only half mean what
     // it says — this shell owns the ground and `GlobeClouds` owns the space tier.
     let disabled = *clouds_disabled.get_or_insert_with(|| crate::env_flag("CARTO_NO_CLOUDS"))
-        || !dev.clouds_enabled;
+        || !dev.clouds_enabled
+        || !adaptive.globe_clouds();
     let want = if disabled || dev.cloud_cover <= 0.0 || alt_fade <= 0.0 || space >= 1.0 {
         Visibility::Hidden
     } else {
@@ -2016,6 +2018,7 @@ pub(crate) fn update_globe_clouds(
     mut cloud_time_override: Local<Option<Option<f32>>>,
     // Same shape, and for the same reason: a bisecting switch cannot change while
     // the process runs, and `env_flag` takes a process-global lock.
+    adaptive: Res<crate::systems::adaptive_quality::AdaptiveQuality>,
     mut clouds_disabled: Local<Option<bool>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
@@ -2042,8 +2045,13 @@ pub(crate) fn update_globe_clouds(
     // consults coverage, so there is no cheap value to set it to either. A shell
     // at planet radius fills the screen from low orbit, so this is the largest
     // single per-fragment cost in the space tier and nothing could measure it.
+    // …and the third way it can be off: this device measured itself unable to
+    // afford it (`systems::adaptive_quality`). That is the *honest* capability
+    // signal — not the operating system, not a GPU family table, but this machine
+    // missing its frame budget while drawing this shell.
     let disabled = *clouds_disabled.get_or_insert_with(|| crate::env_flag("CARTO_NO_CLOUDS"))
-        || !dev.clouds_enabled;
+        || !dev.clouds_enabled
+        || !adaptive.globe_clouds();
     let want = if space <= 0.0 || disabled {
         Visibility::Hidden
     } else {

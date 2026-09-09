@@ -33,8 +33,8 @@ pub mod net;
 pub mod player;
 
 pub use dev::{
-    debug, desktop_integration, diagnostics, frame_pacing, perf, pipeline_health, render_census,
-    shot_harness, shot_presets, upload_meter, window_icon,
+    adaptive_quality, debug, desktop_integration, diagnostics, frame_pacing, perf, pipeline_health,
+    render_census, shot_harness, shot_presets, upload_meter, window_icon,
 };
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
 // writing `systems::vector_tiles` — the same separation of filing from naming the

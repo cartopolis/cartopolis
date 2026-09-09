@@ -1,5 +1,6 @@
 //! `systems::dev` — one file per concern; see systems/mod.rs for the map.
 
+pub mod adaptive_quality;
 pub mod debug;
 pub mod desktop_integration;
 pub mod diagnostics;
