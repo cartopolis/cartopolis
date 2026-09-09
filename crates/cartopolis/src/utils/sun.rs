@@ -150,7 +150,10 @@ pub fn sun_transmittance_at(hours: f32, decl_rad: f32, alt_m: f32) -> Vec3 {
 /// Fraction of the solar disc's light clearing the horizon — the soft boundary for
 /// the *direct* beam around sunrise/sunset (no hard on/off at 6:00/18:00).
 pub fn sun_disc(hours: f32, decl_rad: f32) -> f32 {
-    let lo: f32 = std::env::var("CARTO_EXP_DISC_LO").ok().and_then(|v| v.parse().ok()).unwrap_or(-0.03);
+    let lo: f32 = std::env::var("CARTO_EXP_DISC_LO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-0.03);
     smoothstep(lo, 0.06, sun_direction(hours, decl_rad).y)
 }
 
