@@ -101,11 +101,24 @@ const M3: mat3x3<f32> = mat3x3<f32>(
 // displacement, invisible in the result. The three that shape what you actually
 // see — the density, the ridge crests and the opacity wisp — keep their detail.
 //
-// `WARP_OCTAVES` at 3 rather than 6 removes 3 octaves from 6 of the 9 fields:
-// 54 `vnoise3` calls per fragment become 33, a 39% cut in the noise work that
+// `WARP_OCTAVES` at 2 rather than 6 removes 4 octaves from 6 of the 9 fields:
+// 54 `vnoise3` calls per fragment become 27, a 50% cut in the noise work that
 // dominates this shader.
+//
+// **Two is the floor, and one is not merely worse — it is broken.** Measured as a
+// ladder on the Deck at 1280x720 (cloud pass, whole-Earth capture with live GFS):
+//
+//     warp 3  5.90 ms   reference
+//     warp 2  5.05 ms   -14%   mean difference 1.10/255
+//     warp 1  4.02 ms   -32%   mean 2.77/255, and visibly blocky
+//
+// At one octave the warp is too coarse to decorrelate the noise lattice, and the
+// axis-aligned grid `M3` exists to hide shows straight through as rectangular,
+// stair-stepped patches — exactly the "hexagonal/blocky blobs" the comment above
+// `M3` describes. The extra 1.0 ms is not worth a visible artefact; that is the
+// trade, and it is why this stops at 2.
 const DENSITY_OCTAVES: i32 = 6;
-const WARP_OCTAVES: i32 = 3;
+const WARP_OCTAVES: i32 = 2;
 /// The wisp is documented below as "gentle, LARGE-scale opacity variation… low
 /// frequency and shallow", so its top octaves are contributing detail the effect
 /// explicitly does not want.

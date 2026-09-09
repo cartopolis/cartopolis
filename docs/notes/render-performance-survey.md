@@ -388,6 +388,36 @@ diverge most. What does transfer is the *shape*: fill-bound, 1.00× overdraw, an
 scaling with pixel count — so a handset at ~2772×1272 pays it over ~3.8× the pixels
 of the 1280×720 row above.
 
+### And it was made ~50 % cheaper, with the floor measured
+
+`globe_clouds.wgsl` ran nine 6-octave `fbm3` fields per fragment. Six of them are
+*warps* — their output is scaled by 2.2 and added to a sample coordinate, so their
+top octaves displace the sample by a fraction of a noise cell. Those six, and the
+wisp (whose own comment calls it "gentle, LARGE-scale… low frequency and shallow"),
+lost octaves; the density and ridge crests that decide what you see kept all six.
+
+54 `vnoise3` calls per fragment became 27. Cloud pass at 1280×720: **9.39 → ~5.0 ms**.
+
+**Where the floor is, and why.** A ladder on the warp octaves, whole-Earth capture
+with `CARTO_CLOUD_DATA_SYNC=1` so the frame carries real GFS cloud:
+
+| warp octaves | cloud pass | difference from 3 |
+|---|---|---|
+| 3 | 5.90 ms | reference |
+| 2 | 5.05 ms | mean 1.10/255 — clean |
+| 1 | 4.02 ms | mean 2.77/255 — **visibly blocky** |
+
+At one octave the warp is too coarse to decorrelate the noise lattice, and the
+axis-aligned grid that `M3` exists to hide shows through as rectangular,
+stair-stepped patches — the "hexagonal/blocky blobs" `M3`'s own comment describes.
+So the last 1.0 ms is refused: **two octaves is the floor**, not three, and not one.
+
+Two lessons for the next person here. A per-pixel budget is not one number — the
+nine fields in this shader had wildly different value per octave, and cutting the
+six that only displace a coordinate cost nothing visible. And a `--shot` on real
+hardware is now part of the argument: colour is not evidence on lavapipe, so this
+trade could not have been judged from this container at all.
+
 The device settles it, with no rebuild once an APK carries the flag:
 
 ```
