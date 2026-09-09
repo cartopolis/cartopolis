@@ -1,6 +1,6 @@
 ---
 topic: autopilot-focus
-triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", cartopy, "Autopilot tab"]
+triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", "qa-gap", "the queue", cartopy, "Autopilot tab"]
 updated: 2026-09-09
 ---
 
@@ -14,10 +14,15 @@ solid on the Steam Deck runner" is the case that prompted the feature.
 
 So there is a second queue. `focus` is a sentence in the admin console
 (cartopy's Autopilot tab); `focusPlan` is an **ordered list of pieces of work**
-under it that the console reorders, rewrites, extends and deletes. While the
-focus says something it *replaces* the frontier — the two are not blended,
+that the console reorders, rewrites, extends and deletes. While it holds a row
+nobody has started, it *replaces* the frontier — the two are not blended,
 because a frontier ticket with "…and by the way, the Steam Deck" appended to it
 is a ticket about neither thing.
+
+The field is called `focusPlan` and the list is no longer only the focus's: see
+*A finding is not a ticket* below. The name stayed because it is a hand-synced
+seam — cartopy's `server/autopilot.ts`, the live file on the pipeline host and
+this parser all have to agree — and renaming it buys nothing a comment does not.
 
 ## Who turns a sentence into a plan
 
@@ -44,10 +49,10 @@ and the autopilot stores it. The alternatives that lost:
 `autopilot.json` used to have exactly one writer. It now has two, and the rule
 that keeps that safe is ownership, not locking:
 
-| | Ordering, wording, membership of an **unfiled** item | A **filed** item | `issue` |
+| | Ordering, wording, membership of an **unfiled** row | A **filed** row | `issue` |
 |---|---|---|---|
 | cartopy (`server/autopilot.ts`) | writes | refuses the edit | ignores what is sent |
-| autopilot (`tools/autopilot.ts`) | only appends to a **fully filed** list | leaves it | writes |
+| autopilot (`tools/autopilot.ts`) | appends only, never reorders or rewords | leaves it | writes |
 
 Both do read-merge-rename through a temp file in the same directory. A collision
 can therefore cost at most one stamp, and a lost stamp is recovered on the next
@@ -63,22 +68,43 @@ filed and its answer can never be stored, so the lane sits there filing nothing
 here?`) and does not take the QA and retrospective lanes down with it, which is
 the only reason that failure is survivable rather than an hourly stack trace.
 
-A plan is stored only while nothing in the console's list is **unfiled** —
-otherwise a second planning session would overwrite an evening's ordering. It
-used to be "only while the list is empty", and the console's lock on filed rows
-(below) retired that: a filed row can no longer be deleted there, so after the
-first ticket the list would never be empty again and a new plan could never be
-answered. Filed rows are history — they stay where they are and a new plan is
-appended past them, through `planItems` so a fresh item cannot take an id a
-filed one already answers to.
+**Appending is the only write.** A posted block never replaces the list, never
+reorders it and never rewords a row: it adds rows to the end, drops any whose
+title slugs to an id already there, and stops at twenty. That is what lets three
+kinds of session write to one list without a lock and without an argument about
+whose ordering wins — there is no ordering to lose. Two earlier rules are gone
+with it: "stored only while the list is empty" (the console's lock on filed rows
+made the list never empty again, so a new plan could never be answered) and its
+successor "only while nothing is unfiled" (appending cannot overwrite, so there
+is nothing to protect).
 
-Asking for a fresh plan is therefore *clearing the unfiled rows*, plus a
-`planRevision` bump so the dedupe key does not recognise the question it
-answered last time. The bump is what makes the key the memory here: the
-exhausted-plan state is the same state the planning ticket was read in, so
-without it every tick after the last item was filed would read that ticket's
-block again and append the whole plan a second time. The key goes into the
-autopilot's own state file once its answer is stored.
+Asking for a fresh plan is *clearing the unfiled rows* plus a `planRevision`
+bump, so the dedupe key does not recognise the question it answered last time.
+Each harvested ticket is remembered in the lane's own state file under
+`plan-from-<n>`, which is what stops a tick re-reading a block it has already
+appended — without it, every tick would append the same list again.
+
+## A finding is not a ticket
+
+Until 2026-09-09 a QA pass filed each gap it found as its own `qa-gap` issue and
+a retrospective filed a ticket per machinery problem and per direction proposal.
+On that date 30 gap issues and 9 retrospective ones were open; **none carried a
+label the build lane acts on, and not one had ever been closed** — the lane's own
+retrospective had filed a ticket saying so ("34 filed, 0 closed"). They were also
+counting against the board, and the board's size is what stops the lane filing
+anything: nine open against a limit of two meant six days in which it filed
+nothing at all.
+
+The rule now is that **a ticket exists only for work that is about to be built**.
+A finding is a row on the queue: the session posts the same `autopilot-plan`
+block the planning session posts, on its own ticket, and the autopilot appends
+it. The maintainer reorders and deletes rows in the console, and a row becomes a
+ticket only when the lane reaches it. A direction proposal is not even a row —
+it is a paragraph in the retrospective's report, posted on the long-lived
+`Autopilot log` issue, because a row is a promise that something gets built.
+
+What this costs is that a deleted row is gone: the queue is not a record. That is
+why the report goes to the log thread, which is the copy that survives.
 
 ## A filed row is locked, in both writers
 
@@ -106,7 +132,7 @@ convention.
   Forgejo account already reaches by opening an issue, so it is not an
   escalation — but the autopilot's own sequence must stay fixed, and no future
   field may be read as a command here.
-- **Not a way to go faster.** `ticketsPerDay` and `maxOpen` gate the focus lane
+- **Not a way to go faster.** `ticketsPerDay` and `maxOpen` gate the queue
   exactly as they gate the frontier. The planning ticket is the one exception:
   it writes no code and holds no feature slot, and it is self-limited to one per
   (focus, revision) by its key.
