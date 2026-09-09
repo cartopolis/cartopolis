@@ -87,18 +87,46 @@ const M3: mat3x3<f32> = mat3x3<f32>(
     vec3<f32>(-0.60, -0.48, 0.64),
 );
 
-fn fbm3(p: vec3<f32>) -> f32 {
+// Octave counts, and why they are not all the same.
+//
+// **This shader is the most expensive thing the client draws.** Measured on a
+// Steam Deck (RADV) 2026-09-09: the cloud shell is the whole transparent pass, and
+// at 1280x720 that is 71% of the GPU frame — 52 fps against 85 with the shell off.
+// It is not overdraw (exactly 1.00x, one fragment per pixel); it is what one
+// fragment costs. So the octave count is a performance decision, not a taste one.
+//
+// The nine `fbm3` calls below are not equal. Six of them (`q` and `r`) are *warps*:
+// their output is multiplied by 2.2 and added to a sample coordinate, so their
+// high octaves move the sample by a fraction of a noise cell — a displacement of a
+// displacement, invisible in the result. The three that shape what you actually
+// see — the density, the ridge crests and the opacity wisp — keep their detail.
+//
+// `WARP_OCTAVES` at 3 rather than 6 removes 3 octaves from 6 of the 9 fields:
+// 54 `vnoise3` calls per fragment become 33, a 39% cut in the noise work that
+// dominates this shader.
+const DENSITY_OCTAVES: i32 = 6;
+const WARP_OCTAVES: i32 = 3;
+/// The wisp is documented below as "gentle, LARGE-scale opacity variation… low
+/// frequency and shallow", so its top octaves are contributing detail the effect
+/// explicitly does not want.
+const WISP_OCTAVES: i32 = 3;
+
+fn fbm3_n(p: vec3<f32>, octaves: i32) -> f32 {
     var v = 0.0;
     var amp = 0.5;
     var norm = 0.0;
     var q = p;
-    for (var i = 0; i < 6; i = i + 1) {
+    for (var i = 0; i < octaves; i = i + 1) {
         v += amp * vnoise3(q);
         norm += amp;
         q = M3 * q * 2.0;
         amp *= 0.5;
     }
     return v / norm;
+}
+
+fn fbm3(p: vec3<f32>) -> f32 {
+    return fbm3_n(p, DENSITY_OCTAVES);
 }
 
 // Rotate `v` about a unit `axis` by `ang` radians (Rodrigues).
@@ -174,15 +202,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // ITCZ convects, it doesn't rotate).
     let coriolis = sin(lat);
     let q = vec3<f32>(
-        fbm3(base + evo),
-        fbm3(base + evo + vec3<f32>(5.2, 1.3, 7.8)),
-        fbm3(base + evo + vec3<f32>(2.7, 9.1, 3.4)),
+        fbm3_n(base + evo, WARP_OCTAVES),
+        fbm3_n(base + evo + vec3<f32>(5.2, 1.3, 7.8), WARP_OCTAVES),
+        fbm3_n(base + evo + vec3<f32>(2.7, 9.1, 3.4), WARP_OCTAVES),
     ) - 0.5;
     let qw = rotate_about(q, radial, coriolis * SWIRL_STRENGTH);
     let r = vec3<f32>(
-        fbm3(base + evo + 2.2 * qw + vec3<f32>(1.7, 8.2, 4.1)),
-        fbm3(base + evo + 2.2 * qw + vec3<f32>(6.3, 2.9, 9.6)),
-        fbm3(base + evo + 2.2 * qw + vec3<f32>(3.8, 5.5, 1.2)),
+        fbm3_n(base + evo + 2.2 * qw + vec3<f32>(1.7, 8.2, 4.1), WARP_OCTAVES),
+        fbm3_n(base + evo + 2.2 * qw + vec3<f32>(6.3, 2.9, 9.6), WARP_OCTAVES),
+        fbm3_n(base + evo + 2.2 * qw + vec3<f32>(3.8, 5.5, 1.2), WARP_OCTAVES),
     ) - 0.5;
     let rw = rotate_about(r, radial, coriolis * SWIRL_STRENGTH * 0.6);
     let base_density = fbm3(base + 2.2 * rw);
@@ -235,7 +263,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Gentle, LARGE-scale opacity variation (thin veils vs solid cores). Low
     // frequency and shallow, so it grades the cloud rather than shattering it into
     // cells — the earlier fine, deep wisp is what fragmented the masses.
-    let wisp = 0.72 + 0.36 * fbm3(base * 1.3 + 3.0 * rw);
+    let wisp = 0.72 + 0.36 * fbm3_n(base * 1.3 + 3.0 * rw, WISP_OCTAVES);
     let opacity = mix(0.16, 1.0, thickness) * wisp;
     var a = presence * clamp(opacity, 0.0, 1.0) * lit_color.a * params.y;
     if a <= 0.003 {
