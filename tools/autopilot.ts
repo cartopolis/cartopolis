@@ -20,8 +20,15 @@
 // beyond a `write:issue` token — see the comment on the `config:` volume in
 // docker-compose.yml. Merging to `main` needs `write:repository`, so putting
 // that token where those sessions can read it would let an issue body reach a
-// token that can push to `main`. This process holds it instead, takes no free
-// text as input, and can only do the fixed sequence below.
+// token that can push to `main`. This process holds it instead and can only do
+// the fixed sequence below.
+//
+// It does read one piece of free text now: `focus`, typed into the admin console
+// by a signed-in operator and quoted into the tickets it files. That is not a
+// way in — the text reaches a *session's* prompt, which is somewhere anyone who
+// can open an issue already reaches, and it reaches nothing here but a string
+// interpolation. What it must never become is an instruction this process acts
+// on itself.
 //
 // ## The sequence
 //
@@ -47,6 +54,7 @@
 // a machine can see.
 
 import { $ } from "bun";
+import { rename } from "node:fs/promises";
 
 const API = process.env.FORGEJO_API ?? "https://code.garage44.eu/api/v1";
 const REPO = process.env.FORGEJO_REPO ?? "jeroen/cartopolis";
@@ -88,11 +96,86 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //     "qaPerDay": 0,           // how many QA passes a day (0 = the lane is off)
 //     "qaMaxOpen": 3,          // how many QA tickets may be open at once
 //     "retroEveryDays": 0,     // file a retrospective every N days (0 = never)
-//     "ship": false }          // merge and deploy finished ones, or stop at review
+//     "ship": false,           // merge and deploy finished ones, or stop at review
+//     "focus": "",             // an area to work in; empty means the frontier
+//     "focusPlan": [],         // the ordered queue under that focus (see below)
+//     "planRevision": 0 }      // bumped by the console to ask for a fresh plan
 
-type Config = { enabled: boolean; ticketsPerDay: number; maxOpen: number; ship: boolean; qaPerDay: number; qaMaxOpen: number; retroEveryDays: number };
+type PlanItem = {
+  /** Stable key, and the ticket's dedupe marker (`autopilot:focus-<id>`). */
+  id: string;
+  /** One line: the piece of work. This becomes the ticket title. */
+  title: string;
+  /** Where in the code, and how it would be judged. Empty is allowed. */
+  note: string;
+  /** The ticket it became, or 0 while it has not been filed. */
+  issue: number;
+};
 
-const DEFAULTS: Config = { enabled: false, ticketsPerDay: 5, maxOpen: 2, ship: false, qaPerDay: 0, qaMaxOpen: 3, retroEveryDays: 0 };
+type Config = {
+  enabled: boolean;
+  ticketsPerDay: number;
+  maxOpen: number;
+  ship: boolean;
+  qaPerDay: number;
+  qaMaxOpen: number;
+  retroEveryDays: number;
+  focus: string;
+  focusPlan: PlanItem[];
+  planRevision: number;
+};
+
+const DEFAULTS: Config = {
+  enabled: false,
+  ticketsPerDay: 5,
+  maxOpen: 2,
+  ship: false,
+  qaPerDay: 0,
+  qaMaxOpen: 3,
+  retroEveryDays: 0,
+  focus: "",
+  focusPlan: [],
+  planRevision: 0,
+};
+
+/** Long enough for a paragraph of intent, short enough that a ticket still reads as one. */
+const MAX_FOCUS_CHARS = 2000;
+/** A plan is a queue a person reads. Past twenty items nobody reorders it, they rewrite it. */
+const MAX_PLAN_ITEMS = 20;
+
+/**
+ * Whatever is in the file, as a plan.
+ *
+ * Applied to the console's list and to a session's posted block alike — the
+ * second is JSON a language model wrote, so nothing here may assume a field is
+ * present, a string, or short.
+ */
+function planItems(raw: unknown): PlanItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PlanItem[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const title = String(e.title ?? "").trim().replace(/\s+/g, " ").slice(0, 200);
+    if (!title) continue;
+    const given = String(e.id ?? "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+    const id = given && !seen.has(given) ? given : freshId(title, seen);
+    seen.add(id);
+    const issue = Math.floor(Number(e.issue));
+    out.push({ id, title, note: String(e.note ?? "").trim().slice(0, 1000), issue: Number.isFinite(issue) ? Math.max(0, issue) : 0 });
+    if (out.length >= MAX_PLAN_ITEMS) break;
+  }
+  return out;
+}
+
+/** A slug of the title, made unique against the ids already taken. */
+function freshId(title: string, seen: Set<string>): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "item";
+  let id = slug;
+  for (let n = 2; seen.has(id); n++) id = `${slug}-${n}`;
+  return id;
+}
 
 async function config(): Promise<Config> {
   try {
@@ -111,6 +194,12 @@ async function config(): Promise<Config> {
       qaPerDay: Number.isFinite(raw.qaPerDay) ? Math.max(0, Math.floor(raw.qaPerDay)) : DEFAULTS.qaPerDay,
       qaMaxOpen: Number.isFinite(raw.qaMaxOpen) ? Math.max(1, Math.floor(raw.qaMaxOpen)) : DEFAULTS.qaMaxOpen,
       retroEveryDays: Number.isFinite(raw.retroEveryDays) ? Math.max(0, Math.floor(raw.retroEveryDays)) : DEFAULTS.retroEveryDays,
+      // An area to work in, in the maintainer's own words. Empty — which is the
+      // default and the state to return to — hands the queue back to the
+      // frontier in docs/direction.md.
+      focus: String(raw.focus ?? "").trim().slice(0, MAX_FOCUS_CHARS),
+      focusPlan: planItems(raw.focusPlan),
+      planRevision: Number.isFinite(raw.planRevision) ? Math.max(0, Math.floor(raw.planRevision)) : 0,
     };
   } catch {
     return DEFAULTS;
@@ -130,6 +219,38 @@ async function loadState(): Promise<State> {
 
 async function saveState(s: State) {
   await Bun.write(STATE_PATH, JSON.stringify(s, null, 2));
+}
+
+/**
+ * Change named fields of the control file, keeping everything else in it.
+ *
+ * This process is a *reader* of that file everywhere else — it is the console's
+ * knob, not this lane's state, which is why there are two files at all. There
+ * are exactly two things it writes back, and both are answers to a question the
+ * console asked: the plan a planning session posted, and the issue number
+ * stamped onto a plan item when it is filed.
+ *
+ * Merged into the file as it stands at that instant and written through a temp
+ * file and a rename, because cartopy's `server/autopilot.ts` may be saving an
+ * operator's edit in the same second — and a torn parse over here falls back to
+ * DEFAULTS, i.e. reads as the whole lane switching itself off. Neither write
+ * ever reorders the plan or rewrites a title: those belong to the person editing
+ * the list, so the worst a collision can cost is one stamp, which `filedIssue`
+ * recovers on the next tick.
+ *
+ * `edit` returns false to abandon the write, which is not an error — it is how
+ * "the list is no longer empty, leave it alone" is said.
+ */
+async function writeConfig(edit: (raw: Record<string, unknown>) => boolean): Promise<boolean> {
+  // Re-read rather than reuse the tick's Config: that one is normalised, and
+  // writing it back would silently delete any field the console has that this
+  // version has not heard of.
+  const raw = JSON.parse(await Bun.file(CONFIG_PATH).text()) as Record<string, unknown>;
+  if (!edit(raw)) return false;
+  const tmp = `${CONFIG_PATH}.autopilot-${process.pid}.tmp`;
+  await Bun.write(tmp, `${JSON.stringify(raw, null, 2)}\n`);
+  await rename(tmp, CONFIG_PATH);
+  return true;
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -601,14 +722,20 @@ async function frontier(): Promise<{ key: string; source: string; adds: string }
 // title and body: searching it for `autopilot:pdok-aerial-imagery` returns
 // unrelated issues, and a false positive here means the frontier looks fully
 // filed and nothing is ever proposed again.
-let issueBodies: string[] | null = null;
+let issueCache: any[] | null = null;
+
+async function knownIssues(): Promise<any[]> {
+  if (!issueCache) issueCache = (await api(`/issues?state=all&type=issues&limit=100`)) as any[];
+  return issueCache!;
+}
+
+/** The ticket filed under this key, or null. The focus lane needs the issue, not the fact. */
+async function filedIssue(key: string): Promise<any | null> {
+  return (await knownIssues()).find((i: any) => `${i.body ?? ""}`.includes(`autopilot:${key}`)) ?? null;
+}
 
 async function alreadyFiled(key: string): Promise<boolean> {
-  if (!issueBodies) {
-    const all = await api(`/issues?state=all&type=issues&limit=100`);
-    issueBodies = all.map((i: any) => `${i.body ?? ""}`);
-  }
-  return issueBodies.some((b) => b.includes(`autopilot:${key}`));
+  return (await filedIssue(key)) !== null;
 }
 
 async function generate(cfg: Config) {
@@ -646,7 +773,13 @@ async function generate(cfg: Config) {
   const open = await api(`/issues?state=open&type=issues&limit=50`);
   // QA tickets pace themselves in generateQa and hold no feature slot here —
   // nineteen a day counted against maxOpen would stop this lane outright.
-  const mine = open.filter((i: any) => labelsOf(i).includes(FILED_BY_AUTOPILOT) && !labelsOf(i).includes(QA) && !labelsOf(i).includes(RETRO));
+  const mine = open.filter(
+    (i: any) =>
+      labelsOf(i).includes(FILED_BY_AUTOPILOT) &&
+      !labelsOf(i).includes(QA) &&
+      !labelsOf(i).includes(RETRO) &&
+      !labelsOf(i).includes(PLAN),
+  );
   const stalled = (i: any) => {
     const names = labelsOf(i);
     if (names.includes(FAILED) || names.includes(NEEDS_INPUT)) return true;
@@ -667,6 +800,12 @@ async function generate(cfg: Config) {
   if (mine.length >= cfg.maxOpen + MAX_PARKED) {
     return log(`${mine.length} autopilot ticket(s) open including ${parked.length} parked — filing nothing until some are dealt with`);
   }
+
+  // A focus, while one is set, *replaces* the frontier as this lane's queue —
+  // it does not decorate it. The frontier answers "what is the next source
+  // nobody has wired in?", which is a fine standing question and the wrong one
+  // to answer while the maintainer has said what this fortnight is for.
+  if (cfg.focus) return await generateFocus(cfg, state);
 
   let rows: { key: string; source: string; adds: string }[];
   try {
@@ -785,6 +924,249 @@ async function generate(cfg: Config) {
   log("nothing left on the frontier, and the refill ticket is already open");
 }
 
+// --- the focus ----------------------------------------------------------------
+//
+// The frontier is a standing queue: sources somebody publishes, filed one at a
+// time for ever. It answers "what next?" and it cannot answer "spend the next
+// fortnight on X" — the maintainer's own priority, which is usually not a row in
+// that table at all ("get this solid on the Steam Deck runner" is not a data
+// source). So there is a second queue, and the difference that matters is that a
+// **person orders it**: the console carries a focus sentence and a plan under it,
+// this lane files that plan top down, and the frontier stands down until the
+// focus is cleared.
+//
+// Turning a sentence into six pieces of work is the one part that needs
+// judgement, and this process still runs no language model — so it is done the
+// way every other judgement in this lane is done, by a session on a ticket. The
+// planning ticket posts its answer back as a fenced `autopilot-plan` block and
+// this reads it into the control file, where the console can reorder, rewrite,
+// extend and delete it before most of it has been built. At one ticket a day
+// there is a day between a plan arriving and its second item being started.
+//
+// Three things are deliberate. The plan is stored **only while the console's
+// list is empty**, so a second planning session can never overwrite an operator's
+// edits. A filed item is remembered by its **issue number in the file**, not by
+// its position, so reordering the list after some of it is built refiles
+// nothing. And **nothing about the fences changes**: a focus asking for a
+// protocol bump files tickets that are refused at the ship gate like any other.
+//
+// The block is read from any comment on the ticket, by anybody. That is not a
+// privilege — a Forgejo account can already open an issue, which is a prompt to
+// a session by a shorter route — and what it produces is a list a person sees.
+
+const PLAN = "plan";
+
+/** 32-bit FNV-1a, hex. Only ever used to key a ticket to the focus text that asked for it. */
+function textKey(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+// Keyed on the focus text *and* a revision the console bumps: editing the focus
+// asks a new question, and pressing "plan again" asks the same one twice, and
+// alreadyFiled has to be able to tell those from a tick that already ran.
+const planKey = (cfg: Config) => `focus-plan-${textKey(cfg.focus)}-${cfg.planRevision}`;
+
+const quoted = (text: string) => `> ${text.split("\n").join("\n> ")}`;
+
+const PLAN_BLOCK = /```autopilot-plan\s*\n([\s\S]*?)```/g;
+
+/**
+ * The plan a planning session posted, or null while it has not.
+ *
+ * The **last** valid block wins: a session that posts a draft and then a
+ * correction means the correction, and taking the first would file work it
+ * withdrew. A block that will not parse is logged and skipped rather than
+ * failing the tick — the ticket is still open, and a session can post again.
+ */
+async function planFromTicket(n: number): Promise<PlanItem[] | null> {
+  const comments = await api(`/issues/${n}/comments?limit=50`);
+  let found: PlanItem[] | null = null;
+  for (const c of comments) {
+    for (const m of `${c.body ?? ""}`.matchAll(PLAN_BLOCK)) {
+      try {
+        const items = planItems(JSON.parse(m[1]));
+        if (items.length) found = items;
+      } catch {
+        log(`#${n}: a plan block did not parse as JSON — ignoring it`);
+      }
+    }
+  }
+  return found;
+}
+
+/** Store a posted plan, unless the operator's list has meanwhile stopped being empty. */
+async function storePlan(items: PlanItem[]): Promise<boolean> {
+  return await writeConfig((raw) => {
+    if (planItems(raw.focusPlan).length) return false;
+    raw.focusPlan = items;
+    return true;
+  });
+}
+
+/**
+ * Record which ticket a plan item became.
+ *
+ * Matched by `id` against the file as it stands, so an operator who reordered
+ * the list while this tick was filing keeps their order and gets the stamp.
+ */
+async function stampPlanItem(id: string, issue: number): Promise<boolean> {
+  return await writeConfig((raw) => {
+    const list = Array.isArray(raw.focusPlan) ? (raw.focusPlan as Record<string, unknown>[]) : [];
+    const item = list.find((e) => e && typeof e === "object" && String((e as any).id) === id);
+    if (!item) return false;
+    item.issue = issue;
+    return true;
+  });
+}
+
+async function filePlanningTicket(cfg: Config, key: string) {
+  const body = [
+    "The maintainer has set a focus for this lane, and it needs turning into a queue of work.",
+    "",
+    quoted(cfg.focus),
+    "",
+    "**This is a planning pass, not a build.** Change no code and open no branch. What comes",
+    "back is a list, which the maintainer reorders and edits in the console before any of it",
+    "is filed — so propose the work, do not start it.",
+    "",
+    "1. **Read before proposing.** `docs/direction.md` for the goal and the seven values,",
+    "   `CLAUDE.md` for how this tree is built and what it already does, and whatever part of",
+    "   the code the focus names. Half of a good plan is noticing the thing is already there.",
+    "2. **Propose six to ten pieces of work.** Each one a ticket a session could finish in a",
+    "   sitting, ordered so the earlier ones unblock the later ones. A title that says what",
+    "   changes, and a note saying where in the code it lands and how a machine would judge",
+    "   it — that last part is what this lane can land unattended.",
+    "3. **Leave out what it may not do.** The wire protocol, database migrations, the CI",
+    "   workflows, `tools/autopilot.ts` itself and `assetlinks.json` are fenced: a ticket",
+    "   touching one is built and then parked for a person. Anything whose success is a",
+    "   matter of taste belongs to a person too.",
+    "4. **Post the plan in one comment on this ticket**, as exactly this block:",
+    "",
+    "````",
+    "```autopilot-plan",
+    '[{"title": "…", "note": "…"}, {"title": "…", "note": "…"}]',
+    "```",
+    "````",
+    "",
+    "   JSON, an array, `title` and `note` both strings. The autopilot reads the last such",
+    "   block on this ticket and stores it as the queue; everything else in the comment is",
+    "   ignored, so write whatever reasoning you want around it.",
+    "5. **Then close this ticket.** There is no branch to merge.",
+    "",
+    "**Decide it yourself.** Nobody is watching this ticket, so a question asked here is a",
+    "ticket that stops. The values at the top of `docs/direction.md` settle the ambiguity, and",
+    "a piece of work you are unsure about is one to leave off the list rather than ask about.",
+    "",
+    `<sub>Filed by the autopilot. <!-- autopilot:${key} --></sub>`,
+  ].join("\n");
+
+  const issue = requireIssue(
+    await api(`/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: `Plan the focus: ${cfg.focus.split("\n")[0].slice(0, 80)}`,
+        body,
+        labels: await labelIds(["agent", FILED_BY_AUTOPILOT, PLAN]),
+      }),
+    }),
+  );
+  log(`filed #${issue.number}: plan the focus`);
+}
+
+async function fileFocusTicket(cfg: Config, item: PlanItem, position: string): Promise<any> {
+  const body = [
+    "From the maintainer's focus for this lane:",
+    "",
+    quoted(cfg.focus),
+    "",
+    `**${item.title}**`,
+    ...(item.note ? ["", item.note] : []),
+    "",
+    `This is ${position} of the plan under that focus. The queue is ordered by a person in the`,
+    "admin console, so build this one rather than the one you would have picked — and keep it",
+    "the size it is. A ticket that turns out to be three tickets is one ticket: finish this",
+    "part and say on it what the other two are.",
+    "",
+    "If the item is simply wrong — already done, impossible, or a bad idea against the values",
+    "— say so here and close it. That is a result, not a failure.",
+    "",
+    "**Decide it yourself.** This ticket is not being watched, so a question asked here is a",
+    "ticket that stops. The seven values at the top of `docs/direction.md` exist to settle",
+    "exactly that kind of ambiguity: pick the reading they support, say in the commit body",
+    "which one you applied, and build. Only a decision needing something nobody can derive",
+    "from the repository — a credential, a licence somebody must accept, a choice about what",
+    "the project is *for* — is a reason to stop.",
+    "",
+    `<sub>Filed by the autopilot. <!-- autopilot:focus-${item.id} --></sub>`,
+  ].join("\n");
+
+  return requireIssue(
+    await api(`/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: item.title,
+        body,
+        labels: await labelIds([AUTONOMOUS, FILED_BY_AUTOPILOT, ...(cfg.ship ? [SHIP] : [])]),
+      }),
+    }),
+  );
+}
+
+/**
+ * The feature lane, while a focus is set. Called from `generate` behind the same
+ * quota and open-ticket gates the frontier goes through — a focus changes where
+ * the work comes from, never how fast it arrives.
+ */
+async function generateFocus(cfg: Config, state: State): Promise<void> {
+  let plan = cfg.focusPlan;
+
+  if (!plan.length) {
+    const key = planKey(cfg);
+    const ticket = await filedIssue(key);
+    if (!ticket) {
+      // Not counted against the day's quota and holding no open slot: it is one
+      // session per focus, self-limited by the key above, and it writes no code.
+      await filePlanningTicket(cfg, key);
+      return;
+    }
+    const posted = await planFromTicket(ticket.number);
+    if (!posted) return log(`#${ticket.number} is planning the focus — no plan posted yet`);
+    if (!(await storePlan(posted))) {
+      return log(`#${ticket.number} posted a plan but the console's list is no longer empty — keeping the console's`);
+    }
+    log(`stored ${posted.length} plan item(s) from #${ticket.number}`);
+    plan = posted;
+  }
+
+  const next = plan.find((i) => !i.issue);
+  if (!next) {
+    return log(`the focus plan is fully filed (${plan.length} item(s)) — extend it in the console, or clear the focus`);
+  }
+
+  // Filed on an earlier tick whose stamp did not land (the console saved over it,
+  // or the control file is not writable from here). The marker is the authority,
+  // not the stamp: filing it twice is the one mistake this lane cannot take back.
+  const already = await filedIssue(`focus-${next.id}`);
+  if (already) {
+    await stampPlanItem(next.id, already.number).catch(() => {});
+    return log(`plan item “${next.title}” is already #${already.number} — recorded it`);
+  }
+
+  const done = plan.filter((i) => i.issue).length;
+  const issue = await fileFocusTicket(cfg, next, `item ${done + 1} of ${plan.length}`);
+  log(`filed #${issue.number}: ${next.title}`);
+  state.filed++;
+  await saveState(state);
+  await stampPlanItem(next.id, issue.number).catch((e) =>
+    log(`could not record #${issue.number} on the plan — ${e instanceof Error ? e.message : e}`),
+  );
+}
+
 // --- the QA lane -------------------------------------------------------------
 //
 // The build lane proves a change does what its ticket says; nothing walks the
@@ -826,10 +1208,24 @@ async function shippedRecently(): Promise<any[]> {
   );
 }
 
-async function fileQaTicket(state: State, key: string, name: string, intro: string) {
+async function fileQaTicket(state: State, key: string, name: string, intro: string, focus = "") {
   const body = [
     intro,
     "",
+    // A steer, never a substitute for the target: a QA pass whose target the
+    // focus does not touch is still worth walking, and narrowing it to the
+    // focus would silently stop covering everything else.
+    ...(focus
+      ? [
+          "The maintainer's current focus for this lane is:",
+          "",
+          `> ${focus.split("\n").join("\n> ")}`,
+          "",
+          "Walk the whole target regardless, and weight the depth toward that focus where the",
+          "two meet.",
+          "",
+        ]
+      : []),
     "**This is a QA pass, not a build.** Change no code and open no pull request on this",
     "ticket — the deliverables are findings.",
     "",
@@ -903,6 +1299,7 @@ async function generateQa(cfg: Config) {
       key,
       `what #${shipped.number} shipped — ${shipped.title}`,
       `Issue #${shipped.number} (“${shipped.title}”) was built and merged by the unattended lane, and nobody has used it. Walk what it delivered as a player would meet it.`,
+      cfg.focus,
     );
     return;
   }
@@ -916,7 +1313,7 @@ async function generateQa(cfg: Config) {
     const key = `qa-${t.key}-${today()}`;
     if (await alreadyFiled(key)) continue;
     state.qaCursor = (state.qaCursor + i + 1) % inventory.length;
-    await fileQaTicket(state, key, t.name, `From the standing list in \`docs/qa/targets.md\`: **${t.name}** — ${t.how}.`);
+    await fileQaTicket(state, key, t.name, `From the standing list in \`docs/qa/targets.md\`: **${t.name}** — ${t.how}.`, cfg.focus);
     return;
   }
   log("every QA target has been filed today");
@@ -983,6 +1380,15 @@ async function generateRetro(cfg: Config) {
   const body = [
     `Step back and read the last ${days} day(s) of this lane, then steer it. You are not building anything on this ticket.`,
     "",
+    ...(cfg.focus
+      ? [
+          "The maintainer has set a focus for this lane, so judge the period against it as well",
+          "as against the values — including whether the plan under it is still the right queue:",
+          "",
+          `> ${cfg.focus.split("\n").join("\n> ")}`,
+          "",
+        ]
+      : []),
     "1. **Gather.** `docs/direction.md` (the goal and the seven values); every issue closed or",
     `   filed in the last ${days} day(s) — shipped, failed, parked — and the reports on closed`,
     "   `qa` tickets; the open `qa-gap` backlog. All of it is on the Forgejo API with the",
@@ -1141,6 +1547,14 @@ async function digest(cfg: Config) {
     }`,
     `- **Login:** ${days === null ? "unknown" : days <= 7 ? `**${days} days left — sign in on the VPS or this all stops**` : `${days} days left`}`,
     `- **Settings:** ${cfg.ticketsPerDay}/day, ${cfg.maxOpen} at once, shipping ${cfg.ship ? "on" : "off"}`,
+    // Which queue is driving is the single most surprising thing about this
+    // lane's output — a note listing tickets nobody recognises, with no line
+    // saying a focus is set, is a note that raises more questions than it settles.
+    `- **Queue:** ${
+      cfg.focus
+        ? `focus — ${cfg.focusPlan.filter((i) => i.issue).length}/${cfg.focusPlan.length} plan item(s) filed — “${cfg.focus.split("\n")[0].slice(0, 90)}”`
+        : "the frontier in `docs/direction.md`"
+    }`,
   ].join("\n");
 
   const issue = await logIssue();

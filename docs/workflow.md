@@ -102,9 +102,9 @@ to cite the code rather than assume.
 `viberfox-autopilot` on the VPS: a third container that files the next ticket
 and lands the finished ones, so work continues while the maintainer is away.
 Two jobs, one config file, and **no language model** — `tools/autopilot.ts`
-decides only which frontier item in [`direction.md`](direction.md) has no ticket
-yet, and which finished branch every Actions job passed on. The thinking is
-still ③'s sessions, which refine the ticket and implement it.
+decides only which item in the queue has no ticket yet, and which finished branch
+every Actions job passed on. The thinking is still ③'s sessions, which refine the
+ticket and implement it.
 
 The two jobs run on different clocks: a full `tick` (file + ship) hourly, and
 a `ship`-only pass every five minutes in between. Filing is quota-paced anyway,
@@ -114,21 +114,49 @@ green minutes after a tick sat mergeable for the rest of the hour.
 It is a separate container from the watcher for one reason, and it is the same
 reason the watcher has no `config:` volume: ③ spawns sessions whose prompt is
 issue text anyone can write, and the merge token can push to `main`. The
-autopilot holds that token, runs no session, reads no free text, and has no
-clone to be edited in.
+autopilot holds that token, runs no session, and has no clone to be edited in.
+The one piece of free text it does read — the focus below — it only ever quotes
+into a ticket, which is a place anyone with a Forgejo account already reaches.
 
 **The knob is `/data/agent/state/autopilot.json`**, re-read on every pass, so a
 change to `ship` takes effect within five minutes, the rest within the hour,
 and none of it needs a restart:
 
 ```json
-{ "enabled": false, "ticketsPerDay": 1, "ship": false }
+{ "enabled": false, "ticketsPerDay": 1, "ship": false, "focus": "", "focusPlan": [] }
 ```
 
 - `enabled` — file new tickets at all.
 - `ticketsPerDay` — how many, and it never runs two at once regardless.
 - `ship` — merge finished tickets and deploy, or leave them on `agent:done`
   for a person, which is where this lane stopped before.
+- `focus` / `focusPlan` — the second queue, below.
+
+Nobody edits that file by hand any more: cartopy's **Autopilot tab**
+(`web.cartopolis.org`) is the control surface, and the file is how it reaches
+this process. It is a hand-synced seam — a field added to `Config` here has to be
+added to `server/autopilot.ts` over there, or the console strips it on the next
+save.
+
+#### The queue: the frontier, or a focus
+
+By default the work comes from the frontier table in
+[`direction.md`](direction.md), one row at a time, for ever. That answers "what
+next?" and cannot answer "spend the next fortnight on X", so the console also
+carries a **focus** — a sentence in the maintainer's own words — and while it
+says something it *replaces* the frontier.
+
+What gets built under it is an ordered **plan**, which the console reorders,
+rewrites, extends and deletes. The autopilot does not write that plan (it still
+runs no model): when the focus is set and the plan is empty it files one
+**planning ticket**, and ③'s session answers with a fenced `autopilot-plan` block
+of JSON that this stores. From then on the list is the operator's, filed top
+down at `ticketsPerDay`, with each item's ticket number recorded beside it.
+
+Nothing about it lifts a fence — a focus asking for a wire-protocol change files
+tickets that are built and then parked for a person, like any other. The design,
+the rejected alternatives and the two-writer rule on the config file are in
+[`notes/autopilot-focus.md`](notes/autopilot-focus.md).
 
 Shipping is `agent:done` **plus** a `ship` label, and it re-checks every Actions
 job on the branch head before merging rather than trusting the label: the
