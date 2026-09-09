@@ -33,6 +33,7 @@ use bevy::tasks::IoTaskPool;
 
 use crate::components::FreeCamera;
 use crate::grid::WORLD_CELL_EDGE;
+use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::coverage::CoverageSlot;
@@ -934,7 +935,8 @@ pub fn update_building_facts(
         for dx in -BAG_RADIUS..=BAG_RADIUS {
             let c = (ccx + dx, ccy + dy);
             if bag_covers(c.0, c.1) {
-                facts.stream.request(c, now);
+                let rank = fetch_gate::ring_distance(c, ccx, ccy);
+                facts.stream.request_ranked(c, rank, now);
             }
         }
     }

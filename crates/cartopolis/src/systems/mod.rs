@@ -45,12 +45,12 @@ pub use gui::{
     script_editor, settings, splash, text_touch, theme, ui,
 };
 pub use map::{
-    aerial, atmosphere_patch, building_facts, building_windows, coverage, crops, crossings, dikes,
-    globe, globe_ocean, globe_weather, grass, height, interiors, light_shafts, lod22, lod3,
-    map_geometry, map_stream, model_assets, municipal, nav_marks, osm_buildings, particles,
-    render_features, render_scale, rendering, road_depth, sky, sky_dome, stream_ledger,
-    street_detail, street_furniture, street_labels, surveyed, tall_structures, terrain,
-    tile_loader, tile_source, vegetation, water, weather, wet_surfaces, world_places,
+    aerial, atmosphere_patch, building_facts, building_windows, cell_bundle, coverage, crops,
+    crossings, dikes, globe, globe_ocean, globe_weather, grass, height, interiors, light_shafts,
+    load_control, lod22, lod3, map_geometry, map_stream, model_assets, municipal, nav_marks,
+    osm_buildings, particles, render_features, render_scale, rendering, road_depth, sky, sky_dome,
+    stream_ledger, street_detail, street_furniture, street_labels, surveyed, tall_structures,
+    terrain, tile_loader, tile_source, vegetation, water, weather, wet_surfaces, world_places,
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,

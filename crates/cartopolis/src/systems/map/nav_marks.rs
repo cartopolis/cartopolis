@@ -65,7 +65,8 @@ use cartopolis_geo::nav_marks::{
     MAX_MARKS_PER_CELL,
 };
 
-use crate::platform::{http, storage};
+use crate::platform::cell_source::CellSource;
+use crate::platform::http;
 use crate::systems::surveyed::cell_local_unclamped;
 
 /// Fixed cache/streaming zoom — must match `map_geometry::GEOMETRY_ZOOM`, since a
@@ -305,22 +306,6 @@ fn cell_may_hold_marks(cx: i64, cy: i64, tile_has_water: bool) -> bool {
     covers(cx, cy) && tile_has_water
 }
 
-/// Every gate, as one predicate: is this cell worth a *request*?
-///
-/// The cell's own two, plus the service's outage gate. Split out of
-/// [`load_marks_cell`] so the rule can be asserted without a runtime and without
-/// reaching the network — which is the only way to test "no request was issued".
-/// `breaker` and `now` are injected for the same reason.
-fn should_fetch(
-    cx: i64,
-    cy: i64,
-    tile_has_water: bool,
-    breaker: &http::Breaker,
-    now: web_time::Instant,
-) -> bool {
-    cell_may_hold_marks(cx, cy, tile_has_water) && !breaker.is_open_at(now)
-}
-
 /// RWS's marks service, held off for a minute after it fails. Its own instance:
 /// ProRail's crossings service sits behind the same host and fails separately.
 pub(crate) static MARKS_BREAKER: http::Breaker = http::Breaker::new();
@@ -446,32 +431,43 @@ pub fn parse_items(text: &str, floating: bool) -> Result<Vec<(f64, f64, MarkForm
 /// and an empty answer all produce the same empty cell, which is the water this
 /// client already drew.
 pub(crate) async fn load_marks_cell(cx: i64, cy: i64, tile_has_water: bool) -> MarkCell {
+    // The tile's own water is the gate that cannot live in the descriptor: it is
+    // a property of *this* request (the caller read the undecoded body), not of
+    // the cell. The register's extent is the descriptor's.
     if !cell_may_hold_marks(cx, cy, tile_has_water) {
         return MarkCell::default();
     }
-    let key = cache_key(cx, cy);
-    // The cache is read before the breaker is consulted, not after: a cell whose
-    // marks are already on disk costs the service nothing, and an outage must
-    // not blank cells that were complete before it started.
-    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return decode_cell(&cached).unwrap_or_default();
-    }
-    if !should_fetch(
-        cx,
-        cy,
-        tile_has_water,
-        &MARKS_BREAKER,
-        web_time::Instant::now(),
-    ) {
-        return MarkCell::default();
-    }
+    MARKS.load_with(cx, cy, fetch_and_normalise(cx, cy)).await
+}
 
+/// The register's extent, the cache, the breaker and the store — the seven steps
+/// every additive per-cell layer shares. Only the fetch below is this module's.
+const MARKS: CellSource<MarkCell> = CellSource {
+    label: "navigation marks",
+    gate: Some(covers),
+    key: cache_key,
+    // No one URL: two collections, paged in `fetch_and_normalise`.
+    url: None,
+    breaker: Some(&MARKS_BREAKER),
+    // Applied per request in `fetch_collection`, since two of them go out.
+    timeout: None,
+    parse: |text| decode_cell(text).ok(),
+};
+
+/// Both collections, normalised into the compact stored form — or `None`, which
+/// is what trips the breaker.
+///
+/// Nothing is written to the cache on a partial or unreadable answer: half a cell
+/// cached under a key that will never be re-fetched is worse than a cell that is
+/// asked for again. What *is* remembered is that the service failed, and that is
+/// the breaker rather than the cache.
+async fn fetch_and_normalise(cx: i64, cy: i64) -> Option<String> {
     // Both collections in flight together rather than one after the other, so a
     // cell's wait is one service's answer and not two of them end to end. On
     // wasm that is real overlap; natively `http::fetch` is a blocking `ureq`
     // call with no await point in it (`platform::http`'s module note), so the
-    // two still land in sequence there and the bound below is what caps the
-    // total.
+    // two still land in sequence there and the per-request bound is what caps
+    // the total.
     let (floating, fixed) = futures_lite::future::zip(
         fetch_collection(COLLECTIONS[0], cx, cy),
         fetch_collection(COLLECTIONS[1], cx, cy),
@@ -480,20 +476,12 @@ pub(crate) async fn load_marks_cell(cx: i64, cy: i64, tile_has_water: bool) -> M
 
     let mut marks = Vec::new();
     for (i, answer) in [floating, fixed].into_iter().enumerate() {
-        // Nothing is written to the cache on a partial answer: half a cell
-        // cached under a key that will never be re-fetched is worse than a cell
-        // that is asked for again. What *is* remembered is that the service
-        // failed, which is the breaker rather than the cache.
-        let Ok(text) = answer else {
-            MARKS_BREAKER.trip();
-            return MarkCell::default();
-        };
+        let text = answer.ok()?;
         match parse_items(&text, i == 0) {
             Ok(read) => marks.extend(read),
             Err(e) => {
                 tracing::warn!(collection = COLLECTIONS[i], error = %e, "navigation marks unreadable");
-                MARKS_BREAKER.trip();
-                return MarkCell::default();
+                return None;
             }
         }
     }
@@ -505,15 +493,7 @@ pub(crate) async fn load_marks_cell(cx: i64, cy: i64, tile_has_water: bool) -> M
         );
         marks.truncate(MAX_MARKS_PER_CELL);
     }
-
-    let cell = MarkCell { marks };
-    storage::put(
-        storage::Namespace::Cache,
-        &key,
-        encode_cell(&cell).as_bytes(),
-    )
-    .await;
-    cell
+    Some(encode_cell(&MarkCell { marks }))
 }
 
 /// This cell's marks in the local metre frame, ready to mesh.
@@ -587,6 +567,22 @@ mod tests {
     /// This is the whole cost argument for fetching from the client rather than
     /// through an extractor: without them every streamed cell anywhere in the
     /// world would pay two round trips to be told no.
+    /// The predicate `load_marks_cell` applies, spelled out: the cell's own two
+    /// gates and the service's outage gate. `MARKS.would_fetch` is the production
+    /// call, so the only thing restated here is the composition with the tile's
+    /// water — which is the one gate that belongs to the request rather than to
+    /// the cell.
+    fn should_fetch(
+        cx: i64,
+        cy: i64,
+        tile_has_water: bool,
+        breaker: &http::Breaker,
+        now: web_time::Instant,
+    ) -> bool {
+        cell_may_hold_marks(cx, cy, tile_has_water)
+            && MARKS.would_fetch(cx, cy, breaker.is_open_at(now))
+    }
+
     #[test]
     fn a_foreign_or_dry_cell_asks_for_nothing() {
         let (breaker, now) = (http::Breaker::new(), web_time::Instant::now());

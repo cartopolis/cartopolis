@@ -30,6 +30,7 @@ use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
+use crate::systems::load_control;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, tdbag_url, MeshData};
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
@@ -83,7 +84,32 @@ const LOD22_RADIUS: i64 = 2;
 /// leaves a ring of cells that neither streamer owns; a shared call cannot drift
 /// the way two tier-adjusted constants could.
 pub fn lod22_radius() -> i64 {
-    crate::quality::budget().radius(LOD22_RADIUS)
+    load_control::radius(LOD22_RADIUS)
+}
+
+/// The last ring whose cells are built with door panels on their facades.
+///
+/// One inside the ring's edge, so only the outermost ring goes without. That
+/// placement is the whole safety argument: a rank-1 cell is *adjacent*, and its
+/// near edge is under your feet, so it must keep its doors — while a rank-2 cell
+/// is at least one cell's width away, about 1.5 km at Dutch latitudes, where a
+/// 1.1 × 2.1 m panel subtends well under a pixel.
+///
+/// It also bounds how often a cell is promoted (and therefore rebuilt): the
+/// camera has to cross a whole cell boundary, which is the same event that brings
+/// five new cells into the ring anyway.
+fn last_door_rank() -> i64 {
+    // Floored at 1, not 0. A rank-1 cell is *adjacent* — its near edge is under
+    // your feet — so it must keep its doors whatever the ring has narrowed to.
+    // Without the floor, `load_control` tightening to radius 1 would take the
+    // doors off the cell next to you, which is the adjacency mistake this whole
+    // boundary is placed to avoid.
+    (lod22_radius() - 1).max(1)
+}
+
+/// Whether a cell at this ring distance is built with its doors.
+fn door_detail(rank: crate::platform::fetch_gate::Rank) -> load_control::Detail {
+    load_control::Detail::for_rank(rank, last_door_rank())
 }
 /// Cap on cell meshes uploaded per frame (iGPU device-loss guard — see module doc).
 const MAX_BUILDS_PER_FRAME: usize = 1;
@@ -371,6 +397,14 @@ pub struct Lod22Buildings {
     dated: HashMap<(i64, i64), DatedCount>,
     /// Per-cell tally of doors drawn ([`DoorCount`]).
     doors: HashMap<(i64, i64), DoorCount>,
+    /// What detail each live cell was **built** with.
+    ///
+    /// The record is what makes a promotion detectable: the ring is re-derived
+    /// from the camera every frame, so "how far is this cell now" is free, and
+    /// "how far was it when its mesh was written" is only knowable if it was
+    /// written down. Recorded at dispatch rather than on completion so a cell in
+    /// flight is already accounted for and cannot be promoted twice.
+    built_detail: HashMap<(i64, i64), load_control::Detail>,
     /// Each loaded shell's storey datum, metres ([`shell_datum_height`]), keyed
     /// by BAG identificatie. Per cell so it is evicted with the cell it was
     /// measured from, exactly as the colliders are.
@@ -440,6 +474,7 @@ impl Default for Lod22Buildings {
             cells: HashMap::new(),
             dated: HashMap::new(),
             doors: HashMap::new(),
+            built_detail: HashMap::new(),
             heights: HashMap::new(),
             no_shadow: HashSet::new(),
             material: None,
@@ -503,6 +538,7 @@ pub fn update_lod22(
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.dated.clear();
         lod.doors.clear();
+        lod.built_detail.clear();
         lod.heights.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
@@ -527,6 +563,7 @@ pub fn update_lod22(
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.dated.clear();
         lod.doors.clear();
+        lod.built_detail.clear();
         lod.heights.clear();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
@@ -577,6 +614,55 @@ pub fn update_lod22(
         center.1.div_euclid(1i64 << shift),
     );
 
+    // **Cells that came closer than they were built for.** A cell's detail is
+    // baked into its merged mesh on a worker, so a promotion is a rebuild — and
+    // a rebuild is only worth doing where the difference is visible. Only the
+    // outermost ring is built `Far` (see `door_detail`), so the cells that
+    // promote are one column of the ring, and they promote when the camera
+    // crosses a whole cell boundary: about 1.5 km at Dutch latitudes, alongside
+    // the five cells that are entering the ring at that moment anyway. Demotions
+    // are ignored on purpose — a cell that is drawn with more detail than it now
+    // needs costs a few thousand triangles, and rebuilding it to take them away
+    // would be paying the expensive half of the trade for the cheap half of the
+    // benefit.
+    //
+    // Two bounds on it. A cell still **in flight** is never promoted: `forget`
+    // would let it be requested a second time, both fetches would land, and the
+    // second `cells.insert` would overwrite the first's entity list and leak
+    // every one of them. And at most one cell is promoted per frame, matching
+    // [`MAX_BUILDS_PER_FRAME`] — the rebuild it causes is the same expensive
+    // thing that cap exists to meter out.
+    let promoted: Option<(i64, i64)> = lod
+        .built_detail
+        .iter()
+        .filter(|(c, built)| {
+            **built == load_control::Detail::Far
+                && lod.cells.contains_key(*c)
+                && door_detail(ring_distance(**c, ccx, ccy)) == load_control::Detail::Near
+        })
+        .map(|(c, _)| *c)
+        .min_by_key(|c| ring_distance(*c, ccx, ccy));
+    if let Some(c) = promoted {
+        lod.dated.remove(&c);
+        lod.doors.remove(&c);
+        lod.built_detail.remove(&c);
+        lod.heights.remove(&c);
+        if let Some(entities) = lod.cells.remove(&c) {
+            for e in entities {
+                lod.stream.retire(e);
+            }
+        }
+        if lod.partial.as_ref().is_some_and(|p| p.cell == c) {
+            lod.partial = None;
+        }
+        colliders.remove_cell(c);
+        lod.no_shadow.remove(&c);
+        // `forget`, not `retire`: the cell has to become requestable again, and
+        // `forget` is what drops it from the stream's `requested` set and hands
+        // its slots back. The re-fetch is a disk-cache read.
+        lod.stream.forget(&c);
+    }
+
     // Queue missing covered cells, nearest first. `CellStream::request` is also the
     // retry pump — it refuses a cell that has spent its attempts.
     let mut to_request: Vec<(i64, i64)> = Vec::new();
@@ -589,9 +675,15 @@ pub fn update_lod22(
             }
         }
     }
-    to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
+    // The sort is what put the nearest cell first when the queue was arrival
+    // ordered; the rank says the same thing to the queue and to the global
+    // `fetch_gate`, and keeps saying it when the camera moves under a queue that
+    // was filled from somewhere else.
+    use crate::platform::fetch_gate::ring_distance;
+    to_request.sort_by_key(|c| ring_distance(*c, ccx, ccy));
     for c in to_request {
-        lod.stream.request(c, now);
+        let rank = ring_distance(c, ccx, ccy);
+        lod.stream.request_ranked(c, rank, now);
     }
 
     // Dispatch queued cells up to the concurrency cap: each becomes a detached
@@ -599,6 +691,11 @@ pub fn update_lod22(
     let results = lod.stream.sink();
     while let Some((cx, cy)) = lod.stream.next_job(now) {
         let results = results.clone();
+        // Resolved at dispatch, not inside the worker: the worker has no camera,
+        // and recording what a cell was *built* with is what makes the promotion
+        // sweep above possible at all.
+        let detail = door_detail(ring_distance((cx, cy), ccx, ccy));
+        lod.built_detail.insert((cx, cy), detail);
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
         let ground = terrain.snapshot();
@@ -643,6 +740,7 @@ pub fn update_lod22(
                             &ground,
                             &facts,
                             lod3.as_deref(),
+                            detail,
                         );
                         if let Ok(mut g) = results.lock() {
                             g.push(((cx, cy), built));
@@ -817,6 +915,7 @@ pub fn update_lod22(
     for c in stale {
         lod.dated.remove(&c);
         lod.doors.remove(&c);
+        lod.built_detail.remove(&c);
         lod.heights.remove(&c);
         if let Some(entities) = lod.cells.remove(&c) {
             for e in entities {
@@ -885,6 +984,7 @@ fn build_lod22_from_text(
     ground: &crate::systems::terrain::TerrainSnapshot,
     facts: &crate::systems::building_facts::BagCell,
     lod3_text: Option<&str>,
+    detail: load_control::Detail,
 ) -> Result<Option<Lod22Build>, String> {
     let shell = parse_lod22(text)?;
     // An imported-model cell, when the host serves one. A failure to parse it is
@@ -1051,7 +1151,12 @@ fn build_lod22_from_text(
         // `FIRST_SILL_M` (2.2 m), so a door topping out below that is in the one
         // band of the facade the window shader leaves alone — otherwise every
         // front door in the city would have window panes painted across it.
-        if !doors.is_empty() && outline.len() >= 3 {
+        // Skipped on a far cell — the *drawn* panel only. The doors still reach
+        // `Footprint::with_doors` above, because a collider is CPU state that
+        // costs nothing to carry and a building sealed at range would be a
+        // building the avatar could not walk into on the frame the cell was
+        // promoted.
+        if detail == load_control::Detail::Near && !doors.is_empty() && outline.len() >= 3 {
             let base = ground.level_over(outline.iter().map(|w| [w.x, w.y]));
             for &door in &doors {
                 let Some((at, normal)) = nearest_edge_point(&outline, door) else {

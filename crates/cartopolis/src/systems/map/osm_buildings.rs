@@ -22,6 +22,7 @@
 use crate::components::FreeCamera;
 use crate::components::OsmBuildingMesh;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::fetch_gate;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -907,7 +908,7 @@ const BUILDING_PATCH_RADIUS: i64 = 3;
 /// ([`DETAIL_WINDOWS`]), so its area is close to linear in triangle count — it is
 /// the most expensive ring in the client per tile.
 fn building_patch_radius() -> i64 {
-    crate::quality::budget().radius(BUILDING_PATCH_RADIUS)
+    crate::systems::load_control::radius(BUILDING_PATCH_RADIUS)
 }
 
 /// Concurrent far-cell fetches against the 3DBAG host (see
@@ -931,7 +932,7 @@ const FAR_CELL_RADIUS: i64 = 3;
 /// missing, at a distance that changes with the tier. `the_far_ring_meets_the_lod22_
 /// handover` pins it on both tiers.
 fn far_cell_radius() -> i64 {
-    crate::quality::budget().radius(FAR_CELL_RADIUS)
+    crate::systems::load_control::radius(FAR_CELL_RADIUS)
 }
 /// Re-fetch the patch once the camera has moved this many tiles from the last centre.
 /// Larger = fewer Overpass calls (avoids 429/504 rate limits) at the cost of the
@@ -1286,16 +1287,17 @@ pub fn update_buildings(
                 }
             }
         }
-        to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
-        // `CellStream::request` de-dups and is also the retry pump — it refuses a
-        // cell already known or one that has spent its attempts.
+        to_request.sort_by_key(|c| fetch_gate::ring_distance(*c, ccx, ccy));
+        // `CellStream::request_ranked` de-dups and is also the retry pump — it
+        // refuses a cell already known or one that has spent its attempts.
         let now_secs = time.elapsed_secs_f64();
         for cell in to_request {
             // Two lanes: covered cells hit our own 3DBAG host and run
             // concurrently; everything else rides the Overpass lane. Routed at
             // request time, and the lane's own bookkeeping is what remembers it.
             let tdbag = tdbag_covers(cell.0, cell.1);
-            osm.far_lane(tdbag).request(cell, now_secs);
+            let rank = fetch_gate::ring_distance(cell, ccx, ccy);
+            osm.far_lane(tdbag).request_ranked(cell, rank, now_secs);
         }
 
         // Dispatch queued far cells as detached tasks (ADR-033 seam) — no worker

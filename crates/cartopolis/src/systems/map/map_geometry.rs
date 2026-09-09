@@ -446,6 +446,14 @@ fn spawn_geometry_task(
         .spawn(async move {
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
             let fetched = load_tile_image(&key, &template).await;
+            // One request that fills the cache entries the next three awaits are
+            // about to look for (`systems::cell_bundle`). It changes nothing about
+            // what they do — a host that serves no bundles, or a cell already
+            // bundled, and this returns without asking — but where the host does
+            // serve them it turns three sequential round trips into one. They are
+            // sequential natively whatever the `zip`s below suggest: `http::fetch`
+            // is a blocking call with no await point in it.
+            crate::systems::cell_bundle::prefill(cell.0, cell.1).await;
             // The cell's surveyed BGT objects travel with the job for the reason
             // `building_facts` gives about `lod22`: they end up merged into this
             // cell's meshes, so they have to be in hand on the worker that builds
@@ -1157,9 +1165,14 @@ pub fn update_map_surfaces(
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
     // SURFACE_MAX_IN_FLIGHT concurrent. Unqueued cells are re-evaluated next frame as
     // slots free (the `requested` set already de-dups), so nothing is dropped.
+    // Ranked by ring distance, so the cell the camera is standing in outranks its
+    // neighbours here *and* may spend the global `fetch_gate`'s near reserve — the
+    // ground under your feet is not allowed to queue behind a far building cell
+    // from another streamer that happened to run first this frame.
     for c in &wanted {
         if !surfaces.loaded.contains_key(c) {
-            surfaces.stream.request(*c, now);
+            let rank = crate::platform::fetch_gate::ring_distance(*c, ccx, ccy);
+            surfaces.stream.request_ranked(*c, rank, now);
         }
     }
     // Dispatch under SURFACE_MAX_IN_FLIGHT; whatever doesn't fit stays queued and

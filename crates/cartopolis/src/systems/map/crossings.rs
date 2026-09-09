@@ -68,7 +68,8 @@ use cartopolis_geo::crossings::{
     crossing_kind, CrossingKind, CrossingPoint, MAX_CROSSINGS_PER_CELL,
 };
 
-use crate::platform::{http, storage};
+use crate::platform::cell_source::CellSource;
+use crate::platform::http;
 use crate::systems::surveyed::cell_local_unclamped;
 
 /// Fixed cache/streaming zoom — must match `map_geometry::GEOMETRY_ZOOM`, since a
@@ -206,24 +207,6 @@ fn cell_may_hold_crossings(cx: i64, cy: i64, tile_has_rail: bool) -> bool {
     covers(cx, cy) && tile_has_rail
 }
 
-/// Every gate this module owns, as one predicate: is this cell worth a
-/// *request*?
-///
-/// The cell's own two, plus the service's outage gate. Split out of
-/// [`load_crossings_cell`] so the rule can be asserted without a runtime and
-/// without reaching the network — which is the only way to test "no request was
-/// issued"; `breaker` and `now` are injected for the same reason. The remaining
-/// gate, the Furniture toggle, belongs to the caller.
-fn should_fetch(
-    cx: i64,
-    cy: i64,
-    tile_has_rail: bool,
-    breaker: &http::Breaker,
-    now: web_time::Instant,
-) -> bool {
-    cell_may_hold_crossings(cx, cy, tile_has_rail) && !breaker.is_open_at(now)
-}
-
 /// ProRail's crossings service, held off for a minute after it fails. Its own
 /// instance: RWS's marks service sits behind the same host and fails separately.
 pub(crate) static CROSSINGS_BREAKER: http::Breaker = http::Breaker::new();
@@ -313,41 +296,44 @@ pub fn parse_items(text: &str) -> Result<Vec<(f64, f64, CrossingKind, u8)>, Stri
 /// and an empty answer all produce the same empty cell, which is the bare
 /// railway this client already drew.
 pub(crate) async fn load_crossings_cell(cx: i64, cy: i64, tile_has_rail: bool) -> CrossingCell {
+    // The tile's own railway is the gate that cannot live in the descriptor: it
+    // is a property of *this* request (the caller read the undecoded body), not
+    // of the cell. The register's extent is the descriptor's.
     if !cell_may_hold_crossings(cx, cy, tile_has_rail) {
         return CrossingCell::default();
     }
-    let key = cache_key(cx, cy);
-    // The cache is read before the breaker is consulted, not after: a cell whose
-    // crossings are already on disk costs the service nothing, and an outage
-    // must not blank cells that were complete before it started.
-    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return decode_cell(&cached).unwrap_or_default();
-    }
-    if !should_fetch(
-        cx,
-        cy,
-        tile_has_rail,
-        &CROSSINGS_BREAKER,
-        web_time::Instant::now(),
-    ) {
-        return CrossingCell::default();
-    }
+    CROSSINGS
+        .load_with(cx, cy, fetch_and_normalise(cx, cy))
+        .await
+}
 
-    // Nothing is written to the cache on a failed or unreadable answer: a
-    // poisoned key is never re-fetched, so an empty cell cached under one is
-    // worse than a cell that is asked for again. What *is* remembered is that
-    // the service failed, which is the breaker rather than the cache.
+/// The register's extent, the cache, the breaker and the store — the seven steps
+/// every additive per-cell layer shares. Only the fetch below is this module's.
+const CROSSINGS: CellSource<CrossingCell> = CellSource {
+    label: "level crossings",
+    gate: Some(covers),
+    key: cache_key,
+    url: Some(items_url),
+    breaker: Some(&CROSSINGS_BREAKER),
+    timeout: Some(http::OPTIONAL_LAYER_TIMEOUT),
+    parse: |text| decode_cell(text).ok(),
+};
+
+/// The collection, normalised into the compact stored form — or `None`, which is
+/// what trips the breaker.
+///
+/// Nothing is written to the cache on a failed or unreadable answer: a poisoned
+/// key is never re-fetched, so an empty cell cached under one is worse than a
+/// cell that is asked for again. What *is* remembered is that the service failed,
+/// and that is the breaker rather than the cache.
+async fn fetch_and_normalise(cx: i64, cy: i64) -> Option<String> {
     let request = http::Request::get(items_url(cx, cy)).timeout(http::OPTIONAL_LAYER_TIMEOUT);
-    let Ok(text) = http::fetch_string(request).await else {
-        CROSSINGS_BREAKER.trip();
-        return CrossingCell::default();
-    };
+    let text = http::fetch_string(request).await.ok()?;
     let mut crossings = match parse_items(&text) {
         Ok(read) => read,
         Err(e) => {
             tracing::warn!(error = %e, "level crossings unreadable");
-            CROSSINGS_BREAKER.trip();
-            return CrossingCell::default();
+            return None;
         }
     };
     if crossings.len() > MAX_CROSSINGS_PER_CELL {
@@ -358,15 +344,7 @@ pub(crate) async fn load_crossings_cell(cx: i64, cy: i64, tile_has_rail: bool) -
         );
         crossings.truncate(MAX_CROSSINGS_PER_CELL);
     }
-
-    let cell = CrossingCell { crossings };
-    storage::put(
-        storage::Namespace::Cache,
-        &key,
-        encode_cell(&cell).as_bytes(),
-    )
-    .await;
-    cell
+    Some(encode_cell(&CrossingCell { crossings }))
 }
 
 /// This cell's crossings in the local metre frame, ready to be oriented and
@@ -396,6 +374,22 @@ pub fn cell_crossings(cell: &CrossingCell, cx: i64, cy: i64, tile_m: f32) -> Vec
 mod tests {
     use super::*;
     use cartopolis_core::world::tile_to_lat_lng;
+
+    /// The predicate `load_crossings_cell` applies, spelled out: the cell's own
+    /// two gates and the service's outage gate. `CROSSINGS.would_fetch` is the
+    /// production call, so the only thing restated here is the composition with
+    /// the tile's railway — the one gate that belongs to the request rather than
+    /// to the cell.
+    fn should_fetch(
+        cx: i64,
+        cy: i64,
+        tile_has_rail: bool,
+        breaker: &http::Breaker,
+        now: web_time::Instant,
+    ) -> bool {
+        cell_may_hold_crossings(cx, cy, tile_has_rail)
+            && CROSSINGS.would_fetch(cx, cy, breaker.is_open_at(now))
+    }
 
     /// Two real answers from the service, captured verbatim on 2026-08-30 (the
     /// `links` array trimmed, the Utrecht one cut to two features).

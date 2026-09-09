@@ -33,6 +33,7 @@
 use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::fetch_gate;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
@@ -113,7 +114,7 @@ const LAYER_CELL_RADIUS: i64 = 3;
 /// Note what this ring costs even with every marker layer switched off: the
 /// stream is pumped for each cell of it, per layer definition, on every frame.
 fn layer_cell_radius() -> i64 {
-    crate::quality::budget().radius(LAYER_CELL_RADIUS)
+    crate::systems::load_control::radius(LAYER_CELL_RADIUS)
 }
 /// LAYER_ZOOM cells out from the camera the Overpass **detail** pass covers.
 ///
@@ -1075,7 +1076,9 @@ pub fn update_data_layers(
             continue;
         }
         for (dx, dy) in marker_ring() {
-            dl.cells.request((li, ccx + dx, ccy + dy), now_secs);
+            let rank = fetch_gate::ring_distance((*dx, *dy), 0, 0);
+            dl.cells
+                .request_ranked((li, ccx + dx, ccy + dy), rank, now_secs);
         }
         // Nothing to enrich when Overpass is already placing the markers.
         if from_tile {
@@ -1084,7 +1087,8 @@ pub fn update_data_layers(
                 // A cell answered before a re-anchor is still answered: the detail
                 // is anchor-independent, only the position match is not.
                 if !dl.detail_pois.contains_key(&job) {
-                    dl.details.request(job, now_secs);
+                    let rank = fetch_gate::ring_distance((*dx, *dy), 0, 0);
+                    dl.details.request_ranked(job, rank, now_secs);
                 }
             }
         }

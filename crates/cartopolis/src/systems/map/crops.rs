@@ -19,7 +19,7 @@
 
 use cartopolis_geo::crops::{CropCategory, CropParcel};
 
-use crate::platform::{http, storage};
+use crate::platform::cell_source::CellSource;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::osm_buildings::tdbag_url;
 use crate::systems::surveyed::cell_local_unclamped;
@@ -173,23 +173,25 @@ pub fn crop_parcels(cell: &CropCell, cx: i64, cy: i64, tile_m: f32) -> Vec<CropP
 ///
 /// An uncovered cell asks nothing and answers empty; so does an unreachable one,
 /// because the fallback is the generic green the map already draws.
+/// Public because `systems::cell_bundle` writes a bundled part under the key
+/// this module reads, and two spellings of one key is exactly the bug that
+/// would hide — the bundle would be fetched and the per-part request made anyway.
+pub(crate) fn cache_key(cx: i64, cy: i64) -> String {
+    format!("brp/v1/{BRP_ZOOM}/{cx}/{cy}.json")
+}
+
+const PARCELS: CellSource<CropCell> = CellSource {
+    label: "brp parcels",
+    gate: Some(|cx, cy| COVERAGE.covers(cx, cy)),
+    key: cache_key,
+    url: Some(|cx, cy| format!("{}/brp/{BRP_ZOOM}/{cx}/{cy}.json", tdbag_url())),
+    breaker: None,
+    timeout: None,
+    parse: |text| parse_crop_cell(text).ok(),
+};
+
 pub(crate) async fn load_crop_cell(cx: i64, cy: i64) -> CropCell {
-    if !COVERAGE.covers(cx, cy) {
-        return CropCell::default();
-    }
-    let key = format!("brp/v1/{BRP_ZOOM}/{cx}/{cy}.json");
-    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return parse_crop_cell(&cached).unwrap_or_default();
-    }
-    let url = format!("{}/brp/{}/{}/{}.json", tdbag_url(), BRP_ZOOM, cx, cy);
-    let Ok(bytes) = http::fetch(http::Request::get(url)).await else {
-        return CropCell::default();
-    };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return CropCell::default();
-    };
-    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
-    parse_crop_cell(&text).unwrap_or_default()
+    PARCELS.load(cx, cy).await
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::platform::fetch_gate;
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::osm_buildings::{lat_lng_to_local, num_from_value, overpass_query, MeshData};
@@ -630,9 +631,10 @@ pub fn update_tall_structures(
             to_request.push((ccx + dx, ccy + dy));
         }
     }
-    to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
+    to_request.sort_by_key(|c| fetch_gate::ring_distance(*c, ccx, ccy));
     for cell in to_request {
-        ts.cells.request(cell, now_secs);
+        let rank = fetch_gate::ring_distance(cell, ccx, ccy);
+        ts.cells.request_ranked(cell, rank, now_secs);
     }
 
     let mut jobs = Vec::new();

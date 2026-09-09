@@ -30,7 +30,7 @@
 
 use std::collections::HashSet;
 
-use crate::platform::{http, storage};
+use crate::platform::cell_source::CellSource;
 use crate::systems::coverage::CoverageSlot;
 
 /// Fixed cache/streaming zoom — the same cells as every other building tier.
@@ -83,25 +83,26 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
 ///
 /// `None` for an uncovered or unreachable cell, which every caller reads as "this
 /// cell has no models" and falls back to the shells it always drew.
+/// The cell's text, not a parsed cell: `lod22` owns the parser, because the
+/// format is the LoD2.2 one with two fields added and re-implementing it here is
+/// how the two would come to disagree.
+const MODELS: CellSource<String> = CellSource {
+    label: "lod3 models",
+    gate: Some(|cx, cy| COVERAGE.covers(cx, cy)),
+    key: cell_cache_key,
+    url: Some(|cx, cy| {
+        format!(
+            "{}/lod3/{LOD3_ZOOM}/{cx}/{cy}.json",
+            crate::systems::osm_buildings::tdbag_url()
+        )
+    }),
+    breaker: None,
+    timeout: None,
+    parse: |text| Some(text.to_string()),
+};
+
 pub(crate) async fn load_lod3_text(cx: i64, cy: i64) -> Option<String> {
-    if !COVERAGE.covers(cx, cy) {
-        return None;
-    }
-    let key = cell_cache_key(cx, cy);
-    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return Some(cached);
-    }
-    let url = format!(
-        "{}/lod3/{}/{}/{}.json",
-        crate::systems::osm_buildings::tdbag_url(),
-        LOD3_ZOOM,
-        cx,
-        cy
-    );
-    let bytes = http::fetch(http::Request::get(url)).await.ok()?;
-    let text = String::from_utf8(bytes).ok()?;
-    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
-    Some(text)
+    MODELS.load_text(cx, cy).await
 }
 
 /// The buildings an imported cell replaces, so the shells can be skipped without

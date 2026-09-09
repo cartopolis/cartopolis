@@ -42,6 +42,7 @@ use bevy::tasks::IoTaskPool;
 
 use crate::components::FreeCamera;
 use crate::grid::WORLD_CELL_EDGE;
+use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::coverage::CoverageSlot;
@@ -377,7 +378,8 @@ pub fn update_dikes(
         for dx in -DIKE_RADIUS..=DIKE_RADIUS {
             let c = (ccx + dx, ccy + dy);
             if dike_covers(c.0, c.1) {
-                dikes.stream.request(c, now);
+                let rank = fetch_gate::ring_distance(c, ccx, ccy);
+                dikes.stream.request_ranked(c, rank, now);
             }
         }
     }

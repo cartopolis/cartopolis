@@ -27,6 +27,8 @@
 #[cfg(target_os = "android")]
 pub mod android;
 pub mod audio;
+pub mod cell_source;
+pub mod fetch_gate;
 pub mod http;
 pub mod location;
 pub mod model_file;

@@ -31,7 +31,7 @@
 //! merged mesh, so it has to be known on the worker that builds it rather than
 //! arriving later on a schedule of its own.
 
-use crate::platform::{http, storage};
+use crate::platform::cell_source::CellSource;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind, LineKind, SurveyedLine};
 use crate::systems::osm_buildings::tdbag_url;
@@ -304,8 +304,27 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
 /// regenerated without the ghost versions the only way an existing install would
 /// ever see the fix was a new key. The `v1` entries age out through the ordinary
 /// sweep.
-fn cell_cache_key(cx: i64, cy: i64) -> String {
+/// Whether our host serves BGT data for this cell.
+///
+/// Public so `systems::cell_bundle` can ask the same question before requesting a
+/// bundle: the bundle's parts are all BGT and BRP, so a cell this returns `false`
+/// for has nothing to bundle and must not cost a request. Without it a session
+/// outside the coverage — Berlin, say, after the manifest had already answered
+/// yes for a Dutch cell — would ask for a bundle per cell and be told no, for
+/// ever, because the support flag only latches off while it is still unknown.
+pub(crate) fn covers(cx: i64, cy: i64) -> bool {
+    COVERAGE.covers(cx, cy)
+}
+
+pub(crate) fn objects_cache_key(cx: i64, cy: i64) -> String {
     format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.json")
+}
+
+/// The paving half's key. Public for the same reason [`objects_cache_key`] is:
+/// `systems::cell_bundle` writes a bundled part under the key this module reads,
+/// and two spellings of one key is exactly the bug that would hide.
+pub(crate) fn paving_cache_key(cx: i64, cy: i64) -> String {
+    format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.surfaces.json")
 }
 
 /// Fetch one cell's **paving**, through the storage cache.
@@ -313,53 +332,41 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
 /// Its own file because it is by far the heaviest part — 1.5 MB against 60 kB of
 /// objects for the densest Groningen cell — and the same split, for the same
 /// reason, as the BAG's buildings and places.
+/// The paving half of a cell, in a file of its own because it is by far the
+/// heavier — 1.5 MB against 60 kB of objects for the densest Groningen cell.
+const PAVING: CellSource<SurveyedPaving> = CellSource {
+    label: "bgt paving",
+    gate: Some(|cx, cy| COVERAGE.covers(cx, cy)),
+    // `v2` for the reason `objects_cache_key` gives.
+    key: paving_cache_key,
+    url: Some(|cx, cy| format!("{}/bgt/{BGT_ZOOM}/{cx}/{cy}.surfaces.json", tdbag_url())),
+    // Our own host: a failure here is our problem, not a third party's, and the
+    // coverage manifest already answers "does this host serve it at all".
+    breaker: None,
+    timeout: None,
+    parse: |text| parse_surveyed_paving(text).ok(),
+};
+
 pub(crate) async fn load_surveyed_paving(cx: i64, cy: i64) -> SurveyedPaving {
-    if !COVERAGE.covers(cx, cy) {
-        return SurveyedPaving::default();
-    }
-    // `v2` for the reason `cell_cache_key` gives.
-    let key = format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.surfaces.json");
-    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return parse_surveyed_paving(&cached).unwrap_or_default();
-    }
-    let url = format!(
-        "{}/bgt/{}/{}/{}.surfaces.json",
-        tdbag_url(),
-        BGT_ZOOM,
-        cx,
-        cy
-    );
-    let Ok(bytes) = http::fetch(http::Request::get(url)).await else {
-        return SurveyedPaving::default();
-    };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return SurveyedPaving::default();
-    };
-    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
-    parse_surveyed_paving(&text).unwrap_or_default()
+    PAVING.load(cx, cy).await
 }
 
 /// Fetch and parse one cell, through the storage cache.
 ///
 /// An uncovered cell asks nothing and answers empty; so does an unreachable one,
 /// because every consumer's fallback is the generated layer it already had.
+const OBJECTS: CellSource<SurveyedCell> = CellSource {
+    label: "bgt objects",
+    gate: Some(|cx, cy| COVERAGE.covers(cx, cy)),
+    key: objects_cache_key,
+    url: Some(|cx, cy| format!("{}/bgt/{BGT_ZOOM}/{cx}/{cy}.json", tdbag_url())),
+    breaker: None,
+    timeout: None,
+    parse: |text| parse_surveyed_cell(text).ok(),
+};
+
 pub(crate) async fn load_surveyed_cell(cx: i64, cy: i64) -> SurveyedCell {
-    if !COVERAGE.covers(cx, cy) {
-        return SurveyedCell::default();
-    }
-    let key = cell_cache_key(cx, cy);
-    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return parse_surveyed_cell(&cached).unwrap_or_default();
-    }
-    let url = format!("{}/bgt/{}/{}/{}.json", tdbag_url(), BGT_ZOOM, cx, cy);
-    let Ok(bytes) = http::fetch(http::Request::get(url)).await else {
-        return SurveyedCell::default();
-    };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return SurveyedCell::default();
-    };
-    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
-    parse_surveyed_cell(&text).unwrap_or_default()
+    OBJECTS.load(cx, cy).await
 }
 
 /// Convert a lat/lng to the tile-local metre frame a cell is meshed in: metres

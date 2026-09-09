@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 
 use bevy::prelude::{Commands, Entity};
 
+use super::fetch_gate;
 use super::work::Dispatcher;
 
 /// How a stream admits work and retries failures. All of it is per-streamer
@@ -112,10 +113,25 @@ where
         self.results.clone()
     }
 
-    /// Ask for a cell. `true` if it was queued — i.e. it was not already known and
-    /// is not inside a failure backoff. Call it for every wanted cell every frame:
-    /// this *is* the retry pump, so a streamer needs no second loop over `failed`.
+    /// Ask for a cell with no distance to state. See
+    /// [`request_ranked`](Self::request_ranked), which this defers to with
+    /// [`fetch_gate::ANY`].
     pub fn request(&mut self, key: K, now: f64) -> bool {
+        self.request_ranked(key, fetch_gate::ANY, now)
+    }
+
+    /// Ask for a cell, stating how far it is from the one the camera is over.
+    /// `true` if it was queued — i.e. it was not already known and is not inside a
+    /// failure backoff. Call it for every wanted cell every frame: this *is* the
+    /// retry pump, so a streamer needs no second loop over `failed`.
+    ///
+    /// `rank` decides two things: the order this stream's own queue comes out in,
+    /// and whether the job may spend the global [`fetch_gate`]'s reserve. A cell
+    /// re-requested at a nearer rank while it is still queued keeps its original
+    /// one — the caller's next pass would have to `forget` it to re-rank it, and
+    /// in practice the ring moves whole cells in and out rather than re-ranking
+    /// them in place.
+    pub fn request_ranked(&mut self, key: K, rank: fetch_gate::Rank, now: f64) -> bool {
         if self.requested.contains(&key) {
             return false;
         }
@@ -133,7 +149,7 @@ where
             }
         }
         self.requested.insert(key.clone());
-        self.dispatch.queue(key);
+        self.dispatch.queue_ranked(key, rank);
         true
     }
 
@@ -152,11 +168,28 @@ where
         }
     }
 
-    /// The next cell allowed to start at `now`, or `None` at the concurrency cap /
-    /// inside the throttle. Loop on it to fill the budget each frame.
+    /// The next cell allowed to start at `now`, or `None` at this stream's
+    /// concurrency cap, inside its throttle, or refused by the global
+    /// [`fetch_gate`]. Loop on it to fill the budget each frame.
+    ///
+    /// The gate is consulted **before** the job leaves the queue, which is what
+    /// [`Dispatcher::peek_rank`] exists for: a job taken and then refused would
+    /// have to be pushed back, and it would go back at the end rather than in its
+    /// place.
     pub fn next_job(&mut self, now: f64) -> Option<K> {
         loop {
-            let key = self.dispatch.next(now)?;
+            let rank = self.dispatch.peek_rank()?;
+            if !fetch_gate::acquire(rank) {
+                return None;
+            }
+            let Some(key) = self.dispatch.next(now) else {
+                // This stream's own cap or throttle refused it. The gate slot was
+                // never used, so it goes straight back — holding it would let one
+                // throttled streamer (Overpass paces at seconds per request) sit
+                // on the global bound doing nothing.
+                fetch_gate::release();
+                return None;
+            };
             if self.in_flight.insert(key.clone()) {
                 return Some(key);
             }
@@ -167,6 +200,7 @@ where
             // is what bounds concurrency at all — a leak here is permanent and
             // silent, and the guard costs a set lookup.
             self.dispatch.completed();
+            fetch_gate::release();
         }
     }
 
@@ -191,8 +225,10 @@ where
     pub fn defer(&mut self, items: Vec<(K, R)>) {
         for (key, _) in &items {
             if self.in_flight.insert(key.clone()) {
-                // Re-occupy the slot `take_results` freed for it.
+                // Re-occupy the slot `take_results` freed for it — in this stream
+                // and in the global gate, which released one at the same moment.
                 self.dispatch.reoccupy();
+                fetch_gate::reoccupy();
             }
         }
         if let Ok(mut g) = self.results.lock() {
@@ -319,6 +355,10 @@ where
     /// freed, under the cap.
     pub fn reset(&mut self) {
         self.requested.clear();
+        // Every in-flight cell holds a global gate slot, and this drops the whole
+        // set at once. Forgetting to hand them back would leak the entire cap over
+        // a few teleports and then stream nothing for ever, with nothing logged.
+        fetch_gate::release_many(self.in_flight.len());
         self.in_flight.clear();
         self.failed.clear();
         self.dispatch = Dispatcher::new(self.policy.max_in_flight, self.policy.min_interval_secs);
@@ -336,7 +376,21 @@ where
     fn release(&mut self, key: &K) {
         if self.in_flight.remove(key) {
             self.dispatch.completed();
+            fetch_gate::release();
         }
+    }
+}
+
+/// Hand every held [`fetch_gate`] slot back when a stream goes away.
+///
+/// In the running client this fires almost never — the streams live in Bevy
+/// resources that outlive everything — but the gate is process-wide, so a stream
+/// dropped with work in flight would take part of the global cap with it. It is
+/// also what keeps the tests below honest: they end mid-flight on purpose, and
+/// without this each one would shrink the cap for every test that runs after it.
+impl<K, R> Drop for CellStream<K, R> {
+    fn drop(&mut self) {
+        fetch_gate::release_many(self.in_flight.len());
     }
 }
 

@@ -288,6 +288,32 @@ pub struct Budget {
     /// queues the most, in the same units, in the `slow frame` line and as
     /// `upload_peak_kb` in `--dump-state`.
     pub upload_bytes_per_frame: Option<usize>,
+    /// How many bytes of streamed content this machine should hold at once, or
+    /// `None` for "no ceiling".
+    ///
+    /// The **total** to `upload_bytes_per_frame`'s **rate**, and the term that
+    /// actually loses a device: the 2026-08-19 Adreno 840 report had the rate
+    /// guard in force and died anyway, holding ~1 GB (see [`handset_guarded`],
+    /// which is where that table lives). Deferring an upload changes when a tile
+    /// arrives, never whether it stays.
+    ///
+    /// Unlike every other field here, this one is **not** applied at startup.
+    /// `tile_px` and `radius_bias` are the levers a preset can pull for it, and
+    /// what they can promise is a ring of a given size — not a number of bytes,
+    /// because the bytes depend on the ground the ring lands on. So this is a
+    /// *target* that `systems::load_control` steers the ring toward with the
+    /// measurement `systems::upload_meter` was already taking, rather than a
+    /// setting anything reads directly.
+    ///
+    /// The numbers are read off the table in [`handset_guarded`], which measured
+    /// Groningen at 150 m with a warm tile cache. Each rung sits a little above
+    /// what that configuration actually held, so the controller does nothing in
+    /// the case that was measured and acts only where the ground is denser than
+    /// the rung was tuned against. `None` on the desktop rung for the same reason
+    /// the rate ceiling is: no desktop run on record has lost a device to
+    /// streaming, and a ring that narrowed itself on a workstation would be
+    /// taking away a view nobody was struggling to render.
+    pub resident_bytes_target: Option<usize>,
 }
 
 /// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
@@ -391,6 +417,7 @@ impl Budget {
             render_scale: 1.0,
             fps_cap: Some(60.0),
             upload_bytes_per_frame: None,
+            resident_bytes_target: None,
         }
     }
 
@@ -447,6 +474,11 @@ impl Budget {
             // uploads and despawns together — and its guards are the streamers'
             // own caps.)
             upload_bytes_per_frame: None,
+            // 700 MB: comfortably above the 567 MB the table in `handset_guarded`
+            // measured for this rung with the tile raster capped, and well under
+            // the gigabyte that lost a device. Set here rather than left `None`
+            // because this is the rung Android's automatic answer resolves to.
+            resident_bytes_target: Some(700 * 1024 * 1024),
         }
     }
 
@@ -509,6 +541,8 @@ impl Budget {
             // one of them pays for its upscale and the other does not.
             render_scale: 0.5,
             upload_bytes_per_frame: Some(PHONE_UPLOAD_BYTES_PER_FRAME),
+            // 350 MB, against the 307 MB this rung measured over Groningen.
+            resident_bytes_target: Some(350 * 1024 * 1024),
             // Leave pacing to FIFO. See the field's own comment: a sleep-based
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.
@@ -969,13 +1003,30 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         .map_or(PHONE_UPLOAD_BYTES_PER_FRAME, |own| {
             own.min(PHONE_UPLOAD_BYTES_PER_FRAME)
         });
+    let resident = budget
+        .resident_bytes_target
+        .map_or(HANDSET_RESIDENT_BYTES, |own| {
+            own.min(HANDSET_RESIDENT_BYTES)
+        });
     Budget {
         upload_bytes_per_frame: Some(ceiling),
         tile_px: budget.tile_px.min(HANDSET_TILE_PX),
         radius_bias: budget.radius_bias.max(1),
+        // The total, guarded the same way and for the same reason as the rate: a
+        // rung picked by hand in Settings must not delete a ceiling the machine
+        // needs. The minimum, not an overwrite, so a rung asking for less keeps
+        // its own number.
+        resident_bytes_target: Some(resident),
         ..budget
     }
 }
+
+/// What a handset may hold, whatever rung it is on.
+///
+/// 400 MB, just above the **371 MB** the table above measured for the guarded
+/// configuration over Groningen — so on the ground this was tuned against the
+/// controller never acts, and it is only somewhere denser that the ring narrows.
+const HANDSET_RESIDENT_BYTES: usize = 400 * 1024 * 1024;
 
 /// The spelling of a tier, as `CARTO_QUALITY` / `?quality=` accepts it.
 ///

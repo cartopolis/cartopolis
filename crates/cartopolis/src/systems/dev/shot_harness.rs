@@ -504,6 +504,23 @@ pub struct ShotMetrics {
     /// can be: the harness quiesces the worker pool between the two, so a reading
     /// taken at the shutter is 0 by construction and says nothing.
     pub worker_outstanding: usize,
+    /// Cell fetch jobs outstanding across every streamer at once
+    /// (`platform::fetch_gate`), i.e. what the global bound is bounding.
+    ///
+    /// The network twin of [`Self::worker_outstanding`], and the two are read at
+    /// the same moment for the same reason. A capture that settles slowly with
+    /// this pinned at the gate's capacity is a client waiting on requests; one
+    /// with this near zero and `worker_outstanding` high is waiting on cores.
+    pub fetch_outstanding: usize,
+    /// Steps of streaming radius `systems::load_control` was withholding when
+    /// this was captured — 0 unless the measured residency pushed it up.
+    ///
+    /// A picture taken with a narrower ring than the tier asked for has to say
+    /// so, or a `cargo shots` run that happened to be under memory pressure
+    /// silently documents a thinner map than the one this client draws. The
+    /// controller is off under the harness, so in a scripted capture this is
+    /// always 0 — which is the assertion, not a placeholder.
+    pub radius_bias: i64,
     /// Clipmap tiles left out of the draw list because finer, ready ones already
     /// paint their whole footprint (`map_stream::occluded_by_finer`).
     ///
@@ -866,7 +883,7 @@ pub struct ShotMetrics {
 /// were grouped as they were added), which is exactly why a row must be built by
 /// name rather than by position.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,flicker_px,\
-draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,\
+draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,fetch_outstanding,radius_bias,\
 tiles_occluded,aerial_tiles,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
@@ -2663,6 +2680,8 @@ pub fn drive_capture(
             tris_tiles: render.tris_tiles,
             tris_globe: render.tris_globe,
             worker_outstanding: progress.worker_outstanding,
+            fetch_outstanding: crate::platform::fetch_gate::outstanding(),
+            radius_bias: crate::systems::load_control::bias(),
             tiles_occluded: stream.occluded.len(),
             aerial_tiles: stream.aerial_tiles(),
             alt_m: globe.altitude_m(cell, tf) as i64,
@@ -2794,6 +2813,8 @@ pub fn drive_capture(
                     ktris_total = m.tris_total / 1000,
                     ktris_shadow = m.tris_shadow / 1000,
                     worker_outstanding = m.worker_outstanding,
+                    fetch_outstanding = m.fetch_outstanding,
+                    radius_bias = m.radius_bias,
                     tiles_occluded = m.tiles_occluded,
                     aerial_tiles = m.aerial_tiles,
                     alt_m = m.alt_m,
@@ -3248,6 +3269,8 @@ mod tests {
             tris_tiles: 0,
             tris_globe: 0,
             worker_outstanding: 0,
+            fetch_outstanding: 0,
+            radius_bias: 0,
             tiles_occluded: 0,
             aerial_tiles: 0,
             alt_m: 1000,

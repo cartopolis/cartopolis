@@ -23,6 +23,7 @@ use bevy::tasks::IoTaskPool;
 use bevy_image::Image;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
@@ -283,8 +284,10 @@ pub struct MapStream {
 /// a handful of flops; it is the 424 hash inserts behind them that were the cost.
 #[derive(Default)]
 struct DesiredTiles {
-    /// `(zoom, centre x, centre y)` per clipmap level, plus the anchor generation.
-    key: Option<(Vec<(u32, i64, i64)>, u32)>,
+    /// `(zoom, centre x, centre y)` per clipmap level, the anchor generation, and
+    /// the radius bias `systems::load_control` currently holds — all three decide
+    /// which tiles are wanted, so all three have to invalidate the set.
+    key: Option<(Vec<(u32, i64, i64)>, u32, i64)>,
     /// Wanted tile → its spawn height.
     wanted: HashMap<TileKey, f32>,
     /// Spawn/fetch order: coarsest zoom first, so a fresh anchor gets full — if
@@ -848,15 +851,22 @@ fn clipmap(
     base_zoom: u32,
     finest_zoom: u32,
     budget: &crate::quality::Budget,
+    ring_bias: i64,
 ) -> (HashMap<TileKey, f32>, Vec<TileKey>) {
     let mut wanted: HashMap<TileKey, f32> = HashMap::new();
     let mut spawn_order: Vec<TileKey> = Vec::new();
     for &(zoom, ctx, cty) in centres {
-        let radius = budget.radius(if zoom == finest_zoom {
+        // `budget.radius` and not `load_control::radius`, because `budget` is a
+        // parameter here precisely so a test can state the fan-out for a tier it
+        // is not running on. The controller's bias is folded in by the caller
+        // (`ring_bias`), which keeps this function a pure function of its
+        // arguments.
+        let radius = (budget.radius(if zoom == finest_zoom {
             LOAD_RADIUS
         } else {
             COARSE_RADIUS
-        });
+        }) - ring_bias)
+            .max(1);
         let y = level_y(base_zoom, zoom);
         // Within a level, nearest-first. The fetches are queued in this order and
         // the pools drain it roughly FIFO, so the ground under the camera is the
@@ -876,6 +886,25 @@ fn clipmap(
         spawn_order.extend(level.into_iter().map(|(_, tile)| tile));
     }
     (wanted, spawn_order)
+}
+
+/// [`fetch_gate::NEAR`] for a tile in the 3×3 around its own level's centre, and
+/// [`fetch_gate::ANY`] for the rest of the clipmap.
+///
+/// Two bands rather than a full distance, for the reason the call site gives. A
+/// tile whose level is not in `centres` — which cannot happen, since the desired
+/// set is built from them — answers `ANY`, the conservative side.
+fn tile_rank(tile: TileKey, centres: &[(u32, i64, i64)]) -> fetch_gate::Rank {
+    centres
+        .iter()
+        .find(|(zoom, _, _)| *zoom == tile.z)
+        .map_or(fetch_gate::ANY, |&(_, ctx, cty)| {
+            if fetch_gate::ring_distance((tile.x, tile.y), ctx, cty) <= fetch_gate::NEAR {
+                fetch_gate::NEAR
+            } else {
+                fetch_gate::ANY
+            }
+        })
 }
 
 /// Which tiles are completely painted over by finer, ready ones — and can
@@ -1057,13 +1086,19 @@ pub fn update_map_stream(
     // Expensive, and only when the answer can have changed: the 424-entry desired
     // set and its spawn order. See `DesiredTiles` on why the key is every level's
     // centre rather than just the finest.
-    let key = (centres, stream.fetch_generation);
+    // The controller's bias is part of the key, not just an argument: it changes
+    // which tiles are wanted, so a change to it has to re-derive the desired set
+    // exactly as a re-anchor does. Left out, the ring would narrow only the next
+    // time the camera crossed a cell boundary.
+    let ring_bias = crate::systems::load_control::bias();
+    let key = (centres, stream.fetch_generation, ring_bias);
     if stream.desired.key.as_ref() != Some(&key) {
         let (wanted, spawn_order) = clipmap(
             &key.0,
             base_zoom,
             stream.current_zoom,
             crate::quality::budget(),
+            ring_bias,
         );
         stream.desired = DesiredTiles {
             key: Some(key),
@@ -1077,13 +1112,30 @@ pub fn update_map_stream(
     // mutably borrows `stream`; `TileKey` is `Copy`, so reading one out costs
     // nothing and no 424-entry clone is needed.
     let gen = stream.fetch_generation;
+    // The level centres, for the rank below. Eight entries, cloned out because the
+    // loop body borrows `stream` mutably.
+    let level_centres: Vec<(u32, i64, i64)> = stream
+        .desired
+        .key
+        .as_ref()
+        .map(|(centres, _, _)| centres.clone())
+        .unwrap_or_default();
     for i in 0..stream.desired.spawn_order.len() {
         let key = stream.desired.spawn_order[i];
         let y = stream.desired.wanted[&key];
-        // `CellStream::request` de-dups and is also the retry pump — a failed tile
-        // waits out `FETCH_RETRY_SECS` and stops being offered once its attempts
-        // are spent, so there is no second retry loop.
-        let armed = stream.tiles.request(key, now);
+        // **Only the 3×3 under the camera is ranked near; everything else keeps
+        // its place.** The spawn order here is coarse-level-first on purpose (a
+        // blurry whole ground beats a sharp patch of it), and ranking the full
+        // 424 by distance would overturn that decision — which was made against a
+        // measurement and this one was not. What the rank does buy is the global
+        // `fetch_gate`'s near reserve for the tiles a person is actually looking
+        // at, and since equal ranks keep arrival order, the coarse-first sequence
+        // survives inside both bands.
+        let rank = tile_rank(key, &level_centres);
+        // `CellStream::request_ranked` de-dups and is also the retry pump — a
+        // failed tile waits out `FETCH_RETRY_SECS` and stops being offered once
+        // its attempts are spent, so there is no second retry loop.
+        let armed = stream.tiles.request_ranked(key, rank, now);
         if stream.loaded.contains_key(&key) {
             // Armed a tile we already hold: see `MapStream::requeues`. The fetch
             // itself is left alone deliberately — this is an instrument, not a
@@ -1523,6 +1575,7 @@ mod tests {
             DEFAULT_ANCHOR_ZOOM,
             DEFAULT_ANCHOR_ZOOM,
             &desktop(),
+            0,
         );
         assert_eq!(order.len(), 424, "the clipmap fan-out changed");
         assert_eq!(
@@ -1553,6 +1606,7 @@ mod tests {
             DEFAULT_ANCHOR_ZOOM,
             DEFAULT_ANCHOR_ZOOM,
             &crate::quality::Budget::phone(),
+            0,
         );
         assert_eq!(order.len(), 224, "the phone-tier clipmap fan-out changed");
         assert_eq!(wanted.len(), order.len());
@@ -1594,7 +1648,7 @@ mod tests {
         // finest level in this band as well as the coarsest, so it gets
         // `LOAD_RADIUS`: 9×9 = 81 tiles against a full clipmap's 424.
         let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, MIN_ZOOM);
-        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, MIN_ZOOM, &desktop());
+        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, MIN_ZOOM, &desktop(), 0);
         assert_eq!(order.len(), 81, "the prefetch ring changed size");
     }
 
@@ -1615,6 +1669,7 @@ mod tests {
             DEFAULT_ANCHOR_ZOOM,
             DEFAULT_ANCHOR_ZOOM,
             &desktop(),
+            0,
         );
 
         let sources: std::collections::HashSet<(u32, i64, i64)> = order

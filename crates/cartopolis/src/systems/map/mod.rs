@@ -4,6 +4,7 @@ pub mod aerial;
 pub mod atmosphere_patch;
 pub mod building_facts;
 pub mod building_windows;
+pub mod cell_bundle;
 pub mod coverage;
 // The fetching half of the level crossings (`cartopolis_geo::crossings` is the
 // pure one). Named for the layer rather than for ProRail, the way `surveyed`,
@@ -22,6 +23,7 @@ pub mod interiors;
 // The fog volume the sun's light shafts are marched through; the camera and the
 // sun carry the other two halves (`free_camera::setup_camera`, `sky`).
 pub mod light_shafts;
+pub mod load_control;
 pub mod lod22;
 pub mod lod3;
 pub mod map_geometry;

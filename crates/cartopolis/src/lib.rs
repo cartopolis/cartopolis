@@ -3012,6 +3012,18 @@ fn run_client() {
         // archetypes at all, and the phone is the platform whose bursts it names.
         .add_systems(Last, systems::upload_meter::measure_uploads)
         .init_resource::<systems::upload_meter::UploadMeter>()
+        // The meter's other consumer: the ring that streamers reach with, steered
+        // by the residency the meter measures rather than fixed by the tier alone
+        // (`systems::load_control`). After `measure_uploads` in the same schedule,
+        // so it reads this frame's total and not last frame's; off under the shot
+        // harness, where a ring that changed size between captures would make two
+        // runs of `cargo shots` differ for a reason no image could show.
+        .add_systems(
+            Last,
+            systems::load_control::observe
+                .after(systems::upload_meter::measure_uploads)
+                .run_if(bevy::prelude::not(systems::shot_harness::harness_active)),
+        )
         // The meter's enforcement half: fund the frame's shared finalisation
         // budget before any streamer runs, so what they collectively hand the
         // GPU per frame is bounded once rather than per streamer — see
