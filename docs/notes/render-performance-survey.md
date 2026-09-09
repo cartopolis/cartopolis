@@ -396,7 +396,14 @@ top octaves displace the sample by a fraction of a noise cell. Those six, and th
 wisp (whose own comment calls it "gentle, LARGE-scale… low frequency and shallow"),
 lost octaves; the density and ridge crests that decide what you see kept all six.
 
-54 `vnoise3` calls per fragment became 27. Cloud pass at 1280×720: **9.39 → ~5.0 ms**.
+54 `vnoise3` calls per fragment became 27. Measured end to end at 1280×720, both
+windows `quiet`, on an idle machine:
+
+| | before | after |
+|---|---|---|
+| cloud pass | 9.38 ms | **4.81 ms** (−48.7 %) |
+| GPU frame | 13.22 ms | **8.14 ms** (−38.4 %) |
+| frame rate | 54.6 fps | **69.5 fps** (+27.4 %) |
 
 **Where the floor is, and why.** A ladder on the warp octaves, whole-Earth capture
 with `CARTO_CLOUD_DATA_SYNC=1` so the frame carries real GFS cloud:
