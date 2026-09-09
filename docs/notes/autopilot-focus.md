@@ -44,10 +44,10 @@ and the autopilot stores it. The alternatives that lost:
 `autopilot.json` used to have exactly one writer. It now has two, and the rule
 that keeps that safe is ownership, not locking:
 
-| | Ordering, wording, membership of the plan | `issue` on an item |
-|---|---|---|
-| cartopy (`server/autopilot.ts`) | writes | passes through |
-| autopilot (`tools/autopilot.ts`) | only fills an **empty** list | writes |
+| | Ordering, wording, membership of an **unfiled** item | A **filed** item | `issue` |
+|---|---|---|---|
+| cartopy (`server/autopilot.ts`) | writes | refuses the edit | ignores what is sent |
+| autopilot (`tools/autopilot.ts`) | only appends to a **fully filed** list | leaves it | writes |
 
 Both do read-merge-rename through a temp file in the same directory. A collision
 can therefore cost at most one stamp, and a lost stamp is recovered on the next
@@ -63,10 +63,39 @@ filed and its answer can never be stored, so the lane sits there filing nothing
 here?`) and does not take the QA and retrospective lanes down with it, which is
 the only reason that failure is survivable rather than an hourly stack trace.
 
-A plan is stored only while the console's list is empty — otherwise a second
-planning session would overwrite an evening's ordering. Asking for a fresh plan
-is therefore *clearing the list*, plus a `planRevision` bump so the dedupe key
-does not recognise the question it answered last time.
+A plan is stored only while nothing in the console's list is **unfiled** —
+otherwise a second planning session would overwrite an evening's ordering. It
+used to be "only while the list is empty", and the console's lock on filed rows
+(below) retired that: a filed row can no longer be deleted there, so after the
+first ticket the list would never be empty again and a new plan could never be
+answered. Filed rows are history — they stay where they are and a new plan is
+appended past them, through `planItems` so a fresh item cannot take an id a
+filed one already answers to.
+
+Asking for a fresh plan is therefore *clearing the unfiled rows*, plus a
+`planRevision` bump so the dedupe key does not recognise the question it
+answered last time. The bump is what makes the key the memory here: the
+exhausted-plan state is the same state the planning ticket was read in, so
+without it every tick after the last item was filed would read that ticket's
+block again and append the whole plan a second time. The key goes into the
+autopilot's own state file once its answer is stored.
+
+## A filed row is locked, in both writers
+
+An item stops being a plan the moment it becomes a ticket: a session is building
+it against the wording that was filed, so rewriting the row afterwards describes
+the work as something nobody was asked to do. The console renders a filed row as
+static text with a link to its ticket and no remove button, and
+`writeAutopilotConfig` enforces the same thing rather than trusting it — a stale
+tab is a second writer too. What is enforced is *membership and wording*, not
+position: where a row sits is only how the queue reads, and the autopilot keys
+everything on the id and the marker in the ticket body.
+
+`issue` moved with it. The console used to echo back whatever it last read,
+which is a lost stamp whenever the autopilot files something between that read
+and the save; the server now takes the number from the file by id and ignores
+what was sent, so the field is the autopilot's alone in fact and not only by
+convention.
 
 ## What the focus is not
 

@@ -999,13 +999,30 @@ async function planFromTicket(n: number): Promise<PlanItem[] | null> {
   return found;
 }
 
-/** Store a posted plan, unless the operator's list has meanwhile stopped being empty. */
-async function storePlan(items: PlanItem[]): Promise<boolean> {
-  return await writeConfig((raw) => {
-    if (planItems(raw.focusPlan).length) return false;
-    raw.focusPlan = items;
+/**
+ * Store a posted plan, and answer with the list as it now stands — or null,
+ * meaning the console's own queue was left alone.
+ *
+ * The rule was "only while the list is empty", and the console's lock on filed
+ * rows retired it: a row that became a ticket can no longer be deleted there,
+ * so after the first item is filed the list is never empty again and asking for
+ * a new plan could never be answered. What may not be overwritten is *unfiled*
+ * work — that is somebody's ordering, and a second planning session would throw
+ * an evening of it away. Filed rows are history: they stay at the top and the
+ * new plan is appended past them. Running the concatenation back through
+ * `planItems` is what stops a fresh item taking an id a filed one already
+ * answers to, which would file one ticket for two pieces of work.
+ */
+async function storePlan(items: PlanItem[]): Promise<PlanItem[] | null> {
+  let merged: PlanItem[] = [];
+  const wrote = await writeConfig((raw) => {
+    const current = planItems(raw.focusPlan);
+    if (current.some((i) => !i.issue)) return false;
+    merged = planItems([...current, ...items]);
+    raw.focusPlan = merged;
     return true;
   });
+  return wrote ? merged : null;
 }
 
 /**
@@ -1135,10 +1152,21 @@ async function fileFocusTicket(cfg: Config, item: PlanItem, position: string): P
  * `enabled` does gate it. That knob means "file no new tickets", and this files
  * a ticket.
  */
-async function planFocus(cfg: Config): Promise<void> {
-  if (!cfg.enabled || !cfg.focus || cfg.focusPlan.length) return;
+async function planFocus(cfg: Config, state: State): Promise<void> {
+  // Filed rows are not a queue: they are tickets, and the sessions building them
+  // are past this list. A plan whose every item has been filed is spent, and
+  // asking for the next one is what a person does then.
+  if (!cfg.enabled || !cfg.focus || cfg.focusPlan.some((i) => !i.issue)) return;
 
   const key = planKey(cfg);
+  // An answered question is not asked again. Without this the exhausted plan
+  // above is the same state the ticket was read in, so every tick after the
+  // last item was filed would find that ticket, read its block again and append
+  // the whole plan a second time — under fresh ids, so nothing would dedupe it.
+  // Asking for more work is the console's move: it bumps `planRevision`, which
+  // changes this key.
+  if (state.keys.includes(key)) return;
+
   const ticket = await filedIssue(key);
   if (!ticket) return await filePlanningTicket(cfg, key);
 
@@ -1148,19 +1176,21 @@ async function planFocus(cfg: Config): Promise<void> {
   // and retrospective lanes all run after this one, and an unwritable control
   // file (a volume mounted read-only) would otherwise stop all three every hour
   // with a stack trace as the only explanation.
-  let stored: boolean;
+  let stored: PlanItem[] | null;
   try {
     stored = await storePlan(posted);
   } catch (e) {
     return log(`could not store the plan from #${ticket.number} — is ${CONFIG_PATH} writable from here? ${e instanceof Error ? e.message : e}`);
   }
   if (!stored) {
-    return log(`#${ticket.number} posted a plan but the console's list is no longer empty — keeping the console's`);
+    return log(`#${ticket.number} posted a plan but the console's list still holds unfiled work — keeping the console's`);
   }
-  log(`stored ${posted.length} plan item(s) from #${ticket.number}`);
+  log(`stored ${stored.filter((i) => !i.issue).length} plan item(s) from #${ticket.number}`);
+  state.keys.push(key);
+  await saveState(state);
   // The tick's own copy, so the first item can be filed in this same pass
   // rather than an hour later.
-  cfg.focusPlan = posted;
+  cfg.focusPlan = stored;
 }
 
 /**
@@ -1648,7 +1678,7 @@ if (cmd === "status") {
   await shipReady(cfg);
 } else if (cmd === "generate") {
   await rearmParkedTickets();
-  await planFocus(cfg);
+  await planFocus(cfg, await loadState());
   await generate(cfg);
   await generateQa(cfg);
   await generateRetro(cfg);
@@ -1657,7 +1687,7 @@ if (cmd === "status") {
   await shipReady(cfg);
   await sweepMergedBranches();
   await rearmParkedTickets();
-  await planFocus(cfg);
+  await planFocus(cfg, await loadState());
   await generate(cfg);
   await generateQa(cfg);
   await generateRetro(cfg);
