@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
 triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3]
-updated: 2026-08-23
+updated: 2026-09-09
 ---
 
 # Where the frames go, and where they do not
@@ -308,7 +308,7 @@ The decode is memoised; the path building and the bounds scan are not.
   after launch and after every teleport, not steady-state frames — and `--shot`
   waits for settle, so the harness hides exactly this.
 
-## The space-tier cloud shell had no off-switch, and still has no measurement
+## The space-tier cloud shell: measured at last, and it is the frame
 
 Reported 2026-08-23 from the OnePlus 15: frame rate swings hard with altitude —
 84 fps with the globe small on screen, 24 fps with it filling the screen — which
@@ -351,6 +351,42 @@ in the wrong direction specifically: an ALU-heavy noise shader is far more
 expensive relative to everything else on lavapipe than on an Adreno, so even a
 clean number here would not transfer. This is the `frame_ms` row of the table at
 the top of this note doing exactly what it says it does.
+
+### Settled 2026-09-09 on real hardware
+
+A Steam Deck (AMD Van Gogh, RADV, Mesa 26.2.2) was added as a second runner, and
+it answers what lavapipe could not. `cargo perf --only orbit`, quiet steady
+windows, `CARTO_NO_CLOUDS` against baseline:
+
+| size | config | fps | GPU total | transparent pass | fragment invocations |
+|---|---|---|---|---|---|
+| 640×360 | base | 106.9 | 5.19 ms | **3.21 ms** | 231 039 |
+| 640×360 | no clouds | 115.4 | 2.08 ms | 0.03 ms | 0 |
+| 1280×720 | base | **52.2** | 13.22 ms | **9.39 ms** | 922 840 |
+| 1280×720 | no clouds | **84.5** | 3.85 ms | 0.03 ms | 0 |
+
+**The globe cloud shell is the transparent pass, and at 1280×720 it is 71 % of the
+GPU frame and the difference between 52 and 85 fps.** The atmosphere and the haze
+are noise beside it: `CARTO_NO_ATMOSPHERE` measured *+0.36* ms and `CARTO_NO_HAZE`
+−0.10 ms, both inside the run-to-run spread.
+
+Three things make this trustworthy where the 2026-08-23 attempt was not. The
+windows report `quiet=true` — nothing streaming, no worker jobs, no mesh churn.
+Fragment counts repeat to the unit across configurations. And the machine was idle
+(load 0.1–2.4) rather than shared.
+
+**It is fill-bound, not overdraw.** Overdraw on that pass is exactly **1.00×** —
+one fragment per pixel, nothing wasted — and the cost scales with resolution
+(3.11 → 9.37 ms for 4× the pixels, a 3.0× rise; invocations scale exactly 4×). So
+the problem is not how much is drawn, it is what each fragment costs:
+`globe_clouds.wgsl` runs **nine 6-octave `fbm3` fields, i.e. 54 `vnoise3` calls and
+432 hash lookups, per pixel**.
+
+**Do not extrapolate the millisecond figure to an Adreno.** This shader is
+dominated by 3-D value-noise lookups, which is exactly where GPU architectures
+diverge most. What does transfer is the *shape*: fill-bound, 1.00× overdraw, and
+scaling with pixel count — so a handset at ~2772×1272 pays it over ~3.8× the pixels
+of the 1280×720 row above.
 
 The device settles it, with no rebuild once an APK carries the flag:
 
