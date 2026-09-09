@@ -1118,40 +1118,59 @@ async function fileFocusTicket(cfg: Config, item: PlanItem, position: string): P
 }
 
 /**
+ * The planning lane: get a queue under the focus, or wait for the session that
+ * is writing one.
+ *
+ * A step of the tick in its own right, beside the QA and retrospective lanes,
+ * rather than the first half of `generateFocus` — which is where it started and
+ * where it deadlocked. Everything guarding the feature lane guards *code being
+ * built*: a red `main` every new branch would inherit, a daily quota, one
+ * ticket at a time. This files no branch and writes no code, and behind those
+ * gates it was unreachable in exactly the state that produces it — a focus set
+ * on a busy board answered "no plan yet" in the console for as long as the
+ * board stayed busy, with nothing said anywhere about why. It is still one
+ * session per (focus, revision), self-limited by its key, and it still holds no
+ * feature slot.
+ *
+ * `enabled` does gate it. That knob means "file no new tickets", and this files
+ * a ticket.
+ */
+async function planFocus(cfg: Config): Promise<void> {
+  if (!cfg.enabled || !cfg.focus || cfg.focusPlan.length) return;
+
+  const key = planKey(cfg);
+  const ticket = await filedIssue(key);
+  if (!ticket) return await filePlanningTicket(cfg, key);
+
+  const posted = await planFromTicket(ticket.number);
+  if (!posted) return log(`#${ticket.number} is planning the focus — no plan posted yet`);
+  // A write that cannot happen must not take the tick with it: the feature, QA
+  // and retrospective lanes all run after this one, and an unwritable control
+  // file (a volume mounted read-only) would otherwise stop all three every hour
+  // with a stack trace as the only explanation.
+  let stored: boolean;
+  try {
+    stored = await storePlan(posted);
+  } catch (e) {
+    return log(`could not store the plan from #${ticket.number} — is ${CONFIG_PATH} writable from here? ${e instanceof Error ? e.message : e}`);
+  }
+  if (!stored) {
+    return log(`#${ticket.number} posted a plan but the console's list is no longer empty — keeping the console's`);
+  }
+  log(`stored ${posted.length} plan item(s) from #${ticket.number}`);
+  // The tick's own copy, so the first item can be filed in this same pass
+  // rather than an hour later.
+  cfg.focusPlan = posted;
+}
+
+/**
  * The feature lane, while a focus is set. Called from `generate` behind the same
  * quota and open-ticket gates the frontier goes through — a focus changes where
  * the work comes from, never how fast it arrives.
  */
 async function generateFocus(cfg: Config, state: State): Promise<void> {
-  let plan = cfg.focusPlan;
-
-  if (!plan.length) {
-    const key = planKey(cfg);
-    const ticket = await filedIssue(key);
-    if (!ticket) {
-      // Not counted against the day's quota and holding no open slot: it is one
-      // session per focus, self-limited by the key above, and it writes no code.
-      await filePlanningTicket(cfg, key);
-      return;
-    }
-    const posted = await planFromTicket(ticket.number);
-    if (!posted) return log(`#${ticket.number} is planning the focus — no plan posted yet`);
-    // A write that cannot happen must not take the tick with it: the QA and
-    // retrospective lanes run after this one, and an unwritable control file
-    // (a volume mounted read-only) would otherwise stop all three every hour
-    // with a stack trace as the only explanation.
-    let stored: boolean;
-    try {
-      stored = await storePlan(posted);
-    } catch (e) {
-      return log(`could not store the plan from #${ticket.number} — is ${CONFIG_PATH} writable from here? ${e instanceof Error ? e.message : e}`);
-    }
-    if (!stored) {
-      return log(`#${ticket.number} posted a plan but the console's list is no longer empty — keeping the console's`);
-    }
-    log(`stored ${posted.length} plan item(s) from #${ticket.number}`);
-    plan = posted;
-  }
+  const plan = cfg.focusPlan;
+  if (!plan.length) return log("a focus is set and there is no plan under it yet — nothing to file");
 
   const next = plan.find((i) => !i.issue);
   if (!next) {
@@ -1629,6 +1648,7 @@ if (cmd === "status") {
   await shipReady(cfg);
 } else if (cmd === "generate") {
   await rearmParkedTickets();
+  await planFocus(cfg);
   await generate(cfg);
   await generateQa(cfg);
   await generateRetro(cfg);
@@ -1637,6 +1657,7 @@ if (cmd === "status") {
   await shipReady(cfg);
   await sweepMergedBranches();
   await rearmParkedTickets();
+  await planFocus(cfg);
   await generate(cfg);
   await generateQa(cfg);
   await generateRetro(cfg);

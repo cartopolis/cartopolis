@@ -82,6 +82,23 @@ does not recognise the question it answered last time.
   it writes no code and holds no feature slot, and it is self-limited to one per
   (focus, revision) by its key.
 
+## The planning pass is a lane, not the first half of the feature lane
+
+It was the first half of `generateFocus`, and so it sat behind every gate in
+front of the feature lane — a red `main`, the daily quota, `maxOpen`. All three
+are about *code being built*, and this builds none: it opens no branch and files
+one ticket that answers in a comment. Behind them it was unreachable in the one
+state that reliably produces it — a focus typed while the board is busy — and
+the console said "no plan yet" for as long as that lasted, with nothing anywhere
+saying why. Measured 2026-09-09: nine open tickets against a limit of two and a
+red `main`, a focus and four `planRevision` bumps, and not one planning ticket
+filed.
+
+So `planFocus` is its own step of the tick, beside the QA and retrospective
+lanes, and runs *before* `generate` — a plan stored on a tick has its first item
+filed on that same tick rather than an hour later. `enabled` still gates it,
+because that knob means "file no new tickets" and this files a ticket.
+
 The plan block is read from **any** comment by **anybody**, which is deliberate
 rather than overlooked — see the escalation argument above — and the last valid
 block on the ticket wins, so a session that posts a draft and then a correction
