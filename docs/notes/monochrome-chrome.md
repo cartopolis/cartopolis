@@ -4,13 +4,21 @@ triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, trans
 updated: 2026-09-10
 ---
 
-# The chrome is monochrome, and the logo is not
+# The chrome is monochrome glass, and the logo is not
 
 Until 2026-09-10 the UI was a slate-blue ramp with an orange accent, taken from
-the logo. It is a neutral graphite ramp with a pale grey accent now, and the two
-sentences worth remembering are: **the chrome carries no hue at all**, and **the
-brand orange still exists, scoped to the logo** (`theme::BRAND` — the mark's
-roofs and pin, the wordmark tail, `index.html`'s loader bar; nothing else).
+the logo. It is a graphite ramp with a pale accent now, translucent and blurred
+behind, and the two sentences worth remembering are: **the chrome carries one
+hue at very low saturation**, and **the brand orange still exists, scoped to the
+logo** (`theme::BRAND` — the mark's roofs and pin, the wordmark tail,
+`index.html`'s loader bar; nothing else).
+
+**Monochrome means one hue, not none.** The ramp was neutral grey for half a day
+and read flat: a colourless panel over a coloured map is a dialog pasted onto a
+photograph, and glass has never been colourless — the faint cast it gives what
+you see through it is most of what identifies the material. Everything in the
+chrome is hue 197° (blue-teal) at 6–14 % saturation, applied at constant HSL
+lightness so no contrast ratio moved by more than 0.5.
 
 ## Why the hue went
 
@@ -59,14 +67,25 @@ that floats over arbitrary imagery.
   stayed orange because a pin is *map content* — it has to be found against parks
   and paper, and grey is what a map already has plenty of.
 
-## The glass, and the one number that is not a taste knob
+## The glass, the blur, and the one number that is not a taste knob
 
-`GLASS` is `SURFACE` at 95 %, and it is the panel and window fill. There is **no
-backdrop blur** — egui has no such pass, and adding one means a render-graph node
-sampling the main texture per panel. What carries the effect instead is the
-translucency, a white-at-low-alpha rim (`OVERLAY_LINE`) rather than a drawn
-border, wider radii (`RADIUS` 6→8, `RADIUS_LG` 10→14) and a softer, further
-shadow.
+`GLASS` is `SURFACE` at 84 %, and it is the panel and window fill. Alongside the
+translucency: a white-at-low-alpha rim (`OVERLAY_LINE`) rather than a drawn
+border, wider radii (`RADIUS` 6→8, `RADIUS_LG` 10→14), a softer and further
+shadow — and a real backdrop blur (`systems::glass`).
+
+**The blur is what bought the transparency, and it only works in that order.**
+egui has no backdrop-blur anything, so the first version had none, and it could
+not afford to be thin: at 93 % the roof edges and tree crowns of Groningen read
+straight through the Settings panel's body copy. A blur reduces detail to a
+wash, which is the one thing a fill cannot do at any alpha, so with one behind
+it the panel went to 84 % — noticeably see-through — and stayed legible.
+
+How it is built is in `systems::glass`'s own module note; the two facts worth
+having here are that it is **not load-bearing** (no backdrop registered means
+flat fills, i.e. the look before it existed) and that it hangs a textured twin
+under every rectangle painted in a glass fill, so it covers panels, windows,
+menus and floating readouts without any of them knowing it exists.
 
 **The alpha is load-bearing in both directions, and only one of them is a
 test.** Downward: a translucent panel's real background is not in `theme.rs` at
@@ -76,13 +95,15 @@ all — it is the basemap, and the basemap is pale beige land on near-white pape
 transparent fails there. This is the same trap `OVERLAY`'s alpha was raised for
 on 2026-08-14, one surface later.
 
-Upward, nothing measures it and a rendered city is the only instrument. 93 %
-cleared every ratio in the suite and still showed roof edges and tree crowns
-*through* the Settings panel's body copy over Groningen at 420 m (`--ui graphics`,
-2026-09-10). That is what having no blur costs: with one, detail behind glass
-becomes a wash; without one it stays detail. 95 % is the setting where the world
-is behind the panel rather than in it — check a change here against a shot of a
-dense city, not against the table.
+At 84 % `TEXT_DIM` measures 5.06:1 against white paper and **4.40:1 one step
+further** (alpha 205), so this is a floor with one step of margin, not a
+preference. Note what the test cannot know: it composites against *unblurred*
+white, which is the honest worst case, since no blur makes a white page darker.
+
+Upward, nothing measures it and a rendered city is the only instrument — that is
+how the pre-blur value was chosen (93 % passed every ratio and still showed the
+city through the body copy). Check a change here against a shot of a dense city,
+not against the table.
 
 ## The focus ring is two rings
 

@@ -22,6 +22,7 @@ use bevy::{
     input::{keyboard::KeyboardInput, mouse::MouseScrollUnit, ButtonState},
     prelude::*,
     render::{
+        camera::ExtractedCamera,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_resource::{RenderPassDescriptor, TextureFormat},
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
@@ -567,6 +568,14 @@ pub struct EguiWgpuRenderer(
             u32,
             Option<u64>,
             Vec<egui::TextureId>,
+            // The chrome's backdrop blur (`systems::glass`). It lives in here
+            // rather than in a resource of its own so that it inherits both of
+            // this one's properties for free: the wasm arm's non-send storage,
+            // and — the load-bearing half — being dropped whenever the renderer
+            // is, which is what `RenderStartup` does after a device loss. A
+            // backdrop texture belonging to a dead device, sampled by egui, is a
+            // `Validation` error, and those halt the renderer for good.
+            Option<crate::systems::glass::Backdrop>,
         )>,
     >,
 );
@@ -1179,9 +1188,13 @@ pub fn end_egui_frame(
     }
     *since_write = 0.0;
 
-    let clipped_primitives = egui_manager
-        .ctx
-        .tessellate(full_output.shapes, pixels_per_point);
+    // Hang a blurred copy of the frame under every glass rectangle, before
+    // tessellation turns the shapes into meshes and the fills into vertex
+    // colours. This is the last moment at which a panel background is still
+    // recognisably a panel background (`systems::glass`).
+    let mut shapes = full_output.shapes;
+    crate::systems::glass::insert_backdrops(&mut shapes, size_in_pixels, pixels_per_point);
+    let clipped_primitives = egui_manager.ctx.tessellate(shapes, pixels_per_point);
 
     // Carry unconsumed texture deltas forward instead of dropping them.
     //
@@ -1242,7 +1255,7 @@ fn applied_generation() -> u64 {
 /// Draws the tessellated egui output onto the view target. Runs per view in the
 /// `Core3d` render schedule (Bevy 0.19's schedule-based render graph).
 pub fn egui_pass(
-    view: ViewQuery<&'static ViewTarget>,
+    view: ViewQuery<(&'static ViewTarget, &'static ExtractedCamera)>,
     render_data: Res<EguiRenderOutput>,
     #[cfg(not(target_arch = "wasm32"))] egui_renderer_res: Res<EguiWgpuRenderer>,
     #[cfg(target_arch = "wasm32")] egui_renderer_res: bevy::ecs::system::NonSend<EguiWgpuRenderer>,
@@ -1254,7 +1267,7 @@ pub fn egui_pass(
         return;
     }
 
-    let view_target = view.into_inner();
+    let (view_target, camera) = view.into_inner();
     let render_queue = render_queue.into_inner();
     let mut guard = egui_renderer_res.0.lock().unwrap();
 
@@ -1270,7 +1283,7 @@ pub fn egui_pass(
     // (Re-)create the wgpu renderer when the output format or sample count changes.
     let needs_recreate = guard
         .as_ref()
-        .map(|(_, fmt, s, _, _)| *fmt != texture_format || *s != sample_count)
+        .map(|(_, fmt, s, _, _, _)| *fmt != texture_format || *s != sample_count)
         .unwrap_or(true);
 
     if needs_recreate {
@@ -1293,10 +1306,15 @@ pub fn egui_pass(
             // replaces; dropping it releases those textures the safe way (wgpu
             // keeps a dropped resource alive until the buffers using it retire).
             Vec::new(),
+            None,
         ));
+        // The id the main world was handing out named a texture registered with
+        // the renderer we just dropped. Retract it before anything can tessellate
+        // against it again.
+        crate::systems::glass::forget();
     }
 
-    let (renderer, _, _, uploaded_gen, pending_free) = guard.as_mut().unwrap();
+    let (renderer, _, _, uploaded_gen, pending_free, backdrop) = guard.as_mut().unwrap();
 
     // Destroy last frame's retired textures *now*, at the top of the pass, rather
     // than at the bottom of the one that retired them — see the note where they
@@ -1340,6 +1358,33 @@ pub fn egui_pass(
         Vec::new()
     };
     *uploaded_gen = Some(render_data.generation);
+
+    // Blur the frame the chrome is about to be drawn over, before the pass that
+    // draws it. Two quarter-size passes on this same encoder, so what egui
+    // samples is this frame's scene rather than the last one's — and *before* the
+    // egui pass, because the source is the main texture and a texture cannot be
+    // sampled by a pass that is also writing to it.
+    //
+    // Nothing here is checked: a backdrop that fails to build leaves the chrome
+    // painting flat translucent fills, which is what it did before this existed.
+    {
+        let source = view_target.main_texture_view();
+        let size = view_target.main_texture().size();
+        let viewport = camera
+            .physical_viewport_size
+            .map_or((size.width, size.height), |v| (v.x, v.y));
+        let encoder = render_context.command_encoder();
+        crate::systems::glass::prepare(
+            render_device.wgpu_device(),
+            render_queue,
+            encoder,
+            renderer,
+            backdrop,
+            &source,
+            (size.width, size.height),
+            viewport,
+        );
+    }
 
     // Draw egui on top of the presented frame.
     {

@@ -1,11 +1,22 @@
 //! The Cartopolis look: one palette, one `egui::Style`, one place to change them.
 //!
-//! A neutral graphite ramp from `#14161A` up to `#2A2E34` carries the chrome, a
-//! pale `#C9CFD6` carries every live thing, and `#F4F6F8` is the off-white. The
-//! chrome has **no hue at all**: every surface, rim, fill and text tone in the
-//! ramp is a grey, and the only colours left in the palette are the two that are
-//! *statements* rather than decoration ([`WARN`] and [`ERROR`]) and the brand
-//! orange the splash and the app mark keep for themselves.
+//! A graphite ramp from `#13191B` up to `#283236` carries the chrome, a pale
+//! `#C7D3D8` carries every live thing, and `#F3F7F9` is the off-white. The
+//! chrome is **monochrome**: one hue, 197° — a blue-teal — at 6–14 % saturation
+//! for every surface, rim, fill and text tone in the ramp. Read the numbers and
+//! it is a cool grey; put it beside a true grey and it is glass. The only other
+//! colours in the palette are the two that are *statements* rather than
+//! decoration ([`WARN`] and [`ERROR`]) and the brand orange the splash and the
+//! app mark keep for themselves ([`BRAND`]).
+//!
+//! **One hue, not none.** The ramp was neutral for half a day and it was flat:
+//! a colourless panel over a coloured map reads as a dialog pasted onto a
+//! photograph, and glass has never been colourless — it is the one material
+//! whose whole character is the faint cast it gives what you see through it.
+//! The tint is deliberately below the threshold where anyone would call the UI
+//! blue. It is applied at **constant lightness** (hue rotated in HSL, saturation
+//! raised ~30 %, `l` untouched), so every ratio the tests pin moved by at most
+//! 0.5 and none of the tonal structure the widget table depends on changed.
 //!
 //! **The chrome went monochrome on 2026-09-10, and the argument is the same one
 //! the desaturation before it made, taken to its end.** The ramp was a slate
@@ -57,10 +68,10 @@
 //!     double the vertical rhythm and give buttons a real hit area.
 //!
 //! Contrast was checked against the surface each colour actually lands on:
-//! [`TEXT`] is 13.6:1 on [`SURFACE`], [`TEXT_DIM`] 8.0:1, [`ACCENT_TEXT`] 18.1:1.
-//! Plain [`ACCENT`] is 11.5:1 — it is a *light* tone, so it is comfortable as a
+//! [`TEXT`] is 13.5:1 on [`SURFACE`], [`TEXT_DIM`] 8.2:1, [`ACCENT_TEXT`] 17.8:1.
+//! Plain [`ACCENT`] is 11.6:1 — it is a *light* tone, so it is comfortable as a
 //! fill, a rule or a focus ring on any surface in the ramp. Anything sitting *on*
-//! an accent fill is drawn in [`INK`] (12.5:1) rather than [`CREAM`] (1.4:1).
+//! an accent fill is drawn in [`INK`] (12.7:1) rather than [`CREAM`] (1.4:1).
 //!
 //! [`install`] is called once, from `EguiManager::default`, before the first
 //! pass — early enough that the brand font family is bound on frame one, which
@@ -88,19 +99,19 @@ use crate::systems::icons;
 
 /// Deeper than any of the surface tones: text-edit wells, code blocks, and the
 /// boot backdrop. Also the ink on an [`ACCENT`] plate.
-pub const INK: Color32 = Color32::from_rgb(0x0B, 0x0C, 0x0F);
+pub const INK: Color32 = Color32::from_rgb(0x0A, 0x0E, 0x10);
 /// The surface ramp's bottom, and the tone every glass surface is made of.
 ///
 /// Opaque, and used as such by the handful of call sites that need a solid
 /// panel colour; the *panel and window fill* is [`GLASS`], which is this at
 /// 95 %. Keep the two in step — a solid box beside a glass one that were meant
 /// to be the same surface is exactly the drift the shared frames exist to stop.
-pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x16, 0x1A);
+pub const SURFACE: Color32 = Color32::from_rgb(0x13, 0x19, 0x1B);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
 /// striped rows, anything that should read as sitting *on* a panel.
-pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1E, 0x21, 0x26);
+pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1D, 0x24, 0x27);
 /// The ramp's top. Hover, and open menus over a panel.
-pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x2A, 0x2E, 0x34);
+pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x28, 0x32, 0x36);
 /// Hairlines: separators, widget frames, indent guides.
 ///
 /// **Lightened on 2026-08-14, and the reason is WCAG 1.4.11.** (It was a slate
@@ -110,13 +121,13 @@ pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x2A, 0x2E, 0x34);
 /// fill difference — so the hairline is the *only* channel that says "this is a
 /// control", and at 1.92:1 it was not saying it. What had been carrying the UI
 /// is that a panel is dense enough for position to do the work; a control on its
-/// own had no boundary. This measures 3.63:1 on [`SURFACE`] and clears the
+/// own had no boundary. This measures 3.74:1 on [`SURFACE`] and clears the
 /// 3:1 floor for a UI component boundary.
 ///
 /// It is a **solid grey, not white-at-an-alpha**, which the glass rims are: a
 /// hairline that has to clear a fixed ratio cannot be a translucent one, because
 /// what it composites over changes with the surface under it.
-pub const LINE: Color32 = Color32::from_rgb(0x6B, 0x70, 0x78);
+pub const LINE: Color32 = Color32::from_rgb(0x69, 0x75, 0x7A);
 
 /// The live tone. Focus rings, hover outlines, sliders, and the plate an engaged
 /// control wears — the brightest thing in the chrome, so it always means "this is
@@ -124,9 +135,9 @@ pub const LINE: Color32 = Color32::from_rgb(0x6B, 0x70, 0x78);
 ///
 /// **It is a light tone, and everything about the palette follows from that.**
 /// The orange it replaced was a mid tone that could carry [`CREAM`] badly and
-/// [`INK`] well; this one carries [`INK`] at 12.5:1 and [`CREAM`] at 1.4:1, i.e.
+/// [`INK`] well; this one carries [`INK`] at 12.7:1 and [`CREAM`] at 1.4:1, i.e.
 /// not at all. Anything filled with it is labelled in [`INK`].
-pub const ACCENT: Color32 = Color32::from_rgb(0xC9, 0xCF, 0xD6);
+pub const ACCENT: Color32 = Color32::from_rgb(0xC7, 0xD3, 0xD8);
 /// The accent at the top of its ladder: the text cursor, a text-selection
 /// handle, the rim on a *held* control (north-up lock, caps lock).
 ///
@@ -169,13 +180,13 @@ pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xA8, 0xB7, 0xBD);
 /// the headings rather than by being a different colour.
 pub const ACCENT_TEXT: Color32 = Color32::WHITE;
 /// The dark half of the accent: a pressed button, a selected row. Dark enough to
-/// carry [`CREAM`] at 8.5:1, light enough to be a clear step above
+/// carry [`CREAM`] at 8.0:1, light enough to be a clear step above
 /// [`SURFACE_HOVER`].
 ///
 /// This is what keeps the ladder safe. `active.weak_bg_fill` carries a label
 /// drawn in egui's `strong_text_color`, which is [`CREAM`]; filling it with the
 /// light [`ACCENT`] instead would make every pressed button's label vanish.
-pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x41, 0x48, 0x52);
+pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x3E, 0x4E, 0x55);
 
 /// **The brand orange, and the only saturated colour left in this file.**
 ///
@@ -192,9 +203,9 @@ pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x41, 0x48, 0x52);
 pub const BRAND: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
 
 /// Off-white. Headings and the one or two things that must read brightest.
-pub const CREAM: Color32 = Color32::from_rgb(0xF4, 0xF6, 0xF8);
+pub const CREAM: Color32 = Color32::from_rgb(0xF3, 0xF7, 0xF9);
 /// Body text.
-pub const TEXT: Color32 = Color32::from_rgb(0xDC, 0xE0, 0xE4);
+pub const TEXT: Color32 = Color32::from_rgb(0xDB, 0xE2, 0xE5);
 /// Secondary text: units, coordinates, hints. Also `index.html`'s muted tone,
 /// so the pre-wasm splash and this one agree — **change it in both**.
 ///
@@ -204,7 +215,7 @@ pub const TEXT: Color32 = Color32::from_rgb(0xDC, 0xE0, 0xE4);
 /// `weak_text_color`, i.e. the one that lands on every surface in the ramp: it
 /// measured 4.40:1 on [`SURFACE_HOVER`] and 4.12:1 inside an [`OVERLAY`] box
 /// over bright map imagery. Both now clear 4.5.
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xA7, 0xAD, 0xB5);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0xA5, 0xB2, 0xB7);
 /// Warnings — a desaturated gold.
 ///
 /// **One of the two colours the monochrome chrome keeps**, and it keeps them for
@@ -222,47 +233,57 @@ pub const WARN: Color32 = Color32::from_rgb(0xD8, 0xC0, 0x7A);
 /// bright basemap.
 pub const ERROR: Color32 = Color32::from_rgb(0xF2, 0xA2, 0x96);
 
-/// [`SURFACE`] at ~92% — the fill of the boxes that float *over* the map
-/// (status HUD, stats, driver chrome). Translucent so the world still moves
-/// behind them; opaque enough that the text on top never has to fight a bright
-/// tile.
+/// The fill of the boxes that float *over* the map (status HUD, stats, driver
+/// chrome) — the same 84 % glass a panel is made of, and blurred behind by
+/// `systems::glass` in the same way.
 ///
-/// **It was 84% (alpha 214), and "opaque enough" was not true at that value.**
-/// The failure is invisible from this file, because the background is not in it:
-/// the imagery is a map, not a satellite photo — "pale beige land on near-white
-/// paper" — so the composite an overlay actually lands on is `SURFACE` over
-/// *white*, three steps lighter than the panel these colours were picked
-/// against. At 214 that composite is `#404B51`, on which [`TEXT_DIM`] measured
-/// 4.12:1, [`ACCENT_TEXT`] 4.11:1 and [`ERROR`] 3.59:1 — i.e. the HUD's
-/// coordinates, every value in an overlay and the driver's failure text were all
-/// under 4.5 over ordinary daytime map. At 235 they are 5.5 / 5.4 / 4.8, and the
-/// box is still visibly translucent. The same alpha [`LABEL_CHIP`] already uses,
-/// for the same reason.
-pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x16, 0x1A, 235);
+/// **It shares [`GLASS`]'s alpha rather than having one of its own**, which is a
+/// change: the two used to differ on the argument that an overlay box holds a
+/// line of readout while a panel holds a form, so the box could afford to be
+/// thinner. With a blur behind both, the binding constraint stopped being how
+/// much detail shows through and became the contrast floor — and that floor is
+/// the same for both, because it is set by the text tones, which are also the
+/// same. Two numbers that are only ever equal are one number.
+///
+/// The history is worth keeping, because it is the trap this constant fell into
+/// once already. It was **84 % with no blur** (alpha 214) and "opaque enough" was
+/// not true at that value: the failure is invisible from this file, because the
+/// background is not in it. The imagery is a map, not a satellite photo — pale
+/// beige land on near-white paper — so the composite an overlay lands on is
+/// `SURFACE` over *white*, three steps lighter than the panel these colours were
+/// picked against. [`TEXT_DIM`] measured 4.12:1 there, [`ACCENT_TEXT`] 4.11:1 and
+/// [`ERROR`] 3.59:1. It went to 92 % and now back to 84 %, and the difference
+/// between the two visits is that the tones themselves were lifted in between —
+/// this alpha is a *measured* floor now rather than an eyeballed one, and
+/// `text_clears_every_surface_it_can_land_on` is what keeps it one.
+pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0x1B, 215);
 
-/// The panel and window fill: [`SURFACE`] at 95 %.
+/// The panel and window fill: [`SURFACE`] at 84 %.
 ///
 /// **The one thing that makes the chrome read as glass rather than as paint.**
 /// A panel used to be opaque, which over a moving map is a rectangle cut out of
-/// the world; at 95 % the map is still visibly *there* behind it — enough for the
-/// panel to sit on the scene, not enough for anything under it to compete with a
-/// label. It is more opaque than [`OVERLAY`] on purpose: an overlay box holds a
-/// line or two of readout, a panel holds a form.
+/// the world; at 84 % the map is plainly *there* behind it — as a wash of colour
+/// and shape rather than as a picture, because `systems::glass` blurs it first.
 ///
-/// **Chosen against a rendered city, not against the contrast table.** It was 93 %
-/// first, which every ratio in the suite clears comfortably — and over Groningen
-/// at 420 m the roof edges and tree crowns read *through* the Settings panel's
-/// body copy. That is the cost of having no backdrop blur: with a blur the
-/// detail behind glass becomes a wash, and without one it stays detail. Two
-/// points of alpha is the difference between "the world is behind this" and "the
-/// world is in this".
+/// **The blur is what bought the transparency, and the order matters.** This was
+/// 95 % for as long as there was no blur, and it had to be: at 93 % the roof
+/// edges and tree crowns of Groningen read straight through the Settings panel's
+/// body copy (measured with `--ui graphics`, 2026-09-10). Reducing detail to a
+/// wash is exactly what a blur does, so with one behind it the fill can be a
+/// sixth of a stop from transparent and still be read over.
 ///
-/// The alpha is not a taste knob in the other direction either.
-/// `text_clears_every_surface_it_can_land_on` measures every text tone through it
-/// over a white basemap, which is the background a panel actually has (the
-/// imagery is a map — pale beige land on near-white paper), and lowering it moves
-/// all of those at once.
-pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x16, 0x1A, 242);
+/// **84 % is a floor, not a taste.** It is the most transparent value at which
+/// every text tone still clears 4.5:1 against the worst background a panel can
+/// have — the basemap at its brightest, which is white paper, because the
+/// imagery is a map rather than a photograph. [`TEXT_DIM`] measures 5.06:1 there
+/// at this alpha and **4.40:1 one step further** (alpha 205), and it is the tone
+/// egui hands to every hint and unit in the app.
+/// `text_clears_every_surface_it_can_land_on` is where that is checked; it
+/// composites through this constant, so lowering it moves every one of those
+/// ratios at once. Note what the test cannot know: it measures against the
+/// *unblurred* white, which is the honest worst case — a blur cannot make a
+/// white page darker.
+pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0x1B, 215);
 
 /// The rim around a glass surface — an [`OVERLAY`] box, a panel, a window.
 ///
@@ -278,7 +299,7 @@ pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x
 /// labels, the drag ghost, a feature's hover card. Darker and more opaque than
 /// [`OVERLAY`] on purpose: these are a few words over an arbitrary tile, so
 /// legibility beats letting the map through.
-pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0B, 0x0C, 0x0F, 235);
+pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0A, 0x0E, 0x10, 235);
 /// Halo behind map text that has no chip to sit on — the street names
 /// (`systems::street_labels`), which are painted *along* their street and would
 /// black it out under a chip. Pale and only mostly opaque: it has to lift
@@ -288,11 +309,11 @@ pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0B, 0x0C
 /// no tint left to carry, and a **neutral** halo is the better answer anyway —
 /// the map underneath supplies all the hue in the frame, and a coloured plate
 /// over it was a second opinion about what colour a road is.
-pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xDD, 0xE3, 0xE8, 205);
+pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xDB, 0xE6, 0xEA, 205);
 /// The stroke inside [`LABEL_HALO`]. A hair lighter than [`INK`] and not the
 /// same constant: this one lies on a pale halo over an arbitrary tile, that one
 /// is the chrome's text-well fill, and the two are free to move apart.
-pub const LABEL_INK: Color32 = Color32::from_rgb(0x0E, 0x11, 0x14);
+pub const LABEL_INK: Color32 = Color32::from_rgb(0x0D, 0x13, 0x15);
 
 // ─── Fonts ────────────────────────────────────────────────────────────────────
 
@@ -1363,7 +1384,7 @@ const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 /// alike: the sign-in CTA was a hand-built filled `Button` and the Route panel's
 /// equally-primary "▶ Driver mode" was a plain `ui.button`, so the same rank read
 /// as two different ones. `INK` on `ACCENT` and not white is the palette's rule for
-/// text on the accent (12.5:1 against 1.4:1) and is unit-tested below.
+/// text on the accent (12.7:1 against 1.4:1) and is unit-tested below.
 #[allow(dead_code)]
 pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     primary_button_sized(ui, label, PRIMARY_BUTTON_MIN_WIDTH)
@@ -1561,7 +1582,7 @@ pub const OSD_GROUP_GAP: f32 = 18.0;
 /// own note is a contrast argument about the text inside a box, and there is no
 /// text here. The floor is the other direction: at alpha 90 the well vanished
 /// into pale beige map, and a stick you cannot see the travel of is a pad.
-pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x16, 0x1A, 140);
+pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0x1B, 140);
 
 /// Where a [`map_disc`] wants its mark drawn, and in what ink.
 pub struct DiscFace {
@@ -2787,18 +2808,18 @@ mod tests {
             // 11.8461 — the module note said "11.9:1" from the day it was
             // written, which is this rounded the wrong way. Nobody could have
             // caught that by reading it; that is the point of the test.
-            ("TEXT on SURFACE", TEXT, SURFACE, 13.6),
-            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 8.0),
-            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 18.1),
-            ("ACCENT on SURFACE", ACCENT, SURFACE, 11.5),
-            ("INK on ACCENT", INK, ACCENT, 12.5),
-            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 8.5),
-            ("LINE on SURFACE", LINE, SURFACE, 3.6),
+            ("TEXT on SURFACE", TEXT, SURFACE, 13.5),
+            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 8.2),
+            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 17.8),
+            ("ACCENT on SURFACE", ACCENT, SURFACE, 11.6),
+            ("INK on ACCENT", INK, ACCENT, 12.7),
+            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 8.0),
+            ("LINE on SURFACE", LINE, SURFACE, 3.7),
             (
                 "ACCENT_RING on ACCENT_MUTED",
                 ACCENT_RING,
                 ACCENT_MUTED,
-                7.6,
+                7.2,
             ),
             ("CREAM on ACCENT (the rejected pairing)", CREAM, ACCENT, 1.4),
         ] {

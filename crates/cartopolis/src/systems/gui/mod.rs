@@ -8,6 +8,7 @@ pub mod data_layers;
 pub mod dismiss;
 pub mod dock;
 pub mod egui_manager;
+pub mod glass;
 pub mod hud;
 pub mod icons;
 pub mod login_screen;
