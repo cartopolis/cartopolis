@@ -186,6 +186,12 @@ place, and a seam along every cell boundary — so off the edge it does not appl
 
 One texture sample and about ten instructions.
 
+The reach is `height · cot(elevation)` and so grows without bound as the view
+flattens — 31 m at 16° above the water, 129 m at 4°, half a kilometre at 1° — so
+`BANK_REACH_MAX_M` caps it. Set by the shallowest angle the test views use, not by
+taste: at 45 m the grazing lake frames were truncated to a third of their real
+reach, which is exactly where a far shore belongs in the mirror.
+
 ## What is still missing, and cannot be cheap
 
 Everything about that reflection except its brightness: a quay reads as a dark

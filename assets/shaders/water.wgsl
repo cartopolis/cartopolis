@@ -137,10 +137,18 @@ const SHALLOW_BLUE_M: f32 = 40.0;
 /// dark band swallows the canal, too small and it hugs the kerb.
 const BANK_HEIGHT_M: f32 = 9.0;
 
-/// Furthest the bank probe will look. A probe that leaves this cell's shore field
-/// reads a clamped edge texel, so the effect is switched off out there instead —
-/// but capping the reach first means that hardly ever comes up.
-const BANK_REACH_MAX_M: f32 = 45.0;
+/// Furthest the bank probe will look.
+///
+/// The reach is `BANK_HEIGHT_M · cot(elevation)`, so it grows without bound as the
+/// view flattens: 31 m at 16° above the water, 129 m at 4°, half a kilometre at
+/// 1°. This cap is what stops that, and it is set by the shallowest angle these
+/// views actually use rather than by taste — at 45 m the grazing lake frames were
+/// truncated to a third of their real reach and the far shore fell out of the
+/// mirror exactly where it matters most.
+///
+/// A probe leaving the cell reads a clamped edge texel, so the effect switches
+/// itself off out there; at 130 m against a ~1.5 km cell that is a rare edge.
+const BANK_REACH_MAX_M: f32 = 130.0;
 
 /// Metres of shore distance over which "land is in the mirror" softens back to
 /// open sky, so the band has an edge rather than a cut.
