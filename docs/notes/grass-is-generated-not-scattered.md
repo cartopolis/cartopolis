@@ -86,7 +86,7 @@ reduced one. One mask serves both rings — far blades need coverage, not more
 coverage *accuracy*, and a second coarser mask would double the rebuild
 machinery to save ~600 KB.
 
-## Three things that are load-bearing and do not look it
+## Four things that are load-bearing and do not look it
 
 **The hash input must be the anchor-metre frame, not `world_position`.** Under
 `big_space` the render origin jumps a whole grid cell as the camera moves, and a
@@ -108,6 +108,22 @@ shrinks into the ground rather than fading out. Alpha on tens of thousands of
 triangles buys a sort order and a pass to hide something already sub-pixel, which
 is the same argument `scatter`'s module doc makes for opaque canopies. It is also
 what lets the two ramps compose without a seam, since they multiply.
+
+**A blade that is culled must collapse to a *point*, and every term that spreads
+its vertices apart has to carry the `live` factor — not just the height.** A
+fixed pool means the vertex stage runs for every slot whether or not a blade
+stands there, and the ratio is not close: measured over a canal in Groningen on
+2026-09-09, 1,511,680 slots against 16 live blades. Zeroing the height alone left
+the other 1.5 million as flat hairlines lying in the ground plane — zero area in
+exact arithmetic, and in practice enough of them catch a pixel centre to scatter
+single-pixel specks over the whole near view. They are invisible over pale paving
+and obvious over water, so they were reported from a phone as speckles on the
+canals rather than as anything wrong with the lawn; and because which degenerate
+triangle lands on a pixel centre is a property of the projection, they re-roll on
+every camera move, which reads as crawling. `assets/shaders/particles.wgsl` had
+the same shape of problem to solve and already solved it the same way (`size`
+carries `alive`, so a dead particle's four corners coincide) — any future pooled
+layer owes the same.
 
 ## Why not an off-the-shelf crate
 

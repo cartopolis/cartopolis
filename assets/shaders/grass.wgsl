@@ -299,7 +299,21 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // the viewer as it turns away is the standard answer and costs two lines.
     let to_cam = normalize(view.world_position - base_render);
     let edge_on = 1.0 - abs(dot(to_cam, facing));
-    let width = blade.y * (0.8 + 0.4 * h2.w) * (1.0 + edge_on * 0.6);
+    // …and a blade that is *not there* has to collapse to a point rather than to
+    // a zero-height strip. `live` already takes the height to zero, but without
+    // this factor the five vertices still spread along `side`, so a dead slot
+    // ends up a flat hairline lying in the ground plane. A hairline has no area
+    // to rasterise in theory and catches the occasional pixel centre in
+    // practice — and a frame runs ~1.5 million slots against a couple of dozen
+    // live blades, so "occasional" is a field of single-pixel specks over the
+    // whole near view. They show only where what is behind them is darker than
+    // grass, which is why this arrived as "speckles on the canals" and not as
+    // anything wrong with the lawns: over pale paving they are invisible, and
+    // the slots sit at `ground + field.w`, above the water's rung in the
+    // coplanar stack, so a canal cannot occlude them. And they crawl, because
+    // which degenerate triangle lands on a pixel centre is a property of the
+    // projection and re-rolls on every camera move.
+    let width = blade.y * (0.8 + 0.4 * h2.w) * (1.0 + edge_on * 0.6) * step(1e-6, live);
 
     var world = vec3<f32>(stand.x, ground + field.w, stand.y);
     world += side * (corner.y * width);
