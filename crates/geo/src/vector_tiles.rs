@@ -1494,10 +1494,32 @@ fn land_kind_color(kind: &str) -> Option<u32> {
 pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
     Some(match kind {
         "forest" | "wood" => SurfaceGroup::Forest,
+        // `grassland`, `cemetery`, `playground` and `plant_nursery` were added on
+        // 2026-09-10 and were not an oversight so much as an invisible one: an
+        // unhandled kind emits no vector surface at all, so the rasterised tile
+        // showed through — and the raster's default *is* `GRASS`, so all four
+        // already looked like grass and only a walk over one would tell you they
+        // grew no blades. Adding them costs nothing at runtime (the same slots,
+        // more ground that passes the coverage mask) and is the cheapest "more
+        // grass" there is.
+        //
+        // The list is the kinds observed in real tiles over Groningen, Amsterdam
+        // and Utrecht, not the Shortbread schema read off a page: a kind guessed
+        // at is a line nothing exercises. `brownfield` is deliberately left out —
+        // derelict land is scrubby rather than green, and the raster default
+        // already paints it grass, so it stays consistent either way.
         "grass" | "meadow" | "park" | "garden" | "farmland" | "orchard" | "scrub" | "heath"
-        | "allotments" | "village_green" | "recreation_ground" => SurfaceGroup::Grass,
+        | "allotments" | "village_green" | "recreation_ground" | "grassland" | "cemetery"
+        | "playground" | "plant_nursery" => SurfaceGroup::Grass,
         "sand" | "beach" | "bare_rock" | "scree" => SurfaceGroup::Sand,
-        "residential" | "industrial" | "commercial" | "retail" | "quarry" => SurfaceGroup::Built,
+        // `railway` is here for the opposite reason to the four above, and it is
+        // the one the repaint made urgent: land the table does not name falls
+        // through to the raster's `GRASS` default, which at the old saturation
+        // was a pale sage nobody queried and is now a vivid green. A railway yard
+        // is ballast, not a meadow.
+        "residential" | "industrial" | "commercial" | "retail" | "quarry" | "railway" => {
+            SurfaceGroup::Built
+        }
         _ => return None,
     })
 }

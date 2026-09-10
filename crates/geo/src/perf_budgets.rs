@@ -265,7 +265,15 @@ const MEMO_REREAD_ALLOCS: u64 = 0;
 /// The two sizes still agree to within a handful of allocations, and that fact
 /// still matters: what allocation remains is per *flush*, not per pixel, so
 /// halving `tile_px` for the phone tier buys scan conversion and none of this.
-const RENDER_DENSE_ALLOCS: u64 = 1_160;
+///
+/// Raised 1,160 → 1,170 on 2026-09-10, measured at 1,162: giving `railway` its
+/// own land colour splits one batch in the `land` layer of this fixture, and a
+/// batch boundary is a flush. Confirmed by isolation rather than argued — with
+/// that one kind removed from the table the count returns to passing at 1,160.
+/// Two allocations for a railway yard that no longer paints as a meadow is the
+/// trade, and this is exactly the per-flush cost the batching comment above
+/// describes, not a new per-feature one.
+const RENDER_DENSE_ALLOCS: u64 = 1_170;
 
 /// Heap a parsed-but-undecoded Groningen z14 retains. Measured 3,299 KiB
 /// (bit-identical across runs, 2026-08-24) from a 495 KiB body — the protobuf
