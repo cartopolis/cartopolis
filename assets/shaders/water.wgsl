@@ -448,7 +448,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // open river without three sets of numbers.
     let shelter = mix(SHELTER_FLOOR, 1.0, smoothstep(0.0, SHELTER_M, shore_m));
 
-    let w = waves_at(p, globals.time, dist * wave.w, shelter);
+    // Still water runs no octaves at all. `wave.x` is zero whenever Map ▸ Water
+    // shading is off — which is the *default* on the tier with the least fill to
+    // spare, since the toggle follows `Budget::detail_layers` — and without this
+    // the loop still summed eight sines per fragment to arrive at a gradient of
+    // exactly zero. A flat sheet is the state of the surface, not an absence of
+    // detail, so `detail` is 1: the shore's wet edge stays drawn and only the
+    // waves that are not there stop being computed.
+    var w: Waves;
+    if wave.x > 0.0 {
+        w = waves_at(p, globals.time, dist * wave.w, shelter);
+    } else {
+        w.grad = vec2<f32>(0.0);
+        w.height_lo = 0.0;
+        w.height_hi = 0.0;
+        w.detail = 1.0;
+        w.slope_var = 0.0;
+        w.fine = 0.0;
+    }
 
     // The surface is flat ground, so the geometric normal is +Y and the wave
     // normal can be built directly in world space — no tangent frame needed.
