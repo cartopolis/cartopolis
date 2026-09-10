@@ -98,6 +98,19 @@ pub struct Budget {
     /// water shader. Individually modest, collectively a large slice of both the
     /// draw list and the per-cell meshing the main thread does while streaming.
     pub detail_layers: bool,
+    /// Octaves the water shader sums per fragment (`assets/shaders/water.wgsl`).
+    ///
+    /// Each one is two sines, a cosine and two powers, and the finest ones are the
+    /// centimetre ripples that only exist within a few tens of metres of the
+    /// camera — past that the shader's own distance fade retires them and the loop
+    /// stops early, so this is very nearly a *near-field* cost. `water-surface.md`
+    /// has the octaves-per-fragment table by view distance.
+    ///
+    /// Dropping it does not flatten the sea: `water::octave_norms` renormalises so
+    /// every rung renders the same RMS slope, and a rung with fewer octaves simply
+    /// stops resolving the small stuff sooner and takes it as roughness instead.
+    /// That is the one property that makes this safe to put on the ladder.
+    pub water_octaves: u32,
     /// Subtracted from every streamer's ring radius (floored at 1 by
     /// [`Self::radius`]). One step takes the clipmap from 424 tiles to 224, which
     /// is close to half the ground draw list and half the streaming work behind
@@ -396,6 +409,7 @@ impl Budget {
             bloom: true,
             sky_ibl: true,
             detail_layers: true,
+            water_octaves: 8,
             radius_bias: 0,
             per_frame_divisor: 1,
             worker_cap: None,
@@ -446,6 +460,10 @@ impl Budget {
             // missed thing on this list.
             sky_ibl: false,
             detail_layers: true,
+            // Two fewer than a workstation. The pair dropped are the finest, worth
+            // ripples of a few centimetres inside ~40 m of the camera — the least
+            // of what this rung gives up.
+            water_octaves: 6,
             radius_bias: 0,
             per_frame_divisor: 1,
             worker_cap: None,
@@ -502,6 +520,10 @@ impl Budget {
             bloom: false,
             sky_ibl: false,
             detail_layers: false,
+            // Dead while `detail_layers` is false — the water shading toggle
+            // follows that rung, and a still sheet sums no octaves worth counting.
+            // It is what the dev panel's water toggle then gets.
+            water_octaves: 4,
             radius_bias: 1,
             per_frame_divisor: 2,
             worker_cap: Some(3),
@@ -1229,6 +1251,10 @@ mod tests {
                 "shadow_distance_m: {name}"
             );
             assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
+            assert!(
+                lower.water_octaves <= upper.water_octaves,
+                "water_octaves: {name}"
+            );
             // A LUT tonemapper is the expensive one, and it is only affordable on
             // a rung whose camera is `Hdr` — where the curve is one pass rather
             // than per fragment. Tying the two together here is what stops a

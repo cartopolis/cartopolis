@@ -7,8 +7,9 @@
 // `StandardMaterial` rather than a standalone `Material`: the sun, the shadow
 // cascades, the atmosphere's environment map and the fog are exactly what make
 // water read as water, and all of them come for free from the standard PBR
-// path. We only replace the geometric normal, the roughness and a depth tint
-// before handing the `PbrInput` back to Bevy.
+// path. We replace the geometric normal, the roughness and a depth tint before
+// handing the `PbrInput` back to Bevy, and add two terms Bevy has no notion of
+// (crest scattering and foam) on top of the lit colour.
 //
 // The wave field is a sum of sharpened directional sines (a cheap Gerstner
 // stand-in) evaluated in **map metres**, taken from UV0 rather than from
@@ -17,29 +18,62 @@
 // UV0 is baked per cell from the map anchor (`map_geometry::build_mesh`), so it
 // only changes on a re-anchor, which rebuilds the meshes anyway.
 //
-// Every octave carries its own distance fade. Sub-pixel ripples are the classic
-// specular-aliasing source: unfaded, a 20 cm wave a kilometre out flickers as
-// white noise under any camera motion. The fade retires each octave once its
-// wavelength drops below roughly a pixel and rolls the lost detail into
-// roughness instead, so distant water turns into a broad sheen rather than
-// crawling glitter.
+// # What the octave fade is for, and why it now pays for itself
+//
+// Sub-pixel ripples are the classic specular-aliasing source: unfaded, a 20 cm
+// wave a kilometre out flickers as white noise under any camera motion. Every
+// octave therefore carries a distance fade that retires it once its wavelength
+// drops below roughly a pixel.
+//
+// What the retired detail becomes is the part that changed. It used to be a
+// hand-tuned lump of extra roughness (`surface.y * (1 - detail)`), which is the
+// right *idea* — a surface whose wiggles are smaller than a pixel is a rougher
+// surface — but the wrong number, because it was not derived from the wiggles
+// that were actually dropped. It is now the **slope variance** of exactly the
+// octaves the fade retired, folded into the GGX width the way LEAN/Toksvig
+// mapping does it (`α² += σ²`). That has three consequences worth knowing:
+//
+// * The sun's glitter path — the long shimmering streak that stretches toward
+//   the horizon on any real water — falls out of it, instead of being a hard
+//   dot near the camera and noise beyond it.
+// * The octave sum can be normalised so that `wave.x` is the field's **RMS
+//   slope**, a physical quantity, which is why `water::sea_state` can take it
+//   straight off the Cox–Munk wind relation rather than off taste.
+// * A steeper sea is now safe. The old numbers were held down by aliasing; with
+//   the aliasing answered by roughness rather than by flattening, the sea can be
+//   as steep as the measurement says it is.
+//
+// The loop also **breaks** at the first fully-faded octave rather than running
+// every one with the body switched off. Wavenumber only rises, so once one
+// octave is past the cut every finer one is too, and the slope variance they
+// would have contributed is a geometric tail that closes in one line. That is
+// what pays for the extra fine octaves — but only past the crossover: near water
+// costs up to 60% more octaves than it used to and far water costs less, with
+// the break-even at a couple of hundred metres in a calm. `water-surface.md` has
+// the table, and `Budget::water_octaves` is the knob if the trade is wrong.
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
-    mesh_view_bindings::{view, globals},
+    mesh_view_bindings::{view, lights, globals},
+    // The module alias as well as the three items above: `fog` only exists when
+    // the view has one, so it can only be named behind `#ifdef DISTANCE_FOG`, and
+    // a conditional *item* import is a shape naga_oil is not asked for anywhere
+    // else in bevy. Reaching it through the module is what bevy's own
+    // `pbr_functions` does.
+    mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 }
 
-// x: wave steepness (normal strength). y: base wavelength in metres.
-// z: wave speed scalar (metres/second at the base wavelength).
+// x: RMS slope of the wave field (see `water::sea_state`). y: base wavelength in
+// metres. z: wave speed scalar (metres/second at the base wavelength).
 // w: detail cut-off — larger retires the fine octaves closer to the camera.
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> wave: vec4<f32>;
 
-// x: near roughness. y: extra roughness folded in at distance (the sub-pixel
-// waves the octave fade dropped). z: top-down depth darkening (0 = none).
-// w: foam amount on the wave crests.
+// x: base (micro) roughness, perceptual — what is left when every wave the field
+// models has been resolved. y: crest sub-surface scattering strength.
+// z: top-down depth darkening (0 = none). w: foam amount on the wave crests.
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: vec4<f32>;
 
 // xy: unit wind direction the waves travel along. z: chop (0 = rolling swell,
@@ -54,6 +88,14 @@
 // Distance from the nearest bank, rasterised per cell (`water_shore_field`).
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var shore_field: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var shore_sampler: sampler;
+
+// The octave sum's shape, all of it derived on the CPU in `water::octave_norms`
+// so the fragment pays no series arithmetic and the maths is unit-testable.
+// x: how many octaves to run (the quality knob — see `Budget::water_octaves`).
+// y: gradient normaliser, chosen so the summed slope has RMS `wave.x`.
+// z: 1 / Σ amplitude — turns the surviving-amplitude tally into a 0..1 "how much
+// detail is left" fraction. w: 1 / Σ amplitude over the short octaves only.
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> octaves: vec4<f32>;
 
 /// Distance from the bank over which a body of water is treated as sheltered.
 /// A 12 m canal never gets more than 6 m from a wall and so keeps only a fine
@@ -81,25 +123,95 @@ const SHALLOW_TINT: vec3<f32> = vec3<f32>(1.5, 2.1, 1.7);
 const SHORE_FOAM_M: f32 = 4.0;
 
 const TAU: f32 = 6.2831853;
+const INV_PI: f32 = 0.31830989;
 
-/// Octave count. Five spans ~40 m swell down to ~2 m ripples at the default base
-/// wavelength; the distance fade means only the nearest water pays for all five.
-const OCTAVES: i32 = 5;
+/// Per-octave amplitude roll-off, and its square (the roll-off of the octave's
+/// slope *variance*, which is what the early-out's geometric tail sums).
+///
+/// A steeper roll-off (0.62 and below) lets the fundamental dominate, and one
+/// dominant direction is exactly what reads as corduroy; 0.72 keeps the higher
+/// octaves in the mix without letting the finest one turn the normal into noise.
+const AMP_FALLOFF: f32 = 0.72;
+const AMP_SQ_FALLOFF: f32 = 0.5184;
+
+/// Wavelength ratio between neighbouring octaves.
+const K_STEP: f32 = 1.83;
 
 /// Golden angle between octave directions, so they never line up into a visible
 /// grid — the giveaway of a stacked-sine ocean.
 const OCTAVE_TURN: f32 = 2.39996;
 
+/// Phase each octave is offset by, per octave index.
+///
+/// Without it every octave — and every crest wobble — passes through zero phase
+/// at `p == 0`, which is the map anchor, which is where the camera is. Eight
+/// waves in phase at one point is a focus, and a 2026-09-10 capture over open
+/// water has the standing rings to prove it: a bullseye of interference lobes
+/// sitting in the middle of the lake and travelling with the anchor. An offset
+/// that is not a rational multiple of anything else here scatters the zero
+/// crossings instead. It costs one multiply-add.
+const OCTAVE_PHASE: f32 = 11.937;
+
+/// Octaves below this index are "the big crests"; the rest are the chop riding on
+/// them. Foam asks for both (see the crest-and-chop mask in `fragment`).
+const LO_OCTAVES: i32 = 2;
+
+/// First octave counted into the fine-detail signal that breaks foam up. By here
+/// the golden-angle turn has taken the octaves far enough out of alignment that
+/// their sum reads as blotches rather than as stripes.
+const FINE_FIRST: i32 = 3;
+
+/// Mean square of one octave's shaped derivative, `d/dφ pow(0.5+0.5·sin φ, n)`,
+/// at the two ends of the crest-sharpness range (n = 2 swell, n = 5 chop).
+/// Integrated numerically once rather than left as a fudge factor: it is what
+/// converts the octave amplitudes into a real slope variance, and therefore what
+/// makes `wave.x` mean RMS slope and the retired-detail roughness come out right.
+const SLOPE_MS_SWELL: f32 = 0.1563;
+const SLOPE_MS_CHOP: f32 = 0.2318;
+
+/// Colour of light that goes *into* a wave and comes back out toward the viewer.
+/// Water absorbs the red end within centimetres, so what emerges from a crest a
+/// few tens of centimetres thick is green-blue. This is the term that makes a
+/// backlit wave look lit from within rather than painted.
+///
+/// **It is worth a few per cent of the sunlight and no more.** `surface.y` is an
+/// effective albedo and `sea_state` keeps it under a tenth; at half — with the
+/// camera looking into the sun, which is the configuration the term exists for —
+/// a 2026-09-10 capture over the Paterswoldsemeer put a cyan lattice of blown-out
+/// crests across the whole lake. A term added *after* `apply_pbr_lighting` has
+/// nothing to keep it in range, so its own numbers have to.
+const SCATTER_TINT: vec3<f32> = vec3<f32>(0.06, 0.42, 0.34);
+
+/// How tightly the scattering hugs the direction straight away from the sun.
+const SCATTER_POWER: f32 = 4.0;
+
+/// Sun elevation, as a sine, at which crest scattering is strongest.
+///
+/// Light has to cross the *thickness* of a crest to come out of the far side, so
+/// this is a low-sun effect and needs to say so: the first version gated only on
+/// "the sun is up" and therefore ran at full strength at noon, when a wave is lit
+/// from above and is opaque.
+const SCATTER_PEAK_ELEVATION: f32 = 0.13;
+
+/// Perceptual roughness of foam. Foam is a mat of bubbles: it has no specular
+/// lobe worth the name and it scatters in every direction.
+const FOAM_ROUGHNESS: f32 = 0.92;
+
 struct Waves {
-    /// ∂h/∂x, ∂h/∂z of the wave height field, already scaled by steepness.
+    /// ∂h/∂x, ∂h/∂z of the wave height field, already scaled to RMS `wave.x`.
     grad: vec2<f32>,
     /// Normalised height of the two long octaves — the big crests.
     height_lo: f32,
     /// Normalised height of the short octaves — the chop riding on them.
     height_hi: f32,
-    /// How much of the fine detail survived the distance fade, 0..1 — the
-    /// complement is what gets paid back as roughness.
+    /// How much of the fine detail survived the distance fade, 0..1.
     detail: f32,
+    /// Mean square of the slope the fade retired, as a 2D vector magnitude —
+    /// the variance that has to come back as GGX width.
+    slope_var: f32,
+    /// Signed fine-scale texture, roughly −1..1, for breaking foam up. Zero once
+    /// the fine octaves have faded out, which is also when foam is retired.
+    fine: f32,
 }
 
 /// Evaluate the wave field at `p` (map metres) and time `t` (seconds).
@@ -113,89 +225,151 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
     // the crest-and-chop mask in `fragment`.
     var height_lo = 0.0;
     var height_hi = 0.0;
-    var weight_lo = 0.0;
-    var weight_hi = 0.0;
-    var weight = 0.0;
     var visible = 0.0;
+    // Σ (amplitude × the part of it the fade threw away)², i.e. the shape of the
+    // retired slope variance before the RMS scale is applied.
+    var retired_sq = 0.0;
+    var fine = 0.0;
+    var fine_weight = 0.0;
 
     var amp = 1.0;
     var k = TAU / max(wave.y, 0.5);
+    let chop = clamp(wind.z, 0.0, 1.0);
     // Sharper crests in a wind chop, rounder in a swell.
-    let crest_exp = mix(2.0, 5.0, clamp(wind.z, 0.0, 1.0));
+    let crest_exp = mix(2.0, 5.0, chop);
     var dir = normalize(select(vec2<f32>(1.0, 0.0), wind.xy, length(wind.xy) > 1e-4));
+    let count = i32(octaves.x);
 
-    for (var i = 0; i < OCTAVES; i += 1) {
+    for (var i = 0; i < count; i += 1) {
         let fade = clamp(1.0 - k * cut, 0.0, 1.0);
-        weight += amp;
-        let is_lo = i < 2;
-        if is_lo {
-            weight_lo += amp;
+        if fade <= 0.0 {
+            // Wavenumber only rises, so every remaining octave is past the cut
+            // too. Their variance is a geometric series in `AMP_SQ_FALLOFF`;
+            // summing it here is what lets the loop stop instead of spinning
+            // through a switched-off body for the far half of the screen.
+            retired_sq += amp * amp
+                * (1.0 - pow(AMP_SQ_FALLOFF, f32(count - i)))
+                / (1.0 - AMP_SQ_FALLOFF);
+            break;
+        }
+        // Deep-water dispersion: long waves outrun short ones (c = √(g/k)),
+        // which is most of why a stack of sines reads as moving water at all
+        // rather than as a rippling sheet.
+        let speed = wave.z * inverseSqrt(k);
+        // Crest wobble. A pure directional sine has crests that run dead
+        // straight to the horizon, and a stack of them reads as corduroy —
+        // the giveaway of a sine ocean. Bending each crest along its own
+        // length with a long, slow wave costs one extra sin() and turns the
+        // stripes into an interlocking cell pattern. The derivative of the
+        // wobble is deliberately dropped: it is small next to the wave's own
+        // gradient, and omitting it keeps this to one transcendental.
+        let perp = vec2<f32>(-dir.y, dir.x);
+        let along = dot(p, perp);
+        // Per-octave wobble ratio, plus a second incommensurate wobble on
+        // the fundamental only. One wobble at one ratio is itself periodic:
+        // in the far field, where the distance fade has already retired the
+        // short octaves, the fundamental's arcs line up into a visible
+        // repeating scallop. The second term (worth one extra sin per pixel,
+        // not per octave) beats against the first and breaks the tiling.
+        //
+        // The amplitudes here are deliberately under a radian. Phase modulation
+        // this strong is a lens: at ±1.35 rad a crest wanders by a fifth of its
+        // own wavelength, and where two octaves' wanderings agree the sum focuses
+        // into the ellipse-shaped caustics the same capture shows. Enough bend to
+        // break a straight crest, not enough to fold one over another.
+        let offset = OCTAVE_PHASE * f32(i);
+        var wobble = sin(along * k * (0.31 + 0.11 * f32(i)) + t * 0.27 + offset) * 0.7;
+        if i == 0 {
+            wobble += sin(along * k * 0.13 - t * 0.19) * 0.45;
+        }
+        let phase = dot(p, dir) * k + t * speed * k + wobble + offset;
+        // 0..1 sine, sharpened into crests. d/dphase of pow(s, n) is
+        // n·s^(n-1)·½cos(phase).
+        let s = 0.5 + 0.5 * sin(phase);
+        let shaped = pow(s, crest_exp);
+        let d_shaped = crest_exp * pow(s, crest_exp - 1.0) * 0.5 * cos(phase);
+        let w = amp * fade;
+        if i < LO_OCTAVES {
+            height_lo += w * shaped;
         } else {
-            weight_hi += amp;
+            height_hi += w * shaped;
         }
-        if fade > 0.0 {
-            // Deep-water dispersion: long waves outrun short ones (c = √(g/k)),
-            // which is most of why a stack of sines reads as moving water at all
-            // rather than as a rippling sheet.
-            let speed = wave.z * inverseSqrt(k);
-            // Crest wobble. A pure directional sine has crests that run dead
-            // straight to the horizon, and a stack of them reads as corduroy —
-            // the giveaway of a sine ocean. Bending each crest along its own
-            // length with a long, slow wave costs one extra sin() and turns the
-            // stripes into an interlocking cell pattern. The derivative of the
-            // wobble is deliberately dropped: it is small next to the wave's own
-            // gradient, and omitting it keeps this to one transcendental.
-            let perp = vec2<f32>(-dir.y, dir.x);
-            let along = dot(p, perp);
-            // Per-octave wobble ratio, plus a second incommensurate wobble on
-            // the fundamental only. One wobble at one ratio is itself periodic:
-            // in the far field, where the distance fade has already retired the
-            // short octaves, the fundamental's arcs line up into a visible
-            // repeating scallop. The second term (worth one extra sin per pixel,
-            // not per octave) beats against the first and breaks the tiling.
-            var wobble = sin(along * k * (0.31 + 0.11 * f32(i)) + t * 0.27) * 1.35;
-            if i == 0 {
-                wobble += sin(along * k * 0.13 - t * 0.19) * 0.9;
-            }
-            let phase = dot(p, dir) * k + t * speed * k + wobble;
-            // 0..1 sine, sharpened into crests. d/dphase of pow(s, n) is
-            // n·s^(n-1)·½cos(phase).
-            let s = 0.5 + 0.5 * sin(phase);
-            let shaped = pow(s, crest_exp);
-            let d_shaped = crest_exp * pow(s, crest_exp - 1.0) * 0.5 * cos(phase);
-            let w = amp * fade;
-            if is_lo {
-                height_lo += w * shaped;
-            } else {
-                height_hi += w * shaped;
-            }
-            // No `* k` here: `wave.x` is a *slope* (each octave's real-world
-            // amplitude is steepness/k, so the k cancels out of the gradient).
-            // With the k left in, the rendered slope was steepness/wavelength —
-            // and `sea_state` raises steepness and wavelength together, so dead
-            // calm to a gale changed the visible water by barely 2× and the sea
-            // measured as a flat sheet (open-water luminance σ < 1/255).
-            grad += dir * (w * d_shaped);
-            visible += w;
+        if i >= FINE_FIRST {
+            // A signed, blotchy field that rides along with the waves. Free —
+            // `s` is already in hand — and it exists so foam breaks into patches
+            // instead of painting the crest mask as a smooth ramp.
+            fine += w * (s - 0.5) * 2.0;
+            fine_weight += w;
         }
-        // Per-octave slope roll-off (the gradient above has no k in it, so the
-        // amplitude weight *is* the slope weight). A steeper roll-off (0.62 and
-        // below) lets the fundamental dominate, and one dominant direction is
-        // exactly what reads as corduroy; 0.72 keeps the higher octaves in the
-        // mix without letting the finest one turn the normal into noise.
-        amp *= 0.72;
-        k *= 1.83;
+        // No `* k` here: `wave.x` is a *slope* (each octave's real-world
+        // amplitude is that slope over k, so the k cancels out of the gradient).
+        // With the k left in, the rendered slope was steepness/wavelength —
+        // and `sea_state` raises steepness and wavelength together, so dead
+        // calm to a gale changed the visible water by barely 2× and the sea
+        // measured as a flat sheet (open-water luminance σ < 1/255).
+        grad += dir * (w * d_shaped);
+        visible += w;
+        let lost = amp * (1.0 - fade);
+        retired_sq += lost * lost;
+
+        amp *= AMP_FALLOFF;
+        k *= K_STEP;
         dir = vec2<f32>(
             dir.x * cos(OCTAVE_TURN) - dir.y * sin(OCTAVE_TURN),
             dir.x * sin(OCTAVE_TURN) + dir.y * cos(OCTAVE_TURN),
         );
     }
 
+    // One scale carries the whole field: `octaves.y` is 1/√(mean-square of a
+    // single octave's derivative × Σ amplitude²), so the sum below comes out
+    // with RMS magnitude `wave.x` — a real slope, in the units Cox–Munk reports.
+    let slope_ms = mix(SLOPE_MS_SWELL, SLOPE_MS_CHOP, chop);
+    let scale = wave.x * shelter * octaves.y;
+
     var out: Waves;
-    out.grad = grad * (wave.x * shelter / max(weight, 1e-4));
-    out.height_lo = height_lo / max(weight_lo, 1e-4);
-    out.height_hi = height_hi / max(weight_hi, 1e-4);
-    out.detail = visible / max(weight, 1e-4);
+    out.grad = grad * scale;
+    // The long band's weight is two fixed octaves, so its normaliser is a plain
+    // constant; the short band's depends on how many octaves are running, which
+    // is why that one is supplied.
+    out.height_lo = height_lo / (1.0 + AMP_FALLOFF);
+    out.height_hi = height_hi * octaves.w;
+    out.detail = visible * octaves.z;
+    // Same scale as the gradient, squared: the variance the fade dropped, in the
+    // same slope units the surviving gradient is in.
+    out.slope_var = scale * scale * slope_ms * retired_sq;
+    out.fine = fine / max(fine_weight, 1e-4);
+    return out;
+}
+
+struct KeyLight {
+    /// Direction *toward* the light.
+    dir: vec3<f32>,
+    /// Its colour times illuminance times exposure — the same pre-tonemap space
+    /// every other term in this shader is in.
+    rgb: vec3<f32>,
+}
+
+/// The brightest directional light and the direction toward it.
+///
+/// The scene runs two (sun and moon) and their order in the array is bevy's
+/// extraction order, not ours, so "the sun" is "whichever is brighter" — which
+/// is also the right answer for a moonlit sea. Capped at two because that is how
+/// many this scene has; the array is fixed-size and the rest are dark.
+fn key_light() -> KeyLight {
+    var out: KeyLight;
+    out.rgb = vec3<f32>(0.0);
+    out.dir = vec3<f32>(0.0, 1.0, 0.0);
+    var best = 0.0;
+    let n = min(lights.n_directional_lights, 2u);
+    for (var i = 0u; i < n; i += 1u) {
+        let l = lights.directional_lights[i];
+        let lum = dot(l.color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        if lum > best {
+            best = lum;
+            out.rgb = l.color.rgb;
+            out.dir = l.direction_to_light;
+        }
+    }
     return out;
 }
 
@@ -233,19 +407,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.N = n;
     pbr_input.world_normal = n;
 
-    // Detail lost to the distance fade comes back as roughness, so far water is
-    // a wide soft sheen instead of aliasing sparkle.
-    pbr_input.material.perceptual_roughness = clamp(
-        surface.x + surface.y * (1.0 - w.detail),
-        0.02,
-        1.0,
-    );
+    // The waves too small to resolve are not gone, they are *rough*. Fold their
+    // slope variance into the GGX width the way LEAN/Toksvig mapping does
+    // (α² += σ²) rather than adding a tuned constant: this is what turns the
+    // sun's reflection into a glitter path that stretches to the horizon instead
+    // of a hard dot surrounded by crawling noise. `surface.x` is what remains at
+    // zero distance — the micro-roughness of water itself.
+    let alpha_base = surface.x * surface.x;
+    let alpha = sqrt(alpha_base * alpha_base + w.slope_var);
+    pbr_input.material.perceptual_roughness = clamp(sqrt(alpha), 0.02, 1.0);
 
     // Water is dark looking down (you see into it) and mirror-bright at grazing
     // angles. Schlick's fresnel drives the tint; the reflection itself is the
     // standard path's environment map, which is the atmosphere — so the sea
     // takes the sky's colour through dawn, noon and dusk on its own.
-    let fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
+    let fresnel = pow(1.0 - n_dot_v, 5.0);
     let depth_tint = mix(1.0 - clamp(surface.z, 0.0, 1.0), 1.0, fresnel);
 
     // Shallows read lighter and greener: a short water column absorbs less of the
@@ -265,8 +442,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // alone paints continuous ribbons down every crest line — foam as a stripe,
     // not as spray. The bands sit well below 1 on purpose: each is a mean of
     // sharpened sines, so its peaks land nearer 0.7 than unity.
+    //
+    // `w.fine` then tears the result up. Foam is a mat of bubbles with holes in
+    // it, and a smoothstep of a smooth field is a smooth blob — which is what
+    // makes painted-on foam read as painted on. The breakup rides the same wave
+    // field, so it moves with the crest instead of crawling over it.
+    // Clamped at 1: the breakup may tear holes in foam, never brighten it. An
+    // earlier version allowed 1.4 and so quietly raised the foam ceiling above
+    // what `sea_state` asked for, which is not a thing a *breakup* should do.
+    let breakup = clamp(0.55 + 0.75 * w.fine, 0.0, 1.0);
     let crest_foam = surface.w
         * w.detail
+        * breakup
         * smoothstep(0.34, 0.62, w.height_lo)
         * smoothstep(0.40, 0.80, w.height_hi);
 
@@ -283,7 +470,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         SHORE_FOAM_M * (0.55 + 0.45 * wind.z) * (0.55 + 0.9 * w.height_hi),
         2.0 * texel_m,
     );
-    let shore_foam = w.detail * (0.30 + 0.55 * wind.z) * (1.0 - smoothstep(0.0, lap, shore_m));
+    let shore_foam = w.detail
+        * (0.30 + 0.55 * wind.z)
+        * clamp(0.75 + 0.4 * w.fine, 0.0, 1.0)
+        * (1.0 - smoothstep(0.0, lap, shore_m));
 
     let foam = clamp(max(crest_foam, shore_foam), 0.0, 1.0);
     pbr_input.material.base_color = vec4<f32>(
@@ -292,7 +482,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     );
     pbr_input.material.perceptual_roughness = mix(
         pbr_input.material.perceptual_roughness,
-        0.9,
+        FOAM_ROUGHNESS,
         foam,
     );
 
@@ -304,6 +494,61 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     } else {
         out.color = pbr_input.material.base_color;
     }
+
+    let key = key_light();
+
+#ifndef ENVIRONMENT_MAP
+#ifdef DISTANCE_FOG
+    // No environment map on this view, so the standard path has *no* reflection
+    // to give the surface at all — which is the state a phone-class adapter
+    // without `FLOAT32_FILTERABLE` renders in (`systems::sky_dome`), and any run
+    // with sky lighting switched off. Water with nothing in it is the one thing
+    // water can never look like, so stand in with the haze colour the ground
+    // already fades into: it is the horizon's own tone, it is driven by the same
+    // day/night clock, and a reflected ray off near-flat water is near-horizontal
+    // anyway. Weighted by the same fresnel the tint above uses, so it arrives at
+    // grazing angles and stays out of the head-on colour.
+    //
+    // Deliberately not compiled at all when there *is* an environment map: this
+    // would be a second reflection stacked on the real one.
+    //
+    // Schlick against water's own F0 of 0.02 — the same reflectance the standard
+    // path would have used had it had anything to reflect, so switching an
+    // environment map on and off moves the surface as little as this
+    // approximation can manage.
+    let reflectance = 0.02 + 0.98 * fresnel;
+    out.color = vec4<f32>(
+        out.color.rgb + view_bindings::fog.base_color.rgb * reflectance * (1.0 - foam),
+        out.color.a,
+    );
+#endif
+#endif
+
+    // Light that goes into the back of a crest, scatters, and comes out the front
+    // toward the viewer — the translucent green that makes a backlit wave look
+    // lit from inside. Three gates, all cheap: it needs a crest to shine through
+    // (`height_lo`), the viewer roughly opposite the sun, and the sun above the
+    // horizon. Foam kills it, being opaque.
+    let toward_sun = clamp(dot(v, -key.dir), 0.0, 1.0);
+    // Up over the first few degrees of elevation, down again as the sun climbs:
+    // a crest is translucent when the light crosses it and opaque when the light
+    // comes from over the top of it.
+    let elevation = clamp(key.dir.y, 0.0, 1.0);
+    let sun_low = smoothstep(0.0, SCATTER_PEAK_ELEVATION, elevation)
+        * (1.0 - smoothstep(SCATTER_PEAK_ELEVATION, 0.75, elevation));
+    let scatter = surface.y
+        * w.detail
+        * pow(toward_sun, SCATTER_POWER)
+        // The top of a big crest only. A wide mask paints whole wave faces green,
+        // and what actually glows is the thin edge the light gets through.
+        * smoothstep(0.50, 0.90, w.height_lo)
+        * sun_low
+        * (1.0 - foam);
+    out.color = vec4<f32>(
+        out.color.rgb + SCATTER_TINT * key.rgb * (scatter * INV_PI),
+        out.color.a,
+    );
+
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }
