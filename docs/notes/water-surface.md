@@ -68,13 +68,22 @@ Both this and the F0 fix are scaled so the **head-on tone is bit-identical** —
 that is the number `vector_tiles::palette::WATER` is matched against
 (`WATER_ALBEDO`), and only the grazing end moves.
 
-Checked rather than assumed, because `WATER_ALBEDO` asks for it: the ring-water /
-painted-water step at `53.07,5.34` from 12 km straight down, noon, went from
-**14.9, 14.1, 11.9** to **13.1, 13.0, 11.3** — a shade narrower. Note that
-`WATER_ALBEDO`'s own table records 8, 9, 9 for the same pair; that was a different
-viewpoint and hour, and the gap between the two readings is the drift its last
-paragraph predicts. **Compare a seam against the same view, never against a
-remembered number.**
+Checked rather than assumed, because `WATER_ALBEDO` asks for it. The ring-water /
+painted-water step at `53.07,5.34` from 12 km straight down, at noon:
+
+| | R, G, B |
+|---|---|
+| before this work, on lavapipe | 14.9, 14.1, 11.9 |
+| after, on lavapipe | 13.1, 13.0, 11.3 |
+| **after, on the Steam Deck** | **6.4, 8.7, 7.9** |
+
+Two readings of the same thing, and the third is the one that counts. The change
+narrows the seam slightly — that comparison is like-for-like and holds on either
+machine — but the *absolute* width does not transfer at all: lavapipe puts it near
+14 and real hardware near 8, which is where `WATER_ALBEDO`'s own table has always
+had it. **The palette match is intact, and it took a GPU to say so.** Compare a
+seam against the same view on the same machine, never against a remembered
+number.
 
 ## Aliasing is answered with roughness, not with flatness
 
@@ -84,23 +93,35 @@ octave sum can be normalised to a physical slope because the scale is no longer
 doubling as an aliasing control; and calm water gets a 0.22 sheen rather than a
 0.04 mirror, which is most of the difference between water and blue plastic.
 
-## The term with no ceiling (measured 2026-09-10)
+## Crest scattering is a multiplier, and it took three goes to learn why
 
-Crest scattering is added **after** `apply_pbr_lighting`, so nothing downstream
-holds it in range. Camera 40 m up, 5° above the Paterswoldsemeer, into the sun:
+An additive radiance was scaled by the sun's `color · illuminance · exposure`, and
+this scene lifts exposure at a low sun faster than it extinguishes the beam — so
+the term **grew as the sun set**, which is backwards, and put a lattice of
+blown-out cyan crests across the Paterswoldsemeer. Three readings, all 2026-09-10:
 
-| `surface.y` at full sea | result |
-|---|---|
-| 0.55 | a lattice of blown-out cyan crests across the lake |
-| 0.09 | the brightest water pulled 18 levels toward green |
-| 0.045 | what ships |
+| form | strength | result |
+|---|---|---|
+| additive | 0.55 | a neon lattice across the whole lake |
+| additive | 0.09 | brightest water pulled 18 levels toward green |
+| additive | 0.045 | *appeared* fine — see below |
+| relative, capped at 30 % | — | a sun glitter path |
 
-It also has to be gated on a **low sun** (`SCATTER_PEAK_ELEVATION`): light crosses
-the *thickness* of a crest, and the first version gated only on "the sun is up",
-so it ran at full strength at noon when a wave is opaque. The number errs toward
-invisible on purpose — too faint reads as the term missing, too strong reads as a
-bug, and its magnitude is the one thing here a software rasteriser cannot settle.
-**Worth a workstation's eye before it is raised.**
+**The third row is the one to remember.** It looked tame, and it was measured in a
+view aimed 100° away from the sun, so it never fired the term at all. Re-aimed at
+the sun the same numbers blew out exactly as before. A verification that does not
+exercise the thing it verifies is worse than none, because it is filed as
+evidence.
+
+The fix is not a smaller number, it is a bounded form: a fraction of the light
+already there (`SCATTER_MAX`, 30 %) says "a crest is brighter and greener than the
+water beside it", which is true in any exposure and cannot blow out in any of
+them. The mask is a ramp rather than a narrow band for the same class of reason —
+a hard threshold on a smooth field draws the wave field's own diamond lattice.
+
+It is still gated on a **low sun** (`SCATTER_PEAK_ELEVATION`): light crosses the
+*thickness* of a crest, and the first version gated only on "the sun is up", so it
+ran at full strength at noon when a wave is lit from over the top and opaque.
 
 ## Cost
 
@@ -176,6 +197,19 @@ lighting off — the standard path has no reflection to give, so the shader stan
 in with the `DistanceFog` haze colour under `#ifndef ENVIRONMENT_MAP`, weighted by
 the same `reflected` the body colour was taken out of. Not compiled at all when
 there *is* an environment map.
+
+## Aim a test view with arithmetic
+
+`--look`'s yaw is measured **anticlockwise from north** — yaw 0 faces north, yaw
+90 faces west — so a compass azimuth `a` is `yaw = 360 - a`. The sun's own azimuth
+and elevation come from `utils::sun::sun_direction(hours, decl)` at
+`OBSERVER_LATITUDE_DEG` (52°), which is what the time-of-day slider drives:
+15:00 is azimuth 231.8° and 25.8° up, 17:12 is 260.5° and 7.4° up, and 18:36 —
+which reads like sunset — is already **5.5° below the horizon** and renders night.
+
+Getting that backwards is how the first version of `docs/water-shots.toml` aimed
+both of its "into the sun" views at empty sky, on a machine that costs twenty
+minutes a run, and then passed. Compute the number; do not eyeball it.
 
 ## Verifying a change here
 

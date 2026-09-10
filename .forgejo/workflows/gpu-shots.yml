@@ -62,7 +62,10 @@ jobs:
           set -o pipefail
           ONLY=""
           if [ -n "${{ inputs.only }}" ]; then ONLY="--only ${{ inputs.only }}"; fi
-          mkdir -p /tmp/gpu-shots
+          # Emptied, not just created: the runner is a persistent machine, and a
+          # previous run's captures left in here are uploaded by the collect step
+          # below as if this run had produced them.
+          rm -rf /tmp/gpu-shots && mkdir -p /tmp/gpu-shots
           cargo run -p cartopolis -- \
             --shots "${{ inputs.manifest }}" $ONLY \
             --size "${{ inputs.size }}" \

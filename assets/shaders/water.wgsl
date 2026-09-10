@@ -162,7 +162,6 @@ const WATER_F0: f32 = 0.0204;
 const SHORE_FOAM_M: f32 = 4.0;
 
 const TAU: f32 = 6.2831853;
-const INV_PI: f32 = 0.31830989;
 
 /// Per-octave amplitude roll-off, and its square (the roll-off of the octave's
 /// slope *variance*, which is what the early-out's geometric tail sums).
@@ -231,18 +230,31 @@ fn slope_mean_square(chop: f32) -> f32 {
     return SLOPE_MS_A + chop * (SLOPE_MS_B + chop * SLOPE_MS_C);
 }
 
-/// Colour of light that goes *into* a wave and comes back out toward the viewer.
-/// Water absorbs the red end within centimetres, so what emerges from a crest a
-/// few tens of centimetres thick is green-blue. This is the term that makes a
-/// backlit wave look lit from within rather than painted.
+/// Colour of light that goes *into* a wave and comes back out toward the viewer,
+/// normalised so its largest component is 1. Water absorbs the red end within
+/// centimetres, so what emerges from a crest a few tens of centimetres thick is
+/// green-blue. This is the term that makes a backlit wave look lit from within
+/// rather than painted.
 ///
-/// **It is worth a few per cent of the sunlight and no more.** `surface.y` is an
-/// effective albedo and `sea_state` keeps it under a tenth; at half — with the
-/// camera looking into the sun, which is the configuration the term exists for —
-/// a 2026-09-10 capture over the Paterswoldsemeer put a cyan lattice of blown-out
-/// crests across the whole lake. A term added *after* `apply_pbr_lighting` has
-/// nothing to keep it in range, so its own numbers have to.
-const SCATTER_TINT: vec3<f32> = vec3<f32>(0.06, 0.42, 0.34);
+/// **It is applied as a fraction of the light already there, not as light added
+/// to it**, and that is a correctness decision rather than a stylistic one. As an
+/// additive radiance it was scaled by the sun's `color · illuminance · exposure`,
+/// and at a low sun this scene lifts exposure faster than the beam is
+/// extinguished — so the term grew as the sun set, which is backwards, and put a
+/// lattice of blown-out cyan crests across the Paterswoldsemeer. Twice: the
+/// second time at an eighth of the first strength, because the view that was
+/// meant to prove it tamed was aimed 100° away from the sun and never fired it.
+///
+/// A multiplier cannot do that. It says "a crest is brighter and greener than the
+/// water beside it, by at most `SCATTER_MAX`", which is true in any exposure and
+/// bounded in all of them.
+const SCATTER_TINT: vec3<f32> = vec3<f32>(0.14, 1.0, 0.81);
+
+/// Ceiling on the crest lift, as a fraction of the water's own lit colour.
+const SCATTER_MAX: f32 = 0.30;
+
+/// Turns `surface.y`'s few per cent into that fraction.
+const SCATTER_GAIN: f32 = 8.0;
 
 /// How tightly the scattering hugs the direction straight away from the sun.
 const SCATTER_POWER: f32 = 4.0;
@@ -679,13 +691,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let scatter = surface.y
         * w.detail
         * pow(toward_sun, SCATTER_POWER)
-        // The top of a big crest only. A wide mask paints whole wave faces green,
-        // and what actually glows is the thin edge the light gets through.
-        * smoothstep(0.50, 0.90, w.height_lo)
+        // Weighted toward the tops of the big crests, but as a ramp rather than a
+        // band: a narrow threshold on a smooth field draws the wave field's own
+        // lattice, which is a diamond grid and reads as neon rather than as water.
+        * smoothstep(0.30, 1.00, w.height_lo)
         * sun_low
         * (1.0 - foam);
+    let glow = clamp(scatter * SCATTER_GAIN, 0.0, SCATTER_MAX);
     out.color = vec4<f32>(
-        out.color.rgb + SCATTER_TINT * key.rgb * (scatter * INV_PI),
+        out.color.rgb * (vec3<f32>(1.0) + SCATTER_TINT * glow),
         out.color.a,
     );
 

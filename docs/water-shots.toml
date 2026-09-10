@@ -31,21 +31,36 @@ time = 11.0
 fog = 0.08
 clouds = 0.0
 
+# **Aim these at the sun with arithmetic, not by eye.** `--look`'s yaw is measured
+# *anticlockwise* from north — a camera at yaw 0 faces north and at yaw 90 faces
+# west — so a compass azimuth `a` is `yaw = 360 - a`. Getting that backwards is
+# how the first version of this file pointed both "into the sun" views at empty
+# sky and tested nothing, on a machine that costs twenty minutes a run. The sun's
+# own azimuth and elevation come from `utils::sun::sun_direction(hours, 0.0)` at
+# `OBSERVER_LATITUDE_DEG` (52°), which is what the clock here drives.
+
+# `sunpath` and `lowsun` are deliberately the **same camera at two sun heights**
+# rather than two viewpoints. The variable under test is the sun's elevation —
+# `SCATTER_PEAK_ELEVATION` exists to make those two frames differ — and two
+# unrelated views cannot isolate it. Yaw 99.5 is azimuth 260.5, which is where the
+# sun is at 17:12; at 15:00 it sits 28° off to the left of frame, still well
+# inside the glitter path.
+
 [[shot]]
 name = "sunpath"
-description = "Paterswoldsemeer, 40 m up and 5° above the water into a mid-afternoon sun — the glitter path, and the crest scattering that has no ceiling"
-at = [53.1880, 6.5560, 40]
-look = [-5.0, 228.0]
+description = "Paterswoldsemeer with the sun 25.8° up — high enough that a crest is lit over the top and opaque, so scattering should be nearly absent here"
+at = [53.1720, 6.5640, 30]
+look = [-4.0, 99.5]
 time = 15.0
 fog = 0.06
 clouds = 0.0
 
 [[shot]]
-name = "dusk"
-description = "The same lake at sunset: crest scattering wants a low sun, and this is where it either reads as translucent water or as green paint"
-at = [53.1880, 6.5560, 40]
-look = [-4.0, 246.0]
-time = 18.6
+name = "lowsun"
+description = "The same water and camera at 17:12, sun 7.4° up — SCATTER_PEAK_ELEVATION exactly, and the frame where crest scattering either reads as translucent water or as green paint. 18:36 was tried first and is night."
+at = [53.1720, 6.5640, 30]
+look = [-4.0, 99.5]
+time = 17.2
 fog = 0.08
 clouds = 0.0
 
