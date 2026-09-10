@@ -136,13 +136,39 @@ error in rendered slope — so the curve is a fitted quadratic, exact at both en
 the box; the same view reported 1.5 s to 4.7 s a frame with the shader held
 constant. The tables above are arithmetic, which is what this machine can settle.
 
+## The bank is in the mirror, without a reflection pass
+
+Nothing in the scene is *actually* reflected — the environment map is the
+atmosphere, so the water reflects the sky and nothing else, and real reflections
+need a second pass or deferred rendering for bevy's SSR. This client is
+forward-rendered on purpose.
+
+The dominant term is not the detail of the reflection, though. It is that the
+mirror is **dark where it is full of quay and bright where it is full of sky**,
+and the shore field already knows where the land is. The reflected ray leaves
+horizontally away from the camera and climbs at the angle the view descends, so
+it clears a bank-side building after `height · cot(elevation)`; probing the shore
+field that far along it answers the question, because the field seeds land at
+zero.
+
+Being **view-dependent for free** is why this is a reflection and not a rim of
+shadow around every island: water by the near bank probes across the water and
+sees sky, water by the far bank probes onto the land behind it, and looking
+straight down the reach goes to zero and it switches itself off — correct,
+because straight down the mirror holds the zenith.
+
+It dims **F0**, not the lit colour: a building blocks the sun's image as surely as
+it blocks the sky's, and scaling `reflectance` is the only way to reach a specular
+`apply_pbr_lighting` owns (`F0 = 0.16 · reflectance²`, hence a square root). And a
+probe leaving the cell would read a clamped edge texel — an answer about the wrong
+place, and a seam along every cell boundary — so off the edge it does not apply.
+
+One texture sample and about ten instructions.
+
 ## What is still missing, and cannot be cheap
 
-**Nothing in the scene is reflected.** The environment map is the atmosphere, so
-the water reflects the sky and follows the day/night cycle, but the quays and
-houses along a canal are not in it. That is the largest remaining gap against a
-viewer like Second Life's, and it needs either a second reflection pass or
-deferred rendering for bevy's SSR. This client is forward-rendered on purpose.
+Everything about that reflection except its brightness: a quay reads as a dark
+band rather than as a quay, and nothing moving is in it at all.
 
 Where there is **no environment map at all** — an adapter without
 `FLOAT32_FILTERABLE` (`sky-without-an-atmosphere.md`), `CARTO_NO_ENVMAP`, sky

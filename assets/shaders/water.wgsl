@@ -131,6 +131,25 @@ const SHALLOW_RED_M: f32 = 6.0;
 const SHALLOW_GREEN_M: f32 = 22.0;
 const SHALLOW_BLUE_M: f32 = 40.0;
 
+/// Assumed height of whatever stands on a bank — a quay wall, a house, a row of
+/// trees. It only sets *how far along the mirror* the surface looks for land, so
+/// it wants a typical streetside height rather than a tall one: too large and the
+/// dark band swallows the canal, too small and it hugs the kerb.
+const BANK_HEIGHT_M: f32 = 9.0;
+
+/// Furthest the bank probe will look. A probe that leaves this cell's shore field
+/// reads a clamped edge texel, so the effect is switched off out there instead —
+/// but capping the reach first means that hardly ever comes up.
+const BANK_REACH_MAX_M: f32 = 45.0;
+
+/// Metres of shore distance over which "land is in the mirror" softens back to
+/// open sky, so the band has an edge rather than a cut.
+const BANK_SOFT_M: f32 = 12.0;
+
+/// What the mirror is worth where it is full of bank rather than sky. Not zero: a
+/// sunlit brick quay is dark against the sky, not black.
+const BANK_MIRROR: f32 = 0.28;
+
 /// Water's reflectance at normal incidence, from its refractive index:
 /// `((1.333 - 1) / (1.333 + 1))²`. The one number the whole surface turns on —
 /// nearly everything you see looking at water is this times the sky.
@@ -518,6 +537,43 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         1.0 - smoothstep(0.0, SHALLOW_BLUE_M, shore_m),
     );
     let body_tint = (vec3<f32>(1.0) + shallow * (SHALLOW_LIFT - 1.0)) * body;
+
+    // **What a canal actually looks like is the far bank upside down in it.**
+    // There are no scene reflections here and there cannot cheaply be — but the
+    // dominant term is not the detail of the reflection, it is that the mirror is
+    // *dark* where it is full of quay and bright where it is full of sky, and the
+    // shore field already knows where the land is.
+    //
+    // The reflected ray leaves horizontally away from the camera and climbs at the
+    // angle the view descends, so it clears a bank-side building after
+    // `height · cot(elevation)`. Probe the shore field that far along it: the
+    // field seeds land at zero, so a near-zero reading there means the mirror is
+    // looking at a wall.
+    //
+    // This is view-dependent for free, which is the whole reason it works. Water
+    // by the *near* bank probes across the water and sees sky; water by the far
+    // bank probes onto the land behind it and darkens. Looking straight down the
+    // reach goes to zero and the effect switches itself off, which is correct —
+    // straight down the mirror holds the zenith, not the quay.
+    let rise = max(n_dot_v, 0.02);
+    let horiz = sqrt(max(1.0 - rise * rise, 0.0));
+    let reach = min(BANK_HEIGHT_M * horiz / rise, BANK_REACH_MAX_M);
+    let away = normalize(select(vec2<f32>(1.0, 0.0), -v.xz, length(v.xz) > 1e-4));
+    let bank_uv = (p + away * reach - field.xy) / max(field.z, 1.0);
+    // Outside this cell the sampler clamps to an edge texel, which is an answer
+    // about the wrong place and would draw a seam along every cell boundary. Off
+    // the edge the effect simply does not apply.
+    var mirror = 1.0;
+    if all(bank_uv > vec2<f32>(0.0)) && all(bank_uv < vec2<f32>(1.0)) {
+        let ahead = textureSample(shore_field, shore_sampler, bank_uv).r * field.w;
+        mirror = mix(BANK_MIRROR, 1.0, smoothstep(0.0, BANK_SOFT_M, ahead));
+    }
+    // `F0 = 0.16 · reflectance²`, so a mirror worth `m` is a reflectance scaled by
+    // its square root. Dimming F0 rather than the lit colour is what keeps the sun
+    // glint out of a reflection that is looking at a wall — a building blocks the
+    // sun's image as surely as it blocks the sky's.
+    pbr_input.material.reflectance *= sqrt(mirror);
+
     pbr_input.material.base_color = vec4<f32>(
         pbr_input.material.base_color.rgb * body_tint,
         pbr_input.material.base_color.a,
@@ -602,7 +658,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // two halves of the surface still add up to one and switching an environment
     // map on and off moves it as little as this approximation can manage.
     out.color = vec4<f32>(
-        out.color.rgb + view_bindings::fog.base_color.rgb * reflected * (1.0 - foam),
+        out.color.rgb + view_bindings::fog.base_color.rgb * reflected * mirror * (1.0 - foam),
         out.color.a,
     );
 #endif
