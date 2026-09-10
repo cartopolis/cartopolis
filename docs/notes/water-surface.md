@@ -192,10 +192,35 @@ flattens — 31 m at 16° above the water, 129 m at 4°, half a kilometre at 1°
 taste: at 45 m the grazing lake frames were truncated to a third of their real
 reach, which is exactly where a far shore belongs in the mirror.
 
-## What is still missing, and cannot be cheap
+## Real reflections: the two routes, and why neither was taken
 
-Everything about that reflection except its brightness: a quay reads as a dark
-band rather than as a quay, and nothing moving is in it at all.
+Everything about that reflection except its brightness is missing: a quay reads as
+a dark band rather than as a quay, and nothing moving is in it at all. Both ways
+to fix that properly were costed on 2026-09-10 and **both were declined** — not
+because they do not work, but because the approximation above already carries the
+part of the effect the eye reads.
+
+**Bevy's own `ScreenSpaceReflections` is not one of the routes.** It requires
+deferred rendering and a `DeferredPrepass` (`bevy_pbr::ssr`, and its own doc
+comment says so); this client is forward-rendered on purpose.
+
+* **Screen-space, by hand.** A material returning `reads_view_transmission_texture
+  = true` is handed `view_transmission_texture`, a snapshot of the scene as drawn
+  just before it — the buildings, quays and trees. March the depth buffer in the
+  reflected direction, sample that, fall back to the environment map on a miss.
+  Costs a full-screen copy plus the march. Two things make it more than a shader
+  change: it moves water from the opaque pass into `Transmissive3d`, which is the
+  coplanar ground ordering this tree has been bitten by repeatedly, and it needs a
+  `DepthPrepass`, which today only exists while ambient occlusion is switched on
+  (`render_features.rs` removes both prepasses by hand when it goes).
+* **Planar.** A second camera mirrored about the water plane rendering into a
+  quarter-resolution image, sampled by screen UV. Reflects off-screen geometry,
+  which screen-space cannot, and needs no pass move — but it is a second scene
+  traversal every frame.
+
+If this is revisited, screen-space is the better trade for a city viewer: the
+reflection you actually want is the far side of a canal, and that is nearly always
+on screen.
 
 Where there is **no environment map at all** — an adapter without
 `FLOAT32_FILTERABLE` (`sky-without-an-atmosphere.md`), `CARTO_NO_ENVMAP`, sky
