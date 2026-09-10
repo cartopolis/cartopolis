@@ -466,10 +466,22 @@ pub mod palette {
     /// Second canopy tone, alternated per instance. Two tones buy depth without
     /// costing a light.
     pub const CANOPY_DEEP: u32 = 0x4A_7F_3A;
-    /// Trunks are a warm grey in the [`BUILDING_EDGE`] family, deliberately *not*
-    /// brown: at walking distance a saturated brown is the loudest colour on the
-    /// whole map.
-    pub const TRUNK: u32 = 0xB0_A5_94;
+    /// Trunk bark: a warm, dark, low-saturation brown — hue ~30°, saturation
+    /// 0.30, value 0.48.
+    ///
+    /// It was `#B0A594`, a warm *grey* in the [`BUILDING_EDGE`] family, on the
+    /// argument that at walking distance a saturated brown is the loudest colour
+    /// on the map. True while everything around it was pale; the greens are
+    /// saturated now and the value ladder inverted — a trunk at value 0.69 became
+    /// the brightest thing under a 0.62 canopy, and the park rendered as green
+    /// trees on pale stone posts.
+    ///
+    /// So it is darker rather than browner: the saturation is still low (0.30
+    /// against the canopy's 0.53), which is what keeps the old argument's point —
+    /// the trunk is the one thing in the group that is not a leaf and must not
+    /// compete with them. What changed is only that it now sits *under* the
+    /// canopy in value instead of above it.
+    pub const TRUNK: u32 = 0x7A_68_55;
     /// What a forest polygon looks like from far enough that the individual trees
     /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover. The
     /// fill ramps to this as the trees fade out, so the aggregate brightness does
@@ -515,9 +527,11 @@ pub mod palette {
     /// this, exactly as the canopy's second tone is, so one material paints a whole
     /// street's benches, bins and shelters.
     pub const FURNITURE: u32 = 0xB8_B0_A2;
-    /// Timber: bench slats, table tops, swing seats. In the [`TRUNK`] family and
-    /// muted for the same reason — a saturated brown at walking distance is the
-    /// loudest colour on the map.
+    /// Timber: bench slats, table tops, swing seats. It used to be described as
+    /// being in the [`TRUNK`] family; it is not any more, and deliberately so —
+    /// the trunk darkened to sit under a saturated canopy, and a bench stands on
+    /// pale paving beside pale buildings where the original argument still holds:
+    /// a saturated brown at walking distance is the loudest colour on the map.
     pub const FURNITURE_WOOD: u32 = 0xB4_A9_98;
     /// Painted steel: posts, frames, bins.
     pub const FURNITURE_METAL: u32 = 0x9A_98_93;
