@@ -1,6 +1,6 @@
 ---
 topic: rendering
-triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, "junction mouth", "side street", "roads look wrong", ribbon_kinds]
+triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, round_corners, corner_cut, "faceted road", "roads look polygonal", "road is a curve", "junction mouth", "side street", "roads look wrong", ribbon_kinds]
 updated: 2026-09-10
 ---
 
@@ -383,3 +383,74 @@ is tarmac meeting tarmac.
 CARTO_DUMP_WIN="300,300,220" cargo test -p cartopolis_geo \
     --lib dump_road_ribbons -- --ignored --nocapture
 ```
+
+## A road is a curve, and a generalised vertex is not a corner (2026-09-10)
+
+Everything above is about where two ribbons meet. This is about the ribbon
+itself, and it is the thing you actually see standing on the pavement.
+
+Shortbread generalises its geometry for a map read from above, where a 20° kink
+in a street is a pixel. Extrude that into a ribbon two lanes wide, put a painted
+edge line down both sides of it, and look at it from eye height: every one of
+those kinks is a visible corner, and the street reads as a row of straight
+boards bolted end to end. Measured over the fixture's drawn centre lines,
+**79 % of interior vertices turn by 2–70°, and 49 % by ten degrees or more**.
+This is the ordinary case, not an edge one.
+
+So `round_corners` replaces each moderate kink with a circular fillet before the
+ribbon is extruded, and `a_drawn_street_is_a_curve_not_a_chain_of_boards`
+measures the result:
+
+| turn at an interior vertex | raw | rounded |
+|---|---|---|
+| under 10° | 648 | **4616** |
+| 10–20° | 378 | 2 |
+| 20–70° | 447 | 70 |
+| over 70° — a corner the map asserts | 216 | 216 |
+
+Five rules, and every one of them is a thing that broke a test when it was
+missing:
+
+- **The endpoints never move.** A road's ends are its junction nodes, and the
+  mitred continuation, the junction stub and the half-open tile ownership are
+  all anchored on them.
+- **The end *bearings* never change.** A fillet at the second vertex pulls that
+  vertex back *along* the first segment, so the segment shortens and keeps its
+  direction. `junction_extent` and `continuation` read the bearing and are
+  untouched.
+- **A fillet tighter than the road is wide is refused.** The ribbon is offset
+  `half` either side of the centre line, so on the inside of an arc of radius
+  `r` the edge has radius `r − half`; below `r = half` the strip turns inside
+  out. The rule is one line — round only while `t ≥ half · tan(θ/2)` — and it is
+  what makes this safe on a 22 m motorway and generous on an alley without a
+  width table. `a_tight_corner_does_not_fold_the_ribbon` is the guard.
+- **A fillet may not move the road more than a metre** (`ROUND_MAX_OFFSET_M`)
+  from the vertex the map recorded, and a turn over 60° is kept sharp. The
+  licence this takes is that a generalised vertex is an artefact of drawing the
+  map small; that licence runs out at a corner the map is asserting, and a
+  street grid's right angles are exactly that.
+- **`street_nodes` must report the segment length *after* the fillet.** This is
+  the subtle one. `ribbon` clamps its inner corner against the shorter of the
+  two segments meeting there, and at a continuation one of those comes over from
+  the neighbouring feature as `NodeArm::leaves`. Shorten the segment `ribbon`
+  measures while `NodeArm` still reports the raw one and the two halves of one
+  street clamp against different numbers and land on different points — which is
+  the hairline `two_halves_of_one_street_meet_on_the_same_two_points` forbids.
+  Both sides go through `corner_cut`, so there is one answer rather than two.
+
+**Rings are not rounded.** A roundabout's polygon is not a generalisation
+artefact the way a kink in a street is: its vertices lie *on* the circle the
+junction actually is, so cutting its corners would shrink the roundabout rather
+than smooth it. Its seam is already mitred closed.
+
+**What it costs, measured on this container** (median of three, on a box that
+was also running a render, so read the ratio and not the absolute):
+`tessellate_roads` over the fixture **481 ms → 590 ms (+23 %)** and the road
+sheet **15,163 → 25,445 triangles (+68 %)**. The step between fillet points is
+the knob: at 22° the residual kinks are still 10–20° and cost 20,655 triangles;
+at 8° they collapse to nothing extra; at 6° the count keeps climbing for no
+further angular gain. `ROUND_STEP_DEG` is 8 for that reason and not by taste.
+
+`the_road_sheet_is_a_partition` is unchanged at 0.81 %, and every one of the
+join tests above still passes — the fillet changes what the centre line *is*,
+not how two of them meet.

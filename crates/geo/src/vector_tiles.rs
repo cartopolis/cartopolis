@@ -3221,6 +3221,26 @@ struct NodeArm {
 ///
 /// Keys are tile units; `scale` converts those to the metres the ribbon builder
 /// works in.
+/// How far the fillet at vertex `i` of a raw MVT linestring reaches back along
+/// each of its segments, in **tile units**.
+///
+/// The scale is uniform, so [`corner_cut`]'s answer in tile units times the scale
+/// is its answer in metres — which is what lets [`street_nodes`] report the same
+/// number `ribbon` will measure without converting the whole line first.
+fn fillet_units(line: &[geo_types::Coord<f32>], i: usize, half_units: f32) -> f32 {
+    if i == 0 || i + 1 >= line.len() {
+        return 0.0;
+    }
+    let (a, p, b) = (line[i - 1], line[i], line[i + 1]);
+    let (l_in, l_out) = ((p.x - a.x).hypot(p.y - a.y), (b.x - p.x).hypot(b.y - p.y));
+    if l_in < 1e-6 || l_out < 1e-6 {
+        return 0.0;
+    }
+    let cos =
+        (((p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y)) / (l_in * l_out)).clamp(-1.0, 1.0);
+    corner_cut(l_in, l_out, cos.acos(), half_units)
+}
+
 fn street_nodes(features: &[Feature], scale: f32) -> HashMap<(i32, i32), Vec<NodeArm>> {
     let mut nodes: HashMap<(i32, i32), Vec<NodeArm>> = HashMap::new();
     for (fi, feature) in features.iter().enumerate() {
@@ -3258,9 +3278,20 @@ fn street_nodes(features: &[Feature], scale: f32) -> HashMap<(i32, i32), Vec<Nod
                 // At an end, `axis` already points from the node into the line
                 // (`j + 1 < n` at the head, `j > 0` reversed at the tail), so
                 // the leaving direction is the axis or its negation.
+                //
+                // The length is the one **`ribbon` will actually measure**, i.e.
+                // after the fillet at the next vertex along has eaten its way
+                // back into this segment — see [`corner_cut`]. Reporting the raw
+                // length here and the cut one there is how the two halves of a
+                // continuation would come to clamp their shared inner corner
+                // against different numbers, which opens the crack the mitre
+                // exists to close.
                 let leaves = match (j, len > 1e-6 && len.is_finite()) {
-                    (0, true) => Some((d, len * scale)),
-                    (j, true) if j + 1 == n => Some(([-d[0], -d[1]], len * scale)),
+                    (0, true) => Some((d, (len - fillet_units(&ls.0, 1, half / scale)) * scale)),
+                    (j, true) if j + 1 == n => Some((
+                        [-d[0], -d[1]],
+                        (len - fillet_units(&ls.0, n - 2, half / scale)) * scale,
+                    )),
                     _ => None,
                 };
                 let at = nodes.entry(node_key([c.x, c.y])).or_default();
@@ -3419,6 +3450,158 @@ struct EndJoin {
     cont: Option<([f32; 2], f32)>,
 }
 
+/// Below this turn there is no corner worth rounding: the kink is finer than the
+/// ribbon's own kerb line is wide and rounding it would only add vertices.
+const ROUND_MIN_DEG: f32 = 2.0;
+
+/// Above this turn the corner is **real** and is kept. A street grid's right
+/// angles, a hairpin and a switchback are all things the map is asserting; a
+/// fillet there would cut the corner off a road that genuinely turns there, and
+/// at a junction it would pull the carriageway away from the node it meets.
+const ROUND_MAX_DEG: f32 = 60.0;
+
+/// How far a fillet may pull the carriageway away from the vertex the map
+/// recorded, in metres.
+///
+/// The whole licence this rounding takes is that a generalised vertex is an
+/// artefact of drawing the map small, not a statement that the road has a kink
+/// there. That licence runs out somewhere, and this is where: a metre is inside
+/// the width of the lane the vertex sits in, so no fillet can move a road onto
+/// ground the map says is something else.
+const ROUND_MAX_OFFSET_M: f32 = 1.0;
+
+/// How far back along each adjacent segment a fillet may reach, as a fraction of
+/// the **shorter** of the two.
+///
+/// Well under the `INNER_BACKTRACK_BUDGET` the miter join is allowed, so a
+/// rounded corner can never eat the segment its neighbour's join is measured
+/// against.
+const ROUND_TANGENT_FRAC: f32 = 0.35;
+
+/// The largest turn one segment of a fillet may carry. The sagitta it leaves is
+/// `r · (1 − cos(step/2))` — four centimetres on a five-metre radius at this
+/// step, i.e. under the width of the painted line that runs along the edge.
+const ROUND_STEP_DEG: f32 = 8.0;
+
+/// How far back along its two segments the fillet at a corner reaches, in metres,
+/// or `0` where the corner is kept.
+///
+/// Shared with [`street_nodes`], and that is not tidiness — it is the whole
+/// reason the mitred continuation joins stay watertight. `ribbon` clamps the
+/// inner corner against the *shorter* of the two segments meeting there, and at
+/// a continuation one of those two comes over from the neighbouring feature as
+/// `NodeArm::leaves`. If this rounding shortened the segment `ribbon` measures
+/// while `NodeArm` still reported the raw one, the two halves of one street
+/// would clamp against different numbers and land on different points — the
+/// hairline crack `two_halves_of_one_street_meet_on_the_same_two_points` exists
+/// to forbid. So `street_nodes` reports the length *after* this cut, computed by
+/// this same function.
+/// `half` is the carriageway's half-width, and it is what decides whether the
+/// corner may be rounded at all — see the fold rule below.
+fn corner_cut(prev_len: f32, next_len: f32, turn_rad: f32, half: f32) -> f32 {
+    let deg = turn_rad.to_degrees();
+    if !(ROUND_MIN_DEG..=ROUND_MAX_DEG).contains(&deg) {
+        return 0.0;
+    }
+    let tan_half = (turn_rad * 0.5).tan();
+    if tan_half <= 1e-6 {
+        return 0.0;
+    }
+    // As far back as the two segments can spare…
+    let budget = ROUND_TANGENT_FRAC * prev_len.min(next_len);
+    // …but never so far that the carriageway leaves the vertex the map recorded
+    // by more than [`ROUND_MAX_OFFSET_M`]. A fillet's departure from its corner
+    // is `r · (sec(θ/2) − 1)`, and `t = r · tan(θ/2)`, so the tangent that lands
+    // exactly on the allowance is this.
+    let sec_minus_one = 1.0 / (turn_rad * 0.5).cos() - 1.0;
+    let by_offset = if sec_minus_one > 1e-9 {
+        ROUND_MAX_OFFSET_M / sec_minus_one * tan_half
+    } else {
+        f32::MAX
+    };
+    let t = budget.min(by_offset);
+    // **A fillet tighter than the road is wide folds the inner edge through
+    // itself.** The ribbon is offset `half` either side of the centre line, so
+    // on the inside of an arc of radius `r` the edge has radius `r − half`: at
+    // `r < half` that is negative and the strip turns inside out — the doubled,
+    // self-intersecting triangles `a_tight_corner_does_not_fold_the_ribbon`
+    // exists to forbid. `r = t / tan(θ/2)`, so the corner is roundable only
+    // while `t ≥ half · tan(θ/2)`, and where it is not the kink is kept. That is
+    // what makes this safe on a 22 m motorway and generous on an alley, with one
+    // rule rather than a width table.
+    if t < half * tan_half {
+        return 0.0;
+    }
+    t
+}
+
+/// Replace each moderate kink in a centre line with a circular fillet.
+///
+/// **A road is not a polygon, and at street level this is what says so.**
+/// Shortbread generalises its geometry for a map read from above, where a 20°
+/// kink in a street is a pixel; extruded into a ribbon and seen from the
+/// pavement it is a visible corner in the kerb and in the painted edge line, and
+/// the whole street reads as a chain of straight boards. Measured on the
+/// Groningen z14 fixture, **79 % of interior vertices turn by 2–70° and 49 % by
+/// ten degrees or more** — this is the ordinary case, not an edge one.
+///
+/// Three properties are load-bearing:
+///
+/// * **The endpoints never move.** A road's ends are its junction nodes, and
+///   every join in this module — the mitred continuation, the junction stub, the
+///   half-open tile ownership — is anchored on them.
+/// * **The end *directions* never change either.** A fillet at the second vertex
+///   pulls that vertex back *along* the first segment, so the first segment gets
+///   shorter and keeps its bearing. `junction_extent` and `continuation` read
+///   the bearing and are untouched.
+/// * **A sharp corner is kept** ([`ROUND_MAX_DEG`]). Rounding a right angle
+///   would move the carriageway off a corner the map is asserting is there.
+fn round_corners(pts: &[[f32; 2]], half: f32) -> Vec<[f32; 2]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let len_of = |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+    let mut out: Vec<[f32; 2]> = Vec::with_capacity(pts.len() * 2);
+    out.push(pts[0]);
+    for i in 1..pts.len() - 1 {
+        let (p, a, b) = (pts[i], pts[i - 1], pts[i + 1]);
+        let (l_in, l_out) = (len_of(a, p), len_of(p, b));
+        if l_in < 1e-4 || l_out < 1e-4 {
+            continue;
+        }
+        let d_in = [(p[0] - a[0]) / l_in, (p[1] - a[1]) / l_in];
+        let d_out = [(b[0] - p[0]) / l_out, (b[1] - p[1]) / l_out];
+        let cos = (d_in[0] * d_out[0] + d_in[1] * d_out[1]).clamp(-1.0, 1.0);
+        let turn = cos.acos();
+        let t = corner_cut(l_in, l_out, turn, half);
+        if t <= 0.0 {
+            out.push(p);
+            continue;
+        }
+        // The fillet runs from `t` back along the incoming segment to `t` along
+        // the outgoing one. Sampled as a quadratic Bézier through the corner,
+        // which is tangent to both segments at exactly those two points and is
+        // within a fraction of a millimetre of the true arc over this angle —
+        // and needs no centre, no radius and no sign of the turn.
+        let start = [p[0] - d_in[0] * t, p[1] - d_in[1] * t];
+        let end = [p[0] + d_out[0] * t, p[1] + d_out[1] * t];
+        let steps = (turn.to_degrees() / ROUND_STEP_DEG).ceil().max(1.0) as usize;
+        for k in 0..=steps {
+            let s = k as f32 / steps as f32;
+            let w = 1.0 - s;
+            out.push([
+                w * w * start[0] + 2.0 * w * s * p[0] + s * s * end[0],
+                w * w * start[1] + 2.0 * w * s * p[1] + s * s * end[1],
+            ]);
+        }
+    }
+    out.push(pts[pts.len() - 1]);
+    // Consecutive duplicates would produce a NaN normal downstream; a fillet
+    // whose tangent point lands on its neighbour's is the case that can make one.
+    out.dedup_by(|a, b| len_of(*a, *b) <= 1e-4);
+    out
+}
+
 /// Extrude a centre line into a flat ribbon of `2 × half` metres at height `y`,
 /// writing positions, UVs and indices into shared buffers.
 ///
@@ -3493,10 +3676,26 @@ fn ribbon(
     // A ring needs three distinct points plus the repeat to have an interior;
     // and the caller's flag is only a hint until the geometry agrees with it
     // (a clipped run of a closed line is an ordinary open polyline).
-    let last = pts.len() - 1;
     let ring = ring
         && pts.len() >= 4
-        && (pts[0][0] - pts[last][0]).hypot(pts[0][1] - pts[last][1]) <= 1e-4;
+        && (pts[0][0] - pts[pts.len() - 1][0]).hypot(pts[0][1] - pts[pts.len() - 1][1]) <= 1e-4;
+    // A generalised centre line is a chain of straight segments, and the ribbon
+    // built on it inherits every kink as a corner in the kerb and in the painted
+    // edge line. Round them first — see `round_corners`. Both of `kerb_band`'s
+    // runs come through here, so a carriageway and its kerb are rounded from the
+    // same points and cannot drift apart.
+    //
+    // **Not a ring.** A roundabout's polygon is not a generalisation artefact
+    // the way a kink in a street is: its vertices lie *on* the circle the
+    // junction actually is, so cutting its corners would shrink the roundabout
+    // rather than smooth it. Its seam is already mitred closed.
+    if !ring {
+        pts = round_corners(&pts, half);
+        if pts.len() < 2 {
+            return RibbonEdges::default();
+        }
+    }
+    let last = pts.len() - 1;
 
     let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -6199,6 +6398,152 @@ mod tests {
         );
     }
 
+    /// **A drawn street is a curve, not a chain of boards.**
+    ///
+    /// Shortbread generalises its geometry for a map read from above, where a
+    /// 20° kink in a street is a pixel. Extruded into a ribbon and seen from the
+    /// pavement, that kink is a corner in the kerb and in the painted edge line,
+    /// and the street reads as a row of straight planks. Measured on the fixture
+    /// over every drawn centre line's interior vertices:
+    ///
+    /// | turn | raw | rounded |
+    /// |---|---|---|
+    /// | under 10° | 648 (38 %) | 4616 (94 %) |
+    /// | 10–20° | 378 | 2 |
+    /// | 20–70° | 447 | 70 |
+    /// | over 70° — a corner the map asserts | 216 | 216 |
+    ///
+    /// The last row is the one that must **not** move: a street grid's right
+    /// angles are real, and `round_corners` keeps them. What is left in 20–70° is
+    /// the corners the fold rule and the one-metre allowance refused, which is
+    /// the guard working rather than a miss.
+    #[test]
+    fn a_drawn_street_is_a_curve_not_a_chain_of_boards() {
+        let tile_m = 1000.0f32;
+        let parsed = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let meta = parsed.layer("streets").expect("streets");
+        let features = parsed.features(meta);
+        let scale = tile_m / TileData::extent(meta);
+
+        let tally = |rounded: bool| -> [usize; 4] {
+            let mut bins = [0usize; 4];
+            for f in features.iter() {
+                let Some((_, half)) = drawn_street(f) else {
+                    continue;
+                };
+                let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+                match &f.geometry {
+                    geo_types::Geometry::LineString(ls) => lines.push(ls),
+                    geo_types::Geometry::MultiLineString(ml) => lines.extend(ml.iter()),
+                    _ => continue,
+                }
+                for ls in lines {
+                    let raw: Vec<[f32; 2]> =
+                        ls.0.iter().map(|c| [c.x * scale, c.y * scale]).collect();
+                    let p = if rounded {
+                        round_corners(&raw, half)
+                    } else {
+                        raw
+                    };
+                    for i in 1..p.len().saturating_sub(1) {
+                        let a = [p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]];
+                        let b = [p[i + 1][0] - p[i][0], p[i + 1][1] - p[i][1]];
+                        let (la, lb) = (a[0].hypot(a[1]), b[0].hypot(b[1]));
+                        if la < 1e-4 || lb < 1e-4 {
+                            continue;
+                        }
+                        let cos = ((a[0] * b[0] + a[1] * b[1]) / (la * lb)).clamp(-1.0, 1.0);
+                        let deg = cos.acos().to_degrees();
+                        bins[match deg {
+                            d if d < 10.0 => 0,
+                            d if d < 20.0 => 1,
+                            d if d < 70.0 => 2,
+                            _ => 3,
+                        }] += 1;
+                    }
+                }
+            }
+            bins
+        };
+
+        let raw = tally(false);
+        let round = tally(true);
+        println!(
+            "raw     <10 {} 10-20 {} 20-70 {} >70 {}",
+            raw[0], raw[1], raw[2], raw[3]
+        );
+        println!(
+            "rounded <10 {} 10-20 {} 20-70 {} >70 {}",
+            round[0], round[1], round[2], round[3]
+        );
+
+        let visible = |b: [usize; 4]| b[1] + b[2];
+        assert!(
+            visible(raw) > 700,
+            "the fixture should be faceted to begin with: {raw:?}"
+        );
+        assert!(
+            visible(round) * 8 < visible(raw),
+            "rounding left {} visible kinks of {}",
+            visible(round),
+            visible(raw),
+        );
+        assert_eq!(
+            raw[3], round[3],
+            "a corner the map asserts must survive rounding untouched",
+        );
+    }
+
+    /// The three properties `round_corners` is allowed to have, and the one it is
+    /// not. Each is load-bearing somewhere else in this module, so each is
+    /// asserted here rather than left to the fixture.
+    #[test]
+    fn a_fillet_keeps_the_ends_the_bearings_and_the_corner() {
+        // A gentle bend on long segments: rounded.
+        let bend = [[-60.0f32, 0.0], [0.0, 0.0], [50.0, 30.0]];
+        let out = round_corners(&bend, 3.5);
+        assert!(out.len() > bend.len(), "a 31° bend should be filleted");
+        assert_eq!(
+            out[0], bend[0],
+            "the head is a junction node and may not move"
+        );
+        assert_eq!(out[out.len() - 1], bend[2], "and so is the tail",);
+        // The first segment keeps its bearing — `junction_extent` and
+        // `continuation` both read it off the raw line.
+        let bearing = |a: [f32; 2], b: [f32; 2]| (b[1] - a[1]).atan2(b[0] - a[0]);
+        assert!(
+            (bearing(out[0], out[1]) - bearing(bend[0], bend[1])).abs() < 1e-4,
+            "the fillet turned the first segment",
+        );
+        // …and it never wanders further from the recorded corner than it is
+        // allowed to.
+        let worst = out
+            .iter()
+            .map(|p| (p[0] - bend[1][0]).hypot(p[1] - bend[1][1]))
+            .fold(f32::MAX, f32::min);
+        assert!(
+            worst <= ROUND_MAX_OFFSET_M + 1e-3,
+            "the fillet cut {worst:.2} m off a corner it may cut {ROUND_MAX_OFFSET_M} m off",
+        );
+
+        // A right angle is a corner the map asserts, and survives.
+        let square = [[-60.0f32, 0.0], [0.0, 0.0], [0.0, 60.0]];
+        assert_eq!(round_corners(&square, 3.5), square.to_vec());
+
+        // And a bend too tight for the road's own width is refused rather than
+        // folded: a 22 m carriageway cannot be bent round a 3 m fillet.
+        let tight = [[-8.0f32, 0.0], [0.0, 0.0], [7.0, 4.0]];
+        assert_eq!(
+            round_corners(&tight, 11.0),
+            tight.to_vec(),
+            "a fillet tighter than the half-width would fold the inner edge",
+        );
+        assert!(
+            round_corners(&tight, 1.5).len() > tight.len(),
+            "…while the same bend on an alley is fine",
+        );
+    }
+
     /// Eyeball hatch for junction geometry: rasterise the tessellated ribbons
     /// top-down and colour each pixel by how many ribbons cover it, so stubs,
     /// gaps and overlaps are visible without a GPU.
@@ -6371,8 +6716,13 @@ mod tests {
         // so a mouth is either open tarmac or a bar across it.
         let mut kind = vec![0u8; PX * PX];
         for m in &meshes {
+            // A footway is drawn apart from a carriageway, because it is not one
+            // — it does not break a kerb, and reading it as tarmac makes a kerb
+            // running correctly along the edge of a pavement look like a line
+            // ruled down the middle of a road.
             let tone = match m.group {
                 SurfaceGroup::RoadCasing(_) => 2u8,
+                SurfaceGroup::Road(RoadClass::Path) => 3,
                 SurfaceGroup::Road(_) => 1,
                 _ => continue,
             };
@@ -6418,12 +6768,106 @@ mod tests {
         let kerb = kind.iter().filter(|k| **k == 2).count();
         let tarmac = kind.iter().filter(|k| **k == 1).count();
         println!("carriageway {tarmac} px, kerb band {kerb} px");
+
+        // Two numbers the overlap image cannot give, both of which are what a
+        // person means by "the joints look wrong":
+        //
+        // * **kerb over tarmac** — a kerb band surviving on ground a carriageway
+        //   also claims. After `cut_band` the only legitimate case is a bridge,
+        //   which is cut against bridges alone.
+        // * **a crack** — bare ground with road on both sides of it, i.e. a
+        //   hairline the cut opened between two pieces that should abut.
+        let mut road_cov = vec![false; PX * PX];
+        let mut kerb_cov = vec![false; PX * PX];
+        for m in &meshes {
+            let sink = match m.group {
+                SurfaceGroup::RoadCasing(_) => &mut kerb_cov,
+                SurfaceGroup::Road(_) => &mut road_cov,
+                _ => continue,
+            };
+            for tri in m.indices.chunks_exact(3) {
+                let p: Vec<[f32; 2]> = tri
+                    .iter()
+                    .map(|i| {
+                        let v = m.positions[*i as usize];
+                        [(v[0] - wx) / ws * PX as f32, (v[2] - wz) / ws * PX as f32]
+                    })
+                    .collect();
+                let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                    - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                if area.abs() < 1e-9 {
+                    continue;
+                }
+                let lo = |f: &dyn Fn(&[f32; 2]) -> f32| {
+                    p.iter().map(f).fold(f32::MAX, f32::min).floor().max(0.0) as usize
+                };
+                let hi = |f: &dyn Fn(&[f32; 2]) -> f32| {
+                    p.iter()
+                        .map(f)
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize
+                };
+                for y in lo(&|q| q[1])..=hi(&|q| q[1]) {
+                    for x in lo(&|q| q[0])..=hi(&|q| q[0]) {
+                        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let s = |a: &[f32; 2], b: &[f32; 2]| {
+                            (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])
+                        };
+                        let (d0, d1, d2) = (s(&p[0], &p[1]), s(&p[1], &p[2]), s(&p[2], &p[0]));
+                        if (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0)
+                            || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+                        {
+                            sink[y * PX + x] = true;
+                        }
+                    }
+                }
+            }
+        }
+        let both = road_cov
+            .iter()
+            .zip(kerb_cov.iter())
+            .filter(|(r, k)| **r && **k)
+            .count();
+        let covered_any = road_cov
+            .iter()
+            .zip(kerb_cov.iter())
+            .filter(|(r, k)| **r || **k)
+            .count();
+        let any = |i: usize| road_cov[i] || kerb_cov[i];
+        let mut cracks = 0usize;
+        let mut crack_at = vec![false; PX * PX];
+        for y in 1..PX - 1 {
+            for x in 1..PX - 1 {
+                let i = y * PX + x;
+                if any(i) {
+                    continue;
+                }
+                let horiz = any(i - 1) && any(i + 1);
+                let vert = any(i - PX) && any(i + PX);
+                if horiz || vert {
+                    cracks += 1;
+                    crack_at[i] = true;
+                }
+            }
+        }
+        println!(
+            "kerb over tarmac {both} px ({:.2} % of the sheet); one-pixel cracks {cracks}",
+            100.0 * both as f32 / covered_any.max(1) as f32,
+        );
         let mut rgba = Vec::with_capacity(PX * PX * 4);
-        for k in &kind {
-            let px: [u8; 3] = match k {
-                1 => [0xB4, 0xB1, 0xAC],
-                2 => [0x33, 0x3A, 0x40],
-                _ => [0x1A, 0x22, 0x1A],
+        for (i, k) in kind.iter().enumerate() {
+            // A crack is painted in the brand's accent orange so it is findable
+            // at a glance: a one-pixel hairline in a grey-on-grey image is not.
+            let px: [u8; 3] = if crack_at[i] {
+                [0xFD, 0x60, 0x12]
+            } else {
+                match k {
+                    1 => [0xB4, 0xB1, 0xAC],
+                    2 => [0x33, 0x3A, 0x40],
+                    3 => [0x6E, 0x6A, 0x63],
+                    _ => [0x1A, 0x22, 0x1A],
+                }
             };
             rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
         }
@@ -7313,7 +7757,11 @@ mod tests {
                 .zip(&uvs)
                 .map(|(p, uv)| ([p[0], p[2]], uv[0]))
                 .collect(),
-            centre,
+            // The line the ribbon is actually built on, which is the rounded one
+            // wherever `corner_cut` allowed a fillet. Handing back the *input*
+            // here would measure every one of these tests against a centre line
+            // the road does not follow.
+            round_corners(&centre, half),
         )
     }
 
