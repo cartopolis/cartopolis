@@ -1639,6 +1639,13 @@ pub fn open_scripted_ui(
     // is here for the reason `--ui menu` is: a card nothing can screenshot is a
     // card nobody reviews, and this one is a form that only opens by hand.
     cards.sign_in.open = want("signin");
+    // A scripted run reads no `user.json`, so the form comes up empty — and an
+    // empty form is the *disabled* state of the button, which is the one state
+    // this capture should not be documenting. Seed it with the address the docs
+    // hand out so `--ui signin` photographs the card somebody actually looks at.
+    if want("signin") {
+        cards.sign_in.seed_for_capture("cartopolis.org", "jeroen");
+    }
     // `--ui menu` opens the app mark's card. It is the one piece of chrome a
     // scripted run could not reach at all, and it is where the entries that left
     // the map now live — Set Home, Copy location and the status readout's own

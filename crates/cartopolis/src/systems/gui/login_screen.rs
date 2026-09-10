@@ -194,6 +194,29 @@ impl LoginScreen {
     /// **Takes the password**, leaving the field empty: it goes to the network
     /// thread inside an `AuthCredential` and nothing else on this screen — or in
     /// `user.json` — ever wants it again.
+    /// Fill the form for a scripted capture (`--ui signin`), which has no
+    /// `user.json` to seed it from and would otherwise photograph the empty
+    /// state. Only ever writes over an empty field, so a preset cannot undo what
+    /// a remembered session put there.
+    pub fn seed_for_capture(&mut self, server: &str, username: &str) {
+        if self.server.is_empty() {
+            self.server = server.to_string();
+        }
+        if self.username.is_empty() {
+            self.username = username.to_string();
+        }
+    }
+
+    /// Is there a question here the server could be asked? The same rule
+    /// [`Self::build_request`] refuses on, stated separately so the button can be
+    /// disabled *before* the press rather than swallowing it.
+    #[must_use]
+    fn answerable(&self) -> bool {
+        !normalize_server(&self.server).is_empty()
+            && !self.username.trim().is_empty()
+            && can_simulate()
+    }
+
     fn build_request(&mut self) -> Option<SessionRequest> {
         let server = normalize_server(&self.server);
         let username = self.username.trim().to_string();
@@ -437,6 +460,13 @@ pub fn render_login_screen(
 
     if submit {
         if let Some(request) = screen.build_request() {
+            // Says the request left the card, which is the one step between the
+            // button and `network::start_link` that used to have no evidence at
+            // all: a sign-in that produced nothing could equally have been a
+            // press that never reached the button, a form the card refused, or a
+            // socket that failed — and the log said the same thing (nothing) for
+            // all three.
+            info!(server = %screen.server, user = %screen.username, "sign-in requested");
             store.set_session_prefs(screen.prefs());
             session.request(request);
             // Stay open while it connects: the spinner, and any rejection, belong
@@ -524,7 +554,18 @@ fn card_ui(
                 // A bare hostname, because that is now what works and what
                 // the docs hand out. A hint carrying `:4747` taught the one
                 // shape that cannot reach a TLS sim.
-                .hint_text("cartopolis.org")
+                //
+                // **"e.g." is not decoration.** egui paints a hint in
+                // `weak_text_color`, which this palette sets to `TEXT_DIM` —
+                // 15 % darker than body text, and at this size on this surface
+                // that is not a difference anybody reads as "empty". The hint
+                // was *exactly* the string a filled field would hold, so an
+                // untouched Server field was indistinguishable from one
+                // containing the right answer, and the button below it then
+                // refused the form without a word (`build_request` returns
+                // `None`). A hint that is an example rather than an impostor
+                // cannot be mistaken for a value however dim the theme is.
+                .hint_text("e.g. cartopolis.org")
                 .desired_width(f32::INFINITY),
         );
     });
@@ -551,11 +592,27 @@ fn card_ui(
     // you were still in — a case that no longer exists now that nothing but the app
     // menu opens the card and a live session closes it. Leaving is that menu's
     // (`session::sign_out`): one entry, one tap, no modal to dismiss afterwards.
-    ui.add_enabled_ui(!busy, |ui| {
+    //
+    // **The button says which of its three states it is in**, because a press on
+    // this one starts a network round trip and the answer is seconds away. Live,
+    // it takes the press. Waiting on the handshake, it holds the status the
+    // spinner below it repeats. And *unanswerable* — an empty server or user —
+    // it is disabled rather than live-and-inert: `build_request` refuses those,
+    // so the button that looked pressable simply did nothing, which is
+    // indistinguishable from a sign-in that failed silently and is most of what
+    // "clicking it gives no feedback" was.
+    let ready = screen.answerable();
+    ui.add_enabled_ui(!busy && ready, |ui| {
         // `theme::primary_button_sized`, not a hand-built filled `Button`: this
         // card and the Route panel's "▶ Driver mode" were the same rank and did
         // not look alike, which is what that helper exists to end.
-        *submit |= theme::primary_button_sized(ui, "Sign in", ui.available_width()).clicked();
+        let label = if busy {
+            session.status.label()
+        } else {
+            "Sign in"
+        };
+        let button = theme::primary_button_sized(ui, label, ui.available_width());
+        *submit |= button.clicked();
     });
 
     if busy {
@@ -572,6 +629,20 @@ fn card_ui(
                     .color(theme::TEXT_DIM),
             );
         });
+    } else if !ready {
+        // Says which field is missing rather than what is wrong with the form:
+        // the card asks two questions and this names the one still unanswered.
+        ui.add_space(8.0);
+        let missing = if normalize_server(&screen.server).is_empty() {
+            "Enter the server to sign in to"
+        } else {
+            "Enter your account name"
+        };
+        ui.label(
+            egui::RichText::new(missing)
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
     } else if let Some(error) = &session.error {
         ui.add_space(8.0);
         ui.label(
@@ -812,6 +883,189 @@ mod tests {
             screen.settle(&session(status.clone(), Some("sim.example: no")));
             assert!(screen.open, "{status:?} closed the card");
         }
+    }
+
+    /// Drive the real card structure for six frames, pressing at `at` (when
+    /// given) on frames 3/4. Returns `(submitted, dismissed_by_backdrop,
+    /// card_rect)`.
+    fn drive_card(at: Option<egui::Pos2>) -> (bool, bool, Option<egui::Rect>) {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let viewport = egui::vec2(936.0, 620.0);
+        let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+        let mut screen = LoginScreen {
+            open: true,
+            anim: 1.0,
+            server: "cartopolis.org".into(),
+            username: "jeroen".into(),
+            password: "hunter2".into(),
+            ..LoginScreen::default()
+        };
+        let sess = SessionState::default();
+        let identity = AuthIdentity::default();
+        let mut submitted = false;
+        let mut dismissed_any = false;
+        let mut last_rect = None;
+        for frame in 0..6 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen_rect);
+            if let Some(pos) = at {
+                raw.events = match frame {
+                    2 => vec![egui::Event::PointerMoved(pos)],
+                    3 => vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    4 => vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    _ => vec![],
+                };
+            }
+            let mut submit = false;
+            let card_rect = std::cell::Cell::new(None);
+            let dismissed = std::cell::Cell::new(false);
+            let screen_ref = &mut screen;
+            let backdrop_id =
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sign_in_dim"));
+            let _ = ctx.run_ui(raw, |root| {
+                let ctx = &root.ctx().clone();
+                let hit = egui::Area::new(backdrop_id.id)
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        let (_, resp) =
+                            ui.allocate_exact_size(viewport, egui::Sense::click_and_drag());
+                        resp.clicked()
+                    })
+                    .inner;
+                ctx.move_to_top(backdrop_id);
+                dismissed.set(hit);
+
+                let card_id = egui::Id::new("sign_in_card");
+                let frame_style = egui::Frame::NONE
+                    .fill(theme::SURFACE)
+                    .inner_margin(egui::Margin::symmetric(CARD_PAD_X, CARD_PAD_Y));
+                let inner = egui::Window::new("sign in")
+                    .id(card_id)
+                    .order(egui::Order::Foreground)
+                    .title_bar(false)
+                    .resizable(false)
+                    .movable(false)
+                    .collapsible(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .frame(frame_style)
+                    .max_width(card_outer_width(viewport.x))
+                    .show(ctx, |ui| {
+                        ui.set_width(card_width(viewport.x));
+                        egui::ScrollArea::vertical()
+                            .max_height(520.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                card_ui(ui, screen_ref, &sess, &identity, &mut submit);
+                            });
+                    });
+                ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
+                if let Some(inner) = inner {
+                    card_rect.set(Some(inner.response.rect));
+                }
+            });
+            submitted |= submit;
+            dismissed_any |= dismissed.get();
+            if let Some(r) = card_rect.get() {
+                last_rect = Some(r);
+            }
+        }
+        (submitted, dismissed_any, last_rect)
+    }
+
+    /// **The click on the card's one button has to reach the button.** The card
+    /// is drawn as a full-screen `click_and_drag` backdrop with a `Window` over
+    /// it, both on `Order::Foreground`, both raised with `move_to_top` every
+    /// frame — an arrangement where "which of the two took the press" is decided
+    /// by layer order rather than by geometry, and where a mistake shows up as a
+    /// button that visibly does nothing.
+    #[test]
+    fn clicking_sign_in_asks_for_a_session() {
+        let (_, _, card) = drive_card(None);
+        let card = card.expect("the card drew nothing");
+        eprintln!("card rect: {card:?}");
+        let mut hits = Vec::new();
+        let mut y = card.min.y + 2.0;
+        while y < card.max.y {
+            let (submitted, dismissed, _) = drive_card(Some(egui::pos2(card.center().x, y)));
+            if submitted || dismissed {
+                hits.push((y, submitted, dismissed));
+            }
+            y += 4.0;
+        }
+        eprintln!("hits: {hits:?}");
+        assert!(
+            hits.iter().any(|h| h.1),
+            "no point down the middle of the card submitted"
+        );
+        assert!(
+            !hits.iter().any(|h| h.2),
+            "the backdrop took a press inside the card"
+        );
+    }
+
+    /// **An unanswerable form disables the button rather than swallowing the
+    /// press.** `build_request` refuses an empty server or user by returning
+    /// `None`, and for as long as the button stayed live that refusal was
+    /// completely silent: no spinner, no error, no connection — the exact
+    /// symptom of a sign-in that "does nothing". The two rules have to agree,
+    /// which is what this pins.
+    #[test]
+    fn an_unanswerable_form_cannot_be_submitted() {
+        let full = LoginScreen {
+            server: "cartopolis.org".into(),
+            username: "jeroen".into(),
+            ..LoginScreen::default()
+        };
+        assert!(full.answerable());
+
+        for (server, user) in [
+            ("", "jeroen"),
+            ("   ", "jeroen"),
+            ("cartopolis.org", ""),
+            ("cartopolis.org", "  "),
+            ("", ""),
+        ] {
+            let mut screen = LoginScreen {
+                server: server.into(),
+                username: user.into(),
+                ..LoginScreen::default()
+            };
+            assert!(
+                !screen.answerable(),
+                "({server:?}, {user:?}) claimed to be answerable"
+            );
+            assert!(
+                screen.build_request().is_none(),
+                "({server:?}, {user:?}) built a request the button is disabled for"
+            );
+        }
+    }
+
+    /// The Server hint may not be a string a *filled* field could hold. egui
+    /// paints it in `weak_text_color`, which is 15 % under body text here — not
+    /// a difference that reads as "empty" — so a bare `cartopolis.org` made an
+    /// untouched field look like the right answer already typed.
+    #[test]
+    fn the_server_hint_reads_as_an_example() {
+        // The hint the field is built with, kept in step by hand with the
+        // `field(ui, "Server", ...)` call above.
+        let hint = "e.g. cartopolis.org";
+        assert!(
+            normalize_server(hint) != "cartopolis.org",
+            "the hint is still something a filled Server field could contain"
+        );
     }
 
     /// A fresh install starts offline and is never asked about it — the card is
