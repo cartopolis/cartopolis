@@ -1,0 +1,73 @@
+# Ground-level views for judging the lawn, and nothing else.
+#
+#     cargo run -p cartopolis -- --shots docs/grass-shots.toml
+#
+# Why this file exists rather than a `--only` of `docs/shots.toml`: the grass is a
+# **near-camera** layer. The dense pool reaches 26 m, the far ring 80 m and the
+# horizon ring 130 m, and the whole layer fades out by 60 m of *altitude*
+# (`grass::GRASS_FADE_ALT`). Every preset in `shots.toml` is at 420 m or above
+# except `avatar`, so none of them contains a single blade at full density — a
+# lawn judged from one of those is being judged on the flat `palette::GRASS` fill
+# that stands in for it, which is a different thing wearing the same colour.
+#
+# `out_dir` is `gpu` deliberately, matching `water-shots.toml`: the deck-gpu lane
+# collects that directory and refuses to sweep `docs/img`, where the checked-in
+# README images live.
+#
+# **This has to be shot on a real GPU.** Colour, exposure and lighting are not
+# evidence on a software rasteriser
+# (`docs/notes/headless-shots-software-renderer.md`), and the colour is the entire
+# question here.
+
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1600x900"
+out_dir = "gpu"
+hide_ui = true
+settle = 1.5
+# Generous, and measured rather than guessed. A ground-level city view does not
+# go quiet the way an aerial one does - the vector-tile streamer keeps trickling
+# at this altitude - so `wait` is what actually decides how much of the park has
+# arrived, and a capture that hits the cap photographs a half-built world while
+# still writing a plausible-looking PNG. At 45 s one run of this manifest settled
+# at 37.8 s and its pair timed out with `map_tiles`, `surfaces`, `lod22`,
+# `street_detail` and `tall_structures` all still working, which came back as a
+# grey frame of unstreamed geometry. Read `settled` in the metrics before reading
+# the image.
+wait = 150.0
+# `time` / `fog` / `clouds` / `rain` are **per-shot keys and not defaults** — the
+# defaults block takes only size, out_dir, settle, wait, mode, tile_url and
+# hide_ui, and an unknown key here is a hard error rather than a silent no-op.
+# So each shot below states noon and clear weather for itself, which is the point
+# either way: a low sun swings the whole frame warm and a lawn's hue with it,
+# which is exactly the confound a palette comparison cannot afford.
+
+[[shot]]
+name = "lawn-close"
+description = "Standing on the Noorderplantsoen's lawn — blades at full density"
+# Avatar mode rather than a 2 m free camera: `at`'s altitude is an altitude, and
+# a hand-picked one that close to the ground lands inside the terrain as often as
+# above it. The follow camera is placed *relative to the avatar*, who is standing
+# on the ground by construction, so 6 m of boom at a shallow angle is repeatable.
+# The avatar also gives the blades a scale — a lawn with nothing in it is hard to
+# read at any tone.
+mode = "avatar"
+at = [53.22580, 6.55780, 6]
+look = [-10.0, 30.0]
+time = 12.0
+fog = 0.05
+clouds = 0.0
+rain = 0.0
+
+[[shot]]
+name = "lawn-across"
+description = "The same park from 14 m — the lawn as an area rather than as blades"
+# Well under `GRASS_FADE_ALT` (60 m) so the pool is at full strength, and high
+# enough that the frame is mostly grass rather than mostly avatar. This is the
+# one that answers "what colour is the park", where the close shot answers "what
+# colour is a blade".
+at = [53.22560, 6.55740, 14]
+look = [-18.0, 40.0]
+time = 12.0
+fog = 0.05
+clouds = 0.0
+rain = 0.0
