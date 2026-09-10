@@ -4,8 +4,9 @@ triggers: [ScreenSpaceAmbientOcclusion, ssao, "ambient occlusion", Fxaa, Msaa,
   main_pass_msaa, wants_edge_filter, VolumetricFog, FogVolume, VolumetricLight,
   light_shafts.rs, wet_surfaces.rs, "light shafts", "god rays", "wet road", "rain",
   metallic_roughness_texture, road_material_image, "roughness", "reflectance",
-  GLASS_ROUGHNESS, building_windows.wgsl, "looks flat", "looks like a model"]
-updated: 2026-09-04
+  GLASS_ROUGHNESS, building_windows.wgsl, "looks flat", "looks like a model",
+  density_factor, "the world went dark", "too dark", "everything is dark"]
+updated: 2026-09-10
 ---
 
 # Why the city read as a model, and the four things that were missing
@@ -128,6 +129,50 @@ origin, so its global translation is ~0 whatever grid cell it is in.
 Only the sun gets `VolumetricLight`. The moon's illuminance is four orders of
 magnitude down and a second volumetric light doubles the march's shadow work for
 something nobody would see.
+
+## A fog volume subtracts as well as adds, and that is how the shafts went dark
+
+Reported 2026-09-10: turning light shafts on made the whole world dark. It was
+not the shafts, it was the air they are marched through.
+
+Bevy's march is Beer's law twice. It adds the sunlight scattered *into* the ray —
+the shafts, the thing the feature is named after — and along the same ray it
+attenuates the background by `exp(-density × (absorption + scattering) ×
+distance)`. The second half is the one that gets forgotten, and it is scaled by
+the volume's own metres, so the same `density_factor` means something completely
+different in a 5 m room and in a 600 m box.
+
+The numbers, because the size of the mistake is the point:
+
+| | background surviving |
+|---|---|
+| shipped value (0.024 after the haze multiplier), at 100 m | **19 %** |
+| shipped value, at 300 m — the volume's half-edge | **0.7 %** |
+| now, default weather, at 300 m | 95 % |
+| now, default weather, across a 20 m street | 99.6 % |
+| now, heaviest fog *and* heaviest rain, at 300 m | 65 % |
+
+Two things caused it and either alone would have been survivable. Bevy's default
+`density_factor` of 0.1 was taken as a starting point when it is meant for a
+volume a few metres across. And `DevPanelState::fog_density` was read as if it ran
+`0..0.02` — that is the scale of a `FogFalloff` *coefficient*, not of the control,
+which is the Weather slider in Settings ▸ World and runs `0..1` with a default of
+0.15. So the haze multiplier sat clamped at its ceiling in every weather,
+including "clear", and no slider position ever looked different from any other.
+
+The fix is not a smaller number, it is a different unit. `light_shafts` states how
+much of the background the air may swallow over the volume's half-edge
+(`CLEAR_EXTINCTION`, `RAIN_EXTINCTION` — fractions, reviewable on sight) and
+inverts Beer's law to get the `density_factor` bevy wants (~3 × 10⁻⁴, reviewable
+by nobody). Four tests hold it: the extinction constants mean what they say, the
+volume passes at least 60 % of the background in the worst weather, rain is
+thicker than clear air, and the haze knob does not saturate in the first tenth of
+its travel.
+
+**This is not checkable in the container.** Light shafts are refused on a software
+adapter (see below), so the fog volume is never even spawned on lavapipe. The
+arithmetic above is the evidence, plus the tests; a picture needs the `deck-gpu`
+runner.
 
 There is **no Android special case**, deliberately. A handset will resolve
 Automatic to on and a shadowed per-pixel march at panel resolution will cost it —
