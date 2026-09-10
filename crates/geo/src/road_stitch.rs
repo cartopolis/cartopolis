@@ -104,10 +104,18 @@ pub(crate) struct Ribbon {
     /// The depth rung every one of its vertices carries.
     pub rung: f32,
     /// Cut order — **strictly** ordered, so "who wins this ground" is never a
-    /// draw. The leading term is `road_rung`, which is the road hierarchy; the
-    /// rest is the ribbon's position in the tile, which only has to be *some*
-    /// stable answer.
-    pub priority: (u32, usize, usize, usize),
+    /// draw, and strictly ordered is not optional: an asymmetric rule (this beats
+    /// that, that beats this) cuts *both* out of the ground they share and opens
+    /// a hole.
+    ///
+    /// `(band, rung, feature, linestring, part)`. The band is
+    /// `vector_tiles::cut_band` — which sheet of the road surface this ribbon
+    /// belongs to, and the reason it exists is the kerb: a kerb band is the edge
+    /// between a carriageway and what is *not* one, so wherever another
+    /// carriageway abuts there is no kerb, whatever the two roads' classes are.
+    /// Then `road_rung`, which is the road hierarchy proper. The rest is the
+    /// ribbon's position in the tile, which only has to be *some* stable answer.
+    pub priority: (u32, u32, usize, usize, usize),
     /// A bridge is cut against other bridges and against nothing else — see the
     /// module note.
     pub bridge: bool,
@@ -548,7 +556,9 @@ mod tests {
         Ribbon {
             group: SurfaceGroup::Water,
             rung: 0.0,
-            priority: (priority, 0, 0, 0),
+            // One band, so the bare `priority` is the whole order — these tests
+            // are about the cut itself, not about which sheet a ribbon is on.
+            priority: (0, priority, 0, 0, 0),
             bridge: false,
             positions: vec![[x0, 0.0, z0], [x1, 0.0, z0], [x1, 0.0, z1], [x0, 0.0, z1]],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],

@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay]
-updated: 2026-08-26
+triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, "junction mouth", "side street", "roads look wrong", ribbon_kinds]
+updated: 2026-09-10
 ---
 
 # One street arrives as a chain of features, and most of its "junctions" are not
@@ -302,3 +302,84 @@ Two standing lessons for the next flicker report:
   deterministically, so a coin flip only shows where the copies *differ* — the
   sensitive views are shallow, grazing, mid-distance ones, exactly where a low
   camera looks at a street.
+
+## A kerb is not allowed to seal the street that joins it (2026-09-10)
+
+Everything above is about which ribbon wins a patch of ground. `road_rung` is
+the answer, and it is **class-major**: a whole class sits above a whole class.
+The kerb band goes in at the *foot* of its own class's block (`road_casing_rung`)
+so that a road's tarmac beats its own kerb — which is right, and which is also
+why the band is a band rather than the old slab.
+
+What nobody checked is what that says about two *different* classes. A `Major`
+road's casing rung is 130; a `Minor` road's fill tops out at 129. So the main
+road's **kerb** outranked the side street's **carriageway**, and once
+`road_stitch` started cutting rather than ordering, that stopped being an
+invisible depth decision and became geometry: the side street's tarmac was cut
+away at the far side of the kerb band, and the kerb line ran on unbroken across
+the mouth. Every residential street tee-ing into a primary road was walled off
+from the road it joins. It is a 0.75 m band, so from any altitude a whole
+junction fits in it is a hairline — which is why three rounds of junction work
+went past it — and from the pavement it is the thing that makes the junctions
+look wrong.
+
+The rule it was missing is one sentence: **a kerb is the edge between a
+carriageway and what is not one, so wherever another carriageway abuts, there is
+no kerb.** That is a junction mouth, and every side street in a city has one.
+
+So the cut order gained a leading term, `vector_tiles::cut_band`, above the whole
+class hierarchy:
+
+| band | | |
+|---|---|---|
+| 2 | rails | a level crossing is track laid *over* a road; `road_rung` already had rail at the top and this keeps it there rather than promoting every carriageway over it |
+| 1 | carriageways | every class a kerb is drawn for |
+| 0 | kerb bands, and footways | a footway is not a carriageway and does not break a kerb; inside the band `road_rung` decides exactly as before |
+
+**A band, not a "may block" predicate, and that is the load-bearing part.** The
+obvious way to write this is a rule — *a carriageway blocks a kerb whatever the
+classes say* — and it is wrong in a way that produces a worse artefact than the
+one it fixes. `stitch` cuts each ribbon against everything that outranks it, all
+at once; if the major's kerb outranks the minor's carriageway *and* the minor's
+carriageway blocks the major's kerb, then both are cut out of the ground they
+share and the junction gets a **hole in the road**. The order has to stay total,
+which is what a band gives and what an asymmetric predicate cannot.
+
+Measured on the fixture (`a_side_street_reaches_the_road_it_joins`). The tile
+holds 23 ends where a street of one class stops on a *through* road of a higher
+one; 15 of those cross at an angle steep enough to sample cleanly. The sample is
+the point on the side street's own centre line 40 % of the way into the main
+road's kerb band — which is on the **approach** side, since the node sits on the
+main road's centre line, and `1 / sin` further along the side street than it is
+across the main road:
+
+| what is drawn there | before | after |
+|---|---|---|
+| the side street's carriageway | 8 | **15** |
+| the main road's kerb, across the mouth | **7** | 0 |
+
+The road sheet is still a partition — the cut is unchanged, only its order is —
+and `the_road_sheet_is_a_partition` measures 0.81 % both ways, the same figure it
+has measured since 2026-08-26.
+
+Note the eight that were already open. This is not a defect that fires at every
+cross-class junction: it needs the main road's *casing* rung to sit above the
+side street's *fill* rung, which is what the class-major ladder does whenever the
+classes differ, but the sample also has to land where the main road's kerb band
+actually reaches. Half of them is enough — a street in four having its mouth
+bricked up is what "the joints look ugly" is made of.
+
+The road sheet is still a partition — the cut is unchanged, only its order is —
+and `the_road_sheet_is_a_partition` still measures 0.8 %.
+
+The picture that shows it is `dump_road_ribbons`' second output. The overlap
+image it already wrote cannot answer this question — a kerb crossing a
+carriageway is a partition either way and both come out as one clean pixel — so
+the dump now also writes `/tmp/ribbon_kinds.png`, carriageways pale and kerb
+bands dark. A walled mouth is a dark bar ruled across a side street; an open one
+is tarmac meeting tarmac.
+
+```bash
+CARTO_DUMP_WIN="300,300,220" cargo test -p cartopolis_geo \
+    --lib dump_road_ribbons -- --ignored --nocapture
+```

@@ -2167,12 +2167,58 @@ fn road_rung(class: RoadClass, width_m: f32, bridge: bool, tie_seed: u64) -> u32
 /// A whole class's casings share this one rung on purpose: two overlapping
 /// casings of one class are the same flat colour, so their fight is the one
 /// collision in this ladder that cannot be seen.
+///
+/// It settles a road's kerb against *its own* tarmac and nothing wider than
+/// that: which of two **different** roads' surfaces wins is [`cut_band`]'s, and
+/// this rung is only the tie-break inside a band.
 fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
     if bridge {
         // A deck's kerb rides with the deck, under its own fills.
         return ROAD_LAYERS - BRIDGE_LAYERS;
     }
     road_class_rank(class) * ROAD_RUNGS_PER_CLASS
+}
+
+/// Which sheet of the road surface a ribbon belongs to — the leading term of
+/// `road_stitch::Ribbon::priority`, above the whole class hierarchy.
+///
+/// **A kerb is the edge between a carriageway and what is not one.** Where
+/// another carriageway abuts, there is no kerb — that is a junction mouth, and
+/// it is not optional: every side street in a city has one. The cut used to
+/// settle a kerb band against a carriageway on `road_rung` alone, which puts the
+/// *whole* of a higher class above the whole of a lower one, casing included. So
+/// a residential street tee-ing into a primary road lost the argument to that
+/// road's kerb band: its tarmac stopped at the far side of the kerb and the kerb
+/// line ran on unbroken across the mouth, walling the street off from the road
+/// it joins. That is what a junction looked like from the pavement everywhere
+/// two classes met — which is most junctions, since Shortbread's classes are
+/// what make a street a side street.
+///
+/// Three bands, and the two that are not the ordinary case are there because
+/// they are genuinely different surfaces:
+///
+/// * **2 — rails.** A level crossing is track laid *over* a road: the sleepers
+///   and ballast are continuous and the tarmac is what stops. `road_rung`
+///   already put rail at the top of the ladder; this keeps it there rather than
+///   promoting every carriageway over it.
+/// * **1 — carriageways**, every class a kerb is drawn for.
+/// * **0 — kerb bands, and footways.** A footway is not a carriageway, so it
+///   does not break a kerb; within this band `road_rung` decides exactly as it
+///   did before, which leaves a path crossing a road settled the old way.
+///
+/// The bands must be a *total* order together with the rung, and that is the
+/// point of expressing this as a band rather than as a "may block" predicate: an
+/// asymmetric rule where a kerb outranks a carriageway that outranks the kerb
+/// cuts both out of the ground they share and leaves a hole in the road.
+fn cut_band(group: SurfaceGroup) -> u32 {
+    match group {
+        SurfaceGroup::Road(RoadClass::Rail) => 2,
+        SurfaceGroup::Road(RoadClass::Path) => 0,
+        SurfaceGroup::Road(_) => 1,
+        // Kerb bands, and anything else that is ever staged into the road sheet
+        // (a bridge deck), at the foot.
+        _ => 0,
+    }
 }
 
 /// Which width sub-band inside a class block a width falls in: the eight
@@ -2632,12 +2678,13 @@ pub fn tessellate_roads(
                         sink.push(crate::road_stitch::Ribbon {
                             group,
                             rung,
-                            // `road_rung` is the road hierarchy and decides who
-                            // wins the ground; the rest only has to make the
-                            // order total, so that two ribbons which tie on the
-                            // hierarchy still have a definite winner rather than
-                            // a draw the renderer would have to break.
-                            priority: (priority, fi, li, pi),
+                            // `cut_band` separates the carriageways from the kerb
+                            // bands and `road_rung` is the road hierarchy within
+                            // them; the rest only has to make the order total, so
+                            // that two ribbons which tie on the hierarchy still
+                            // have a definite winner rather than a draw the
+                            // renderer would have to break.
+                            priority: (cut_band(group), priority, fi, li, pi),
                             bridge,
                             positions,
                             uvs,
@@ -2737,11 +2784,11 @@ pub fn tessellate_roads(
             continue;
         }
         let deck = &mut decks[di];
-        // Every road on the deck is lifted one rung so that the deck can sit at
+        // Every road on the deck is lifted one *band* so that the deck can sit at
         // the very bottom of the order and lose to all of them. Shifting the whole
-        // set by one keeps their order among themselves exactly as `road_rung`
-        // decided it — and it is the only way to be *strictly* below a hierarchy
-        // whose own floor is zero.
+        // set by one keeps their order among themselves exactly as `cut_band` and
+        // `road_rung` decided it — and it is the only way to be *strictly* below a
+        // hierarchy whose own floor is zero.
         for r in ribbons.iter_mut() {
             r.priority.0 += 1;
         }
@@ -2751,7 +2798,7 @@ pub fn tessellate_roads(
             rung: 0.0,
             // The weakest claim there is: `stitch` gives the ground to the
             // *larger* priority, so this yields to every road above.
-            priority: (0, 0, 0, 0),
+            priority: (0, 0, 0, 0, 0),
             // The deck and the ribbons on it are one sheet, and `stitch` only
             // lets a bridge be cut by another bridge — which is exactly the
             // isolation this wants from the roads passing underneath.
@@ -5991,6 +6038,167 @@ mod tests {
         }
     }
 
+    /// The cut order has to stay a **total** order, and the band is the term
+    /// that is easiest to get wrong: an asymmetric rule — the kerb beats the
+    /// carriageway that beats the kerb — cuts both out of the ground they share
+    /// and opens a hole in the road.
+    #[test]
+    fn the_cut_bands_order_a_kerb_under_every_carriageway() {
+        use RoadClass::{Carriageway, Major, Minor, Motorway, Path, Rail};
+        for kerbed in [Motorway, Carriageway, Major, Minor] {
+            for other in [Motorway, Carriageway, Major, Minor] {
+                assert!(
+                    cut_band(SurfaceGroup::Road(kerbed))
+                        > cut_band(SurfaceGroup::RoadCasing(other)),
+                    "{kerbed:?}'s carriageway must break {other:?}'s kerb",
+                );
+            }
+            // Rails are laid *over* a road, not cut by it.
+            assert!(cut_band(SurfaceGroup::Road(Rail)) > cut_band(SurfaceGroup::Road(kerbed)));
+            // A footway is not a carriageway and does not break a kerb; inside
+            // one band `road_rung` settles it exactly as it did before.
+            assert_eq!(
+                cut_band(SurfaceGroup::Road(Path)),
+                cut_band(SurfaceGroup::RoadCasing(kerbed)),
+            );
+            assert!(
+                road_rung(kerbed, 6.0, false, 0) > road_casing_rung(kerbed, false),
+                "a road's own kerb still loses to its own tarmac",
+            );
+        }
+    }
+
+    /// **A side street's mouth has to be open.** A kerb is the edge between a
+    /// carriageway and what is not one, so where another carriageway arrives
+    /// there is no kerb.
+    ///
+    /// Until `cut_band` the cut settled that on `road_rung` alone, which puts a
+    /// whole class above a whole class, kerb band included — so a residential
+    /// street tee-ing into a primary road lost to that road's *kerb*: its tarmac
+    /// stopped at the far side of the band and the kerb line ran on unbroken
+    /// across the mouth. Measured on the fixture over the junctions where two
+    /// kerbed classes meet at a clear angle, the point on the side street's
+    /// centre line halfway through the main road's kerb band was drawn as:
+    ///
+    /// | | before | after |
+    /// |---|---|---|
+    /// | the side street's carriageway | 0 | 129 |
+    /// | the main road's kerb | 129 | 0 |
+    ///
+    /// A picture cannot settle this — a kerb crossing a junction mouth is a
+    /// hairline at any altitude a whole junction fits in — which is why it is a
+    /// geometric assertion and not a screenshot.
+    #[test]
+    fn a_side_street_reaches_the_road_it_joins() {
+        let tile_m = 1000.0f32;
+        let parsed = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let meta = parsed.layer("streets").expect("a streets layer");
+        let features = parsed.features(meta);
+        let scale = tile_m / TileData::extent(meta);
+        let nodes = street_nodes(&features, scale);
+        let meshes = tessellate_roads(GRONINGEN_Z14, tile_m, &[]).expect("tessellate");
+
+        let covers = |group: &dyn Fn(SurfaceGroup) -> bool, p: [f32; 2]| -> bool {
+            meshes.iter().filter(|m| group(m.group)).any(|m| {
+                m.indices.chunks_exact(3).any(|t| {
+                    let q: Vec<[f32; 2]> = t
+                        .iter()
+                        .map(|i| [m.positions[*i as usize][0], m.positions[*i as usize][2]])
+                        .collect();
+                    let s = |a: &[f32; 2], b: &[f32; 2]| {
+                        (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+                    };
+                    let (d0, d1, d2) = (s(&q[0], &q[1]), s(&q[1], &q[2]), s(&q[2], &q[0]));
+                    (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+                })
+            })
+        };
+        let kerbed = |c: RoadClass| {
+            matches!(
+                c,
+                RoadClass::Motorway | RoadClass::Carriageway | RoadClass::Major | RoadClass::Minor
+            )
+        };
+
+        let (mut open, mut walled, mut bare) = (0usize, 0usize, 0usize);
+        let (mut ranked, mut angled) = (0usize, 0usize);
+        for (key, arms) in &nodes {
+            for side in arms {
+                // A street that *ends* here…
+                let Some((leaves, _)) = side.leaves else {
+                    continue;
+                };
+                if !kerbed(side.class) {
+                    continue;
+                }
+                for main in arms {
+                    // …onto a road of a higher class, which is exactly the pair
+                    // the old ordering got wrong: the kerb band goes in at the
+                    // foot of its own class's block, so a whole class's kerb sat
+                    // above a whole lower class's tarmac.
+                    if main.feature == side.feature
+                        || main.leaves.is_some()
+                        || !kerbed(main.class)
+                        || road_class_rank(main.class) <= road_class_rank(side.class)
+                    {
+                        continue;
+                    }
+                    ranked += 1;
+                    // Shallow crossings are excluded: they stretch the band the
+                    // sample has to land in along the side street until the
+                    // street's own first segment is too short to hold it, and
+                    // below `MERGE_SIN` the two are a continuation rather than a
+                    // junction at all.
+                    let sin = (leaves[0] * main.axis[1] - leaves[1] * main.axis[0]).abs();
+                    if sin < 0.45 {
+                        continue;
+                    }
+                    // The sample sits on the side street's own centre line, in
+                    // the main road's kerb band **on the approach side** — the
+                    // node is on the main road's centre line, so the band the
+                    // side street has to break through is the one between it and
+                    // the carriageway. It is `1 / sin` further out along the side
+                    // street than it is across the main road, which is what makes
+                    // the crossing angle matter here at all. Placed 40 % into the
+                    // 0.75 m band, which leaves room for the node key's rounding
+                    // to whole tile units (±0.12 m at z14).
+                    let d = (main.half + ROAD_CASING_M * 0.4) / sin;
+                    // …and only where the side street actually runs that far in a
+                    // straight line, or the sample is off its centre line.
+                    if side.leaves.is_some_and(|(_, seg)| seg < d) {
+                        continue;
+                    }
+                    angled += 1;
+                    let p = [
+                        key.0 as f32 * scale + leaves[0] * d,
+                        key.1 as f32 * scale + leaves[1] * d,
+                    ];
+                    if covers(&|g| matches!(g, SurfaceGroup::Road(_)), p) {
+                        open += 1;
+                    } else if covers(&|g| matches!(g, SurfaceGroup::RoadCasing(_)), p) {
+                        walled += 1;
+                    } else {
+                        bare += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "cross-class junction ends {ranked}, of those at a usable angle {angled}; \
+             mouths: {open} open, {walled} walled off, {bare} bare"
+        );
+        // The population is small because most of a city centre's streets are
+        // one Shortbread class (`Minor` covers tertiary down to service), and it
+        // is only *across* classes that a kerb ever outranked a carriageway.
+        assert!(open + walled + bare >= 12, "too few junctions to conclude");
+        assert_eq!(
+            walled,
+            0,
+            "{walled} of {} mouths are sealed by the kerb of the road they join",
+            open + walled + bare,
+        );
+    }
+
     /// Eyeball hatch for junction geometry: rasterise the tessellated ribbons
     /// top-down and colour each pixel by how many ribbons cover it, so stubs,
     /// gaps and overlaps are visible without a GPU.
@@ -6153,6 +6361,81 @@ mod tests {
         )
         .expect("write png");
         println!("wrote /tmp/ribbons.png");
+
+        // …and the same window again, coloured by **what** covers each pixel
+        // rather than by how many things do. The overlap image cannot answer the
+        // question a junction actually raises — *is the kerb running across the
+        // mouth of the street that joins here?* — because a kerb crossing a
+        // carriageway is a partition either way and shows up as one clean pixel
+        // in both. This one draws the carriageways pale and the kerb bands dark,
+        // so a mouth is either open tarmac or a bar across it.
+        let mut kind = vec![0u8; PX * PX];
+        for m in &meshes {
+            let tone = match m.group {
+                SurfaceGroup::RoadCasing(_) => 2u8,
+                SurfaceGroup::Road(_) => 1,
+                _ => continue,
+            };
+            for tri in m.indices.chunks_exact(3) {
+                let p: Vec<[f32; 2]> = tri
+                    .iter()
+                    .map(|i| {
+                        let v = m.positions[*i as usize];
+                        [(v[0] - wx) / ws * PX as f32, (v[2] - wz) / ws * PX as f32]
+                    })
+                    .collect();
+                let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                    - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                if area.abs() < 1e-9 {
+                    continue;
+                }
+                let lo = |f: &dyn Fn(&[f32; 2]) -> f32| {
+                    p.iter().map(f).fold(f32::MAX, f32::min).floor().max(0.0) as usize
+                };
+                let hi = |f: &dyn Fn(&[f32; 2]) -> f32| {
+                    p.iter()
+                        .map(f)
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize
+                };
+                for y in lo(&|q| q[1])..=hi(&|q| q[1]) {
+                    for x in lo(&|q| q[0])..=hi(&|q| q[0]) {
+                        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let s = |a: &[f32; 2], b: &[f32; 2]| {
+                            (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])
+                        };
+                        let (d0, d1, d2) = (s(&p[0], &p[1]), s(&p[1], &p[2]), s(&p[2], &p[0]));
+                        if (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0)
+                            || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+                        {
+                            kind[y * PX + x] = tone;
+                        }
+                    }
+                }
+            }
+        }
+        let kerb = kind.iter().filter(|k| **k == 2).count();
+        let tarmac = kind.iter().filter(|k| **k == 1).count();
+        println!("carriageway {tarmac} px, kerb band {kerb} px");
+        let mut rgba = Vec::with_capacity(PX * PX * 4);
+        for k in &kind {
+            let px: [u8; 3] = match k {
+                1 => [0xB4, 0xB1, 0xAC],
+                2 => [0x33, 0x3A, 0x40],
+                _ => [0x1A, 0x22, 0x1A],
+            };
+            rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
+        }
+        image::save_buffer(
+            "/tmp/ribbon_kinds.png",
+            &rgba,
+            PX as u32,
+            PX as u32,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("write png");
+        println!("wrote /tmp/ribbon_kinds.png");
     }
 
     /// The `bridges` layer is areas, and those areas are the deck a raised bridge
