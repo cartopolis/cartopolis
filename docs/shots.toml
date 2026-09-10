@@ -79,6 +79,24 @@ hide_ui = false
 ui = ["route"]
 
 [[shot]]
+name = "chrome"
+# The interface itself, which nothing in this set documented: `route` is the only
+# other preset that opens a panel, and it is framed for the *line* rather than for
+# the chrome. Settings ▸ Graphics is the densest screen in the app — headings,
+# body copy, switchers, checkboxes, a slider and a scrollbar in one frame — so it
+# is the one that shows whether a palette change holds up. Over a city rather
+# than over sky on purpose: the panels are translucent, and a screenshot of glass
+# against a plain background is a screenshot of nothing.
+description = "The interface: Settings over the city, the dock and the map controls"
+at = [53.2194, 6.5665, 420]
+look = [-22.0, 35.0]
+time = 11.0
+fog = 0.10
+clouds = 0.25
+hide_ui = false
+ui = ["graphics"]
+
+[[shot]]
 name = "horizon"
 description = "Tilted view from 120 km — atmosphere limb over the map tier"
 at = [53.0000, 6.5665, 120000]

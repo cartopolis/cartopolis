@@ -21,6 +21,7 @@ The map, the sky and the weather work anywhere on Earth. Three things do not, be
 |---|---|---|
 | ![Groningen city centre](docs/img/city.png) | ![The same streets at dusk](docs/img/city-dusk.png) | ![Third-person avatar](docs/img/avatar.png) |
 | ![Planned route](docs/img/route.png) | ![Atmosphere limb from 120 km](docs/img/horizon.png) | ![Earth from orbit](docs/img/globe.png) |
+| ![The interface over the city](docs/img/chrome.png) | | |
 
 _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every time._
 

@@ -3,7 +3,7 @@
 Images used by the docs and the top-level README.
 
 The named files — `city.png`, `city-dusk.png`, `avatar.png`, `route.png`,
-`horizon.png`, `globe.png` — are **generated**, one per entry in
+`chrome.png`, `horizon.png`, `globe.png` — are **generated**, one per entry in
 [`docs/shots.toml`](../shots.toml). Regenerate them all with:
 
 ```bash
