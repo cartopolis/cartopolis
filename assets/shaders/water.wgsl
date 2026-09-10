@@ -108,13 +108,33 @@ const SHELTER_M: f32 = 30.0;
 /// Not zero: sheltered water is calm, not a mirror.
 const SHELTER_FLOOR: f32 = 0.22;
 
-/// Distance over which the shallow tint fades out into open water.
-const SHALLOW_M: f32 = 22.0;
+/// How much brighter the water is where it meets the bank, before absorption
+/// takes the colour back out of it channel by channel.
+const SHALLOW_LIFT: f32 = 1.9;
 
-/// Colour multiplier for the shallows. Shallow water is *lighter and greener*:
-/// less of the column to absorb the red end, and the bottom scatters some light
-/// back. Applied as a tint on the albedo so it rides the scene's own lighting.
-const SHALLOW_TINT: vec3<f32> = vec3<f32>(1.5, 2.1, 1.7);
+/// Distance from the bank at which each channel has been absorbed away.
+///
+/// This is Beer–Lambert wearing a cheaper coat. Clear water's extinction runs
+/// about 0.45 / 0.08 / 0.03 per metre for red / green / blue, which is why a
+/// shallow edge is pale, then turquoise, then green, then blue as it deepens —
+/// the single most recognisable thing about water in daylight, and the thing one
+/// scalar tint could never produce. Distance from the bank stands in for depth
+/// (there is no bathymetry in a vector tile), and a per-channel `smoothstep` in
+/// that distance stands in for `exp(-kd)`: three multiplies each instead of three
+/// transcendentals, exactly zero at the far end where an exponential only
+/// approaches it, and the widths are in metres a person can reason about.
+///
+/// The ratios are **compressed** against the real coefficients (1 : 5.6 : 15
+/// becomes 1 : 3.7 : 6.7). At true ratios the blue band runs 100 m from the bank,
+/// which over a canal is not a band at all — it is the whole canal.
+const SHALLOW_RED_M: f32 = 6.0;
+const SHALLOW_GREEN_M: f32 = 22.0;
+const SHALLOW_BLUE_M: f32 = 40.0;
+
+/// Water's reflectance at normal incidence, from its refractive index:
+/// `((1.333 - 1) / (1.333 + 1))²`. The one number the whole surface turns on —
+/// nearly everything you see looking at water is this times the sky.
+const WATER_F0: f32 = 0.0204;
 
 /// Half-width of the foam line against the bank, in metres, at full sea.
 /// Must stay comfortably above one shore-field texel (~1.4 m at z14): the field
@@ -138,8 +158,16 @@ const AMP_SQ_FALLOFF: f32 = 0.5184;
 const K_STEP: f32 = 1.83;
 
 /// Golden angle between octave directions, so they never line up into a visible
-/// grid — the giveaway of a stacked-sine ocean.
-const OCTAVE_TURN: f32 = 2.39996;
+/// grid — the giveaway of a stacked-sine ocean. Its sine and cosine are written
+/// out because they are loop-invariant constants that a shader compiler is not
+/// obliged to fold, and folding them by hand takes two transcendentals per
+/// octave out of the inner loop.
+const OCTAVE_TURN_COS: f32 = -0.7373667;
+const OCTAVE_TURN_SIN: f32 = 0.6754927;
+
+/// `1 / sqrt(K_STEP)`, which advances the deep-water phase speed from one octave
+/// to the next by a multiply instead of a reciprocal square root.
+const INV_SQRT_K_STEP: f32 = 0.7392213;
 
 /// Phase each octave is offset by, per octave index.
 ///
@@ -161,13 +189,28 @@ const LO_OCTAVES: i32 = 2;
 /// their sum reads as blotches rather than as stripes.
 const FINE_FIRST: i32 = 3;
 
-/// Mean square of one octave's shaped derivative, `d/dφ pow(0.5+0.5·sin φ, n)`,
-/// at the two ends of the crest-sharpness range (n = 2 swell, n = 5 chop).
-/// Integrated numerically once rather than left as a fudge factor: it is what
-/// converts the octave amplitudes into a real slope variance, and therefore what
-/// makes `wave.x` mean RMS slope and the retired-detail roughness come out right.
-const SLOPE_MS_SWELL: f32 = 0.1563;
-const SLOPE_MS_CHOP: f32 = 0.2318;
+/// Mean square of one octave's shaped derivative, as a quadratic in the chop.
+///
+/// The crest sharpening used to be `pow(s, mix(2, 5, chop))`, which is two `pow`s
+/// per octave — four transcendentals, more than the sines the wave itself is made
+/// of — for a shape that is a blend of `s²` and `s⁵`. It is now literally that
+/// blend, and both powers fall out of three multiplies off `s²`.
+///
+/// The catch is that the mean square of a blend is not the blend of the mean
+/// squares: a straight lerp between the two endpoints is up to **8.5 % high** in
+/// the middle of the range, which is a 4 % error in the RMS slope the surface
+/// renders. So the curve is fitted instead — exact at both ends and within 1e-4
+/// across, integrated numerically over `d/dφ mix(s², s⁵, b)`. This is what
+/// converts octave amplitudes into a real slope variance, and therefore what
+/// makes `wave.x` mean RMS slope; `water::octave_norms` carries the same three
+/// coefficients on the CPU side.
+const SLOPE_MS_A: f32 = 0.1563;
+const SLOPE_MS_B: f32 = 0.0097;
+const SLOPE_MS_C: f32 = 0.0658;
+
+fn slope_mean_square(chop: f32) -> f32 {
+    return SLOPE_MS_A + chop * (SLOPE_MS_B + chop * SLOPE_MS_C);
+}
 
 /// Colour of light that goes *into* a wave and comes back out toward the viewer.
 /// Water absorbs the red end within centimetres, so what emerges from a crest a
@@ -234,9 +277,9 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
 
     var amp = 1.0;
     var k = TAU / max(wave.y, 0.5);
+    // Advanced by a multiply each octave rather than a reciprocal square root.
+    var inv_sqrt_k = inverseSqrt(k);
     let chop = clamp(wind.z, 0.0, 1.0);
-    // Sharper crests in a wind chop, rounder in a swell.
-    let crest_exp = mix(2.0, 5.0, chop);
     var dir = normalize(select(vec2<f32>(1.0, 0.0), wind.xy, length(wind.xy) > 1e-4));
     let count = i32(octaves.x);
 
@@ -255,7 +298,7 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
         // Deep-water dispersion: long waves outrun short ones (c = √(g/k)),
         // which is most of why a stack of sines reads as moving water at all
         // rather than as a rippling sheet.
-        let speed = wave.z * inverseSqrt(k);
+        let speed = wave.z * inv_sqrt_k;
         // Crest wobble. A pure directional sine has crests that run dead
         // straight to the horizon, and a stack of them reads as corduroy —
         // the giveaway of a sine ocean. Bending each crest along its own
@@ -283,11 +326,16 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
             wobble += sin(along * k * 0.13 - t * 0.19) * 0.45;
         }
         let phase = dot(p, dir) * k + t * speed * k + wobble + offset;
-        // 0..1 sine, sharpened into crests. d/dphase of pow(s, n) is
-        // n·s^(n-1)·½cos(phase).
+        // 0..1 sine, sharpened into crests: a blend of s² (a rolling swell) and
+        // s⁵ (a sharp wind chop). Three multiplies off s² give both powers and
+        // both derivatives, where the `pow(s, mix(2, 5, chop))` this replaces cost
+        // two `pow`s — four transcendentals — for the same family of shapes.
+        // `d/dφ sⁿ = n·s^(n-1)·½cos φ`, and a blend differentiates term by term.
         let s = 0.5 + 0.5 * sin(phase);
-        let shaped = pow(s, crest_exp);
-        let d_shaped = crest_exp * pow(s, crest_exp - 1.0) * 0.5 * cos(phase);
+        let s2 = s * s;
+        let s4 = s2 * s2;
+        let shaped = mix(s2, s4 * s, chop);
+        let d_shaped = mix(2.0 * s, 5.0 * s4, chop) * 0.5 * cos(phase);
         let w = amp * fade;
         if i < LO_OCTAVES {
             height_lo += w * shaped;
@@ -314,16 +362,17 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
 
         amp *= AMP_FALLOFF;
         k *= K_STEP;
+        inv_sqrt_k *= INV_SQRT_K_STEP;
         dir = vec2<f32>(
-            dir.x * cos(OCTAVE_TURN) - dir.y * sin(OCTAVE_TURN),
-            dir.x * sin(OCTAVE_TURN) + dir.y * cos(OCTAVE_TURN),
+            dir.x * OCTAVE_TURN_COS - dir.y * OCTAVE_TURN_SIN,
+            dir.x * OCTAVE_TURN_SIN + dir.y * OCTAVE_TURN_COS,
         );
     }
 
     // One scale carries the whole field: `octaves.y` is 1/√(mean-square of a
     // single octave's derivative × Σ amplitude²), so the sum below comes out
     // with RMS magnitude `wave.x` — a real slope, in the units Cox–Munk reports.
-    let slope_ms = mix(SLOPE_MS_SWELL, SLOPE_MS_CHOP, chop);
+    let slope_ms = slope_mean_square(chop);
     let scale = wave.x * shelter * octaves.y;
 
     var out: Waves;
@@ -417,21 +466,41 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let alpha = sqrt(alpha_base * alpha_base + w.slope_var);
     pbr_input.material.perceptual_roughness = clamp(sqrt(alpha), 0.02, 1.0);
 
-    // Water is dark looking down (you see into it) and mirror-bright at grazing
-    // angles. Schlick's fresnel drives the tint; the reflection itself is the
-    // standard path's environment map, which is the atmosphere — so the sea
-    // takes the sky's colour through dawn, noon and dusk on its own.
+    // Schlick against water's own F0. Written out as multiplies: the exponent is
+    // a constant 5, and `pow` is `exp2(y·log2(x))` on every adapter there is.
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let fresnel = pow(1.0 - n_dot_v, 5.0);
-    let depth_tint = mix(1.0 - clamp(surface.z, 0.0, 1.0), 1.0, fresnel);
+    let grazing = 1.0 - n_dot_v;
+    let grazing2 = grazing * grazing;
+    let fresnel = grazing2 * grazing2 * grazing;
+    let reflected = WATER_F0 + (1.0 - WATER_F0) * fresnel;
 
-    // Shallows read lighter and greener: a short water column absorbs less of the
-    // red end and the bottom scatters some light back. There is no bathymetry in
-    // the tile, but distance from the bank is a good proxy for it — and it is the
-    // right proxy visually, because what the eye actually reads is "this is the
-    // edge of the water", which is exactly what the field measures.
-    let shallow = 1.0 - smoothstep(0.0, SHALLOW_M, shore_m);
-    let body_tint = mix(vec3<f32>(1.0), SHALLOW_TINT, shallow) * depth_tint;
+    // **Light that was not reflected is light that went in**, so the body colour
+    // is worth `1 - F` and nothing else. This used to be the other way round —
+    // the albedo was *brightened* toward full at grazing angles — and that is a
+    // flat, chalky wash laid over exactly the part of the surface where a real
+    // sheet of water stops having a colour of its own and becomes a picture of
+    // the sky. It is the single most "computer graphics" thing the old surface
+    // did, and it was hiding the reflection underneath it.
+    //
+    // Scaled so the **head-on tone is unchanged to the last bit**: `surface.z` is
+    // still what the depth takes out of the albedo looking straight down, which
+    // is the number `vector_tiles::palette::WATER` was matched against (see
+    // `WATER_ALBEDO`). Only the grazing end moves, and it moves onto the sky.
+    let body = (1.0 - reflected) * (1.0 - clamp(surface.z, 0.0, 1.0))
+        / (1.0 - WATER_F0);
+
+    // Absorption, channel by channel: red is gone within a few metres of the
+    // bank, green holds on, blue goes furthest. That progression — pale, then
+    // turquoise, then green, then blue — is what shallow water looks like, and no
+    // single tint can produce it. Distance from the bank stands in for depth,
+    // which is also the right proxy *visually*: what the eye reads is "this is
+    // the edge of the water", and that is exactly what the field measures.
+    let shallow = vec3<f32>(
+        1.0 - smoothstep(0.0, SHALLOW_RED_M, shore_m),
+        1.0 - smoothstep(0.0, SHALLOW_GREEN_M, shore_m),
+        1.0 - smoothstep(0.0, SHALLOW_BLUE_M, shore_m),
+    );
+    let body_tint = (vec3<f32>(1.0) + shallow * (SHALLOW_LIFT - 1.0)) * body;
     pbr_input.material.base_color = vec4<f32>(
         pbr_input.material.base_color.rgb * body_tint,
         pbr_input.material.base_color.a,
@@ -512,13 +581,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Deliberately not compiled at all when there *is* an environment map: this
     // would be a second reflection stacked on the real one.
     //
-    // Schlick against water's own F0 of 0.02 — the same reflectance the standard
-    // path would have used had it had anything to reflect, so switching an
-    // environment map on and off moves the surface as little as this
-    // approximation can manage.
-    let reflectance = 0.02 + 0.98 * fresnel;
+    // Weighted by the *same* `reflected` the body colour was taken out of, so the
+    // two halves of the surface still add up to one and switching an environment
+    // map on and off moves it as little as this approximation can manage.
     out.color = vec4<f32>(
-        out.color.rgb + view_bindings::fog.base_color.rgb * reflectance * (1.0 - foam),
+        out.color.rgb + view_bindings::fog.base_color.rgb * reflected * (1.0 - foam),
         out.color.a,
     );
 #endif

@@ -157,14 +157,24 @@ const AMP_FALLOFF: f32 = 0.72;
 /// short band starts after them and is what `octave_norms`' `w` normalises.
 const LO_OCTAVES: u32 = 2;
 
-/// Mean square of one octave's shaped derivative at the two ends of the crest
-/// sharpness range — the same pair `water.wgsl` interpolates between, integrated
-/// numerically over `d/dφ pow(0.5 + 0.5·sin φ, n)` for n = 2 and n = 5. It is the
-/// conversion factor between the octave amplitudes and a real slope variance, so
-/// it belongs on both sides: here to build the normaliser, there to turn the
-/// retired octaves back into roughness.
-const SLOPE_MS_SWELL: f32 = 0.1563;
-const SLOPE_MS_CHOP: f32 = 0.2318;
+/// Mean square of one octave's shaped derivative, as a quadratic in the chop —
+/// the same three coefficients `water.wgsl` evaluates, integrated numerically
+/// over `d/dφ mix(s², s⁵, chop)`. It is the conversion factor between the octave
+/// amplitudes and a real slope variance, so it belongs on both sides: here to
+/// build the normaliser, there to turn the retired octaves back into roughness.
+///
+/// A quadratic rather than a lerp between the endpoints because the mean square
+/// of a blend is not the blend of the mean squares: a straight lerp is 8.5 % high
+/// in the middle of the range, which is a 4 % error in the rendered slope.
+const SLOPE_MS_A: f32 = 0.1563;
+const SLOPE_MS_B: f32 = 0.0097;
+const SLOPE_MS_C: f32 = 0.0658;
+
+/// Mean square of one octave's shaped derivative at the given chop.
+fn slope_mean_square(chop: f32) -> f32 {
+    let c = chop.clamp(0.0, 1.0);
+    SLOPE_MS_A + c * (SLOPE_MS_B + c * SLOPE_MS_C)
+}
 
 /// Share of the measured slope variance this octave stack puts in the **normal**.
 /// The rest is not discarded — it becomes base roughness, which is the same split
@@ -240,7 +250,7 @@ pub fn octave_norms(count: u32, chop: f32) -> Vec4 {
     let sum_sq = sum(r * r, n);
     // The long band is the first `LO_OCTAVES`; everything after it is the chop.
     let sum_hi = sum_amp - sum(r, n.min(LO_OCTAVES));
-    let slope_ms = SLOPE_MS_SWELL.lerp(SLOPE_MS_CHOP, chop.clamp(0.0, 1.0));
+    let slope_ms = slope_mean_square(chop);
     Vec4::new(
         n as f32,
         1.0 / (slope_ms * sum_sq).sqrt(),
@@ -369,10 +379,15 @@ impl WaterSeaState {
                 // fallback for the prepass, which runs the standard pipeline.
                 perceptual_roughness: 0.06,
                 metallic: 0.0,
-                // Water's F0 is ~0.02, half the dielectric default — the bright
-                // part of a water surface is the grazing fresnel, not the head-on
-                // reflection, and overstating F0 gives it a plastic sheen.
-                reflectance: 0.25,
+                // Bevy's `reflectance` is not F0 — `F0 = 0.16 · reflectance²`.
+                // Water's F0 is `((n-1)/(n+1))²` at n = 1.333, i.e. 0.0204, so
+                // the reflectance that produces it is √(0.0204 / 0.16). The 0.25
+                // that stood here was aimed at 0.02 and landed on **0.01**, which
+                // is half of water's reflectance — and the reflection is very
+                // nearly all of what a water surface is. `water.wgsl` uses the
+                // same 0.0204 for the fresnel it does itself, so the body colour
+                // and the reflection cannot disagree about where the light went.
+                reflectance: 0.3571,
                 // Same coplanar-ground ordering the other surface groups use; see
                 // `SurfaceGroup::depth_bias`.
                 depth_bias: crate::systems::vector_tiles::SurfaceGroup::Water.depth_bias(),
@@ -572,6 +587,47 @@ mod tests {
     }
 
     #[test]
+    fn the_shaped_slope_curve_is_exact_at_both_ends() {
+        // The two endpoints are integrals, not fits: `d/dφ s²` and `d/dφ s⁵`
+        // have mean squares 0.1563 and 0.2318. The quadratic exists only to
+        // carry the blend between them, so if it has drifted off either end the
+        // rendered slope no longer matches `rms_slope` at the wind speeds that
+        // matter most — dead calm and a full gale.
+        assert!((slope_mean_square(0.0) - 0.1563).abs() < 1e-6, "swell");
+        assert!((slope_mean_square(1.0) - 0.2318).abs() < 1e-6, "chop");
+        // And it must stay between them: a blend of two shapes cannot be
+        // steeper than the steeper one.
+        for i in 0..=10 {
+            let c = i as f32 / 10.0;
+            let m = slope_mean_square(c);
+            assert!((0.1563..=0.2318).contains(&m), "chop {c} gave {m}");
+        }
+    }
+
+    #[test]
+    fn the_reflectance_produces_waters_own_f0() {
+        // Bevy computes `F0 = 0.16 · reflectance²`, and `water.wgsl` does its own
+        // Schlick against a hard-coded 0.0204 — so if these two ever disagree the
+        // body colour is taken out at one reflectance and put back at another,
+        // and the surface stops conserving light without saying so.
+        let material = WaterSeaState {
+            wave: Vec4::ZERO,
+            surface: Vec4::ZERO,
+            wind: Vec4::ZERO,
+            octaves: Vec4::ZERO,
+            open_water: Handle::default(),
+            shading: true,
+        }
+        .material(None, Vec2::ZERO, 1.0);
+        let f0 = 0.16 * material.base.reflectance * material.base.reflectance;
+        assert!(
+            (f0 - 0.0204).abs() < 1e-4,
+            "reflectance {} gives F0 {f0}, water is 0.0204",
+            material.base.reflectance
+        );
+    }
+
+    #[test]
     fn the_split_conserves_the_measured_variance() {
         // Nothing is allowed to vanish between the measurement and the surface:
         // whatever the normal field does not carry has to arrive as roughness, or
@@ -662,7 +718,7 @@ mod tests {
     /// variances because the golden-angle turn keeps their directions apart.
     fn rendered_rms_slope(count: u32, chop: f32) -> f32 {
         let norms = octave_norms(count, chop);
-        let slope_ms = SLOPE_MS_SWELL.lerp(SLOPE_MS_CHOP, chop);
+        let slope_ms = slope_mean_square(chop);
         let mut amp = 1.0_f32;
         let mut var = 0.0_f32;
         for _ in 0..count {
