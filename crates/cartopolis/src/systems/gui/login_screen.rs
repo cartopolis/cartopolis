@@ -406,8 +406,11 @@ pub fn render_login_screen(
     // ── Card ─────────────────────────────────────────────────────────────────
     let card_id = egui::Id::new("sign_in_card");
     let frame = egui::Frame::NONE
-        .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        // The same glass every panel and window in the app is made of — see
+        // `theme::GLASS`. A card over a dimmed map is exactly the case the
+        // translucency was chosen for.
+        .fill(theme::GLASS)
+        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
         .inner_margin(egui::Margin::symmetric(CARD_PAD_X, CARD_PAD_Y))
         .shadow(egui::Shadow {

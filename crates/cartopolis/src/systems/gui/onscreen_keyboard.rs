@@ -912,7 +912,7 @@ impl Glyphs {
 ///
 /// Every colour comes off the ambient `Visuals`, which is `theme::style`'s — so
 /// a key at rest is a raised surface with the theme's hairline, a key under a
-/// finger is the same accent orange the rest of the app uses for "this is the live
+/// finger is the same pressed fill the rest of the app uses for "this is the live
 /// thing", and none of it can drift from the palette without the palette moving.
 #[allow(clippy::too_many_arguments)]
 fn paint_key(
@@ -938,10 +938,13 @@ fn paint_key(
     } else {
         match cap {
             Cap::Enter => (theme::ACCENT_MUTED, theme::ACCENT_BRIGHT, theme::CREAM),
-            // A held state, which is what `AMBER` is reserved for across the app
-            // (north-up lock, follow-and-rotate) — so caps lock reads as the same
-            // kind of thing, and never collides with the accent.
-            Cap::Shift if shift == ShiftState::Lock => (theme::AMBER, theme::AMBER, theme::INK),
+            // A held state, drawn the way every held state in the app is: the
+            // engaged plate, plus the brightest rim. Caps lock then reads as the
+            // same kind of thing as a north-up lock, and as a clear step past
+            // `ShiftState::Once` below, which only gets the pressed fill.
+            Cap::Shift if shift == ShiftState::Lock => {
+                (theme::ACCENT, theme::ACCENT_BRIGHT, theme::INK)
+            }
             Cap::Shift if shift == ShiftState::Once => {
                 (theme::ACCENT_MUTED, theme::ACCENT_BRIGHT, theme::CREAM)
             }

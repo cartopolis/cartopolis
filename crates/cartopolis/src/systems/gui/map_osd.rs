@@ -504,7 +504,7 @@ fn action_pair(
                 }
                 // The flight toggle is a *state*, not a rate or an edge that
                 // vanishes — so it wears the engaged plate while flying, the same
-                // muted orange an open panel's dock disc wears. It was the one
+                // light plate an open panel's dock disc wears. It was the one
                 // control on the map whose on and off looked identical.
                 // In flight the jump disc above is gone, so the top side is
                 // outer too and may carry the margin.
@@ -609,9 +609,8 @@ fn vertical_pair(
 /// The plate is [`theme::map_disc`], which is what makes these the same object as
 /// the dock discs eight points below them and the compass in the far corner.
 /// They were painted here instead, one shade off on every state — `TEXT_DIM` ink
-/// at rest against the dock's `TEXT`, no lift on hover, `ACCENT_BRIGHT` for the
-/// pressed ring against the dock's `ACCENT_RING` (which the palette notes
-/// measures 4.2:1 on the muted fill where the bright one measures 2.7).
+/// at rest against the dock's `TEXT`, no lift on hover, and their own answer to
+/// what a pressed ring is.
 fn round_button(ui: &mut egui::Ui, mark: Mark, on: bool) -> egui::Response {
     let (resp, face) = theme::map_disc(
         ui,

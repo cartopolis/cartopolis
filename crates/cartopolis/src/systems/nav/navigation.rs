@@ -150,7 +150,7 @@ const MARKER_RADIUS: f32 = 7.0;
 ///
 /// Not palette colours: green-means-start and red-means-finish is wayfinding
 /// convention, the same exemption `driver::DRIVE_BLUE` and the road-sign colours
-/// claim, and bending them to the app's orange would cost the convention.
+/// claim, and bending them to the app's own palette would cost the convention.
 const ROUTE_START_RGB: [f32; 3] = [0.20, 0.78, 0.35];
 const ROUTE_FINISH_RGB: [f32; 3] = [0.90, 0.25, 0.22];
 

@@ -1335,15 +1335,19 @@ pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
     }
 }
 
-/// Green through amber to the brand orange as the signal approaches clipping.
+/// The live tone through amber to the error red as the signal approaches
+/// clipping.
 ///
-/// The top of the bar is a warning, not a target — a meter that is green at
-/// full scale invites people to clip their own microphone.
+/// The top of the bar is a warning, not a target — a meter that is full-scale in
+/// the ordinary colour invites people to clip their own microphone. This is one
+/// of the places the retired second accent was doing `WARN`'s job: a meter three
+/// quarters of the way up is a caution, and caution is one of the two things the
+/// monochrome palette still says in colour.
 fn meter_colour(meter: f32) -> egui::Color32 {
     if meter > 0.9 {
         theme::ERROR
     } else if meter > 0.75 {
-        theme::AMBER
+        theme::WARN
     } else {
         theme::ACCENT
     }
@@ -1620,7 +1624,7 @@ mod tests {
     fn meter_warns_before_it_reaches_the_end() {
         // The bar must change colour below full scale, or it reads as a target.
         assert_eq!(meter_colour(0.5), theme::ACCENT);
-        assert_eq!(meter_colour(0.8), theme::AMBER);
+        assert_eq!(meter_colour(0.8), theme::WARN);
         assert_eq!(meter_colour(0.95), theme::ERROR);
     }
 

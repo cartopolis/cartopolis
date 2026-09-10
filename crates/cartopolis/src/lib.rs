@@ -993,7 +993,7 @@ fn halt_action(prior_reloads: Option<u32>, uptime_s: f64) -> HaltAction {
 ///
 /// This is the web sibling of Android's crash report: the boot overlay is long
 /// gone by now (it removes itself at the first drawn frame), so without this the
-/// spent-streak state is a solid `#1b2830` rectangle. Plain DOM on purpose —
+/// spent-streak state is a solid `#14161a` rectangle. Plain DOM on purpose —
 /// after the halt the ECS is on its way down, so nothing here may depend on
 /// another frame running. The retry is an `<a href="">` (a navigation to the
 /// same URL) rather than a scripted button, so it keeps working after the wasm
@@ -1009,15 +1009,15 @@ fn halt_card() {
     // The loader's palette: SURFACE, INK, TEXT, CREAM, ACCENT_TEXT.
     card.set_inner_html(
         "<div style=\"position:fixed;inset:0;z-index:9999;display:flex;align-items:center;\
-         justify-content:center;background:#1b2830;font:15px/1.6 system-ui,sans-serif\">\
-         <div style=\"max-width:34rem;margin:0 1.5rem;padding:1.2rem 1.4rem;background:#10181e;\
-         border:1px solid #647f8f;border-radius:8px;color:#dfe5e7\">\
-         <h1 style=\"font-size:1.3rem;font-weight:600;color:#f2efea;margin:0 0 .5rem\">\
+         justify-content:center;background:#14161a;font:15px/1.6 system-ui,sans-serif\">\
+         <div style=\"max-width:34rem;margin:0 1.5rem;padding:1.2rem 1.4rem;background:#0b0c0f;\
+         border:1px solid #6b7078;border-radius:8px;color:#dce0e4\">\
+         <h1 style=\"font-size:1.3rem;font-weight:600;color:#f4f6f8;margin:0 0 .5rem\">\
          Cartopolis lost its graphics device</h1>\
          <p style=\"margin:.4rem 0\">The browser took the GPU away, and reloading the page \
          did not bring it back. That is usually the browser&#8217;s GPU process crashing on \
          this page &#8212; restarting the browser sometimes clears it.</p>\
-         <p style=\"margin:.4rem 0\"><a href=\"\" style=\"color:#ff9457\">Try again</a></p>\
+         <p style=\"margin:.4rem 0\"><a href=\"\" style=\"color:#ffffff\">Try again</a></p>\
          </div></div>",
     );
     if let Some(body) = document.body() {

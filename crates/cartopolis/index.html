@@ -40,16 +40,18 @@
       if (!navigator.gpu) {
         document.write(
           // Brand palette, not the browser's default greys: this page is the
-          // only Cartopolis some visitors ever see. Slate `#1b2830` is
-          // `theme::SURFACE`, `#dfe5e7` is `TEXT`, `#f2efea` is `CREAM`,
-          // `#10181e` is `INK` and `#ff9457` is `ACCENT_TEXT` — the same five
-          // constants the loader below and the app itself paint from.
+          // only Cartopolis some visitors ever see. Graphite `#14161a` is
+          // `theme::SURFACE`, `#dce0e4` is `TEXT`, `#f4f6f8` is `CREAM`,
+          // `#0b0c0f` is `INK` and `#ffffff` is `ACCENT_TEXT` — the same five
+          // constants the loader below and the app itself paint from. The chrome
+          // is monochrome; the one colour on the page is the brand orange, and it
+          // is only ever on the logo.
           '<style>' +
-            'body{margin:0;background:#1b2830}' +
-            '.u{color:#dfe5e7;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
-            '.u h1{font-size:1.3rem;font-weight:600;color:#f2efea}' +
-            '.u code{background:#10181e;padding:.1em .4em;border-radius:3px}' +
-            '.u a{color:#ff9457}' +
+            'body{margin:0;background:#14161a}' +
+            '.u{color:#dce0e4;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
+            '.u h1{font-size:1.3rem;font-weight:600;color:#f4f6f8}' +
+            '.u code{background:#0b0c0f;padding:.1em .4em;border-radius:3px}' +
+            '.u a{color:#ffffff}' +
           '</style>' +
           '<div class="u">' +
             "<h1>This browser can't run Cartopolis</h1>" +
@@ -64,7 +66,7 @@
             // does not need WebGPU at all, because there is a native app. Without
             // this the gate is a dead end on the platform most likely to hit it.
             '<p>On <b>Android</b> there is a native app that needs no WebGPU: ' +
-            '<a href="/apk/" style="color:#FD9212">cartopolis.org/apk</a>.</p>' +
+            '<a href="/apk/" style="color:#ffffff">cartopolis.org/apk</a>.</p>' +
           '</div>'
         );
         window.stop();
@@ -328,10 +330,10 @@
         padding: 0;
         height: 100%;
         overflow: hidden;
-        /* Brand slate, not black: this is what shows for the frames before the
-           loader paints, and a black flash reads as a broken page. Matches
+        /* Brand graphite, not black: this is what shows for the frames before
+           the loader paints, and a black flash reads as a broken page. Matches
            `systems::theme::SURFACE`. */
-        background: #1b2830;
+        background: #14161a;
         /* Pull-to-refresh and rubber-banding are chrome-level gestures: they are
            decided before any pointer event is dispatched, so `preventDefault`
            in the canvas handler cannot reach them. A downward drag on the map
@@ -374,20 +376,20 @@
       /* Same brand tones as the <head> abort page above — an "it doesn't work
          here" screen is still the product's screen. */
       .unsupported {
-        color: #dfe5e7;
-        background: #1b2830;
+        color: #dce0e4;
+        background: #14161a;
         font: 15px/1.6 system-ui, sans-serif;
         max-width: 34rem;
         margin: 12vh auto;
         padding: 0 1.5rem;
       }
-      .unsupported h1 { font-size: 1.3rem; font-weight: 600; color: #f2efea; }
+      .unsupported h1 { font-size: 1.3rem; font-weight: 600; color: #f4f6f8; }
       .unsupported code {
-        background: #10181e;
+        background: #0b0c0f;
         padding: 0.1em 0.4em;
         border-radius: 3px;
       }
-      .unsupported a { color: #ff9457; }
+      .unsupported a { color: #ffffff; }
 
       /* The wordmark face, the same file `systems::theme` embeds for the Bevy
          splash — without it the handover swaps typeface mid-load, which is the
@@ -424,8 +426,8 @@
         gap: 0.9rem;
         /* The loader, the Bevy splash and the app chrome all paint from
            `systems::theme`'s palette — keep these in step with it. */
-        background: #1b2830;
-        color: #b8c0c7;
+        background: #14161a;
+        color: #a7adb5;
         font: 13px/1.5 system-ui, -apple-system, sans-serif;
         transition: opacity 0.4s ease;
         padding: 6vh 1.5rem;
@@ -475,29 +477,34 @@
            against. */
         font-size: 40px;
         line-height: 1.1;
-        color: #f2efea;
+        color: #f4f6f8;
       }
       /* Cream `carto`, accent `polis` — `theme::WORDMARK_HEAD` here, and the
          account GUI's `.app-header .wordmark b` over in `jeroen/cartopy`. Three
          surfaces, one way of writing the name.
 
-         `#fd6012` is `theme::WORDMARK_TAIL_COLOR` (= `theme::ACCENT`), and the
+         `#fd6012` is `theme::WORDMARK_TAIL_COLOR` (= `theme::BRAND`), and the
          same orange as the mark's ring and `#bar` below. This said `#ff9457`
          while the Rust side said `#ffa470` — two lightened accents, neither of
          them the one they sit next to, which is how the name came to read pink
-         on a screen whose every other orange is this one. */
+         on a screen whose every other orange is this one.
+
+         It is `BRAND` rather than `ACCENT` since the chrome went monochrome:
+         the app's live tone is a grey now, and the logo kept its colour. This
+         page is the loudest place that distinction shows — the wordmark, the
+         mark and the progress bar are the only orange left on any screen. */
       #wordmark b {
         color: #fd6012;
         font-weight: 600;
       }
       #motto {
         font-size: 16px;
-        color: #b8c0c7;
+        color: #a7adb5;
       }
       #track {
         width: min(22rem, 70vw);
         height: 3px;
-        background: #263842;
+        background: #1e2126;
         border-radius: 2px;
         overflow: hidden;
       }
@@ -517,8 +524,8 @@
         0% { margin-left: -35%; }
         100% { margin-left: 100%; }
       }
-      #loader[data-state="failed"] #bar { background: #e88b7d; animation: none; }
-      #loader[data-state="failed"] #status { color: #e88b7d; }
+      #loader[data-state="failed"] #bar { background: #f2a296; animation: none; }
+      #loader[data-state="failed"] #status { color: #f2a296; }
       /* The instrumentation. Hidden by default — it is a developer console, and
          it was the first thing every visitor saw for the whole download. It
          comes back for the two audiences that want it: `?log`, and any run that
@@ -543,17 +550,17 @@
       }
       #checks li { display: flex; gap: 0.6rem; align-items: baseline; }
       /* Fixed-width mark so the labels line up while rows are still settling. */
-      #checks .mark { flex: none; width: 1ch; text-align: center; color: #767f87; }
+      #checks .mark { flex: none; width: 1ch; text-align: center; color: #7c828a; }
       #checks .label { flex: none; }
-      #checks .note { color: #767f87; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #checks .note { color: #7c828a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* No green in the brand palette (systems::theme has no success colour), so
          "passed" is just ordinary text — the eye is meant to catch the failures. */
-      #checks li[data-ok="yes"] .mark { color: #dfe5e7; }
+      #checks li[data-ok="yes"] .mark { color: #dce0e4; }
       #checks li[data-ok="warn"] .mark,
       #checks li[data-ok="warn"] .note { color: #d8c07a; }
       #checks li[data-ok="no"] .mark,
       #checks li[data-ok="no"] .note,
-      #checks li[data-ok="no"] .label { color: #e88b7d; }
+      #checks li[data-ok="no"] .label { color: #f2a296; }
       #bootlog {
         width: min(64rem, 100%);
         /* Scrollable, and tall enough to hold a paragraph. It was a fixed 9rem
@@ -572,14 +579,14 @@
            loader fills the viewport, so the chain would just rubber-band. */
         overscroll-behavior: contain;
         scrollbar-width: thin;
-        scrollbar-color: #647f8f transparent;
+        scrollbar-color: #6b7078 transparent;
         margin: 0;
         padding: 0.6rem 0.8rem;
         box-sizing: border-box;
         background: rgba(0, 0, 0, 0.3);
-        border: 1px solid #647f8f;
-        border-radius: 6px;
-        color: #767f87;
+        border: 1px solid #6b7078;
+        border-radius: 8px;
+        color: #7c828a;
         font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
         white-space: pre-wrap;
         word-break: break-word;
@@ -593,11 +600,11 @@
         font: 14px/1.4 "Plus Jakarta Sans", system-ui, sans-serif;
       }
       #android-hint a,
-      #android-open a { color: #fd9212; text-decoration: none; }
+      #android-open a { color: #ffffff; text-decoration: none; }
       #android-hint a:hover,
       #android-open a:hover { text-decoration: underline; }
       #bootlog .warn { color: #d8c07a; }
-      #bootlog .error { color: #e88b7d; }
+      #bootlog .error { color: #f2a296; }
     </style>
   </head>
   <body>

@@ -104,7 +104,7 @@ const MAX_FADE_STRETCH: f32 = 2.0;
 /// [`theme::SURFACE`] is painted opaque from the first frame, because what is
 /// behind this layer is the 3D view with nothing streamed into it yet — fading
 /// the panel itself in would open the app on a flash of empty void and then hide
-/// it again, which is worse than no transition at all. So the slate is there
+/// it again, which is worse than no transition at all. So the backdrop is there
 /// instantly and the *content* arrives on it.
 ///
 /// Inside [`min_visible_s`] rather than added to it: the splash's total hold is

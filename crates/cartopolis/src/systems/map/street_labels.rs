@@ -148,10 +148,12 @@ const GLYPH_PX: f32 = 40.0;
 const HALO_PX: i32 = 3;
 
 /// Ink and halo, off the shared palette ([`theme::LABEL_INK`] over
-/// [`theme::LABEL_HALO`]) — deep slate-teal on pale teal, the map labels' own
-/// pair rather than the chrome's near-black-on-cream, so the names belong to
-/// the blue city instead of floating over it. Contrast is pinned in `theme`'s
-/// tests against both a white and a night basemap.
+/// [`theme::LABEL_HALO`]) — near-black on a pale neutral, the map labels' own
+/// pair rather than the chrome's. It used to be tinted slate-teal so the names
+/// would belong to the city around them; the chrome carries no tint any more,
+/// and a neutral halo is the better answer on a map that supplies all the hue
+/// in the frame itself. Contrast is pinned in `theme`'s tests against both a
+/// white and a night basemap.
 const INK: [f32; 3] = srgb_of(theme::LABEL_INK);
 const HALO: [f32; 3] = srgb_of(theme::LABEL_HALO);
 /// The halo's own opacity, and deliberately not [`theme::LABEL_HALO`]'s alpha:

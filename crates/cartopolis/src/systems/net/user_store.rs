@@ -458,11 +458,12 @@ pub struct PlaceFolder {
 /// unfoldered place is drawn in it twice, as the pin on the map *and* as the
 /// marker or the photo frame in the Places row, so on a fresh install the panel
 /// was outlined in a red the rest of the UI never uses, which reads as a warning
-/// rather than as a colour. The accent is the one saturated colour the palette
-/// does own, and a place with no folder is exactly the "no group chose this"
-/// case that should wear it. Colours a user picks for a folder are untouched —
-/// [`FOLDER_PALETTE`] below still starts at blue, so a folder never comes up in
-/// the same orange the top level is in.
+/// rather than as a colour. This is the brand orange (`theme::BRAND`), and it
+/// stayed orange when the chrome went monochrome: a pin is *map content*, not
+/// chrome, it has to be found against parks, water and paper at a glance, and
+/// grey is the one thing a map already has plenty of. Colours a user picks for a
+/// folder are untouched — [`FOLDER_PALETTE`] below still starts at blue, so a
+/// folder never comes up in the same orange the top level is in.
 pub const DEFAULT_PIN_COLOR: [f32; 3] = [0.992, 0.376, 0.071];
 
 /// Colours handed to new folders, in order, so a fresh tree is legible without

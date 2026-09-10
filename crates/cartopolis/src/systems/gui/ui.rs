@@ -935,12 +935,12 @@ fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
 }
 
 /// The frame the object editor and the texture picker wear: the sign-in card's
-/// recipe, which is what a themed window looks like in this app — a surface fill,
-/// a hairline, the shared corner radius and real margins.
+/// recipe, which is what a themed window looks like in this app — a glass fill,
+/// a lit rim, the shared corner radius and real margins.
 fn dialog_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::window(style)
-        .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        .fill(theme::GLASS)
+        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
         .inner_margin(egui::Margin::symmetric(10, 10))
 }
 

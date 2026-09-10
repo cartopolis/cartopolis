@@ -55,8 +55,8 @@ struct Compass {
     hover: &'static str,
 }
 
-/// Draws the top-left compass rose (Organic-Maps style): the accent orange needle
-/// and the "N" point to geographic north as it appears on screen. In globe (Orbit)
+/// Draws the top-left compass rose (Organic-Maps style): the accent needle and
+/// the "N" point to geographic north as it appears on screen. In globe (Orbit)
 /// mode it is a toggle — clicking locks the view north-up (and unlocking
 /// releases it); while driving it steps through the map orientations; in the
 /// free-form fly/avatar modes it is a passive indicator. Returns true when the
@@ -64,10 +64,11 @@ struct Compass {
 fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool {
     let (interactive, locked) = (cfg.interactive, cfg.locked);
     let mut clicked = false;
-    // Amber, the same "held" accent the locked ring and glyph share — and the
-    // brand's second accent, so it can never be mistaken for the accent orange
-    // hover/pressed states the rest of the UI uses.
-    let lock_color = theme::AMBER;
+    // The brightest rim in the palette, which is how a *held* control is drawn
+    // everywhere in the app now that there is no second accent to reserve for it.
+    // What separates it from an ordinary engaged control is weight, not colour:
+    // the lock draws a second ring at 2 pt over the disc's own 1.5 pt one.
+    let lock_color = theme::ACCENT_BRIGHT;
     egui::Area::new(egui::Id::new("compass_overlay"))
         // Top-left: the status HUD moved into the top-right corner, so the compass
         // takes the opposite one to keep both clear of the docked panels.
@@ -85,11 +86,11 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
             // focus states the dock discs and the on-screen controls wear.
             //
             // `on` is deliberately false even when locked. The engaged plate is
-            // the muted orange a *panel* wears when it is open, and the needle it
-            // has to carry is itself orange — the rose would lose its one piece
-            // of colour vocabulary to the state of a lock. North-up keeps the
-            // treatment it was designed with instead: the amber ring the palette
-            // reserves for a held state, plus the padlock below.
+            // the *light* one a panel's dock disc wears when it is open, and the
+            // needle it has to carry is the accent — on that plate the rose would
+            // lose the one thing that makes it a rose. North-up keeps the
+            // treatment it was designed with instead: the brightest ring in the
+            // palette, drawn a second time at 2 pt, plus the padlock below.
             let (resp, face) = theme::map_disc(ui, COMPASS_SIZE, false, lock_color, sense);
             let p = ui.painter();
             let c = face.center;
@@ -107,9 +108,11 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
             // 46 pt rose and would have crowded the needle into the "N" the
             // moment the disc joined the rest of the family at 40.
             //
-            // North half: the accent (a compass needle is red by convention,
-            // and the brand's warm end is the closest thing to it we own); south
-            // half: the muted body tone.
+            // North half: the accent; south half: the muted body tone. The
+            // needle used to be argued for as "red by convention, and the brand's
+            // warm end is the closest thing we own" — the chrome has no warm end
+            // any more, and what actually makes a needle readable is that its two
+            // halves differ, which they still do by two full steps of the ramp.
             p.add(egui::Shape::convex_polygon(
                 vec![c + north * (r * 0.86), c + w, c - w],
                 theme::ACCENT,
@@ -245,7 +248,7 @@ fn locate_overlay(
     let tone = match (on, gps) {
         (false, _) => theme::ACCENT_RING,
         (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => theme::WARN,
-        (true, _) => theme::AMBER,
+        (true, _) => theme::ACCENT_BRIGHT,
     };
     // Read before the `Area`'s closure, not inside it: `Context::input` takes the
     // context lock, and taking it again from within a closure the context is
@@ -337,7 +340,7 @@ fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, 
         .collect();
     painter.add(egui::Shape::line(
         points,
-        egui::Stroke::new(2.2, theme::AMBER),
+        egui::Stroke::new(2.2, theme::ACCENT),
     ));
 }
 

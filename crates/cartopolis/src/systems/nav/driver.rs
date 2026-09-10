@@ -2315,7 +2315,7 @@ pub fn render_driver_hud(
             panel(if arrived {
                 ARRIVE_GREEN
             } else if rerouting {
-                theme::AMBER
+                REROUTE_AMBER
             } else if off_route || failed.is_some() {
                 theme::ERROR
             } else {
@@ -2652,6 +2652,14 @@ const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
 /// exists. Dark enough to carry `theme::CREAM` at the contrast the theme tests
 /// hold the rest of the UI to.
 const ARRIVE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x7A, 0x48);
+
+/// The card's colour while the route is being replaced. Signage again, and here
+/// for a second reason: this was `theme::AMBER`, the palette's second accent,
+/// which the monochrome chrome retired. `theme::WARN` could not take it over —
+/// that is a *type* colour, pale enough to read on a dark panel, and this is a
+/// card fill that has to carry `theme::CREAM`. So it is the amber a road sign
+/// would use, dark enough to be a plate.
+const REROUTE_AMBER: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x5A, 0x0C);
 
 /// The distance to the next manoeuvre, as a countdown rather than a measurement.
 ///

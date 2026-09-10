@@ -554,16 +554,15 @@ pub fn render_chat_transcript(
                             egui::RichText::new(format!("{prefix}{name}:"))
                                 .size(theme::SIZE_SUB)
                                 .strong()
-                                // Own lines in amber against everyone else's
-                                // orange: `my_id` has been on `ChatState` since
-                                // the handshake was written, documented as
-                                // "to tag own lines", and nothing had ever read
-                                // it — so every line in the app looked alike.
-                                .color(if mine {
-                                    theme::AMBER
-                                } else {
-                                    theme::ACCENT_TEXT
-                                }),
+                                // One tone for every speaker. This used to be
+                                // amber for your own lines against everyone
+                                // else's orange, and the monochrome palette has
+                                // no second accent to spend on it — but it also
+                                // does not need one: `my_id` is read a line above
+                                // to write the name as "You", which says the same
+                                // thing in a word rather than in a hue nobody has
+                                // a key to.
+                                .color(theme::ACCENT_TEXT),
                         );
                         if interactive {
                             // The name is the handle for what you can do *about*

@@ -311,7 +311,7 @@ pub fn render_script_panel(
                 }))
                 .on_hover_text(tip);
                 if editor.is_dirty() {
-                    ui.label(egui::RichText::new("• unsaved").color(theme::AMBER));
+                    ui.label(egui::RichText::new("• unsaved").color(theme::WARN));
                 }
             });
 
