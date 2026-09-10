@@ -1,0 +1,53 @@
+# Water viewpoints, for looking at rather than for the README.
+#
+# `docs/shots.toml` is the documentation image set; this is the surface under
+# test. It exists because water is almost entirely colour and lighting, and the
+# containers every other lane runs in cannot judge either
+# (`docs/notes/headless-shots-software-renderer.md`) — so these are the views the
+# `gpu shots` workflow runs on the Steam Deck, where the answer means something.
+#
+#     cargo run -p cartopolis -- --shots docs/water-shots.toml
+#
+# Keep them cheap and comparable: fixed clock, no cloud (a cloud shadow drifting
+# across a canal between two runs looks exactly like a shading change and has
+# already fooled one A/B), and one view per thing worth seeing.
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1600x900"
+out_dir = "gpu"
+hide_ui = true
+mode = "free"
+settle = 1.5
+wait = 45.0
+clouds = 0.0
+
+[[shot]]
+name = "canal"
+description = "Groningen's Verbindingskanaal from just above the water — the near case: shelter, the shore band, a sky reflection at a middling angle"
+at = [53.21263, 6.57016, 25]
+look = [-16.0, 90.0]
+time = 11.0
+fog = 0.08
+
+[[shot]]
+name = "sunpath"
+description = "Paterswoldsemeer, 40 m up and 5° above the water into a mid-afternoon sun — the glitter path, and the crest scattering that has no ceiling"
+at = [53.1880, 6.5560, 40]
+look = [-5.0, 228.0]
+time = 15.0
+fog = 0.06
+
+[[shot]]
+name = "dusk"
+description = "The same lake at sunset: crest scattering wants a low sun, and this is where it either reads as translucent water or as green paint"
+at = [53.1880, 6.5560, 40]
+look = [-4.0, 246.0]
+time = 18.6
+fog = 0.08
+
+[[shot]]
+name = "ringedge"
+description = "12 km straight down over the Waddenzee, where streamed water meets painted tile — the seam WATER_ALBEDO is matched on"
+at = [53.0700, 5.3400, 12000]
+look = [-88.0, 0.0]
+time = 12.0
+fog = 0.05

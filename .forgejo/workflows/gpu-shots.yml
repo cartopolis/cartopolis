@@ -1,0 +1,86 @@
+# Captures on a real GPU, because the containers cannot judge one.
+#
+# Every other lane here runs on the VPS, where "the GPU" is Mesa lavapipe. That
+# is honest about geometry, placement, culling and visibility and says nothing
+# about colour, exposure, bloom or lighting
+# (`docs/notes/headless-shots-software-renderer.md`) — which is most of what a
+# water surface, a sky or a tonemapping curve *is*. So every judgement about how
+# the scene looks has had to end with "check it on a workstation", and mostly did
+# not get checked.
+#
+# The `deck-gpu` runner is a Steam Deck (AMD Van Gogh, RADV). It is the machine
+# `docs/notes/render-performance-survey.md` settled the cloud-shell question on,
+# and this lane is the same machine answering the other half: what the frame
+# actually looks like.
+#
+# Manual only. It is not a gate and should not become one — a screenshot
+# diff has no threshold anybody can defend, and this exists to be *looked at*.
+name: gpu shots
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: "Preset manifest to run (repo-relative)"
+        required: false
+        default: "docs/water-shots.toml"
+      only:
+        description: "Comma-separated preset names, or empty for all"
+        required: false
+        default: ""
+      size:
+        description: "Capture size, WxH"
+        required: false
+        default: "1600x900"
+
+jobs:
+  shots:
+    name: capture on the deck
+    runs-on: deck-gpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The font, app icon, star catalog and map fixtures are
+          # `include_bytes!`-ed, so without the smudge filter this builds
+          # 130-byte LFS pointers into the binary. Same reason every other lane
+          # sets it.
+          lfs: true
+
+      - name: Which adapter answered
+        run: |
+          vulkaninfo --summary 2>/dev/null | head -30 || true
+          echo "--- and it must not be a software one ---"
+          if vulkaninfo --summary 2>/dev/null | grep -qi "llvmpipe\|lavapipe"; then
+            echo "::error::deck-gpu resolved to a software rasteriser; this lane has no reason to exist then."
+            exit 1
+          fi
+
+      - name: Capture
+        env:
+          WGPU_BACKEND: vulkan
+        run: |
+          set -o pipefail
+          ONLY=""
+          if [ -n "${{ inputs.only }}" ]; then ONLY="--only ${{ inputs.only }}"; fi
+          mkdir -p /tmp/gpu-shots
+          cargo run -p cartopolis -- \
+            --shots "${{ inputs.manifest }}" $ONLY \
+            --size "${{ inputs.size }}" \
+            --csv /tmp/gpu-shots/metrics.csv \
+            --dump-state /tmp/gpu-shots/state.json 2>&1 | tail -60
+
+      - name: Collect
+        if: always()
+        run: |
+          # A manifest's `out_dir` is resolved against the manifest's own
+          # directory: `docs/water-shots.toml` writes `docs/gpu`, `docs/shots.toml`
+          # writes `docs/img`. Take both rather than guess which ran.
+          cp docs/gpu/*.png /tmp/gpu-shots/ 2>/dev/null || true
+          cp docs/img/*.png /tmp/gpu-shots/ 2>/dev/null || true
+          ls -la /tmp/gpu-shots/
+
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: gpu-shots
+          path: /tmp/gpu-shots
