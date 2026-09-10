@@ -1725,22 +1725,11 @@ mod tests {
             }
         };
         // Water is exempt: it is the canal colour, which the map already carries.
-        //
-        // The ceiling is a number, not `saturation(palette::TRUNK)`, and that is
-        // the point of the 2026-09-10 edit: it was keyed to the trunk as a stand-in
-        // for "as muted as the map's quietest natural thing", and then the trunk
-        // moved for a reason that has nothing to do with street furniture (the
-        // greens were saturated and a pale trunk stopped sitting under its own
-        // canopy). A ceiling that follows a constant it does not depend on is a
-        // test that silently relaxes. Benches and bins still stand on pale paving
-        // beside pale buildings, so the original bound is the one that is still
-        // true — it just has to say so itself.
-        const LOUDEST: f32 = 0.18;
         for tone in [Tone::Wood, Tone::Metal, Tone::Roof, Tone::Stone] {
             let s = saturation(tone.rgb());
             assert!(
-                s <= LOUDEST,
-                "{tone:?} at saturation {s} is louder than the pale map around it"
+                s <= saturation(palette::TRUNK) + 0.02,
+                "{tone:?} at saturation {s} is louder than a tree trunk"
             );
         }
     }

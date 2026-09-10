@@ -443,70 +443,34 @@ pub mod palette {
     /// edge is the price. `tile_loader`'s
     /// `the_basemaps_water_paint_reads_as_fully_water` holds the line.
     pub const WATER: u32 = 0x2C_48_62;
-    /// The green family is one hue at one saturation, separated by value alone.
-    ///
-    /// It used to be pale cartographic sage — `GRASS` was `#D2DEC6`, saturation
-    /// 0.11 — on the argument that the map is pale paper and a saturated green on
-    /// it reads as confetti scattered over a pastel drawing. That argument was
-    /// sound for the map this began as and it is no longer the brief: the ask
-    /// (2026-09-10) is a green world that reads as a game, so the greens are now
-    /// hue ~97–108° at saturation ~0.54 and the *value* ladder carries what the
-    /// old family carried in tone alone — grass 0.72, canopy 0.62, canopied
-    /// forest 0.60, forest 0.55, deep canopy 0.50.
-    ///
-    /// Keeping one hue and one saturation across the five is what stops that
-    /// being a repaint of five unrelated constants: every relation the old family
-    /// held still holds, including the exact one below. What it *does* end is the
-    /// near-tie between the greens and the built-up tones — see
-    /// [`RESIDENTIAL_FAR`].
-    pub const FOREST: u32 = 0x4E_8C_3F;
-    pub const GRASS: u32 = 0x7C_B8_56;
-    /// Canopy tone: one step down the [`FOREST`] hue ramp.
-    pub const CANOPY: u32 = 0x5E_9E_4A;
+    pub const FOREST: u32 = 0xC3_D3_BB;
+    pub const GRASS: u32 = 0xD2_DE_C6;
+    /// Canopy tone: one step down the [`FOREST`] hue ramp. The map is pale
+    /// cartographic paper, so a saturated green here reads as confetti scattered
+    /// on a pastel drawing rather than as trees — see `systems::vegetation`.
+    pub const CANOPY: u32 = 0xA9_BF_9E;
     /// Second canopy tone, alternated per instance. Two tones buy depth without
     /// costing a light.
-    pub const CANOPY_DEEP: u32 = 0x4A_7F_3A;
-    /// Trunk bark: a warm, dark, low-saturation brown — hue ~30°, saturation
-    /// 0.30, value 0.48.
-    ///
-    /// It was `#B0A594`, a warm *grey* in the [`BUILDING_EDGE`] family, on the
-    /// argument that at walking distance a saturated brown is the loudest colour
-    /// on the map. True while everything around it was pale; the greens are
-    /// saturated now and the value ladder inverted — a trunk at value 0.69 became
-    /// the brightest thing under a 0.62 canopy, and the park rendered as green
-    /// trees on pale stone posts.
-    ///
-    /// So it is darker rather than browner: the saturation is still low (0.30
-    /// against the canopy's 0.53), which is what keeps the old argument's point —
-    /// the trunk is the one thing in the group that is not a leaf and must not
-    /// compete with them. What changed is only that it now sits *under* the
-    /// canopy in value instead of above it.
-    pub const TRUNK: u32 = 0x7A_68_55;
+    pub const CANOPY_DEEP: u32 = 0x93_AC_8A;
+    /// Trunks are a warm grey in the [`BUILDING_EDGE`] family, deliberately *not*
+    /// brown: at walking distance a saturated brown is the loudest colour on the
+    /// whole map.
+    pub const TRUNK: u32 = 0xB0_A5_94;
     /// What a forest polygon looks like from far enough that the individual trees
     /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover. The
     /// fill ramps to this as the trees fade out, so the aggregate brightness does
     /// not step when the geometry goes away.
-    ///
-    /// It is `mix(FOREST, CANOPY, 0.65)` computed exactly, not matched by eye —
-    /// which is the property that made the family safe to repaint: move either
-    /// end and this is derivable rather than guessable.
-    pub const FOREST_CANOPIED: u32 = 0x58_98_46;
+    pub const FOREST_CANOPIED: u32 = 0xB2_C6_A8;
     pub const SAND: u32 = 0xE6_DC_C2;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
     /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
-    /// [`INDUSTRIAL`] *used to* sit within a few counts of [`GRASS`] — streets and
-    /// buildings carry the figure there — but from ~z12 out those are sub-pixel,
-    /// the land layer is all that is left, and a whole province rendered as one
-    /// near-uniform sheet with no visible cities. These are the same land uses a
-    /// hue step warmer and darker, used by the far style band
-    /// (`FAR_STYLE_TILE_M`) so a town reads as a town from the air.
-    ///
-    /// The near-tie is over: the green family is saturated now and a built-up
-    /// polygon no longer risks being mistaken for a field at any range. That
-    /// makes this band a *smaller* correction than it was rather than a dead one
-    /// — it still warms and darkens the built land, which is what separates a
-    /// town from a quarry and a beach at province scale.
+    /// [`INDUSTRIAL`] sit within a few counts of [`GRASS`] on purpose — streets
+    /// and buildings carry the figure there — but from ~z12 out those are
+    /// sub-pixel, the land layer is all that is left, and a whole province
+    /// rendered as one near-uniform green sheet with no visible cities. These are
+    /// the same land uses a hue step warmer and darker, used by the far style
+    /// band (`FAR_STYLE_TILE_M`) so a town reads as a town from the air.
     pub const RESIDENTIAL_FAR: u32 = 0xDE_D4_C2;
     pub const INDUSTRIAL_FAR: u32 = 0xD6_D1_CA;
     pub const SITE: u32 = 0xE3_E0_D5;
@@ -527,11 +491,9 @@ pub mod palette {
     /// this, exactly as the canopy's second tone is, so one material paints a whole
     /// street's benches, bins and shelters.
     pub const FURNITURE: u32 = 0xB8_B0_A2;
-    /// Timber: bench slats, table tops, swing seats. It used to be described as
-    /// being in the [`TRUNK`] family; it is not any more, and deliberately so —
-    /// the trunk darkened to sit under a saturated canopy, and a bench stands on
-    /// pale paving beside pale buildings where the original argument still holds:
-    /// a saturated brown at walking distance is the loudest colour on the map.
+    /// Timber: bench slats, table tops, swing seats. In the [`TRUNK`] family and
+    /// muted for the same reason — a saturated brown at walking distance is the
+    /// loudest colour on the map.
     pub const FURNITURE_WOOD: u32 = 0xB4_A9_98;
     /// Painted steel: posts, frames, bins.
     pub const FURNITURE_METAL: u32 = 0x9A_98_93;
@@ -588,15 +550,8 @@ const PAINT_ORDER: &[(&str, Draw)] = &[
                 ("sand", palette::SAND),
                 ("beach", palette::SAND),
                 ("residential", palette::RESIDENTIAL),
-                // These three are the deliberate divergence from
-                // `land_kind_color`: all three group as `Built` and would take
-                // housing paint, and a retail park beside a factory beside a
-                // housing estate reads better when the two working land uses
-                // share a tone. Everything not named here falls through to the
-                // land table.
                 ("industrial", palette::INDUSTRIAL),
                 ("commercial", palette::INDUSTRIAL),
-                ("retail", palette::INDUSTRIAL),
             ],
         },
     ),
@@ -911,13 +866,7 @@ fn render_mvt_culled(
                 Draw::Fill(rgb) => Some((*rgb, None)),
                 Draw::FillByKind { default, kinds } => {
                     let mut rgb = kind
-                        .and_then(|k| {
-                            kinds
-                                .iter()
-                                .find(|(n, _)| *n == k)
-                                .map(|(_, c)| *c)
-                                .or_else(|| land_kind_color(k))
-                        })
+                        .and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
                         .unwrap_or(*default);
                     if far_style {
                         rgb = match kind {
@@ -1477,34 +1426,6 @@ impl SurfaceGroup {
 
 /// Which `land` kinds map to which surface. Anything unlisted is skipped rather
 /// than guessed — an unstyled polygon is better than a wrong one.
-/// The raster basemap's colour for a `land` kind, taken from the *same* table the
-/// vector surfaces are grouped by.
-///
-/// The two pipelines paint the same polygons — the streamed vector ring up close,
-/// the rasterised tile everywhere else — so a kind the two disagree about is a
-/// visible square around the camera. [`PAINT_ORDER`]'s own list is kept for the
-/// cases where they are meant to differ (a `commercial` block reads as industrial
-/// paint, not as housing), and everything else now falls through here rather than
-/// through a default, so the lists cannot drift apart again.
-///
-/// It mattered little while the greens were pale — `retail`, `quarry`,
-/// `bare_rock` and `scree` were being painted the default sage outside the ring
-/// and grey or sand inside it, a step small enough that nobody had reported it.
-/// At [`palette::GRASS`]'s current saturation the same four are a vivid green
-/// square meeting grey, so the drift had to go before the repaint could land.
-fn land_kind_color(kind: &str) -> Option<u32> {
-    Some(match land_group(kind)? {
-        SurfaceGroup::Forest => palette::FOREST,
-        SurfaceGroup::Grass => palette::GRASS,
-        SurfaceGroup::Sand => palette::SAND,
-        SurfaceGroup::Built => palette::RESIDENTIAL,
-        // `land_group` answers with these four and nothing else; anything added
-        // to it without a colour here falls back to the caller's default rather
-        // than silently taking a road or canopy tone.
-        _ => return None,
-    })
-}
-
 pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
     Some(match kind {
         "forest" | "wood" => SurfaceGroup::Forest,
@@ -5640,14 +5561,8 @@ mod tests {
                     let style: Option<(u32, Option<f32>)> = match draw {
                         Draw::Fill(rgb) => Some((*rgb, None)),
                         Draw::FillByKind { default, kinds } => Some((
-                            kind.and_then(|k| {
-                                kinds
-                                    .iter()
-                                    .find(|(n, _)| *n == k)
-                                    .map(|(_, c)| *c)
-                                    .or_else(|| land_kind_color(k))
-                            })
-                            .unwrap_or(*default),
+                            kind.and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
+                                .unwrap_or(*default),
                             None,
                         )),
                         Draw::Line { color, width } => Some((*color, Some(*width))),

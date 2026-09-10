@@ -16,19 +16,11 @@
 //!
 //! Three things shape the design:
 //!
-//! * **Canopies are one step down the same hue ramp as the ground they stand on,
-//!   and the trunk sits below both in value.** The reason used to be that the
-//!   whole map was pale cartographic paper, on which a saturated dark-green blob
-//!   read as confetti scattered over a pastel drawing. The green family is
-//!   saturated now (2026-09-10, `palette::FOREST`), so that half of the argument
-//!   is gone — but the ramp is not, because it never depended on the greens being
-//!   pale: a canopy has to be readable *against its own forest floor*, which is
-//!   what one value step down the same hue buys. The trunk went with it, and had
-//!   to: at the old `#B0A594` it was value 0.69 under a 0.62 canopy, i.e. the
-//!   brightest thing in the tree, and a park rendered as green foliage on pale
-//!   stone posts. It is darker now and still barely saturated — the one thing in
-//!   the group that is not a leaf must not compete with them for colour, only
-//!   support them in value.
+//! * **The map is pale cartographic paper**, not a satellite photo: `FOREST` is a
+//!   light desaturated sage at ~80% luminance on near-white. Saturated dark-green
+//!   blobs read as confetti scattered on a pastel drawing. Canopies are therefore
+//!   one step down the *same* hue ramp, and trunks are a warm grey in the
+//!   building-edge family — a brown trunk is the loudest colour on the whole map.
 //! * **The camera lives above the map** (orbit cam, `--look=-90` shots, the space
 //!   tier). Crossed quads collapse to lines seen from directly overhead and
 //!   alpha-tested billboards need a texture pipeline plus a sort order, so canopies

@@ -1007,10 +1007,11 @@ fn blade_tint() -> Vec4 {
     // evidence on the container's software rasteriser, so the final value belongs
     // on a workstation (`docs/notes/headless-shots-software-renderer.md`).
     //
-    // These three multipliers are the whole reason the 2026-09-10 repaint of
-    // `palette::GRASS` needed no second edit here: the blade is defined as a
-    // ratio to the fill, so a new fill carries the lawn with it. The shader's own
-    // per-clump hue spread is likewise centred on 1.0, for the same reason.
+    // These three multipliers are the whole reason the green family can be
+    // repainted without a second edit here: the blade is defined as a *ratio* to
+    // the fill, so a new fill carries the lawn with it. That held in both
+    // directions on 2026-09-10 — the palette went saturated and came back, and
+    // this line did not move either time.
     Vec4::new(r * 0.94, g * 0.99, b * 0.86, 0.45)
 }
 

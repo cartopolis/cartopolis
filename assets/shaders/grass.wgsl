@@ -140,25 +140,6 @@ fn value_noise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-/// The two ends of the per-clump hue spread, as multipliers on the tip colour.
-///
-/// Their midpoint is **exactly 1.0 on every channel**, and that is the contract:
-/// averaged over a lawn this leaves the material's `tint.rgb` untouched, so the
-/// blades still hand over to the flat `palette::GRASS` fill at the edge of the
-/// pool and above the altitude fade without a coloured disc appearing around the
-/// camera. Change one end and change the other.
-const GRASS_WARM: vec3<f32> = vec3<f32>(1.20, 1.02, 0.80);
-const GRASS_COOL: vec3<f32> = vec3<f32>(0.80, 0.98, 1.20);
-
-/// What the top of a blade is multiplied by, relative to its body.
-///
-/// Brighter *and* warmer: the tip is the part of a blade that its neighbours do
-/// not shade, so it is both better lit and closer to the sun's own colour. It is
-/// the other half of the root darkening — one gives the mat a floor, this gives
-/// it a ceiling — and between them a dense lawn has a gradient to read instead of
-/// being one flat sheet.
-const TIP_SUN: vec3<f32> = vec3<f32>(1.18, 1.12, 0.86);
-
 // Which of the five vertices this is, as (height up the blade, offset across it).
 // The strip narrows on the way up — that taper is what stops a blade reading as
 // a shard when it leans, and it is why the tip is one vertex and not two.
@@ -372,23 +353,8 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // back to a flat green a few metres out; a patch of slightly different green
     // is still legible there, and is most of what a real lawn's surface is.
     let tone = (0.86 + 0.28 * ch.w) * (0.94 + 0.12 * h2.z) * mix(0.9, 1.06, density);
-    // Per-clump *hue*, not only per-clump brightness. Until this the whole lawn
-    // was one green with a scalar on it, and one hue reads as a painted surface
-    // however much its value varies — what makes real turf worth looking at from
-    // standing height is that neighbouring stands are different greens, some
-    // yellowed and some blue-deep.
-    //
-    // Driven off `tuft` rather than off `ch.w`, which already carries the tone:
-    // hue and brightness varying together is one variation wearing two hats, and
-    // half the variety for the same instructions. `tuft` is the ~0.6 m noise the
-    // clumping itself rides on, so a hue change lands on a stand of grass rather
-    // than on a lattice cell.
-    let hue = mix(GRASS_COOL, GRASS_WARM, tuft);
     let root = 1.0 - tint.a;
-    // `t²` so it is the top third that lifts rather than the whole blade — a
-    // linear ramp here just brightens everything and loses the gradient.
-    let sun_tip = mix(vec3<f32>(1.0), TIP_SUN, t * t);
-    out.color = vec4<f32>(tint.rgb * hue * sun_tip * tone * mix(root, 1.0, t), 1.0);
+    out.color = vec4<f32>(tint.rgb * tone * mix(root, 1.0, t), 1.0);
 
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Not optional: the standard fragment reads its material out of a bindless
