@@ -98,6 +98,16 @@ pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0x84, 0x3C);
 /// still 9.47:1 against [`SURFACE`] outside it, so the ring separates from both
 /// sides. It is the same hue family, lifted and desaturated just far enough.
 pub const ACCENT_RING: Color32 = Color32::from_rgb(0xFF, 0xC0, 0x8F);
+/// The accent, pushed *down* — the fill of an accent-filled button while the
+/// pointer is held on it.
+///
+/// A press has to move the surface in the opposite direction from a hover, or
+/// the two states are one state: [`primary_button`] lifts to [`ACCENT_BRIGHT`]
+/// under the pointer and sinks to this while held, which is what makes a click
+/// on the app's one call-to-action *feel* like a click. Still 4.62:1 against the
+/// [`INK`] its label is written in (unit-tested below), which is the constraint
+/// that stops this being an arbitrarily darker orange.
+pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xE0, 0x53, 0x0F);
 /// The accent as *text*, lightened to hold its margin on [`SURFACE`] (7.8:1).
 /// Links, speaker names, emphasised values.
 ///
@@ -1237,17 +1247,60 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 /// [`primary_button`] with the minimum width stated — for a CTA that has to fill
 /// the card it sits in.
+///
+/// **The label is centred by two growable atoms, not by the surrounding layout.**
+/// egui 0.35 takes a button's atom alignment from `ui.layout()` — and a top-down
+/// `Ui`, which is what every card, panel and dialog in this app hands down, is
+/// `Align::Min`. So a button whose `min_size` is wider than its text put that
+/// text against the left edge: the sign-in card's full-width CTA read as an
+/// orange bar with a word stuck in the corner. An empty [`egui::Atom::grow`]
+/// either side is the fix that does not touch where the *button* itself sits,
+/// which the alternative — wrapping it in a `Align::Center` layout — would,
+/// centring the narrow [`primary_button`] variant in its row as a side effect.
+///
+/// **And it answers the pointer.** The fill was a flat [`ACCENT`] in every
+/// state, so the one control on the screen whose whole job is to be pressed gave
+/// nothing back when you pressed it — no hover, no press, no focus ring, on a
+/// button that then waits on a network round trip. It lifts to
+/// [`ACCENT_BRIGHT`] under the pointer, sinks to [`ACCENT_PRESSED`] while held,
+/// and wears an [`ACCENT_RING`] outline when the keyboard is on it. The state
+/// comes from the *previous* pass's response, read under the id this button is
+/// about to take — the same thing egui's own `Button` does internally, and the
+/// reason `next_auto_id` is safe here is that it reports the next id without
+/// consuming it.
 #[allow(dead_code)]
 pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> egui::Response {
     let height = PRIMARY_BUTTON_HEIGHT.max(row_height());
+    let was = ui.ctx().read_response(ui.next_auto_id());
+    let held = was
+        .as_ref()
+        .is_some_and(egui::Response::is_pointer_button_down_on);
+    let hovered = was.as_ref().is_some_and(egui::Response::hovered);
+    let focused = was.as_ref().is_some_and(egui::Response::has_focus);
+    let fill = if !ui.is_enabled() {
+        ACCENT_MUTED
+    } else if held {
+        ACCENT_PRESSED
+    } else if hovered {
+        ACCENT_BRIGHT
+    } else {
+        ACCENT
+    };
     ui.add(
-        egui::Button::new(
+        egui::Button::new((
+            egui::Atom::grow(),
             egui::RichText::new(label)
                 .size(SIZE_VALUE)
                 .strong()
                 .color(INK),
-        )
-        .fill(ACCENT)
+            egui::Atom::grow(),
+        ))
+        .fill(fill)
+        .stroke(if focused {
+            Stroke::new(FOCUS_RING, ACCENT_RING)
+        } else {
+            Stroke::NONE
+        })
         .corner_radius(CornerRadius::same(RADIUS))
         .min_size(egui::vec2(min_width, height)),
     )
@@ -2266,6 +2319,11 @@ mod tests {
             ("selected row", CREAM, ACCENT_MUTED, 4.5),
             ("label on pressed button", CREAM, ACCENT_MUTED, 4.5),
             ("profile initial on the accent", INK, ACCENT, 4.5),
+            // The three fills [`primary_button_sized`] moves between. The label
+            // is [`INK`] in all of them, so the *press* state is the one that
+            // constrains how far down [`ACCENT_PRESSED`] may go.
+            ("primary label, hovered", INK, ACCENT_BRIGHT, 4.5),
+            ("primary label, pressed", INK, ACCENT_PRESSED, 4.5),
             ("warning on panel", WARN, SURFACE, 4.5),
             ("error on panel", ERROR, SURFACE, 4.5),
             // Not text: a fill, a rule or a focus ring, which WCAG puts at 3:1.
