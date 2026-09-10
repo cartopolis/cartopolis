@@ -6,7 +6,7 @@ triggers:
   - reaching for an off-the-shelf Bevy grass crate
   - the lawn is bare, or a seam appears along a patch boundary
   - bumping Bevy, or anything that moves `MeshTag` / `MaterialExtension`
-updated: 2026-08-21
+updated: 2026-09-10
 ---
 
 # Grass is generated on the GPU, and the reason is churn
@@ -51,40 +51,63 @@ Three fixed things and one small moving one:
 * **A fixed pool of patch entities** that slides along a world-aligned lattice
   under the camera. Crossing a lattice line moves a `Transform` and rewrites a
   `MeshTag`. Nothing spawns, nothing despawns, no mesh is rebuilt.
-* **A moving coverage mask** — 384² `Rg8Unorm`, 96 m of ground at 25 cm a texel,
-  ~288 KB. Red is "grass may grow here", green is the ground height. Rasterised
-  on a worker when the camera walks out of it, which is every twenty-odd metres.
+* **A moving coverage mask** — `Rg8Unorm`, 800² over 300 m of ground on the full
+  rung and 384² over 96 m on the reduced one. Red is "grass may grow here", green
+  is the ground height. Rasterised on a worker when the camera walks out of it,
+  which is every twenty-odd metres.
 
 `assets/shaders/grass.wgsl` turns a slot into a blade: hash the slot's world
 position for jitter, yaw, height, lean and tone; sample the mask for existence
 and ground height; bend in the wind; shrink back into the ground with distance.
 
-## The far ring (LOD), and why its seam is statistical
+## The rings (LOD), and why every seam is statistical
 
 One dense pool ended at 26 m on a visible line — dense lawn on one side, flat
-`palette::GRASS` paint on the other. The fix (2026-08-21) is a second `Tier`:
-16 m patches on a 64² lattice (16 blades/m² against the near pool's ~200), each
-blade a shade taller and three times wider so ground coverage doesn't collapse
-with the count — Ghost of Tsushima's "drop three blades in four at the LOD
-switch, widen the survivors" made into a ring. It retires, staggered, across
-44–80 m, where a 17 cm blade is under two pixels: the handover to paint happens
-where a blade stops being legible, not where the eye can find a circle.
+`palette::GRASS` paint on the other. The answer is more `Tier`s, each sparser and
+wider-bladed than the one inside it. As of 2026-09-10 there are three on the full
+rung:
 
-The two rings never meet on a line. A far blade *arrives* (stands up out of the
-ground) across exactly the band the near blades retire in, and both draw their
-per-blade cut from the same hash lane — so the expected blade count ramps
-smoothly from the near density to the far one through the band, and there is no
-LOD switch anywhere, only two overlapping staggers. The `range2` uniform is the
-arrive band; the near tier's sits below zero, which reads as "always arrived".
-An unarrived blade costs its vertex invocations but rasterises nothing: height
-zero collapses all five vertices onto one line, and zero-area triangles emit no
-fragments.
+| ring | patch | lattice | density | retires over |
+|---|---|---|---|---|
+| near | 8 m | 152² | ~361 /m² | 20–26 m |
+| far | 16 m | 88² | ~30 /m² | 62–80 m |
+| horizon | 32 m | 96² | ~9 /m² | 101–130 m |
 
-The far ring is full-tier only, and the mask grew to feed it: 640² texels over
-208 m (0.325 m/texel, against 0.25 before) on the full rung, unchanged on the
-reduced one. One mask serves both rings — far blades need coverage, not more
-coverage *accuracy*, and a second coarser mask would double the rebuild
-machinery to save ~600 KB.
+Each blade is taller and wider than the last so ground coverage does not collapse
+with the count — Ghost of Tsushima's "drop three blades in four at the LOD switch,
+widen the survivors" made into a ring, twice. Width × height × density is the
+silhouette per m² of ground and it is what has to survive the grazing-angle
+projection: 0.63 for the far ring, 0.50 for the horizon one. An 11 cm blade would
+be a plank at walking distance and is a texel at 100 m.
+
+**Extending a ring is the expensive way to reach further, and adding one is the
+cheap way.** Carrying the far ring's 30 blades/m² out to 130 m instead of adding
+the horizon ring covers 2.6× the area at the same density — ~2.5M extra vertex
+invocations a frame, every one of them on a blade nobody can resolve. Density is
+allowed to fall with distance precisely because the handover is statistical.
+
+The rings never meet on a line. A blade *arrives* (stands up out of the ground)
+across exactly the band the ring inside it retires in, and both draw their
+per-blade cut from the same hash lane — so the expected blade count ramps smoothly
+from one density to the next through the band, and there is no LOD switch
+anywhere, only overlapping staggers. The `range2` uniform is the arrive band; the
+near tier's sits below zero, which reads as "always arrived". That rule is one
+rule applied N−1 times, and the test walks consecutive pairs rather than naming
+two tiers — which is the assertion that says nothing the day a third ring lands
+under it.
+
+An unarrived or culled blade still costs its vertex invocations. It used to be
+claimed here that it rasterises nothing; **that was wrong**, and the fourth
+load-bearing item below is the correction.
+
+The outer two rings are full-tier only, and the mask grew to feed them: 800²
+texels over 300 m (0.375 m/texel, against 0.325 for two rings and 0.25 for one) on
+the full rung, unchanged on the reduced one. One mask serves all three — outer
+blades need coverage, not more coverage *accuracy*, and a second coarser mask
+would double the rebuild machinery to save ~600 KB. The field is sized by the
+test, not by eye: it must hold the outermost radius plus the rebuild margin plus a
+patch, and a ring extended without it is silently given a circular haircut at the
+mask's edge.
 
 ## Four things that are load-bearing and do not look it
 
@@ -150,6 +173,14 @@ and visibility half of a `--shot` is trustworthy on the software rasteriser and
 `grass_patches` / `grass_slots` are in `--dump-state` for exactly that; **colour,
 exposure and lighting are not** (`docs/notes/headless-shots-software-renderer.md`),
 so how a lawn actually *looks* lit is unverified and belongs on a workstation.
+
+One kind of colour claim the software rasteriser *can* carry, and it is worth
+knowing which: the **difference between two captures of one scene under one
+light**. On 2026-09-10 the greens were repainted and the same park measured hue
+66°/saturation 0.15 → hue 91°/0.51 in sun, and hue 193° → 126° in shade — the
+shaded lawn had been rendering blue-grey, which is most of why the old park read
+as washed out. That is a comparison, not a tone, and it is the only shape of
+colour finding to bring back from this container.
 
 Not run on a phone. The layer is behind `quality::Budget::detail_layers`, so a
 handset starts with it off, and its cost there — tens of thousands of vertex

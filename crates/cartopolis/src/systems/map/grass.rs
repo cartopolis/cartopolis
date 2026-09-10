@@ -5,9 +5,9 @@
 //! `assets/shaders/grass.wgsl`; both have the reasoning for *why* a blade is
 //! generated in the vertex shader rather than scattered and uploaded. What this
 //! module owns is the consequence of that decision, which is that grass does not
-//! stream. Per [`Tier`] — a dense near pool, and on the full quality rung a
-//! sparse far ring of wider blades that pushes the lawn's edge out to where a
-//! blade is sub-pixel — there is:
+//! stream. Per [`Tier`] — a dense near pool, and on the full quality rung two
+//! progressively sparser rings of wider blades that push the lawn's edge out to
+//! where a blade is sub-pixel — there is:
 //!
 //! * **one mesh** — [`turf::blade_lattice`], uploaded at startup and never again;
 //! * **one material** — rewritten when the wind changes (a few times an hour) and
@@ -74,8 +74,8 @@ use crate::systems::weather::WeatherState;
 const PATCH_M: f32 = 8.0;
 
 /// Blade slots along one edge of a patch, per quality tier. `slots()²` blades per
-/// patch, so this and [`PATCH_M`] together are the density: 128² over 64 m² is
-/// ~256 blades/m².
+/// patch, so this and [`PATCH_M`] together are the density: 152² over 64 m² is
+/// ~361 blades/m².
 ///
 /// **Density is the one number that decides whether this reads as a lawn**, and
 /// it took four captures over the Noorderplantsoen on 2026-08-20 to find: 9
@@ -84,18 +84,23 @@ const PATCH_M: f32 = 8.0;
 /// blades overlap, and no amount of getting the blade *shape* right substitutes
 /// for that. Real turf is thousands per m²; this is as close as a real-time
 /// budget gets (raised from 196/m² on 2026-08-21 because the ground still read
-/// through the lawn — density, the survival floor and the blade width moved
-/// together, since coverage is their product).
+/// through the lawn, and again from 256/m² on 2026-09-10 on an explicit ask for
+/// a lusher world — density, the survival floor and the blade width moved
+/// together the first time, since coverage is their product).
 ///
 /// It costs nothing to *store* — the lattice is one shared mesh — so what
-/// density actually buys is paid in **vertex invocations**: ~82k per drawn
-/// patch, and a pool with ~17 patches in frame is ~1.4M a frame. That is cheap
-/// on a desktop GPU and is not free on a tiler, which is why the handset rung
-/// takes both a lower count here *and* half the radius in [`pool_offsets`] — a
-/// quarter of the area at a quarter of the density.
+/// density actually buys is paid in **vertex invocations**: ~116k per drawn near
+/// patch, and a near pool with ~17 patches in frame is ~2.0M a frame, against
+/// ~1.4M at the old 128. That is cheap on a desktop GPU and is not free on a
+/// tiler, which is why the handset rung takes both a lower count here *and* half
+/// the radius in [`pool_offsets`] — a quarter of the area at a quarter of the
+/// density. **Android auto-detects to `Budget::balanced`, which sets
+/// `detail_layers`** — so a phone runs this branch, not the 64 below, and this
+/// number lands on the device least able to afford it. Battery saver
+/// (`Budget::phone`) is the way out.
 fn slots() -> u32 {
     if crate::quality::budget().detail_layers {
-        128
+        152
     } else {
         64
     }
@@ -123,10 +128,13 @@ struct Tier {
     width_m: f32,
 }
 
-/// The rings the current quality tier runs. The far ring is full-tier only: it
-/// exists to push the lawn's edge out to where a blade is sub-pixel, and a
-/// handset that forces the layer on gets the honest half-radius near pool it
-/// always did.
+/// The rings the current quality tier runs, innermost first — and the order is
+/// load-bearing, because the handover chain is expressed as "each ring arrives
+/// exactly where the one inside it retires" and the test walks consecutive pairs.
+///
+/// The outer two rings are full-tier only: they exist to push the lawn's edge out
+/// to where a blade is sub-pixel, and a handset that forces the layer on gets the
+/// honest half-radius near pool it always did.
 fn tiers() -> Vec<Tier> {
     let detail = crate::quality::budget().detail_layers;
     let near_radius = if detail {
@@ -155,6 +163,16 @@ fn tiers() -> Vec<Tier> {
             retire: Vec2::new(FAR_RADIUS_M * FADE_START_FRAC, FAR_RADIUS_M),
             height_m: FAR_BLADE_HEIGHT_M,
             width_m: FAR_BLADE_WIDTH_M,
+        });
+        out.push(Tier {
+            patch_m: HORIZON_PATCH_M,
+            slots: HORIZON_SLOTS,
+            // …and again: exactly the far tier's retire band, so the chain of
+            // handovers is one rule applied twice rather than two tunings.
+            arrive: Vec2::new(FAR_RADIUS_M * FADE_START_FRAC, FAR_RADIUS_M),
+            retire: Vec2::new(HORIZON_RADIUS_M * FADE_START_FRAC, HORIZON_RADIUS_M),
+            height_m: HORIZON_BLADE_HEIGHT_M,
+            width_m: HORIZON_BLADE_WIDTH_M,
         });
     }
     out
@@ -202,7 +220,7 @@ const CLUMP_FAN: f32 = 2.0;
 /// well short of the knee-high reeds the first 26 cm × 2.6 cm attempt produced,
 /// because that was a *stiff* 26 cm — height reads as wild only together with
 /// droop and unevenness, which is where the rest of this tune lives.
-const BLADE_HEIGHT_M: f32 = 0.30;
+const BLADE_HEIGHT_M: f32 = 0.38;
 /// Still narrower than a real blade looks from standing height, but wide enough
 /// that at [`slots`]'s density the blades overlap and the ground stops reading
 /// through the lawn — that was the explicit ask on 2026-08-21. The root
@@ -256,10 +274,11 @@ const GRASS_RADIUS_M: f32 = 26.0;
 /// density now holds to ~20 m and the handover band is the last quarter.
 const FADE_START_FRAC: f32 = 0.78;
 
-/// Radius of the far ring — where the last blade anywhere has retired and the
-/// flat fill finally takes over. At 80 m a 17 cm blade is under two pixels at
-/// 1080p, so the handover to paint happens where a blade stops being legible,
-/// not on a circle the eye can find.
+/// Radius of the far ring — where its blades have retired and
+/// [`HORIZON_RADIUS_M`]'s ring has fully arrived. It was the outermost ring until
+/// 2026-09-10 and the flat fill took over here; the third ring now carries the
+/// lawn on, and this is a handover between two sets of blades rather than
+/// between blades and paint.
 const FAR_RADIUS_M: f32 = 80.0;
 
 /// Patch edge and lattice side of the far ring: 88² slots over a 16 m patch is
@@ -279,8 +298,33 @@ const FAR_SLOTS: u32 = 88;
 /// reading through at mid-field, which is exactly what it looked like. Safe
 /// *because* the ring only exists past the distance where a single blade's
 /// silhouette can be read.
-const FAR_BLADE_HEIGHT_M: f32 = 0.34;
+const FAR_BLADE_HEIGHT_M: f32 = 0.42;
 const FAR_BLADE_WIDTH_M: f32 = 0.050;
+
+/// The third ring, and the same argument one rung coarser: it carries the lawn
+/// from where the far ring retires out to [`HORIZON_RADIUS_M`], where a blade of
+/// any width is well under a pixel and the flat fill can take over without the
+/// eye finding the join.
+///
+/// Extending the *far* ring to 130 m instead was the obvious move and is the
+/// expensive one: its 30 blades/m² over an annulus 2.6× the area is ~2.5M extra
+/// vertex invocations a frame, all of them spent on blades nobody can resolve.
+/// A ring is the cheap shape because density may fall with distance —
+/// 96² slots on a 32 m patch is ~9 blades/m², a third of the far ring's and a
+/// twenty-eighth of the near one's — and the handover is statistical, so a
+/// sparser ring costs no seam.
+///
+/// The blade is wide and tall for the reason [`FAR_BLADE_WIDTH_M`] gives, taken
+/// one step further: width × height × density is the ground coverage that has to
+/// survive the grazing-angle projection, and at 9 blades/m² closing the carpet
+/// needs ~0.5 m² of silhouette per m² (9 × 0.11 × 0.50 ≈ 0.50, against the far
+/// ring's 0.63). Safe *because* it only exists past 80 m: a 11 cm blade would be
+/// a plank at walking distance and is a texel at this one.
+const HORIZON_RADIUS_M: f32 = 130.0;
+const HORIZON_PATCH_M: f32 = 32.0;
+const HORIZON_SLOTS: u32 = 96;
+const HORIZON_BLADE_HEIGHT_M: f32 = 0.50;
+const HORIZON_BLADE_WIDTH_M: f32 = 0.11;
 
 /// Altitude at which the whole layer starts fading, and where it is gone.
 ///
@@ -301,15 +345,23 @@ const GRASS_HIDE_ALT: f32 = 140.0;
 /// The reduced tier is 0.25 m per texel — finer than the disagreement between a
 /// landuse polygon and the road ribbon drawn over it, which is the accuracy that
 /// actually matters here; a coverage edge is only ever as true as the two
-/// generalisations that produced it. The full tier has to reach the far ring, so
-/// it trades to 0.325 m per texel over a 208 m field: still under the
+/// generalisations that produced it. The full tier has to reach the outermost
+/// ring, so it trades to 0.375 m per texel over a 300 m field: still under the
 /// generalisation error, and the linear filter plus the probabilistic survival
-/// test feather the edge either way. One mask serves both rings — the far
+/// test feather the edge either way. One mask serves all three rings — the outer
 /// blades need no more coverage accuracy, just coverage at all, and a second
 /// coarser mask would double the worker/rebuild machinery to save ~600 KB.
+///
+/// The field is sized by the test, not by eye: it must hold
+/// `max_radius() + FIELD_MARGIN_M` with a patch's worth to spare, so extending a
+/// ring without growing this silently clips the outermost blades to the mask's
+/// edge — a circular haircut that looks like a coverage bug. Growing it is what
+/// the reach costs off-screen: 800² texels against 640² is 1.6× the ~150k
+/// point-in-polygon tests a rebuild does on a worker, every twenty-odd metres of
+/// walking.
 fn field_dims() -> (f32, u32) {
     if crate::quality::budget().detail_layers {
-        (208.0, 640)
+        (300.0, 800)
     } else {
         (96.0, 384)
     }
@@ -949,11 +1001,16 @@ fn ensure_pools(
 fn blade_tint() -> Vec4 {
     let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(palette::GRASS);
     // Only a little off the paint. An earlier 0.72 on blue read as straw against
-    // the sage sheet it stands on — and the *ratio* between the two is a constant
-    // here, so that much is judgeable without trusting the render. How the pair
-    // actually lands once lit is not: colour and exposure are not evidence on the
-    // container's software rasteriser, so the final value belongs on a
-    // workstation (`docs/notes/headless-shots-software-renderer.md`).
+    // the pale sheet this used to stand on — and the *ratio* between the two is a
+    // constant here, so that much is judgeable without trusting the render. How
+    // the pair actually lands once lit is not: colour and exposure are not
+    // evidence on the container's software rasteriser, so the final value belongs
+    // on a workstation (`docs/notes/headless-shots-software-renderer.md`).
+    //
+    // These three multipliers are the whole reason the 2026-09-10 repaint of
+    // `palette::GRASS` needed no second edit here: the blade is defined as a
+    // ratio to the fill, so a new fill carries the lawn with it. The shader's own
+    // per-clump hue spread is likewise centred on 1.0, for the same reason.
     Vec4::new(r * 0.94, g * 0.99, b * 0.86, 0.45)
 }
 
@@ -1087,25 +1144,33 @@ mod tests {
     }
 
     #[test]
-    fn the_far_ring_hands_over_where_the_near_pool_retires() {
+    fn every_ring_hands_over_where_the_one_inside_it_retires() {
         let tiers = tiers();
-        if tiers.len() < 2 {
-            return; // reduced tier: no far ring to hand over to
+        // Walk the chain rather than naming tiers[0] and tiers[1]: this used to
+        // check the one handover there was, which is exactly the assertion that
+        // says nothing the day a third ring is added under it.
+        for pair in tiers.windows(2) {
+            let (inner, outer) = (&pair[0], &pair[1]);
+            // The outer ring's arrive band must be exactly the inner one's
+            // retire band: both draw a blade's cut from the same hash lane, so
+            // equal bands are what conserves the expected blade count through
+            // the handover — a gap is a bald ring around the camera, an overlap
+            // a dense one.
+            assert_eq!(inner.retire, outer.arrive);
+            // …and each ring must actually reach past the one inside it, or the
+            // LOD is a second pool under the first.
+            assert!(outer.retire.y > inner.retire.y);
+            // Its own retire must start beyond the handover, or blades begin
+            // dying before they have finished arriving.
+            assert!(outer.retire.x >= outer.arrive.y);
+            // Density must fall outwards. A ring that is denser than the one
+            // inside it is not a level of detail, and the handover would read as
+            // a bright band rather than as nothing at all.
+            let density = |t: &Tier| (t.slots * t.slots) as f32 / (t.patch_m * t.patch_m);
+            assert!(density(outer) < density(inner));
         }
-        let (near, far) = (&tiers[0], &tiers[1]);
-        // The far ring's arrive band must be exactly the near pool's retire
-        // band: both draw a blade's cut from the same hash lane, so equal bands
-        // are what conserves the expected blade count through the handover — a
-        // gap is a bald ring around the camera, an overlap a dense one.
-        assert_eq!(near.retire, far.arrive);
-        // …and the far ring must actually reach past the near pool, or the LOD
-        // is a second pool under the first.
-        assert!(far.retire.y > near.retire.y);
-        // The far ring's own retire must start beyond the handover, or blades
-        // begin dying before they have finished arriving.
-        assert!(far.retire.x >= far.arrive.y);
         // The mask has to cover the farthest blade with rebuild slack to spare —
-        // an undersized field silently clips the far ring to the mask edge.
+        // an undersized field silently clips the outermost ring to the mask edge.
         let (field_m, _) = field_dims();
         assert!(field_m * 0.5 >= max_radius() + FIELD_MARGIN_M + 8.0);
     }
