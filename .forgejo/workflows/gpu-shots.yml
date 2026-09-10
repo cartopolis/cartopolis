@@ -73,14 +73,23 @@ jobs:
         if: always()
         run: |
           # A manifest's `out_dir` is resolved against the manifest's own
-          # directory: `docs/water-shots.toml` writes `docs/gpu`, `docs/shots.toml`
-          # writes `docs/img`. Take both rather than guess which ran.
+          # directory, so `docs/water-shots.toml` writes into `docs/gpu`.
+          #
+          # Only that directory. An earlier version also swept `docs/img`, which
+          # is where `docs/shots.toml` writes — and is also where six README
+          # images are *checked in*, so a run whose capture step had already
+          # failed uploaded those six and looked like it had worked.
           cp docs/gpu/*.png /tmp/gpu-shots/ 2>/dev/null || true
-          cp docs/img/*.png /tmp/gpu-shots/ 2>/dev/null || true
           ls -la /tmp/gpu-shots/
+          if ! ls /tmp/gpu-shots/*.png >/dev/null 2>&1; then
+            echo "::error::no captures were written — read the Capture step, not this artifact."
+          fi
 
       - uses: actions/upload-artifact@v3
         if: always()
         with:
           name: gpu-shots
           path: /tmp/gpu-shots
+          # The metrics and the state dump are written even when the capture
+          # fails, and they are half the reason to look.
+          if-no-files-found: warn

@@ -8,9 +8,12 @@
 #
 #     cargo run -p cartopolis -- --shots docs/water-shots.toml
 #
-# Keep them cheap and comparable: fixed clock, no cloud (a cloud shadow drifting
-# across a canal between two runs looks exactly like a shading change and has
-# already fooled one A/B), and one view per thing worth seeing.
+# Keep them cheap and comparable: one view per thing worth seeing, a fixed clock,
+# and `clouds = 0` on every one of them — a cloud shadow drifting across a canal
+# between two runs looks exactly like a shading change, and has already fooled one
+# A/B here. Note `clouds`, `fog` and `time` are **per-shot** keys: the manifest's
+# own defaults block takes only `size`, `out_dir`, `settle`, `wait`, `mode`,
+# `tile_url` and `hide_ui`, and anything else there is a hard parse error.
 tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
 size = "1600x900"
 out_dir = "gpu"
@@ -18,7 +21,6 @@ hide_ui = true
 mode = "free"
 settle = 1.5
 wait = 45.0
-clouds = 0.0
 
 [[shot]]
 name = "canal"
@@ -27,6 +29,7 @@ at = [53.21263, 6.57016, 25]
 look = [-16.0, 90.0]
 time = 11.0
 fog = 0.08
+clouds = 0.0
 
 [[shot]]
 name = "sunpath"
@@ -35,6 +38,7 @@ at = [53.1880, 6.5560, 40]
 look = [-5.0, 228.0]
 time = 15.0
 fog = 0.06
+clouds = 0.0
 
 [[shot]]
 name = "dusk"
@@ -43,6 +47,7 @@ at = [53.1880, 6.5560, 40]
 look = [-4.0, 246.0]
 time = 18.6
 fog = 0.08
+clouds = 0.0
 
 [[shot]]
 name = "ringedge"
@@ -51,3 +56,4 @@ at = [53.0700, 5.3400, 12000]
 look = [-88.0, 0.0]
 time = 12.0
 fog = 0.05
+clouds = 0.0
