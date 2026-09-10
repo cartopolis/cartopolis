@@ -40,17 +40,17 @@
       if (!navigator.gpu) {
         document.write(
           // Brand palette, not the browser's default greys: this page is the
-          // only Cartopolis some visitors ever see. Graphite `#14161a` is
-          // `theme::SURFACE`, `#dce0e4` is `TEXT`, `#f4f6f8` is `CREAM`,
-          // `#0b0c0f` is `INK` and `#ffffff` is `ACCENT_TEXT` — the same five
+          // only Cartopolis some visitors ever see. Slate graphite `#13191b` is
+          // `theme::SURFACE`, `#dbe2e5` is `TEXT`, `#f3f7f9` is `CREAM`,
+          // `#0a0e10` is `INK` and `#ffffff` is `ACCENT_TEXT` — the same five
           // constants the loader below and the app itself paint from. The chrome
           // is monochrome; the one colour on the page is the brand orange, and it
           // is only ever on the logo.
           '<style>' +
-            'body{margin:0;background:#14161a}' +
-            '.u{color:#dce0e4;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
-            '.u h1{font-size:1.3rem;font-weight:600;color:#f4f6f8}' +
-            '.u code{background:#0b0c0f;padding:.1em .4em;border-radius:3px}' +
+            'body{margin:0;background:#13191b}' +
+            '.u{color:#dbe2e5;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
+            '.u h1{font-size:1.3rem;font-weight:600;color:#f3f7f9}' +
+            '.u code{background:#0a0e10;padding:.1em .4em;border-radius:3px}' +
             '.u a{color:#ffffff}' +
           '</style>' +
           '<div class="u">' +
@@ -333,7 +333,7 @@
         /* Brand graphite, not black: this is what shows for the frames before
            the loader paints, and a black flash reads as a broken page. Matches
            `systems::theme::SURFACE`. */
-        background: #14161a;
+        background: #13191b;
         /* Pull-to-refresh and rubber-banding are chrome-level gestures: they are
            decided before any pointer event is dispatched, so `preventDefault`
            in the canvas handler cannot reach them. A downward drag on the map
@@ -376,16 +376,16 @@
       /* Same brand tones as the <head> abort page above — an "it doesn't work
          here" screen is still the product's screen. */
       .unsupported {
-        color: #dce0e4;
-        background: #14161a;
+        color: #dbe2e5;
+        background: #13191b;
         font: 15px/1.6 system-ui, sans-serif;
         max-width: 34rem;
         margin: 12vh auto;
         padding: 0 1.5rem;
       }
-      .unsupported h1 { font-size: 1.3rem; font-weight: 600; color: #f4f6f8; }
+      .unsupported h1 { font-size: 1.3rem; font-weight: 600; color: #f3f7f9; }
       .unsupported code {
-        background: #0b0c0f;
+        background: #0a0e10;
         padding: 0.1em 0.4em;
         border-radius: 3px;
       }
@@ -426,8 +426,8 @@
         gap: 0.9rem;
         /* The loader, the Bevy splash and the app chrome all paint from
            `systems::theme`'s palette — keep these in step with it. */
-        background: #14161a;
-        color: #a7adb5;
+        background: #13191b;
+        color: #a5b2b7;
         font: 13px/1.5 system-ui, -apple-system, sans-serif;
         transition: opacity 0.4s ease;
         padding: 6vh 1.5rem;
@@ -477,7 +477,7 @@
            against. */
         font-size: 40px;
         line-height: 1.1;
-        color: #f4f6f8;
+        color: #f3f7f9;
       }
       /* Cream `carto`, accent `polis` — `theme::WORDMARK_HEAD` here, and the
          account GUI's `.app-header .wordmark b` over in `jeroen/cartopy`. Three
@@ -499,12 +499,12 @@
       }
       #motto {
         font-size: 16px;
-        color: #a7adb5;
+        color: #a5b2b7;
       }
       #track {
         width: min(22rem, 70vw);
         height: 3px;
-        background: #1e2126;
+        background: #1d2427;
         border-radius: 2px;
         overflow: hidden;
       }
@@ -550,12 +550,12 @@
       }
       #checks li { display: flex; gap: 0.6rem; align-items: baseline; }
       /* Fixed-width mark so the labels line up while rows are still settling. */
-      #checks .mark { flex: none; width: 1ch; text-align: center; color: #7c828a; }
+      #checks .mark { flex: none; width: 1ch; text-align: center; color: #7b878c; }
       #checks .label { flex: none; }
-      #checks .note { color: #7c828a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #checks .note { color: #7b878c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* No green in the brand palette (systems::theme has no success colour), so
          "passed" is just ordinary text — the eye is meant to catch the failures. */
-      #checks li[data-ok="yes"] .mark { color: #dce0e4; }
+      #checks li[data-ok="yes"] .mark { color: #dbe2e5; }
       #checks li[data-ok="warn"] .mark,
       #checks li[data-ok="warn"] .note { color: #d8c07a; }
       #checks li[data-ok="no"] .mark,
@@ -579,14 +579,14 @@
            loader fills the viewport, so the chain would just rubber-band. */
         overscroll-behavior: contain;
         scrollbar-width: thin;
-        scrollbar-color: #6b7078 transparent;
+        scrollbar-color: #69757a transparent;
         margin: 0;
         padding: 0.6rem 0.8rem;
         box-sizing: border-box;
         background: rgba(0, 0, 0, 0.3);
-        border: 1px solid #6b7078;
+        border: 1px solid #69757a;
         border-radius: 8px;
-        color: #7c828a;
+        color: #7b878c;
         font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
         white-space: pre-wrap;
         word-break: break-word;
