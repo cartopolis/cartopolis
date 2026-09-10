@@ -84,6 +84,7 @@ use bevy::prelude::*;
 
 use crate::platform::audio::{self, AudioInput};
 use crate::resources::{AppPrefs, QualityPreset, RightPanel, SunMode, Units};
+use crate::systems::cache_reset::CacheReset;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
@@ -194,6 +195,11 @@ pub fn render_settings_panel(
     // needs an adapter — a headless world without one has no answer, and saying
     // so beats implying the preference took effect.
     sky: Option<Res<crate::systems::sky_dome::SkyMode>>,
+    // The Storage section draws the state of the last reset and writes the next
+    // request into it. The work itself is `cache_reset::apply_cache_reset`'s —
+    // emptying a store is a directory walk on another thread, which is not
+    // something an egui pass can wait for.
+    mut cache: ResMut<CacheReset>,
 ) {
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
@@ -206,6 +212,7 @@ pub fn render_settings_panel(
     });
     let mut play_tone = false;
     let mut delete_account = false;
+    let mut reset_cache = false;
 
     // Edited as plain values and written back only on a real change. All three of
     // these resources are read by `is_changed()` gates — `DevPanelState`'s re-runs
@@ -242,7 +249,9 @@ pub fn render_settings_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.tab {
-                    SettingsTab::General => general_tab(ui, &mut edited),
+                    SettingsTab::General => {
+                        reset_cache = general_tab(ui, &mut edited, &cache);
+                    }
                     SettingsTab::World => {
                         world_tab(ui, &mut world, &mut weather_live, observed);
                     }
@@ -275,6 +284,10 @@ pub fn render_settings_panel(
     // …and it must drop the typed password, for the same shape of reason.
     if !right_panel.is(RightPanel::Settings) && !state.delete_password.is_empty() {
         state.delete_password.clear();
+    }
+
+    if reset_cache {
+        cache.requested = true;
     }
 
     if delete_account {
@@ -561,7 +574,10 @@ fn account_tab(
 }
 
 /// General: the settings a phone user looks for first.
-fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
+///
+/// Returns `true` when the Storage section's confirm was pressed, for
+/// `systems::cache_reset::apply_cache_reset` to act on.
+fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, cache: &CacheReset) -> bool {
     section(ui, "Units");
     ui.horizontal_wrapped(|ui| {
         for units in Units::ALL {
@@ -621,6 +637,94 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
             "Adds a permanent notification while it is on, and keeps the app \
              running when you leave it. Only applies while signed in.",
         );
+    }
+
+    ui.add_space(8.0);
+    ui.separator();
+    storage_section(ui, cache)
+}
+
+/// The map this device has downloaded, and the button that throws it away.
+///
+/// **In General rather than in Graphics**, though the symptom that sends people
+/// here is usually something they see: a cache is not a rendering setting, and the
+/// tab a person opens looking for "where is my downloaded data" is this one.
+///
+/// Behind [`theme::confirm_button`] like the account deletion, for a much smaller
+/// version of the same reason — nothing is destroyed that cannot be downloaded
+/// again, but on a metered connection re-downloading a city is a real cost, and
+/// this is a phone-sized button in a scrolling list.
+fn storage_section(ui: &mut egui::Ui, cache: &CacheReset) -> bool {
+    section(ui, "Storage");
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(
+                "The map, the aerial photography, the buildings and the registers are \
+                 kept on this device so revisiting a place is quick. Clearing them \
+                 fixes a map that has cached something wrong — tiles that flicker, \
+                 a layer that will not draw — at the cost of downloading it again.",
+            )
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+        )
+        .wrap(),
+    );
+
+    // Nothing you would be sorry to lose is in reach of this button, and saying so
+    // is most of what makes it safe to press.
+    theme::note(
+        ui,
+        "Your saved places, photos and settings are not touched.",
+    );
+
+    ui.add_space(4.0);
+    if cache.running() {
+        // Disabled rather than hidden: a button that vanishes under the finger
+        // reads as a mis-tap. The repaint request is what keeps this row from
+        // sitting on "Clearing…" after the worker has finished — the clear runs
+        // off the frame loop, so nothing else would redraw the panel.
+        ui.ctx().request_repaint();
+        ui.add_enabled_ui(false, |ui| theme::action_button(ui, "Clearing…"));
+        return false;
+    }
+
+    let pressed = theme::confirm_button(
+        ui,
+        egui::Id::new("reset_cache_confirm"),
+        "Clear downloaded map data",
+        "Clear it",
+    );
+
+    if let Some(freed) = cache.freed_bytes() {
+        // Zero is the browser's honest answer as well as "there was nothing there"
+        // (`storage::ClearProgress::freed_bytes`), so it is phrased not to claim a
+        // measurement it does not have.
+        theme::note(
+            ui,
+            &match freed {
+                0 => "Cleared.".to_string(),
+                bytes => format!("Cleared, freeing {}.", human_bytes(bytes)),
+            },
+        );
+    }
+    pressed
+}
+
+/// Bytes as a person reads them. One decimal place past a megabyte, none below —
+/// "412 KB" and "1.4 GB" both being the answer to "is that a lot?".
+fn human_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} bytes")
     }
 }
 

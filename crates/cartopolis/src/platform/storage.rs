@@ -138,6 +138,58 @@ pub fn remove_now(ns: Namespace, key: &str) {
     imp::remove_now(ns, key);
 }
 
+/// How a [`clear`] is getting on. Shared with whatever is doing the deleting.
+///
+/// It exists because neither platform can answer "cleared" in the call: natively
+/// the work is a directory walk on another thread, and on the web it is a chain of
+/// IndexedDB requests. A caller that wanted a return value would have to block an
+/// egui frame on a filesystem.
+#[derive(Default)]
+pub struct ClearProgress {
+    done: std::sync::atomic::AtomicBool,
+    freed_bytes: std::sync::atomic::AtomicU64,
+}
+
+impl ClearProgress {
+    /// Has the store finished emptying?
+    pub fn finished(&self) -> bool {
+        self.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Bytes reclaimed, once [`Self::finished`]. **Zero is not "nothing"** on the
+    /// web: IndexedDB will not say how big a record was, and walking every value
+    /// to add them up would read the whole cache into memory to throw it away. So
+    /// the browser arm reports 0 and the UI has to phrase itself accordingly.
+    pub fn freed_bytes(&self) -> u64 {
+        self.freed_bytes.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Called by the worker when the store is empty. `Release`/`Acquire` in that
+    /// order and not the other way round: a reader that sees `done` must also see
+    /// the byte count that was written before it.
+    pub fn finish(&self, freed_bytes: u64) {
+        self.freed_bytes
+            .store(freed_bytes, std::sync::atomic::Ordering::Release);
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Throw away everything in a namespace.
+///
+/// Only ever called for [`Namespace::Cache`] today, and the signature takes the
+/// namespace anyway because the alternative — a `clear_cache()` that closes over
+/// which half it means — is how a future "delete my data" ends up as a second
+/// function that does 90% of the same thing. It is safe on the cache for the
+/// reason `utils::cache`'s sweep gives: an entry deleted under a running streamer
+/// costs a re-fetch and nothing else. It would **not** be safe on
+/// [`Namespace::Data`] without more thought, because `user.json` is written back
+/// from memory on a timer and would simply reappear.
+pub fn clear(ns: Namespace) -> std::sync::Arc<ClearProgress> {
+    let progress = std::sync::Arc::new(ClearProgress::default());
+    imp::clear(ns, std::sync::Arc::clone(&progress));
+    progress
+}
+
 /// Pull every Data-namespace key that begins with `prefix` and ends with
 /// `suffix` into the synchronous view, so [`get_now`] can answer for them.
 ///
@@ -219,6 +271,19 @@ mod imp {
 
     pub fn remove_now(ns: Namespace, key: &str) {
         let _ = std::fs::remove_file(path(ns, key));
+    }
+
+    pub fn clear(ns: Namespace, progress: std::sync::Arc<super::ClearProgress>) {
+        match ns {
+            // Delegated rather than a `remove_dir_all` here: the sweep already
+            // owns the tree walk, the detached thread and the byte count, and a
+            // second implementation of "empty this directory" is a second place
+            // for the Android root question to be answered differently.
+            Namespace::Cache => crate::utils::cache::clear_cache_root(progress),
+            // Deliberately unimplemented: see [`super::clear`]. Reporting it
+            // finished with nothing freed is the honest answer — nothing was.
+            Namespace::Data => progress.finish(0),
+        }
     }
 
     pub async fn preload(_prefix: &str, _suffix: &str) {}
@@ -566,6 +631,50 @@ mod imp {
             {
                 settle(&request).await;
             }
+        });
+    }
+
+    pub fn clear(ns: Namespace, progress: std::sync::Arc<super::ClearProgress>) {
+        // The synchronous view first and outside the task: a read on the very next
+        // frame has to miss, or the streamers keep being handed the bytes we are
+        // in the middle of deleting and nothing appears to have happened.
+        //
+        // Every key, not just the `Ready` ones — a remembered `Missing` is a
+        // negative cache entry, and leaving those behind is how a "reset" comes to
+        // mean "forget what you found and keep what you didn't".
+        if let Ok(mut warm) = warm().lock() {
+            let prefix = format!("{}/", store_name(ns));
+            warm.retain(|key, _| !key.starts_with(&prefix));
+        }
+        // A refused write is a fact about a full quota, and the quota is what we
+        // just emptied. Only this thread's flag: it is a `thread_local`, and the
+        // worker threads' copies will clear themselves the next time a write to a
+        // now-roomy store succeeds.
+        if ns == Namespace::Cache {
+            CACHE_FULL.with(|full| *full.borrow_mut() = false);
+        }
+        wasm_bindgen_futures::spawn_local(async move {
+            let name = store_name(ns);
+            let cleared = async {
+                let db = db().await?;
+                let tx = db
+                    .transaction_with_str_and_mode(name, IdbTransactionMode::Readwrite)
+                    .ok()?;
+                // `clear()` on the store rather than a key walk: one request, and
+                // it does not care how many records there are.
+                let request = tx.object_store(name).and_then(|store| store.clear()).ok()?;
+                settle(&request).await
+            }
+            .await;
+            if cleared.is_none() {
+                tracing::warn!("the browser refused to empty the {name} store");
+            }
+            // Finished either way. A reset that failed still has to stop saying
+            // "clearing…", and the warning above is where the truth is.
+            //
+            // Zero bytes: IndexedDB does not report a record's size and adding
+            // them up means reading the whole cache in to throw it away.
+            progress.finish(0);
         });
     }
 

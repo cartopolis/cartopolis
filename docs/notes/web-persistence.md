@@ -1,7 +1,7 @@
 ---
 topic: web-persistence
-triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload]
-updated: 2026-08-13
+triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload, "clear cache", "reset cache", ClearProgress, cache_reset.rs]
+updated: 2026-09-10
 ---
 
 # Everything the client keeps goes through one seam, IndexedDB-backed on the web
@@ -72,6 +72,25 @@ logged, not surfaced: best-effort is the status quo, not a new failure.
 
 `the_two_namespaces_do_not_see_each_other` in `storage.rs` is the test that keeps
 this real rather than conventional.
+
+It is also what makes `storage::clear(Namespace::Cache)` — Settings ▸ General ▸
+Storage, added 2026-09-10 — safe to offer to anybody: the button cannot reach a
+saved place, a photo or a setting, because those are not in the half it empties.
+`Namespace::Data` is deliberately **not** clearable through the same call. It
+would not work as anybody expects: `user.json` is written back from memory on a
+timer, so it would reappear within seconds, and "delete everything I have" is a
+different feature with a different confirmation.
+
+Two things about a clear are worth knowing before writing another one:
+
+- **It is safe mid-flight.** Deleting a cache entry under a running streamer costs
+  a re-fetch and nothing else, which is the same reason `sweep_cache_root` is
+  allowed to run at startup while the streamers are already going.
+- **The store is the bottom of three caches, not the only one.** In front of it
+  sit `tile_source`'s 32 MiB of in-memory bodies and the tiles already drawn on
+  screen. Emptying only the store looks, to the user, like the button did nothing.
+  `systems::cache_reset` is where the three are sequenced; anything that adds a
+  fourth owes it a line there.
 
 ## Gaps, deliberately left
 

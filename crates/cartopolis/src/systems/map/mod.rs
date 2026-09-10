@@ -4,6 +4,9 @@ pub mod aerial;
 pub mod atmosphere_patch;
 pub mod building_facts;
 pub mod building_windows;
+// Throwing the downloaded map away, and the three layers of cache that have to
+// be emptied in the right order for that to be visible.
+pub mod cache_reset;
 pub mod cell_bundle;
 pub mod coverage;
 // The fetching half of the level crossings (`cartopolis_geo::crossings` is the

@@ -1998,6 +1998,8 @@ fn run_client() {
         .init_resource::<systems::bookmarks::BookmarksState>()
         .insert_resource(user_store)
         .init_resource::<systems::map_stream::MapStream>()
+        // The Settings ▸ Storage button's request, and what came of it.
+        .init_resource::<systems::cache_reset::CacheReset>()
         .init_resource::<resources::MapAnchor>()
         .init_resource::<systems::map_geometry::MapSurfaces>()
         // Filled by the same streamer, cell for cell (`systems::street_labels`).
@@ -2462,6 +2464,12 @@ fn run_client() {
                 // `apply_stream_textures`, which asks the same resolved answer
                 // which source a finished tile came from.
                 systems::map_stream::apply_aerial_source
+                    .after(systems::map_stream::init_map_stream)
+                    .before(systems::map_stream::update_map_stream),
+                // …and so does a cache reset, for the same reason and through the
+                // same teardown: the tiles it drops must be gone before the
+                // streamer decides what to refill.
+                systems::cache_reset::apply_cache_reset
                     .after(systems::map_stream::init_map_stream)
                     .before(systems::map_stream::update_map_stream),
             ),

@@ -275,6 +275,41 @@ pub fn sweep_cache_root() {
         });
 }
 
+/// Delete **everything** under the cache root, reporting the bytes freed into
+/// `progress` when the walk finishes.
+///
+/// This is [`sweep_cache_root`] with a cap of zero, and that is not a pun on the
+/// implementation — the two want exactly the same properties. Off the calling
+/// thread for the same reason (a tree of tens of thousands of files is seconds of
+/// `stat` calls on a cold phone filesystem, and here the caller is an egui frame
+/// rather than startup, so blocking would drop frames a user is watching).
+/// Best-effort for the same reason (a file that vanishes under us is one less to
+/// delete). And safe to run mid-flight for the reason the sweep's own note gives:
+/// **deleting a cache entry can only ever cost a re-fetch.**
+///
+/// What it does *not* do is empty the in-memory caches in front of it —
+/// `tile_source`'s 32 MiB of bodies, and the per-layer maps that hold a parsed
+/// cell. `systems::map_stream::apply_cache_reset` is what sequences those with
+/// this, and it is the caller that owes the user an honest "cleared".
+pub fn clear_cache_root(progress: std::sync::Arc<crate::platform::storage::ClearProgress>) {
+    let root = cache_root();
+    // Cloned rather than moved, so the failure arm below still holds a handle: a
+    // thread that could not start would otherwise drop the only `Arc` and leave
+    // the panel saying "clearing…" for the rest of the session.
+    let worker = std::sync::Arc::clone(&progress);
+    let spawned = std::thread::Builder::new()
+        .name("carto-cache-clear".into())
+        .spawn(move || {
+            let freed = sweep(&root, 0);
+            tracing::info!(freed_mb = freed / (1024 * 1024), "cleared the disk cache");
+            worker.finish(freed);
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "could not start the cache clear");
+        progress.finish(0);
+    }
+}
+
 /// Delete the oldest files under `root` until the tree fits in `cap` bytes; returns
 /// how many bytes were freed. Split out from [`sweep_cache_root`] so it is testable
 /// against a directory that is not the real cache.

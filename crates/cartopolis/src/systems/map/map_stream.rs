@@ -444,18 +444,32 @@ pub fn apply_aerial_source(
         return;
     }
     stream.aerial = Some(want);
-    // Same order as `apply_reanchor`, and for the same reason: the query
-    // re-collects tiles that a previous teardown already queued, so the queue is
-    // cleared first or an entity is freed twice.
+    retear_tiles(&mut stream, tiles.iter());
+    tracing::info!(aerial = want, "map basemap source changed");
+}
+
+/// Retire every standing tile and re-stream it, without touching the anchor.
+///
+/// The teardown half of [`apply_aerial_source`], lifted out because a cache reset
+/// (`systems::cache_reset`) wants exactly the same thing for a different reason:
+/// the bytes behind these tiles are gone and the pictures on screen are the last
+/// evidence of them. Sharing it is what keeps "re-stream the basemap" one
+/// sequence — the order below is load-bearing and there should not be two copies
+/// of it to keep in step.
+///
+/// `clear_despawn_queue` comes first for the reason `apply_reanchor` gives: the
+/// caller's query re-collects tiles a previous teardown already queued, so
+/// without it an entity is freed twice. The quads are deliberately kept — they
+/// are sized by tile metres at the anchor latitude, and the anchor has not moved.
+pub(crate) fn retear_tiles(stream: &mut MapStream, tiles: impl Iterator<Item = Entity>) {
     stream.tiles.clear_despawn_queue();
-    let retired: Vec<Entity> = tiles.iter().collect();
+    let retired: Vec<Entity> = tiles.collect();
     stream.tiles.retire_all(retired);
     stream.loaded.clear();
     stream.aerial_ready.clear();
     stream.tiles.reset();
     stream.desired = DesiredTiles::default();
     stream.bump_fetch_generation();
-    tracing::info!(aerial = want, "map basemap source changed");
 }
 
 impl Default for MapStream {

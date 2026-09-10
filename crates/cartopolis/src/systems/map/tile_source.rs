@@ -226,6 +226,21 @@ impl TileSource {
         (result, Origin::Fetched)
     }
 
+    /// Drop every cached body, so the next ask goes back to the blob store.
+    ///
+    /// **In-flight fetches are left alone**, and that is the whole subtlety here:
+    /// `in_flight` is not a cache, it is a list of tasks already waiting on a
+    /// oneshot. Clearing it would strand every follower forever — they would hold
+    /// a receiver whose sender had been dropped, which is the one failure this
+    /// module's `bytes` reports as "tile fetch was cancelled". Their results
+    /// simply land in an empty cache, which is exactly right.
+    pub fn forget_all(&self) {
+        let mut st = self.lock();
+        st.cache.clear();
+        st.order.clear();
+        st.bytes = 0;
+    }
+
     /// Bytes already in memory, if any — a peek that does not fetch.
     #[cfg(test)]
     fn cached(&self, ck: &CacheKey) -> Option<Arc<Vec<u8>>> {
@@ -286,6 +301,17 @@ impl State {
 fn shared() -> &'static TileSource {
     static SOURCE: OnceLock<TileSource> = OnceLock::new();
     SOURCE.get_or_init(TileSource::default)
+}
+
+/// Empty the process-wide in-memory tile cache.
+///
+/// For `map_stream::apply_cache_reset`, and it is not optional there: this cache
+/// sits *in front of* the blob store, so wiping the disk and leaving these 32 MiB
+/// standing means the tiles the user just asked to be re-downloaded come straight
+/// back out of RAM, and a reset that visibly changes nothing is worse than no
+/// button at all.
+pub fn forget_cached_tiles() {
+    shared().forget_all();
 }
 
 /// Fetch a single tile's raw bytes: in-memory cache → in-flight coalesce →
