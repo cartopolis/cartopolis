@@ -89,20 +89,31 @@ const TRAFFIC_HIDE_ALT: f32 = 700.0;
 
 /// Find a road leading on from `at`, and which way to drive it.
 ///
-/// Returns the line, the direction (`+1` along its own order, `-1` against) and
-/// the distance along it to start from — which is zero or the line's length,
-/// because a car joining a road joins it at an end.
+/// Returns the line and the direction (`+1` along its own order, `-1` against).
+/// A car joining a road joins it at an end, so where along it to start from is
+/// not a choice — it is zero or the line's length, and the caller derives it.
 ///
 /// The road just left is excluded, or a car reaching a dead end turns round and
 /// drives back down it forever, which reads as a fault rather than as traffic.
+///
+/// **The choice is by heading, not by distance.** It used to take whichever line
+/// end was nearest, which at a crossroads is decided by a metre of survey
+/// accuracy: a car running down a main road would turn off it at random every
+/// time a side street happened to be noded a few centimetres closer than the
+/// continuation. Traffic mostly goes *straight on*, so the score is the cosine
+/// of the turn the car would be making, with the nearness of the join as a
+/// tie-break, and a turn sharper than [`TURN_BACK_COS`] is only taken when
+/// nothing else is on offer.
 fn hand_off(
     net: &DriveNetwork,
     candidates: &[LineKey],
     from: LineKey,
     at: Vec2,
+    travel: Vec2,
     kind: AgentKind,
-) -> Option<(LineKey, f32, f32)> {
-    let mut best: Option<(f32, LineKey, f32, f32)> = None;
+) -> Option<(LineKey, f32)> {
+    let mut best: Option<(f32, LineKey, f32)> = None;
+    let mut fallback: Option<(f32, LineKey, f32)> = None;
     for &key in candidates {
         if key == from {
             continue;
@@ -131,12 +142,23 @@ fn hand_off(
             if !allowed {
                 continue;
             }
-            if best.is_none_or(|(bd, ..)| d < bd) {
-                best = Some((d, key, dir, 0.0));
+            // The direction the agent would be travelling once on it.
+            let (_, heading) = l.at(if dir > 0.0 { 0.0 } else { l.length() });
+            let cos = travel.dot(heading * dir);
+            // Nearness only separates two roads that leave at the same angle, so
+            // it is worth a fraction of a cosine and no more.
+            let score = cos - d / HANDOFF_M * 0.05;
+            let slot = if cos >= TURN_BACK_COS {
+                &mut best
+            } else {
+                &mut fallback
+            };
+            if slot.is_none_or(|(s, ..)| score > s) {
+                *slot = Some((score, key, dir));
             }
         }
     }
-    best.map(|(_, key, dir, s)| (key, dir, s))
+    best.or(fallback).map(|(_, key, dir)| (key, dir))
 }
 
 /// How close two line ends must be for a car to drive from one onto the other.
@@ -155,6 +177,147 @@ const HANDOFF_M: f32 = 14.0;
 /// gutter. Right-hand traffic: the Netherlands, and every country this map has
 /// data for.
 const LANE_FRACTION: f32 = 0.45;
+
+/// How hard a car pulls away, in m/s².
+///
+/// Well under a real car's, and that is the point: ambient traffic is watched
+/// from the pavement, where a vehicle that reaches the speed limit in its own
+/// length reads as a game object. Before this the speed was *assigned* — a car
+/// handed from a residential street onto a trunk road stepped from 7.5 m/s to
+/// 22 m/s between two frames, and every recycled car appeared already at speed.
+const CAR_ACCEL: f32 = 2.2;
+
+/// How hard a car slows, in m/s². Larger than [`CAR_ACCEL`], as a car's brakes
+/// are stronger than its engine — and it has to be, or a car cannot shed enough
+/// speed inside [`CORNER_LOOKAHEAD_M`] to take the corner it is looking at.
+const CAR_BRAKE: f32 = 5.5;
+
+/// A walker's, m/s². Small in both directions: nobody accelerates.
+const WALK_ACCEL: f32 = 1.4;
+
+/// How far ahead a car looks for the bend it must slow for.
+///
+/// Deliberately short of what a real driver uses: `v²/2a` at a trunk road's
+/// speed is 44 m, and braking from off screen for a bend nobody can see yet
+/// reads as traffic slowing for nothing. A car that arrives at a bend still too
+/// fast simply takes it a little wide.
+const CORNER_LOOKAHEAD_M: f32 = 30.0;
+
+/// Lateral acceleration a driver accepts through a bend, m/s². About a quarter
+/// of gravity — brisk but well short of the tyre limit, and it is what sets how
+/// fast a corner is taken: `v = √(a·r)`.
+const CORNER_LAT_ACCEL: f32 = 2.8;
+
+/// How fast an agent may swing its nose, in radians per second **per m/s** of
+/// its own speed.
+///
+/// A simplified centre line is a chain of straight segments, so its heading is a
+/// *step* function: at every vertex the tangent changes by the whole bend at
+/// once, and a car reading it directly snapped its yaw by the full angle between
+/// two frames — several times down any curving street. The drawn heading eases
+/// toward the path's instead, rate-limited. It is per m/s rather than a flat
+/// rate because a vehicle turns through a *radius*, and `v / r` is what a yaw
+/// rate is: this allows about an eight-metre one.
+const TURN_RATE_PER_MS: f32 = 0.12;
+
+/// …and the floor under it, in radians per second.
+///
+/// A rate proportional to speed alone leaves anything slow turning in slow
+/// motion — a walker at 1.25 m/s would need fifteen seconds to round a corner,
+/// which is a much worse artefact than the snap this replaces. In practice the
+/// floor governs city speeds and the rate above it governs fast roads.
+const TURN_RATE_FLOOR: f32 = 1.4;
+
+/// The gap a car keeps to the one in front of it, and the gap at which it has
+/// stopped entirely.
+///
+/// This is **not** the queueing simulation the module note rules out: there is
+/// still no give-way, no signal obedience and no collision test. It is one
+/// lookup in the occupancy map [`drive_traffic`] already builds for placement,
+/// against the nearest agent *on the same line travelling the same way* — the
+/// only pair that can visibly drive through each other, since two cars on one
+/// street at different speeds converge and then overlap for as long as it takes
+/// one of them to be recycled. Walkers are exempt: at 1.25 m/s two of them
+/// passing through each other is not what anybody is looking at, and a pavement
+/// where nobody can overtake is worse than one where they do.
+const HEADWAY_M: f32 = 24.0;
+/// See [`HEADWAY_M`]. A car's own length and a little more.
+const MIN_HEADWAY_M: f32 = 7.0;
+
+/// How much road an agent needs to itself when it is recycled.
+///
+/// Placement drew a line and then a distance along it with nothing looking at
+/// where the other cars already were, so two of the pool landing on the same
+/// street within a metre of each other was an ordinary outcome — one car drawn
+/// twice, in the same paint, which reads as a rendering fault rather than as
+/// traffic. A handful of redraws is enough: the map has far more road in range
+/// than the pool has agents.
+const SPAWN_GAP_M: f32 = 16.0;
+
+/// A U-turn at a junction is a last resort. The cosine of the sharpest turn an
+/// agent will take while anything straighter is on offer — 90°, so it will turn
+/// a corner but will not double back unless the corner is all there is.
+const TURN_BACK_COS: f32 = 0.0;
+
+/// One agent's state while it crosses a junction.
+///
+/// Before this a hand-off was a **cut**: the line, the direction and the lateral
+/// offset were all replaced between two frames, so at every junction the car's
+/// nose snapped through the turn angle and its body jumped across the road by
+/// the two lane offsets — and by up to [`HANDOFF_M`] more where the two lines do
+/// not share a node. Roads meet at junctions constantly, so that was most of
+/// what the motion looked like.
+///
+/// So the junction is *driven*. The exit pose of the old road and the entry pose
+/// of the new one are the two ends of a cubic Hermite curve whose tangents are
+/// the two travel directions, and the car follows it at a speed derived from how
+/// tight it is. The curve is exact at both ends by construction — it starts
+/// where the car is, pointing where it is pointing, and finishes on the new
+/// line's own lane at its own heading — so there is nothing to pop at either
+/// end. It is also the only place the layer models something a straight read of
+/// the centre lines cannot express: the corner itself, which is not in the data.
+#[derive(Clone, Copy)]
+struct Turn {
+    /// Where the agent leaves the old road, and the direction it leaves in.
+    from: Vec2,
+    from_dir: Vec2,
+    /// Where it joins the new road, and the direction it joins in.
+    to: Vec2,
+    to_dir: Vec2,
+    /// Tangent scale, and the length progress is measured against. Never smaller
+    /// than the junction is wide, so two lines sharing a node still get a rounded
+    /// corner rather than a pivot on the spot.
+    len: f32,
+    /// 0 at `from`, 1 at `to`.
+    t: f32,
+}
+
+impl Turn {
+    /// Position and unit heading at the current `t`.
+    fn pose(&self) -> (Vec2, Vec2) {
+        let (t, l) = (self.t.clamp(0.0, 1.0), self.len);
+        let (t2, t3) = (t * t, t * t * t);
+        let pos = self.from * (2.0 * t3 - 3.0 * t2 + 1.0)
+            + self.from_dir * (l * (t3 - 2.0 * t2 + t))
+            + self.to * (-2.0 * t3 + 3.0 * t2)
+            + self.to_dir * (l * (t3 - t2));
+        let tangent = self.from * (6.0 * t2 - 6.0 * t)
+            + self.from_dir * (l * (3.0 * t2 - 4.0 * t + 1.0))
+            + self.to * (-6.0 * t2 + 6.0 * t)
+            + self.to_dir * (l * (3.0 * t2 - 2.0 * t));
+        // A degenerate curve has no tangent to normalise; the two travel
+        // directions are then the honest answer.
+        let heading = tangent
+            .try_normalize()
+            .unwrap_or_else(|| self.from_dir.lerp(self.to_dir, t).normalize_or_zero());
+        (pos, heading)
+    }
+
+    /// The speed this turn may be taken at, m/s.
+    fn speed_limit(&self) -> f32 {
+        corner_speed(corner_radius(self.from_dir, self.to_dir, self.len * 0.5))
+    }
+}
 
 // ─── The network ─────────────────────────────────────────────────────────────
 
@@ -194,6 +357,87 @@ impl WorldDriveLine {
         let t = ((s - self.cumulative[i]) / seg).clamp(0.0, 1.0);
         (a.lerp(b, t), (b - a) / seg)
     }
+
+    /// Arc length of the point on this line closest to `p`.
+    ///
+    /// Used when an agent is recycled, so it is dropped onto the stretch of road
+    /// that is actually in front of the camera rather than anywhere along a line
+    /// that merely *reaches* the camera. Exact (a projection onto every segment)
+    /// rather than nearest-vertex, because the difference is half a segment and
+    /// the whole point of the call is to land inside a radius.
+    fn nearest_along(&self, p: Vec2) -> f32 {
+        let mut best = (f32::MAX, 0.0f32);
+        for i in 0..self.points.len() - 1 {
+            let (a, b) = (self.points[i], self.points[i + 1]);
+            let ab = b - a;
+            let len2 = ab.length_squared().max(1e-8);
+            let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+            let d2 = (a + ab * t).distance_squared(p);
+            if d2 < best.0 {
+                best = (d2, self.cumulative[i] + t * len2.sqrt());
+            }
+        }
+        best.1
+    }
+
+    /// The tightest bend within `ahead_m` of `along`, as the radius of the arc
+    /// that would round it — [`f32::MAX`] on a stretch with no bend in it.
+    ///
+    /// A simplified centre line has no curvature, only kinks: two straight
+    /// segments meeting at an angle. So the radius is the one an arc tangent to
+    /// both would have if it were allowed to eat half of the shorter of them,
+    /// `T / tan(θ/2)`. That is what turns "this street bends" into a number a
+    /// speed can be derived from, which is what stops a car taking a right-angle
+    /// corner at the speed limit.
+    ///
+    /// `dir` is the travel direction, because a car only has to slow for the
+    /// bends it is about to reach.
+    fn min_turn_radius(&self, along: f32, ahead_m: f32, dir: f32) -> f32 {
+        let (lo, hi) = if dir > 0.0 {
+            (along, along + ahead_m)
+        } else {
+            (along - ahead_m, along)
+        };
+        let mut best = f32::MAX;
+        for i in 1..self.points.len().saturating_sub(1) {
+            let c = self.cumulative[i];
+            if c < lo || c > hi {
+                continue;
+            }
+            let d_in = (self.points[i] - self.points[i - 1]).normalize_or_zero();
+            let d_out = (self.points[i + 1] - self.points[i]).normalize_or_zero();
+            let seg = (self.cumulative[i] - self.cumulative[i - 1])
+                .min(self.cumulative[i + 1] - self.cumulative[i]);
+            best = best.min(corner_radius(d_in, d_out, seg * 0.5));
+        }
+        best
+    }
+}
+
+/// The radius of an arc tangent to two directions meeting at a point, given how
+/// far back along each it may reach.
+///
+/// Shared by the in-line bends ([`WorldDriveLine::min_turn_radius`]) and the
+/// junction turns ([`Turn`]) so both derive a cornering speed the same way — a
+/// car that slows for a bend in a street and then takes the right-angle turn at
+/// its end flat out would be worse than one that does neither.
+fn corner_radius(d_in: Vec2, d_out: Vec2, tangent_m: f32) -> f32 {
+    // The deflection: 0 straight on, π doubling back.
+    let cos = d_in.dot(d_out).clamp(-1.0, 1.0);
+    let theta = cos.acos();
+    if theta < 1e-3 {
+        return f32::MAX;
+    }
+    (tangent_m / (theta * 0.5).tan()).max(0.5)
+}
+
+/// The speed a bend of this radius may be taken at, m/s.
+///
+/// `v = √(a·r)` for the lateral acceleration a driver will accept. Uncapped at
+/// the top — the road's own speed is the other bound and the caller takes the
+/// smaller.
+fn corner_speed(radius: f32) -> f32 {
+    (CORNER_LAT_ACCEL * radius.min(1.0e4)).sqrt()
 }
 
 /// Every drivable line in the streamed world, keyed by the cell that supplied it
@@ -317,7 +561,11 @@ impl DriveNetwork {
 
 /// Which line a car is on. Not a reference: the cell it names can be retired
 /// under it, and [`DriveNetwork::get`] answering `None` is how the car finds out.
-#[derive(Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` because the per-frame occupancy map (see [`drive_traffic`]) is keyed by
+/// the line an agent is on: that is what lets a car see the one in front of it
+/// and a recycled car avoid being dropped on top of one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct LineKey {
     cell: (i64, i64),
     index: usize,
@@ -350,6 +598,47 @@ impl AgentKind {
         match self {
             Self::Car => line.speed,
             Self::Walker => WALK_SPEED,
+        }
+    }
+
+    /// How fast this kind may gain and shed speed, m/s². A person's is one
+    /// number in both directions; a car's brakes are stronger than its engine.
+    fn accel(self) -> (f32, f32) {
+        match self {
+            Self::Car => (CAR_ACCEL, CAR_BRAKE),
+            Self::Walker => (WALK_ACCEL, WALK_ACCEL),
+        }
+    }
+
+    /// Whether this kind slows for the bend ahead and for whatever is in front
+    /// of it. Both are about vehicles sharing a carriageway; a person on a
+    /// pavement neither corners nor queues.
+    fn drives(self) -> bool {
+        matches!(self, Self::Car)
+    }
+
+    /// How much traffic of this kind a line of this sort carries, relative to a
+    /// residential street. One of the two terms in [`weigh`].
+    ///
+    /// `drive_speed` is already this codebase's encoding of how important a road
+    /// is, so a car's share follows it — but *softened*, because the raw ratio
+    /// between a motorway and a service road is nearly six and a city where
+    /// every side street is empty is as wrong as one where the main road is.
+    /// People are the other way round: a pavement is a pavement, and a busy
+    /// street is busy with pedestrians because it is long, not because it is
+    /// fast.
+    fn importance(self, line: &WorldDriveLine) -> f32 {
+        match self {
+            Self::Car => (line.speed / RESIDENTIAL_SPEED).max(0.2).powf(0.7),
+            Self::Walker => 1.0,
+        }
+    }
+
+    /// How much road this kind needs to itself when it is recycled, in metres.
+    fn spawn_gap(self) -> f32 {
+        match self {
+            Self::Car => SPAWN_GAP_M,
+            Self::Walker => SPAWN_GAP_M * 0.2,
         }
     }
 
@@ -408,6 +697,18 @@ pub struct Car {
     /// Stable per-car jitter, so a street's cars are not all doing exactly the
     /// speed limit in lockstep.
     speed_scale: f32,
+    /// Metres per second **now**, eased toward whatever the road, the bend ahead
+    /// and the car in front allow. The road's speed used to be written straight
+    /// into the step, which is why a car crossing from a side street onto a
+    /// trunk road changed speed by a factor of three in one frame.
+    speed: f32,
+    /// The drawn heading — the path's, rate-limited. See [`TURN_RATE_PER_MS`].
+    /// Zero until the agent is first placed, which is how the first frame after
+    /// a placement knows to adopt the path's heading outright rather than
+    /// swinging round to it from due east.
+    heading: Vec2,
+    /// Set while the agent is crossing a junction. See [`Turn`].
+    turn: Option<Turn>,
 }
 
 /// Deterministic unit random from three integers. The same shape as the geo
@@ -487,6 +788,9 @@ pub fn setup_traffic(
                     s: 0.0,
                     dir: 1.0,
                     speed_scale: 0.85 + rand01(seed, i as u64, 7) * 0.3,
+                    speed: 0.0,
+                    heading: Vec2::ZERO,
+                    turn: None,
                 },
             ));
         }
@@ -607,6 +911,33 @@ pub fn drive_traffic(
     if roads.is_empty() && paths.is_empty() {
         return;
     }
+    // How much of the pool each candidate deserves — see `weigh`. Built once per
+    // frame beside the candidate lists themselves, for the same reason.
+    let road_weights = weigh(&net, &roads, AgentKind::Car);
+    let path_weights = weigh(&net, &paths, AgentKind::Walker);
+
+    // Where every placed agent is, keyed by its line **and** the direction it is
+    // travelling, as the distance it has run along that line. Two things read
+    // it: a car looks up whatever is in front of it (`headway_speed`), and a
+    // recycled agent avoids landing on top of one. Both used to be missing, and
+    // both are visible: a fast car overtook a slow one *through* it, and two of
+    // the pool on one street a metre apart drew one car twice.
+    //
+    // It is a read-only pass over the same query — one hash insert per placed
+    // agent, no allocation per frame beyond the map itself.
+    let mut occupied: HashMap<(LineKey, i8), Vec<f32>> = HashMap::new();
+    for (car, &kind, ..) in cars.iter() {
+        if !showing(kind) {
+            continue;
+        }
+        if let Some(key) = car.line {
+            occupied
+                .entry((key, lane_key(car.dir)))
+                .or_default()
+                .push(car.s);
+        }
+    }
+
     let dt = time.delta_secs();
 
     for (i, (mut car, &kind, mut tf, mut cell, mut vis)) in cars.iter_mut().enumerate() {
@@ -614,102 +945,165 @@ pub fn drive_traffic(
             *vis = Visibility::Hidden;
             continue;
         }
-        let candidates: &[LineKey] = match kind {
-            AgentKind::Car => &roads,
-            AgentKind::Walker => &paths,
+        let (candidates, weights): (&[LineKey], &[f32]) = match kind {
+            AgentKind::Car => (&roads, &road_weights),
+            AgentKind::Walker => (&paths, &path_weights),
         };
         if candidates.is_empty() {
             *vis = Visibility::Hidden;
             continue;
         }
-        // Advance, then decide whether the car still has a road.
-        let mut placed = car.line.and_then(|k| net.get(k).map(|l| (k, l)));
-        if let Some((key, line)) = placed {
-            car.s += kind.speed(line) * car.speed_scale * dt;
-            let (pos, _) = line.at(if car.dir > 0.0 {
+        let mut key = car.line;
+        let mut line = key.and_then(|k| net.get(k));
+
+        // ── Advance ──────────────────────────────────────────────────────────
+        //
+        // Speed is *eased*, never assigned. What it is eased toward is the least
+        // of what the road allows, what the bend ahead allows and what the car
+        // in front allows — so a car pulls away from a junction, slows into a
+        // corner and sits behind a slower one instead of stepping between three
+        // constants as it changes road.
+        if let (Some(k), Some(l)) = (key, line) {
+            let along = if car.dir > 0.0 {
                 car.s
             } else {
-                line.length() - car.s
-            });
-            if pos.distance(cam) > kind.recycle_radius() {
-                placed = None;
-            } else if car.s > line.length() {
-                // At the end of its road, drive **onto a connected one** rather
-                // than vanishing. Without this a car pops out of existence at
-                // every junction and reappears elsewhere, which is more visible
-                // than the traffic itself.
-                placed = hand_off(&net, candidates, key, pos, kind).and_then(
-                    |(next_key, next_dir, next_s)| {
-                        let l = net.get(next_key)?;
-                        car.line = Some(next_key);
-                        car.dir = next_dir;
-                        car.s = next_s;
-                        Some((next_key, l))
-                    },
-                );
+                l.length() - car.s
+            };
+            let mut want = kind.speed(l) * car.speed_scale;
+            if kind.drives() {
+                want = want.min(corner_speed(l.min_turn_radius(
+                    along,
+                    CORNER_LOOKAHEAD_M,
+                    car.dir,
+                )));
+                if let Some(t) = &car.turn {
+                    want = want.min(t.speed_limit());
+                }
+                want = want.min(headway_speed(&occupied, k, car.dir, car.s, want));
+            }
+            let (accel, brake) = kind.accel();
+            let rate = if want > car.speed { accel } else { brake };
+            car.speed = (car.speed + (want - car.speed).clamp(-rate * dt, rate * dt)).max(0.0);
+
+            // Inside a junction the progress is the turn's, not the line's.
+            let step = car.speed * dt;
+            let mut done = false;
+            if let Some(t) = car.turn.as_mut() {
+                t.t += step / t.len.max(0.5);
+                done = t.t >= 1.0;
+            } else {
+                car.s += step;
+            }
+            if done {
+                car.turn = None;
             }
         }
 
-        if placed.is_none() {
-            // Recycled onto a road near the camera. The `frame` term is what stops
-            // every car that runs out on the same frame picking the same road.
-            //
-            // Three draws, keep the fastest road: a cheap bias toward the streets
-            // that would actually carry traffic. Picking uniformly spreads the
-            // pool evenly over every service alley and back lane in the ring,
-            // which is how the first capture ended up with one car on a main
-            // street. The road's speed stands in for its importance because that
-            // is exactly what `drive_speed` encodes.
-            let key = (0..3)
-                .map(|t| {
-                    let r = rand01(0xD1CE, i as u64, frame.wrapping_add(t));
-                    candidates[((r * candidates.len() as f32) as usize).min(candidates.len() - 1)]
-                })
-                .max_by(|a, b| {
-                    let sp = |k: &LineKey| net.get(*k).map_or(0.0, |l| l.speed);
-                    sp(a).total_cmp(&sp(b))
-                })
-                .expect("three draws");
-            let Some(line) = net.get(key) else {
-                continue;
-            };
-            car.line = Some(key);
-            let coin = if rand01(0xB1D1, i as u64, *frame) < 0.5 {
-                1.0
-            } else {
-                -1.0
-            };
-            car.dir = match (kind, line.flow) {
-                // A pavement is two-way whatever the carriageway beside it does —
-                // which is what somebody walking up a one-way street is doing.
-                (AgentKind::Walker, _) | (_, Flow::Both) => coin,
-                (_, Flow::Forward) => 1.0,
-                (_, Flow::Backward) => -1.0,
-            };
-            // Start somewhere along the road rather than at its end, or every
-            // recycled car appears at a junction.
-            car.s = rand01(0x5EED, i as u64, *frame) * line.length() * 0.8;
-            placed = Some((key, line));
+        // ── Where that leaves it ─────────────────────────────────────────────
+        let mut pose = pose_of(&car, line, kind);
+        if pose.is_some_and(|(p, _)| p.distance(cam) > kind.recycle_radius()) {
+            key = None;
+            line = None;
+            car.turn = None;
         }
 
-        let Some((_, line)) = placed else {
+        // ── The end of the road ──────────────────────────────────────────────
+        //
+        // Drive **onto a connected one** rather than vanishing: without this an
+        // agent pops out of existence at every junction and reappears elsewhere,
+        // which is more visible than the traffic itself. The crossing itself is
+        // a `Turn` — see its note for why the hand-off cannot simply be a swap.
+        if car.turn.is_none() {
+            if let (Some(k), Some(l), Some((p, travel))) = (key, line, pose) {
+                if car.s > l.length() {
+                    match hand_off(&net, candidates, k, p, travel, kind) {
+                        Some((next, next_dir)) => {
+                            let nl = net.get(next).expect("hand_off only offers lines it read");
+                            let entry = if next_dir > 0.0 { 0.0 } else { nl.length() };
+                            let (centre, heading) = nl.at(entry);
+                            let to_dir = heading * next_dir;
+                            let to = centre + right_of(to_dir) * kind.offset(nl);
+                            // The corner is not in the data: two centre lines
+                            // meet at a *point*, and how far the vehicle swings
+                            // getting from one to the other is set by how wide
+                            // the two roads are. Where the lines do not share a
+                            // node the gap between them is wider still, and then
+                            // that is the arc.
+                            let span =
+                                (l.half_width + nl.half_width + 2.0).max(p.distance(to) * 1.1);
+                            car.turn = Some(Turn {
+                                from: p,
+                                from_dir: travel,
+                                to,
+                                to_dir,
+                                len: span,
+                                t: 0.0,
+                            });
+                            car.line = Some(next);
+                            car.dir = next_dir;
+                            car.s = 0.0;
+                            key = Some(next);
+                            line = Some(nl);
+                        }
+                        None => {
+                            key = None;
+                            line = None;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Recycling ────────────────────────────────────────────────────────
+        if line.is_none() {
+            match place_agent(
+                &net, candidates, weights, cam, kind, &occupied, i as u64, *frame,
+            ) {
+                Some((k, dir, s)) => {
+                    let l = net.get(k).expect("place_agent only offers lines it read");
+                    car.line = Some(k);
+                    car.dir = dir;
+                    car.s = s;
+                    car.turn = None;
+                    // A recycled agent is somewhere else entirely; it must adopt
+                    // its new heading outright rather than swinging round to it
+                    // from the one it had on the far side of the city.
+                    car.heading = Vec2::ZERO;
+                    // Not from rest — a car dropped into moving traffic is
+                    // already moving — but not at the limit either, so it is
+                    // seen to pick up rather than to appear at speed.
+                    car.speed = kind.speed(l) * car.speed_scale * 0.7;
+                    // Record it, so the next agent recycled on this same frame
+                    // does not choose the spot that has just been taken.
+                    occupied.entry((k, lane_key(dir))).or_default().push(s);
+                    key = Some(k);
+                    line = Some(l);
+                }
+                None => {
+                    *vis = Visibility::Hidden;
+                    continue;
+                }
+            }
+            pose = pose_of(&car, line, kind);
+        }
+
+        let (Some(_), Some((pos, travel))) = (key, pose) else {
             *vis = Visibility::Hidden;
             continue;
         };
 
-        // Position along the line, in the direction this car drives it.
-        let along = if car.dir > 0.0 {
-            car.s
+        // ── Draw ─────────────────────────────────────────────────────────────
+        //
+        // The drawn heading is not the path's tangent but a rate-limited chase
+        // of it: a simplified centre line changes direction in steps, and a
+        // vehicle cannot. See `TURN_RATE_PER_MS`.
+        car.heading = if car.heading == Vec2::ZERO {
+            travel
         } else {
-            line.length() - car.s
+            let rate = (TURN_RATE_PER_MS * car.speed).max(TURN_RATE_FLOOR);
+            rotate_toward(car.heading, travel, rate * dt)
         };
-        let (centre, heading) = line.at(along);
-        let travel = heading * car.dir;
-        // Right of the travel direction, in the XZ plane where +x is east and +z
-        // is south: rotating the heading a quarter turn one way gives the kerb
-        // side. Right-hand traffic — see `LANE_FRACTION`.
-        let right = Vec2::new(-travel.y, travel.x);
-        let pos = centre + right * kind.offset(line);
+        let facing = car.heading;
 
         let y = terrain.at(pos.x, pos.y) + CAR_RIDE_HEIGHT;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
@@ -717,9 +1111,214 @@ pub fn drive_traffic(
         tf.translation = local;
         // The model's +z is its nose (`cartopolis_geo::furniture`'s CAR), so the
         // yaw that points +z along the travel direction is measured from +z.
-        tf.rotation = Quat::from_rotation_y(travel.x.atan2(travel.y));
+        let yaw = Quat::from_rotation_y(facing.x.atan2(facing.y));
+        // A vehicle lies **on** the road, and over relief the road is not level:
+        // a yaw-only car keeps its wheels in the horizontal plane, so it sinks
+        // into every rise and hangs off every crest. The height was already
+        // sampled from the same field; the slope is one more read of it
+        // (`TerrainSnapshot::normal_at` is `Vec3::Y` wherever the field is off or
+        // absent, so this costs nothing outside coverage). People stay upright.
+        tf.rotation = if kind.drives() && terrain.is_ready() {
+            Quat::from_rotation_arc(Vec3::Y, terrain.normal_at(pos.x, pos.y)) * yaw
+        } else {
+            yaw
+        };
         *vis = Visibility::Inherited;
     }
+}
+
+/// Right of a travel direction, in the XZ plane where +x is east and +z is
+/// south: rotating the heading a quarter turn one way gives the kerb side.
+/// Right-hand traffic — see [`LANE_FRACTION`].
+fn right_of(travel: Vec2) -> Vec2 {
+    Vec2::new(-travel.y, travel.x)
+}
+
+/// Which side of a line an agent's occupancy entry belongs to. Two agents can
+/// only be in each other's way when they are going the same way.
+fn lane_key(dir: f32) -> i8 {
+    if dir > 0.0 {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Where an agent is and which way it is pointing: on its line, or on the curve
+/// across the junction it is in the middle of.
+fn pose_of(car: &Car, line: Option<&WorldDriveLine>, kind: AgentKind) -> Option<(Vec2, Vec2)> {
+    let l = line?;
+    if let Some(t) = &car.turn {
+        return Some(t.pose());
+    }
+    let along = if car.dir > 0.0 {
+        car.s
+    } else {
+        l.length() - car.s
+    };
+    let (centre, heading) = l.at(along);
+    let travel = heading * car.dir;
+    Some((centre + right_of(travel) * kind.offset(l), travel))
+}
+
+/// Turn `from` toward `to` by at most `max_rad`.
+fn rotate_toward(from: Vec2, to: Vec2, max_rad: f32) -> Vec2 {
+    let cross = from.x * to.y - from.y * to.x;
+    let angle = cross.atan2(from.dot(to)).clamp(-max_rad, max_rad);
+    let (s, c) = angle.sin_cos();
+    Vec2::new(from.x * c - from.y * s, from.x * s + from.y * c)
+        .try_normalize()
+        .unwrap_or(to)
+}
+
+/// What speed the agent in front leaves this one. See [`HEADWAY_M`].
+fn headway_speed(
+    occupied: &HashMap<(LineKey, i8), Vec<f32>>,
+    key: LineKey,
+    dir: f32,
+    s: f32,
+    want: f32,
+) -> f32 {
+    let Some(others) = occupied.get(&(key, lane_key(dir))) else {
+        return want;
+    };
+    let gap = others
+        .iter()
+        .copied()
+        .filter(|o| *o > s + 1e-3)
+        .fold(f32::MAX, f32::min)
+        - s;
+    if gap >= HEADWAY_M {
+        return want;
+    }
+    want * ((gap - MIN_HEADWAY_M) / (HEADWAY_M - MIN_HEADWAY_M)).clamp(0.0, 1.0)
+}
+
+/// The road a residential street runs at, m/s — the unit
+/// [`AgentKind::importance`] measures the others against.
+const RESIDENTIAL_SPEED: f32 = 7.5;
+
+/// Cumulative placement weights for a pool's candidate lines, one entry per
+/// candidate.
+///
+/// The old rule was **three uniform draws, keep the fastest**, and it is worth
+/// saying what was wrong with it because both halves were: a uniform draw makes
+/// a 30 m service stub as likely as a 400 m avenue, so most of the pool ended up
+/// on back lanes; and keeping the maximum of three draws over a speed range of
+/// 4.5 to 26 m/s is very nearly *deterministic*, so once a trunk road was in
+/// range almost every recycled car went onto it and the ordinary streets emptied
+/// out. Neither is what "spread over the traffic a city carries" means.
+///
+/// So a line's share is how much road it contributes — its length, capped at the
+/// diameter of the placement disc, since nothing past that is in range — times
+/// how much traffic a road of its class carries. That is a *distribution* rather
+/// than an argmax: a motorway takes several times a back lane's share and does
+/// not take all of it.
+fn weigh(net: &DriveNetwork, keys: &[LineKey], kind: AgentKind) -> Vec<f32> {
+    let cap = kind.place_radius() * 2.0;
+    let mut cum = Vec::with_capacity(keys.len());
+    let mut run = 0.0;
+    for k in keys {
+        run += net
+            .get(*k)
+            .map_or(0.0, |l| l.length().min(cap) * kind.importance(l));
+        cum.push(run);
+    }
+    cum
+}
+
+/// Draw one line from `keys` in proportion to [`weigh`]'s weights.
+fn draw_line(keys: &[LineKey], cum: &[f32], r: f32) -> Option<LineKey> {
+    let total = *cum.last()?;
+    if !(total > 0.0) {
+        return keys.first().copied();
+    }
+    let target = r.clamp(0.0, 0.999_999) * total;
+    let i = cum.partition_point(|c| *c <= target).min(keys.len() - 1);
+    keys.get(i).copied()
+}
+
+/// How many times placement will redraw to find a spot with nobody already on
+/// it. A handful is enough: the map holds far more road in range than the pool
+/// holds agents, so a rejection is rare and a second rejection rarer.
+const PLACE_ATTEMPTS: u64 = 4;
+
+/// Choose a line, a direction and a distance along it for a recycled agent.
+///
+/// Returns `(line, dir, s)` where `s` is measured the way [`Car::s`] is — from
+/// the end the agent enters by.
+///
+/// Two things it does that the old placement did not. It lands the agent on the
+/// stretch of the chosen road that is **in front of the camera**: the candidate
+/// list holds every line with *any* point in range, so a 900 m avenue clipping
+/// the edge of the disc used to receive cars anywhere along its whole length,
+/// most of them outside the recycle radius and thrown away again on the next
+/// frame. And it refuses a spot another agent is already occupying, which is
+/// what stops two of one pool being drawn a metre apart in the same paint.
+#[allow(clippy::too_many_arguments)]
+fn place_agent(
+    net: &DriveNetwork,
+    keys: &[LineKey],
+    cum: &[f32],
+    cam: Vec2,
+    kind: AgentKind,
+    occupied: &HashMap<(LineKey, i8), Vec<f32>>,
+    agent: u64,
+    frame: u64,
+) -> Option<(LineKey, f32, f32)> {
+    let mut fallback = None;
+    for attempt in 0..PLACE_ATTEMPTS {
+        // The `frame` term is what stops every agent that runs out on the same
+        // frame picking the same road.
+        let seed = frame.wrapping_mul(PLACE_ATTEMPTS).wrapping_add(attempt);
+        let key = draw_line(keys, cum, rand01(0xD1CE, agent, seed))?;
+        let Some(line) = net.get(key) else {
+            continue;
+        };
+        let dir = match (kind, line.flow) {
+            // A pavement is two-way whatever the carriageway beside it does —
+            // which is what somebody walking up a one-way street is doing.
+            (AgentKind::Walker, _) | (_, Flow::Both) => {
+                if rand01(0xB1D1, agent, seed) < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            (_, Flow::Forward) => 1.0,
+            (_, Flow::Backward) => -1.0,
+        };
+        // Around the point on this line nearest the camera, so the agent lands
+        // in the neighbourhood the pool is sized for rather than anywhere along
+        // a line that merely reaches into it.
+        let focus = line.nearest_along(cam);
+        let spread = kind.place_radius() * 0.7;
+        let mut along =
+            (focus + (rand01(0x5EED, agent, seed) - 0.5) * 2.0 * spread).clamp(0.0, line.length());
+        if line.at(along).0.distance(cam) > kind.place_radius() {
+            // A line qualifies for the candidate list by having *any* point in
+            // range, so a road running away from the camera has stretches that
+            // do not — and one of those would be recycled on the next frame
+            // without ever being seen. The nearest point is in range by
+            // construction; take that instead.
+            along = focus;
+        }
+        let s = if dir > 0.0 {
+            along
+        } else {
+            line.length() - along
+        };
+        let clear = occupied
+            .get(&(key, lane_key(dir)))
+            .is_none_or(|v| v.iter().all(|o| (o - s).abs() > kind.spawn_gap()));
+        if clear {
+            return Some((key, dir, s));
+        }
+        fallback.get_or_insert((key, dir, s));
+    }
+    // Every draw was taken. Somewhere occupied beats nowhere: an agent with no
+    // line is hidden, and a hidden agent is one the pool has lost.
+    fallback
 }
 
 /// How far the car body's origin sits above the road surface.
@@ -960,5 +1559,341 @@ mod tests {
     #[test]
     fn the_recycle_radius_is_outside_the_place_radius() {
         assert!(RECYCLE_RADIUS_M > PLACE_RADIUS_M * 1.2);
+    }
+
+    // ── Trajectory ───────────────────────────────────────────────────────────
+
+    /// A tight corner has to be taken slower than a gentle one, and a straight
+    /// road must impose no limit at all — otherwise the whole cornering model is
+    /// a constant slow-down applied everywhere.
+    #[test]
+    fn a_tighter_corner_is_a_slower_one() {
+        let straight = corner_radius(Vec2::X, Vec2::X, 5.0);
+        let gentle = corner_radius(Vec2::X, Vec2::new(0.95, 0.31).normalize(), 5.0);
+        let square = corner_radius(Vec2::X, Vec2::Y, 5.0);
+        assert_eq!(straight, f32::MAX, "a straight road bends nowhere");
+        assert!(gentle > square, "{gentle} should be wider than {square}");
+        assert!(
+            corner_speed(square) < corner_speed(gentle),
+            "a right angle must be slower than a bend"
+        );
+        // …and a motorway's speed must survive a motorway's curves: a 300 m
+        // radius may not be a reason to brake.
+        assert!(corner_speed(300.0) > 26.0);
+    }
+
+    /// The bend a car slows for is the one **in front of it**. A car reads its
+    /// line in whichever direction it drives it, so the same vertex is a reason
+    /// to brake for one of them and already behind the other.
+    #[test]
+    fn only_the_bend_ahead_is_a_reason_to_slow() {
+        // Straight for 100 m, then a right angle.
+        let net = net_with(&[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]);
+        let l = net
+            .get(LineKey {
+                cell: (0, 0),
+                index: 0,
+            })
+            .expect("one road");
+        // 10 m in, driving forwards: the corner is 90 m away and out of sight.
+        assert_eq!(l.min_turn_radius(10.0, 30.0, 1.0), f32::MAX);
+        // 80 m in: it is 20 m away and must be seen.
+        assert!(l.min_turn_radius(80.0, 30.0, 1.0) < 60.0);
+        // 80 m in going the other way: it is behind.
+        assert_eq!(l.min_turn_radius(80.0, 30.0, -1.0), f32::MAX);
+    }
+
+    /// The junction curve has to begin exactly where the agent is, pointing
+    /// where it is pointing, and finish exactly on the new road's lane at its
+    /// heading. That is the whole reason it exists: anything approximate at
+    /// either end is the pop it was built to remove.
+    #[test]
+    fn a_junction_turn_is_exact_at_both_ends() {
+        let mut turn = Turn {
+            from: Vec2::new(10.0, 0.0),
+            from_dir: Vec2::X,
+            to: Vec2::new(14.0, 4.0),
+            to_dir: Vec2::Y,
+            len: 8.0,
+            t: 0.0,
+        };
+        let (p0, d0) = turn.pose();
+        assert!(p0.distance(turn.from) < 1e-3, "{p0} != {}", turn.from);
+        assert!(d0.distance(Vec2::X) < 1e-3, "leaves along the old road");
+        turn.t = 1.0;
+        let (p1, d1) = turn.pose();
+        assert!(p1.distance(turn.to) < 1e-3, "{p1} != {}", turn.to);
+        assert!(d1.distance(Vec2::Y) < 1e-3, "joins along the new road");
+        // And it stays a curve in between: every sample is a unit heading and
+        // the path does not double back on itself.
+        let mut last = p0;
+        for step in 1..=20 {
+            turn.t = step as f32 / 20.0;
+            let (p, d) = turn.pose();
+            assert!((d.length() - 1.0).abs() < 1e-3, "heading not unit at {p}");
+            assert!(p.distance(last) > 0.0, "the curve stalled");
+            last = p;
+        }
+    }
+
+    /// A right-angle turn must be taken slower than a straight-through
+    /// continuation, or the corner curve is decoration.
+    #[test]
+    fn a_sharp_junction_turn_is_taken_slowly() {
+        let corner = Turn {
+            from: Vec2::ZERO,
+            from_dir: Vec2::X,
+            to: Vec2::new(6.0, 6.0),
+            to_dir: Vec2::Y,
+            len: 9.0,
+            t: 0.0,
+        };
+        let ahead = Turn {
+            to: Vec2::new(9.0, 0.0),
+            to_dir: Vec2::X,
+            ..corner
+        };
+        assert!(corner.speed_limit() < 8.0, "{}", corner.speed_limit());
+        assert!(
+            ahead.speed_limit() > corner.speed_limit() * 4.0,
+            "driving straight on through a node is not cornering"
+        );
+    }
+
+    /// The drawn heading chases the path's and never jumps to it. The rate limit
+    /// is the whole mechanism, so both halves are asserted: it moves, and it
+    /// moves by no more than it is allowed to.
+    #[test]
+    fn a_heading_turns_at_a_bounded_rate() {
+        let mut h = Vec2::X;
+        let target = Vec2::new(-1.0, 0.0);
+        let mut steps = 0;
+        while h.distance(target) > 1e-2 && steps < 1000 {
+            let next = rotate_toward(h, target, 0.1);
+            let turned = (h.x * next.y - h.y * next.x).atan2(h.dot(next)).abs();
+            assert!(turned <= 0.1 + 1e-4, "turned {turned} rad in one step");
+            h = next;
+            steps += 1;
+        }
+        assert!(steps > 20, "a half turn at 0.1 rad a step cannot be quick");
+        assert!(h.distance(target) < 1e-2, "never got there");
+    }
+
+    // ── Spread ───────────────────────────────────────────────────────────────
+
+    /// Placement is a distribution, not an argmax. A long fast road takes the
+    /// larger share and a short slow one still gets picked — the old
+    /// three-draws-keep-the-fastest rule failed both halves of that.
+    #[test]
+    fn placement_favours_the_bigger_road_without_starving_the_smaller() {
+        let mut net = DriveNetwork::default();
+        let mut fast = line(&[[0.0, 0.0], [400.0, 0.0]], Flow::Both);
+        fast.speed = 22.0;
+        let mut alley = line(&[[0.0, 20.0], [40.0, 20.0]], Flow::Both);
+        alley.speed = 4.5;
+        net.insert_cell((0, 0), 0.0, 0.0, vec![fast, alley]);
+        let keys = [
+            LineKey {
+                cell: (0, 0),
+                index: 0,
+            },
+            LineKey {
+                cell: (0, 0),
+                index: 1,
+            },
+        ];
+        let cum = weigh(&net, &keys, AgentKind::Car);
+        let mut tally = [0usize; 2];
+        for i in 0..1000 {
+            let r = i as f32 / 1000.0;
+            let k = draw_line(&keys, &cum, r).expect("a line");
+            tally[k.index] += 1;
+        }
+        assert!(tally[0] > tally[1] * 4, "{tally:?} — the avenue should win");
+        assert!(tally[1] > 20, "{tally:?} — but the alley is not starved");
+    }
+
+    /// An agent is dropped on the part of a road that is in front of the camera.
+    /// The candidate list holds every line with *any* point in range, so without
+    /// this a long road clipping the edge of the disc receives agents anywhere
+    /// along its whole length — most of them outside the recycle radius and
+    /// thrown away on the next frame.
+    #[test]
+    fn a_recycled_agent_lands_near_the_camera() {
+        // 2 km of road; the camera sits beside one end of it.
+        let pts: Vec<[f32; 2]> = (0..=200).map(|i| [i as f32 * 10.0, 0.0]).collect();
+        let net = net_with(&pts);
+        let keys = [LineKey {
+            cell: (0, 0),
+            index: 0,
+        }];
+        let cum = weigh(&net, &keys, AgentKind::Car);
+        let cam = Vec2::new(1500.0, 30.0);
+        let occupied = HashMap::new();
+        let l = net.get(keys[0]).expect("one road");
+        for agent in 0..50u64 {
+            let (key, dir, s) =
+                place_agent(&net, &keys, &cum, cam, AgentKind::Car, &occupied, agent, 3)
+                    .expect("a spot");
+            let along = if dir > 0.0 { s } else { l.length() - s };
+            let (p, _) = net.get(key).expect("placed line").at(along);
+            assert!(
+                p.distance(cam) <= AgentKind::Car.place_radius() + 1.0,
+                "placed {:.0} m out, outside the disc the pool is sized for",
+                p.distance(cam)
+            );
+        }
+    }
+
+    /// Two agents may not be dropped on the same spot. One car drawn twice a
+    /// metre apart in the same paint reads as a rendering fault, not as traffic.
+    #[test]
+    fn placement_avoids_a_spot_that_is_taken() {
+        let pts: Vec<[f32; 2]> = (0..=40).map(|i| [i as f32 * 10.0, 0.0]).collect();
+        let net = net_with(&pts);
+        let key = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let keys = [key];
+        let cum = weigh(&net, &keys, AgentKind::Car);
+        let cam = Vec2::new(200.0, 0.0);
+        let mut occupied: HashMap<(LineKey, i8), Vec<f32>> = HashMap::new();
+        let mut placed: Vec<(i8, f32)> = Vec::new();
+        for agent in 0..12u64 {
+            let Some((k, dir, s)) =
+                place_agent(&net, &keys, &cum, cam, AgentKind::Car, &occupied, agent, 11)
+            else {
+                continue;
+            };
+            for (d, o) in &placed {
+                if *d == lane_key(dir) {
+                    assert!(
+                        (o - s).abs() > 1.0,
+                        "two agents {:.2} m apart on one lane",
+                        (o - s).abs()
+                    );
+                }
+            }
+            placed.push((lane_key(dir), s));
+            occupied.entry((k, lane_key(dir))).or_default().push(s);
+        }
+        assert!(placed.len() > 6, "hardly anything was placed");
+    }
+
+    /// A car keeps its distance from the one in front. Both ends matter: with
+    /// nobody ahead nothing changes at all, and at contact the speed is zero
+    /// rather than merely reduced.
+    #[test]
+    fn a_car_slows_for_the_one_in_front() {
+        let key = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let mut occupied: HashMap<(LineKey, i8), Vec<f32>> = HashMap::new();
+        // The car itself, at 100 m, and one 10 m in front of it.
+        occupied.insert((key, 1), vec![100.0, 110.0]);
+        assert!(
+            headway_speed(&occupied, key, 1.0, 100.0, 14.0) < 14.0,
+            "a car 10 m behind another is not doing the speed limit"
+        );
+        assert_eq!(
+            headway_speed(&occupied, key, 1.0, 110.0, 14.0),
+            14.0,
+            "the leader is not held up by the car behind it"
+        );
+        // Bumper to bumper.
+        occupied.insert((key, 1), vec![100.0, 100.0 + MIN_HEADWAY_M]);
+        assert_eq!(headway_speed(&occupied, key, 1.0, 100.0, 14.0), 0.0);
+        // Clear road.
+        occupied.insert((key, 1), vec![100.0, 100.0 + HEADWAY_M + 1.0]);
+        assert_eq!(headway_speed(&occupied, key, 1.0, 100.0, 14.0), 14.0);
+        // And a car coming the other way on the same line is not in the way.
+        occupied.insert((key, -1), vec![100.5]);
+        assert_eq!(headway_speed(&occupied, key, 1.0, 100.0, 14.0), 14.0);
+    }
+
+    /// At a junction a car goes **straight on** unless it is choosing to turn.
+    /// Taking whichever line end is nearest — which is what this used to do —
+    /// makes the choice on a metre of survey accuracy, so a car running down a
+    /// main road turned off it whenever a side street happened to be noded a
+    /// fraction closer than the continuation.
+    #[test]
+    fn a_hand_off_prefers_the_road_straight_ahead() {
+        let mut net = DriveNetwork::default();
+        // Arriving eastbound at (100, 0). The continuation runs on east; the
+        // side street turns south and its end is nearer.
+        let straight = line(&[[100.4, 0.0], [300.0, 0.0]], Flow::Both);
+        let side = line(&[[100.1, 0.0], [100.1, 200.0]], Flow::Both);
+        net.insert_cell((0, 0), 0.0, 0.0, vec![straight, side]);
+        let keys: Vec<LineKey> = (0..2)
+            .map(|index| LineKey {
+                cell: (0, 0),
+                index,
+            })
+            .collect();
+        let from = LineKey {
+            cell: (9, 9),
+            index: 0,
+        };
+        let (key, dir) = hand_off(
+            &net,
+            &keys,
+            from,
+            Vec2::new(100.0, 0.0),
+            Vec2::X,
+            AgentKind::Car,
+        )
+        .expect("a road to go on to");
+        assert_eq!(key.index, 0, "took the side street over the continuation");
+        assert_eq!(dir, 1.0);
+    }
+
+    /// …but a dead end is still a dead end. Where the only road on offer doubles
+    /// back, the car takes it rather than vanishing.
+    #[test]
+    fn a_hand_off_doubles_back_only_when_it_must() {
+        let mut net = DriveNetwork::default();
+        net.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            vec![line(&[[100.0, 0.0], [100.0, -80.0]], Flow::Both)],
+        );
+        let keys = [LineKey {
+            cell: (0, 0),
+            index: 0,
+        }];
+        let from = LineKey {
+            cell: (9, 9),
+            index: 0,
+        };
+        let got = hand_off(
+            &net,
+            &keys,
+            from,
+            Vec2::new(100.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            AgentKind::Car,
+        );
+        assert!(got.is_some(), "a car at a dead end has to go somewhere");
+    }
+
+    /// The projection has to be onto the segments, not onto the vertices: a
+    /// simplified line has a vertex every few metres and the placement radius is
+    /// what the answer is compared against.
+    #[test]
+    fn nearest_along_projects_onto_the_line() {
+        let net = net_with(&[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]);
+        let l = net
+            .get(LineKey {
+                cell: (0, 0),
+                index: 0,
+            })
+            .expect("one road");
+        assert!((l.nearest_along(Vec2::new(37.0, 12.0)) - 37.0).abs() < 1e-2);
+        assert!((l.nearest_along(Vec2::new(140.0, 60.0)) - 160.0).abs() < 1e-2);
+        // Past either end it clamps to the end.
+        assert!(l.nearest_along(Vec2::new(-50.0, 0.0)).abs() < 1e-2);
     }
 }

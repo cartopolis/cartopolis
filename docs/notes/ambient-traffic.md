@@ -2,8 +2,8 @@
 topic: ambient-traffic
 triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffic",
   DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
-  "Life layer", life_enabled, cars_visible, people_enabled, "layer toggle"]
-updated: 2026-08-29
+  "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle"]
+updated: 2026-09-10
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -247,3 +247,106 @@ tessellated geometry and shore rasters, and a POI's category reaches
 need a proximity index built first, which is the actual work — the synthesis and
 the ramp are the easy half, and copying this one would take an afternoon once the
 index exists.
+
+## The motion, and what "rudimentary" meant (2026-09-10)
+
+The first version of this layer answered "is this street alive" and stopped
+there: a car read its speed straight off the road, its heading straight off the
+polyline, and changed road by having all three of those replaced between two
+frames. Every one of those is a **step function**, and a step is exactly what an
+eye picks out of a moving picture. Four of them, in the order they are visible:
+
+- **Speed was assigned, not eased.** A car handed from a residential street onto
+  a trunk road went from 7.5 m/s to 22 m/s in one frame, and a recycled car
+  appeared already at its road's speed. It is a rate now (`CAR_ACCEL` /
+  `CAR_BRAKE`, and a walker's own gentler pair), and what it eases *toward* is
+  the least of three things — the road, the bend ahead and the car in front.
+- **A junction was a cut.** The hand-off replaced the line, the direction and the
+  lane offset at once, so the car's nose snapped through the whole turn angle and
+  its body jumped across the road by the two lane offsets — plus up to
+  `HANDOFF_M` more where the two lines do not share a node. Roads meet at
+  junctions constantly, so this was most of what the motion looked like. The
+  junction is *driven* now (`Turn`): the exit pose of the old road and the entry
+  pose of the new one are the two ends of a cubic Hermite curve whose tangents
+  are the two travel directions, and the car follows it at a speed derived from
+  how tight it is. The curve is exact at both ends by construction, so there is
+  nothing left to pop. It is also the only place the layer models something the
+  centre lines do not contain: **the corner itself is not in the data** — two
+  lines meet at a point, and how far a vehicle swings getting from one to the
+  other is set by how wide the two roads are.
+- **The heading was the polyline's tangent.** A simplified line changes direction
+  in steps, and a vehicle cannot: at every vertex the yaw jumped by the whole
+  bend. The drawn heading is a rate-limited chase of the path's
+  (`TURN_RATE_PER_MS`), and the rate is per m/s of the agent's own speed because
+  a vehicle turns through a *radius*, not at a fixed rate.
+- **Nothing slowed for a bend.** A simplified line has no curvature, only kinks,
+  so the radius is the one an arc tangent to both segments would have if it were
+  allowed to eat half the shorter of them; `v = √(a·r)` at `CORNER_LAT_ACCEL`
+  turns that into a speed. `corner_radius` is shared with the junction turns, or
+  a car that slows for a bend in a street and then takes the right angle at its
+  end flat out would be worse than one that does neither.
+
+And one that is not motion at all: a car was oriented by **yaw alone**, so over
+the measured terrain it kept its wheels in the horizontal plane and sank into
+every rise. The height was already read from `TerrainField`; the slope is one
+more read of it (`normal_at`, which answers `Vec3::Y` wherever the field is off
+or absent, so it costs nothing outside the Netherlands). People stay upright.
+
+## Spread: a distribution, not an argmax
+
+The 2026-08-26 fix for "one car in view" was **three uniform draws, keep the
+fastest road**. Both halves of that are wrong, and it is worth writing down
+because each is wrong in a different direction:
+
+- A **uniform draw** makes a 30 m service stub as likely as a 400 m avenue, so
+  most of the pool still went to back lanes. Length is most of what "how much
+  traffic does this road carry" means.
+- **Keeping the maximum of three draws** over a speed range of 4.5 to 26 m/s is
+  very nearly deterministic. Once a trunk road was in range almost every recycled
+  car went onto it and the ordinary streets emptied — the opposite failure, from
+  the same fix.
+
+So a line's share is its length (capped at the diameter of the placement disc,
+since nothing past that is in range) times how much traffic a road of its class
+carries — the speed ratio, *softened* by a 0.7 power, because a city where every
+side street is empty is as wrong as one where the main road is. `weigh` builds
+the cumulative table once per frame beside the candidate list; `draw_line` is a
+binary search. Walkers weight by length alone: a busy pavement is busy because
+the street is long, not because it is fast.
+
+Two more things placement now does, both of which were losing agents outright:
+
+- **It lands them in front of the camera.** `near` returns every line with *any*
+  point in range, and placement then drew a distance along the whole of it — so a
+  900 m avenue clipping the edge of the disc received cars anywhere along its
+  length, most of them outside the recycle radius and thrown away on the next
+  frame. `nearest_along` projects the camera onto the line and the draw is a
+  spread around that.
+- **It refuses a spot that is taken.** Two of one pool landing on the same street
+  a metre apart draws one car twice, in the same paint, which reads as a
+  rendering fault rather than as traffic.
+
+## One thing the note above said this would never do
+
+The "what this deliberately is not" list still holds for signals, give-way,
+collision and avatar interaction. **Headway does not**: a car now sits behind a
+slower one instead of driving through it (`HEADWAY_M`). The reason it is worth
+the exception is that it costs nothing new — placement already needs a map of
+where every agent is, keyed by its line, so "what is in front of me" is one
+lookup in a table that is built either way. It is the only pair that can visibly
+interpenetrate: two cars on one street at different speeds converge and then
+overlap for as long as it takes one of them to be recycled. Walkers are exempt;
+at 1.25 m/s two of them passing through each other is not what anybody is
+looking at, and a pavement nobody can overtake on is worse than one where they
+do.
+
+There is no deadlock in it: the block is always by an agent with a strictly
+larger distance along the same line in the same direction, so the chain is
+finite and its head is never blocked.
+
+**Still unverified, and by the same argument as before.** This container cannot
+watch a moving frame, so smoothness, the junction curve and the absence of a pop
+on recycle are reasoned about and pinned by unit tests on the pure parts —
+`a_junction_turn_is_exact_at_both_ends`, `a_heading_turns_at_a_bounded_rate`,
+`only_the_bend_ahead_is_a_reason_to_slow` — not watched. A still cannot show any
+of it.
