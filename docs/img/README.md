@@ -11,9 +11,9 @@ cargo shots
 ```
 
 Don't edit or replace them by hand: change the camera position in
-`docs/shots.toml` (the dev panel's **📋 Copy as preset** button writes the block
-for you) and re-run.
+`docs/shots.toml` (the dev panel's View tab has a **📋 Copy as preset** button
+that writes the block for you) and re-run.
 
 `screenshot-1.png` … `screenshot-3.png` are scratch slots for one-off in-app
-captures (developer panel ▸ **📷 Capture slot N**). Nothing links to them.
+captures (developer panel ▸ View ▸ **📷 Capture slot N**). Nothing links to them.
 See [Taking screenshots](../manual.md#taking-screenshots).

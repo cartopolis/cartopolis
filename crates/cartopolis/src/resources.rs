@@ -342,16 +342,19 @@ pub struct DebugSwitches {
     pub no_dual_source: bool,
     #[serde(default)]
     pub no_space_raymarch: bool,
+    #[serde(default)]
+    pub gpu_timings: bool,
 }
 
 impl DebugSwitches {
     /// Every switch, as `(env name, label, what it proves)`.
     ///
     /// The order is the order a render problem is bisected in: the two that split
-    /// *this* sky bug first, then the layers, outermost first. The help text is
+    /// *this* sky bug first, then the layers, outermost first — and last the one
+    /// that adds an instrument rather than removing a layer. The help text is
     /// written for somebody holding a phone with no log, so it says what the
     /// answer *means* rather than what the switch does.
-    pub const SWITCHES: [(&'static str, &'static str, &'static str); 8] = [
+    pub const SWITCHES: [(&'static str, &'static str, &'static str); 9] = [
         (
             "CARTO_GROUND_RAYMARCH",
             "Raymarch the sky at ground level",
@@ -402,6 +405,21 @@ impl DebugSwitches {
              limb; says whether the raymarch is what a slow orbit view is paying \
              for.",
         ),
+        // The one switch here that adds rather than removes, and the one that can
+        // take the app down with it: bevy's `RenderDiagnosticsPlugin` reads its
+        // GPU timestamp buffers back on a task-pool thread, and on this project's
+        // Mesa/Intel host that readback panicked in `Buffer::get_mapped_range`
+        // during startup (`frame_pacing`'s note has the measurement). So it is
+        // off by default, on any hardware, and the Developer tools' Profiler tab
+        // is where it is switched on and where the warning is written.
+        (
+            "CARTO_GPU_TIMINGS",
+            "Time the GPU passes",
+            "Adds per-pass GPU and CPU timings to the Profiler tab. Needs Vulkan \
+             or DX12 — on Metal and the web the columns stay empty. Some drivers \
+             crash on the timestamp readback, so if the app dies at startup with \
+             this on, that is the answer.",
+        ),
     ];
 
     /// The field behind an env name, or `None` if this switch has no preference.
@@ -419,6 +437,7 @@ impl DebugSwitches {
             "CARTO_NO_OCEAN" => self.no_ocean,
             "CARTO_NO_DUAL_SOURCE" => self.no_dual_source,
             "CARTO_NO_SPACE_RAYMARCH" => self.no_space_raymarch,
+            "CARTO_GPU_TIMINGS" => self.gpu_timings,
             _ => return None,
         })
     }
@@ -434,6 +453,7 @@ impl DebugSwitches {
             "CARTO_NO_OCEAN" => &mut self.no_ocean,
             "CARTO_NO_DUAL_SOURCE" => &mut self.no_dual_source,
             "CARTO_NO_SPACE_RAYMARCH" => &mut self.no_space_raymarch,
+            "CARTO_GPU_TIMINGS" => &mut self.gpu_timings,
             _ => return None,
         })
     }
@@ -570,13 +590,6 @@ pub struct AppPrefs {
     /// `AMBIENT_DAY_BRIGHTNESS_NO_IBL` exists to stand in for it.
     #[serde(default)]
     pub sky_lighting: Option<bool>,
-    /// The frame-time / draw-count overlay.
-    ///
-    /// Not a developer-only readout any more: it is the one control here whose
-    /// whole purpose is to let somebody *check* what the rest of the tab did, and
-    /// on a handset it is the only frame counter there is.
-    #[serde(default)]
-    pub show_stats: bool,
     /// Hold the connection open while the app is off screen
     /// (`systems::background`, `ConnectionService.java`).
     ///
@@ -638,7 +651,6 @@ impl Default for AppPrefs {
             ambient_occlusion: None,
             light_shafts: None,
             sky_lighting: None,
-            show_stats: false,
             background_connection: false,
             debug_switches: DebugSwitches::default(),
         }
@@ -824,7 +836,9 @@ impl<'de> serde::Deserialize<'de> for SunMode {
 /// is not a control on a handset and because "what time is it here" is the least
 /// developer-ish question in the client. What stayed behind Ctrl+Shift+D is
 /// measurement: frame timing, draw counts, upload and residency, pipeline health,
-/// and the capture tools. See [`crate::systems::ui::render_dev_panel`].
+/// Bevy's own diagnostics, the capture tools, and the `CARTO_*` startup switches
+/// — which came back the other way, out of Settings ▸ Graphics, for the mirror of
+/// this reason. See [`crate::systems::dev_panel::render_dev_panel`].
 ///
 /// What this struct must *not* grow is a render setting. Those moved to
 /// [`AppPrefs`] and Settings ▸ Graphics, and the reason is still live: nothing
@@ -941,25 +955,14 @@ pub struct ScreenshotState {
     pub capture_requested: bool,
 }
 
-/// Smoothed runtime stats for the dev overlay. Kept **separate** from
-/// [`DevPanelState`] on purpose: it updates every frame, and mutating
-/// `DevPanelState` each frame would trip its `is_changed()` gate and re-run the
-/// day/night lighting recompute continuously.
-#[derive(Resource, Default)]
-pub struct StatsState {
-    /// Exponential moving average of frames per second.
-    pub fps: f32,
-    /// Exponential moving average of frame time in milliseconds.
-    pub frame_ms: f32,
-}
-
 /// The last completed one-second window of frame timing, for the shareable
 /// diagnostics report.
 ///
-/// **Why this is not [`StatsState`].** That one is an EMA written from `ui.rs`,
-/// so it only exists while the dev overlay is being drawn — on a handset, where
-/// the overlay is usually closed and there is no terminal to read `CARTO_FPS_LOG`
-/// from, it is never written at all. This is written unconditionally by
+/// **It is the only frame measurement left.** There used to be a second one — a
+/// per-frame exponential moving average written by the map's performance
+/// overlay, which existed only while that overlay was being drawn, i.e. never on
+/// the handset that most needed it. The overlay is gone (the Developer tools'
+/// Frame tab is the readout now) and this is written unconditionally by
 /// `lib.rs::frame_stats` from the same accumulator that feeds the `frame stats`
 /// log line, so `systems::dev::diagnostics` can report a real frame time in a
 /// report the user taps once and sends.
@@ -1906,7 +1909,6 @@ mod tests {
             ambient_occlusion: Some(false),
             light_shafts: Some(true),
             sky_lighting: Some(true),
-            show_stats: true,
             // Non-default, like everything else here: the field defaults to
             // `false`, so a round trip that left it `false` would pass with the
             // field missing from the document entirely.
@@ -1994,7 +1996,6 @@ mod tests {
         assert_eq!(prefs.sky, SkyPreference::Auto);
         assert_eq!(prefs.shadows, None);
         assert_eq!(prefs.sky_lighting, None);
-        assert!(!prefs.show_stats);
     }
 
     /// A file written before the levels existed must not arrive silent.

@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud"]
-updated: 2026-08-17
+updated: 2026-09-10
 ---
 
 # The map chrome
@@ -75,8 +75,8 @@ Five discs along the bottom edge (`dock.rs`), reading outwards from the map:
 
 Layers went the other way, to a disc in the **top-left corner** above the compass
 (`dock::reserved_top`, read by `hud::render_map_controls`). It is the map's own
-settings rather than a destination, which is the same thing the compass, the
-locate button and the ⓘ toggle under it are.
+settings rather than a destination, which is the same thing the compass and the
+locate button under it are.
 
 The menu disc closes the row. It was the app's own **mark** at first — the way
 into "everything else" being the logo, which is the affordance the corner card
@@ -90,9 +90,18 @@ measured from the disc would move under a menu that should not move.
 
 **One menu on every viewport**, and it holds what has nowhere else to be: the
 account (first, and a single **Log out** once there is a session), the camera
-mode, Appearance, the Assistant, Settings, About, the status readout, developer
-tools, diagnostics, Exit. A menu whose contents depend on the window width is two
-menus.
+mode, Appearance, the Assistant, Settings, About, developer tools, diagnostics,
+Exit. A menu whose contents depend on the window width is two menus.
+
+**Three entries are session-bound**: Nearby chat, Models and — since
+2026-09-10 — Appearance. The first two are obvious (there is nobody to have said
+anything, and an inventory belongs to an account). Appearance is the arguable
+one, and it costs something real: an offline avatar is on screen wearing whatever
+`user.json` last remembered, and this hides the only way to change a body you can
+still see. The argument for it anyway is that an appearance is a thing other
+people look at — that is what it is *for* — so alone on the map the panel is a
+wardrobe with no occasion. Nothing is lost; the saved choice comes back with the
+session that gives it a point.
 
 **What left it, and why.** Back / Forward / Home and Set Home / Copy link went to
 the **Search panel** — a history belongs beside the field you navigate with, and
@@ -110,12 +119,17 @@ look like, and three list rows for it pushed Exit below the fold.
 
 ### Consequences worth knowing
 
-- **The status readout is off by default** (`hud::StatusHud`). It is an
-  instrument panel — clock, position, altitude, the sun and weather switchers —
-  and the two *verbs* it carried have gone where their results appear: ☆ into the
-  Places panel, Set Home and Copy link into the Search panel. The ⓘ disc at the
-  foot of the top-left column brings it back. The column is measured, not pinned:
-  the locate button above it only exists when there is an avatar.
+- **The status readout is gone** (2026-09-10), and so is the performance
+  overlay. Both were anchored boxes over the map that duplicated a panel: the
+  readout's position, altitude and street address are the Developer tools' View
+  tab, its sun and weather chips are Settings ▸ World, and the overlay's frame
+  rate and entity count are the Frame tab, which says considerably more (worst
+  frame, jitter, triangles by producer, upload bytes, residency). Both existed
+  because the panel holding those numbers was once behind a keyboard chord —
+  which stopped being true when Developer tools got a menu entry, and neither
+  removal was made until somebody noticed the reason had expired. The
+  top-left column is compass and locate only now; it is measured, not pinned,
+  since the locate button only exists when there is an avatar.
 - **`dock::reserved_top` / `reserved_bottom` are the two edges** everything else
   anchors against. A second copy of that arithmetic is how the scale bar and the
   thumbstick drift when the dock grows an entry.
@@ -221,5 +235,8 @@ not quite booleans:
 - `--ui search` opens the Search panel *and* seeds a query through
   `GeoNavState::seed_search` (`CARTO_SEARCH_QUERY` overrides it). A capture of an
   empty field would document nothing.
-- `--ui hud` switches the status readout on, since it is off by default now. Any
-  older manifest that expected it in frame has to say so.
+- `--ui profiler` and `--ui switches` open Developer tools *on a named tab*. A
+  tab is not reachable by opening the window alone, so `--ui dev` alone
+  photographs whichever tab the enum defaults to — the same trap `--ui graphics`
+  exists to avoid for Settings. `--ui hud` and `--ui stats` are gone with the two
+  overlays they opened.

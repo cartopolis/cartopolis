@@ -1716,8 +1716,7 @@ fn menu_entry_full(
 ///
 /// It takes its height from the enclosing `interact_size` rather than pinning
 /// one, which is what keeps it finger-sized inside a box that has already raised
-/// that floor for the touch tier (see `hud::hud_area`) without making it a
-/// 32 pt slab on a desktop.
+/// that floor for the touch tier without making it a 32 pt slab on a desktop.
 pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     ui.add(chip_button(label, selected))
 }

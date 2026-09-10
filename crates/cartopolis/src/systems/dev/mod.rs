@@ -3,6 +3,7 @@
 pub mod adaptive_quality;
 pub mod debug;
 pub mod desktop_integration;
+pub mod dev_panel;
 pub mod diagnostics;
 pub mod frame_pacing;
 pub mod perf;

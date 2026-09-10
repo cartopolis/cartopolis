@@ -78,7 +78,7 @@ Movement is camera-relative. The full input reference:
 | Right-click | Context menu (create / edit / delete prims) |
 | T / R / S | Gizmo mode: translate / rotate / scale |
 | Delete / Backspace | Delete selected prims |
-| Ctrl + Shift + D | Toggle the developer panel (frame rate, draw counts, etc.) |
+| Ctrl + Shift + D | Toggle the developer panel (frame rate, draw counts, profiler) |
 | Ctrl + Shift + A | Toggle the AI assistant panel |
 
 ### Camera modes
@@ -258,7 +258,9 @@ places you navigate between. One at a time; clicking the lit one closes it.
 The rest live in the **address bar's ☰ menu**, because they are things you visit
 rather than flip while looking at the map:
 
-- **Appearance** — pick your avatar.
+- **Appearance** — pick your avatar. Only when you are signed in to a simulator:
+  an appearance is something other people look at, so offline there is no
+  occasion for one. Your saved choice comes back with the session.
 - **Assistant** (Ctrl + Shift + A) — the [AI assistant](#ai-assistant).
 - **Developer tools** (Ctrl + Shift + D) — the [developer panel](#developer-panel).
 
@@ -322,10 +324,14 @@ not a control panel** — what this run is doing, measured live. The things you
 *set* are in Settings: the time of day and the weather under **World**, and what
 the machine spends drawing the scene under **Graphics**.
 
-- **Frame** — frame rate, mean frame time, the worst single frame of the last
-  second, and jitter. The three are separate on purpose: a good mean beside a bad
-  worst is a hitch, and a good mean beside high jitter is a pacing problem rather
-  than a load one.
+It has four tabs.
+
+**Frame** — is it fast, and what is it drawing?
+
+- Frame rate, mean frame time, the worst single frame of the last second, and
+  jitter. The four are separate on purpose: a good mean beside a bad worst is a
+  hitch, and a good mean beside high jitter is a pacing problem rather than a
+  load one.
 - **Drawn** — draw calls, entities, and triangles split by what produced them
   (buildings, 3DBAG, map tiles, globe), plus how many of them cast shadows and so
   get re-drawn by every cascade.
@@ -335,15 +341,42 @@ the machine spends drawing the scene under **Graphics**.
   total exhausts an allocator — so both are here. Below them, whether the GPU
   pipelines this frame needs actually compiled; a failed one is a silent hole in
   the picture, and it is named here.
-- **View** — where the camera is (lat/lng, altitude, look angles) and which tier
-  it is in, including the 0–1 crossfade the space tier rides.
-- **Readouts** — a switch for the on-map frame overlay, which is the same one in
-  Settings ▸ Graphics (it is the only frame counter a phone has).
-- **README screenshots** — see below.
 
-Everything in the first four groups was already being measured for the log, the
-`--dump-state` metrics or the shareable diagnostics report. The panel is a window
-onto them, not a new instrument.
+**View** — where the camera is (lat/lng, altitude, look angles) and which tier it
+is in, including the 0–1 crossfade the space tier rides; the nearest street
+address to your avatar; and the screenshot tools described below.
+
+**Profiler** — Bevy's own diagnostics, read live:
+
+- **Engine** — the engine's frame rate, frame time, frame count and entity count.
+  Measured differently from the Frame tab (a rolling smoothed history against a
+  closed one-second window), so a disagreement between the two means the last
+  second was not like the seconds before it.
+- **Mesh allocator** — the slabs the engine packed your meshes into, and their
+  total size. The gap between this and the Frame tab's *resident* figure is
+  fragmentation.
+- **Process** — CPU as a percentage of one core, and memory as a percentage of
+  system memory. Only in a build made with `--features perf`, because it pulls an
+  extra dependency; the tab says so when it is absent.
+- **GPU passes** — per-pass GPU time and fragment-shader invocations. Off by
+  default: it needs GPU timestamp queries (Vulkan and DX12 only), and some
+  drivers crash on the readback. Switch on **Time the GPU passes** under Switches
+  and restart. Fragment invocations are the number worth trusting across
+  machines, because it is a count rather than a time.
+
+**Switches** — the `CARTO_*` startup switches, each of which removes one layer of
+the renderer (no sky, no haze, no reflections, no globe ocean, …) or adds an
+instrument. They are for bisecting a render problem: several make the picture
+worse on purpose, so a run with one on is a run whose rendering proves nothing.
+All are read once at startup — set one and restart. The tab says how many are on,
+because the answer to "why does it look like that" has to be findable without
+remembering that you set one last week. These used to be at the foot of
+Settings ▸ Graphics.
+
+Almost nothing here is a new instrument: the Frame and View tabs are a window
+onto measurements already taken for the log, the `--dump-state` metrics and the
+shareable diagnostics report, and the Profiler is Bevy's own diagnostics, which
+until now only a `cargo perf` run could read.
 
 ## Taking screenshots
 
@@ -368,7 +401,7 @@ needs no display, it is a build step: it works over SSH and in CI.
 
 **Adding or moving a view.** Fly there in the app, set the time and weather you
 want in **Settings ▸ World**, then open the dev panel (**Ctrl + Shift + D**) and
-click **📋 Copy as preset** — the current camera lands
+go to its **View** tab and click **📋 Copy as preset** — the current camera lands
 on the clipboard as a `[[shot]]` block (position, look angles, time of day, fog,
 cloud) ready to paste into `docs/shots.toml` under a new name. From then on that
 viewpoint is reproducible instead of something to re-find every release.
@@ -388,7 +421,7 @@ quietly doing nothing.
 The dev panel also has a one-click screenshot tool for capturing clean,
 chrome-free images from wherever the camera is (for sharing or a quick look):
 
-1. Open the dev panel (**Ctrl + Shift + D**).
+1. Open the dev panel (**Ctrl + Shift + D**) and go to its **View** tab.
 2. Frame the shot — pick a camera mode, position, and time of day.
 3. Click **📷 Capture slot N**.
 

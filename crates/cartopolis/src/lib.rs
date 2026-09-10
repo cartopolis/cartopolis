@@ -55,7 +55,7 @@ use components::Avatar;
 use resources::{
     AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
     ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState,
-    MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
+    MouseState, OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
 };
 use systems::egui_manager::EguiPlugin;
 use systems::*;
@@ -1752,6 +1752,38 @@ fn run_client() {
         bevy::asset::io::AssetSourceBuilder::new(|| Box::new(model_assets::SimAssetReader)),
     );
 
+    // **Bevy's own diagnostics, in every build** — the three that cost a counter
+    // and an atomic. They feed the Developer tools' Profiler tab
+    // (`systems::dev_panel::profiler_tab`), which is the reason they are no
+    // longer confined to a `cargo perf` run: an engine measurement that is only
+    // available on a scripted flight is unavailable in exactly the situation
+    // somebody wants it, which is "this device is slow right now".
+    //
+    // The two that are *not* here are absent for reasons of their own, and the
+    // Profiler tab says so on screen rather than showing an empty table:
+    // `SystemInformationDiagnosticsPlugin` needs `bevy/sysinfo_plugin` (a
+    // build-time dependency, so it rides the `perf` feature below), and
+    // `RenderDiagnosticsPlugin` reads GPU timestamps back on a task-pool thread
+    // — a readback that panicked at startup on this project's Mesa/Intel host
+    // (`frame_pacing`'s note), so it is behind the `CARTO_GPU_TIMINGS` switch.
+    //
+    // None of them asks anything new of the device: `WgpuSettings` defaults to
+    // `Functionality` priority, under which `initialize_renderer` already
+    // enables every feature the adapter reports.
+    app.add_plugins((
+        bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+        bevy::diagnostic::EntityCountDiagnosticsPlugin::default(),
+        bevy::render::diagnostic::MeshAllocatorDiagnosticPlugin,
+    ));
+    // Process CPU and memory, both as **percentages** (of one core, and of total
+    // system memory). Its own docs warn the sample is not taken per frame and may
+    // be stale, so it is a trend rather than a reading.
+    #[cfg(feature = "perf")]
+    app.add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin);
+    if env_flag("CARTO_GPU_TIMINGS") {
+        app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+    }
+
     app.add_plugins(default_plugins)
         // `BigSpaceTimingStatsPlugin` is disabled rather than the group being
         // swapped for `BigSpaceMinimalPlugins`, and the difference matters: the
@@ -1835,13 +1867,13 @@ fn run_client() {
             _ => OsmTileUrlTemplate::default(),
         })
         .init_resource::<systems::settings::SettingsState>()
-        // The dock's mark disc and the card it opens (`systems::ui`), and whether
-        // the status readout is showing (`systems::hud`, off until the ⓘ disc
-        // under the compass is pressed).
+        // The dock's mark disc and the card it opens (`systems::ui`).
         .init_resource::<systems::ui::MainMenu>()
         // The place card a picked search result opens (`systems::place_card`).
         .init_resource::<systems::place_card::PlaceCard>()
-        .init_resource::<systems::hud::StatusHud>()
+        // Which screen of the developer panel is showing
+        // (`systems::dev_panel`) — a resource so `--ui profiler` can name one.
+        .init_resource::<systems::dev_panel::DevTools>()
         .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
         // What the on-screen navigation controls asked for this frame
         // (`systems::map_osd`); read by `free_camera::camera_controls`.
@@ -1890,7 +1922,6 @@ fn run_client() {
             precipitation: cli.rain.unwrap_or(0.0).clamp(0.0, 1.0),
             ..default()
         })
-        .init_resource::<StatsState>()
         .init_resource::<resources::FrameStats>()
         .init_resource::<resources::ScreenshotState>()
         // The tier's ceiling on bytes uploaded to the GPU per frame, and the only
@@ -2168,28 +2199,15 @@ fn run_client() {
     // The performance suite rides the harness above: same teleport, same settle
     // test, same shutter. All it adds is when to measure.
     if let Some(run) = perf_run {
-        // Bevy's own diagnostics, which is most of what the suite reports. None of
-        // these asks anything new of the device: `WgpuSettings` defaults to
-        // `Functionality` priority, under which `initialize_renderer` already
-        // enables every feature the adapter offers — so the GPU queries are there
-        // if the hardware has them, and the columns come back absent if not.
-        //
-        // Behind the `perf` feature because each adds per-frame work — the render
-        // ones add it to the render app — and a shipped build should carry none of
-        // it.
-        #[cfg(feature = "perf")]
-        app.add_plugins((
-            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
-            bevy::diagnostic::EntityCountDiagnosticsPlugin::default(),
-            // Process CPU and memory, both as **percentages** (of one core, and of
-            // total system memory). Needs `bevy/sysinfo_plugin`, which pulls the
-            // `sysinfo` crate — acceptable only because it enters a profiling build
-            // alone. Its own docs warn the sample is not taken per frame and may be
-            // stale, so it is a trend rather than a reading.
-            bevy::diagnostic::SystemInformationDiagnosticsPlugin,
-            bevy::render::diagnostic::RenderDiagnosticsPlugin,
-            bevy::render::diagnostic::MeshAllocatorDiagnosticPlugin,
-        ));
+        // The per-pass GPU timings, which the suite's report is half built on. They
+        // are behind `CARTO_GPU_TIMINGS` for every other launch (see the plugin
+        // block above) because the readback can take a driver down at startup — but
+        // a `cargo perf` run is a measurement run by definition, so it opts itself
+        // in. Guarded, because the switch may already have added it and bevy
+        // answers a duplicate plugin with a panic.
+        if !app.is_plugin_added::<bevy::render::diagnostic::RenderDiagnosticsPlugin>() {
+            app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+        }
         app.insert_resource(run)
             .init_resource::<systems::perf::PerfProgress>()
             .init_resource::<systems::perf::MeshChurn>()
@@ -2767,21 +2785,15 @@ fn run_client() {
                 // panel never draws a frame over the card it just opened.
                 systems::place_card::render_place_card.before(systems::ui::render_main_menu),
                 systems::ui::toggle_ai_panel_shortcut,
-                systems::ui::toggle_dev_panel_shortcut,
+                systems::dev_panel::toggle_dev_panel_shortcut,
                 // Nested to stay under the per-tuple system limit: the driver runs after
                 // the panel so a button click is seen the same frame it's captured.
                 (
-                    systems::ui::render_dev_panel,
-                    systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
+                    systems::dev_panel::render_dev_panel,
+                    systems::ui::drive_screenshots.after(systems::dev_panel::render_dev_panel),
                 ),
-                systems::ui::render_stats_overlay.after(systems::ui::render_main_menu),
                 // The right-hand panel chain lives in Phase 7b, declared once with
                 // `.chain()`. A panel added here rather than there is NOT in it.
-                (
-                    systems::hud::render_hud.after(systems::ui::render_main_menu),
-                    // Draws a root-`Ui` panel as well as the bottom bar's `Area`, so it
-                    // belongs in the chain below — last, after the route panel.
-                ),
                 systems::data_layers::render_poi_popup
                     .after(systems::ui::render_main_menu)
                     .after(systems::free_camera::camera_controls),
@@ -2802,9 +2814,9 @@ fn run_client() {
                         .after(systems::transit_live::update_world_clock),
                     sky::advance_day_cycle.before(sky::apply_day_night_cycle),
                 ),
-                sky::apply_day_night_cycle.after(systems::ui::render_dev_panel),
-                sky::manage_lights.after(systems::ui::render_dev_panel),
-                sky::apply_distance_fog.after(systems::ui::render_dev_panel),
+                sky::apply_day_night_cycle.after(systems::dev_panel::render_dev_panel),
+                sky::manage_lights.after(systems::dev_panel::render_dev_panel),
+                sky::apply_distance_fog.after(systems::dev_panel::render_dev_panel),
                 sky::update_window_glow,
                 // Ambient traffic: one transform write per car per frame, and no
                 // asset touched after startup (`systems::traffic`).

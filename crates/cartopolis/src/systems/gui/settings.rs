@@ -25,7 +25,20 @@
 //! Graphics is **what this machine spends on the picture**; World is **what the
 //! picture is of**. A new control belongs on whichever side of that answers it,
 //! and a control that belongs on neither is probably a measurement, which is
-//! what [`crate::systems::ui::render_dev_panel`] kept.
+//! what [`crate::systems::dev_panel::render_dev_panel`] kept.
+//!
+//! **Two things went back the other way in 2026-09-10**, and both are the same
+//! test applied honestly. The performance overlay was a Graphics checkbox for a
+//! box of frame rate and entity count over the map: not a setting, a readout,
+//! and one the Developer tools' Frame tab already gave in more detail — deleted.
+//! The `CARTO_*` bisecting switches were a collapsed section at the foot of this
+//! tab whose own header had to explain that they are not quality knobs: several
+//! of them make the picture worse on purpose, and a run with one on is a run
+//! whose rendering proves nothing. A section that must apologise for the panel it
+//! is in belongs in another panel, and Developer tools ▸ Switches is it. They
+//! were put here in the first place for a good reason that is no longer load
+//! bearing — a phone cannot press Ctrl+Shift+D — and that reason expired when
+//! Developer tools got a main-menu entry.
 //!
 //! **Nothing here invents a backend.** Each control is wired to state that
 //! already exists, or to a [`crate::resources::AppPrefs`] field whose doc comment
@@ -618,7 +631,7 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
 /// questions at all. "What time is it here" and "make it rain" are the first two
 /// things anybody looking at a city reaches for; the panel keeps what actually
 /// needs a developer, which is measurement (see
-/// [`crate::systems::ui::render_dev_panel`]).
+/// [`crate::systems::dev_panel::render_dev_panel`]).
 ///
 /// **Laid out tight on purpose.** The old block spent eleven rows, four
 /// paragraphs and two separators on this; here each group is a mode row, its
@@ -1004,79 +1017,21 @@ fn graphics_tab(
 
     ui.add_space(8.0);
     ui.separator();
-    section(ui, "Diagnostics");
-    theme::checkbox(ui, &mut prefs.show_stats, "Performance overlay");
-    ui.label(
-        egui::RichText::new(
-            "Frame rate, frame time and entity count, over the top-left of the map.",
-        )
-        .small()
-        .color(theme::TEXT_DIM),
+    // **Neither of the two sections that used to close this tab is here any
+    // more, and they left for opposite reasons.** The performance overlay — a
+    // box of frame rate and entity count anchored over the map — is gone
+    // entirely: it existed because the panel that already had those numbers was
+    // behind a keyboard chord, and that stopped being true when Developer tools
+    // got a main-menu entry (`systems::dev::dev_panel`). The `CARTO_*` bisecting
+    // switches moved into that panel too, because they were never settings: a
+    // run with one on is a run whose rendering proves nothing, which is not a
+    // thing to keep beside a shadow toggle.
+    theme::note(
+        ui,
+        "Frame rate, draw counts, GPU uploads and the startup switches for \
+         bisecting a render problem are in Developer tools — in the menu, or \
+         Ctrl+Shift+D.",
     );
-
-    ui.add_space(8.0);
-    ui.separator();
-    developer_section(ui, prefs);
-}
-
-/// The `CARTO_*` bisecting switches, on the device.
-///
-/// **Collapsed, and last, and it says what it is.** These are not quality knobs:
-/// several of them make the picture worse on purpose, and a run with one on is a
-/// run whose rendering proves nothing. But the alternative was worse — on Android
-/// they are `debug.carto.*` properties, so the only way to reach them was a cable,
-/// an `adb`, and a machine that is not the phone. `resources::DebugSwitches` has
-/// the account of what that cost.
-///
-/// The header carries the count when any are on, because the section is closed by
-/// default and "why does it look like that" has to be answerable without
-/// remembering that you opened this a week ago.
-fn developer_section(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
-    use crate::resources::DebugSwitches;
-
-    let on = DebugSwitches::SWITCHES
-        .iter()
-        .filter(|(name, _, _)| prefs.debug_switches.get(name) == Some(true))
-        .count();
-    let header = if on == 0 {
-        "Developer".to_string()
-    } else {
-        format!("Developer — {on} on")
-    };
-
-    egui::CollapsingHeader::new(egui::RichText::new(header).color(if on == 0 {
-        theme::TEXT_DIM
-    } else {
-        theme::ACCENT_TEXT
-    }))
-    .id_salt("settings_developer")
-    .default_open(on > 0)
-    .show(ui, |ui| {
-        ui.label(
-            egui::RichText::new(
-                "Switches for bisecting a render problem. Each one removes a layer; \
-                 several make the picture worse on purpose. An environment variable \
-                 or a debug.carto.* property still overrides what is set here.",
-            )
-            .small()
-            .color(theme::TEXT_DIM),
-        );
-        ui.add_space(4.0);
-        for (name, label, help) in DebugSwitches::SWITCHES {
-            let Some(value) = prefs.debug_switches.get_mut(name) else {
-                // Unreachable while the table and `get_mut` agree, and a test pins
-                // that they do. Skipping beats an `unwrap` in a UI system.
-                continue;
-            };
-            theme::checkbox(ui, value, label);
-            ui.label(egui::RichText::new(help).small().color(theme::TEXT_DIM));
-            ui.add_space(4.0);
-        }
-        pending(
-            ui,
-            "All of these are read once, at startup. Restart the app to apply them.",
-        );
-    });
 }
 
 /// The sky picker, plus what the run actually got.

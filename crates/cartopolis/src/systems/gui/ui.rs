@@ -15,7 +15,6 @@ use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
 use cartopolis_core::NetMessage;
 use egui::Window;
-use web_time::Instant;
 
 /// The main menu's state: whether the card above the dock is showing.
 ///
@@ -78,7 +77,6 @@ pub fn render_main_menu(
     mut egui: ResMut<EguiManager>,
     mut menu: ResMut<MainMenu>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
-    mut status: ResMut<crate::systems::hud::StatusHud>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut app_exit: MessageWriter<AppExit>,
@@ -210,6 +208,18 @@ pub fn render_main_menu(
                             // microphone. Only in a session — there is nobody to have
                             // said anything otherwise.
                             for panel in [
+                                // **Appearance is session-bound too**, and that is
+                                // the one of the three that costs something: an
+                                // offline avatar is visible and is wearing
+                                // whatever `user.json` last remembered, so this
+                                // hides the only way to change a body you can
+                                // still see. It is the right trade anyway. An
+                                // appearance is a thing other people look at —
+                                // that is what it is *for* — and offline there is
+                                // nobody to look, so what the panel offers alone
+                                // on the map is a wardrobe with no occasion. The
+                                // saved choice is not lost; it comes back with
+                                // the session that gives it a point.
                                 crate::resources::RightPanel::Appearance,
                                 crate::resources::RightPanel::Assistant,
                                 crate::resources::RightPanel::Chat,
@@ -229,7 +239,8 @@ pub fn render_main_menu(
                             .filter(|p| {
                                 !matches!(
                                     p,
-                                    crate::resources::RightPanel::Chat
+                                    crate::resources::RightPanel::Appearance
+                                        | crate::resources::RightPanel::Chat
                                         | crate::resources::RightPanel::Models
                                 ) || sign_in.session.is_online()
                             }) {
@@ -248,32 +259,19 @@ pub fn render_main_menu(
                                 }
                             }
                             ui.separator();
-                            // The two things that switch an *instrument* on over
-                            // the map, grouped because that is what they have in
-                            // common. The status readout used to be a small ⓘ disc
-                            // at the foot of the compass column, where being a
-                            // different size was the only thing saying it was a
-                            // different kind of control — see `hud`'s module note.
+                            // The inspection surface. It was two entries — this
+                            // one and a "Status readout" that put time, position
+                            // and altitude in a box over the top-right of the map
+                            // — and the readout is gone (`systems::hud`'s module
+                            // note): the position and altitude are two taps into
+                            // this panel, where somebody asking where the camera
+                            // is already is, and the sun and weather chips it also
+                            // carried are in Settings ▸ World.
                             //
-                            // They carry the accent when they are on rather than
-                            // renaming themselves to "Hide …": a toggle that is
-                            // lit says the same thing in a word less, and it is
-                            // the state the panel entries above already show.
-                            if theme::menu_entry_selected(
-                                ui,
-                                status.open,
-                                icons::ABOUT,
-                                "Status readout",
-                            )
-                            .on_hover_text(
-                                "Time, position, altitude, and the sun and weather \
-                                 switchers, over the top-right of the map",
-                            )
-                            .clicked()
-                            {
-                                status.open = !status.open;
-                                close = true;
-                            }
+                            // It carries the accent when it is open rather than
+                            // renaming itself to "Hide …": a toggle that is lit
+                            // says the same thing in a word less, and it is the
+                            // state the panel entries above already show.
                             if theme::menu_entry_selected(
                                 ui,
                                 dev_state.open,
@@ -356,472 +354,31 @@ pub fn toggle_ai_panel_shortcut(
     }
 }
 
-/// Toggle the developer panel with Ctrl+Shift+D.
-pub fn toggle_dev_panel_shortcut(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut dev_state: ResMut<crate::resources::DevPanelState>,
-) {
-    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    if ctrl && shift && keyboard.just_pressed(KeyCode::KeyD) {
-        dev_state.open = !dev_state.open;
-    }
-}
-
-/// How far right the frame overlay's box reaches, near enough.
-///
-/// The overlay is size-to-content — deliberately, see [`render_stats_overlay`] —
-/// so this is a bound rather than a measurement, and it is used for exactly one
-/// thing: keeping the developer panel's *default* position off it. A window the
-/// user can drag does not need an exact answer, and paying for one (laying the
-/// overlay out first, then reading its rect back) would couple two systems that
-/// currently share nothing.
-const STATS_OVERLAY_RIGHT: f32 = 160.0;
-
-/// How often the draw/triangle census is re-walked while the panel is open.
-///
-/// [`RenderCensus::counts`] resolves every mesh handle in the world, which is a
-/// real hitch on a streamed city — the module note is explicit that it is cheap
-/// enough once per capture or once per five seconds and not cheap enough per
-/// frame. Twice a second is the compromise a live panel needs: slow enough not to
-/// be the thing it is measuring, fast enough that a number moves when the scene
-/// does. The frame timing beside it is *not* throttled by this — that comes from
-/// [`crate::resources::FrameStats`], which is accumulated every frame regardless.
-const CENSUS_PERIOD_S: f64 = 0.5;
-
-/// The throttled census, kept across frames so the panel is not re-walking the
-/// world on every one of them.
-#[derive(Default)]
-pub struct CensusCache {
-    counts: crate::systems::render_census::RenderCounts,
-    /// `Time<Real>` seconds at the last walk. `None` until the first.
-    at: Option<f64>,
-}
-
-/// Developer tools (Ctrl+Shift+D, or the menu): what this run is *doing*, as
-/// distinct from what it is set to.
-///
-/// **The clock and the weather are not here any more** — they went to Settings ▸
-/// World, where a phone can reach them, and the panel got what actually needs a
-/// developer in exchange. The distinction the two panels now draw is worth
-/// stating, because it is what decides where the next control goes: Settings is
-/// where you change the world or what the machine spends on it, and this is where
-/// you find out what happened. Nothing in here is a setting except the two
-/// checkboxes at the bottom, and both of those switch a *readout* on.
-///
-/// Everything it shows already existed and was being thrown away. `FrameStats` is
-/// accumulated every frame for the diagnostics report and was legible nowhere;
-/// `RenderCensus` was computed on a five-second log timer that is switched off on
-/// handsets; `UploadMeter` reached a `slow frame` warning and `--dump-state`;
-/// `pipeline_health` reached the shareable report alone. On a workstation all four
-/// live in a terminal — which is a fine place for them right up until the question
-/// is "is it doing that *now*, while I hold this key down", and then it is not a
-/// place at all. So this panel invents no instrument: it is one window onto four
-/// that were already measuring.
-///
-/// **Frame rate came back here first.** It moved out with the render settings in
-/// the Graphics-tab migration, on the correct argument that a phone cannot press
-/// Ctrl+Shift+D — but the overlay it became is off by default and three taps deep
-/// in Settings, so on a desktop the number simply vanished. Both are right: the
-/// overlay is the handset's frame counter and stays where it is, and the panel a
-/// developer already has open shows it without being asked.
-#[allow(clippy::too_many_arguments)]
-pub fn render_dev_panel(
-    mut egui: ResMut<EguiManager>,
-    mut dev: ResMut<crate::resources::DevPanelState>,
-    mut shot: ResMut<crate::resources::ScreenshotState>,
-    mut prefs: ResMut<crate::resources::AppPrefs>,
-    // Accumulated every frame by `lib.rs::frame_stats`, whether anything is
-    // reading it or not — so it is honest the instant the panel opens, with no
-    // warm-up and no "0 fps" first second.
-    frame: Res<crate::resources::FrameStats>,
-    upload: Res<crate::systems::upload_meter::UploadMeter>,
-    census: crate::systems::render_census::RenderCensus,
-    entities: Query<()>,
-    time: Res<Time<Real>>,
-    // For "Copy as preset" and the position readout: the same camera fix the HUD
-    // reads.
-    globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
-    map_anchor: Res<crate::resources::MapAnchor>,
-    mut copied_at: Local<Option<Instant>>,
-    mut cache: Local<CensusCache>,
-) {
-    if !dev.open {
-        return;
-    }
-    // Every number in this panel changes on its own, so the window has to be
-    // redrawn on its own — without this the readout only updates on the frames
-    // something else caused, i.e. it measures the frames *you* caused, which is
-    // the opposite of what it is for. Same call and same reason as the overlay.
-    egui.animating();
-
-    let now = time.elapsed_secs_f64();
-    if cache.at.is_none_or(|t| now - t >= CENSUS_PERIOD_S) {
-        cache.counts = census.counts();
-        cache.at = Some(now);
-    }
-    let counts = cache.counts;
-    let entity_count = entities.count();
-    let fix = camera
-        .single()
-        .ok()
-        .zip(map_anchor.geo)
-        .map(|((cell, tf), anchor)| {
-            let (lat, lng) = crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
-            // (yaw, pitch, roll) — the same decomposition free_camera uses to seed
-            // its look angles from the live view, so a pasted preset reproduces
-            // this exact framing.
-            let euler = tf.rotation.to_euler(EulerRot::YXZ);
-            ViewFix {
-                lat,
-                lng,
-                alt: globe.altitude_m(cell, tf),
-                pitch: euler.1.to_degrees(),
-                yaw: euler.0.to_degrees(),
-                in_space: globe.in_space(cell, tf),
-                space_factor: globe.space_factor(cell, tf),
-            }
-        });
-    // Edited as a plain bool and written back below, so the panel does not mark
-    // `AppPrefs` changed on every frame it is open — the same shape the Settings
-    // panel uses, and the reason its module note gives.
-    let mut show_stats = prefs.show_stats;
-
-    let ctx = egui.ctx_mut();
-    let mut open = true;
-    egui::Window::new("Developer tools")
-        .open(&mut open)
-        .default_width(290.0)
-        // Clear of the top-left corner, which by now holds the disc column *and*
-        // the frame overlay under it. egui's default cascade puts a window near
-        // that corner, so the panel opened on top of the very readout its own
-        // checkbox switches on. Only a default — the window is draggable and egui
-        // remembers where it was put.
-        .default_pos([STATS_OVERLAY_RIGHT + theme::OSD_GAP, theme::OSD_MARGIN])
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
-
-            // ── Frame ──────────────────────────────────────────────────────
-            // Mean, worst and jitter together, because they fail differently: a
-            // healthy mean beside a bad worst is a hitch, and a healthy mean
-            // beside a high jitter is a pacing problem rather than a load one.
-            // A single fps number hides both.
-            theme::section(ui, "Frame");
-            if frame.sampled {
-                stat(ui, "rate", &format!("{} fps", frame.fps));
-                stat(
-                    ui,
-                    "frame",
-                    &format!(
-                        "{:.1} ms  worst {:.0}  ±{:.1}",
-                        frame.mean_ms, frame.worst_ms, frame.jitter_ms
-                    ),
-                );
-            } else {
-                // The window is a whole second wide, so say so rather than print
-                // a confident zero — the same call `FrameStats` documents.
-                stat(ui, "rate", "measuring…");
-            }
-
-            ui.add_space(5.0);
-            theme::section(ui, "Drawn");
-            stat(
-                ui,
-                "draws",
-                &format!("{}  ·  {} entities", counts.draws, entity_count),
-            );
-            stat(ui, "triangles", &thousands(counts.tris_total));
-            // Split by producer, so a regression names the streamer that caused
-            // it. Shadow casters are counted apart because each cascade re-draws
-            // them — four cascades make that number the one that matters.
-            stat(
-                ui,
-                "  shadowed",
-                &format!(
-                    "{} ({:.0}%)",
-                    thousands(counts.tris_shadow),
-                    share(counts.tris_shadow, counts.tris_total),
-                ),
-            );
-            stat(ui, "  buildings", &thousands(counts.tris_buildings));
-            stat(ui, "  3DBAG", &thousands(counts.tris_lod22));
-            stat(ui, "  map tiles", &thousands(counts.tris_tiles));
-            stat(ui, "  globe", &thousands(counts.tris_globe));
-
-            ui.add_space(5.0);
-            // ── GPU ────────────────────────────────────────────────────────
-            // The two halves of every device-loss report this project has:
-            // a rate (a frame's upload burst times out a command buffer) and a
-            // total (streamed content exhausts an allocator). They move
-            // independently — the per-frame ceiling flattens the first and does
-            // nothing at all about the second — so both are here or neither is
-            // worth having. `docs/notes/upload-bursts.md`.
-            theme::section(ui, "GPU");
-            stat(
-                ui,
-                "upload",
-                &format!(
-                    "{} kB now · {} kB peak",
-                    thousands(upload.frame_kb()),
-                    thousands(upload.peak_kb()),
-                ),
-            );
-            stat(
-                ui,
-                "biggest asset",
-                &format!("{} kB", thousands(upload.peak_asset_kb())),
-            );
-            let resident_mb = upload.resident_bytes as f64 / (1024.0 * 1024.0);
-            let peak_mb = upload.peak_resident_bytes as f64 / (1024.0 * 1024.0);
-            stat(
-                ui,
-                "resident",
-                &format!("{resident_mb:.0} MB · {peak_mb:.0} MB peak"),
-            );
-            // A pipeline that fails to compile is a silent hole in the picture:
-            // the render node just skips its pass, and wgpu's one log line about
-            // it has long since rolled out of the ring. Named here, live.
-            match crate::systems::pipeline_health::snapshot() {
-                Some(health) if !health.errored.is_empty() => {
-                    stat_colored(
-                        ui,
-                        "pipelines",
-                        &format!("{} FAILED", health.errored.len()),
-                        theme::ERROR,
-                    );
-                    for label in &health.errored {
-                        ui.label(
-                            egui::RichText::new(label)
-                                .monospace()
-                                .size(theme::SIZE_TINY)
-                                .color(theme::ERROR),
-                        );
-                    }
-                }
-                Some(health) => stat(
-                    ui,
-                    "pipelines",
-                    &format!("{} ready · {} building", health.ready, health.building),
-                ),
-                None => stat(ui, "pipelines", "not measured"),
-            }
-
-            ui.add_space(5.0);
-            // ── View ───────────────────────────────────────────────────────
-            // Where the camera is, in the terms the rest of the client argues
-            // in: a geographic fix, the altitude that drives every tier
-            // decision, and `space_factor` — the 0..1 crossfade the whole space
-            // tier rides, which is invisible in a screenshot and is the first
-            // thing to check when a ramp looks like a cut.
-            theme::section(ui, "View");
-            match fix {
-                Some(v) => {
-                    stat(ui, "at", &format!("{:.5}, {:.5}", v.lat, v.lng));
-                    stat(ui, "altitude", &metres(v.alt));
-                    stat(
-                        ui,
-                        "look",
-                        &format!("{:.1}° pitch · {:.1}° yaw", v.pitch, v.yaw),
-                    );
-                    stat(
-                        ui,
-                        "tier",
-                        &if v.in_space {
-                            format!("space · factor {:.2}", v.space_factor)
-                        } else {
-                            "ground".to_string()
-                        },
-                    );
-                }
-                None => stat(ui, "at", "no camera / no anchor yet"),
-            }
-
-            ui.add_space(5.0);
-            theme::section(ui, "Readouts");
-            // The overlay's own switch is in Settings ▸ Graphics, where a phone
-            // can reach it. Mirrored here because this is the panel somebody
-            // debugging a frame rate already has open, and making them close it
-            // to find a checkbox is the kind of friction that ends with the
-            // checkbox never being found.
-            theme::checkbox(ui, &mut show_stats, "Frame overlay, over the map");
-            // No "▸" here, or anywhere else a user reads. It is not in the
-            // bundled brand font, so it paints a tofu box — the same trap
-            // `theme::close_button` exists for. Doc comments are free to use it;
-            // strings that reach epaint are not.
-            theme::note(
-                ui,
-                "The clock and the weather are in Settings, under World.",
-            );
-
-            ui.add_space(5.0);
-            theme::section(ui, "README screenshots");
-            // The documentation set is generated from the remembered camera
-            // positions in `docs/shots.toml` (`cargo shots`), not from this
-            // button — but a *new* position has to be found by flying to it, so
-            // this copies the current camera out as a pasteable `[[shot]]` block.
-            // That is the whole handoff from "looks good here" to reproducible.
-            ui.horizontal(|ui| {
-                let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
-                if ui
-                    .add_enabled(
-                        fix.is_some(),
-                        egui::Button::new(format!("{}  Copy as preset", icons::COPY)),
-                    )
-                    .on_hover_text("Copies this camera as a [[shot]] block for docs/shots.toml")
-                    .clicked()
-                {
-                    // The same fix the View section above is reading. It used to
-                    // be measured a second time here, from the same query, on
-                    // every frame the panel was open — for a value only a click
-                    // consumes.
-                    if let Some(v) = fix {
-                        crate::utils::clipboard::set_text(
-                            &crate::systems::shot_presets::preset_toml(
-                                "new-view",
-                                v.lat,
-                                v.lng,
-                                v.alt,
-                                v.pitch,
-                                v.yaw,
-                                dev.time_of_day,
-                                dev.fog_density,
-                                dev.cloud_cover,
-                            ),
-                        );
-                        *copied_at = Some(Instant::now());
-                    }
-                }
-                if copied {
-                    ui.label("copied");
-                }
-            });
-            ui.horizontal(|ui| {
-                // Clicking captures a chrome-free shot into the next slot, cycling
-                // docs/img/screenshot-{1..N}.png. The `capture_requested` guard stops
-                // a held click from queuing more than one capture.
-                if ui
-                    .button(format!(
-                        "{}  Capture slot {}",
-                        icons::CAMERA,
-                        shot.next_slot + 1
-                    ))
-                    .on_hover_text(
-                        "Hides the UI for one frame, then saves docs/img/screenshot-N.png",
-                    )
-                    .clicked()
-                    && !shot.hide_ui
-                {
-                    shot.hide_ui = true;
-                    shot.capture_requested = true;
-                }
-                if ui.button("Reset to 1").clicked() {
-                    shot.next_slot = 0;
-                }
-            });
-        });
-    if show_stats != prefs.show_stats {
-        prefs.show_stats = show_stats;
-    }
-    // Closing via the window's [x] only writes when it actually changed, to avoid
-    // marking the resource changed every frame (which would re-run the lighting update).
-    if !open && dev.open {
-        dev.open = false;
-    }
-}
-
-/// A camera fix, measured once per frame and read by both the View section and
-/// the "Copy as preset" button.
-#[derive(Clone, Copy)]
-struct ViewFix {
-    lat: f64,
-    lng: f64,
-    alt: f64,
-    pitch: f32,
-    yaw: f32,
-    in_space: bool,
-    /// The 0..1 crossfade the whole space tier rides. Worth a line of its own
-    /// because it is invisible in a screenshot and is the first thing to check
-    /// when a ramp — exposure, bloom, atmosphere density, globe albedo — reads
-    /// as a hard cut.
-    space_factor: f32,
-}
-
-/// One `name  value` row of a readout, with the name in a fixed column so a
-/// stack of them lines up and the value monospaced so a changing digit does not
-/// shift the ones beside it.
-///
-/// This is the whole layout vocabulary of the developer panel, deliberately: a
-/// panel of numbers wants to be scanned down the left edge, and the moment two
-/// rows disagree about where the value starts it stops being scannable.
-fn stat(ui: &mut egui::Ui, name: &str, value: &str) {
-    stat_colored(ui, name, value, theme::CREAM);
-}
-
-/// [`stat`] with the value in a chosen colour — for the one row that reports a
-/// failure rather than a measurement.
-fn stat_colored(ui: &mut egui::Ui, name: &str, value: &str, color: egui::Color32) {
-    ui.horizontal(|ui| {
-        ui.add_sized(
-            [88.0, ui.spacing().interact_size.y],
-            egui::Label::new(
-                egui::RichText::new(name)
-                    .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
-            ),
-        );
-        ui.label(
-            egui::RichText::new(value)
-                .monospace()
-                .size(theme::SIZE_MONO)
-                .color(color),
-        );
-    });
-}
-
-/// `1234567` → `"1 234 567"`. A thin space rather than a comma because these are
-/// counts read at a glance, and six unbroken digits are the reason a triangle
-/// budget is hard to eyeball.
-fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push('\u{202f}');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// `part` as a percentage of `whole`, and 0 rather than a NaN on an empty scene.
-fn share(part: usize, whole: usize) -> f32 {
-    if whole == 0 {
-        0.0
-    } else {
-        part as f32 * 100.0 / whole as f32
-    }
-}
-
-/// An altitude in the unit that suits it: metres near the ground, kilometres
-/// once the number stops fitting in a glance.
-fn metres(m: f64) -> String {
-    if m.abs() >= 10_000.0 {
-        format!("{:.0} km", m / 1000.0)
-    } else {
-        format!("{m:.0} m")
-    }
-}
-
-/// Avatar chooser (View ▸ Choose Avatar): pick body (Man/Woman) and clothing
-/// theme. Edits a draft; Apply commits it to the persisted store, which
+/// Avatar chooser (☰ ▸ Appearance): pick body (Man/Woman) and clothing theme.
+/// Edits a draft; Apply commits it to the persisted store, which
 /// `avatar::respawn_avatar_on_appearance_change` watches to rebuild the model.
+///
+/// **The menu only offers it in a session** (`render_main_menu`), because an
+/// appearance is a thing other people look at. This closes it on the *transition*
+/// out of one rather than refusing to draw whenever there is no session, and the
+/// difference is not pedantry: a scripted capture is always offline
+/// (`--ui appearance` sets `RightPanel` directly), so a flat "online or nothing"
+/// rule would mean the wardrobe is the one panel no README image can ever show.
+/// What is actually wrong is a panel left standing after a sign-out, and that is
+/// an edge.
 pub fn render_avatar_chooser(
     mut egui: ResMut<EguiManager>,
     mut chooser: ResMut<crate::resources::AvatarChooserState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<RightPanel>,
+    session: Res<crate::systems::session::SessionState>,
+    mut was_online: Local<bool>,
 ) {
+    let online = session.is_online();
+    if std::mem::replace(&mut was_online, online) && !online {
+        right_panel.toggle(RightPanel::Appearance);
+        chooser.seeded = false;
+    }
     use crate::systems::avatar::{accessory_styles_for, styles_for};
     use crate::systems::user_store::AvatarSex;
     // Seed the draft from the saved appearance the first time the panel opens.
@@ -1053,106 +610,6 @@ pub fn suppress_egui_for_screenshot(
         output.force_next_write = true;
         output.generation = output.generation.wrapping_add(1);
     }
-}
-
-/// Toggleable performance overlay (top-left, below the menu bar): smoothed FPS,
-/// frame time, and live entity count. Switched on from Settings ▸ Graphics — off
-/// by default. The FPS/frame-time smoothing lives in [`StatsState`] (not in the
-/// preference) so updating it every frame doesn't re-trigger the day/night
-/// lighting recompute.
-pub fn render_stats_overlay(
-    mut egui: ResMut<EguiManager>,
-    prefs: Res<crate::resources::AppPrefs>,
-    time: Res<Time<Real>>,
-    mut stats: ResMut<crate::resources::StatsState>,
-    // The worst frame of the last whole second. The EMA below cannot show it —
-    // smoothing is what a hitch disappears into — and a hitch is what somebody
-    // switches this overlay on to see. Free: `lib.rs::frame_stats` accumulates it
-    // every frame whether anything reads it or not.
-    frame: Res<crate::resources::FrameStats>,
-    entities: Query<()>,
-) {
-    if !prefs.show_stats {
-        return;
-    }
-    // A frame-rate readout that only updates when you move the mouse measures the
-    // frames you caused, which is the opposite of what it is for. See
-    // `EguiManager::animating`.
-    egui.animating();
-    // Exponential moving average so the readout is steady, not jittering per frame.
-    const ALPHA: f32 = 0.1;
-    let dt = time.delta_secs().max(1e-6);
-    let inst_fps = 1.0 / dt;
-    let inst_ms = dt * 1000.0;
-    stats.fps = if stats.fps <= 0.0 {
-        inst_fps
-    } else {
-        stats.fps + ALPHA * (inst_fps - stats.fps)
-    };
-    stats.frame_ms = if stats.frame_ms <= 0.0 {
-        inst_ms
-    } else {
-        stats.frame_ms + ALPHA * (inst_ms - stats.frame_ms)
-    };
-    // `Query::count()`, not `iter().count()`: `QueryIter` doesn't override
-    // `Iterator::count`, so the latter walks every entity in the world (tens of
-    // thousands, with tiles + buildings streamed in) just to render one number.
-    // `Query::count` takes the archetype `size_hint` fast path — same value.
-    let entity_count = entities.count();
-
-    let fps = stats.fps;
-    let frame_ms = stats.frame_ms;
-    // Left side, because the right is where the panels dock — and *below the disc
-    // column*, which is the part that was wrong. The old offset was a bare `40.0`
-    // written against a menu bar that no longer exists; the layers disc, the
-    // compass and the locate button have owned that corner since, and they are
-    // floating `Area`s drawn over this one. A frame counter behind two discs is
-    // not a frame counter. `hud::left_column_bottom` is the shared figure, so the
-    // next control to grow on that column moves this one with it.
-    egui::Area::new(egui::Id::new("stats_overlay"))
-        .anchor(
-            egui::Align2::LEFT_TOP,
-            egui::vec2(
-                theme::OSD_MARGIN,
-                crate::systems::hud::left_column_bottom() + theme::OSD_GROUP_GAP,
-            ),
-        )
-        .show(egui.ctx_mut(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                let mono = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .monospace()
-                            .size(12.5)
-                            .color(color),
-                    );
-                };
-                // Let the rows set the box's width instead of wrapping inside it.
-                // A size-to-content `Area` settles at the width of its widest
-                // *unwrapped* row, so the one long line ("27.80 ms/frame") folded
-                // in two while the box stayed narrow — a readout that changes
-                // line count as the number changes is unreadable at a glance.
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                ui.spacing_mut().item_spacing.y = 3.0;
-                mono(ui, format!("{fps:5.1} fps"), theme::CREAM);
-                mono(ui, format!("{frame_ms:5.2} ms/frame"), theme::TEXT_DIM);
-                if frame.sampled {
-                    mono(
-                        ui,
-                        format!("{:5.0} ms worst", frame.worst_ms),
-                        // Amber once a frame in the last second took longer than
-                        // two 60 Hz frames. A hitch that has to be noticed in a
-                        // number nobody is looking at is a hitch nobody notices.
-                        if frame.worst_ms > 33.0 {
-                            theme::AMBER
-                        } else {
-                            theme::TEXT_DIM
-                        },
-                    );
-                }
-                mono(ui, format!("{entity_count} entities"), theme::TEXT_DIM);
-            });
-        });
 }
 
 /// Fill the edit dialog's fields and revert snapshots from a prim. Leaves `visible` and
@@ -2560,51 +2017,6 @@ fn shape_display_name(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The developer panel's number formatting. Small, but these run on every
-    /// count in the panel and a grouping that misplaces a separator makes a
-    /// triangle budget unreadable, which is the one job the panel has.
-    #[test]
-    fn counts_group_into_threes_from_the_right() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_000), "1\u{202f}000");
-        assert_eq!(thousands(12_345), "12\u{202f}345");
-        assert_eq!(thousands(1_234_567), "1\u{202f}234\u{202f}567");
-    }
-
-    /// An empty scene is the state the panel opens in, so the shadow-share row
-    /// must not be a NaN on frame one.
-    #[test]
-    fn a_share_of_nothing_is_zero_not_a_nan() {
-        assert_eq!(share(0, 0), 0.0);
-        assert_eq!(share(1, 4), 25.0);
-    }
-
-    /// The frame overlay must start below everything the top-left disc column
-    /// draws, because those are floating `Area`s and they paint over it. This is
-    /// the regression it is pinned against: the overlay's offset was a bare
-    /// `40.0` from a menu bar that no longer exists, so the layers disc and the
-    /// compass sat on top of the frame rate.
-    #[test]
-    fn the_frame_overlay_clears_the_top_left_disc_column() {
-        let column = crate::systems::hud::left_column_bottom();
-        assert!(
-            column > crate::systems::dock::reserved_top(),
-            "the column has to include what is under the layers disc"
-        );
-        // What `render_stats_overlay` anchors at.
-        let overlay_top = column + theme::OSD_GROUP_GAP;
-        assert!(overlay_top > column, "the overlay starts below the column");
-    }
-
-    #[test]
-    fn altitude_switches_unit_where_the_digits_stop_fitting() {
-        assert_eq!(metres(120.0), "120 m");
-        assert_eq!(metres(9_999.0), "9999 m");
-        assert_eq!(metres(10_000.0), "10 km");
-        assert_eq!(metres(1_200_000.0), "1200 km");
-    }
 
     /// **A bottom-anchored `Area` taller than the sizing pass allows settles at
     /// a wrong height and stays there.** egui lays an `Area` out once against

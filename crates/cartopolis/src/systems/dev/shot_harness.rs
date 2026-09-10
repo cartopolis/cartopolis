@@ -37,11 +37,13 @@
 //! for chrome-free images. The toggle-able panels (dev lighting/weather, layers,
 //! bookmarks, AI, avatar chooser) are closed by default and can't be opened by
 //! hand in a headless run, so `--ui <list>` opens them for the capture, e.g.
-//! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
+//! `--ui dev` or `--ui dev,layers` (or `--ui all`); see [`open_scripted_ui`].
 //! `--ui search` opens the Search panel *and* seeds it a query, since an empty
-//! field documents nothing; `--ui hud` brings back the status readout, which is
-//! off by default (`hud::StatusHud`); and `--ui menu` opens the app mark's card,
-//! which is where the entries that left the map live.
+//! field documents nothing; `--ui profiler` and `--ui switches` open Developer
+//! tools on a named tab (a tab is not reachable by opening the window alone, so
+//! naming the window alone would photograph whichever tab was last selected);
+//! and `--ui menu` opens the app mark's card, which is where the entries that
+//! left the map live.
 //!
 //! ## Metrics: the numbers behind the frame
 //!
@@ -1516,14 +1518,14 @@ pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::E
 /// Bevy's sixteen-parameter ceiling and adding a seventeenth does not fail as a
 /// count, it fails as `does not describe a valid system configuration`.
 ///
-/// `prefs` joined them when the stats overlay became a preference rather than a
-/// developer-panel field. A scripted run never reads or writes `user.json`, so
-/// writing it here is an in-memory override for the capture and nothing more.
+/// It briefly held `AppPrefs` too, for the map's frame overlay — one `--ui stats`
+/// boolean. Both are gone: the overlay was deleted (`systems::dev_panel`'s module
+/// note) and a scripted run never reads or writes `user.json` anyway, so there is
+/// nothing left here that a preference decides.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct ScriptedCards<'w, 's> {
     menu: ResMut<'w, crate::systems::ui::MainMenu>,
     sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
-    prefs: ResMut<'w, crate::resources::AppPrefs>,
     settings: ResMut<'w, crate::systems::settings::SettingsState>,
     /// Nested rather than added beside: the ceiling this type exists to work
     /// around is a *parameter* count, so a second bundle would hit it again.
@@ -1568,8 +1570,8 @@ pub struct ScriptedChat<'w, 's> {
 /// test that fails when it doesn't.
 const UI_ELEMENTS: &[&str] = &[
     "dev",
-    "stats",
-    "hud",
+    "profiler",
+    "switches",
     "menu",
     "ai",
     "avatar",
@@ -1606,6 +1608,7 @@ pub fn open_scripted_ui(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
     mut dev: ResMut<crate::resources::DevPanelState>,
+    mut tools: ResMut<crate::systems::dev_panel::DevTools>,
     mut ai: ResMut<crate::resources::AiAssistantState>,
     mut avatar: ResMut<crate::resources::AvatarChooserState>,
     mut layers: ResMut<crate::systems::data_layers::DataLayers>,
@@ -1614,7 +1617,6 @@ pub fn open_scripted_ui(
     mut route: ResMut<crate::systems::navigation::RouteState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
-    mut status: ResMut<crate::systems::hud::StatusHud>,
     mut cards: ScriptedCards,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     egui: Res<crate::systems::egui_manager::EguiManager>,
@@ -1629,11 +1631,17 @@ pub fn open_scripted_ui(
     let want = |k: &str| all || panels.iter().any(|u| u == k);
     // Written unconditionally (not only when opening) so each shot starts from
     // exactly the chrome it asked for.
-    dev.open = want("dev");
-    cards.prefs.show_stats = want("stats");
-    // The status readout is off by default now (`hud::StatusHud`), so a capture
-    // that wants to document it has to ask — `--ui hud`.
-    status.open = want("hud");
+    dev.open = want("dev") || want("profiler") || want("switches");
+    // A tab, not just the window: `--ui dev` alone photographs whichever tab the
+    // enum defaults to, which is the same trap `--ui graphics` exists to avoid
+    // for Settings.
+    tools.tab = if want("profiler") {
+        crate::systems::dev_panel::DevTab::Profiler
+    } else if want("switches") {
+        crate::systems::dev_panel::DevTab::Switches
+    } else {
+        crate::systems::dev_panel::DevTab::Frame
+    };
     // `--ui signin` opens the sign-in card. It is a modal over everything else,
     // so it is written before the panels below rather than beside them — and it
     // is here for the reason `--ui menu` is: a card nothing can screenshot is a
@@ -1648,8 +1656,8 @@ pub fn open_scripted_ui(
     }
     // `--ui menu` opens the app mark's card. It is the one piece of chrome a
     // scripted run could not reach at all, and it is where the entries that left
-    // the map now live — Set Home, Copy location and the status readout's own
-    // switch. A control nothing can screenshot is a control nobody reviews.
+    // the map now live — Set Home, Copy location and the way into Developer
+    // tools. A control nothing can screenshot is a control nobody reviews.
     cards.menu.open = want("menu");
     ai.open = want("ai");
     avatar.open = want("avatar");

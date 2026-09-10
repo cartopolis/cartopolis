@@ -255,7 +255,7 @@ fn compose(s: &DiagnosticsSources) -> String {
     // The preference separately from the resolved answer: an env var or property
     // overrides it, so the two disagreeing is itself worth seeing.
     if switches.any() {
-        out.push_str("  (set in Settings ▸ Graphics ▸ Developer)\n");
+        out.push_str("  (set in Developer tools ▸ Switches)\n");
     }
 
     // The performance block. Placed directly under `quality:` because the two are

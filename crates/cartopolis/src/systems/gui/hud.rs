@@ -1,35 +1,23 @@
-//! Top-right status overlay: wall-clock time, the camera's geographic position
-//! and altitude, the sun and weather switchers — and, in the opposite corner, the
-//! compass and the locate button.
+//! The map's left-hand controls: the compass rose, the locate button under it,
+//! and the scale bar along the bottom edge.
 //!
-//! **It is off by default** ([`StatusHud`]). It is an instrument panel — six rows
-//! of numbers and chips over the top-right of a map — and the two *verbs* it used
-//! to carry have gone where a reader will find them without it: ☆ bookmark into
-//! the Places panel (which is where the place then appears), and Set Home and
-//! Copy location into the main menu. What is left is a readout, and a readout
-//! that is up whether or not anyone is reading it is just chrome over the map.
+//! **The status readout that used to share this module is gone** (2026-09-10).
+//! It was an anchored box in the top-right corner carrying the wall-clock time,
+//! the camera's latitude, longitude and altitude, the avatar's street address,
+//! the signed-in username, and chips for the sun mode and live weather. Every
+//! one of those had by then acquired a second home that a reader finds without
+//! being told about a toggle: the position, the altitude and the address are in
+//! the Developer tools' View tab, which is where somebody asking "where is the
+//! camera" is already looking, and the sun and weather switchers are in
+//! Settings ▸ World, which is the only one of the two a phone could reach
+//! comfortably. What was left was a second copy of a readout, drawn over the
+//! map, behind a switch in a menu — which is chrome charging rent.
 //!
-//! **The switch is in the main menu, not on the map.** It was a small ⓘ disc at
-//! the foot of the compass column, and it cost that column its only argument for
-//! being a column: three discs the same size on one axis, all of them controls
-//! *for the view*. A fourth at 28 pt, for a panel of numbers nobody flips while
-//! moving, read as a mis-sized member of the set rather than as a different kind
-//! of thing — the size was doing the work a position should have done. The main
-//! menu is where the readout's own verbs already went, and where the other
-//! inspection toggle (developer tools) lives.
-//!
-//! The clock shows real local time once [`WorldClock`] has learned the
-//! region's UTC offset (from the transit feed), and UTC until then.
-//!
-//! Layout note: the overlay is an anchored, size-to-content [`egui::Area`].
-//! Anything inside that reaches for the *available* width (a `right_to_left`
-//! row) would let the box grow a little each frame — the Area sizes to its
-//! content, and next frame that larger size becomes the available width, a
-//! feedback loop that stretches the panel across the screen and pushes the
-//! text off the top. So the content is pinned to [`HUD_WIDTH`] up front, which
-//! bounds every inner row and keeps the box a fixed size.
-
-use crate::resources::MapAnchor;
+//! What did *not* move is the compass and the locate button, and the reason is
+//! the same one that put them in the opposite corner in the first place: they
+//! are controls **for the view**, they act on the thing under them, and there is
+//! no panel that could hold them without making a camera turn a trip into a
+//! menu.
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -38,66 +26,7 @@ use crate::components::FreeCamera;
 use crate::resources::CameraState;
 use crate::systems::driver::GpsQuality;
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::geo_nav::camera_geo;
 use crate::systems::theme;
-use crate::systems::transit_live::WorldClock;
-
-/// Fixed content width of the overlay (see the module note on why it must be
-/// fixed rather than sized to content).
-const HUD_WIDTH: f32 = 150.0;
-
-/// Plain snapshot the overlay renders — no ECS types, so the layout is unit
-/// testable.
-#[derive(Clone, Default)]
-pub struct HudData {
-    pub time: String,
-    /// Whether the clock is currently shown as UTC (drives the Local/UTC toggle
-    /// label). True when the user forced UTC, or no local offset is known yet.
-    pub utc: bool,
-    /// Current sun-mode for the Auto/Day/Night switcher's active state.
-    pub sun_mode: crate::resources::SunMode,
-    /// Whether live (Auto) weather is on — drives the weather switcher's state.
-    pub weather_live: bool,
-    /// Forecast readout for the weather line: (compact, full-hover). `Some` only
-    /// when Auto weather has a sample to show.
-    pub weather_info: Option<(String, String)>,
-    pub geo: Option<(f64, f64)>,
-    /// Where the avatar is standing, in words — the BAG's address for the nearest
-    /// unit plus what the register says the building is
-    /// (`systems::interact::InteractState::address`).
-    ///
-    /// That field has said this since the interact layer was written and nothing
-    /// has ever drawn it; the readout it was made for is this one. `None` off the
-    /// Netherlands, away from an address, and in every camera mode but Follow —
-    /// the coordinates below are what the HUD falls back to, as before.
-    pub place: Option<String>,
-    pub altitude: Option<f64>,
-    /// Authenticated username, if online (ADR-016). Drives the profile chip;
-    /// grows into a chat/presence affordance later.
-    pub user: Option<String>,
-}
-
-// `format_place` lived here — "53.21940, 6.56650, 120m, -12.5°, 45.0°", the
-// readable spelling the copy button used to write. It has no writer any more:
-// **Search ▸ Copy link** copies a URL (`systems::place_link`), whose value is the same
-// five numbers without the decoration, and a format with no writer is a format
-// that drifts. `geo_nav::parse_location` still *reads* the readable form, because
-// people have that string in old chat messages and it is what a person types.
-
-/// What the user clicked in the overlay this frame.
-///
-/// The location *actions* that used to be here — copy, bookmark, Set Home — are
-/// gone: see the module note. What is left is the three switchers, which are
-/// controls for the readout itself.
-#[derive(Default)]
-pub struct HudActions {
-    /// User clicked the Local/UTC clock toggle.
-    pub toggle_utc: bool,
-    /// User picked a new sun mode from the Auto/Day/Night switcher.
-    pub set_sun_mode: Option<crate::resources::SunMode>,
-    /// User toggled live (Auto) weather on/off from the weather switcher.
-    pub set_weather_live: Option<bool>,
-}
 
 /// Diameter (points) of the compass overlay — [`theme::ROUND_BUTTON_SIZE`], the
 /// one disc this app draws over a map.
@@ -109,23 +38,6 @@ pub struct HudActions {
 /// `theme::ROUND_BUTTON_SIZE`'s own doc claimed it "matches the compass disc"
 /// while they were six points apart; now it does.
 const COMPASS_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
-
-/// The bottom edge of the top-left disc column: layers disc
-/// ([`crate::systems::dock::reserved_top`]), compass, locate button.
-///
-/// **Anything else anchored to the top-left corner has to start below this**, and
-/// the frame overlay is why the figure is a function rather than a comment. It
-/// was anchored at a hardcoded `y = 40` — written when a menu *bar* owned the top
-/// of the screen — and the column that replaced the bar draws straight over it,
-/// so the frame rate somebody switched on to read was behind two discs.
-///
-/// The locate button is counted even when it is not drawn (it needs a local
-/// avatar). A readout that changes position depending on whether an avatar exists
-/// is worse than one that leaves a gap: the gap is stable and the jump is not.
-#[must_use]
-pub fn left_column_bottom() -> f32 {
-    crate::systems::dock::reserved_top() + COMPASS_SIZE + theme::OSD_GAP + theme::ROUND_BUTTON_SIZE
-}
 
 /// How the rose behaves this frame — one compass with three jobs.
 struct Compass {
@@ -527,13 +439,6 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
     }
 }
 
-/// Whether the status readout is on screen. Off by default — see the module note.
-/// Switched from the main menu (`ui::render_main_menu`), not from the map.
-#[derive(Resource, Default)]
-pub struct StatusHud {
-    pub open: bool,
-}
-
 // ─── Scale bar ────────────────────────────────────────────────────────────────
 
 /// The widest the bar may draw, in points. A scale bar is read by comparing it
@@ -675,10 +580,11 @@ fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32, bottom_reserved
 /// The left-hand map controls: the compass rose, and the GPS/locate button under
 /// it.
 ///
-/// Its own system rather than part of [`render_hud`] because it answers to a
-/// different owner in each mode — the Orbit camera's north lock normally, driver
-/// mode's orientation cycle while navigating — and because `render_hud` was
-/// already at Bevy's 16-parameter ceiling.
+/// Its own system rather than part of the status readout that used to live in
+/// this module, because it answers to a different owner in each mode — the Orbit
+/// camera's north lock normally, driver mode's orientation cycle while
+/// navigating. The readout is gone now (see the module note) and this is what
+/// the module is.
 #[allow(clippy::too_many_arguments)]
 pub fn render_map_controls(
     egui: Res<EguiManager>,
@@ -702,9 +608,9 @@ pub fn render_map_controls(
     // `RightPanel` is the whole answer. This used to also OR in `DataLayers::
     // panel_open`, `BookmarksState::panel_open` and `AiAssistantState::open` — the
     // booleans the panels carried before the shared dock existed. None of them is
-    // cleared anywhere, and `render_hud` *set* the bookmarks one when you saved a
-    // place, so a single press of ☆ hid the compass, the locate button and the
-    // whole status overlay for the rest of the session. Nothing writes them now
+    // cleared anywhere, and the old status readout *set* the bookmarks one when
+    // you saved a place, so a single press of ☆ hid the compass and the locate
+    // button for the rest of the session. Nothing writes them now
     // except the `--shot` harness, which sets `RightPanel` alongside them from the
     // same `--ui` list, so the scripted chrome is unchanged.
     if !right_panel.is(crate::resources::RightPanel::None) && !driver.active {
@@ -852,211 +758,6 @@ pub fn render_map_controls(
     }
 }
 
-/// Build the overlay's anchored box and return what was clicked. Pure UI over
-/// [`HudData`], so it can be exercised headless (see the test below).
-pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
-    let mut actions = HudActions::default();
-    let mono = |ui: &mut egui::Ui, text: String, size: f32, color: egui::Color32| {
-        ui.label(
-            egui::RichText::new(text)
-                .monospace()
-                .size(size)
-                .color(color),
-        );
-    };
-
-    // Top-right: keeps clear of the bottom chat/action bar. The caller drops the
-    // whole HUD while a right-docked panel is open, so the two never coexist here.
-    egui::Area::new(egui::Id::new("status_hud"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
-        .show(ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                // Pin the width first — this is what stops the runaway.
-                ui.set_width(HUD_WIDTH);
-                // Overlay density. The theme's rhythm is sized for a panel of
-                // place rows and layer toggles; in a 150 pt corner readout the
-                // same values add ~40 pt of air to a box that is mostly
-                // numbers. These switchers are chips, not buttons — so tighten
-                // locally, while keeping a 20 pt hit target.
-                ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                // 20 pt is 30 dp on a phone. It predates
-                // `theme::MIN_TOUCH_TARGET_DP` and it is applied to the two
-                // switchers *and* the clock toggle, so the whole box was under
-                // the guideline on the tier that most needs it.
-                ui.spacing_mut().interact_size.y = if theme::touch_layout() {
-                    theme::row_height()
-                } else {
-                    20.0
-                };
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    // Profile chip: a placeholder avatar dot with the account
-                    // initial, plus the username. Extends into a presence/chat
-                    // affordance later (ADR-016 / ADR-028).
-                    if let Some(user) = &data.user {
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
-                            let c = rect.center();
-                            ui.painter().circle_filled(c, 7.0, theme::ACCENT);
-                            if let Some(ch) = user.chars().next() {
-                                ui.painter().text(
-                                    c,
-                                    egui::Align2::CENTER_CENTER,
-                                    ch.to_uppercase().to_string(),
-                                    egui::FontId::proportional(theme::SIZE_TINY),
-                                    // Ink on the accent, not white — the same
-                                    // 6:1 pairing every filled orange uses.
-                                    theme::INK,
-                                );
-                            }
-                            ui.label(
-                                egui::RichText::new(user)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::CREAM),
-                            );
-                        });
-                    }
-                    // Clock + a small Local/UTC toggle, then the sun-mode
-                    // switcher (Auto/Day/Night) — a light/dark/auto control
-                    // for the sky, the way a website theme toggle reads.
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        mono(ui, data.time.clone(), theme::SIZE_VALUE, theme::CREAM);
-                        let zone = if data.utc { "UTC" } else { "Local" };
-                        // `theme::chip`, not `Button::small()`: `small()` zeroes
-                        // the vertical padding *and* skips the `interact_size`
-                        // floor, so this was a ~13.5 pt widget — 20 dp under a
-                        // finger against a 48 dp guideline. A chip rather than a
-                        // plain button because that is what the two rows under it
-                        // are, and this box is small enough that a third control
-                        // style in it is visible as one.
-                        if theme::chip(ui, zone, false)
-                            .on_hover_text("Toggle the clock between local time and UTC")
-                            .clicked()
-                        {
-                            actions.toggle_utc = true;
-                        }
-                    });
-                    // **Both switchers are named.** They were two anonymous rows
-                    // whose first chip in each read "Auto", one above the other,
-                    // with nothing on screen to say that one was the sun and the
-                    // other the weather — and the tooltip that did say so is the
-                    // one affordance a touch screen has no way to reach.
-                    let caption = |ui: &mut egui::Ui, text: &str| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(text)
-                                    .size(theme::SIZE_TINY)
-                                    .color(theme::TEXT_DIM),
-                            )
-                            .selectable(false),
-                        );
-                    };
-                    ui.horizontal(|ui| {
-                        use crate::resources::SunMode;
-                        ui.spacing_mut().item_spacing.x = 3.0;
-                        caption(ui, "Sun");
-                        let mut choice =
-                            |ui: &mut egui::Ui, mode: SunMode, label: &str, tip: &str| {
-                                if theme::chip(ui, label, data.sun_mode == mode)
-                                    .on_hover_text(tip)
-                                    .clicked()
-                                {
-                                    actions.set_sun_mode = Some(mode);
-                                }
-                            };
-                        choice(ui, SunMode::Auto, "Auto", "Sun follows the real local time");
-                        // Words, not `☀`/`🌙`: neither is in the bundled font, so
-                        // both were boxes — and next to a textual "Auto" the words
-                        // read better anyway, on touch especially, where the
-                        // explanatory tooltip can never appear.
-                        choice(ui, SunMode::Day, "Day", "Force daylight (noon)");
-                        choice(ui, SunMode::Night, "Night", "Force night (midnight)");
-                    });
-                    // Weather: an Auto/Manual toggle mirroring the sun switcher,
-                    // plus the live forecast readout for the map location.
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 3.0;
-                        caption(ui, "Sky");
-                        if theme::chip(ui, "Auto", data.weather_live)
-                            .on_hover_text("Live weather for the map location (met.no)")
-                            .clicked()
-                        {
-                            actions.set_weather_live = Some(true);
-                        }
-                        if theme::chip(ui, "Manual", !data.weather_live)
-                            // "▸" would tofu — it is not in the bundled font.
-                            .on_hover_text(
-                                "Hold the weather; the sliders are in Settings, under World",
-                            )
-                            .clicked()
-                        {
-                            actions.set_weather_live = Some(false);
-                        }
-                    });
-                    if let Some((short, full)) = &data.weather_info {
-                        ui.label(
-                            egui::RichText::new(short)
-                                .monospace()
-                                .size(theme::SIZE_CHIP)
-                                .color(theme::TEXT_DIM),
-                        )
-                        .on_hover_text(full);
-                    }
-                    // Above the coordinates on purpose: a street name is what a
-                    // person reads first, and the decimals are the fallback for
-                    // where there is no name to give.
-                    if let Some(place) = &data.place {
-                        // Truncated, not wrapped. The line is a street, a
-                        // postcode, a use, an area and a year, and a wrapping
-                        // label turns a long one into three rows — which grows
-                        // the anchored box, which is the failure `hud_box_does_not_grow`
-                        // exists to catch. The full text is on hover.
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(place)
-                                    .size(theme::SIZE_CHIP)
-                                    .color(theme::TEXT_DIM),
-                            )
-                            .truncate(),
-                        )
-                        .on_hover_text(place);
-                    }
-                    if let Some((lat, lng)) = data.geo {
-                        let ns = if lat >= 0.0 { 'N' } else { 'S' };
-                        let ew = if lng >= 0.0 { 'E' } else { 'W' };
-                        mono(
-                            ui,
-                            format!("{:.5}° {}", lat.abs(), ns),
-                            theme::SIZE_CHIP,
-                            theme::TEXT_DIM,
-                        );
-                        mono(
-                            ui,
-                            format!("{:.5}° {}", lng.abs(), ew),
-                            theme::SIZE_CHIP,
-                            theme::TEXT_DIM,
-                        );
-                    }
-                    if let Some(alt) = data.altitude {
-                        let alt = alt.max(0.0);
-                        let text = if alt >= 1000.0 {
-                            format!("alt {:.1} km", alt / 1000.0)
-                        } else {
-                            format!("alt {alt:.0} m")
-                        };
-                        mono(ui, text, theme::SIZE_CHIP, theme::TEXT_DIM);
-                    }
-                    // Heading is the compass's, in the opposite corner; the
-                    // location actions are the main menu's and the Places panel's
-                    // (see the module note).
-                });
-            });
-        });
-    actions
-}
-
 /// Compass bearing (deg, 0 = north, 90 = east) of the direction that reads as
 /// "up" on screen over the ground. North is −Z in world space (East +X, South
 /// +Z). Uses the camera's forward when it is tilted toward the ground, and its
@@ -1092,95 +793,6 @@ fn space_view_heading(tf: &Transform, north: Vec3) -> Option<f32> {
     let x = north.dot(tf.rotation * Vec3::X);
     let y = north.dot(tf.rotation * Vec3::Y);
     (x * x + y * y > 1e-9).then(|| x.atan2(y).to_degrees().rem_euclid(360.0))
-}
-
-/// Draw the status overlay and apply its copy / bookmark actions.
-#[allow(clippy::too_many_arguments)]
-pub fn render_hud(
-    egui: Res<EguiManager>,
-    mut clock: ResMut<WorldClock>,
-    mut dev: ResMut<crate::resources::DevPanelState>,
-    mut weather: ResMut<crate::systems::weather::WeatherState>,
-    globe: Res<crate::systems::globe::GlobeState>,
-    identity: Res<crate::resources::AuthIdentity>,
-    driver: Res<crate::systems::driver::DriverState>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    right_panel: Res<crate::resources::RightPanel>,
-    status: Res<StatusHud>,
-    map_anchor: Res<MapAnchor>,
-    interact: Res<crate::systems::interact::InteractState>,
-) {
-    // Off unless the ⓘ disc has been pressed (see the module note). Before the
-    // panel gate and the data below, both of which cost work every frame.
-    if !status.open {
-        return;
-    }
-    // The status HUD lives in the top-right corner (see `hud_area`), which any
-    // right-docked panel covers — and while driving the map has to stay clear for
-    // the navigation chrome. So drop the HUD whenever a right panel is open, at any
-    // width; egui paints floating Areas above panels, so it can't hide behind one.
-    //
-    // The gate comes *before* the data, not after: building `HudData` is four
-    // `format!`s and a username clone, and every one of them was thrown away
-    // unread on every frame with a panel open. See `render_map_controls` for why
-    // `RightPanel` is the only operand.
-    if !right_panel.is(crate::resources::RightPanel::None) || driver.active {
-        return;
-    }
-
-    let ((h, m, s), is_local) = clock.hms();
-    // The clock ticks and the altitude changes while the camera flies, neither of
-    // which is egui input — without this the readout is frozen at whatever it said
-    // when the pointer last moved. See `EguiManager::animating`.
-    egui.animating();
-    let cam = camera.single().ok();
-    // Geocentric altitude (the local-y "altitude" is wrong away from the anchor).
-    let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
-    let data = HudData {
-        // The Local/UTC label now lives in the toggle beside the clock, so the
-        // time reads bare.
-        time: format!("{h:02}:{m:02}:{s:02}"),
-        utc: !is_local,
-        sun_mode: dev.sun_mode,
-        weather_live: weather.live,
-        // Show the forecast only in Auto (in Manual the sim isn't using it).
-        weather_info: weather.live.then(|| weather.latest).flatten().map(|o| {
-            (
-                format!(
-                    "{:.0}% cloud · {:.0}°C",
-                    o.cloud_cover * 100.0,
-                    o.air_temp_c
-                ),
-                format!(
-                    "{:.0}% cloud · {:.1} mm/h · {:.0}°C · {:.0} m/s wind",
-                    o.cloud_cover * 100.0,
-                    o.precipitation * crate::systems::weather::RAIN_FULL_MM,
-                    o.air_temp_c,
-                    o.wind_ms,
-                ),
-            )
-        }),
-        geo: cam
-            .zip(map_anchor.geo)
-            .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf)),
-        place: interact.address.clone(),
-        altitude,
-        // The heading is not here: it is the compass's, and the compass is
-        // `render_map_controls`, which reads the camera itself.
-        user: identity.username.clone(),
-    };
-
-    let actions = hud_area(egui.ctx(), &data);
-
-    if actions.toggle_utc {
-        clock.show_utc = !clock.show_utc;
-    }
-    if let Some(mode) = actions.set_sun_mode {
-        dev.sun_mode = mode;
-    }
-    if let Some(live) = actions.set_weather_live {
-        weather.live = live;
-    }
 }
 
 #[cfg(test)]
@@ -1340,97 +952,6 @@ mod tests {
         // …and nothing overlaps its neighbour, which hand-placed anchors do not
         // guarantee on their own.
         assert!(locate_top >= compass_top + COMPASS_SIZE);
-    }
-
-    /// The overlay must not grow across frames: a size-to-content anchored
-    /// Area with an unbounded inner row would stretch a little each frame
-    /// (the bug this guards against). Render several frames alongside the side
-    /// panels that shrink the central area, and assert the box stays put.
-    #[test]
-    fn hud_box_does_not_grow() {
-        let ctx = egui::Context::default();
-        // The real theme, not `Visuals::dark()`: the box's size is mostly spacing
-        // and padding, so measuring it under egui's stock style would guard a
-        // layout the app never renders.
-        theme::install(&ctx);
-        let data = HudData {
-            time: "08:14:11".to_string(),
-            utc: false,
-            sun_mode: crate::resources::SunMode::Auto,
-            weather_live: true,
-            weather_info: Some((
-                "60% cloud · 16°C".to_string(),
-                "60% cloud · 16°C".to_string(),
-            )),
-            geo: Some((53.21952, 6.58220)),
-            place: Some("Paterswoldseweg 62 · 9726BG · home · 1915".to_string()),
-            altitude: Some(17.0),
-            user: Some("dev".to_string()),
-        };
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1323.0, 819.0));
-
-        let mut sizes = Vec::new();
-        for _ in 0..10 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            // egui 0.35: `Context::run` is `run_ui` and panels are shown inside a
-            // root `Ui` rather than on the `Context` (`SidePanel` → `Panel`,
-            // `default_width` → `default_size`) — same layout as `egui_manager`
-            // drives in the live app.
-            let out = ctx.run_ui(raw, |ui| {
-                // Side panels present, like the live app.
-                egui::Panel::right("layers_panel")
-                    .default_size(260.0)
-                    .show(ui, |ui| {
-                        ui.heading("Layers");
-                    });
-                egui::Panel::right("bookmarks_panel")
-                    .default_size(280.0)
-                    .show(ui, |ui| {
-                        ui.heading("Places");
-                    });
-                hud_area(&ui.ctx().clone(), &data);
-            });
-            // The HUD's frame is the largest translucent rect (the side panels
-            // are opaque). `from_rgba_unmultiplied` premultiplies internally,
-            // and the frame fades in over the first frames, so match the alpha
-            // band loosely and take the biggest.
-            let rect = out
-                .shapes
-                .iter()
-                .filter_map(|cs| match &cs.shape {
-                    egui::Shape::Rect(rs) if (1..250).contains(&rs.fill.a()) => {
-                        Some(cs.shape.visual_bounding_rect())
-                    }
-                    _ => None,
-                })
-                .max_by(|a, b| (a.area()).total_cmp(&b.area()));
-            sizes.push(rect.unwrap_or(egui::Rect::NOTHING));
-        }
-
-        // On the settled frames the box must be compact, on-screen, and stable
-        // — the regression being an anchored Area that grows every frame.
-        let last = *sizes.last().unwrap();
-        let prev = sizes[sizes.len() - 2];
-        assert!(last.width() < 220.0, "HUD too wide: {}", last.width());
-        // 194 pt under the brand theme (was ~173 on egui's stock spacing — the
-        // roomier rhythm is the point, and `hud_area` already tightens the box's
-        // own padding back down), plus one row since the "where am I" line was
-        // added. The bound is a compactness sanity check, not a pixel pin: it is
-        // the runaway, caught by the stability assert below, that this test exists
-        // for. Note the place line is `truncate()`d for exactly that reason — a
-        // wrapping address would add rows with the text rather than one row.
-        assert!(last.height() < 220.0, "HUD too tall: {}", last.height());
-        assert!(last.min.y >= 0.0, "HUD grew off the top: {}", last.min.y);
-        assert!(
-            screen.contains_rect(last),
-            "HUD outside the screen: {last:?}"
-        );
-        assert!(
-            (last.width() - prev.width()).abs() < 0.5
-                && (last.height() - prev.height()).abs() < 0.5,
-            "HUD size still changing: {prev:?} -> {last:?}"
-        );
     }
 
     /// The locate button's caption must tell the four situations apart. They look
