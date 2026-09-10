@@ -732,6 +732,41 @@ pub struct ShotMetrics {
     /// one that is rendered but unseen is a depth or colour problem.
     pub route_meshes: usize,
     pub route_rendered: usize,
+    /// The three components light shafts need, counted separately, because two
+    /// of them draw nothing on their own (`systems::light_shafts`).
+    ///
+    /// `shaft_fog` is the camera's `VolumetricFog` — the pass. `shaft_volumes` is
+    /// the `FogVolume` count — the only place the pass has any effect.
+    /// `shaft_volume_m` is how far the volume's centre is from the camera in
+    /// render space, which is the number that would have saved a day: a volume
+    /// the viewer is not inside contributes *nothing at all*, because bevy's
+    /// march starts `end_depth_view` at 0 and only raises it on a backface hit,
+    /// so the shader returns `vec4(0)` and the setting reads as on while doing
+    /// nothing. Expect ~0; a whole grid cell means the placement is wrong.
+    ///
+    /// All three because the failure is a missing *combination*: on a capture
+    /// where the shafts are invisible, `shaft_fog=false` is a settings answer,
+    /// `shaft_volumes=0` is a spawn answer, and a large `shaft_volume_m` is a
+    /// placement answer, and no single boolean separates them.
+    ///
+    /// With no volume at all the distance is `NaN`, which serialises to null and
+    /// reads as *not measured* — the same convention `ground_m` uses off the
+    /// height layer, and the honest answer to "how far away is a thing that does
+    /// not exist". Assert `shaft_volumes` first if you are gating on it.
+    pub shaft_fog: bool,
+    pub shaft_volumes: usize,
+    pub shaft_volume_m: f32,
+    /// What `AppPrefs` *decided*, beside what the scene got.
+    ///
+    /// `shaft_pref` is `AppPrefs::light_shafts_on()` and `shadows_pref` is the
+    /// `shadows_on()` that gates it. Reported next to [`Self::shaft_fog`] because
+    /// the three of them localise the failure to one line: pref on and fog off is
+    /// `render_features`; pref off with shadows on is the capability half; both
+    /// off is the shadow setting, and the shafts are a symptom rather than the
+    /// bug. Without these, "the shafts are not there" is four possible causes and
+    /// a capture that cannot distinguish them.
+    pub shaft_pref: bool,
+    pub shadows_pref: bool,
     /// Particle emitters drawing, and the quads they add up to
     /// (`systems::particles`).
     ///
@@ -890,7 +925,8 @@ tiles_occluded,aerial_tiles,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,particle_emitters,particle_quads,\
+route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
+particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
 bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
 lod22_dated,lod22_elements,prop_meshes,\
@@ -967,6 +1003,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("globe_texture_mb", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
+    ("shaft_volume_m", 1),
     ("fetch_mb", 2),
 ];
 
@@ -2362,6 +2399,11 @@ pub struct ShotReadouts<'w, 's> {
     osm_buildings: Res<'w, crate::systems::osm_buildings::OsmBuildings>,
     lod22: Res<'w, crate::systems::lod22::Lod22Buildings>,
     adapter: Res<'w, bevy::render::renderer::RenderAdapterInfo>,
+    /// The resolved graphics preferences, for the columns that report what a
+    /// setting *decided* rather than what the scene ended up looking like. The
+    /// two are not the same question and conflating them is what made the light
+    /// shafts take four GPU runs to diagnose.
+    prefs: Res<'w, crate::resources::AppPrefs>,
     avatar: AvatarReadout<'w, 's>,
     census: crate::systems::render_census::RenderCensus<'w, 's>,
     /// The wall clock, for the frame-time columns only. Everything else the
@@ -2439,6 +2481,11 @@ pub struct VisualCounts<'w, 's> {
     /// rather than added as its own argument for the reason above — the system is
     /// at Bevy's parameter ceiling.
     particles: Query<'w, 's, &'static crate::systems::particles::ParticleEmitter>,
+    /// The light-shaft fog volumes and where they actually are in render space
+    /// (`systems::light_shafts`). `GlobalTransform`, not `Transform`, precisely
+    /// because the bug this metric exists for is the difference between the two.
+    shafts:
+        Query<'w, 's, &'static GlobalTransform, With<crate::systems::light_shafts::ShaftVolume>>,
 }
 
 pub fn drive_capture(
@@ -2467,6 +2514,9 @@ pub fn drive_capture(
             &Projection,
             &Exposure,
             Option<&Bloom>,
+            // The volumetric pass itself. `Has`, not `Option<&…>`: nothing here
+            // reads its settings, only whether `render_features` put it on.
+            Has<bevy::light::VolumetricFog>,
         ),
         With<FreeCamera>,
     >,
@@ -2708,7 +2758,7 @@ pub fn drive_capture(
     // The numbers behind the image, so a black frame can be diagnosed without
     // re-running: a black *scene* still reports visible, rendered globe meshes.
     // Built once and reused for the log line, the `--csv` row and the JSON dump.
-    if let Ok((cell, tf, projection, exposure, bloom)) = camera.single() {
+    if let Ok((cell, tf, projection, exposure, bloom, shaft_fog)) = camera.single() {
         let (near, far) = match projection {
             Projection::Perspective(p) => (p.near, p.far),
             _ => (0.0, 0.0),
@@ -2779,6 +2829,20 @@ pub fn drive_capture(
             furniture_factor: readouts.furniture.factor,
             route_meshes: visuals.route.iter().count(),
             route_rendered: visuals.route.iter().filter(|vv| vv.get()).count(),
+            shaft_fog,
+            shaft_volumes: visuals.shafts.iter().count(),
+            // Distance from the camera to the volume's centre, in render space.
+            // The camera is the floating origin, so its own render position is
+            // ~0 and this is just the volume's magnitude — which is the point:
+            // it is the one number that tells a cell-local translation from a
+            // render-space one without knowing either frame's convention.
+            shaft_volume_m: visuals
+                .shafts
+                .iter()
+                .map(|t| t.translation().length())
+                .fold(f32::NAN, f32::min),
+            shaft_pref: readouts.prefs.light_shafts_on(),
+            shadows_pref: readouts.prefs.shadows_on(),
             particle_emitters: particles.0 as usize,
             particle_quads: particles.1 as usize,
             grass_patches: grass.0,
@@ -3398,6 +3462,14 @@ mod tests {
             globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
             route_meshes: 0,
             route_rendered: 0,
+            shaft_fog: false,
+            shaft_volumes: 0,
+            // A real number, not the `NaN` the no-volume case reports: this fixture
+            // exists to prove the column is plumbed, and `ground_m` is already the
+            // one field carrying the unmeasured-reads-as-null case.
+            shaft_volume_m: 0.0,
+            shaft_pref: false,
+            shadows_pref: false,
             particle_emitters: 0,
             particle_quads: 0,
             avatar_meshes: 0,
