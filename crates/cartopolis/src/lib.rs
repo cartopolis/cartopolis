@@ -2673,6 +2673,14 @@ fn run_client() {
             // the wire this frame rather than the next.
             systems::interact::handle_interaction_input.before(network::send_network_intent),
         ),
+    )
+    // Phase 3b'': the camera mode a sign-in lands in. Its own `add_systems`
+    // because the camera tuple in Phase 3 is at Bevy's 20-element ceiling.
+    // Before the toggle so the mode it writes is the one the toggle's
+    // "Follow is not on offer" guard sees this frame.
+    .add_systems(
+        Update,
+        systems::free_camera::follow_on_sign_in.before(systems::free_camera::camera_mode_toggle),
     );
     // Phase 3b': voice capture. Its own `add_systems` rather than a line in the
     // tuple above, which is at Bevy's 20-element limit for one call — and two

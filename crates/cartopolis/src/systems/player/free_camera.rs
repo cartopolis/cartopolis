@@ -1249,6 +1249,50 @@ pub fn camera_mode_toggle(
     println!("Camera mode: {:?}", camera_state.mode);
 }
 
+/// Land in Follow the moment a session comes up.
+///
+/// Signing in is the one thing in this client that adds a *body*: offline is the
+/// map viewer and its switcher offers Fly and Earth only
+/// ([`follow_available`]), so every sign-in used to finish with the camera still
+/// in whichever map mode it happened to be in — the avatar the user had just
+/// acquired standing somewhere off-screen, and Tab the only thing that said so.
+/// `CameraState`'s own default has always been [`CameraMode::Avatar`]; this is
+/// what makes that default reachable, since `camera_mode_toggle` drops it to Fly
+/// on the first offline frame.
+///
+/// An **edge**, not a level: it fires on the frame Follow becomes available and
+/// never again, so a user who then picks Earth stays in Earth for the rest of
+/// the session. The `Local` is the previous answer rather than the previous
+/// session status, because the avatar entity is half of it — the mode is no more
+/// enterable without one than it is without a session.
+///
+/// Driver mode is exempt for the reason it is exempt in `camera_mode_toggle`: it
+/// drives the follow camera itself and restores the pose it borrowed on the way
+/// out, so writing the mode under it would be a no-op at best and would fight it
+/// at worst.
+///
+/// It does overrule the camera mode `user_store::restore_saved_location` puts
+/// back on a launch that signs in from a remembered token — the restore lands
+/// early, while the handshake takes as long as a network round trip. That is the
+/// intended reading of "signed in means following": the saved location still
+/// decides *where* the world comes back, only not through which camera.
+pub fn follow_on_sign_in(
+    mut was_available: Local<bool>,
+    session: Res<crate::systems::session::SessionState>,
+    driver: Res<crate::systems::driver::DriverState>,
+    mut camera_state: ResMut<CameraState>,
+    avatars: Query<(), With<crate::components::Avatar>>,
+) {
+    let available = follow_available(&session, !avatars.is_empty());
+    let arrived = available && !*was_available;
+    *was_available = available;
+    if !arrived || driver.active {
+        return;
+    }
+    enter_mode(&mut camera_state, CameraMode::Avatar);
+    camera_state.mode = CameraMode::Avatar;
+}
+
 /// Everything the user did this frame, in one parameter.
 ///
 /// Bevy caps a system at 16 parameters and `camera_controls` was already at the
@@ -2422,6 +2466,82 @@ fn ground_lift(cell_y: f64, local_y: f32, min_height: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::Avatar;
+    use crate::systems::driver::DriverState;
+    use crate::systems::session::{SessionState, SessionStatus};
+
+    /// Just enough world to run [`follow_on_sign_in`]: the three resources it
+    /// reads and the avatar entity that is half of `follow_available`.
+    fn sign_in_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<CameraState>()
+            .init_resource::<SessionState>()
+            .init_resource::<DriverState>()
+            .add_systems(Update, follow_on_sign_in);
+        app.world_mut().spawn(Avatar);
+        // Offline, and in the mode `camera_mode_toggle` drops an offline client
+        // into — this is the state every sign-in actually starts from.
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Free;
+        app.update();
+        app
+    }
+
+    fn go_online(app: &mut App) {
+        app.world_mut().resource_mut::<SessionState>().status = SessionStatus::Online;
+    }
+
+    fn mode(app: &App) -> CameraMode {
+        app.world().resource::<CameraState>().mode
+    }
+
+    #[test]
+    fn a_sign_in_lands_in_follow() {
+        let mut app = sign_in_app();
+        assert_eq!(mode(&app), CameraMode::Free, "offline is the map viewer");
+        go_online(&mut app);
+        app.update();
+        assert_eq!(mode(&app), CameraMode::Avatar);
+    }
+
+    /// The edge, not the level: having a session is not a reason to be dragged
+    /// back to the avatar every frame.
+    #[test]
+    fn a_mode_picked_after_signing_in_is_left_alone() {
+        let mut app = sign_in_app();
+        go_online(&mut app);
+        app.update();
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Orbit;
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(mode(&app), CameraMode::Orbit);
+    }
+
+    /// Driver mode drives the follow camera itself and restores the pose it
+    /// borrowed on the way out; a sign-in must not write over that.
+    #[test]
+    fn driver_mode_keeps_the_camera_it_borrowed() {
+        let mut app = sign_in_app();
+        app.world_mut().resource_mut::<DriverState>().active = true;
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Orbit;
+        go_online(&mut app);
+        app.update();
+        assert_eq!(mode(&app), CameraMode::Orbit);
+    }
+
+    /// Signing out and back in is a sign-in, so it lands in Follow again.
+    #[test]
+    fn signing_back_in_lands_in_follow_again() {
+        let mut app = sign_in_app();
+        go_online(&mut app);
+        app.update();
+        app.world_mut().resource_mut::<SessionState>().status = SessionStatus::Offline;
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Free;
+        app.update();
+        go_online(&mut app);
+        app.update();
+        assert_eq!(mode(&app), CameraMode::Avatar);
+    }
 
     /// Bevy-local north for these tests: the anchor frame's +Y (see
     /// `GlobeState::north_axis_local`, which returns the real thing in-app).
