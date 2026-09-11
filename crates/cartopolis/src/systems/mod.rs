@@ -33,7 +33,7 @@ pub mod net;
 pub mod player;
 
 pub use dev::{
-    adaptive_quality, debug, desktop_integration, dev_panel, diagnostics, frame_pacing, perf,
+    adaptive_quality, desktop_integration, dev_panel, diagnostics, frame_pacing, perf,
     pipeline_health, render_census, shot_harness, shot_presets, upload_meter, window_icon,
 };
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
