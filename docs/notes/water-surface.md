@@ -158,6 +158,21 @@ error in rendered slope — so the curve is a fitted quadratic, exact at both en
 the box; the same view reported 1.5 s to 4.7 s a frame with the shader held
 constant. The tables above are arithmetic, which is what this machine can settle.
 
+## How to A/B this surface at all
+
+Two `gpu shots` runs of the same preset are **not** the same frame. The waves are
+a function of `globals.time`, which is wall clock, so every capture lands on a
+different phase and a raw image diff of two runs reports ~14 % of pixels changed
+before anything has been altered. Half of that is the wave texture and it is
+signed noise, not a finding.
+
+So measure over **water pixels only** (`b − r > 18` separates this surface from
+the pale map behind it) and take a **mean**, which the phase noise averages out
+of, rather than a maximum or a pixel count. The numbers in the bank-field section
+below were taken that way over the `edge-lake` and `edge-canal` presets: what one
+term is worth is the mean luminance difference between a run with it and a run
+with it neutralised, measured over the water in the frame.
+
 ## The bank is in the mirror, without a reflection pass
 
 Nothing in the scene is *actually* reflected — the environment map is the
@@ -183,8 +198,20 @@ water by the far bank probes onto the land behind it. That is true and it is not
 enough. From a few hundred metres up the camera direction barely changes across
 the frame, so "the far bank" is the same side of every water body at once, and a
 band on one consistent side of every shore is exactly what a cast shadow looks
-like. Measured on the `edge-lake` preset (2026-09-11, deck-gpu): up to **46
-luminance levels**, in a band ~30 m wide following every bank in the frame.
+like — which is how it was reported.
+
+Measured on deck-gpu, 2026-09-11, as the mean over the frame's water of
+neutralising the term (see the A/B section above):
+
+| preset | the term as it was | after the bank field | removed |
+|---|---|---|---|
+| `edge-lake`  (open banks, one marina) | +3.62 | +0.27 | **93 %** |
+| `edge-canal` (Groningen, built both sides) | +5.10 | +1.83 | 64 % |
+
+That split is the whole point, and the 64 % is not a shortfall: `edge-canal`
+looks down at 30°, where the ray is 9 m up only 16 m back, and a Groningen quay
+routinely has a road before the houses. What survives is the water in front of
+the buildings, which is what a reflection of them would be.
 
 So there is a second, coarser field now — `ShoreField::bank`,
 [`BANK_FIELD_PX`] = 256 against the shore field's 1024, 64 KiB a cell against

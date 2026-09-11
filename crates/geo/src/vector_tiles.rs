@@ -5310,7 +5310,10 @@ mod tests {
         let field = water_shore_field(GRONINGEN_Z14, tile_m)
             .expect("shore field")
             .expect("fixture has water");
-        assert_eq!(field.bank.len(), (field.bank_size * field.bank_size) as usize);
+        assert_eq!(
+            field.bank.len(),
+            (field.bank_size * field.bank_size) as usize
+        );
         assert!(field.bank.iter().any(|&d| d == 0), "no building texels");
         assert!(
             field.bank.iter().any(|&d| d == u8::MAX),
@@ -5326,8 +5329,7 @@ mod tests {
         let mut clear = 0usize;
         for by in 0..field.bank_size {
             for bx in 0..field.bank_size {
-                let s = field.data
-                    [((by * step) * field.size + bx * step) as usize];
+                let s = field.data[((by * step) * field.size + bx * step) as usize];
                 if s < u8::MAX {
                     continue; // not open water
                 }
