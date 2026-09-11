@@ -84,7 +84,7 @@ cargo run -p cartopolis_simulator -- --http-listen 127.0.0.1:8080
 export CARTO_SIM=http://127.0.0.1:8080
 export CARTO_ADMIN_USER=dev CARTO_ADMIN_PASSWORD=...
 
-tools/author.py regions                 # ids, anchors, prim/script budgets
+tools/author.py capacity                # the world's prim/script budget and usage
 tools/author.py content                 # what the server can install
 tools/author.py install firebird        # the worked example, over Groningen
 tools/author.py create --lat 53.2194 --lng 6.5665 --alt 20 \

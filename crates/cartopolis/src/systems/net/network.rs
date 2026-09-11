@@ -6,7 +6,7 @@
 //! [`LinkStatus`], and speak the same frames.
 
 use crate::components::{
-    Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, Region, RemoteAvatar,
+    Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, RemoteAvatar,
     RemoteAvatarMotionHint,
 };
 use crate::resources::{
@@ -46,7 +46,7 @@ use bevy::render::render_resource::TextureFormat;
 use bytes::Bytes;
 use cartopolis_core::{
     motion, snap_yaw_continuation, wrap_angle_pi, AuthCredential, AvatarStateDto, NetMessage,
-    PrimDto, RegionDto,
+    PrimDto,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use futures_channel::mpsc::UnboundedReceiver;
@@ -626,7 +626,6 @@ pub fn apply_network_snapshot(
     mut game_state: ResMut<GameState>,
     mut avatar_state: ResMut<AvatarState>,
     mut local_sim_id: ResMut<LocalAvatarSimId>,
-    region_entities: Query<Entity, With<Region>>,
     // Excludes avatars so the `&mut Transform` access is provably disjoint from
     // `avatar_tf` below (prims never carry Avatar/RemoteAvatar).
     mut prim_entities: Query<
@@ -716,7 +715,6 @@ pub fn apply_network_snapshot(
                 }
             }
             NetMessage::WorldSnapshot {
-                regions,
                 prims,
                 avatars,
                 tick,
@@ -742,10 +740,6 @@ pub fn apply_network_snapshot(
                 // same frame, with no ordering between the two systems. Whichever
                 // runs first, the other is holding a live view of entities that are
                 // already queued for despawn. Gone is the outcome both wanted.
-                let region_es: Vec<Entity> = region_entities.iter().collect();
-                for e in region_es {
-                    commands.entity(e).try_despawn();
-                }
                 let prim_es: Vec<Entity> = prim_entities.iter().map(|(e, _, _)| e).collect();
                 for e in prim_es {
                     commands.entity(e).try_despawn();
@@ -754,13 +748,7 @@ pub fn apply_network_snapshot(
                 for e in remote_es {
                     commands.entity(e).try_despawn();
                 }
-                game_state.regions_loaded = false;
                 game_state.prims_loaded = false;
-
-                for r in regions {
-                    commands.spawn(region_from_dto(r));
-                }
-                game_state.regions_loaded = true;
 
                 for p in prims {
                     spawn_prim_from_dto(&mut commands, p);
@@ -957,24 +945,20 @@ pub fn apply_network_snapshot(
                 // at a different one still has its error waiting when you get there.
                 auth.script.push(prim_id, level, text);
             }
-            NetMessage::RegionCapacity {
-                region_id,
+            NetMessage::WorldCapacity {
                 prims_used,
                 prims_max,
                 scripts_used,
                 scripts_max,
                 script_memory_bytes,
             } => {
-                auth.script.budgets.insert(
-                    region_id,
-                    crate::systems::script_editor::RegionBudget {
-                        prims_used,
-                        prims_max,
-                        scripts_used,
-                        scripts_max,
-                        script_memory_bytes,
-                    },
-                );
+                auth.script.budget = Some(crate::systems::script_editor::WorldBudget {
+                    prims_used,
+                    prims_max,
+                    scripts_used,
+                    scripts_max,
+                    script_memory_bytes,
+                });
             }
             _ => {}
         }
@@ -1143,23 +1127,9 @@ fn sync_remote_avatar_entities(
     }
 }
 
-fn region_from_dto(r: RegionDto) -> Region {
-    Region {
-        id: r.id,
-        name: r.name,
-        latitude: r.latitude,
-        longitude: r.longitude,
-        tile_x: r.tile_x,
-        tile_y: r.tile_y,
-        tile_z: r.tile_z,
-        sim_origin: Some(Vec3::new(r.sim_x, r.sim_y, r.sim_z)),
-    }
-}
-
 fn prim_from_dto(p: &PrimDto) -> Prim {
     Prim {
         id: p.id,
-        region_id: p.region_id,
         name: p.name.clone(),
         shape: PrimShape::from_str(&p.shape),
         color: Color::srgb(p.color[0], p.color[1], p.color[2]),
@@ -1557,22 +1527,6 @@ pub fn send_network_intent(
         emote,
         seated,
         geo,
-    });
-}
-
-pub fn send_observer_update(
-    online: Option<Res<OnlineSession>>,
-    avatar_state: Res<AvatarState>,
-    camera_state: Res<crate::resources::CameraState>,
-) {
-    let Some(sess) = online else {
-        return;
-    };
-    if camera_state.mode != crate::resources::CameraMode::Avatar {
-        return;
-    }
-    let _ = sess.intent_tx.unbounded_send(NetMessage::ObserverUpdate {
-        position: avatar_state.position,
     });
 }
 

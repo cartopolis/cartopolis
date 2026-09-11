@@ -10,7 +10,6 @@ use bevy::prelude::*;
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
 use cartopolis_core::motion;
 
-use crate::components::RegionMesh;
 use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::gizmo::GizmoState;
@@ -1126,7 +1125,7 @@ pub fn setup_camera(
             Transform::from_xyz(0.0, -GROUND_SKIRT_SINK, 0.0),
             NotShadowCaster,
             // From orbit this 150 km cap reads as a bright patch over the
-            // anchor; hide it (and the tiles/regions) while the globe is up.
+            // anchor; hide it (and the streamed tiles) while the globe is up.
             crate::components::HideInSpace,
             crate::components::GroundSkirt,
         ));
@@ -1311,7 +1310,6 @@ pub fn camera_controls(
     mut camera_state: ResMut<CameraState>,
     avatar_state: Res<AvatarState>,
     time: Res<Time>,
-    region_mesh_query: Query<&GlobalTransform, With<RegionMesh>>,
     gizmo_state: Res<GizmoState>,
     egui_manager: Res<EguiManager>,
     globe: Res<crate::systems::globe::GlobeState>,
@@ -1611,8 +1609,7 @@ pub fn camera_controls(
             let mut target_position = avatar_pos + camera_offset + lead;
 
             // Prevent camera from going below ground
-            let ground_height = get_ground_height(target_position, &region_mesh_query);
-            let min_height = ground_height + MIN_CAMERA_HEIGHT;
+            let min_height = MIN_CAMERA_HEIGHT;
             if target_position.y < min_height {
                 target_position.y = min_height;
             }
@@ -1876,11 +1873,10 @@ pub fn camera_controls(
 
             // Prevent going below ground — including the measured ground, or flying
             // low over the Veluwe puts the camera inside the hill.
-            let ground_height = get_ground_height(camera_transform.translation, &region_mesh_query)
-                + terrain.at(
-                    camera_cell.x as f32 * WORLD_CELL_EDGE + camera_transform.translation.x,
-                    camera_cell.z as f32 * WORLD_CELL_EDGE + camera_transform.translation.z,
-                );
+            let ground_height = terrain.at(
+                camera_cell.x as f32 * WORLD_CELL_EDGE + camera_transform.translation.x,
+                camera_cell.z as f32 * WORLD_CELL_EDGE + camera_transform.translation.z,
+            );
             let min_height = ground_height + MIN_CAMERA_HEIGHT;
             let lift = ground_lift(
                 camera_cell.y as f64,
@@ -2421,25 +2417,6 @@ pub fn camera_controls(
 fn ground_lift(cell_y: f64, local_y: f32, min_height: f32) -> f32 {
     let absolute = cell_y * WORLD_CELL_EDGE as f64 + local_y as f64;
     (min_height as f64 - absolute).max(0.0) as f32
-}
-
-fn get_ground_height(
-    position: Vec3,
-    region_mesh_query: &Query<&GlobalTransform, With<RegionMesh>>,
-) -> f32 {
-    let mut min_height: f32 = 0.0;
-    for region_transform in region_mesh_query.iter() {
-        let region_y: f32 = region_transform.translation().y;
-        let region_top: f32 = region_y + 0.05;
-        if position.x >= region_transform.translation().x - 150.0
-            && position.x <= region_transform.translation().x + 150.0
-            && position.z >= region_transform.translation().z - 150.0
-            && position.z <= region_transform.translation().z + 150.0
-        {
-            min_height = min_height.max(region_top);
-        }
-    }
-    min_height
 }
 
 #[cfg(test)]

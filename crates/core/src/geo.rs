@@ -1,13 +1,11 @@
-//! Geodetic ↔ ECEF ↔ local ENU tangent frame, and the sim-region grid.
+//! Geodetic ↔ ECEF ↔ local ENU tangent frame.
 //!
-//! This is the concrete "region-to-globe" attachment from ADR-020/021: a sim
-//! cluster is pinned to the WGS84 ellipsoid at a lat/lng anchor, which defines a
-//! flat **East-North-Up** tangent frame. Regions are fixed real-metre squares
-//! addressed by integer `(i, j)` offsets within that frame, so neighbours tile
-//! seamlessly by construction. All maths is f64; the client maps ENU → Bevy and
-//! handles render precision separately (ADR-019).
+//! This is the concrete flat-sim-to-globe attachment from ADR-020/021: a sim
+//! world is pinned to the WGS84 ellipsoid at a lat/lng anchor, which defines a
+//! flat **East-North-Up** tangent frame everything else is measured in. All maths
+//! is f64; the client maps ENU → Bevy and handles render precision separately
+//! (ADR-019).
 
-use crate::world::REGION_SIZE_METERS;
 use glam::DVec3;
 
 // WGS84 ellipsoid.
@@ -49,7 +47,7 @@ pub fn ecef_to_geodetic(ecef: DVec3) -> (f64, f64, f64) {
 }
 
 /// A local East-North-Up tangent frame pinned to the ellipsoid at an anchor —
-/// how a flat sim cluster/region attaches to the globe (ADR-020/021).
+/// how the flat sim frame attaches to the globe (ADR-020/021).
 #[derive(Clone, Copy, Debug)]
 pub struct TangentFrame {
     /// ECEF position of the anchor (local origin).
@@ -94,10 +92,6 @@ impl TangentFrame {
     }
 }
 
-/// Fixed real-metre edge of a sim region (ADR-021). Real metres, decoupled from
-/// any map tile zoom.
-pub const REGION_SIZE: f64 = REGION_SIZE_METERS;
-
 /// Horizontal distance between two geographic points, in metres.
 ///
 /// The ENU frame at the first point, which is exact for the ranges anything here
@@ -129,28 +123,6 @@ pub fn degree_scale_m(lat_deg: f64) -> (f64, f64) {
     let per_lat = ground_distance_m(lat_deg, 0.0, lat_deg + step, 0.0);
     let per_lng = ground_distance_m(lat_deg, 0.0, lat_deg, 1.0);
     (per_lat.max(1e-3), per_lng.max(1e-3))
-}
-
-/// Which region `(i, j)` a local ENU position falls in (i = East, j = North).
-#[must_use]
-pub fn region_index(east_m: f64, north_m: f64) -> (i64, i64) {
-    (
-        (east_m / REGION_SIZE).floor() as i64,
-        (north_m / REGION_SIZE).floor() as i64,
-    )
-}
-
-/// The (East, North) local origin of region `(i, j)` in metres.
-#[must_use]
-pub fn region_origin(i: i64, j: i64) -> (f64, f64) {
-    (i as f64 * REGION_SIZE, j as f64 * REGION_SIZE)
-}
-
-/// Are two regions edge-adjacent (4-neighbour) in the same cluster grid?
-#[must_use]
-pub fn regions_adjacent(a: (i64, i64), b: (i64, i64)) -> bool {
-    let (di, dj) = ((a.0 - b.0).abs(), (a.1 - b.1).abs());
-    di + dj == 1
 }
 
 #[cfg(test)]
@@ -225,18 +197,6 @@ mod tests {
         let p0 = geodetic_to_ecef(LAT, LNG, 0.0);
         let p1 = geodetic_to_ecef(LAT, LNG + 0.001, 0.0);
         assert_relative_eq!(local.length(), (p1 - p0).length(), epsilon = 1e-6);
-    }
-
-    #[test]
-    fn region_grid() {
-        assert_eq!(region_index(0.0, 0.0), (0, 0));
-        assert_eq!(region_index(REGION_SIZE + 1.0, 0.0), (1, 0));
-        assert_eq!(region_index(-1.0, 0.0), (-1, 0));
-        let (ox, oy) = region_origin(1, 2);
-        assert_relative_eq!(ox, REGION_SIZE, epsilon = 1e-9);
-        assert_relative_eq!(oy, 2.0 * REGION_SIZE, epsilon = 1e-9);
-        assert!(regions_adjacent((0, 0), (1, 0)));
-        assert!(!regions_adjacent((0, 0), (1, 1)));
     }
 
     #[test]

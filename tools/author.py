@@ -15,7 +15,7 @@ you can see the request it would have sent.
     export CARTO_SIM=https://sim.cartopolis.org
     export CARTO_ADMIN_USER=dev CARTO_ADMIN_PASSWORD=...
 
-    tools/author.py regions
+    tools/author.py capacity
     tools/author.py prims
     tools/author.py show 42
     tools/author.py create --lat 53.2194 --lng 6.5665 --alt 45 \\
@@ -72,7 +72,7 @@ class ApiError(RuntimeError):
 def request(method: str, url: str, token: str | None, body: object | None) -> object:
     """One JSON call. Errors carry the server's own message — the API answers with
     `{"error": "..."}` for everything it refuses, and that sentence is usually the
-    whole diagnosis (a shape that isn't a shape, a region that is full)."""
+    whole diagnosis (a shape that isn't a shape, a world that is full)."""
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -137,8 +137,6 @@ def spec_from_args(args: argparse.Namespace) -> dict:
     explicit `null` takes a texture or an emitter *off*. Sending everything with
     a default would make `patch --color` a reset of the whole prim."""
     spec: dict = {}
-    if args.region is not None:
-        spec["region_id"] = args.region
     if args.name is not None:
         spec["name"] = args.name
     if args.shape is not None:
@@ -219,16 +217,14 @@ def main() -> int:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("regions", help="list regions and their prim/script budgets")
+    sub.add_parser("capacity", help="the world's prim/script budget and usage")
 
-    lp = sub.add_parser("prims", help="list prims")
-    lp.add_argument("--region", type=int)
+    sub.add_parser("prims", help="list prims")
 
     sp = sub.add_parser("show", help="one prim, with its script source")
     sp.add_argument("id", type=int)
 
     def add_spec_flags(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--region", type=int)
         parser.add_argument("--name")
         parser.add_argument(
             "--shape", choices=["box", "sphere", "cylinder", "cone", "torus"]
@@ -293,11 +289,10 @@ def main() -> int:
         player = args.command in ("export", "import", "give")
         token = None if args.dry_run else login(base, player=player)
 
-        if args.command == "regions":
-            emit(request("GET", f"{base}/api/admin/regions", token, None))
+        if args.command == "capacity":
+            emit(request("GET", f"{base}/api/admin/capacity", token, None))
         elif args.command == "prims":
-            query = f"?region_id={args.region}" if args.region else ""
-            emit(request("GET", f"{base}/api/admin/prims{query}", token, None))
+            emit(request("GET", f"{base}/api/admin/prims", token, None))
         elif args.command == "show":
             emit(request("GET", f"{base}/api/admin/prims/{args.id}", token, None))
         elif args.command == "create":

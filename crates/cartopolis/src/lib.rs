@@ -1387,9 +1387,9 @@ fn run_client() {
     // not a logic error: two systems with no ordering between them both hold a
     // live view of the same entity, one queues a despawn and the other queues an
     // insert, and the flush applies them in that order. It killed the Android
-    // build on every app switch — a dropped session tore the server's regions
-    // down while `tile_loader` was queueing this frame's texture onto one of them
-    // (`load_region_tiles`, fixed there too) — and it aborts the process, which on
+    // build on every app switch — a dropped session tore the server's own
+    // entities down while a streamer was queueing a component onto one of them —
+    // and it aborts the process, which on
     // a handheld reads as "the app closed itself" with the explanation only in
     // `logcat`. The same policy `handle_render_error` follows: a recoverable
     // failure logs and the app keeps running.
@@ -1855,7 +1855,6 @@ fn run_client() {
         .init_resource::<MouseState>()
         .init_resource::<systems::touch::TouchGestures>()
         .init_resource::<systems::touch::UiClaimRegions>()
-        .init_resource::<systems::tile_loader::TileCache>()
         // A scripted run never sees the server handshake that normally supplies the
         // tile template, and the built-in fallback is the raster OSM basemap — which
         // the route planner cannot solve against. A preset manifest may therefore pin
@@ -2290,7 +2289,6 @@ fn run_client() {
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.
             systems::sky_dome::setup_sky_dome.after(systems::free_camera::setup_camera),
-            spawn_avatar_entity,
             sky::setup_sky,
             sky::setup_stars,
             sky::setup_moon,
@@ -2309,7 +2307,6 @@ fn run_client() {
         (
             network::apply_network_snapshot,
             network::create_egui_texture_handles.after(network::apply_network_snapshot),
-            rendering::spawn_regions.after(network::apply_network_snapshot),
             // ADR-029: derive geo-anchored prims' GridCell/Transform from the
             // current OSM anchor (and re-project on re-anchor) before meshing.
             systems::prim_geo::place_geo_prims
@@ -2350,15 +2347,13 @@ fn run_client() {
                 // in the panel, because both outlive it being open: an upload
                 // started and then the panel closed must still land.
                 systems::model_library::poll_model_library,
-                systems::tile_loader::load_region_tiles,
             ),
-            rendering::update_region_materials,
-            systems::osm_buildings::update_buildings.after(rendering::spawn_regions),
+            systems::osm_buildings::update_buildings,
             // Nested as one element to stay under Bevy's per-tuple system limit.
             // `update_building_facts` takes no ordering edges: it spawns nothing
             // and is read by panels and readouts, never by a streamer mid-frame.
             (
-                systems::lod22::update_lod22.after(rendering::spawn_regions),
+                systems::lod22::update_lod22,
                 systems::building_facts::update_building_facts,
                 systems::surveyed::prefetch_bgt_coverage,
                 systems::crops::prefetch_brp_coverage,
@@ -2375,7 +2370,7 @@ fn run_client() {
                 )
                     .chain(),
             ),
-            systems::data_layers::update_data_layers.after(rendering::spawn_regions),
+            systems::data_layers::update_data_layers,
             systems::data_layers::animate_stop_rings
                 .after(systems::data_layers::update_data_layers),
             // "Minimal mode" forces the layer + weather toggles off before they're
@@ -2387,7 +2382,7 @@ fn run_client() {
                     .before(systems::data_layers::apply_feature_toggles)
                     .before(systems::data_layers::apply_feature_toggles_to_new),
                 // The full sweep is the expensive one — four queries over every
-                // building, window, 3DBAG mesh, stream tile and region quad — so it
+                // building, window, 3DBAG mesh and stream tile — so it
                 // runs only when the answer can have changed. Note the gate is a
                 // *value* comparison, not `resource_changed::<DataLayers>()`:
                 // `update_data_layers` mutably derefs the resource every frame, and
@@ -2400,8 +2395,7 @@ fn run_client() {
                     .run_if(systems::data_layers::feature_toggles_changed)
                     .after(systems::osm_buildings::update_buildings)
                     .after(systems::map_stream::update_map_stream)
-                    .after(systems::map_stream::update_tile_occlusion)
-                    .after(rendering::spawn_regions),
+                    .after(systems::map_stream::update_tile_occlusion),
                 // …and the entities that streamed in *this* frame get the current
                 // state applied unconditionally, because the gate above is closed on
                 // exactly the frames where nothing about the toggles changed but a
@@ -2413,8 +2407,7 @@ fn run_client() {
                     .after(systems::osm_buildings::update_buildings)
                     .after(systems::map_stream::update_map_stream)
                     .after(systems::map_stream::apply_stream_textures)
-                    .after(systems::lod22::update_lod22)
-                    .after(rendering::spawn_regions),
+                    .after(systems::lod22::update_lod22),
             ),
             systems::data_layers::handle_poi_click.after(systems::data_layers::update_data_layers),
             // Transit polling, nested to stay under the per-tuple system limit.
@@ -2451,7 +2444,7 @@ fn run_client() {
                     .after(systems::map_stream::apply_reanchor)
                     .before(systems::height::poll_height_layer),
             ),
-            systems::map_stream::init_map_stream.after(rendering::spawn_regions),
+            systems::map_stream::init_map_stream,
             // Re-anchor requests (from teleports / globe descent) drop the old
             // tiles before streaming resumes at the new origin (ADR-025).
             // Nested as one element to stay under Bevy's per-tuple system limit.
@@ -2593,7 +2586,11 @@ fn run_client() {
                 // Globe-descent re-anchor → teleport (must precede the teleport).
                 systems::geo_nav::apply_camera_reanchor.before(systems::geo_nav::apply_teleport),
             ),
-            attach_avatar_to_bigspace,
+            // Before `attach_avatar_to_bigspace`, so an avatar that appears when
+            // a session comes up is in the grid on the frame it is spawned
+            // rather than the one after.
+            sync_local_avatar,
+            attach_avatar_to_bigspace.after(sync_local_avatar),
         ),
     )
     // The Overpass street-detail streamer, and the small systems riding it:
@@ -2602,7 +2599,7 @@ fn run_client() {
     .add_systems(
         Update,
         (
-            systems::street_detail::update_street_detail.after(rendering::spawn_regions),
+            systems::street_detail::update_street_detail,
             systems::street_detail::update_lamp_glow
                 .after(systems::street_detail::update_street_detail),
             systems::street_detail::update_lamp_lights
@@ -2611,7 +2608,7 @@ fn run_client() {
                 .after(systems::street_detail::update_street_detail),
             systems::street_detail::update_prop_fade
                 .after(systems::street_detail::update_street_detail),
-            systems::tall_structures::update_tall_structures.after(rendering::spawn_regions),
+            systems::tall_structures::update_tall_structures,
             systems::tall_structures::spin_rotors
                 .after(systems::tall_structures::update_tall_structures),
         ),
@@ -2637,15 +2634,6 @@ fn run_client() {
                 .after(avatar::handle_avatar_movement)
                 .before(systems::free_camera::camera_controls),
             network::send_network_intent.after(avatar::handle_avatar_movement),
-            // 20 Hz, not per-frame: the window runs `AutoNoVsync`, so unthrottled
-            // this pushed several hundred position messages a second at the sim for
-            // a value it only uses to pick an area of interest.
-            network::send_observer_update
-                .after(network::apply_network_snapshot)
-                .after(avatar::handle_avatar_movement)
-                .run_if(bevy::time::common_conditions::on_timer(
-                    Duration::from_millis(50),
-                )),
             systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
             systems::globe::update_globe_visibility.after(systems::free_camera::camera_controls),
             systems::globe::update_globe_albedo.after(systems::free_camera::camera_controls),
@@ -2669,7 +2657,6 @@ fn run_client() {
             avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
             avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
             avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
-            systems::debug::debug_region_entities.after(rendering::spawn_regions),
         ),
     )
     // Phase 3b: the world the avatar can touch. Its own `add_systems` because the
@@ -3230,13 +3217,49 @@ fn run_client() {
     }
 }
 
-fn spawn_avatar_entity(mut commands: Commands) {
-    // Scale is applied by `avatar::spawn_avatar` from the resolved model, before
-    // the mesh instantiates — so spawn at the identity scale here.
-    commands.spawn((
-        Avatar,
-        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-    ));
+/// **The avatar belongs to a session, and offline there is not one.**
+///
+/// It used to be spawned once at startup and never despawned, so `--offline` —
+/// which is the default, and every scripted run — put a body on the map with no
+/// sim behind it: nothing owned its position, nobody else could see it, and the
+/// Follow camera that is its whole point was refused
+/// ([`free_camera::follow_available`]). Offline is the streamed map and a camera.
+///
+/// The one exception is the shot harness, and it is not a loophole: a scripted
+/// run is always offline, so `--shot-mode avatar`, `--ui sit` and `--ui driver`
+/// would otherwise be photographing an empty street. The harness already states
+/// what each shot is of, so [`ShotHarness::wants_avatar`] reads that rather than
+/// taking a flag of its own — a capture cannot ask for an avatar without saying
+/// what it wants one for.
+///
+/// Written as a sync rather than a pair of one-shot systems because the session
+/// is switched at runtime in both directions (`systems::session`), and `connect`
+/// and `teardown` are already an exact pair without a third thing to keep in
+/// step.
+fn sync_local_avatar(
+    mut commands: Commands,
+    session: Res<systems::session::SessionState>,
+    harness: Option<Res<systems::shot_harness::ShotHarness>>,
+    avatars: Query<Entity, With<Avatar>>,
+) {
+    let wanted = session.is_online() || harness.is_some_and(|h| h.wants_avatar());
+    let present = !avatars.is_empty();
+    if wanted == present {
+        return;
+    }
+    if wanted {
+        // Scale is applied by `avatar::spawn_avatar` from the resolved model,
+        // before the mesh instantiates — so spawn at the identity scale here.
+        // `attach_avatar_to_bigspace` gives it a `GridCell` on the same frame.
+        commands.spawn((Avatar, Transform::from_translation(Vec3::ZERO)));
+        return;
+    }
+    // `try_despawn`, and recursive: the model holders are children, and
+    // `session::teardown` retires this same entity from the other side with no
+    // ordering between the two.
+    for e in avatars.iter() {
+        commands.entity(e).try_despawn();
+    }
 }
 
 /// Attach the avatar to the world `BigSpace` once it exists, so it rebases with

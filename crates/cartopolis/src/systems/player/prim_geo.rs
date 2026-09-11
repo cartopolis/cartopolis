@@ -4,8 +4,7 @@
 //! coordinate ([`PrimGeo`]), so it survives an OSM re-anchor. The render-space
 //! position — a big_space `GridCell` + a cell-local `Transform` — is *derived*
 //! here from the current anchor (`MapStream::geo_anchor()`) and re-derived
-//! whenever that anchor moves. This is the prim-side mirror of how
-//! `rendering::spawn_regions` rebases regions into the grid.
+//! whenever that anchor moves.
 
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::MapAnchor;

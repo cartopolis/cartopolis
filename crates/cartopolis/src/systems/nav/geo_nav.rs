@@ -2004,7 +2004,7 @@ pub fn apply_teleport(
     let base_zoom = stream
         .geo_anchor()
         .map(|(_, _, z)| z)
-        .unwrap_or(cartopolis_core::world::REGION_ZOOM_LEVEL);
+        .unwrap_or(cartopolis_core::world::DEFAULT_TILE_ZOOM);
     let snapped = crate::systems::map_stream::snap_anchor(lat, lng, base_zoom);
     let (wx, wz) = lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);

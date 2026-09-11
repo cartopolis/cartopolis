@@ -1183,7 +1183,7 @@ pub fn update_globe_visibility(
     mut applied_density: Local<f32>,
     mut globe_vis: Query<&mut Visibility, (With<GlobeMesh>, Without<HideInSpace>)>,
     // Only the ground props NOT owned by the Layers toggles (i.e. the horizon
-    // disc): tiles, region quads, buildings and windows are excluded because
+    // disc): tiles, buildings and windows are excluded because
     // `data_layers::apply_feature_toggles` is their single visibility writer —
     // it combines the panel toggle with `GlobeState::in_space`. Two systems
     // writing the same entities raced nondeterministically (tiles sometimes
@@ -1194,7 +1194,6 @@ pub fn update_globe_visibility(
             With<HideInSpace>,
             Without<GlobeMesh>,
             Without<crate::systems::map_stream::StreamTile>,
-            Without<crate::components::RegionMesh>,
             Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
             // Trees are owned by `vegetation::update_vegetation_lod`, which hides

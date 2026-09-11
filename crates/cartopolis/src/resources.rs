@@ -991,7 +991,6 @@ pub struct FrameStats {
 #[derive(Resource, Default)]
 pub struct GameState {
     pub selected_prim_id: Option<i64>,
-    pub regions_loaded: bool,
     pub prims_loaded: bool,
     pub editing_prim_id: Option<i64>,
     pub pending_prim_save: Option<EditDialogState>,
@@ -1037,7 +1036,6 @@ pub struct ContextMenuState {
     pub screen_pos: Vec2,
     pub hit_point: Vec3,
     pub hit_prim_id: Option<i64>,
-    pub hit_region_id: Option<i64>,
     /// Where the click landed on the map, in `(lat, lng)`.
     ///
     /// Separate from `hit_point`, which is a *render-space* position under the
@@ -1735,7 +1733,7 @@ impl OnlineSession {
     /// was stored. So the failure is logged with what it was, and reported to
     /// the caller for any UI that can say so.
     ///
-    /// Per-frame traffic (`ClientIntent`, `ObserverUpdate`, `VoiceFrame`)
+    /// Per-frame traffic (`ClientIntent`, `VoiceFrame`)
     /// deliberately does not come through here: a dropped movement frame is
     /// corrected by the next one, and a log line per frame during a disconnect
     /// would be noise on top of the failure that matters.
@@ -1753,7 +1751,7 @@ impl OnlineSession {
     }
 }
 
-/// After the first `WorldSnapshot`, static regions/prims are not torn down each sim tick (ADR-011).
+/// After the first `WorldSnapshot`, static prims are not torn down each sim tick (ADR-011).
 #[derive(Resource, Default)]
 pub struct NetworkSyncState {
     pub received_initial_world: bool,

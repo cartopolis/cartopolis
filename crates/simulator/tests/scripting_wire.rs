@@ -103,12 +103,11 @@ async fn send(c: &mut Client, msg: &NetMessage) {
 
 /// Create a prim and return its id, taken from the `PrimUpsert` the server
 /// broadcasts (the create has no direct reply).
-async fn create_prim(c: &mut Client, region_id: i64) -> i64 {
+async fn create_prim(c: &mut Client) -> i64 {
     send(
         c,
         &NetMessage::CreatePrim {
             request_id: 1,
-            region_id,
             name: "scripted".into(),
             position: glam::Vec3::new(1.0, 1.0, 1.0),
             rotation: glam::Vec3::ZERO,
@@ -134,14 +133,6 @@ async fn create_prim(c: &mut Client, region_id: i64) -> i64 {
     .await
 }
 
-async fn first_region(c: &mut Client) -> i64 {
-    recv_until(c, "world snapshot", |m| match m {
-        NetMessage::WorldSnapshot { regions, .. } => regions.first().map(|r| r.id),
-        _ => None,
-    })
-    .await
-}
-
 /// The whole loop the editor drives: store a script, get told it compiled, touch
 /// the prim, and hear back from the handler.
 #[tokio::test]
@@ -150,8 +141,8 @@ async fn store_compile_touch_and_hear_back() {
     let mut c = connect_auth(&handle.local_addr.to_string()).await;
 
     // Capacity is pushed before anything else, so an editor can show headroom.
-    let (prims_max, scripts_max) = recv_until(&mut c, "region capacity", |m| match m {
-        NetMessage::RegionCapacity {
+    let (prims_max, scripts_max) = recv_until(&mut c, "world capacity", |m| match m {
+        NetMessage::WorldCapacity {
             prims_max,
             scripts_max,
             ..
@@ -161,8 +152,7 @@ async fn store_compile_touch_and_hear_back() {
     .await;
     assert!(prims_max > 0 && scripts_max > 0, "budget should be set");
 
-    let region_id = first_region(&mut c).await;
-    let prim_id = create_prim(&mut c, region_id).await;
+    let prim_id = create_prim(&mut c).await;
 
     send(
         &mut c,
@@ -225,8 +215,7 @@ async fn script_moves_the_prim_for_everyone() {
     let (handle, _dir) = start_sim().await;
     let addr = handle.local_addr.to_string();
     let mut author = connect_auth(&addr).await;
-    let region_id = first_region(&mut author).await;
-    let prim_id = create_prim(&mut author, region_id).await;
+    let prim_id = create_prim(&mut author).await;
 
     // A second client, which never asks for anything — it should see the move.
     let mut observer = connect_auth(&addr).await;
@@ -257,8 +246,7 @@ async fn script_moves_the_prim_for_everyone() {
 async fn a_broken_script_reports_and_does_not_run() {
     let (handle, _dir) = start_sim().await;
     let mut c = connect_auth(&handle.local_addr.to_string()).await;
-    let region_id = first_region(&mut c).await;
-    let prim_id = create_prim(&mut c, region_id).await;
+    let prim_id = create_prim(&mut c).await;
 
     send(
         &mut c,
@@ -283,8 +271,7 @@ async fn a_broken_script_reports_and_does_not_run() {
 async fn an_empty_script_removes_it() {
     let (handle, _dir) = start_sim().await;
     let mut c = connect_auth(&handle.local_addr.to_string()).await;
-    let region_id = first_region(&mut c).await;
-    let prim_id = create_prim(&mut c, region_id).await;
+    let prim_id = create_prim(&mut c).await;
 
     send(
         &mut c,
@@ -331,8 +318,7 @@ async fn an_empty_script_removes_it() {
 async fn appearance_calls_become_prim_state() {
     let (handle, _dir) = start_sim().await;
     let mut c = connect_auth(&handle.local_addr.to_string()).await;
-    let region_id = first_region(&mut c).await;
-    let prim_id = create_prim(&mut c, region_id).await;
+    let prim_id = create_prim(&mut c).await;
 
     send(
         &mut c,
@@ -379,8 +365,7 @@ async fn a_script_can_end_its_own_prim() {
     let (handle, _dir) = start_sim().await;
     let addr = handle.local_addr.to_string();
     let mut c = connect_auth(&addr).await;
-    let region_id = first_region(&mut c).await;
-    let prim_id = create_prim(&mut c, region_id).await;
+    let prim_id = create_prim(&mut c).await;
 
     send(
         &mut c,
@@ -402,11 +387,7 @@ async fn a_script_can_end_its_own_prim() {
     // The capacity broadcast that follows reports the prim is gone. Reading it
     // back proves the budget was released rather than leaked on a self-delete.
     let used = recv_until(&mut c, "capacity after death", |m| match m {
-        NetMessage::RegionCapacity {
-            region_id: r,
-            prims_used,
-            ..
-        } if r == region_id => Some(prims_used),
+        NetMessage::WorldCapacity { prims_used, .. } => Some(prims_used),
         _ => None,
     })
     .await;

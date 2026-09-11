@@ -32,9 +32,9 @@ impl TileKey {
 const EARTH_RADIUS: f64 = 6_378_137.0;
 const EARTH_CIRCUMFERENCE: f64 = 2.0 * std::f64::consts::PI * EARTH_RADIUS;
 
-/// Fixed zoom for region ground tiles (ADR-004 / ADR-006).
-pub const REGION_ZOOM_LEVEL: u32 = 17;
-pub const REGION_SIZE_METERS: f64 = 256.0;
+/// The zoom a lat/lng is turned into a tile key at when nothing else says
+/// otherwise (ADR-004 / ADR-006) — street level.
+pub const DEFAULT_TILE_ZOOM: u32 = 17;
 
 /// Default map tile source: our **self-hosted** VersaTiles **vector** (Shortbread
 /// MVT) server, the client-side tessellated-and-lit basemap of ADR-035. This is a
@@ -168,13 +168,6 @@ pub fn find_optimal_zoom(target_meters: f64, lat: f64) -> u32 {
     best_zoom
 }
 
-/// Derive default tile key for a region anchor at [`REGION_ZOOM_LEVEL`].
-#[must_use]
-pub fn tile_key_from_lat_lng(lat: f64, lng: f64) -> TileKey {
-    let (x, y) = lat_lng_to_tile(lat, lng, REGION_ZOOM_LEVEL);
-    TileKey::new(x, y, REGION_ZOOM_LEVEL)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,8 +177,8 @@ mod tests {
     fn groningen_tile_roundtrip_rough() {
         let lat = 53.2194_f64;
         let lng = 6.5665_f64;
-        let (x, y) = lat_lng_to_tile(lat, lng, REGION_ZOOM_LEVEL);
-        let (lat2, lng2) = tile_to_lat_lng(x, y, REGION_ZOOM_LEVEL);
+        let (x, y) = lat_lng_to_tile(lat, lng, DEFAULT_TILE_ZOOM);
+        let (lat2, lng2) = tile_to_lat_lng(x, y, DEFAULT_TILE_ZOOM);
         assert_relative_eq!(lat, lat2, epsilon = 0.05);
         assert_relative_eq!(lng, lng2, epsilon = 0.05);
     }

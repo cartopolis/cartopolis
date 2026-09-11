@@ -103,6 +103,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "model assets — PrimDto/CreatePrim/UpdatePrim carry an optional `model`, the hash of a glTF binary the sim stores; ServerHelloAck says where to fetch one; ReportUser can name one",
     },
+    ProtocolRevision {
+        version: 23,
+        adr: "",
+        summary: "regions retired — RegionDto and WorldSnapshot.regions gone, PrimDto/CreatePrim lose region_id, RegionCapacity becomes the world-wide WorldCapacity, and ObserverUpdate goes with the AoI filter it fed",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -119,7 +124,11 @@ pub enum MessageKind {
     ServerHelloAck = 2,
     ServerError = 3,
     ClientIntent = 4,
-    ObserverUpdate = 5,
+    // 5 was `ObserverUpdate`, retired with regions in protocol 23: it existed only
+    // to aim the per-region area-of-interest filter, and there is no longer a
+    // region to include or exclude. The number is left unassigned rather than
+    // reused — a stale client sending 5 should be rejected, not misread as
+    // something else.
     WorldSnapshot = 6,
     PrimRemoved = 7,
     CreatePrim = 8,
@@ -139,7 +148,7 @@ pub enum MessageKind {
     PrimScript = 22,
     ScriptOutput = 23,
     TouchPrim = 24,
-    RegionCapacity = 25,
+    WorldCapacity = 25,
     VoiceFrame = 26,
     VoiceData = 27,
     SetBlocked = 28,
@@ -160,7 +169,6 @@ impl MessageKind {
             2 => Some(Self::ServerHelloAck),
             3 => Some(Self::ServerError),
             4 => Some(Self::ClientIntent),
-            5 => Some(Self::ObserverUpdate),
             6 => Some(Self::WorldSnapshot),
             7 => Some(Self::PrimRemoved),
             8 => Some(Self::CreatePrim),
@@ -180,7 +188,7 @@ impl MessageKind {
             22 => Some(Self::PrimScript),
             23 => Some(Self::ScriptOutput),
             24 => Some(Self::TouchPrim),
-            25 => Some(Self::RegionCapacity),
+            25 => Some(Self::WorldCapacity),
             26 => Some(Self::VoiceFrame),
             27 => Some(Self::VoiceData),
             28 => Some(Self::SetBlocked),
@@ -200,21 +208,6 @@ impl MessageKind {
 pub struct TextureEntry {
     pub id: String,
     pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RegionDto {
-    pub id: i64,
-    pub name: String,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub tile_x: i64,
-    pub tile_y: i64,
-    pub tile_z: i64,
-    /// Sim-space origin for this region’s tile (matches `simulator` grid layout).
-    pub sim_x: f32,
-    pub sim_y: f32,
-    pub sim_z: f32,
 }
 
 /// Per-prim texture surface parameters (Texture tab). Mirrors a subset of the
@@ -312,7 +305,6 @@ pub struct GeoAnchor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PrimDto {
     pub id: i64,
-    pub region_id: i64,
     pub name: String,
     pub shape: String,
     /// Sim-space position (metres). `position.y` is the authoritative altitude;
@@ -598,23 +590,16 @@ pub enum NetMessage {
         /// right answer rather than a guessed position.
         geo: Option<GeoAnchor>,
     },
-    ObserverUpdate {
-        position: Vec3,
-    },
     WorldSnapshot {
         tick: u64,
-        regions: Vec<RegionDto>,
         prims: Vec<PrimDto>,
         avatars: Vec<AvatarStateDto>,
     },
     /// ADR-011 delta v0: remove prim by stable id (server-assigned).
-    PrimRemoved {
-        id: i64,
-    },
+    PrimRemoved { id: i64 },
     /// ADR-017 / ADR-018: client requests creation of a new prim with full initial state.
     CreatePrim {
         request_id: u32,
-        region_id: i64,
         name: String,
         position: Vec3,
         rotation: Vec3,
@@ -662,25 +647,15 @@ pub enum NetMessage {
         model: Option<String>,
     },
     /// ADR-017: client requests deletion of a prim by id.
-    DeletePrim {
-        request_id: u32,
-        prim_id: i64,
-    },
+    DeletePrim { request_id: u32, prim_id: i64 },
     /// ADR-017: server broadcasts the full authoritative prim state after a create or update.
-    PrimUpsert {
-        prim: PrimDto,
-    },
+    PrimUpsert { prim: PrimDto },
     /// Client requests the full texture catalog from the sim.
     TextureCatalogRequest,
     /// Sim responds with the list of available textures.
-    TextureCatalog {
-        textures: Vec<TextureEntry>,
-    },
+    TextureCatalog { textures: Vec<TextureEntry> },
     /// Client requests raw PNG bytes for a specific texture.
-    TextureRequest {
-        request_id: u32,
-        texture_id: String,
-    },
+    TextureRequest { request_id: u32, texture_id: String },
     /// Sim sends raw PNG bytes for the requested texture.
     TextureData {
         request_id: u32,
@@ -688,10 +663,7 @@ pub enum NetMessage {
         png_bytes: Vec<u8>,
     },
     /// Sim signals that the requested texture id does not exist.
-    TextureNotFound {
-        request_id: u32,
-        texture_id: String,
-    },
+    TextureNotFound { request_id: u32, texture_id: String },
     /// ADR-028: client sends a chat message in a scope; the server resolves the
     /// concrete channel, applies rate limits, and delivers it.
     ChatSend {
@@ -710,18 +682,12 @@ pub enum NetMessage {
         distance_m: Option<f32>,
     },
     /// ADR-028: client joins (`join = true`) or leaves a room channel.
-    ChatSubscribe {
-        room: String,
-        join: bool,
-    },
+    ChatSubscribe { room: String, join: bool },
     /// Fetch a prim's script source for the editor. Scripts are *not* carried in
     /// `WorldSnapshot`: source is authoring data, an order of magnitude larger
     /// than the rest of a `PrimDto`, and it would be re-sent to every observer
     /// 20 times a second for the benefit of the one person editing it.
-    GetPrimScript {
-        request_id: u32,
-        prim_id: i64,
-    },
+    GetPrimScript { request_id: u32, prim_id: i64 },
     /// Store (or, with an empty `source`, remove) a prim's script. The server
     /// compiles it and replies with a [`NetMessage::ScriptOutput`] carrying either
     /// the compile error or a ready line.
@@ -747,15 +713,16 @@ pub enum NetMessage {
         at_ms: u64,
     },
     /// Client touched a prim; the server turns it into the script's `on_touch`.
-    TouchPrim {
-        request_id: u32,
-        prim_id: i64,
-    },
-    /// Region resource budget and current usage. Sent on connect and whenever a
-    /// prim or script is added or removed, so the editor can show the headroom
+    TouchPrim { request_id: u32, prim_id: i64 },
+    /// The world's resource budget and current usage. Sent on connect and whenever
+    /// a prim or script is added or removed, so the editor can show the headroom
     /// *before* an author hits the wall rather than as a refusal afterwards.
-    RegionCapacity {
-        region_id: i64,
+    ///
+    /// World-wide since protocol 23. It was per-region, on the reasoning that a
+    /// region is the unit an operator hands out — but a simulator only ever ran
+    /// one, so the ceiling was already the server's, and the limits now live in
+    /// `cartopolis.toml` where the rest of an operator's decisions are.
+    WorldCapacity {
         prims_used: u32,
         prims_max: u32,
         scripts_used: u32,
@@ -812,9 +779,7 @@ pub enum NetMessage {
     /// Whole list, not a delta: it is a handful of short strings, it makes the
     /// login and the update path the same code, and a lost delta would leave a
     /// blocked person audible with nothing to say why.
-    BlockedList {
-        usernames: Vec<String>,
-    },
+    BlockedList { usernames: Vec<String> },
     /// Report a person to the operators (App Store guideline 1.2).
     ///
     /// `message` is the offending line as the reporter saw it, which is the only
@@ -843,10 +808,7 @@ pub enum NetMessage {
     /// Server confirms a report was filed. `accepted = false` means it was
     /// refused (unknown subject, or reporting yourself) — the client says so
     /// rather than showing a silent success.
-    ReportAck {
-        request_id: u32,
-        accepted: bool,
-    },
+    ReportAck { request_id: u32, accepted: bool },
     /// Delete the signed-in account and everything personal attached to it
     /// (App Store guideline 5.1.1(v): an app with accounts must offer deletion
     /// *within the app*).
@@ -855,10 +817,7 @@ pub enum NetMessage {
     /// authenticated: this is the one irreversible thing a session token can ask
     /// for, and a token can be a remembered one from a device somebody else is
     /// holding.
-    DeleteAccount {
-        request_id: u32,
-        password: String,
-    },
+    DeleteAccount { request_id: u32, password: String },
     /// The account is gone. The server closes the connection immediately after
     /// sending this, so it is both the receipt and the goodbye.
     AccountDeleted,
@@ -870,14 +829,10 @@ pub enum NetMessage {
     /// the motion state, and the next `WorldSnapshot` is the confirmation —
     /// there is no ack, exactly as with intents.
     ///
-    /// `position` is in the same frame `ObserverUpdate` and `AvatarStateDto`
-    /// already use. Trusted like an intent is trusted (the sim has no map to
+    /// `position` is in the same frame `AvatarStateDto` already uses. Trusted like an intent is trusted (the sim has no map to
     /// validate a destination against); non-finite components discard the whole
     /// message, same rule as `apply_intent`.
-    Teleport {
-        request_id: u32,
-        position: Vec3,
-    },
+    Teleport { request_id: u32, position: Vec3 },
     /// Client says whether it is being *looked at*.
     ///
     /// `active: false` means the app is off screen (Android's background
@@ -902,10 +857,7 @@ pub enum NetMessage {
     /// Resuming is the same message with `active: true`, and the next tick's
     /// snapshot is the resynchronisation — there is no catch-up and no ack, for
     /// the same reason `Teleport` has none: the next snapshot is the whole state.
-    SetPresence {
-        request_id: u32,
-        active: bool,
-    },
+    SetPresence { request_id: u32, active: bool },
 }
 
 /// Why a person is being reported. A closed list rather than free text: it is
@@ -1009,7 +961,6 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::ServerHelloAck { .. } => MessageKind::ServerHelloAck,
         NetMessage::ServerError { .. } => MessageKind::ServerError,
         NetMessage::ClientIntent { .. } => MessageKind::ClientIntent,
-        NetMessage::ObserverUpdate { .. } => MessageKind::ObserverUpdate,
         NetMessage::WorldSnapshot { .. } => MessageKind::WorldSnapshot,
         NetMessage::PrimRemoved { .. } => MessageKind::PrimRemoved,
         NetMessage::CreatePrim { .. } => MessageKind::CreatePrim,
@@ -1029,7 +980,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::PrimScript { .. } => MessageKind::PrimScript,
         NetMessage::ScriptOutput { .. } => MessageKind::ScriptOutput,
         NetMessage::TouchPrim { .. } => MessageKind::TouchPrim,
-        NetMessage::RegionCapacity { .. } => MessageKind::RegionCapacity,
+        NetMessage::WorldCapacity { .. } => MessageKind::WorldCapacity,
         NetMessage::VoiceFrame { .. } => MessageKind::VoiceFrame,
         NetMessage::VoiceData { .. } => MessageKind::VoiceData,
         NetMessage::SetBlocked { .. } => MessageKind::SetBlocked,
@@ -1201,7 +1152,6 @@ mod tests {
     fn roundtrip_snapshot_app_frame() {
         let m = NetMessage::WorldSnapshot {
             tick: 42,
-            regions: vec![],
             prims: vec![],
             avatars: vec![],
         };
@@ -1235,7 +1185,6 @@ mod tests {
 
             let m = NetMessage::WorldSnapshot {
                 tick: 7,
-                regions: vec![],
                 prims: vec![],
                 avatars: vec![AvatarStateDto {
                     id: 3,
@@ -1254,7 +1203,6 @@ mod tests {
     fn roundtrip_create_prim_app_frame() {
         let m = NetMessage::CreatePrim {
             request_id: 123,
-            region_id: 1,
             name: "New Prim".into(),
             position: Vec3::new(10.0, 5.0, 20.0),
             rotation: Vec3::ZERO,
@@ -1348,7 +1296,7 @@ mod tests {
                 request_id: 4,
                 username: "loud".into(),
                 reason: ReportReason::Harassment,
-                note: "followed me across three regions".into(),
+                note: "followed me home and would not leave".into(),
                 message: Some("the line they sent".into()),
                 asset: None,
             },
@@ -1439,7 +1387,6 @@ mod tests {
     fn roundtrip_prim_upsert_app_frame() {
         let prim = PrimDto {
             id: 42,
-            region_id: 1,
             name: "Updated Prim".into(),
             shape: "sphere".into(),
             position: Vec3::new(15.0, 8.0, 25.0),
@@ -1482,12 +1429,11 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 35] = [
+        const ALL: [MessageKind; 34] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
             ClientIntent,
-            ObserverUpdate,
             WorldSnapshot,
             PrimRemoved,
             CreatePrim,
@@ -1507,7 +1453,7 @@ mod tests {
             PrimScript,
             ScriptOutput,
             TouchPrim,
-            RegionCapacity,
+            WorldCapacity,
             VoiceFrame,
             VoiceData,
             SetBlocked,
@@ -1527,11 +1473,16 @@ mod tests {
                 k as u16
             );
         }
-        // Contiguous from 1, nothing on either side. `ALL` is the list to extend
+        // Nothing on either side of the assigned run. `ALL` is the list to extend
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(ALL.len() as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(SetPresence as u16 + 1), None);
+        // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
+        // retired number stays retired: reusing it would make a stale client's
+        // observer update decode as whatever took the slot, and the run is
+        // therefore no longer contiguous on purpose.
+        assert_eq!(MessageKind::from_wire(5), None);
     }
 
     /// The header guards in `decode_app_frame` — the checks that keep a

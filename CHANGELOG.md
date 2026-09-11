@@ -11,6 +11,33 @@ Entries are grouped by what changed for a user, not by crate. A line here should
 be findable in the log; where the *reason* matters it is in the commit body, and
 where it constrains future work it is in `docs/notes/`.
 
+## Unreleased
+
+### Changed
+
+- **Regions are retired** (wire protocol 23, schema V17). A region was a 256 m
+  square of ground with a map tile painted on it, from before the client
+  streamed a map; an object's place has been an absolute lat/lng since then and
+  the ground is the streamed map. The prim and script budget is now one budget
+  for the server, set in `cartopolis.toml` (`max_prims` / `max_scripts`) and
+  read over HTTP at `GET /api/admin/capacity` in place of
+  `/api/admin/regions` — `tools/author.py regions` is now
+  `tools/author.py capacity`. Script channels (`vfSend`) reach every listening
+  script on the server rather than only those in the same region.
+- **The area-of-interest filter is gone with them**, and the sim now sends every
+  prim to every client. It excluded whole regions by distance from a single
+  observer position shared by every connection, so in practice it hid every
+  object from everybody as soon as one player walked far enough from a grid
+  origin unrelated to the map — which is how the "Create object…" entry could
+  vanish from the right-click menu of a signed-in player. A filter that works
+  has to be computed per connection; that is separate work.
+- **Offline has no avatar.** It is a map and a camera now. The avatar used to be
+  spawned at startup and never despawned, so signing out left a body with no
+  simulator behind it — nothing owned its position, nobody else could see it,
+  and the third-person camera it exists for was already refused. Scripted
+  captures that photograph the avatar (`--shot-mode avatar`, `--ui sit`,
+  `--ui driver`) still get one.
+
 ## 1.0.0 — 2026-08-10
 
 The first tagged release. There was one rolling `continuous` prerelease before

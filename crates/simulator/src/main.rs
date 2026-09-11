@@ -41,7 +41,8 @@ async fn main() -> anyhow::Result<()> {
         http_listen = config.http_listen.as_deref().unwrap_or("(off)"),
         db = %config.database_path,
         tick_hz = config.tick_hz,
-        aoi = config.aoi_radius,
+        max_prims = config.max_prims,
+        max_scripts = config.max_scripts,
         tile_template = %config.osm_tile_url_template,
         texture_dir = %config.texture_dir,
         "simulator"

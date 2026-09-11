@@ -19,8 +19,8 @@
 //! authorisation decision through the same path as a movement intent, and would
 //! move every client's protocol version whenever the authoring surface changed.
 //! The wire keeps `CreatePrim`/`UpdatePrim`, which are a *player* building
-//! something in front of them and are checked against that player's region
-//! budget; this is an operator building something they may not be looking at.
+//! something in front of them and are checked against the world's budget; this
+//! is an operator building something they may not be looking at.
 //!
 //! # What it shares with the wire, and what that costs
 //!
@@ -63,7 +63,7 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/content/export", get(export_content))
         .route("/api/content/import", post(import_content))
         .route("/api/content/transfer", post(transfer_content))
-        .route("/api/admin/regions", get(list_regions))
+        .route("/api/admin/capacity", get(get_capacity))
         .route("/api/admin/prims", get(list_prims).post(create_prim))
         .route(
             "/api/admin/prims/{id}",
@@ -182,13 +182,12 @@ impl ParticleSpec {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrimSpec {
-    pub region_id: Option<i64>,
     pub name: Option<String>,
     /// `box`, `sphere`, `cylinder`, `cone` or `torus`.
     pub shape: Option<String>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
-    /// Metres above the ground the prim's region sits on. This is the durable
+    /// Metres above the ground. This is the durable
     /// half of the vertical placement, and the only part of `position` an author
     /// sets: horizontal placement is `latitude`/`longitude` (ADR-029).
     pub altitude: Option<f32>,
@@ -220,16 +219,14 @@ pub struct PrimSpec {
 impl PrimSpec {
     /// A live prim, described the way an author would have written it.
     ///
-    /// The inverse of [`apply`], and deliberately lossy in one direction: the id,
-    /// the region and the client-frame `position.x/z` echo are **not** carried.
-    /// An id from one server means nothing on another, a region is chosen by the
-    /// importer's world rather than the exporter's, and x/z are re-derived from
-    /// the geo anchor by every client anyway (ADR-029). What is left is the part
-    /// that is actually about the object.
+    /// The inverse of [`apply`], and deliberately lossy in one direction: the id
+    /// and the client-frame `position.x/z` echo are **not** carried. An id from
+    /// one server means nothing on another, and x/z are re-derived from the geo
+    /// anchor by every client anyway (ADR-029). What is left is the part that is
+    /// actually about the object.
     #[must_use]
     pub fn of(p: &PrimDto, script: Option<String>) -> Self {
         Self {
-            region_id: None,
             name: Some(p.name.clone()),
             shape: Some(p.shape.clone()),
             latitude: Some(p.geo.latitude),
@@ -314,41 +311,29 @@ struct PrimView {
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn list_regions(
+/// What the world holds and what it may hold — the operator's view of the same
+/// numbers `NetMessage::WorldCapacity` pushes to every client.
+///
+/// Replaces `GET /api/admin/regions`, which listed one row per region with its
+/// budget on it. There are no regions; the budget is the server's, and it is set
+/// in `cartopolis.toml` (`max_prims` / `max_scripts`).
+async fn get_capacity(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&state, &headers)?;
-    let w = state.world.read().await;
-    let regions: Vec<serde_json::Value> = w
-        .regions()
-        .iter()
-        .map(|r| {
-            let usage = w.capacity(r.id);
-            json!({
-                "id": r.id,
-                "name": r.name,
-                "latitude": r.latitude,
-                "longitude": r.longitude,
-                "prims_used": usage.map(|u| u.prims_used),
-                "prims_max": usage.map(|u| u.prims_max),
-                "scripts_used": usage.map(|u| u.scripts_used),
-                "scripts_max": usage.map(|u| u.scripts_max),
-            })
-        })
-        .collect();
-    Ok(Json(json!({ "regions": regions })))
-}
-
-#[derive(Deserialize, Default)]
-struct PrimQuery {
-    region_id: Option<i64>,
+    let usage = state.world.read().await.capacity();
+    Ok(Json(json!({
+        "prims_used": usage.prims_used,
+        "prims_max": usage.prims_max,
+        "scripts_used": usage.scripts_used,
+        "scripts_max": usage.scripts_max,
+    })))
 }
 
 async fn list_prims(
     State(state): State<HttpState>,
     headers: HeaderMap,
-    Query(q): Query<PrimQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&state, &headers)?;
     let w = state.world.read().await;
@@ -357,7 +342,6 @@ async fn list_prims(
     let prims: Vec<PrimView> = w
         .prims()
         .iter()
-        .filter(|p| q.region_id.is_none_or(|r| p.region_id == r))
         .map(|p| PrimView {
             prim: p.clone(),
             scripted: w.is_scripted(p.id),
@@ -418,7 +402,7 @@ async fn create_prim(
 /// refused.
 async fn create(state: &HttpState, spec: &PrimSpec) -> ApiResult<PrimDto> {
     // A prim has to be *somewhere*, and there is no sensible default for where:
-    // the region's own anchor would drop every scripted object on one spot.
+    // the sim holds no map, so its own frame origin is not a place.
     let (Some(latitude), Some(longitude)) = (spec.latitude, spec.longitude) else {
         return Err(bad("latitude and longitude are required to create a prim"));
     };
@@ -428,24 +412,8 @@ async fn create(state: &HttpState, spec: &PrimSpec) -> ApiResult<PrimDto> {
 
     let created = {
         let mut w = state.world.write().await;
-        let region_id = match spec.region_id {
-            Some(r) => r,
-            // One region is the overwhelmingly common deployment, so requiring
-            // the id would be ceremony; several is when it becomes ambiguous and
-            // then it is asked for.
-            None => match w.regions() {
-                [only] => only.id,
-                [] => return Err(bad("this world has no regions")),
-                _ => {
-                    return Err(bad(
-                        "region_id is required when there is more than one region",
-                    ))
-                }
-            },
-        };
         let base = w
             .add_prim(
-                region_id,
                 Vec3::new(0.0, spec.altitude.unwrap_or(0.0), 0.0),
                 &shape,
                 geo,
@@ -479,14 +447,6 @@ async fn update_prim(
     Json(spec): Json<PrimSpec>,
 ) -> ApiResult<Json<PrimView>> {
     let (_, who) = require_admin(&state, &headers)?;
-    if spec.region_id.is_some() {
-        // Not a refusal on principle — it is that a prim's region decides which
-        // budget it draws against, and moving it between them is a capacity
-        // transaction rather than a field write.
-        return Err(bad(
-            "a prim cannot change region; delete it and create it in the other one",
-        ));
-    }
     if let Some(s) = &spec.shape {
         check_shape(s)?;
     }
@@ -584,7 +544,7 @@ pub struct ContentDocument {
 const CONTENT_DOCUMENT_VERSION: u32 = 1;
 
 /// Most prims one import may create. A document is a file a person can edit, so
-/// this is the ceiling on what one request may cost the region — the per-region
+/// this is the ceiling on what one request may cost the server — the world's own
 /// prim budget still applies underneath and is the real limit.
 const MAX_IMPORT_PRIMS: usize = 512;
 
@@ -765,7 +725,7 @@ async fn import_content(
     for spec in &doc.prims {
         // Straight through `create`, so an imported prim is checked exactly as
         // one an author posts by hand: same shape validation, same geo bounds,
-        // same region budget. A document cannot describe a prim the API would
+        // same world budget. A document cannot describe a prim the API would
         // otherwise refuse.
         let prim = create(&state, spec).await?;
         let owner = principal.to_string();
@@ -976,7 +936,7 @@ async fn store_script(state: &HttpState, prim_id: i64, source: Option<&str>) -> 
     };
     // Trimmed first, for the reason the wire's `SetPrimScript` trims: a buffer of
     // whitespace means "no script", and the two differ in whether they draw
-    // against the region's budget.
+    // against the world's budget.
     let source = source.trim();
     if source.len() > crate::scripting::MAX_SOURCE_BYTES {
         return Err(bad(format!(
@@ -986,7 +946,7 @@ async fn store_script(state: &HttpState, prim_id: i64, source: Option<&str>) -> 
         )));
     }
     let mut w = state.world.write().await;
-    if w.prim_region(prim_id).is_none() {
+    if !w.has_prim(prim_id) {
         return Err(not_found());
     }
     if source.is_empty() {

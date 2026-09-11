@@ -1,4 +1,4 @@
-use crate::components::{Prim, Region};
+use crate::components::Prim;
 use crate::resources::{
     AiAssistantState, AiConfig, DisplayMessage, OnlineSession, PendingAiResponse,
 };
@@ -370,7 +370,6 @@ pub fn poll_ai_response(
     config: Res<AiConfig>,
     online: Option<Res<OnlineSession>>,
     prim_query: Query<(Entity, &Prim, &Transform)>,
-    region_query: Query<&Region>,
     map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     // Fire request when the user submitted a message
@@ -487,7 +486,6 @@ pub fn poll_ai_response(
                     input,
                     online.as_deref(),
                     &prim_query,
-                    &region_query,
                     &map_anchor,
                 );
 
@@ -532,7 +530,6 @@ fn run_tool(
     input: &serde_json::Value,
     online: Option<&OnlineSession>,
     prim_query: &Query<(Entity, &Prim, &Transform)>,
-    region_query: &Query<&Region>,
     map_anchor: &crate::resources::MapAnchor,
 ) -> String {
     match name {
@@ -561,7 +558,6 @@ fn run_tool(
             let scale = vec3_from(input, "scale");
             let color = color_from(input);
             let texture_id = input["texture_id"].as_str().map(|s| s.to_string());
-            let region_id = region_query.iter().next().map(|r| r.id).unwrap_or(1);
             let geom = PrimGeom::defaults().merged_with(input);
 
             // ADR-029: prims are online-only and geo-anchored. The server assigns
@@ -576,7 +572,6 @@ fn run_tool(
                 "create prim",
                 NetMessage::CreatePrim {
                     request_id: 0,
-                    region_id,
                     name: prim_name.clone(),
                     position: pos,
                     rotation: Vec3::ZERO,

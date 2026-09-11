@@ -1,12 +1,11 @@
 use anyhow::Context;
-use cartopolis_core::world::{lat_lng_to_tile, REGION_ZOOM_LEVEL};
-use cartopolis_core::{GeoAnchor, ParticleEffect, PrimDto, PrimGeometry, PrimSurface, RegionDto};
+use cartopolis_core::{GeoAnchor, ParticleEffect, PrimDto, PrimGeometry, PrimSurface};
 use glam::Vec3;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 
 /// Column list (in order) for selecting a full [`PrimDto`]; consumed by [`row_to_prim`].
-const PRIM_COLUMNS: &str = "id, region_id, name, shape, \
+const PRIM_COLUMNS: &str = "id, name, shape, \
      position_x, position_y, position_z, \
      rotation_x, rotation_y, rotation_z, \
      scale_x, scale_y, scale_z, \
@@ -44,58 +43,57 @@ const PRIM_COLUMN_COUNT: usize = {
 fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
     Ok(PrimDto {
         id: row.get(0)?,
-        region_id: row.get(1)?,
-        name: row.get(2)?,
-        shape: row.get(3)?,
-        position: Vec3::new(row.get(4)?, row.get(5)?, row.get(6)?),
-        rotation: Vec3::new(row.get(7)?, row.get(8)?, row.get(9)?),
-        scale: Vec3::new(row.get(10)?, row.get(11)?, row.get(12)?),
-        color: [row.get(13)?, row.get(14)?, row.get(15)?],
-        texture_id: row.get(16)?,
-        path_cut_begin: row.get(17)?,
-        path_cut_end: row.get(18)?,
-        hollow: row.get(19)?,
-        twist_begin: row.get(20)?,
-        twist_end: row.get(21)?,
-        taper_x: row.get(22)?,
-        taper_y: row.get(23)?,
-        top_shear_x: row.get(24)?,
-        top_shear_y: row.get(25)?,
-        slice_begin: row.get(26)?,
-        slice_end: row.get(27)?,
+        name: row.get(1)?,
+        shape: row.get(2)?,
+        position: Vec3::new(row.get(3)?, row.get(4)?, row.get(5)?),
+        rotation: Vec3::new(row.get(6)?, row.get(7)?, row.get(8)?),
+        scale: Vec3::new(row.get(9)?, row.get(10)?, row.get(11)?),
+        color: [row.get(12)?, row.get(13)?, row.get(14)?],
+        texture_id: row.get(15)?,
+        path_cut_begin: row.get(16)?,
+        path_cut_end: row.get(17)?,
+        hollow: row.get(18)?,
+        twist_begin: row.get(19)?,
+        twist_end: row.get(20)?,
+        taper_x: row.get(21)?,
+        taper_y: row.get(22)?,
+        top_shear_x: row.get(23)?,
+        top_shear_y: row.get(24)?,
+        slice_begin: row.get(25)?,
+        slice_end: row.get(26)?,
         surface: PrimSurface {
-            alpha: row.get(28)?,
-            glow: row.get(29)?,
-            full_bright: row.get(30)?,
-            repeat_u: row.get(31)?,
-            repeat_v: row.get(32)?,
-            flip_u: row.get(33)?,
-            flip_v: row.get(34)?,
-            rotation: row.get(35)?,
-            offset_u: row.get(36)?,
-            offset_v: row.get(37)?,
+            alpha: row.get(27)?,
+            glow: row.get(28)?,
+            full_bright: row.get(29)?,
+            repeat_u: row.get(30)?,
+            repeat_v: row.get(31)?,
+            flip_u: row.get(32)?,
+            flip_v: row.get(33)?,
+            rotation: row.get(34)?,
+            offset_u: row.get(35)?,
+            offset_v: row.get(36)?,
         },
         // ADR-029: every prim is geo-anchored.
         geo: GeoAnchor {
-            latitude: row.get(38)?,
-            longitude: row.get(39)?,
+            latitude: row.get(37)?,
+            longitude: row.get(38)?,
         },
         // Protocol v20. Sanitised on the way *out* of the database as well as on
         // the way in: a row can predate a tightened limit, or have been edited
         // with sqlite3, and the client hands these numbers straight to a shader.
-        particles: parse_particles(row.get::<_, Option<String>>(40)?.as_deref()),
+        particles: parse_particles(row.get::<_, Option<String>>(39)?.as_deref()),
         // Protocol v22. Not validated on the way out: `net.rs` refuses a hash the
         // store does not hold at the point it is *set*, and a row whose file was
         // later removed draws the placeholder — which is the honest picture, and
         // cheaper than a store lookup per prim per snapshot.
-        model: row.get(41)?,
+        model: row.get(40)?,
         // Protocol v21, and read from the database rather than tracked: a
         // subquery on the row is always right, where a flag maintained beside
         // `set_prim_script` is one more thing to forget. `SimWorld::set_scripted`
         // still updates its in-memory copy so the next snapshot is current
         // without a re-read — the database is what it falls back to being right
         // from.
-        scripted: row.get(42)?,
+        scripted: row.get(41)?,
     })
 }
 
@@ -141,7 +139,6 @@ pub fn open_and_migrate(path: &str) -> anyhow::Result<Connection> {
     }
     let mut conn = Connection::open(path).with_context(|| format!("open sqlite {path}"))?;
     migrate(&mut conn)?;
-    seed_default_region(&conn)?;
     Ok(conn)
 }
 
@@ -158,58 +155,14 @@ pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn seed_default_region(conn: &Connection) -> anyhow::Result<()> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM regions", [], |row| row.get(0))?;
-    if count > 0 {
-        return Ok(());
-    }
-    let groningen_lat = 53.2194_f64;
-    let groningen_lng = 6.5665_f64;
-    let (tile_x, tile_y) = lat_lng_to_tile(groningen_lat, groningen_lng, REGION_ZOOM_LEVEL);
-    conn.execute(
-        "INSERT INTO regions (name, latitude, longitude, tile_x, tile_y, tile_z, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
-        rusqlite::params![
-            "Groningen",
-            groningen_lat,
-            groningen_lng,
-            tile_x,
-            tile_y,
-            REGION_ZOOM_LEVEL as i64,
-        ],
-    )?;
-    tracing::info!("seeded default region Groningen");
-    Ok(())
-}
-
-pub fn load_world(conn: &Connection) -> anyhow::Result<(Vec<RegionDto>, Vec<PrimDto>)> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, latitude, longitude, tile_x, tile_y, tile_z FROM regions ORDER BY id",
-    )?;
-    let regions = stmt
-        .query_map([], |row| {
-            Ok(RegionDto {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                latitude: row.get(2)?,
-                longitude: row.get(3)?,
-                tile_x: row.get(4)?,
-                tile_y: row.get(5)?,
-                tile_z: row.get(6)?,
-                sim_x: 0.0,
-                sim_y: 0.0,
-                sim_z: 0.0,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
+pub fn load_world(conn: &Connection) -> anyhow::Result<Vec<PrimDto>> {
     let sql = format!("SELECT {PRIM_COLUMNS} FROM prims ORDER BY id");
     let mut stmt = conn.prepare(&sql)?;
     let prims = stmt
         .query_map([], row_to_prim)?
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok((regions, prims))
+    Ok(prims)
 }
 
 /// Create a new prim in the database.
@@ -217,33 +170,20 @@ pub fn load_world(conn: &Connection) -> anyhow::Result<(Vec<RegionDto>, Vec<Prim
 /// (ADR-017 Phase 2)
 pub fn insert_prim(
     conn: &Connection,
-    region_id: i64,
     position: Vec3,
     shape: &str,
     geo: GeoAnchor,
     particles: Option<&ParticleEffect>,
     model: Option<&str>,
 ) -> anyhow::Result<PrimDto> {
-    // Validate that the region exists
-    let region_exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM regions WHERE id = ?1",
-        rusqlite::params![region_id],
-        |row| row.get(0),
-    )?;
-
-    if !region_exists {
-        return Err(anyhow::anyhow!("region_id {} not found", region_id));
-    }
-
     // Insert with sensible defaults
     conn.execute(
-        "INSERT INTO prims (region_id, name, shape, position_x, position_y, position_z,
+        "INSERT INTO prims (name, shape, position_x, position_y, position_z,
                             rotation_x, rotation_y, rotation_z, scale_x, scale_y, scale_z,
                             color_r, color_g, color_b, texture_id, latitude, longitude,
                             particles, model, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, datetime('now'), datetime('now'))",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'), datetime('now'))",
         rusqlite::params![
-            region_id,
             "Prim",                   // default name
             shape,
             position.x,
@@ -271,7 +211,7 @@ pub fn insert_prim(
     let prim = select_prim_by_id(conn, id)?
         .ok_or_else(|| anyhow::anyhow!("failed to retrieve newly inserted prim {}", id))?;
 
-    tracing::debug!(prim_id = id, region_id, shape, "prim created");
+    tracing::debug!(prim_id = id, shape, "prim created");
     Ok(prim)
 }
 
@@ -517,7 +457,7 @@ pub fn delete_prim(conn: &Connection, prim_id: i64) -> anyhow::Result<bool> {
     // `PRAGMA foreign_keys = ON`, which is off by default and not set on this
     // connection. Relying on the declaration would leave an orphaned script row
     // keeping a deleted prim's source alive — and, worse, counting against the
-    // region's script budget forever.
+    // world's script budget forever.
     conn.execute(
         "DELETE FROM prim_scripts WHERE prim_id = ?1",
         rusqlite::params![prim_id],
@@ -532,28 +472,6 @@ pub fn delete_prim(conn: &Connection, prim_id: i64) -> anyhow::Result<bool> {
         tracing::debug!(prim_id, "prim deleted");
     }
     Ok(deleted)
-}
-
-/// Per-region resource budget (schema V7). Loaded once at startup with the world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegionCaps {
-    pub max_prims: u32,
-    pub max_scripts: u32,
-}
-
-/// Every region's capacity budget, keyed by region id.
-pub fn load_region_caps(conn: &Connection) -> anyhow::Result<HashMap<i64, RegionCaps>> {
-    let mut stmt = conn.prepare("SELECT id, max_prims, max_scripts FROM regions")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            RegionCaps {
-                max_prims: row.get::<_, i64>(1)?.max(0) as u32,
-                max_scripts: row.get::<_, i64>(2)?.max(0) as u32,
-            },
-        ))
-    })?;
-    Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
 }
 
 /// Every stored script, as `(prim_id, source)`. Read once at startup so the host
@@ -866,14 +784,9 @@ mod tests {
     fn test_insert_prim() -> anyhow::Result<()> {
         let (conn, _temp) = test_db()?;
 
-        // Get the default region (Groningen from seed)
-        let region_id: i64 =
-            conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
-
         // Create a prim
         let prim = insert_prim(
             &conn,
-            region_id,
             Vec3::new(10.0, 5.0, 20.0),
             "box",
             GeoAnchor {
@@ -886,7 +799,6 @@ mod tests {
 
         // Verify the prim was created
         assert!(prim.id > 0);
-        assert_eq!(prim.region_id, region_id);
         assert_eq!(prim.name, "Prim");
         assert_eq!(prim.shape, "box");
         assert_eq!(prim.position, Vec3::new(10.0, 5.0, 20.0));
@@ -907,39 +819,12 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_prim_invalid_region() -> anyhow::Result<()> {
-        let (conn, _temp) = test_db()?;
-
-        // Try to create a prim with non-existent region
-        let result = insert_prim(
-            &conn,
-            9999,
-            Vec3::ZERO,
-            "box",
-            GeoAnchor {
-                latitude: 0.0,
-                longitude: 0.0,
-            },
-            None,
-            None,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
-
-        Ok(())
-    }
-
-    #[test]
     fn test_update_prim() -> anyhow::Result<()> {
         let (conn, _temp) = test_db()?;
-
-        let region_id: i64 =
-            conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
 
         // Create a prim
         let prim = insert_prim(
             &conn,
-            region_id,
             Vec3::ZERO,
             "box",
             GeoAnchor {
@@ -1062,13 +947,9 @@ mod tests {
     fn test_delete_prim() -> anyhow::Result<()> {
         let (conn, _temp) = test_db()?;
 
-        let region_id: i64 =
-            conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
-
         // Create a prim
         let prim = insert_prim(
             &conn,
-            region_id,
             Vec3::ZERO,
             "box",
             GeoAnchor {
@@ -1109,13 +990,9 @@ mod tests {
     fn test_texture_roundtrip() -> anyhow::Result<()> {
         let (conn, _temp) = test_db()?;
 
-        let region_id: i64 =
-            conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
-
         // Create a prim with a texture
         let prim = insert_prim(
             &conn,
-            region_id,
             Vec3::ZERO,
             "sphere",
             GeoAnchor {
@@ -1163,13 +1040,9 @@ mod tests {
     fn test_multiple_prims_isolation() -> anyhow::Result<()> {
         let (conn, _temp) = test_db()?;
 
-        let region_id: i64 =
-            conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
-
         // Create two prims
         let prim1 = insert_prim(
             &conn,
-            region_id,
             Vec3::new(0.0, 0.0, 0.0),
             "box",
             GeoAnchor {
@@ -1181,7 +1054,6 @@ mod tests {
         )?;
         let prim2 = insert_prim(
             &conn,
-            region_id,
             Vec3::new(10.0, 0.0, 0.0),
             "sphere",
             GeoAnchor {

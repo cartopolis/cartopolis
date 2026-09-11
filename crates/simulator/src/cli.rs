@@ -30,8 +30,10 @@ pub struct SimCli {
     pub database_path: Option<String>,
     #[arg(long, help = "Simulation tick rate (Hz)")]
     pub tick_hz: Option<f32>,
-    #[arg(long, help = "AOI radius in sim units (ADR-012)")]
-    pub aoi_radius: Option<f32>,
+    #[arg(long, help = "Most prims this world may hold at once")]
+    pub max_prims: Option<u32>,
+    #[arg(long, help = "Most scripted prims this world may hold at once")]
+    pub max_scripts: Option<u32>,
     #[arg(
         long,
         help = "OSM tile URL template with {z}/{x}/{y} (sent to clients at handshake)"

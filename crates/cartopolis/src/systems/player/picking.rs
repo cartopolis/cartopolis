@@ -30,7 +30,6 @@ pub fn prim_picking(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     prim_query: Query<(Entity, &Prim, &GlobalTransform), With<PrimMesh>>,
-    region_query: Query<(Entity, &crate::components::Region, &GlobalTransform), Without<Prim>>,
     selected_query: Query<Entity, With<Selected>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     gizmo_state: Res<crate::systems::gizmo::GizmoState>,
@@ -186,27 +185,18 @@ pub fn prim_picking(
 
         if let Some((_, prim, _)) = hit_prim {
             context_menu.hit_prim_id = Some(prim.id);
-            context_menu.hit_region_id = Some(prim.region_id);
             context_menu.hit_point = ray_plane_y(ray_origin, ray_dir, 0.0)
                 .unwrap_or_else(|| ray_origin + ray_dir * 10.0);
             tracing::debug!(prim_id = prim.id, "context menu for prim");
         } else {
             context_menu.hit_prim_id = None;
 
-            // No `Region` entity used to mean *no menu at all*. A region only
-            // exists when a sim has sent one (`network::region_from_dto`), so
-            // `--offline` — which is every `--shot` run — had no map right-click
-            // whatsoever, and that is the gesture "Route to here" is reached by.
-            // The menu now always opens; the prim entries gate on `hit_region_id`.
-            //
-            // Note this takes the *first* region, not the one under the cursor —
-            // pre-existing, and only harmless while a world has one.
-            context_menu.hit_region_id = region_query.iter().next().map(|(_, region, _)| region.id);
-            let plane_y = region_query
-                .iter()
-                .next()
-                .map_or(0.0, |(_, _, tf)| tf.translation().y);
-            context_menu.hit_point = ray_plane_y(ray_origin, ray_dir, plane_y)
+            // The ground plane, which is `y = 0` in the anchored frame — the
+            // streamed map is what is under the cursor. It used to be the height
+            // of the first `Region` quad in the world, which was zero in every
+            // deployment that had one and simply absent in every one that did
+            // not, so the menu could not open at all offline.
+            context_menu.hit_point = ray_plane_y(ray_origin, ray_dir, 0.0)
                 .unwrap_or_else(|| ray_origin + ray_dir * 20.0);
             tracing::debug!("context menu for the map");
         }

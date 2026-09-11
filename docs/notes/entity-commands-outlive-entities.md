@@ -26,8 +26,8 @@ The log around it, to the millisecond:
 1. The app is suspended. Nothing drains the network mailbox while it is off
    screen, and the system aborts the socket a few seconds later.
 2. The app resumes. In the **first frame back** `session::drive_session` sees
-   `LinkState::Failed`, runs `teardown`, and queues a despawn for every `Region`,
-   `Prim` and `RemoteAvatar` the server owned.
+   `LinkState::Failed`, runs `teardown`, and queues a despawn for every `Prim`
+   and `RemoteAvatar` the server owned, and for the local `Avatar`.
 3. Same millisecond: panic.
 
 **Which command it was is not established**, and the report could not say —
@@ -43,8 +43,8 @@ could see.
 
 **Any `insert`/`remove`/`despawn` aimed at an entity another system may retire is
 `try_insert` / `try_remove` / `try_despawn`.** "The entity is gone" is the outcome
-the caller wanted anyway; a texture for a region that no longer exists is not a
-failure to report. The server-owned entities are the standing case — `teardown`
+the caller wanted anyway; a component queued onto an object that no longer
+exists is not a failure to report. The server-owned entities are the standing case — `teardown`
 is unordered against every streamer — and `network::apply_network_snapshot` is
 the mirror image, because a mailbox backlog can retire the same entities in the
 same frame from the other side. Converted 2026-08-25: `tile_loader`,

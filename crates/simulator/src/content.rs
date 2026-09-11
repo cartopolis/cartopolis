@@ -47,8 +47,8 @@ pub struct Pack {
     pub prims: Vec<PrimSpec>,
 }
 
-/// Groningen's Grote Markt — the anchor of the seeded region, and where the
-/// beacon stands.
+/// Groningen's Grote Markt — where the beacon stands, and the place this world
+/// has been anchored to since there was one.
 const MARKT_LAT: f64 = 53.2194;
 const MARKT_LNG: f64 = 6.5665;
 

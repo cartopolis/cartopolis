@@ -18,7 +18,6 @@
 
 use bevy::prelude::*;
 use cartopolis_core::{NetMessage, ScriptLevel};
-use std::collections::HashMap;
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
@@ -64,9 +63,9 @@ pub struct ConsoleLine {
     pub text: String,
 }
 
-/// A region's budget, as last reported by the server.
+/// The world's budget, as last reported by the server.
 #[derive(Clone, Copy, Default)]
-pub struct RegionBudget {
+pub struct WorldBudget {
     pub prims_used: u32,
     pub prims_max: u32,
     pub scripts_used: u32,
@@ -93,8 +92,9 @@ pub struct ScriptEditorState {
     /// Whether the server holds a live instance for this prim.
     pub running: bool,
     pub console: Vec<ConsoleLine>,
-    /// Budgets by region id, from `RegionCapacity`.
-    pub budgets: HashMap<i64, RegionBudget>,
+    /// The world's budget, from `WorldCapacity`. `None` until the server has
+    /// said — offline it never does, and the headroom line is simply absent.
+    pub budget: Option<WorldBudget>,
 }
 
 impl ScriptEditorState {
@@ -258,9 +258,7 @@ pub fn render_script_panel(
     let prim_name = prim_id
         .and_then(|id| prims.iter().find(|p| p.id == id).map(|p| p.name.clone()))
         .unwrap_or_else(|| "—".to_string());
-    let budget = prim_id
-        .and_then(|id| prims.iter().find(|p| p.id == id))
-        .and_then(|p| editor.budgets.get(&p.region_id).copied());
+    let budget = editor.budget;
 
     let mut save = false;
     let mut stop = false;

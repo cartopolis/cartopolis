@@ -76,18 +76,15 @@ impl SimHandle {
 /// valid and the server is ready to accept connections.
 pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let conn = db::open_and_migrate(&config.database_path)?;
-    let (regions, prims) = db::load_world(&conn)?;
-    let caps = db::load_region_caps(&conn)?;
+    let prims = db::load_world(&conn)?;
     let scripts = db::load_prim_scripts(&conn)?;
     let owners = db::load_prim_owners(&conn)?;
     let conn = Arc::new(std::sync::Mutex::new(conn));
 
     let world = Arc::new(RwLock::new(state::SimWorld::new(
-        regions,
         prims,
-        config.aoi_radius,
         conn.clone(),
-        caps,
+        config.world_caps(),
         scripts.iter().map(|(id, _)| *id).collect(),
         owners,
     )));

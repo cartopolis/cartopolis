@@ -1,5 +1,5 @@
 //! In-world scripting: one sandboxed Luau VM per scripted prim, scheduled against
-//! a per-region fuel bank.
+//! a per-world fuel bank.
 //!
 //! # Why Luau, and what the capacity model rests on
 //!
@@ -15,7 +15,7 @@
 //!   script" the sole answer to an over-budget slice. Being able to **suspend and
 //!   resume** is what makes a fuel bank a scheduler instead of a killer: a script
 //!   that runs long is descheduled and continues next tick, exactly as a long
-//!   loop behaves on a busy region rather than as a user-visible failure.
+//!   loop behaves on a busy world rather than as a user-visible failure.
 //!
 //! # Threading
 //!
@@ -66,17 +66,17 @@ use std::sync::Arc;
 /// 256 KiB is eight pages: two for the chunk, six for it to work in.
 ///
 /// The cost that is not here: each script is a whole Luau state, ~386 KiB of
-/// interpreter before the ceiling applies at all. A region at its default 200
+/// interpreter before the ceiling applies at all. A world at its default 200
 /// scripts is therefore ~75 MiB of baseline — the price of one VM per prim, and
-/// the number to revisit if a region ever wants thousands.
+/// the number to revisit if a world ever wants thousands.
 pub const SCRIPT_MEMORY_BYTES: usize = 256 * 1024;
 
 /// Interrupt allowance shared by every script in the world, refilled each tick.
 ///
 /// The unit is "interrupt callbacks", which Luau fires on a fixed instruction
-/// cadence — deterministic, unlike wall-clock, so a region's capacity is
+/// cadence — deterministic, unlike wall-clock, so the world's capacity is
 /// reproducible across hosts and a slow disk cannot make a script look expensive.
-pub const REGION_FUEL_PER_TICK: i64 = 200_000;
+pub const WORLD_FUEL_PER_TICK: i64 = 200_000;
 
 /// Ceiling on what any single script may draw from the bank in one tick, so one
 /// busy script cannot starve the rest before round-robin comes back around.
@@ -142,7 +142,7 @@ const MIN_TIMER_INTERVAL: f32 = 0.05;
 /// Messages one script may send per tick (`vfSend`). Separate from
 /// [`MAX_COMMANDS_PER_TICK`] because it bounds a different thing: a command costs
 /// one wire frame, while a message costs an event queued on *every* listening
-/// script in the region, so the same number would mean very different work.
+/// script in the world, so the same number would mean very different work.
 const MAX_MESSAGES_PER_TICK: usize = 8;
 
 /// Channels one script may listen on. A ceiling rather than a policy — a script
@@ -160,7 +160,7 @@ pub enum ScriptEvent {
         avatar_name: String,
     },
     Timer,
-    /// Another script in the same region sent on a channel this one listens to.
+    /// Another script sent on a channel this one listens to.
     Message {
         channel: i64,
         text: String,
@@ -302,9 +302,6 @@ pub struct PrimView {
     /// The prim's geographic anchor (ADR-029) — where it actually is, as opposed
     /// to [`Self::pos`]'s x/z, which are a client-frame echo.
     pub geo: GeoAnchor,
-    /// Which region the prim is in. Not readable by a script; it is what scopes
-    /// `vfSend` (see [`Slot::region_id`]).
-    pub region_id: i64,
     /// Avatars near this prim, nearest first: `(id, name, metres)`.
     ///
     /// Pushed with the view rather than queried, because the host thread has no
@@ -465,7 +462,7 @@ struct Shared {
     /// Commands dropped this tick because the script exceeded its output budget.
     dropped: Cell<u32>,
     /// `vfSend` calls made this slice, drained by the scheduler and fanned out to
-    /// the other scripts in the region.
+    /// the other scripts in the world.
     ///
     /// **Not a [`ScriptCommand`]**, and that is the whole design: a message never
     /// leaves the host thread. It is script-to-script, the simulation has nothing
@@ -532,16 +529,9 @@ struct Slot {
     /// Channels this script has asked to hear (`vfListen`).
     ///
     /// Opt-in, as Second Life's `llListen` is: without it every `vfSend` would be
-    /// queued on every script in the region, so one chatty prim would cost every
+    /// queued on every script in the world, so one chatty prim would cost every
     /// other one an event per tick whether or not it cared.
     listening: std::collections::HashSet<i64>,
-    /// The region this prim is in, refreshed with the view each tick.
-    ///
-    /// Held on the slot rather than read through `shared` at fan-out time because
-    /// the fan-out happens with several slots borrowed at once; it is also the
-    /// only thing that scopes a channel, and a channel that silently crossed
-    /// regions would be a surprising thing to debug.
-    region_id: i64,
     /// A faulted script keeps its source (so the author can see and fix it) but
     /// runs nothing until it is stored again.
     faulted: bool,
@@ -684,7 +674,6 @@ impl Slot {
             first_args: None,
             timer: None,
             listening: std::collections::HashSet::new(),
-            region_id: 0,
             faulted: false,
         })
     }
@@ -1447,7 +1436,6 @@ fn run(rx: Receiver<HostMsg>, tx: Sender<ScriptCommand>) {
             HostMsg::Tick { dt, views } => {
                 for (prim_id, view) in views {
                     if let Some(slot) = slots.get_mut(&prim_id) {
-                        slot.region_id = view.region_id;
                         *slot.shared.view.borrow_mut() = view;
                     }
                 }
@@ -1458,7 +1446,7 @@ fn run(rx: Receiver<HostMsg>, tx: Sender<ScriptCommand>) {
     }
 }
 
-/// One scheduling pass: advance timers, then spend the region's fuel bank on
+/// One scheduling pass: advance timers, then spend the world's fuel bank on
 /// whoever has work, round-robin from a rotating start.
 fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender<ScriptCommand>) {
     let mut ids: Vec<i64> = slots.keys().copied().collect();
@@ -1489,11 +1477,11 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
     // one slot mutably, and a listener is another slot. And delivering mid-loop
     // would make "does this listener see the message this tick or next?" depend on
     // where the round-robin cursor happened to be — a script's behaviour would
-    // then change with the number of other scripts in the region, which is the
+    // then change with the number of other scripts in the world, which is the
     // kind of thing that reproduces once a week.
     let mut posted: Vec<(i64, i64, i64, String)> = Vec::new();
 
-    let mut bank = REGION_FUEL_PER_TICK;
+    let mut bank = WORLD_FUEL_PER_TICK;
     let start = *cursor % ids.len();
     for i in 0..ids.len() {
         if bank <= 0 {
@@ -1530,9 +1518,8 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
                 slot.listening.remove(&channel);
             }
         }
-        let region = slot.region_id;
         for (channel, text) in slot.shared.outbox.borrow_mut().drain(..) {
-            posted.push((id, region, channel, text));
+            posted.push((id, channel, text));
         }
 
         let dropped = slot.shared.dropped.replace(0);
@@ -1552,13 +1539,18 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
     }
     *cursor = cursor.wrapping_add(1);
 
-    // Fan out. Scoped to the sender's region, because a channel that silently
-    // crossed regions would let one estate's button work another's door — and
-    // **never back to the sender**, which is the one deviation from Second Life
+    // Fan out across the whole world. This used to be scoped to the sender's
+    // region, so that one estate's button could not work its neighbour's door;
+    // regions are gone, and nothing that survived them divides the world into
+    // estates, so a channel now reaches every listening script on the server. A
+    // radius would be the way to bring that property back if it is ever wanted —
+    // every prim carries a `GeoAnchor`, which is what `vfSensor` already measures
+    // against. Fan-out is still **never back to the sender**, which is the one
+    // deviation from Second Life
     // here and is deliberate: a script listening on the channel it sends on is the
     // ordinary shape (the beacon and the firebird both do it), and hearing
     // yourself makes that an immediate feedback loop the author did not write.
-    for (sender, region, channel, text) in posted {
+    for (sender, channel, text) in posted {
         for id in &ids {
             if *id == sender {
                 continue;
@@ -1566,7 +1558,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
             let Some(slot) = slots.get_mut(id) else {
                 continue;
             };
-            if slot.faulted || slot.region_id != region || !slot.listening.contains(&channel) {
+            if slot.faulted || !slot.listening.contains(&channel) {
                 continue;
             }
             slot.queue(ScriptEvent::Message {

@@ -446,7 +446,7 @@ fn timer_interval_is_clamped_to_the_tick() {
     );
 }
 
-/// One script's fuel slice must not consume the whole region bank.
+/// One script's fuel slice must not consume the whole world's bank.
 #[test]
 fn one_busy_script_does_not_starve_another() {
     let (tx, rx) = mpsc::channel();
@@ -706,16 +706,10 @@ fn die_is_a_command_not_a_side_effect() {
 /// fan-out *is* what these tests are about: who hears a message, when, and in
 /// what order is decided there and nowhere else.
 fn talk(a: &str, b: &str, ticks: u32) -> Vec<ScriptCommand> {
-    talk_in_regions((1, a, 1), (2, b, 1), ticks)
-}
-
-/// The same, with each script's prim id and region spelled out.
-fn talk_in_regions(a: (i64, &str, i64), b: (i64, &str, i64), ticks: u32) -> Vec<ScriptCommand> {
     let (tx, rx) = mpsc::channel();
     let mut slots: HashMap<i64, Slot> = HashMap::new();
-    for (id, source, region) in [a, b] {
+    for (id, source) in [(1, a), (2, b)] {
         let mut slot = Slot::compile(id, source).expect("compile");
-        slot.region_id = region;
         slot.queue(ScriptEvent::Start);
         slots.insert(id, slot);
     }
@@ -772,7 +766,7 @@ fn a_script_does_not_hear_its_own_message() {
 }
 
 /// Listening is opt-in. Without it every `vfSend` would queue an event on every
-/// script in the region, so one chatty prim would cost every other one work it
+/// script in the world, so one chatty prim would cost every other one work it
 /// never asked for.
 #[test]
 fn a_script_hears_nothing_until_it_listens() {
@@ -796,23 +790,6 @@ fn channels_are_separate() {
     assert!(!logged(&out, "heard"), "{out:?}");
 }
 
-/// A region is the boundary. A channel that silently crossed one would let an
-/// estate's button work its neighbour's door.
-#[test]
-fn a_message_does_not_leave_its_region() {
-    let out = talk_in_regions(
-        (1, "function on_start() vfSend(7, 'ping') end", 1),
-        (
-            2,
-            "function on_start() vfListen(7) end \
-             function on_message(c, t, f) vfLog('heard') end",
-            2,
-        ),
-        8,
-    );
-    assert!(!logged(&out, "heard"), "{out:?}");
-}
-
 /// `vfListen(channel, false)` stops it again.
 #[test]
 fn listening_can_be_stopped() {
@@ -826,7 +803,7 @@ fn listening_can_be_stopped() {
     assert!(!logged(&out, "heard"), "{out:?}");
 }
 
-/// A script cannot flood the region: the send budget is per tick, and overrunning
+/// A script cannot flood the world: the send budget is per tick, and overrunning
 /// it is reported the way an overrun command budget is rather than faulting the
 /// script mid-handler.
 #[test]

@@ -1,13 +1,11 @@
 use cartopolis_core::{
     snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage,
-    ParticleEffect, PrimDto, PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS,
-    MAX_SEAT_OFFSET_M,
+    ParticleEffect, PrimDto, PrimGeometry, PrimSurface, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::db::RegionCaps;
 use crate::scripting::{PrimView, ScriptCommand};
 use cartopolis_core::motion;
 
@@ -73,20 +71,19 @@ struct AvatarSim {
 }
 
 pub struct SimWorld {
-    regions: Vec<RegionDto>,
     prims: Vec<PrimDto>,
-    /// Region id -> approximate sim origin (for AOI); v0 single region at origin.
-    region_sim_origin: HashMap<i64, Vec3>,
     avatars: HashMap<u64, AvatarSim>,
     next_avatar_id: u64,
-    observer: Vec3,
-    aoi_radius_sq: f32,
     /// Database connection for prim mutations (Phase 3).
     conn: Arc<Mutex<rusqlite::Connection>>,
-    /// Per-region resource budget (schema V7). A region absent from this map has
-    /// no recorded budget and is treated as unlimited — that only happens for a
-    /// row inserted outside the migration path.
-    caps: HashMap<i64, RegionCaps>,
+    /// What this world may hold at once, from `cartopolis.toml`.
+    ///
+    /// One budget for the server. It used to be a row per region, on the
+    /// reasoning that a region is the unit an operator hands out — but a
+    /// simulator only ever ran one region, so the ceiling was already the
+    /// server's, and it now sits with the rest of an operator's decisions
+    /// instead of in a table.
+    caps: WorldCaps,
     /// Prim id -> the account that built it (schema V15), for the edit and delete
     /// permission. Absent means nobody owns it, which is how everything built
     /// before V15 and everything a content pack installed reads.
@@ -137,10 +134,16 @@ fn ground_distance_m(a: GeoAnchor, b: GeoAnchor) -> f32 {
     cartopolis_core::ground_distance_m(a.latitude, a.longitude, b.latitude, b.longitude) as f32
 }
 
-/// A region's budget and what is currently drawn against it.
+/// What the world may hold at once ([`SimWorld::caps`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorldCaps {
+    pub max_prims: u32,
+    pub max_scripts: u32,
+}
+
+/// The world's budget and what is currently drawn against it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapacityUsage {
-    pub region_id: i64,
     pub prims_used: u32,
     pub prims_max: u32,
     pub scripts_used: u32,
@@ -149,44 +152,16 @@ pub struct CapacityUsage {
 
 impl SimWorld {
     pub fn new(
-        mut regions: Vec<RegionDto>,
         prims: Vec<PrimDto>,
-        aoi_radius: f32,
         conn: Arc<Mutex<rusqlite::Connection>>,
-        caps: HashMap<i64, RegionCaps>,
+        caps: WorldCaps,
         scripted: HashSet<i64>,
         owners: HashMap<i64, String>,
     ) -> Self {
-        let mut region_sim_origin = HashMap::new();
-        let n = regions.len().max(1);
-        let grid_size = (n as f32).sqrt().ceil() as usize;
-        let spacing = 300.0_f32;
-        let grid_f = grid_size as f32;
-        // Same ordering as the offline client: sort by region id so grid indices match.
-        let mut ordered_indices: Vec<usize> = (0..regions.len()).collect();
-        ordered_indices.sort_by_key(|&i| regions[i].id);
-        for (grid_idx, &idx) in ordered_indices.iter().enumerate() {
-            let row = grid_idx / grid_size;
-            let col = grid_idx % grid_size;
-            let pos = Vec3::new(
-                (col as f32 - grid_f / 2.0) * spacing,
-                0.0,
-                (row as f32 - grid_f / 2.0) * spacing,
-            );
-            let r = &mut regions[idx];
-            region_sim_origin.insert(r.id, pos);
-            r.sim_x = pos.x;
-            r.sim_y = pos.y;
-            r.sim_z = pos.z;
-        }
         Self {
-            regions,
             prims,
-            region_sim_origin,
             avatars: HashMap::new(),
             next_avatar_id: 1,
-            observer: Vec3::ZERO,
-            aoi_radius_sq: aoi_radius * aoi_radius,
             conn,
             caps,
             scripted,
@@ -198,12 +173,10 @@ impl SimWorld {
     pub fn spawn_avatar(&mut self) -> u64 {
         let id = self.next_avatar_id;
         self.next_avatar_id += 1;
-        let mut ids: Vec<i64> = self.regions.iter().map(|r| r.id).collect();
-        ids.sort();
-        let start = ids
-            .first()
-            .and_then(|rid| self.region_sim_origin.get(rid).copied())
-            .unwrap_or(Vec3::ZERO);
+        // The origin of the sim's flat frame, which is where every client's map
+        // is anchored when it connects. There is nothing else to spawn relative
+        // to: the sim holds no map (see `AvatarSim::geo`).
+        let start = Vec3::ZERO;
         self.avatars.insert(
             id,
             AvatarSim {
@@ -287,20 +260,11 @@ impl SimWorld {
         self.avatars.len()
     }
 
-    pub fn set_observer(&mut self, p: Vec3) {
-        self.observer = p;
-    }
-
-    /// Every region in the world, in the order they were loaded.
-    pub fn regions(&self) -> &[RegionDto] {
-        &self.regions
-    }
-
     /// Every prim in the world, in id order.
     ///
     /// The AoI filter in [`SimWorld::snapshot`] is what a *client* sees; this is
     /// the whole set, which is what the authoring API lists and what the tests
-    /// assert against. An operator listing a region's contents is not standing
+    /// assert against. An operator listing the world's contents is not standing
     /// anywhere in it.
     pub fn prims(&self) -> &[PrimDto] {
         &self.prims
@@ -490,29 +454,23 @@ impl SimWorld {
         }
     }
 
-    /// ADR-012: filter regions/prims by distance from observer to region origin (v0 heuristic).
+    /// Every prim and every avatar, to every client.
+    ///
+    /// **There is no area-of-interest filter here, and removing it was the
+    /// honest outcome of retiring regions rather than a regression.** ADR-012's
+    /// v0 filter excluded whole *regions* by the distance from `self.observer`
+    /// to a synthetic grid origin — and `observer` was one field on a world
+    /// shared by every connection, written by whichever client sent the last
+    /// `ObserverUpdate`, while one snapshot is broadcast to all. So what it did
+    /// in practice was blank every prim for *everybody* as soon as one client
+    /// walked 500 m from the origin of a grid that no longer corresponds to
+    /// anything. A real filter has to be computed per connection, which is a
+    /// different piece of work: the snapshot would have to stop being a
+    /// broadcast.
     pub fn snapshot(&self, tick: u64) -> NetMessage {
-        let regions: Vec<RegionDto> = self
-            .regions
-            .iter()
-            .filter(|r| {
-                let Some(origin) = self.region_sim_origin.get(&r.id) else {
-                    return true;
-                };
-                (*origin - self.observer).length_squared() <= self.aoi_radius_sq
-            })
-            .cloned()
-            .collect();
+        let prims: Vec<PrimDto> = self.prims.clone();
 
-        let region_ids: std::collections::HashSet<i64> = regions.iter().map(|r| r.id).collect();
-        let prims: Vec<PrimDto> = self
-            .prims
-            .iter()
-            .filter(|p| region_ids.contains(&p.region_id))
-            .cloned()
-            .collect();
-
-        // v0 multiplayer: replicate every avatar to all clients. (Regions/prims still use observer AOI.)
+        // v0 multiplayer: replicate every avatar to all clients.
         let avatars: Vec<AvatarStateDto> = self
             .avatars
             .iter()
@@ -527,7 +485,6 @@ impl SimWorld {
 
         NetMessage::WorldSnapshot {
             tick,
-            regions,
             prims,
             avatars,
         }
@@ -539,7 +496,6 @@ impl SimWorld {
     /// (ADR-017 Phase 3)
     pub fn add_prim(
         &mut self,
-        region_id: i64,
         position: Vec3,
         shape: &str,
         geo: GeoAnchor,
@@ -548,14 +504,12 @@ impl SimWorld {
     ) -> Result<PrimDto, String> {
         // Capacity is checked *before* the insert, so the refusal costs no write
         // and the id sequence does not advance on a rejected create.
-        if let Some(caps) = self.caps.get(&region_id) {
-            let used = self.region_prim_count(region_id);
-            if used >= caps.max_prims {
-                return Err(format!(
-                    "region is full: {used} of {} prims. Delete something or ask the operator to raise the budget.",
-                    caps.max_prims
-                ));
-            }
+        let used = self.prims.len() as u32;
+        if used >= self.caps.max_prims {
+            return Err(format!(
+                "the world is full: {used} of {} prims. Delete something or ask the operator to raise the budget.",
+                self.caps.max_prims
+            ));
         }
         // Call db::insert_prim with a minimal lock
         let prim = {
@@ -563,16 +517,8 @@ impl SimWorld {
                 .conn
                 .lock()
                 .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::insert_prim(
-                &conn_guard,
-                region_id,
-                position,
-                shape,
-                geo,
-                particles,
-                model,
-            )
-            .map_err(|e| format!("insert_prim failed: {}", e))?
+            crate::db::insert_prim(&conn_guard, position, shape, geo, particles, model)
+                .map_err(|e| format!("insert_prim failed: {}", e))?
         };
         // Add to in-memory list
         self.prims.push(prim.clone());
@@ -656,13 +602,6 @@ impl SimWorld {
         Ok(deleted)
     }
 
-    fn region_prim_count(&self, region_id: i64) -> u32 {
-        self.prims
-            .iter()
-            .filter(|p| p.region_id == region_id)
-            .count() as u32
-    }
-
     /// A prim by id, for the lookups a script command needs (its name and where
     /// it is standing when it speaks).
     pub fn prim(&self, prim_id: i64) -> Option<&PrimDto> {
@@ -675,37 +614,26 @@ impl SimWorld {
         self.scripted.contains(&prim_id)
     }
 
-    /// The region a prim belongs to, if it exists.
-    pub fn prim_region(&self, prim_id: i64) -> Option<i64> {
-        self.prims
-            .iter()
-            .find(|p| p.id == prim_id)
-            .map(|p| p.region_id)
+    /// Does a prim by this id exist?
+    #[must_use]
+    pub fn has_prim(&self, prim_id: i64) -> bool {
+        self.prims.iter().any(|p| p.id == prim_id)
     }
 
-    /// Budget and usage for a region, for [`NetMessage::RegionCapacity`].
-    pub fn capacity(&self, region_id: i64) -> Option<CapacityUsage> {
-        let caps = self.caps.get(&region_id)?;
+    /// Budget and usage for the world, for [`NetMessage::WorldCapacity`].
+    #[must_use]
+    pub fn capacity(&self) -> CapacityUsage {
         let scripts_used = self
             .prims
             .iter()
-            .filter(|p| p.region_id == region_id && self.scripted.contains(&p.id))
+            .filter(|p| self.scripted.contains(&p.id))
             .count() as u32;
-        Some(CapacityUsage {
-            region_id,
-            prims_used: self.region_prim_count(region_id),
-            prims_max: caps.max_prims,
+        CapacityUsage {
+            prims_used: self.prims.len() as u32,
+            prims_max: self.caps.max_prims,
             scripts_used,
-            scripts_max: caps.max_scripts,
-        })
-    }
-
-    /// Capacity for every region, for the connect-time push.
-    pub fn all_capacity(&self) -> Vec<CapacityUsage> {
-        self.regions
-            .iter()
-            .filter_map(|r| self.capacity(r.id))
-            .collect()
+            scripts_max: self.caps.max_scripts,
+        }
     }
 
     /// Who owns a prim, if anybody does.
@@ -769,15 +697,13 @@ impl SimWorld {
         if self.scripted.contains(&prim_id) {
             return Ok(());
         }
-        let Some(region_id) = self.prim_region(prim_id) else {
+        if !self.has_prim(prim_id) {
             return Err(format!("prim {prim_id} not found"));
-        };
-        let Some(usage) = self.capacity(region_id) else {
-            return Ok(());
-        };
+        }
+        let usage = self.capacity();
         if usage.scripts_used >= usage.scripts_max {
             return Err(format!(
-                "region is at its script limit: {} of {}",
+                "the world is at its script limit: {} of {}",
                 usage.scripts_used, usage.scripts_max
             ));
         }
@@ -795,7 +721,7 @@ impl SimWorld {
     /// `vfGetPos` has always had.
     pub fn script_views(&self) -> Vec<(i64, PrimView)> {
         // Every avatar that has told us where on Earth it is. Gathered once for
-        // the whole pass: a region with 200 scripted prims and 20 avatars would
+        // the whole pass: a world with 200 scripted prims and 20 avatars would
         // otherwise rebuild this list 200 times a tick.
         let located: Vec<(u64, GeoAnchor, String)> = self
             .avatars
@@ -829,7 +755,6 @@ impl SimWorld {
                         name: p.name.clone(),
                         particles: p.particles,
                         geo: p.geo,
-                        region_id: p.region_id,
                         nearby,
                     },
                 )
@@ -973,14 +898,11 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("test.db");
         let conn = crate::db::open_and_migrate(path.to_str().unwrap()).expect("open db");
-        let (regions, prims) = crate::db::load_world(&conn).expect("load world");
-        let caps = crate::db::load_region_caps(&conn).expect("load caps");
+        let prims = crate::db::load_world(&conn).expect("load world");
         let world = SimWorld::new(
-            regions,
             prims,
-            50.0,
             Arc::new(Mutex::new(conn)),
-            caps,
+            crate::config::SimConfig::default().world_caps(),
             HashSet::new(),
             HashMap::new(),
         );

@@ -2,7 +2,7 @@
 //!
 //! Renders context menus and edit dialogs using egui.
 
-use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Region, Selected};
+use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Selected};
 use crate::resources::OnlineSession;
 use crate::resources::RightPanel;
 use crate::resources::{
@@ -887,11 +887,17 @@ pub fn render_context_menu(
                         context_menu.visible = false;
                     }
                 }
-            } else if context_menu.hit_region_id.is_some() {
-                // Clicked on empty space with a region to put a prim in. The menu
-                // now also opens where there is no region at all (for the routing
-                // entries above, and so `--offline` has a map right-click), so
-                // this can no longer assume one exists.
+            } else if online.is_some() {
+                // Clicked on empty ground with a sim to put a prim in.
+                //
+                // Gated on the *session*, which is what "can I build here?"
+                // actually means: a prim is created by `CreatePrim` and lives in
+                // the simulator, so offline there is nobody to make one. It used
+                // to be gated on a `Region` entity existing — which came to the
+                // same thing by accident, since regions only ever arrived from a
+                // sim, and was the reason the entry silently vanished when an
+                // area-of-interest filter dropped the region a client was
+                // standing in.
                 if ui.button("Create object…").clicked() {
                     edit_dialog.prim_id = None;
                     edit_dialog.is_new = true;
@@ -1708,7 +1714,6 @@ pub fn send_prim_mutations(
         Option<&MeshMaterial3d<StandardMaterial>>,
         Has<crate::components::OwnedMaterial>,
     )>,
-    region_query: Query<&Region>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     texture_cache: Res<PrimTextureCache>,
     online: Option<Res<OnlineSession>>,
@@ -1716,7 +1721,6 @@ pub fn send_prim_mutations(
 ) {
     if let Some(dialog_state) = game_state.pending_prim_save.take() {
         if dialog_state.is_new {
-            let region_id = region_query.iter().next().map(|r| r.id).unwrap_or(1);
             let pos = Vec3::new(
                 dialog_state.position[0],
                 dialog_state.position[1],
@@ -1737,7 +1741,6 @@ pub fn send_prim_mutations(
                 "create prim",
                 NetMessage::CreatePrim {
                     request_id: 0,
-                    region_id,
                     name: dialog_state.name.clone(),
                     position: pos,
                     rotation: Vec3::new(

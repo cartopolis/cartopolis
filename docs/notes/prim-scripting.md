@@ -80,8 +80,8 @@ the interpreter's baseline*, not from zero: a fresh sandboxed state is ~386 KiB
 before a line of script exists, and that is the host's cost, not the author's.
 
 The corollary nobody costed up front: **one VM per prim is ~386 KiB of floor**.
-A region at its default 200 scripts is ~75 MiB of interpreter. That is affordable
-and it is also the number that decides whether a region can ever have thousands of
+A world at its default 200 scripts is ~75 MiB of interpreter. That is affordable
+and it is also the number that decides whether a world can ever have thousands of
 scripted prims — it would need a shared VM with per-script environments, which
 gives up the per-script memory ceiling (the allocator limit is per *state*).
 
@@ -186,38 +186,45 @@ an alternative:
 - **Delivery is after the whole round-robin pass, so it lands next tick.**
   Delivering inline would make "does this listener see it this tick or next?"
   depend on where the scheduler's cursor happened to be — a script's behaviour
-  would change with the number of other scripts in the region.
+  would change with the number of other scripts on the server.
 - **Listening is opt-in.** Without it every send would queue an event on every
-  script in the region, so one chatty prim would cost every other one work.
+  script in the world, so one chatty prim would cost every other one work.
 - **A script does not hear itself**, which is the one deviation from Second Life
   here. Listening on the channel you send on is the ordinary shape — the beacon
   and the firebird both do it — and hearing yourself makes that an immediate
   feedback loop the author did not write.
 
-Channels are scoped to the **region**, because one that silently crossed would
-let an estate's button work its neighbour's door. `MAX_MESSAGES_PER_TICK` bounds a
-sender for a different reason than `MAX_COMMANDS_PER_TICK` does: a command costs
-one wire frame, a message costs an event queued on every listener.
+A channel reaches **every listening script on the server**. It used to be scoped
+to the sender's region, so that an estate's button could not work its
+neighbour's door — regions are retired
+([retired/regions.md](retired/regions.md)) and nothing that survived them divides
+the world into estates. Bringing that property back means a **radius** around the
+sender's `GeoAnchor`, measured the way `vfSensor` already measures, not a new
+container. `MAX_MESSAGES_PER_TICK` bounds a sender for a different reason than
+`MAX_COMMANDS_PER_TICK` does: a command costs one wire frame, a message costs an
+event queued on every listener.
 
-## The unit of accounting is the region
+## The unit of accounting is the world
 
-Capacity (`max_prims`, `max_scripts`, schema V7) hangs off the region row because
-a region is what an operator hands out. Fuel is a per-tick bank spent round-robin
-with a per-script slice cap, so the cost of a busy region is bounded by the tick,
-not by the number of scripts in it.
+Capacity (`max_prims`, `max_scripts`) is one budget for the server, set in
+`cartopolis.toml`. It used to be a column on the region row, on the reasoning
+that a region is what an operator hands out — no simulator ever ran more than
+one. Fuel is a per-tick bank spent round-robin with a per-script slice cap, so
+the cost of a busy world is bounded by the tick, not by the number of scripts in
+it.
 
 Sourced from Second Life's twenty years of the same problem, and deliberately
 so: per-object script limits, a memory ceiling per script, and "your script got
 slower" as the failure mode instead of "your script was killed" are all its
 answers, and they are answers to a social problem more than a technical one.
 The one place this deviates is that fuel is measured in **interrupt callbacks**
-(a deterministic instruction cadence), not wall-clock — a region's capacity is
+(a deterministic instruction cadence), not wall-clock — a world's capacity is
 then reproducible across hosts, and a slow disk cannot make a script look
 expensive.
 
 ## Source is not snapshot data
 
-A `PrimDto` is re-sent to every observer in the AoI at the tick rate. Script
+A `PrimDto` is re-sent to every observer at the tick rate. Script
 source is an order of magnitude larger than the rest of a prim and is of interest
 to exactly one person — so it lives in its own table, travels only on
 `GetPrimScript`/`SetPrimScript`, and the editor is the only thing that ever asks.

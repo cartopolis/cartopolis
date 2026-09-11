@@ -29,7 +29,7 @@ use bevy::prelude::*;
 use cartopolis_core::AuthCredential;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{Prim, Region, RemoteAvatar};
+use crate::components::{Avatar, Prim, RemoteAvatar};
 use crate::resources::{
     AuthIdentity, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId, NetworkMailbox,
     NetworkSyncState, OnlineSession, OsmTileUrlTemplate,
@@ -233,9 +233,9 @@ pub fn drive_session(
     mut local_sim_id: ResMut<LocalAvatarSimId>,
     mut identity: ResMut<AuthIdentity>,
     mut chat: ResMut<crate::systems::chat::ChatState>,
-    regions: Query<Entity, With<Region>>,
     prims: Query<Entity, With<Prim>>,
     remotes: Query<Entity, With<RemoteAvatar>>,
+    avatars: Query<Entity, With<Avatar>>,
 ) {
     if let Some(request) = session.request.take() {
         teardown(
@@ -245,9 +245,9 @@ pub fn drive_session(
             &mut local_sim_id,
             &mut identity,
             &mut chat,
-            &regions,
             &prims,
             &remotes,
+            &avatars,
         );
         session.error = None;
         match request {
@@ -301,9 +301,9 @@ pub fn drive_session(
                 &mut local_sim_id,
                 &mut identity,
                 &mut chat,
-                &regions,
                 &prims,
                 &remotes,
+                &avatars,
             );
             session.error = Some(format!("{was}: {message}"));
         }
@@ -317,9 +317,9 @@ pub fn drive_session(
                 &mut local_sim_id,
                 &mut identity,
                 &mut chat,
-                &regions,
                 &prims,
                 &remotes,
+                &avatars,
             );
             // Only worth reporting if there was a session to lose; a link closed
             // before it came up already failed for a better-stated reason.
@@ -369,9 +369,9 @@ fn teardown(
     local_sim_id: &mut LocalAvatarSimId,
     identity: &mut AuthIdentity,
     chat: &mut crate::systems::chat::ChatState,
-    regions: &Query<Entity, With<Region>>,
     prims: &Query<Entity, With<Prim>>,
     remotes: &Query<Entity, With<RemoteAvatar>>,
+    avatars: &Query<Entity, With<Avatar>>,
 ) {
     session.link = None;
     session.mode = SessionMode::Offline;
@@ -403,17 +403,21 @@ fn teardown(
     // The chat log belongs to the world it was said in; carrying it into the next
     // one would attribute strangers' lines to a server they never spoke on.
     *chat = crate::systems::chat::ChatState::default();
-    game_state.regions_loaded = false;
     game_state.prims_loaded = false;
     game_state.selected_prim_id = None;
 
-    // The local avatar entity stays — it is spawned at startup and its offline
-    // movement path takes over the moment `OnlineSession` is gone. Only the
-    // server's own objects go.
+    // **The local avatar goes too.** It used to be spawned at startup and never
+    // despawned, so leaving a session left you standing on the map as a body with
+    // no sim behind it: nothing owned its position, nothing else could see it,
+    // and it was the one thing on screen still claiming there was a world to be
+    // in. Offline is the map and the camera. `lib::sync_local_avatar` is the
+    // counterpart that brings it back when a session does, and it is also what a
+    // scripted capture asks for when it is photographing the avatar.
+    //
     // `try_despawn`: `network::apply_network_snapshot` retires the same entities
     // from a snapshot backlog, and nothing orders the two systems, so on the frame
     // a session drops they can both queue a despawn for one entity.
-    for e in regions.iter().chain(prims.iter()).chain(remotes.iter()) {
+    for e in prims.iter().chain(remotes.iter()).chain(avatars.iter()) {
         commands.entity(e).try_despawn();
     }
 }
@@ -437,8 +441,8 @@ mod tests {
         app
     }
 
-    /// Pretend a session is up: the resources a live link installs, plus two of
-    /// the server's own entities.
+    /// Pretend a session is up: the resources a live link installs, plus the
+    /// local avatar and one of somebody else's.
     fn go_online(app: &mut App) {
         let (intent_tx, _rx) = futures_channel::mpsc::unbounded();
         let (_tx, out_rx) = std::sync::mpsc::channel();
@@ -451,16 +455,7 @@ mod tests {
         });
         app.insert_resource(ConnectAddr("sim.example:4747".into()));
         app.world_mut().resource_mut::<AuthIdentity>().username = Some("alice".into());
-        app.world_mut().spawn(Region {
-            id: 1,
-            name: "Region".into(),
-            latitude: 0.0,
-            longitude: 0.0,
-            tile_x: 0,
-            tile_y: 0,
-            tile_z: 0,
-            sim_origin: None,
-        });
+        app.world_mut().spawn(Avatar);
         app.world_mut().spawn(RemoteAvatar {
             sim_id: 7,
             net_position: Vec3::ZERO,
@@ -491,14 +486,14 @@ mod tests {
         assert!(world.get_resource::<ConnectAddr>().is_none());
         assert_eq!(world.resource::<AuthIdentity>().username, None);
         assert_eq!(
-            world.query::<&Region>().iter(world).count(),
-            0,
-            "the sim's regions outlived the session"
-        );
-        assert_eq!(
             world.query::<&RemoteAvatar>().iter(world).count(),
             0,
             "other people outlived the session"
+        );
+        assert_eq!(
+            world.query::<&Avatar>().iter(world).count(),
+            0,
+            "the local avatar outlived the session it belonged to"
         );
         let session = world.resource::<SessionState>();
         assert_eq!(session.mode, SessionMode::Offline);

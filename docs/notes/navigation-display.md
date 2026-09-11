@@ -204,10 +204,12 @@ so they cannot drift from the panel's own "pick on map" — an endpoint set with
 the invalidate leaves the previous line drawn under a new destination, and without
 the reverse geocode it stays labelled with raw coordinates.
 
-That menu required a `Region` entity to exist before it would open at all
-(`picking.rs`), and a region only exists when a sim has sent one — so `--offline`,
-which is every `--shot` run, had no map right-click whatsoever. It now always
-opens and the prim entries gate on `hit_region_id` instead.
+That menu once required a `Region` entity to exist before it would open at all
+(`picking.rs`), and a region only existed when a sim had sent one — so
+`--offline`, which is every `--shot` run, had no map right-click whatsoever. It
+always opens now; the routing and save-place entries need only a point on the
+map, and "Create object…" gates on there being a session to create the object in
+(see [retired/regions.md](retired/regions.md)).
 
 ## The trip strip cannot hide behind a panel
 

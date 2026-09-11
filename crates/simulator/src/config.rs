@@ -22,8 +22,22 @@ pub struct SimConfig {
     pub database_path: String,
     #[serde(default = "default_tick_hz")]
     pub tick_hz: f32,
-    #[serde(default = "default_aoi")]
-    pub aoi_radius: f32,
+    /// Most prims this world may hold at once.
+    ///
+    /// Was a per-region column (schema V7), on the reasoning that a region is
+    /// the unit an operator hands out. A simulator only ever ran one region, so
+    /// the ceiling was always the server's — and a budget an operator sets
+    /// belongs beside the rest of their decisions rather than in a table nothing
+    /// else reads. Deliberately small: a world that has never been configured
+    /// should hit its ceiling during testing rather than the first time somebody
+    /// scripts a loop in production.
+    #[serde(default = "default_max_prims")]
+    pub max_prims: u32,
+    /// Most *scripted* prims this world may hold at once. Separate from
+    /// [`Self::max_prims`] because a script costs a VM and a share of the tick's
+    /// fuel bank, where a plain prim costs a row.
+    #[serde(default = "default_max_scripts")]
+    pub max_scripts: u32,
     /// Placeholders `{z}`, `{x}`, `{y}` for client tile fetch (ADR-004 / ADR-014).
     #[serde(default = "default_osm_tile_url_template")]
     pub osm_tile_url_template: String,
@@ -144,8 +158,12 @@ fn default_tick_hz() -> f32 {
     20.0
 }
 
-fn default_aoi() -> f32 {
-    500.0
+fn default_max_prims() -> u32 {
+    1_000
+}
+
+fn default_max_scripts() -> u32 {
+    200
 }
 
 fn default_osm_tile_url_template() -> String {
@@ -174,7 +192,8 @@ impl Default for SimConfig {
             http_listen: None,
             database_path: default_db(),
             tick_hz: default_tick_hz(),
-            aoi_radius: default_aoi(),
+            max_prims: default_max_prims(),
+            max_scripts: default_max_scripts(),
             osm_tile_url_template: default_osm_tile_url_template(),
             api_base_url: String::new(),
             texture_dir: default_texture_dir(),
@@ -193,6 +212,15 @@ impl Default for SimConfig {
 }
 
 impl SimConfig {
+    /// The two ceilings `SimWorld` enforces, in the shape it holds them.
+    #[must_use]
+    pub fn world_caps(&self) -> crate::state::WorldCaps {
+        crate::state::WorldCaps {
+            max_prims: self.max_prims,
+            max_scripts: self.max_scripts,
+        }
+    }
+
     /// `cartopolis.toml` (optional) + env `CARTO_*` (e.g. `CARTO_listen`, `CARTO_database_path`).
     pub fn load() -> anyhow::Result<Self> {
         let mut figment = Figment::new().merge(Serialized::defaults(SimConfig::default()));
@@ -260,8 +288,11 @@ impl SimConfig {
         if let Some(v) = cli.tick_hz {
             self.tick_hz = v;
         }
-        if let Some(v) = cli.aoi_radius {
-            self.aoi_radius = v;
+        if let Some(v) = cli.max_prims {
+            self.max_prims = v;
+        }
+        if let Some(v) = cli.max_scripts {
+            self.max_scripts = v;
         }
         if let Some(ref v) = cli.osm_tile_url_template {
             self.osm_tile_url_template.clone_from(v);

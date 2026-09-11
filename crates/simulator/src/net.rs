@@ -144,9 +144,8 @@ pub(crate) const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// tick quantisation itself, which read as input lag and stutter. 10 ms still
 /// caps a flooding client at 100 `world.write()` locks a second.
 const MIN_INTENT_INTERVAL: Duration = Duration::from_millis(10);
-const MIN_OBSERVER_INTERVAL: Duration = Duration::from_millis(100);
 /// A touch is a deliberate act, so this only has to stop an auto-clicker from
-/// making one client's clicks the whole region's script budget.
+/// making one client's clicks the whole world's script budget.
 const MIN_TOUCH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Sustained rate of script saves from one connection, one per this interval.
@@ -194,19 +193,13 @@ fn check_model(conn: &Arc<Mutex<rusqlite::Connection>>, model: Option<&str>) -> 
     }
 }
 
-/// Tell every client what a region's budget and usage now are.
+/// Tell every client what the world's budget and usage now are.
 ///
 /// Broadcast rather than answered to the actor alone: the budget is shared, so a
 /// prim someone else created is headroom this client no longer has, and finding
 /// that out from a refusal is finding out too late.
-async fn broadcast_capacity(
-    world: &Arc<RwLock<SimWorld>>,
-    tx: &broadcast::Sender<Vec<u8>>,
-    region_id: i64,
-) {
-    let Some(usage) = world.read().await.capacity(region_id) else {
-        return;
-    };
+async fn broadcast_capacity(world: &Arc<RwLock<SimWorld>>, tx: &broadcast::Sender<Vec<u8>>) {
+    let usage = world.read().await.capacity();
     match encode_app_frame(&capacity_message(&usage)) {
         Ok(bytes) => {
             let _ = tx.send(bytes);
@@ -216,8 +209,7 @@ async fn broadcast_capacity(
 }
 
 fn capacity_message(usage: &crate::state::CapacityUsage) -> NetMessage {
-    NetMessage::RegionCapacity {
-        region_id: usage.region_id,
+    NetMessage::WorldCapacity {
         prims_used: usage.prims_used,
         prims_max: usage.prims_max,
         scripts_used: usage.scripts_used,
@@ -493,9 +485,10 @@ pub async fn handle_connection<T: FrameTransport>(
         framed.send(Bytes::from(frame)).await?;
     }
 
-    // Region budgets, before any authoring is possible: the editor shows headroom
+    // The budget, before any authoring is possible: the editor shows headroom
     // rather than discovering it at the moment a create is refused.
-    for usage in world.read().await.all_capacity() {
+    {
+        let usage = world.read().await.capacity();
         let frame = encode_app_frame(&capacity_message(&usage))?;
         framed.send(Bytes::from(frame)).await?;
     }
@@ -505,9 +498,6 @@ pub async fn handle_connection<T: FrameTransport>(
         .unwrap_or_else(Instant::now);
     let mut last_touch = Instant::now()
         .checked_sub(MIN_TOUCH_INTERVAL)
-        .unwrap_or_else(Instant::now);
-    let mut last_observer = Instant::now()
-        .checked_sub(MIN_OBSERVER_INTERVAL)
         .unwrap_or_else(Instant::now);
     let mut last_local = Instant::now()
         .checked_sub(MIN_LOCAL_INTERVAL)
@@ -611,14 +601,6 @@ pub async fn handle_connection<T: FrameTransport>(
                                     geo,
                                 );
                             }
-                            NetMessage::ObserverUpdate { position } => {
-                                if last_observer.elapsed() < MIN_OBSERVER_INTERVAL {
-                                    return Ok(());
-                                }
-                                last_observer = Instant::now();
-                                let mut w = world.write().await;
-                                w.set_observer(position);
-                            }
                             // Deliberately not rate-limited like intents: a
                             // teleport is a deliberate act, not a stream, and
                             // dropping one is not corrected by the next frame.
@@ -645,7 +627,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                 tracing::warn!("duplicate hello ignored");
                             }
                             NetMessage::CreatePrim {
-                                request_id, region_id, name, position, rotation, scale,
+                                request_id, name, position, rotation, scale,
                                 color, texture_id, shape, surface, geometry, geo, particles, model,
                             } => {
                                 // A model this server does not hold is refused rather than
@@ -659,7 +641,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                 // Insert with a server-assigned id, then apply the full initial
                                 // authoring state in one update so it is persisted and broadcast.
                                 let created = check_model(&conn, model.as_deref()).and_then(|()| {
-                                    w.add_prim(region_id, position, &shape, geo, particles.as_ref(), model.as_deref()).and_then(|prim| {
+                                    w.add_prim(position, &shape, geo, particles.as_ref(), model.as_deref()).and_then(|prim| {
                                         w.update_prim(
                                             prim.id, position, rotation, scale, color, texture_id,
                                             &name, surface, geometry, geo, particles.as_ref(), model.as_deref(),
@@ -692,8 +674,8 @@ pub async fn handle_connection<T: FrameTransport>(
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
                                         let _ = tx_snap.send(broadcast_msg);
                                         drop(w);
-                                        broadcast_capacity(&world, &tx_snap, region_id).await;
-                                        tracing::debug!(request_id, region_id, "prim created and broadcast");
+                                        broadcast_capacity(&world, &tx_snap).await;
+                                        tracing::debug!(request_id, "prim created and broadcast");
                                     }
                                     Err(e) => {
                                         // Send ServerError back to client
@@ -750,9 +732,6 @@ pub async fn handle_connection<T: FrameTransport>(
                                     refuse_and_correct(&mut framed, request_id, prim_id, truth).await?;
                                     return Ok(());
                                 }
-                                // Read the region *before* the delete: afterwards the
-                                // prim is gone and there is nothing to ask.
-                                let region_id = w.prim_region(prim_id);
                                 match w.remove_prim(prim_id) {
                                     Ok(deleted) => {
                                         if deleted {
@@ -764,9 +743,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             let broadcast_msg = encode_app_frame(&NetMessage::PrimRemoved { id: prim_id })?;
                                             let _ = tx_snap.send(broadcast_msg);
                                             drop(w);
-                                            if let Some(region_id) = region_id {
-                                                broadcast_capacity(&world, &tx_snap, region_id).await;
-                                            }
+                                            broadcast_capacity(&world, &tx_snap).await;
                                             tracing::debug!(request_id, prim_id, "prim deleted and broadcast");
                                         } else {
                                             // Send ServerError back to client (not found)
@@ -931,7 +908,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                 // Trim first: an editor that saves an untouched
                                 // buffer of whitespace means "no script", not "a
                                 // script that does nothing", and the two differ in
-                                // whether they draw against the region's budget.
+                                // whether they draw against the world's budget.
                                 let source = source.trim().to_string();
                                 let within_rate = {
                                     let now = Instant::now();
@@ -957,7 +934,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                     ))
                                 } else {
                                     let mut w = world.write().await;
-                                    if w.prim_region(prim_id).is_none() {
+                                    if !w.has_prim(prim_id) {
                                         Err(format!("prim {prim_id} not found"))
                                     } else if !w.may_edit(prim_id, &principal_key, is_admin) {
                                         // Scripting somebody else's object is the
@@ -1024,9 +1001,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                         let running = !source.is_empty();
                                         let frame = encode_app_frame(&NetMessage::PrimScript { prim_id, source, running })?;
                                         framed.send(Bytes::from(frame)).await?;
-                                        if let Some(region_id) = { world.read().await.prim_region(prim_id) } {
-                                            broadcast_capacity(&world, &tx_snap, region_id).await;
-                                        }
+                                        broadcast_capacity(&world, &tx_snap).await;
                                     }
                                     Err(e) => {
                                         // A refusal is console text, not a modal:
@@ -1258,7 +1233,7 @@ pub async fn handle_connection<T: FrameTransport>(
                             | NetMessage::ChatMessage { .. }
                             | NetMessage::PrimScript { .. }
                             | NetMessage::ScriptOutput { .. }
-                            | NetMessage::RegionCapacity { .. }
+                            | NetMessage::WorldCapacity { .. }
                             | NetMessage::VoiceData { .. }
                             | NetMessage::BlockedList { .. }
                             | NetMessage::ReportAck { .. }
@@ -1387,7 +1362,6 @@ pub async fn tick_loop(
         let commands = scripts.drain();
         let mut script_frames: Vec<Vec<u8>> = Vec::new();
         let mut died: Vec<i64> = Vec::new();
-        let mut died_regions: Vec<i64> = Vec::new();
         let mut changed: Vec<i64> = Vec::new();
         for cmd in &commands {
             // `vfDie` is handled before the field writes, and its prim is skipped
@@ -1395,11 +1369,9 @@ pub async fn tick_loop(
             // death in the same tick, and broadcasting an update for a prim that
             // is about to be removed leaves the client holding a resurrected copy.
             if let crate::scripting::ScriptCommand::Die { prim_id } = cmd {
-                let region_id = w.prim_region(*prim_id);
                 match w.remove_prim(*prim_id) {
                     Ok(true) => {
                         died.push(*prim_id);
-                        died_regions.extend(region_id);
                         scripts.unload(*prim_id);
                         match encode_app_frame(&NetMessage::PrimRemoved { id: *prim_id }) {
                             Ok(bytes) => script_frames.push(bytes),
@@ -1469,10 +1441,8 @@ pub async fn tick_loop(
         }
         // A prim that deleted itself gives its budget back, and every client's
         // headroom display is stale until it is told.
-        died_regions.sort_unstable();
-        died_regions.dedup();
-        for region_id in died_regions {
-            broadcast_capacity(&world, &tx, region_id).await;
+        if !died.is_empty() {
+            broadcast_capacity(&world, &tx).await;
         }
         // A prim's speech is local chat like anyone else's: same channel, same
         // radius, same "no history" rule. `sender_id` is 0 — a prim has no avatar
@@ -1575,16 +1545,13 @@ mod tests {
         let db_path = tempdir.path().join("test.db");
         let conn = crate::db::open_and_migrate(db_path.to_str().unwrap())
             .expect("failed to open and migrate db");
-        let (regions, prims) = crate::db::load_world(&conn).expect("failed to load world");
-        let caps = crate::db::load_region_caps(&conn).expect("failed to load region caps");
+        let prims = crate::db::load_world(&conn).expect("failed to load world");
         let conn = Arc::new(Mutex::new(conn));
 
         let world = Arc::new(RwLock::new(SimWorld::new(
-            regions,
             prims,
-            50.0,
             conn.clone(),
-            caps,
+            crate::config::SimConfig::default().world_caps(),
             Default::default(),
             Default::default(),
         )));
@@ -1596,17 +1563,10 @@ mod tests {
     async fn test_create_prim_mutation() -> anyhow::Result<()> {
         let (world, _conn, _tempdir) = setup_test_world();
 
-        // Get the default region ID
-        let region_id = {
-            let w = world.read().await;
-            w.regions()[0].id
-        };
-
         // Create a prim
         let prim_result = {
             let mut w = world.write().await;
             w.add_prim(
-                region_id,
                 Vec3::new(10.0, 5.0, 20.0),
                 "box",
                 cartopolis_core::GeoAnchor {
@@ -1621,7 +1581,6 @@ mod tests {
         assert!(prim_result.is_ok(), "prim creation should succeed");
         let created_prim = prim_result.map_err(|e| anyhow::anyhow!(e))?;
         assert!(created_prim.id > 0, "created prim should have positive id");
-        assert_eq!(created_prim.region_id, region_id);
         assert_eq!(created_prim.shape, "box");
         assert_eq!(created_prim.position, Vec3::new(10.0, 5.0, 20.0));
 
@@ -1639,17 +1598,10 @@ mod tests {
     async fn test_update_prim_mutation() -> anyhow::Result<()> {
         let (world, _conn, _tempdir) = setup_test_world();
 
-        // Get the default region ID and create a prim first
-        let region_id = {
-            let w = world.read().await;
-            w.regions()[0].id
-        };
-
         let prim_id = {
             let mut w = world.write().await;
             let prim = w
                 .add_prim(
-                    region_id,
                     Vec3::ZERO,
                     "sphere",
                     cartopolis_core::GeoAnchor {
@@ -1702,17 +1654,10 @@ mod tests {
     async fn test_delete_prim_mutation() -> anyhow::Result<()> {
         let (world, _conn, _tempdir) = setup_test_world();
 
-        // Get the default region ID and create a prim first
-        let region_id = {
-            let w = world.read().await;
-            w.regions()[0].id
-        };
-
         let prim_id = {
             let mut w = world.write().await;
             let prim = w
                 .add_prim(
-                    region_id,
                     Vec3::ZERO,
                     "cube",
                     cartopolis_core::GeoAnchor {

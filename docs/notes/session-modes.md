@@ -98,14 +98,20 @@ made "stay signed in" a no-op there — `docs/notes/android-build.md`.)
 
 Dropping `OnlineSession` is what actually closes the socket (the network thread's
 `select!` sees the intent channel end), but it is not a disconnect on its own: the
-server's regions, prims and other people's avatars are ordinary entities and
-outlive it, and `AuthIdentity` would keep naming a user who is no longer signed
+server's prims and other people's avatars are ordinary entities and outlive
+it, and `AuthIdentity` would keep naming a user who is no longer signed
 in. `session::teardown` and `session::connect` are written as a pair for that
 reason — anything one installs, the other removes.
 
-The local avatar entity is deliberately *not* despawned. It is spawned at startup
-and its offline movement path takes over the moment the session resource is gone,
-which is what makes going offline a change of authority rather than a reload.
+**The local avatar goes with the session**, and is spawned by
+`lib::sync_local_avatar` when one comes up. It used to be spawned at startup and
+never despawned, so offline left a body on the map with no sim behind it:
+nothing owned its position, nobody else could see it, and the Follow camera that
+is its whole point was already refused (`free_camera::follow_available`). Offline
+is the streamed map and a camera. The one exception is the shot harness — every
+scripted run is offline, so `ShotHarness::wants_avatar` reads what each shot says
+it is of (`--shot-mode avatar`, `--ui sit`, `--ui driver`) and spawns one for
+those.
 
 ## The wire has no account creation
 

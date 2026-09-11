@@ -379,7 +379,7 @@ pub fn apply_reanchor(
     let base_zoom = stream
         .anchor
         .map(|(_, _, z)| z)
-        .unwrap_or(cartopolis_core::world::REGION_ZOOM_LEVEL);
+        .unwrap_or(cartopolis_core::world::DEFAULT_TILE_ZOOM);
     // Queue the whole old-anchor patch for bounded despawn rather than freeing it
     // all in one frame (mass-despawn device-loss guard; drained by
     // `update_map_stream`). The queued entities are still live StreamTiles, so the

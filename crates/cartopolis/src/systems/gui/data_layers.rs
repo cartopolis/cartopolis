@@ -469,7 +469,7 @@ pub struct DataLayers {
     /// and lit windows. The fallback beneath 3DBAG: where 3DBAG covers (and is
     /// on), OSM already skips the cell, so this only ever removes the fallback.
     pub osm_buildings_enabled: bool,
-    /// Feature toggle: the map ground (streamed OSM tiles + region plane).
+    /// Feature toggle: the map ground (the streamed OSM tiles).
     pub map_enabled: bool,
     /// Feature toggle (under Life): live moving vehicles (ADR-026) — real Dutch
     /// buses and trains off OVapi's position feed.
@@ -1785,9 +1785,6 @@ pub struct ToggleWants {
     /// A streamed ground tile that has imagery (or is the backstop level); one
     /// that has neither is always hidden, whatever this says.
     map: Visibility,
-    /// The map anchor's own tile, or `None` before the first anchor. A legacy
-    /// region quad outside it is stale and hidden regardless of the toggles.
-    anchor_tile: Option<(i64, i64, i64)>,
     /// `MapStream::occlusion_revision`. Not a toggle at all — it is here because
     /// this struct is what the sweep's `run_if` compares, and the set of clipmap
     /// tiles hidden behind finer ones changes whenever a tile finishes streaming.
@@ -1796,12 +1793,7 @@ pub struct ToggleWants {
 }
 
 impl ToggleWants {
-    fn of(
-        dl: &DataLayers,
-        in_space: bool,
-        map_anchor: &crate::resources::MapAnchor,
-        occlusion_revision: u32,
-    ) -> Self {
+    fn of(dl: &DataLayers, in_space: bool, occlusion_revision: u32) -> Self {
         // The panel toggle AND the space tier (from orbit the flat patch floats
         // over the globe, parallax-shifted — ADR-025). Folding both in here is
         // what keeps these systems the *sole* visibility writer for these
@@ -1827,18 +1819,6 @@ impl ToggleWants {
                 Visibility::Hidden
             },
             map,
-            // The legacy region quad is a single tile-sized textured slab pinned
-            // to the world origin, and unlike everything else it does NOT follow
-            // a re-anchor (ADR-025). Re-anchored elsewhere it becomes a lone patch
-            // of the *old* city's imagery sitting exactly where the camera lands —
-            // the one recognisable thing in an otherwise empty view, which reads as
-            // "streaming is broken" rather than "you are somewhere else". Hide it
-            // once the map anchor has left its tile; the streamed tiles cover that
-            // ground now.
-            anchor_tile: map_anchor.geo.map(|(clat, clng, z)| {
-                let (ax, ay) = cartopolis_core::world::lat_lng_to_tile(clat, clng, z);
-                (ax, ay, z as i64)
-            }),
             occlusion_revision,
         }
     }
@@ -1863,14 +1843,12 @@ pub fn feature_toggles_changed(
     dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    map_anchor: Res<crate::resources::MapAnchor>,
     stream: Res<crate::systems::map_stream::MapStream>,
     mut last: Local<Option<ToggleWants>>,
 ) -> bool {
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.single().ok()),
-        &map_anchor,
         stream.occlusion_revision,
     );
     // `None` on the first evaluation, so the sweep always runs once — which is
@@ -1887,7 +1865,7 @@ pub fn feature_toggles_changed(
 ///
 /// Gated by [`feature_toggles_changed`], because the world is the wrong size to
 /// sweep per frame: four queries over every OSM building, every lit window, every
-/// 3DBAG mesh, every streamed ground tile and every region quad is tens of
+/// 3DBAG mesh and every streamed ground tile is tens of
 /// thousands of rows, and the compare-before-write below only dodges the *change
 /// detection* — the archetype walk and the `&mut Visibility` fetch behind it are
 /// paid whether or not a byte moves. Nothing here can change without one of the
@@ -1932,23 +1910,11 @@ pub fn apply_feature_toggles(
             Has<crate::components::MapBackstop>,
         ),
         (
-            Without<crate::components::RegionMesh>,
             Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
             Without<crate::systems::lod22::Lod22Mesh>,
         ),
     >,
-    mut region_quads: Query<
-        (&crate::components::Region, &mut Visibility),
-        (
-            With<crate::components::RegionMesh>,
-            Without<crate::systems::map_stream::StreamTile>,
-            Without<crate::components::OsmBuildingMesh>,
-            Without<crate::systems::osm_buildings::WindowGlow>,
-            Without<crate::systems::lod22::Lod22Mesh>,
-        ),
-    >,
-    map_anchor: Res<crate::resources::MapAnchor>,
     stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     // Mirror the panel's 3DBAG toggle into `osm_buildings`' coverage gate — the
@@ -1972,7 +1938,6 @@ pub fn apply_feature_toggles(
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.single().ok()),
-        &map_anchor,
         stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {
@@ -1989,12 +1954,6 @@ pub fn apply_feature_toggles(
         let tile_vis = map_tile_want(&want, ready, backstop, stream.occluded.contains(&tile.key));
         if *vis != tile_vis {
             *vis = tile_vis;
-        }
-    }
-    for (region, mut vis) in region_quads.iter_mut() {
-        let region_vis = region_want(&want, region);
-        if *vis != region_vis {
-            *vis = region_vis;
         }
     }
 }
@@ -2028,20 +1987,6 @@ fn map_tile_want(want: &ToggleWants, ready: bool, backstop: bool, occluded: bool
         return Visibility::Hidden;
     }
     want.map
-}
-
-/// What one legacy region quad should be showing — see the `anchor_tile` field of
-/// [`ToggleWants`] for why a quad outside the current anchor tile is hidden
-/// outright.
-fn region_want(want: &ToggleWants, region: &crate::components::Region) -> Visibility {
-    let stale = want
-        .anchor_tile
-        .is_some_and(|t| t != (region.tile_x, region.tile_y, region.tile_z));
-    if stale {
-        Visibility::Hidden
-    } else {
-        want.map
-    }
 }
 
 /// The other half of [`apply_feature_toggles`]: give **newly spawned** entities
@@ -2109,30 +2054,16 @@ pub fn apply_feature_toggles_to_new(
                 Added<crate::systems::map_stream::StreamTile>,
                 Added<crate::components::StreamTileReady>,
             )>,
-            Without<crate::components::RegionMesh>,
             Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
             Without<crate::systems::lod22::Lod22Mesh>,
         ),
     >,
-    mut region_quads: Query<
-        (&crate::components::Region, &mut Visibility),
-        (
-            Added<crate::components::RegionMesh>,
-            With<crate::components::RegionMesh>,
-            Without<crate::systems::map_stream::StreamTile>,
-            Without<crate::components::OsmBuildingMesh>,
-            Without<crate::systems::osm_buildings::WindowGlow>,
-            Without<crate::systems::lod22::Lod22Mesh>,
-        ),
-    >,
-    map_anchor: Res<crate::resources::MapAnchor>,
     stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.single().ok()),
-        &map_anchor,
         stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {
@@ -2149,12 +2080,6 @@ pub fn apply_feature_toggles_to_new(
         let tile_vis = map_tile_want(&want, ready, backstop, stream.occluded.contains(&tile.key));
         if *vis != tile_vis {
             *vis = tile_vis;
-        }
-    }
-    for (region, mut vis) in region_quads.iter_mut() {
-        let region_vis = region_want(&want, region);
-        if *vis != region_vis {
-            *vis = region_vis;
         }
     }
 }

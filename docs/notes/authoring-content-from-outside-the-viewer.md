@@ -13,7 +13,7 @@ updated: 2026-08-29
 There are two ways to author a prim, and they are for different people.
 
 **The wire** (`CreatePrim` / `UpdatePrim` / `SetPrimScript`) is a *player*
-building something in front of them. It is checked against the region's prim and
+building something in front of them. It is checked against the world's prim and
 script budget, it needs a live session, and it is driven by the create dialog,
 the gizmo and the script editor.
 
@@ -85,9 +85,6 @@ defaults or `Option`s would change what the bytes mean and desync every client.
 
 **Change a prim's shape.** `update_prim` does not carry the column, and nothing
 has asked for it; refusing beats accepting it and silently drawing a cube.
-
-**Change a prim's region.** A prim's region decides which budget it draws
-against, so moving it is a capacity transaction rather than a field write.
 
 **Tell you whether your script compiled.** The host compiles on its own thread
 and answers with a `ScriptOutput` on the *wire*. Blocking an HTTP handler on a
@@ -213,9 +210,9 @@ correction would be the one message it throws away.
 
 A `ContentDocument` is `{version, prims: [PrimSpec]}`, and `PrimSpec` is the same
 type the create route accepts, so an export is literally a document you can post
-back. Three things are deliberately dropped on the way out: the id (an id from one
-server means nothing on another), the region (the importer's world chooses), and
-`position.x/z` (a client-frame echo every client re-derives from the geo anchor).
+back. Two things are deliberately dropped on the way out: the id (an id from one
+server means nothing on another) and `position.x/z` (a client-frame echo every
+client re-derives from the geo anchor).
 Rotations are degrees on this surface and radians on the wire — an export that
 wrote radians would re-import as a prim turned by 5157 degrees, which the round
 trip test pins.

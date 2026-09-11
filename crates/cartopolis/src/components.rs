@@ -2,24 +2,9 @@ use bevy::prelude::*;
 use cartopolis_core::PrimSurface;
 
 #[derive(Component, Debug, Clone)]
-#[allow(dead_code)] // latitude/longitude kept for future geo display
-pub struct Region {
-    pub id: i64,
-    pub name: String,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub tile_x: i64,
-    pub tile_y: i64,
-    pub tile_z: i64,
-    /// When set (network snapshot), region mesh uses this sim position; otherwise legacy grid layout.
-    pub sim_origin: Option<Vec3>,
-}
-
-#[derive(Component, Debug, Clone)]
-#[allow(dead_code)] // region_id/name kept for future UI labelling
+#[allow(dead_code)] // name kept for future UI labelling
 pub struct Prim {
     pub id: i64,
-    pub region_id: i64,
     pub name: String,
     pub shape: PrimShape,
     pub color: Color,
@@ -241,9 +226,6 @@ pub struct PlanetAtmosphere;
 
 #[derive(Component)]
 pub struct PrimMesh;
-
-#[derive(Component)]
-pub struct RegionMesh;
 
 /// Marker for every entity making up the drawn route, so the whole lot can be
 /// cleared in one query.

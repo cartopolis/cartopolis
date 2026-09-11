@@ -884,7 +884,6 @@ mod prim_prompt_tests {
             world.spawn((
                 Prim {
                     id: *id,
-                    region_id: 1,
                     name: (*name).to_string(),
                     shape: PrimShape::Box,
                     color: Color::WHITE,

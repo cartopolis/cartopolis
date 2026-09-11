@@ -33,7 +33,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
-/// Groningen's Grote Markt — where the seeded region is anchored.
+/// Groningen's Grote Markt — where this world's content is anchored.
 const LAT: f64 = 53.2194;
 const LNG: f64 = 6.5665;
 
@@ -193,20 +193,10 @@ async fn session(handle: &SimHandle, username: &str, password: &str) -> String {
     }
 }
 
-/// The first region the server tells us about.
-async fn first_region(c: &mut Client) -> i64 {
-    recv_until(c, "world snapshot", |m| match m {
-        NetMessage::WorldSnapshot { regions, .. } => regions.first().map(|r| r.id),
-        _ => None,
-    })
-    .await
-}
-
 /// Build a prim over the wire, as a player does — the path that records an owner.
-async fn build(c: &mut Client, region_id: i64, name: &str, lat: f64, lng: f64) -> i64 {
+async fn build(c: &mut Client, name: &str, lat: f64, lng: f64) -> i64 {
     let msg = NetMessage::CreatePrim {
         request_id: 1,
-        region_id,
         name: name.into(),
         position: glam::Vec3::new(0.0, 2.0, 0.0),
         rotation: glam::Vec3::ZERO,
@@ -487,8 +477,7 @@ async fn a_player_can_export_their_own_build_and_import_it_back() {
 
     // Built over the wire, which is the path that records an owner.
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let region = first_region(&mut c).await;
-    let prim_id = build(&mut c, region, "Lamp", LAT, LNG).await;
+    let prim_id = build(&mut c, "Lamp", LAT, LNG).await;
     set_script(&mut c, prim_id, "function on_touch(id, who) vfSay(who) end").await;
 
     // Give it something worth carrying, so the document is not trivially equal.
@@ -532,7 +521,10 @@ async fn a_player_can_export_their_own_build_and_import_it_back() {
     );
     // Server-assigned facts are deliberately absent: an id from one server means
     // nothing on another.
-    assert!(exported.get("region_id").is_none_or(|v| v.is_null()));
+    assert!(
+        exported.get("region_id").is_none(),
+        "a region is not a thing a document can name"
+    );
 
     // …and it goes straight back in.
     let (status, back) = api(
@@ -574,8 +566,7 @@ async fn an_export_defaults_to_the_callers_own_prims() {
 
     // One prim built by `walker` over the wire, two installed by the server.
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let region = first_region(&mut c).await;
-    build(&mut c, region, "Walkers lamp", LAT, LNG).await;
+    build(&mut c, "Walkers lamp", LAT, LNG).await;
     let (status, _) = api(
         "POST",
         format!("{}/api/admin/content/firebird", base(&handle)),
@@ -640,8 +631,7 @@ async fn an_admin_can_export_anything() {
     let admin = token(&handle).await;
 
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let region = first_region(&mut c).await;
-    build(&mut c, region, "Walkers lamp", LAT, LNG).await;
+    build(&mut c, "Walkers lamp", LAT, LNG).await;
     let (status, _) = api(
         "POST",
         format!("{}/api/admin/content/firebird", base(&handle)),
@@ -703,8 +693,7 @@ async fn ownership_can_be_transferred() {
     let walker = session(&handle, "walker", "walkerpw").await;
 
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let region = first_region(&mut c).await;
-    let mine = build(&mut c, region, "Walkers lamp", LAT, LNG).await;
+    let mine = build(&mut c, "Walkers lamp", LAT, LNG).await;
 
     // The owner gives it to root.
     let (status, body) = api(
@@ -767,8 +756,7 @@ async fn a_transfer_moves_all_of_them_or_none() {
     let walker = session(&handle, "walker", "walkerpw").await;
 
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let region = first_region(&mut c).await;
-    let mine = build(&mut c, region, "Mine", LAT, LNG).await;
+    let mine = build(&mut c, "Mine", LAT, LNG).await;
 
     // The pack's prims belong to the server, so walker may move neither.
     let (status, installed) = api(
@@ -891,9 +879,7 @@ async fn only_the_owner_or_an_admin_may_change_a_prim() {
     let addr = handle.local_addr.to_string();
 
     let mut walker = connect(&addr, "walker", "walkerpw").await;
-    let region = first_region(&mut walker).await;
-    let theirs = build(&mut walker, region, "Walkers lamp", LAT, LNG).await;
-    let _ = region;
+    let theirs = build(&mut walker, "Walkers lamp", LAT, LNG).await;
 
     // The owner may change their own.
     assert!(
@@ -1022,7 +1008,7 @@ async fn authoring_needs_an_admin() {
     assert_eq!(status, 401);
 
     // A real player's real token is not enough either: the wire is where a player
-    // builds, and it is checked against their region's budget.
+    // builds, and it is checked against the world's budget.
     let (status, body) = api(
         "POST",
         format!("{}/api/admin/login", base(&handle)),
@@ -1344,17 +1330,17 @@ async fn a_scripted_prim_circles_senses_and_explodes() {
         );
     }
 
-    // And the region got its budget back — a prim that is gone from the world but
-    // not from the counters is a region that fills up with nothing.
-    let (_, regions) = api(
+    // And the world got its budget back — a prim that is gone from the world but
+    // not from the counters is a world that fills up with nothing.
+    let (_, capacity) = api(
         "GET",
-        format!("{}/api/admin/regions", base(&handle)),
+        format!("{}/api/admin/capacity", base(&handle)),
         Some(tok),
         None,
     )
     .await;
     assert_eq!(
-        regions["regions"][0]["prims_used"], 0,
-        "the exploded prim should have released its budget: {regions}"
+        capacity["prims_used"], 0,
+        "the exploded prim should have released its budget: {capacity}"
     );
 }

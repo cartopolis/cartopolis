@@ -1284,6 +1284,32 @@ impl ShotHarness {
             .unwrap_or_else(|| self.mode.clone())
     }
 
+    /// Does any shot in this run need the local avatar on screen?
+    ///
+    /// A scripted run is always offline, and offline has no avatar
+    /// (`lib::sync_local_avatar`) — so without this `--shot-mode avatar`,
+    /// `--ui sit` and `--ui driver` would photograph an empty street. Read off
+    /// what the run already says it is photographing rather than taken as a flag
+    /// of its own: a capture that wants an avatar has to name the thing it wants
+    /// one for, and a new preset cannot forget to opt in.
+    ///
+    /// Over *every* shot, not the current one: the avatar is spawned for the run,
+    /// and a sweep whose third viewpoint is `mode = "avatar"` must not find the
+    /// street empty when it gets there.
+    #[must_use]
+    pub fn wants_avatar(&self) -> bool {
+        let n = self.shots.len().max(1);
+        (0..n).any(|i| {
+            self.mode_for(i) == "avatar"
+                || self.ui_for(i).iter().any(|u| {
+                    matches!(
+                        u.as_str(),
+                        "all" | "avatar" | "appearance" | "sit" | "driver"
+                    )
+                })
+        })
+    }
+
     /// Whether shot `i` drops the egui overlay.
     pub fn hide_ui_for(&self, i: usize) -> bool {
         self.shots
@@ -1949,7 +1975,6 @@ pub fn hold_scripted_fire(
                     // server-assigned id — offline there is no server, and this
                     // says so rather than relying on there not being one.
                     id: if burst { -2 } else { -1 },
-                    region_id: 0,
                     name: if burst { "Blast" } else { "Fire" }.into(),
                     shape: crate::components::PrimShape::Cylinder,
                     color: Color::srgb(0.15, 0.13, 0.12),

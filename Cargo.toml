@@ -211,7 +211,7 @@ tiny-skia = { version = "0.12", default-features = false, features = [
 # only Luau gives `Lua::sandbox()`, and only Luau's `set_interrupt` can return
 # `VmState::Yield` — standard Lua's `set_hook` can raise an error but cannot
 # suspend, which would leave "abort the script" as the sole answer to an
-# over-budget slice. Yield/resume is what makes the region fuel bank a scheduler
+# over-budget slice. Yield/resume is what makes the world's fuel bank a scheduler
 # rather than a killer.
 #
 # `luau` alone, deliberately **not** `vendored`: that feature is the union of

@@ -43,7 +43,6 @@ other**, and in several cases data in *both* directions:
 | `globe ↔ map_stream` | `MapStream`, `StreamTile` | `GlobeState`, `HideInSpace` |
 | `lod22 ↔ osm_buildings` | `OsmBuildings`, `CACHE_ZOOM` | `BACKFACE_CULL`, `LOD22_RADIUS` |
 | `driver ↔ hud` | `HUD_WIDTH`, `render_map_controls` | `DriverState`, `MapOrientation` |
-| `rendering ↔ tile_loader` | `RegionTileTexture` | `build_mip_chain` |
 | `vector_tiles ↔ road_texture` | `RoadClass` | `render_mvt`, `tessellate_roads` |
 
 ## Why: the hubs are imported for one type each
