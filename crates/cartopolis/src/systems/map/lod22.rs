@@ -1135,7 +1135,15 @@ fn build_lod22_from_text(
         } else {
             crate::systems::collision::convex_hull_xz(world_xz.clone())
         };
-        if let Some(fp) = crate::systems::collision::Footprint::with_doors(outline.clone(), &doors)
+        // Hollow if there is a door *and* a room behind it, which is one question
+        // asked in one place: `interiors` builds the room from this same outline,
+        // so a building the avatar can walk into is a building with a floor,
+        // walls and a ceiling waiting for it. Everything else stays a solid mass
+        // — a shell is back-face culled, so walking into one is a hole in the
+        // world with the street showing through it.
+        let hollow = !doors.is_empty() && crate::systems::interiors::can_hold_a_room(&outline);
+        if let Some(fp) =
+            crate::systems::collision::Footprint::with_doors(outline.clone(), &doors, hollow)
         {
             footprints.push(fp);
         }

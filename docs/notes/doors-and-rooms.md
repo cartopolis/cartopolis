@@ -1,7 +1,7 @@
 ---
 topic: buildings
 triggers: [interiors.rs, doors, entrance, verblijfsobject, Footprint, with_doors, nearest_edge_point, place_doors_on_facades, party wall, hollow, storeys, stairs, floor_lift, InteriorFloors, shell_datum_height, cell_cache_key]
-updated: 2026-09-03
+updated: 2026-09-11
 ---
 
 # Doors, and what is behind them
@@ -136,6 +136,49 @@ Three things are load-bearing:
 Nothing here is double-sided. Walls face in, floor up, ceiling down — so from
 outside a room is invisible and costs no fill, which is its state for all but a
 few seconds of a session.
+
+## A footprint is solid or hollow, and a wall is crossed, not entered
+
+Opening the collider at the door was only half of letting somebody in, and the
+missing half was invisible for as long as nobody walked past the threshold.
+`collision::Footprint` was one shape of thing — a region the avatar may not be
+*in* — which a point test answers and an ejector enforces. A doorway punched a
+1.1 m disc out of that region and left the rest of the floor a no-go area, so a
+step further in was refused in both axes and the avatar stood in its own doorway
+unable to move. It read as the avatar freezing against something invisible,
+because it was.
+
+So there are two kinds now, and the kind is decided where the room is:
+
+- **Solid** — a mass we have nothing but a shell for. Unchanged: a point test,
+  and anything that ends up inside is pushed back out. Walking into a bare shell
+  is not a room, it is a hole in the world with the street showing through it
+  (the walls are back-face culled).
+- **Hollow** — a building with a door *and* a room behind it. Only its walls
+  stop the avatar; the inside is somewhere to be, and nothing ejects from it.
+
+`interiors::can_hold_a_room` is the one place that is decided, and `lod22` asks
+it against the same outline `interiors` will build the room from. Two answers
+derived separately would drift into exactly the failure above, in the other
+direction: a door opening onto nothing.
+
+**A wall is tested by crossing, never by sampling.** A wall has no thickness —
+it is the ring itself — so there is no volume for a point test to land in, and a
+sampled test would miss it on any frame long enough to step over it: the avatar
+would walk out through the back of the house on a slow frame and not on a fast
+one. It is also what the online path needs, and that one is not a matter of
+frame rate at all: it probes `COLLIDE_PROBE_M` (0.6 m) ahead of the avatar, which
+from just outside a facade lands well inside the room, so "is that point solid?"
+answers no every single time.
+
+**The storey counts as ground for the airborne test.** Both movement paths skip
+collision for an avatar off the ground — the footprints are 2D, so applying them
+to a flight would divert it around a building it is passing over. Offline the
+transform *is* the avatar's state, so `floor_lift` is in it, and a first floor
+stands 3.2 m up: without the lift in the ground reference every avatar upstairs
+read as flying and the walls of every upper storey stopped being walls. Online
+the sim position stays flat and the lift is a display offset, so that path never
+had the bug — which is the kind of asymmetry to check both sides of.
 
 ## What a door does *not* do
 

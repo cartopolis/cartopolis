@@ -9,8 +9,24 @@
 //! agree because `map_stream::snap_anchor` pins the anchor to a tile centre).
 //! `osm_buildings` contributes the near OSM detail patch (exact footprint
 //! rings); `lod22` contributes the 3DBAG cells (convex hull of each building's
-//! projected vertices, since only a triangle soup survives there). Interiors
-//! aren't modelled, so the avatar is kept outside the footprint entirely.
+//! projected vertices, since only a triangle soup survives there).
+//!
+//! **A footprint is solid or hollow, and the two are different shapes of rule.**
+//! A solid one is a region the avatar may not be *in*: a point test answers it,
+//! and anything that ends up inside is pushed back out. That is right for a
+//! building we have nothing but a mass for, and it was the only rule here until
+//! `systems::interiors` started putting rooms behind the doors. A building with
+//! a room in it is hollow: what stops the avatar is its *wall*, a line with no
+//! thickness, and the inside is somewhere to be. Keeping the solid rule for
+//! those was the freeze — the doorway let the avatar into a 1.1 m disc of the
+//! collider and the whole floor beyond it was still a no-go region, so a step
+//! further in was refused in both axes and the avatar stood in its own doorway
+//! unable to move.
+//!
+//! A wall is therefore tested by **crossing**, never by sampling: it has no
+//! interior to be inside of, so a point test would miss it on any frame long
+//! enough to step over it and the avatar would walk out through the back of the
+//! house. [`Footprint::crosses_wall`] is the one rule a hollow building has.
 
 use crate::components::Avatar;
 use crate::grid::WORLD_CELL_EDGE;
@@ -55,13 +71,16 @@ pub struct Footprint {
     /// stays whole and the test below lets the avatar past within
     /// [`DOOR_HALF_WIDTH`] of a door.
     doors: Vec<Vec2>,
+    /// Whether there is a room behind the door — see the module header. Hollow
+    /// buildings collide on their walls only; solid ones are a no-go region.
+    hollow: bool,
 }
 
 impl Footprint {
     /// Build a footprint from a ring of world-XZ points (≥ 3), or `None` if the
     /// ring is degenerate.
     pub fn new(ring: Vec<Vec2>) -> Option<Self> {
-        Self::with_doors(ring, &[])
+        Self::with_doors(ring, &[], false)
     }
 
     /// Build a footprint that can be walked through at the given entrance points.
@@ -70,8 +89,11 @@ impl Footprint {
     /// anything on the other side. That is `systems::interiors`, and the two must
     /// agree — a doorway into a building with no room is a way to stand inside a
     /// shell whose walls are culled away, i.e. a hole you fall out of the world
-    /// through, visually.
-    pub fn with_doors(ring: Vec<Vec2>, doors: &[Vec2]) -> Option<Self> {
+    /// through, visually. `hollow` is the caller saying it has checked: it is
+    /// exactly `interiors::can_hold_a_room`, asked at the one place both the
+    /// collider and the room are derived from the same outline (`lod22`), so the
+    /// building you can walk into is the building with a floor in it.
+    pub fn with_doors(ring: Vec<Vec2>, doors: &[Vec2], hollow: bool) -> Option<Self> {
         if ring.len() < 3 {
             return None;
         }
@@ -86,6 +108,7 @@ impl Footprint {
             min,
             max,
             doors: doors.to_vec(),
+            hollow,
         })
     }
 
@@ -109,7 +132,15 @@ impl Footprint {
 
     /// Even-odd ray cast: true when `p` is strictly inside the ring — and not
     /// standing in one of its doorways.
+    ///
+    /// Always false for a hollow building, and that is the whole of what makes
+    /// one walkable: nothing about its inside is a place the avatar may not be,
+    /// so nothing blocks a step taken there and nothing ejects it back out. What
+    /// stops it at the facade is [`Self::crosses_wall`].
     fn contains(&self, p: Vec2) -> bool {
+        if self.hollow {
+            return false;
+        }
         if !self.aabb_contains(p) {
             return false;
         }
@@ -131,6 +162,45 @@ impl Footprint {
             j = i;
         }
         inside
+    }
+
+    /// Whether the straight move `from → to` passes through one of this
+    /// building's walls anywhere that is not a doorway.
+    ///
+    /// A crossing test rather than a sample, for the reason the module header
+    /// gives: a wall is a line, and a line is what a sampled point test walks
+    /// over. It is also what makes the online path work at all — that one probes
+    /// [`COLLIDE_PROBE_M`] ahead of the avatar, which from just outside a facade
+    /// lands well inside the room, so asking "is that point solid?" would answer
+    /// no and walk the avatar straight through the brickwork.
+    fn crosses_wall(&self, from: Vec2, to: Vec2) -> bool {
+        let (lo, hi) = (from.min(to), from.max(to));
+        if self.max.x < lo.x || self.min.x > hi.x || self.max.y < lo.y || self.min.y > hi.y {
+            return false;
+        }
+        let d = to - from;
+        let n = self.ring.len();
+        for i in 0..n {
+            let a = self.ring[i];
+            let b = self.ring[(i + 1) % n];
+            let e = b - a;
+            let denom = d.x * e.y - d.y * e.x;
+            if denom.abs() < 1e-9 {
+                continue; // parallel; a move along a wall does not cross it
+            }
+            let ap = a - from;
+            let t = (ap.x * e.y - ap.y * e.x) / denom;
+            let u = (ap.x * d.y - ap.y * d.x) / denom;
+            if !(0.0..=1.0).contains(&t) || !(0.0..=1.0).contains(&u) {
+                continue;
+            }
+            // Where it went through, not where it ended up: a doorway is a hole
+            // in a particular part of a particular wall.
+            if !self.in_a_doorway(from + d * t) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Nearest point on the polygon boundary to `p`.
@@ -271,6 +341,17 @@ impl BuildingColliders {
         self.iter().any(|f| f.contains(p)) || self.in_prop(p)
     }
 
+    /// True if the move `from → to` is refused — the question every mover here
+    /// actually asks, and the one that has an answer for both kinds of
+    /// footprint. A solid building (or a prop) refuses a move that *ends* inside
+    /// it; a hollow one refuses a move that *crosses* one of its walls.
+    fn blocked_move(&self, from: Vec2, to: Vec2) -> bool {
+        if self.blocked(to) {
+            return true;
+        }
+        self.iter().any(|f| f.hollow && f.crosses_wall(from, to))
+    }
+
     /// The footprint containing `p`, if any.
     fn hit(&self, p: Vec2) -> Option<&Footprint> {
         self.iter().find(|f| f.contains(p))
@@ -326,23 +407,27 @@ impl BuildingColliders {
 
     /// Resolve a desired walk from `from` to `to` (world XZ), sliding along walls
     /// so pushing into a building glides along the facade instead of sticking.
-    /// The avatar is treated as a point; buildings are solid.
+    /// The avatar is treated as a point.
     pub fn slide(&self, from: Vec2, to: Vec2) -> Vec2 {
-        // Already inside (just teleported / a building streamed over us)? Don't
-        // trap the avatar — let it move; `eject` pushes it back out this frame.
+        // Already inside something solid (just teleported / a building streamed
+        // over us)? Don't trap the avatar — let it move; `eject` pushes it back
+        // out this frame. A hollow building never answers this, which is the
+        // point: being indoors is not being stuck in something.
         if self.blocked(from) {
             return to;
         }
-        if !self.blocked(to) {
+        if !self.blocked_move(from, to) {
             return to;
         }
-        // Axis separation: keep whichever single-axis component stays clear.
+        // Axis separation: keep whichever single-axis component stays clear. Each
+        // candidate is a move in its own right and is tested as one, or a step
+        // along a wall could hop through the corner of it.
         let slide_x = Vec2::new(to.x, from.y);
-        if !self.blocked(slide_x) {
+        if !self.blocked_move(from, slide_x) {
             return slide_x;
         }
         let slide_z = Vec2::new(from.x, to.y);
-        if !self.blocked(slide_z) {
+        if !self.blocked_move(from, slide_z) {
             return slide_z;
         }
         from
@@ -510,8 +595,14 @@ pub fn eject_avatar_from_buildings(
     // backstop then never ran. A teleport that landed inside a building stranded
     // the avatar there for good. `avatar::handle_avatar_movement` computes the same
     // ground the same way, a few lines before it calls `slide`.
-    let ground_y =
-        crate::systems::avatar::GROUND_HEIGHT + terrain.at(tf.translation.x, tf.translation.z);
+    //
+    // The storey counts as ground for the same reason, and it has to: a first
+    // floor stands 3.2 m up, so without it every avatar upstairs reads as flying
+    // and neither this backstop nor the slide that runs before it does anything
+    // at all — which is a storey whose walls are a picture.
+    let ground_y = crate::systems::avatar::GROUND_HEIGHT
+        + terrain.at(tf.translation.x, tf.translation.z)
+        + avatar_state.floor_lift;
     if avatar_state.is_flying || tf.translation.y > ground_y + crate::systems::avatar::AIRBORNE_EPS
     {
         return;
@@ -542,6 +633,21 @@ mod tests {
             Vec2::new(5.0, 5.0),
             Vec2::new(-5.0, 5.0),
         ])
+        .unwrap()
+    }
+
+    /// The same square, hollow, with a door in the middle of its south wall.
+    fn hollow_square() -> Footprint {
+        Footprint::with_doors(
+            vec![
+                Vec2::new(-5.0, -5.0),
+                Vec2::new(5.0, -5.0),
+                Vec2::new(5.0, 5.0),
+                Vec2::new(-5.0, 5.0),
+            ],
+            &[Vec2::new(0.0, -5.0)],
+            true,
+        )
         .unwrap()
     }
 
@@ -678,6 +784,84 @@ mod tests {
         let c = colliders_with(unit_square());
         let wish = Vec2::new(1.0, 0.0);
         assert_eq!(c.steer_velocity(Vec2::new(-50.0, -50.0), wish), wish);
+    }
+
+    /// The bug this whole split exists for: the doorway let the avatar into a
+    /// 1.1 m disc and the floor past it was still a no-go region, so the next
+    /// step was refused in both axes and the avatar stood in its own doorway.
+    #[test]
+    fn a_hollow_building_can_be_walked_around_inside() {
+        let c = colliders_with(hollow_square());
+        // In through the door, then on across the room.
+        let door_step = c.slide(Vec2::new(0.0, -6.0), Vec2::new(0.0, -4.0));
+        assert_eq!(door_step, Vec2::new(0.0, -4.0), "the door must open");
+        let across = c.slide(Vec2::new(0.0, -4.0), Vec2::new(3.0, 3.0));
+        assert_eq!(across, Vec2::new(3.0, 3.0), "the room must be walkable");
+        // And back out the way we came.
+        assert_eq!(
+            c.slide(Vec2::new(0.0, -4.0), Vec2::new(0.0, -6.0)),
+            Vec2::new(0.0, -6.0)
+        );
+    }
+
+    /// Only the walls. From either side of them.
+    #[test]
+    fn a_hollow_buildings_walls_still_stop_the_avatar() {
+        let c = colliders_with(hollow_square());
+        // Outside, walking at a blank wall (the door is on the south side).
+        let outside = Vec2::new(-6.0, 0.0);
+        assert_eq!(c.slide(outside, Vec2::new(-4.0, 0.0)), outside);
+        // Inside, walking at the same wall from the room.
+        let inside = Vec2::new(-4.0, 0.0);
+        assert_eq!(c.slide(inside, Vec2::new(-6.0, 0.0)), inside);
+    }
+
+    /// A wall has no thickness, so a point test would step over it. Crossing the
+    /// whole building in one move must be refused at the far wall even though the
+    /// near one it entered by was a doorway.
+    #[test]
+    fn a_long_step_cannot_tunnel_through_the_far_wall() {
+        let c = colliders_with(hollow_square());
+        let from = Vec2::new(0.0, -6.0);
+        assert_eq!(
+            c.slide(from, Vec2::new(0.0, 6.0)),
+            from,
+            "a step from outside to outside crosses the back wall"
+        );
+    }
+
+    /// The online path probes `COLLIDE_PROBE_M` ahead, which from outside a wall
+    /// lands inside the room — so a point test answers "clear" and walks the
+    /// avatar through the brickwork.
+    #[test]
+    fn steer_stops_at_a_hollow_wall_the_probe_overshoots() {
+        let c = colliders_with(hollow_square());
+        let pos = Vec2::new(-5.0 - COLLIDE_PROBE_M * 0.5, 0.0);
+        let v = c.steer_velocity(pos, Vec2::new(1.0, 0.0));
+        assert!(v.length() < 1e-6, "expected zeroed velocity, got {v:?}");
+    }
+
+    /// Being indoors is not being stuck in something, so nothing pushes the
+    /// avatar back out — neither the offline backstop nor the online auto-walk.
+    #[test]
+    fn nothing_ejects_an_avatar_that_is_simply_indoors() {
+        let c = colliders_with(hollow_square());
+        assert_eq!(c.eject(Vec2::ZERO, EJECT_MARGIN), Vec2::ZERO);
+        assert_eq!(c.eject_dir(Vec2::ZERO), None);
+        // And a walk inside is steered by nothing at all.
+        let wish = Vec2::new(1.0, 0.0);
+        assert_eq!(c.steer_velocity(Vec2::ZERO, wish), wish);
+    }
+
+    /// A building with no room behind the door stays solid, and so does one with
+    /// no door: walking into a bare shell is a hole in the world, not a room.
+    #[test]
+    fn a_solid_building_is_unchanged_by_any_of_this() {
+        let c = colliders_with(unit_square());
+        let from = Vec2::new(0.0, -6.0);
+        assert_eq!(c.slide(from, Vec2::new(0.0, -4.0)), from, "still no way in");
+        let out = c.eject(Vec2::ZERO, EJECT_MARGIN);
+        assert!(!c.blocked(out), "still ejected from inside");
     }
 
     #[test]

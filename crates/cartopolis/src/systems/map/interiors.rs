@@ -431,13 +431,28 @@ fn storeys_for(height_m: Option<f32>) -> usize {
     ((h / STOREY_M).floor() as usize).clamp(1, MAX_STOREYS)
 }
 
+/// The ring a room's walls would stand on inside `outline`, or `None` when the
+/// building is too small to hold a room at all.
+///
+/// Public because the *collider* is decided by it: a building with a room in it
+/// is hollow, and one without is a solid mass the avatar is kept out of
+/// (`collision::Footprint`). Both answers have to come from this one function or
+/// the door opens onto a shell — which is a hole you see the street through, and
+/// is worse than a door that does not open.
+pub fn room_ring(outline: &[Vec2]) -> Option<Vec<Vec2>> {
+    let inset = inset_ring(outline, WALL_INSET_M);
+    (inset.len() >= 3 && ring_area(&inset) >= MIN_ROOM_M2).then_some(inset)
+}
+
+/// Whether this outline has a room behind its door — see [`room_ring`].
+pub fn can_hold_a_room(outline: &[Vec2]) -> bool {
+    room_ring(outline).is_some()
+}
+
 /// Lay out one building's interior: inset the outline, and find somewhere to put
 /// the stairs. `None` if the outline is too small to stand in.
 fn plan_room(ring: &[Vec2], height_m: Option<f32>) -> Option<Room> {
-    let inset = inset_ring(ring, WALL_INSET_M);
-    if inset.len() < 3 || ring_area(&inset) < MIN_ROOM_M2 {
-        return None;
-    }
+    let inset = room_ring(ring)?;
     let wanted = storeys_for(height_m);
     let stair = (wanted > 1).then(|| find_stair(&inset)).flatten();
     Some(Room {

@@ -2087,9 +2087,16 @@ pub fn handle_avatar_movement(
         // or a fall around a building it clears) when the buildings layer is on.
         // Footprints live in the anchored world-XZ frame, so resolve the move in
         // absolute metres (cell + local).
+        // Last frame's storey is part of the ground here, exactly as the terrain
+        // is (`collision::eject_avatar_from_buildings` says why): offline this
+        // transform *is* the avatar's state, so standing on a first floor puts
+        // `y` 3.2 m up and without the lift every avatar upstairs reads as
+        // airborne — and an airborne avatar skips collision entirely, so the
+        // walls of every upper storey stop being walls.
         let airborne = transform.translation.y
             > GROUND_HEIGHT
                 + terrain.at(transform.translation.x, transform.translation.z)
+                + avatar_state.floor_lift
                 + AIRBORNE_EPS;
         if !airborne && layers.buildings_enabled && !colliders.is_empty() {
             use crate::grid::WORLD_CELL_EDGE;
