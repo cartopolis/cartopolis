@@ -9,7 +9,6 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use clap::Parser;
 use std::path::PathBuf;
-use std::time::Duration;
 
 mod components;
 mod grid;
