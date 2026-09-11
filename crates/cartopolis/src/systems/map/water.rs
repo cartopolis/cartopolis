@@ -45,6 +45,13 @@
 //! laps against the bank instead of the water ending in a hard polygon edge.
 //! It is also why water is the one surface group with a material *per cell*.
 //!
+//! A second, much coarser field rides beside it, measuring distance to the
+//! nearest **building** rather than to the bank. It exists for one term — the
+//! reflection of the bank in the water — which used to read the shore field and
+//! so treated every shoreline on Earth as carrying a storey of quay. What that
+//! drew on a lake was a rim of shadow following the bank, and from a few hundred
+//! metres up it read as a cast shadow rather than as a reflection.
+//!
 //! [`SurfaceGroup`]: crate::systems::vector_tiles::SurfaceGroup
 
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
@@ -299,6 +306,16 @@ pub struct WaterExtension {
     #[texture(104)]
     #[sampler(105)]
     pub shore: Handle<Image>,
+    /// Distance from the nearest **building**, in the same frame and at the same
+    /// metre scale (`field.w`), a quarter of the resolution.
+    ///
+    /// Only the bank-in-the-mirror term reads it, and only to answer the one
+    /// question the shore field cannot: not "where does the water end" but "is
+    /// there anything standing there". See
+    /// [`ShoreField::bank`](crate::systems::vector_tiles::ShoreField::bank).
+    #[texture(107)]
+    #[sampler(108)]
+    pub bank: Handle<Image>,
 }
 
 impl MaterialExtension for WaterExtension {
@@ -323,9 +340,16 @@ pub struct WaterSeaState {
     surface: Vec4,
     wind: Vec4,
     octaves: Vec4,
-    /// 1×1 "open water everywhere" field, for a cell whose shore field failed to
+    /// 1×1 "nothing anywhere near" field, for a cell whose shore field failed to
     /// build. Deep water with no bank is a far better failure than a shoreline in
     /// the wrong place.
+    ///
+    /// It stands in for the bank field too, and means the same thing there: a
+    /// saturated texel is "no building within [`SHORE_MAX_DIST_M`]", so the
+    /// reflection term switches itself off rather than darkening a shore it knows
+    /// nothing about.
+    ///
+    /// [`SHORE_MAX_DIST_M`]: crate::systems::vector_tiles::SHORE_MAX_DIST_M
     open_water: Handle<Image>,
     /// Mirror of `DataLayers::water_shading`, for the same reason
     /// `VegetationLod::enabled` exists — so the per-cell worker can read the
@@ -365,10 +389,11 @@ impl FromWorld for WaterSeaState {
 
 impl WaterSeaState {
     /// The material for one streamed cell: the shared sea state, plus this cell's
-    /// own shore field and the frame to sample it in.
+    /// own shore and bank fields and the frame to sample them in.
     pub fn material(
         &self,
         shore: Option<Handle<Image>>,
+        bank: Option<Handle<Image>>,
         origin: Vec2,
         tile_m: f32,
     ) -> WaterMaterial {
@@ -400,6 +425,7 @@ impl WaterSeaState {
                 field: Vec4::new(origin.x, origin.y, tile_m, vector_tiles::SHORE_MAX_DIST_M),
                 octaves: self.octaves,
                 shore: shore.unwrap_or_else(|| self.open_water.clone()),
+                bank: bank.unwrap_or_else(|| self.open_water.clone()),
             },
         }
     }
@@ -413,6 +439,15 @@ impl WaterSeaState {
 /// than wrapping a far shore in from the opposite side.
 pub fn shore_field_image(field: &ShoreField) -> Image {
     shore_image(&field.data, field.size, "shore field")
+}
+
+/// The same, for the distance-to-building field the reflection term probes.
+///
+/// A quarter of the edge length and so a sixteenth of the bytes — 64 KiB against
+/// the shore field's 1 MiB, which is what makes a second per-cell texture worth
+/// having at all rather than a second channel of the first one.
+pub fn bank_field_image(field: &ShoreField) -> Image {
+    shore_image(&field.bank, field.bank_size, "bank field")
 }
 
 fn shore_image(data: &[u8], size: u32, label: &str) -> Image {
@@ -618,7 +653,7 @@ mod tests {
             open_water: Handle::default(),
             shading: true,
         }
-        .material(None, Vec2::ZERO, 1.0);
+        .material(None, None, Vec2::ZERO, 1.0);
         let f0 = 0.16 * material.base.reflectance * material.base.reflectance;
         assert!(
             (f0 - 0.0204).abs() < 1e-4,
@@ -796,11 +831,21 @@ mod tests {
         let field = ShoreField {
             size: 2,
             data: vec![0, 64, 128, 255],
+            bank_size: 1,
+            bank: vec![255],
         };
         let image = shore_field_image(&field);
         // R8Unorm, not R8UnormSrgb: the texels are metres, and an sRGB decode
         // would bend the distance scale into a curve.
         assert_eq!(image.texture_descriptor.format, TextureFormat::R8Unorm);
         assert_eq!(image.texture_descriptor.size.width, 2);
+
+        // The bank field is a second image of the same kind at its own size, and
+        // it must be uploaded from `bank` — reading `data` through it would put
+        // the shore field's answer behind the reflection term, which is the bug
+        // the second field exists to remove.
+        let bank = bank_field_image(&field);
+        assert_eq!(bank.texture_descriptor.format, TextureFormat::R8Unorm);
+        assert_eq!(bank.texture_descriptor.size.width, 1);
     }
 }

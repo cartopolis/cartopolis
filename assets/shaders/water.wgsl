@@ -97,6 +97,13 @@
 // detail is left" fraction. w: 1 / Σ amplitude over the short octaves only.
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> octaves: vec4<f32>;
 
+// Distance from the nearest *building*, in the same frame and at the same metre
+// scale, a quarter of the resolution (`ShoreField::bank`). Only the
+// bank-in-the-mirror term below reads it, and only to ask whether anything is
+// actually standing where it is about to darken the water.
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var bank_field: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var bank_sampler: sampler;
+
 /// Distance from the bank over which a body of water is treated as sheltered.
 /// A 12 m canal never gets more than 6 m from a wall and so keeps only a fine
 /// ripple; the middle of a harbour basin gets the full wind sea. Without this
@@ -131,10 +138,18 @@ const SHALLOW_RED_M: f32 = 6.0;
 const SHALLOW_GREEN_M: f32 = 22.0;
 const SHALLOW_BLUE_M: f32 = 40.0;
 
-/// Assumed height of whatever stands on a bank — a quay wall, a house, a row of
-/// trees. It only sets *how far along the mirror* the surface looks for land, so
-/// it wants a typical streetside height rather than a tall one: too large and the
-/// dark band swallows the canal, too small and it hugs the kerb.
+/// Height of the thing the bank field marks — a building, so two or three
+/// storeys. It sets *how far along the mirror* the surface looks for one: the
+/// reflected ray clears something this tall after `height · cot(elevation)`.
+///
+/// It is no longer a guess about what a bank has on it. It used to be, and that
+/// was the whole defect: the probe asked the *shore* field, which can only say
+/// "this is land", so every bank in the world was treated as carrying a storey
+/// of quay. Over a city canal that is true and over a lake with a mown bank it
+/// is not, and what it drew there was a rim of shadow following the shoreline —
+/// most visible from a few hundred metres up, where the camera direction barely
+/// changes across the frame and so the rim lands on the same side of every water
+/// body at once and reads as a cast shadow from a raised bank.
 const BANK_HEIGHT_M: f32 = 9.0;
 
 /// Furthest the bank probe will look.
@@ -150,8 +165,9 @@ const BANK_HEIGHT_M: f32 = 9.0;
 /// itself off out there; at 130 m against a ~1.5 km cell that is a rare edge.
 const BANK_REACH_MAX_M: f32 = 130.0;
 
-/// Metres of shore distance over which "land is in the mirror" softens back to
-/// open sky, so the band has an edge rather than a cut.
+/// Metres of *building* distance over which "a bank is in the mirror" softens
+/// back to open sky, so the band has an edge rather than a cut. A quay a dozen
+/// metres behind where the ray comes down is half in the reflection.
 const BANK_SOFT_M: f32 = 12.0;
 
 /// What the mirror is worth where it is full of bank rather than sky. Not zero: a
@@ -562,19 +578,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // There are no scene reflections here and there cannot cheaply be — but the
     // dominant term is not the detail of the reflection, it is that the mirror is
     // *dark* where it is full of quay and bright where it is full of sky, and the
-    // shore field already knows where the land is.
+    // bank field already knows where the buildings are.
     //
     // The reflected ray leaves horizontally away from the camera and climbs at the
     // angle the view descends, so it clears a bank-side building after
-    // `height · cot(elevation)`. Probe the shore field that far along it: the
-    // field seeds land at zero, so a near-zero reading there means the mirror is
+    // `height · cot(elevation)`. Probe the **bank** field that far along it: it
+    // seeds buildings at zero, so a near-zero reading there means the mirror is
     // looking at a wall.
     //
-    // This is view-dependent for free, which is the whole reason it works. Water
-    // by the *near* bank probes across the water and sees sky; water by the far
-    // bank probes onto the land behind it and darkens. Looking straight down the
-    // reach goes to zero and the effect switches itself off, which is correct —
-    // straight down the mirror holds the zenith, not the quay.
+    // It has to be the bank field and not the shore field, and that is the whole
+    // of this fix. The shore field can only answer "land", which made the term
+    // assert that a storey of quay stands on every bank there is — right over a
+    // canal, wrong over a lake, and what it drew over the lake was a rim of
+    // shadow hugging the shoreline. See `BANK_HEIGHT_M`.
+    //
+    // This is view-dependent for free, which is half of why it works. Water by the
+    // *near* bank probes across the water and sees sky; water by the far bank
+    // probes onto whatever is behind it. Looking straight down the reach goes to
+    // zero and the effect switches itself off, which is correct — straight down
+    // the mirror holds the zenith, not the quay.
     let rise = max(n_dot_v, 0.02);
     let horiz = sqrt(max(1.0 - rise * rise, 0.0));
     let reach = min(BANK_HEIGHT_M * horiz / rise, BANK_REACH_MAX_M);
@@ -585,7 +607,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // the edge the effect simply does not apply.
     var mirror = 1.0;
     if all(bank_uv > vec2<f32>(0.0)) && all(bank_uv < vec2<f32>(1.0)) {
-        let ahead = textureSample(shore_field, shore_sampler, bank_uv).r * field.w;
+        let ahead = textureSample(bank_field, bank_sampler, bank_uv).r * field.w;
         mirror = mix(BANK_MIRROR, 1.0, smoothstep(0.0, BANK_SOFT_M, ahead));
     }
     // `F0 = 0.16 · reflectance²`, so a mirror worth `m` is a reflectance scaled by

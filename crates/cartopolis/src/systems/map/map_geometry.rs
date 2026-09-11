@@ -1274,9 +1274,15 @@ pub fn update_map_surfaces(
                 .iter()
                 .any(|m| m.group == SurfaceGroup::Water))
         .then(|| {
-            let field = shore.map(|f| mats.images.add(water::shore_field_image(&f)));
+            let (field, bank) = match shore {
+                Some(f) => (
+                    Some(mats.images.add(water::shore_field_image(&f))),
+                    Some(mats.images.add(water::bank_field_image(&f))),
+                ),
+                None => (None, None),
+            };
             mats.water
-                .add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
+                .add(sea_state.material(field, bank, Vec2::new(wx, wz), tile_m))
         });
 
         let mut entities = Vec::with_capacity(surface_meshes.len());

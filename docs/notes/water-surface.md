@@ -2,9 +2,10 @@
 topic: water-surface
 triggers: [water.wgsl, water.rs, "water looks", waves, ocean, sea, foam, whitecaps,
   glitter, "specular aliasing", Cox-Munk, "RMS slope", octave, LEAN, Toksvig,
-  moire, corduroy, reflectance, F0, shore field, canal, "sea state", WaterSeaState,
+  moire, corduroy, reflectance, F0, shore field, bank field, canal, "sea state",
+  WaterSeaState, "shadow around the shore", "rim of shadow",
   water_octaves]
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # The water surface: what is measured, and what only looked measured
@@ -165,18 +166,43 @@ need a second pass or deferred rendering for bevy's SSR. This client is
 forward-rendered on purpose.
 
 The dominant term is not the detail of the reflection, though. It is that the
-mirror is **dark where it is full of quay and bright where it is full of sky**,
-and the shore field already knows where the land is. The reflected ray leaves
-horizontally away from the camera and climbs at the angle the view descends, so
-it clears a bank-side building after `height · cot(elevation)`; probing the shore
-field that far along it answers the question, because the field seeds land at
-zero.
+mirror is **dark where it is full of quay and bright where it is full of sky**.
+The reflected ray leaves horizontally away from the camera and climbs at the
+angle the view descends, so it clears a bank-side building after
+`height · cot(elevation)`; probing a distance field that far along it answers the
+question.
 
-Being **view-dependent for free** is why this is a reflection and not a rim of
-shadow around every island: water by the near bank probes across the water and
-sees sky, water by the far bank probes onto the land behind it, and looking
-straight down the reach goes to zero and it switches itself off — correct,
-because straight down the mirror holds the zenith.
+**Which field it probes is the whole of it, and the first version got it wrong.**
+It read the *shore* field — distance to the bank — and the shore field can only
+ever answer "this is land". So the term asserted that a storey or two of quay
+stands on every shoreline there is, which over a city canal is true and over a
+lake with a mown bank is not, and over the lake it drew a rim of shadow hugging
+the shore. It was argued at the time that being view-dependent was what stopped
+it being that rim: water by the near bank probes across the water and sees sky,
+water by the far bank probes onto the land behind it. That is true and it is not
+enough. From a few hundred metres up the camera direction barely changes across
+the frame, so "the far bank" is the same side of every water body at once, and a
+band on one consistent side of every shore is exactly what a cast shadow looks
+like. Measured on the `edge-lake` preset (2026-09-11, deck-gpu): up to **46
+luminance levels**, in a band ~30 m wide following every bank in the frame.
+
+So there is a second, coarser field now — `ShoreField::bank`,
+[`BANK_FIELD_PX`] = 256 against the shore field's 1024, 64 KiB a cell against
+1 MiB — seeded from the tile's **buildings** layer, and that is what the probe
+reads. A quay darkens the water in front of it; a lake bank with nothing on it
+does not darken anything, which is the honest answer and also the one that ends
+the rim.
+
+Buildings only, deliberately. The `land` layer's wood and park polygons are
+canopy *areas* whose edge is where the trees begin, a treeline dims a reflection
+rather than stopping it, and seeding the transform with them would put most of
+the rim straight back. 256 texels is ~5.9 m at z14, which is finer than the
+smallest building in the tile and far finer than the 12 m the term softens its
+own answer over — the shore field needs its 1.5 m to resolve a 10 m canal, and
+this one is read at a single point.
+
+Looking straight down the reach goes to zero and the term switches itself off
+either way — correct, because straight down the mirror holds the zenith.
 
 It dims **F0**, not the lit colour: a building blocks the sun's image as surely as
 it blocks the sky's, and scaling `reflectance` is the only way to reach a specular

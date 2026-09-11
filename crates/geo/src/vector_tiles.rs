@@ -4360,17 +4360,56 @@ pub const SHORE_MAX_DIST_M: f32 = 60.0;
 /// `1024 / 64 = 16` texels covers exactly that.
 pub const SHORE_FIELD_PAD: u32 = SHORE_FIELD_PX / 64;
 
-/// A tile's distance-to-shore field: `SHORE_FIELD_PX²` bytes, 0 at the bank and
-/// 255 at [`SHORE_MAX_DIST_M`] or beyond, in the same tile-local frame as
-/// [`tessellate_surfaces`]' output (origin north-west, +x east, +y south).
+/// Edge length of the bank-obstruction field.
+///
+/// A quarter of [`SHORE_FIELD_PX`] — ~5.9 m per texel at z14 — because the thing
+/// it measures is a building, and the smallest building in the tile is wider than
+/// that. The shore field needs its 1.5 m to resolve a 10 m canal; this one is
+/// read at a single point, through a linear sampler, by a term that then softens
+/// its answer over [`SHORE_MAX_DIST_M`]-scale distances. At the shore field's
+/// size it would be the largest image the client holds per water cell all over
+/// again, for no more information.
+pub const BANK_FIELD_PX: u32 = SHORE_FIELD_PX / 4;
+
+/// The same apron as [`SHORE_FIELD_PAD`], at the bank field's resolution: a
+/// building just over the tile line is exactly as much in the mirror as one just
+/// inside it.
+pub const BANK_FIELD_PAD: u32 = BANK_FIELD_PX / 64;
+
+/// A tile's two distance fields, both in the same tile-local frame as
+/// [`tessellate_surfaces`]' output (origin north-west, +x east, +y south) and
+/// both quantised 0 at the seed to 255 at [`SHORE_MAX_DIST_M`] or beyond.
 #[derive(Debug, Clone)]
 pub struct ShoreField {
+    /// Edge length of [`Self::data`].
     pub size: u32,
+    /// Distance to the nearest **bank**: `size²` bytes, 0 where the water ends.
     pub data: Vec<u8>,
+    /// Edge length of [`Self::bank`].
+    pub bank_size: u32,
+    /// Distance to the nearest **building**, at [`BANK_FIELD_PX`].
+    ///
+    /// This is the half of the bank-in-the-mirror term that used to be a guess.
+    /// The shader asks what a reflected ray runs into on its way off the water,
+    /// and the shore field can only answer "land" — so the term assumed a
+    /// storey or two of quay stood on every bank, which over a city canal is
+    /// true and over a lake with a mown bank is not. A reflection darkened by a
+    /// building that is not there is not a reflection; it is a rim of shadow
+    /// around every shore, and from a few hundred metres up that is exactly how
+    /// it read.
+    ///
+    /// Buildings only, and deliberately not the `land` layer's wood and park
+    /// polygons: those are canopy *areas* whose edge is where the trees start,
+    /// a treeline dims a reflection rather than stopping it, and seeding the
+    /// transform with them would put most of the rim straight back. All 255 for
+    /// a tile with no buildings in it at all, which is the honest answer and
+    /// also the one that switches the term off.
+    pub bank: Vec<u8>,
 }
 
 /// Rasterise the tile's water polygons and turn them into a distance-to-shore
-/// field, or `None` when the tile holds no water at all.
+/// field — plus a coarser distance-to-building one — or `None` when the tile
+/// holds no water at all.
 ///
 /// This is the piece of information the geometry alone cannot give the water
 /// shader. Earcut emits nothing but the polygon's own boundary vertices, so
@@ -4425,33 +4464,79 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
     if !any_water {
         return Ok(None);
     }
+    // Seed the transform from every *land* texel — the unpainted ones.
+    let data = distance_field(&pixmap, size, pad, tile_m, Seed::Unpainted);
 
-    // Seed the transform from every *land* texel, then measure each water texel's
-    // distance to the nearest one.
-    // "Unreached" is a large *finite* distance, not infinity: the envelope below
+    // And a second, coarser field of what *stands* on the bank, for the
+    // reflection term. Only buildings seed it; see `ShoreField::bank`.
+    let bank_size = BANK_FIELD_PX;
+    let bank_pad = BANK_FIELD_PAD;
+    let bpsize = bank_size + 2 * bank_pad;
+    let mut banks = Pixmap::new(bpsize, bpsize).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    for meta in tile.layers() {
+        if meta.name != "buildings" {
+            continue;
+        }
+        let s = bank_size as f32 / TileData::extent(meta);
+        let transform = Transform::from_row(s, 0.0, 0.0, s, bank_pad as f32, bank_pad as f32);
+        for feature in tile.features(meta) {
+            fill_geometry(&mut banks, &paint, &feature.geometry, &transform);
+        }
+    }
+    let bank = distance_field(&banks, bank_size, bank_pad, tile_m, Seed::Painted);
+
+    Ok(Some(ShoreField {
+        size,
+        data,
+        bank_size,
+        bank,
+    }))
+}
+
+/// Which texels of a rasterised mask the distance is measured *from*.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Seed {
+    /// The painted ones — "how far to the nearest building".
+    Painted,
+    /// The unpainted ones — "how far to the nearest bit of land", where the
+    /// paint is the water.
+    Unpainted,
+}
+
+/// Distance transform one padded mask into a cropped, quantised field.
+///
+/// `pixmap` is `size + 2·pad` square; the result is `size` square, in metres
+/// scaled so 255 is [`SHORE_MAX_DIST_M`]. The apron is cropped away *after* the
+/// transform, which is the whole reason it is rasterised: a seed just over the
+/// tile line is as real as one just inside it, and without it every field
+/// saturates in a straight line down the cell edge.
+fn distance_field(pixmap: &Pixmap, size: u32, pad: u32, tile_m: f32, seed: Seed) -> Vec<u8> {
+    let psize = size + 2 * pad;
+    // "Unreached" is a large *finite* distance, not infinity: the envelope
     // subtracts one sample's value from another's, and ∞ − ∞ is a NaN that
     // quietly poisons a whole scanline. Two texel-grids is past any real answer
     // (nothing inside the field can be further than `psize` from a seed) while
-    // staying exactly representable in f32.
+    // staying exactly representable in f32 — and it is also what a mask with no
+    // seeds at all leaves behind, which quantises to 255 everywhere, i.e. "there
+    // is none of this anywhere near", which is the right answer.
     let unreached = (2 * psize) as f32;
-    let n = (psize * psize) as usize;
-    let mut sq = vec![0.0f32; n];
+    let mut sq = vec![0.0f32; (psize * psize) as usize];
     for (d, px) in sq.iter_mut().zip(pixmap.pixels()) {
-        *d = if px.alpha() > 127 { unreached } else { 0.0 };
+        let is_seed = (px.alpha() > 127) == (seed == Seed::Painted);
+        *d = if is_seed { 0.0 } else { unreached };
     }
     squared_distance_transform(&mut sq, psize as usize);
 
-    // Crop the apron away: the shader's frame is the tile proper.
     let m_per_texel = tile_m / size as f32;
-    let mut data = Vec::with_capacity((size * size) as usize);
+    let mut out = Vec::with_capacity((size * size) as usize);
     for y in pad..pad + size {
         let row = &sq[(y * psize + pad) as usize..(y * psize + pad + size) as usize];
-        data.extend(row.iter().map(|d2| {
+        out.extend(row.iter().map(|d2| {
             let m = d2.sqrt() * m_per_texel;
             (m / SHORE_MAX_DIST_M).clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8
         }));
     }
-    Ok(Some(ShoreField { size, data }))
+    out
 }
 
 /// Exact squared Euclidean distance transform, in place over a `size × size`
@@ -5207,6 +5292,56 @@ mod tests {
         assert!(
             field.data.iter().any(|&d| d > 8),
             "no texel more than a few metres from shore"
+        );
+    }
+
+    /// The bank field answers a different question from the shore field, and the
+    /// way it fails is by quietly answering the same one.
+    ///
+    /// Seed it from the water polygons by mistake — or from nothing, and let the
+    /// unreached value leak through as a small number — and the reflection term
+    /// darkens either every shore or none of them, which is precisely the bug it
+    /// exists to end. So: buildings and land must disagree somewhere in a canal
+    /// city, and a stretch of open water must be able to read "nothing standing
+    /// anywhere near".
+    #[test]
+    fn the_bank_field_measures_buildings_and_not_the_shore() {
+        let tile_m = 1500.0;
+        let field = water_shore_field(GRONINGEN_Z14, tile_m)
+            .expect("shore field")
+            .expect("fixture has water");
+        assert_eq!(field.bank.len(), (field.bank_size * field.bank_size) as usize);
+        assert!(field.bank.iter().any(|&d| d == 0), "no building texels");
+        assert!(
+            field.bank.iter().any(|&d| d == u8::MAX),
+            "every texel is within {SHORE_MAX_DIST_M} m of a building"
+        );
+
+        // And the two fields must not be the same picture at different sizes: a
+        // building stands inland, so sample the bank field where the *shore*
+        // field says open water and check that at least some of those texels
+        // still have a building near them and some do not.
+        let step = field.size / field.bank_size;
+        let mut near_a_building = 0usize;
+        let mut clear = 0usize;
+        for by in 0..field.bank_size {
+            for bx in 0..field.bank_size {
+                let s = field.data
+                    [((by * step) * field.size + bx * step) as usize];
+                if s < u8::MAX {
+                    continue; // not open water
+                }
+                if field.bank[(by * field.bank_size + bx) as usize] < 64 {
+                    near_a_building += 1;
+                } else {
+                    clear += 1;
+                }
+            }
+        }
+        assert!(
+            near_a_building > 0 && clear > 0,
+            "open water is uniformly {near_a_building} near / {clear} clear of buildings, \
+             so the bank field is carrying the shore field's answer"
         );
     }
 
