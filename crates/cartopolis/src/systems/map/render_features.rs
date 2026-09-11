@@ -1,5 +1,6 @@
 //! The two render features a person can switch on and off, and the one place
-//! that puts them on the scene.
+//! that puts them — and the contact shadows that ride the first of them — on the
+//! scene.
 //!
 //! Ambient occlusion and volumetric light shafts are **not tier settings**. That
 //! was the first shape of them and it was the wrong one: a tier is a guess about
@@ -27,6 +28,9 @@
 //!   NormalPrepass)]`, and bevy does *not* remove a required component when the
 //!   requiring one goes, so switching occlusion off has to take both prepasses
 //!   with it by hand or the run keeps paying for two passes nothing reads.
+//! * **The contact shadows**, which are the depth prepass's other consumer. They
+//!   have no preference of their own on purpose — see the gate in the function —
+//!   and they have to come off *before* the prepass they read does.
 //! * **The sample count**, because `ScreenSpaceAmbientOcclusion` requires
 //!   `Msaa::Off` and merely warns if it does not get it. A flip that changed one
 //!   without the other would silently produce multisampling and no occlusion.
@@ -49,7 +53,7 @@
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::core_pipeline::prepass::{DepthPrepass, NormalPrepass};
 use bevy::light::{VolumetricFog, VolumetricLight};
-use bevy::pbr::ScreenSpaceAmbientOcclusion;
+use bevy::pbr::{ContactShadows, ScreenSpaceAmbientOcclusion};
 use bevy::prelude::*;
 
 use crate::components::FreeCamera;
@@ -80,6 +84,7 @@ pub fn apply_render_features(
         (
             Entity,
             Has<ScreenSpaceAmbientOcclusion>,
+            Has<ContactShadows>,
             Has<VolumetricFog>,
             Has<Fxaa>,
         ),
@@ -89,12 +94,30 @@ pub fn apply_render_features(
     volume: Query<Entity, With<ShaftVolume>>,
     root: Query<Entity, With<big_space::prelude::BigSpace>>,
 ) {
-    let Ok((cam, has_ao, has_fog, has_fxaa)) = camera.single() else {
+    let Ok((cam, has_ao, has_contact, has_fog, has_fxaa)) = camera.single() else {
         return;
     };
     let want_ao = prefs.ambient_occlusion_on();
     let want_shafts = prefs.light_shafts_on();
     let budget = crate::quality::budget();
+
+    // Contact shadows ride the occlusion setting, and are gated on shadows as
+    // well. Two gates, each of which is the honest one for its half.
+    //
+    // The **prepass** is why they cannot have a switch of their own: bevy's
+    // implementation is `#[require(DepthPrepass)]`, and the depth prepass exists
+    // in this app only because the occlusion pass asked for it. A third
+    // preference would therefore be a preference that silently turns a second
+    // full-screen pass on, which is not a thing a Graphics tab should be able to
+    // hide. They also *are* the same cue — the note that asked for occlusion here
+    // put it as "nothing is darker where it meets anything else" — and this is the
+    // half of that cue a screen-space occlusion pass is worst at, because the
+    // contact is where its own radius has the least to work with.
+    //
+    // The **shadow** gate is the plainer one: these are shadows. Somebody who has
+    // turned shadows off to get their frames back has not asked for a
+    // per-fragment ray march instead.
+    let want_contact = want_ao && prefs.shadows_on();
 
     if want_ao != has_ao {
         let mut cmd = commands.entity(cam);
@@ -106,6 +129,10 @@ pub fn apply_render_features(
             // occlusion component would keep a depth and a normal pass running
             // for the rest of the session with nothing reading either.
             cmd.remove::<ScreenSpaceAmbientOcclusion>();
+            // Before the prepasses go, and in the same flush: this is the other
+            // consumer of the depth one, and leaving it behind would be a march
+            // reading a buffer nothing writes.
+            cmd.remove::<ContactShadows>();
             cmd.remove::<DepthPrepass>();
             cmd.remove::<NormalPrepass>();
         }
@@ -113,6 +140,30 @@ pub fn apply_render_features(
         // component, so this is a write rather than a pipeline rebuild request;
         // bevy notices and re-creates the main texture.
         cmd.insert(budget.main_pass_msaa(restricted.0, want_ao));
+    }
+
+    // Separate from the block above because the two answers can diverge: the
+    // shadow preference moves without the occlusion one.
+    if want_contact != has_contact {
+        let mut cmd = commands.entity(cam);
+        if want_contact {
+            cmd.insert(ContactShadows {
+                // Bevy's default is 16. Halved, because the ray is 30 cm long:
+                // eight steps put a sample every ~4 cm, which is finer than the
+                // depth buffer's own answer about where a surface is at any range
+                // where a 30 cm shadow is visible at all. Steps are the whole cost
+                // of this feature.
+                linear_steps: 8,
+                // Bevy's defaults for the other two. The length is the point — it
+                // is short deliberately: this darkens the join where a lamppost,
+                // a bench or a wall meets the ground, which is exactly the range
+                // the cascade maps cannot resolve and the occlusion pass reads as
+                // one surface.
+                ..default()
+            });
+        } else {
+            cmd.remove::<ContactShadows>();
+        }
     }
 
     let want_fxaa = budget.wants_edge_filter(restricted.0, want_ao);
