@@ -321,6 +321,10 @@ pub struct MapSurfaces {
     /// retears them ([`DetailWants`]). `None` until the first pass, which is what
     /// makes the very first frame a build rather than a rebuild.
     detail_wants: Option<DetailWants>,
+    /// The shared ground-finish roughness map ([`ground_finish_uv`]), minted on
+    /// first use and held so every group that takes it gets the same image rather
+    /// than its own copy of identical texels.
+    ground_finish: Option<Handle<Image>>,
 }
 
 impl Default for MapSurfaces {
@@ -345,6 +349,7 @@ impl Default for MapSurfaces {
             bgt_revision: 0,
             pending_decks: HashMap::new(),
             detail_wants: None,
+            ground_finish: None,
         }
     }
 }
@@ -948,6 +953,13 @@ impl MapSurfaces {
         self.materials.get(&group)
     }
 
+    /// The shared ground-finish map, minting it on first use.
+    pub(crate) fn ground_finish(&mut self, images: &mut Assets<Image>) -> Handle<Image> {
+        self.ground_finish
+            .get_or_insert_with(|| images.add(ground_finish_image()))
+            .clone()
+    }
+
     /// The shared material for a *textureless* surface group, created on first
     /// use with the group's standard recipe. `street_detail` spawns surveyed
     /// trees through this so they hold the same canopy/trunk handles the
@@ -1329,6 +1341,21 @@ pub fn update_map_surfaces(
                     .clone();
                 commands.spawn((placement, MeshMaterial3d(material))).id()
             } else {
+                // The ground's own finish, for the groups that are walked on. It
+                // *multiplies* `perceptual_roughness` rather than replacing it,
+                // which is what keeps `systems::wet_surfaces` composing: rain
+                // writes the scalar, this varies it across the square, and
+                // neither has to know about the other. Same contract the road map
+                // has, and the same order the three roughness terms are required
+                // to stay in (`docs/notes/surface-finish-and-occlusion.md`).
+                //
+                // Minted here rather than inside the closure below because that
+                // one already borrows `surfaces.materials`, and this is cached on
+                // `surfaces` too — every group that takes the finish shares one
+                // image, since the map says nothing about colour and the groups
+                // differ in nothing else.
+                let finish =
+                    wants_ground_finish(sm.group).then(|| surfaces.ground_finish(&mut mats.images));
                 let material = surfaces
                     .materials
                     .entry(sm.group)
@@ -1337,6 +1364,14 @@ pub fn update_map_surfaces(
                         mats.plain.add(StandardMaterial {
                             base_color: Color::srgb(r, g, b),
                             perceptual_roughness: sm.group.perceptual_roughness(),
+                            metallic_roughness_texture: finish,
+                            // UV0 on an area surface is **metres from the map
+                            // anchor**, so this is what turns a distance into a
+                            // number of repeats. Set unconditionally: with no
+                            // texture bound there is nothing for it to transform,
+                            // and a field that is only sometimes right is worse
+                            // than one that is always the same.
+                            uv_transform: ground_finish_uv(),
                             // What actually resolves the coplanar ground stack —
                             // see `SurfaceGroup::depth_bias`. Physical separation
                             // is only millimetres and cannot survive the far plane.
@@ -1808,6 +1843,80 @@ fn road_surface_image(class: RoadClass) -> Image {
         data,
         mip_count,
         TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+        ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            address_mode_w: ImageAddressMode::Repeat,
+            anisotropy_clamp: 8,
+            ..ImageSamplerDescriptor::linear()
+        }),
+    )
+}
+
+/// How many metres of ground one repeat of the finish map covers.
+///
+/// Chosen against the two ways it can be wrong. Much smaller and the coarse
+/// octave becomes a repeating pattern you can pick out from standing height —
+/// which is worse than no variation, because a pattern is something the map looks
+/// like it is asserting. Much larger and the whole visible square falls inside
+/// one blotch, i.e. the flat sheet this exists to break up, just at a different
+/// level.
+const GROUND_FINISH_M: f32 = 7.0;
+
+/// Which groups take the ground finish.
+///
+/// The two the note names as the largest flat areas in a street scene, plus the
+/// one other bare-ground group — and no more than that. Every group left out has
+/// a reason. Roads carry their own, and a better one. Water is a shader. Grass, forest and crops have their own colour
+/// systems writing the same material, and `systems::grass` draws actual blades
+/// over the first of them. Canopy, trunk and furniture are objects rather than
+/// ground, and their UV0 is not the anchor-metre projection this is scaled
+/// against. A bridge deck is a structure, not a surface you walk to.
+fn wants_ground_finish(group: SurfaceGroup) -> bool {
+    matches!(
+        group,
+        SurfaceGroup::Paving | SurfaceGroup::Built | SurfaceGroup::Sand
+    )
+}
+
+/// UV0 is metres from the map anchor, so a repeat every [`GROUND_FINISH_M`] is a
+/// plain scale.
+fn ground_finish_uv() -> bevy::math::Affine2 {
+    bevy::math::Affine2::from_scale(Vec2::splat(1.0 / GROUND_FINISH_M))
+}
+
+/// Upload [`ground_texture::ground_finish_texture`].
+///
+/// `Rgba8Unorm`, not sRGB, for the reason spelled out at [`road_material_image`]:
+/// these are coefficients and the sRGB decode would bend every one of them toward
+/// zero. Mipmapped and anisotropic because the ground is the surface most often
+/// seen at a grazing angle — without the chain, an un-averaged roughness at
+/// distance is a crawling sparkle rather than a finish.
+///
+/// One known and accepted inexactness, shared with [`road_material_image`]:
+/// `mip::build_mip_chain` averages in *linear sRGB*, which is right for a colour
+/// and not for a coefficient, so the downsampled levels are biased slightly
+/// toward the smoother end. Mip 0 is copied verbatim and is exact, and over this
+/// map's narrow 0.75–1.0 range the curve is close enough to straight that the
+/// bias is under a texel value. A coefficient-space chain would be the correct
+/// fix and belongs to both call sites at once, not to this one.
+fn ground_finish_image() -> Image {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::render::render_resource::TextureFormat;
+
+    let px = crate::systems::ground_texture::GROUND_TEX_PX;
+    let (data, mip_count) = crate::systems::mip::build_mip_chain(
+        px,
+        px,
+        crate::systems::ground_texture::ground_finish_texture(),
+    );
+    crate::systems::tile_loader::image_from_mip_chain(
+        px,
+        px,
+        data,
+        mip_count,
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::default(),
         ImageSampler::Descriptor(ImageSamplerDescriptor {
             address_mode_u: ImageAddressMode::Repeat,

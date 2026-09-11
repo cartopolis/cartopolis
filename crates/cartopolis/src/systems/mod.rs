@@ -66,8 +66,8 @@ pub use player::{
 // but nothing outside it calls in, and an unconditional re-export would be an
 // unused import rather than a convenience.
 pub use cartopolis_geo::{
-    furniture, mip, moorings, parking, paving, places, pois, road_texture, routing, scatter, turf,
-    vector_tiles,
+    furniture, ground_texture, mip, moorings, parking, paving, places, pois, road_texture, routing,
+    scatter, turf, vector_tiles,
 };
 // **Unconditional since 2026-08-26.** It used to be `cfg(feature = "audio")`,
 // with the note above explaining that nothing outside reached it by name so an

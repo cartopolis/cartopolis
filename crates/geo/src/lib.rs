@@ -22,6 +22,9 @@ pub mod crossings;
 // merged meshes out, with the per-polygon tone in the vertex colours.
 mod flat_fill;
 pub mod furniture;
+// The tiling roughness map the flat ground groups sample, so paving and built
+// land stop being one perfectly uniform sheet beside a textured road.
+pub mod ground_texture;
 pub mod mip;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split
 // from `furniture` rather than folded into it because the claim is different: a
