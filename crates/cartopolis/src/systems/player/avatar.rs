@@ -298,10 +298,52 @@ fn avatar_asset_exists(scene_rel: &str) -> bool {
 /// Online: blend visual toward authoritative sim position (see `smooth_online_avatar_display`).
 const ONLINE_DISPLAY_SMOOTHING: f32 = 14.0;
 /// Online prediction reconcile rate: how quickly the locally-predicted display
-/// position is corrected toward the authoritative sim position. Since prediction
-/// integrates the same velocity the sim does, the residual error is small, so
-/// this can be brisk without the tick-rate pulsing the old ease-to-latest had.
-const ONLINE_RECONCILE_RATE: f32 = 9.0;
+/// position is corrected toward the authoritative sim position.
+///
+/// **Deliberately slow, and paired with [`ONLINE_ERROR_FILTER_RATE`].** It was
+/// 9/s — brisk, on the reasoning that prediction integrates the same velocity
+/// the sim does, so the residual error is small. What that reasoning misses is
+/// that the residual error is *noisy*: the reconcile target is rebuilt every
+/// time a snapshot lands, and snapshots do not land on a metronome. A snapshot
+/// 40 ms late moves the target by 40 ms of travel — 0.3 m at a walk, 10 m in
+/// flight at altitude — and a correction stiff enough to take that out inside a
+/// frame or two feeds the whole of that jitter into the picture, twenty times a
+/// second. That is the wobble: not divergence, not the link, just arrival times
+/// being turned into motion.
+///
+/// Together the two rates make a second-order response with a damping ratio of
+/// ~0.7 and a corner near 0.8 Hz, so snapshot-rate noise is attenuated by three
+/// orders of magnitude while a real disagreement is still taken out inside about
+/// a second. The client is therefore a little further from the server's opinion
+/// at any instant and much smoother, which is the trade this is for.
+const ONLINE_RECONCILE_RATE: f32 = 3.5;
+/// How fast the correction *follows the error* (1/s) — the second pole.
+///
+/// Reconciliation acts on a low-passed error rather than on the raw one, so a
+/// snapshot that arrives early or late moves the display by a fraction of its
+/// lateness instead of by all of it. Set above [`ONLINE_RECONCILE_RATE`] so the
+/// pair stays well damped (see there).
+const ONLINE_ERROR_FILTER_RATE: f32 = 7.0;
+/// Ceiling on the correction speed, as a fraction of the speed being travelled.
+///
+/// The filter above removes jitter; this bounds whatever is left. A correction
+/// is only ever allowed to be a quarter of the avatar's own pace, so it reads as
+/// the motion being slightly off rather than as a tug — the one thing a
+/// correction must never look like.
+const ONLINE_CORRECTION_FRACTION: f32 = 0.25;
+/// …and the floor under it (m/s), so a standing avatar still converges: a
+/// fraction of zero would leave a stopped avatar parked beside its own position
+/// forever.
+///
+/// **This number decides how fast a real disagreement closes, and nothing
+/// else.** Measured 2026-09-11: the clamp does not bind in the jitter regime at
+/// any plausible setting — the worst error arrival noise produces is 6 cm at a
+/// walk and 22 m at the top of the flight ramp, against a knee (`floor / rate`)
+/// of 57 cm and 46 m. The filter above is what removes the wobble; this is only
+/// the ceiling on a transient. So it is set by the other end: at 2 m/s a 3 m
+/// desync closes in 1.4 s and the worst frame runs at 1.5× walking pace, where
+/// 1 m/s took 2.8 s and 3 m/s reached twice walking pace.
+const ONLINE_CORRECTION_FLOOR: f32 = 2.0;
 /// Cap on how far the authoritative pose is extrapolated while waiting for the
 /// next snapshot (see `smooth_online_avatar_display`) — i.e. **how long the
 /// client will move on its own prediction with no confirmation**.
@@ -339,7 +381,12 @@ const ONLINE_MAX_EXTRAPOLATION: f32 = 0.5;
 const ONLINE_SNAP_ERROR: f32 = 8.0;
 /// …and the part of that threshold that has to grow with speed: how many seconds
 /// of travel count as ordinary prediction lag rather than as a correction.
-const ONLINE_SNAP_SECONDS: f32 = 0.6;
+///
+/// Raised from 0.6 s with the reconcile rate: a gentler correction settles at a
+/// larger standing error, and a threshold that the ordinary steady state can
+/// reach turns every long flight into alternating snaps — which is the judder
+/// this whole band of constants exists to keep out of the picture.
+const ONLINE_SNAP_SECONDS: f32 = 1.0;
 
 /// The error beyond which the display snaps to authority instead of easing.
 ///
@@ -362,6 +409,61 @@ const ONLINE_SNAP_SECONDS: f32 = 0.6;
 #[must_use]
 fn online_snap_error(speed: f32) -> f32 {
     (speed * ONLINE_SNAP_SECONDS).max(ONLINE_SNAP_ERROR)
+}
+
+/// The fastest a correction may move the display, at the speed it is travelling.
+#[must_use]
+fn online_correction_speed(speed: f32) -> f32 {
+    (speed * ONLINE_CORRECTION_FRACTION).max(ONLINE_CORRECTION_FLOOR)
+}
+
+/// One frame of reconciliation: ease the predicted display toward the
+/// authoritative target without letting the target's own arrival noise into the
+/// picture.
+///
+/// `smoothed_error` is this reconciler's memory and belongs to nothing else. The
+/// raw error — target minus display — is a jittery signal, because the target is
+/// rebuilt whenever a snapshot lands and snapshots arrive when the network says
+/// so. Correcting the *filtered* error instead makes the pair a second-order
+/// low-pass (see [`ONLINE_RECONCILE_RATE`]), which is what separates "the server
+/// disagrees with us" from "that snapshot was 40 ms late".
+///
+/// Two things deliberately bypass the filter, and they are the two cases where
+/// the answer must arrive rather than be eased into:
+///
+/// - **A snap.** Past [`online_snap_error`] this is a teleport, a server
+///   correction or a resumed stream, not drift; easing would slide the avatar
+///   across the map instead of putting it where it is.
+/// - **A stall.** Once the extrapolation window is spent
+///   ([`ONLINE_MAX_EXTRAPOLATION`]) the target stands still on purpose so an
+///   unconfirmed avatar brakes to a halt. Filtering and clamping that would make
+///   the brake take a second and a half instead of a third of one, and a stall is
+///   by definition not jitter.
+#[must_use]
+fn reconcile_display(
+    display: Vec3,
+    target: Vec3,
+    smoothed_error: &mut Vec3,
+    speed: f32,
+    stalled: bool,
+    dt: f32,
+) -> Vec3 {
+    let raw = target - display;
+    if raw.length() > online_snap_error(speed) {
+        *smoothed_error = Vec3::ZERO;
+        return target;
+    }
+    *smoothed_error = if stalled {
+        raw
+    } else {
+        let follow = 1.0 - (-ONLINE_ERROR_FILTER_RATE * dt).exp();
+        *smoothed_error + (raw - *smoothed_error) * follow
+    };
+    let mut step = *smoothed_error * (1.0 - (-ONLINE_RECONCILE_RATE * dt).exp());
+    if !stalled {
+        step = step.clamp_length_max(online_correction_speed(speed) * dt);
+    }
+    display + step
 }
 
 /// Where the last authoritative pose has got to by now, given how long ago it
@@ -1602,6 +1704,10 @@ pub fn smooth_online_avatar_display(
     // off the frame it resets on. A `Local` and not a field on the resource: it is
     // this system's own bookkeeping and nothing else may write it.
     mut prev_age: Local<f32>,
+    // The low-passed prediction error `reconcile_display` corrects on. A `Local`
+    // for the same reason: it is the reconciler's memory, and a second writer
+    // would be a second opinion about how far off we are.
+    mut reconcile_error: Local<Vec3>,
 ) {
     let dt = time.delta_secs();
     if online.is_some() {
@@ -1681,15 +1787,14 @@ pub fn smooth_online_avatar_display(
         // Measured against the speed actually being predicted, not the ramped
         // `ground_speed`: the altitude factor is applied at integration, so at
         // 2 km up those two differ by a factor of sixteen.
-        let snap = online_snap_error(avatar_state.predicted_velocity.length());
-        let flat = if display.distance(target) > snap {
-            // Teleport / correction / resumed stream: ease-in would visibly slide
-            // the avatar across the map instead of arriving.
-            target
-        } else {
-            let reconcile = 1.0 - (-ONLINE_RECONCILE_RATE * dt).exp();
-            display.lerp(target, reconcile)
-        };
+        let flat = reconcile_display(
+            display,
+            target,
+            &mut reconcile_error,
+            avatar_state.predicted_velocity.length(),
+            is_stalled(avatar_state.snapshot_age),
+            dt,
+        );
         avatar_state.terrain_lift = terrain.at(flat.x, flat.z);
         // The storey, on top of the ground. Sampled from `flat` — the reconciled
         // sim position, which is the frame `interiors` builds its rooms in and the
@@ -1714,6 +1819,11 @@ pub fn smooth_online_avatar_display(
     } else {
         avatar_state.display_position = avatar_state.position;
         *prev_age = 0.0;
+        // Offline the transform *is* the position, so there is no error to carry.
+        // Zeroed rather than left standing: a session can be entered and left
+        // while the app runs, and the first online frame must not correct for a
+        // disagreement that belongs to a connection which has already gone.
+        *reconcile_error = Vec3::ZERO;
     }
 }
 
@@ -2400,6 +2510,205 @@ mod tests {
         // No heading yet (at rest, or an unusable target) snaps rather than arcs.
         assert_eq!(advance_move_dir(Vec3::ZERO, east, step), east);
         assert_eq!(advance_move_dir(north, Vec3::ZERO, step), Vec3::ZERO);
+    }
+
+    /// One frame of the online display loop, as `smooth_online_avatar_display`
+    /// runs it: integrate the prediction, then reconcile toward the last
+    /// authoritative pose extrapolated by its own age.
+    fn step_display(
+        display: Vec3,
+        authority: Vec3,
+        velocity: Vec3,
+        age: f32,
+        error: &mut Vec3,
+        dt: f32,
+    ) -> Vec3 {
+        let target = extrapolated_target(authority, velocity, age);
+        reconcile_display(
+            display + velocity * dt,
+            target,
+            error,
+            velocity.length(),
+            is_stalled(age),
+            dt,
+        )
+    }
+
+    /// **Snapshots arrive when the network says so, and that must not become
+    /// motion.** This is the wobble the reconciler is tuned against, and it has
+    /// nothing to do with the server disagreeing: here the sim integrates exactly
+    /// the velocity the client predicts, and the only thing moving the reconcile
+    /// target about is arrival times drifting either side of the tick.
+    ///
+    /// A stiff correction turns each late arrival into a shove — at 9/s a 40 ms
+    /// gap in the news was worth a third of the walking speed, twenty times a
+    /// second. The assertion is on the *displacement per frame*, because that is
+    /// what a person sees.
+    /// Run a steady journey at `speed` against a sim that agrees with us
+    /// completely, and report the worst a single frame's travel deviated from
+    /// the nominal — plus the largest error the arrival noise ever opened up.
+    ///
+    /// The two clocks are kept apart on purpose, because that is where the noise
+    /// comes from and it is easy to model it away by accident: the sim's
+    /// position advances on its own 20 Hz tick, and the news of a given tick
+    /// arrives a latency *plus a varying delay* later. Tie the two together —
+    /// derive the authority from the arrival time — and the extrapolation
+    /// cancels the jitter exactly, the test passes at any tuning, and it is
+    /// measuring nothing.
+    fn journey(
+        speed: f32,
+        reconcile: impl Fn(Vec3, Vec3, &mut Vec3, f32, bool, f32) -> Vec3,
+    ) -> (f32, f32) {
+        let dt = 1.0 / 60.0;
+        let tick = 1.0 / 20.0;
+        let v = Vec3::new(0.0, 0.0, -speed);
+        let latency = 0.08;
+        // What the link adds on top of the latency, per snapshot, cycling.
+        let jitter = [0.0, 0.04, -0.01, 0.03, 0.0, 0.05, -0.02, 0.02];
+
+        let mut t = 0.0f32;
+        let mut sent = 0usize;
+        let mut authority = Vec3::ZERO;
+        let mut age = 0.0f32;
+        let mut display = Vec3::ZERO;
+        let mut error = Vec3::ZERO;
+        let (mut worst_step, mut worst_error) = (0.0f32, 0.0f32);
+        for frame in 0..1800 {
+            t += dt;
+            age += dt;
+            loop {
+                let at = sent as f32 * tick;
+                if at + latency + jitter[sent % jitter.len()] > t {
+                    break;
+                }
+                authority = v * at;
+                age = t - (at + latency + jitter[sent % jitter.len()]);
+                sent += 1;
+            }
+            let target = extrapolated_target(authority, v, age);
+            let before = display;
+            display = reconcile(
+                display + v * dt,
+                target,
+                &mut error,
+                speed,
+                is_stalled(age),
+                dt,
+            );
+            // Skip the opening seconds, where the display is still catching up to
+            // a lag it started with none of.
+            if frame > 300 {
+                worst_step =
+                    worst_step.max(((display - before).length() - speed * dt).abs() / (speed * dt));
+                worst_error = worst_error.max((target - display).length());
+            }
+        }
+        (worst_step, worst_error)
+    }
+
+    #[test]
+    fn arrival_jitter_does_not_reach_the_picture() {
+        for speed in [
+            crate::systems::locomotion::WALK_SPEED,
+            crate::systems::locomotion::FLY_SPEED,
+            // Flight at altitude, where the same lateness is worth ten metres.
+            crate::systems::locomotion::FLY_SPEED * motion::FLY_ALT_MAX_FACTOR,
+        ] {
+            let (worst, error) = journey(speed, reconcile_display);
+            assert!(
+                worst < 0.05,
+                "at {speed} m/s a frame's travel wobbled by {:.1}% of itself",
+                worst * 100.0
+            );
+
+            // …and the *filter* is what achieved that, not the correction cap.
+            // The cap is a ceiling on a transient; if it were binding on ordinary
+            // arrival noise it would be shaping the everyday motion, which is the
+            // job this design gives to the filter alone. Measured 2026-09-11:
+            // the noise opens 6 cm at a walk against a 57 cm knee.
+            let knee = online_correction_speed(speed) / ONLINE_RECONCILE_RATE;
+            assert!(
+                error < knee,
+                "at {speed} m/s arrival noise reaches {error} m, past the {knee} m \
+                 where the correction cap starts to bite"
+            );
+        }
+    }
+
+    /// The same journey under the old single-pole correction, to pin *why* the
+    /// rates changed rather than leaving them as two numbers somebody will round
+    /// off. Measured 2026-09-11: 30.5 % against 2.3 %.
+    #[test]
+    fn the_old_stiff_correction_is_what_the_wobble_was() {
+        /// What `smooth_online_avatar_display` did before 2026-09-11: one pole at
+        /// 9/s, straight onto the raw error.
+        fn old(
+            display: Vec3,
+            target: Vec3,
+            _error: &mut Vec3,
+            speed: f32,
+            _stalled: bool,
+            dt: f32,
+        ) -> Vec3 {
+            if display.distance(target) > online_snap_error(speed) {
+                target
+            } else {
+                display.lerp(target, 1.0 - (-9.0f32 * dt).exp())
+            }
+        }
+        let (was, _) = journey(crate::systems::locomotion::WALK_SPEED, old);
+        let (now, _) = journey(crate::systems::locomotion::WALK_SPEED, reconcile_display);
+        assert!(
+            was > 0.2,
+            "the 9/s correction used to pass {:.1}% of each frame's travel as wobble",
+            was * 100.0
+        );
+        assert!(now * 5.0 < was, "now {now}, was {was}");
+    }
+
+    /// …and it is still reconciliation: a server that genuinely disagrees is
+    /// agreed with, inside about a second, without ever tugging.
+    #[test]
+    fn a_real_disagreement_is_corrected_without_a_tug() {
+        let dt = 1.0 / 60.0;
+        let speed = crate::systems::locomotion::WALK_SPEED;
+        let v = Vec3::new(0.0, 0.0, -speed);
+        // Three metres off, and under the snap threshold, so this is drift to be
+        // eased out rather than a teleport to be arrived at.
+        let offset = Vec3::new(3.0, 0.0, 0.0);
+        assert!(offset.length() < online_snap_error(speed));
+
+        let mut display = offset;
+        let mut error = Vec3::ZERO;
+        let mut worst_step = 0.0f32;
+        let mut t = 0.0f32;
+        for _ in 0..90 {
+            t += dt;
+            let before = display;
+            // Snapshots on time, so the only error is the one we started with.
+            display = step_display(display, v * t, v, 0.0, &mut error, dt);
+            worst_step = worst_step.max((display - before).length() / dt);
+        }
+        let left = (display - v * t).length();
+        assert!(left < 0.3, "1.5 s later the display is still {left} m out");
+        assert!(
+            worst_step <= speed + online_correction_speed(speed) + 1e-3,
+            "the correction added {worst_step} m/s to a {speed} m/s walk"
+        );
+    }
+
+    /// A teleport still arrives rather than being eased into — and takes the
+    /// filter's memory with it, or the next frames would correct for a
+    /// disagreement that was resolved by moving.
+    #[test]
+    fn a_teleport_snaps_and_forgets() {
+        let speed = crate::systems::locomotion::WALK_SPEED;
+        let mut error = Vec3::new(0.4, 0.0, 0.0);
+        let here = Vec3::ZERO;
+        let there = Vec3::new(0.0, 0.0, -2_000.0);
+        let landed = reconcile_display(here, there, &mut error, speed, false, 1.0 / 60.0);
+        assert_eq!(landed, there);
+        assert_eq!(error, Vec3::ZERO);
     }
 
     /// The snap threshold is a *duration* of travel, not a fixed distance.

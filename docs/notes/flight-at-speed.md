@@ -1,21 +1,25 @@
 ---
 topic: flight-at-speed
-triggers: [flight stutters, flying is jerky, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival]
-updated: 2026-08-26
+triggers: [flight stutters, flying is jerky, walking is jerky, movement wobble, prediction jitter, avatar rubber-bands, flight speed, fly faster, climb rate, follow camera lags, avatar off screen, snap threshold, reconciliation, extrapolation, snapshot gap, nagle, nodelay, udp, teleport sound, teleport animation, arrival]
+updated: 2026-09-11
 ---
 
 # Why fast flight juddered, and what the fixes rest on
 
-Reported 2026-08-25 as "the avatar flight is stuttery", and **reported again on
-2026-08-26 after those fixes shipped** — from a phone, signed in to the hosted
-sim, which is the case the first round never touched. Five causes now, none of
-them in the flight controls themselves. Recording it because most of them are
-constants that look correct until you multiply them by the altitude ramp, and
-anyone re-tuning from first principles would restore them.
+Reported 2026-08-25 as "the avatar flight is stuttery", **again on 2026-08-26
+after those fixes shipped** — from a phone, signed in to the hosted sim, which is
+the case the first round never touched — and **again on 2026-09-11, this time
+with "same for walking, but less obviously noticeable"** beside it. Seven causes
+now, none of them in the flight controls themselves. Recording it because most of
+them are constants that look correct until you multiply them by the altitude
+ramp, and anyone re-tuning from first principles would restore them.
 
 Sections 1–3 are the first round (client-side smoothing and the camera).
-Sections 4–5 are the second (the snapshot stream that feeds all of it), and
-section 6 is why the answer was not UDP.
+Sections 4–5 are the second (the snapshot stream that feeds all of it).
+Section 7 is the third, and it is the one that also explains the walk: it is
+about the *shape* of the correction rather than about any threshold, which is
+why it shows at 1.8 m/s as well as at 640. Section 6 is why the answer was not
+UDP.
 
 **Flight is the one thing in this client that is fast.** `motion::MAX_SPEED` is
 32 m/s, and `motion::fly_altitude_factor` multiplies it by up to
@@ -186,6 +190,106 @@ invisible, which is why it survived this long.
 Four sites, all best-effort (a socket that refuses the option is still a working
 socket): `network::set_nodelay` for both client carriers, the simulator's accept
 loop, and `axum::serve::ListenerExt::tap_io` for the `/ws` listener.
+
+## 7. The correction was stiff enough to turn arrival times into motion
+
+Reported a third time, 2026-09-11: flight still not smooth, and **walking too,
+less obviously**. That pairing is the diagnosis. Sections 1–5 are all things
+that scale with speed and therefore say nothing about a 1.8 m/s walk; a fault
+that shows at both ends of a 350× speed range is proportional to speed, which
+means it is in the part of the loop that multiplies by it.
+
+Two causes, and the brief was explicit: **the client being smooth matters more
+than the client agreeing with the server.**
+
+### The reconcile target is noisy, and a stiff ease passes the noise on
+
+Section 4 made the target a moving one — the last snapshot extrapolated by its
+own age — which is what stopped the display being dragged backwards between
+ticks. What it cannot do is make the target *smooth*. The target is rebuilt
+whenever a snapshot lands, and snapshots do not land on a metronome: a snapshot
+40 ms late moves the target by 40 ms of travel before the display has moved at
+all. That is 7 cm at a walk and 10 m in flight at altitude, and both are
+correct — nothing has diverged, the news is just late.
+
+At `ONLINE_RECONCILE_RATE` = 9/s that lateness was taken out of the picture
+within a frame or two of arriving, which means it *became* motion: a correction
+of `9 · 0.07 ≈ 0.6 m/s` against a 1.8 m/s walk, twenty times a second. Visible
+as a wobble in the walk; at altitude the same arithmetic is hundreds of metres
+per second and it is the judder.
+
+Reconciliation now acts on a **low-passed error** rather than on the raw one
+(`avatar::reconcile_display`, `ONLINE_ERROR_FILTER_RATE` = 7/s over
+`ONLINE_RECONCILE_RATE` = 3.5/s). The pair is a second-order response, damping
+ratio ~0.7, corner ~0.8 Hz. On top of it the correction speed is capped at a
+quarter of the avatar's own pace (`ONLINE_CORRECTION_FRACTION`), so whatever
+survives the filter reads as the motion being slightly off rather than as a tug.
+
+Measured 2026-09-11 over a steady journey against a sim that agrees completely,
+with the snapshots arriving ±40 ms either side of an 80 ms latency — the worst a
+single frame's travel deviated from the nominal:
+
+| | old (one pole, 9/s) | now |
+|---|---|---|
+| per-frame travel wobble | **30.5 %** | **2.3 %** |
+
+The number is the *same at every speed*, which is the point and is why the
+report named walking as well as flight: the error is proportional to speed, so
+as a fraction of the travel it is a constant. Sections 1–5 all scale with speed
+and none of them could have explained a wobble at 1.8 m/s.
+
+**The filter does that work alone — the cap never enters it.** Also measured:
+the largest error arrival noise opens is 6 cm at a walk and 22 m at the top of
+the flight ramp, against a knee (`correction speed / rate`, where the cap starts
+to bite) of 57 cm and 46 m. So the cap is free to be set by the *other* end,
+which is how fast a genuine desync closes: at `ONLINE_CORRECTION_FLOOR` = 2 m/s
+a 3 m disagreement closes in 1.4 s with the worst frame at 1.5× walking pace
+(1 m/s took 2.8 s; 3 m/s reached twice walking pace). `avatar.rs`'s
+`arrival_jitter_does_not_reach_the_picture` asserts both halves, and
+`the_old_stiff_correction_is_what_the_wobble_was` keeps the A/B runnable so the
+two rates are not just numbers to round off later.
+
+Two things deliberately bypass both, because they are the cases where the answer
+must *arrive* rather than be eased into: a snap (past `online_snap_error`, i.e.
+a teleport or a server correction) and a stall (past
+`ONLINE_MAX_EXTRAPOLATION`, where the target stands still on purpose so an
+unconfirmed avatar brakes). Filtering the brake would have taken it from a third
+of a second to a second and a half, and a stall is by definition not jitter.
+
+**Correcting section 1 while we are here.** Its table reads the standing error
+as `speed / ONLINE_RECONCILE_RATE`, which was true when the target was a
+staircase. Once the target is extrapolated it advances at the same velocity the
+display integrates, so the error converges on *zero* and what the display
+actually trails the world by is the latency the extrapolation cannot see — the
+rate no longer sets it. That is why lowering the rate by a factor of 2.6 costs
+accuracy only in transients, and why `ONLINE_SNAP_SECONDS` still had to go from
+0.6 to 1.0: the snap threshold has to stay clear of the *transient*, which the
+gentler ease leaves standing for longer.
+
+### Flight speed stepped at snapshot rate, because the altitude came from the sim
+
+`send_network_intent` derived `motion::fly_altitude_factor` from
+`AvatarState::position` — the authoritative height, which only advances at the
+sim's 20 Hz tick. Flight rides altitude, so during a climb the *whole* velocity
+was re-scaled twenty times a second in steps. At a kilometre up each snapshot
+moves the height by ~10 m, which is an 8 % jump in horizontal speed as well as
+vertical, and the follow camera leads by that same velocity (section 2), so the
+view lurched with it.
+
+It reads the **predicted** height now — the display, with `terrain_lift` and
+`floor_lift` taken back off, which is the flat frame the sim actually simulates.
+The authoritative height was chosen to stop a high flight rubber-banding and it
+does not do that: reconciliation compares positions, and a factor derived from a
+height that is itself reconciled converges on the sim's answer anyway,
+continuously instead of in twenty steps a second. The residual is a systematic
+1–2 % over-prediction during a sustained climb (the client's height leads the
+server's, and the ramp is exponential in height), which is metres against a snap
+threshold of hundreds.
+
+The same expression fixed a second bug beside it: the gravity arc subtracted
+only `terrain_lift`, so standing on an upper storey predicted a fall from the
+height of that floor on every frame, which the reconciler then undid — for as
+long as you stood indoors above the ground floor.
 
 ## 6. Why not UDP
 

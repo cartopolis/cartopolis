@@ -1405,12 +1405,29 @@ pub fn send_network_intent(
     // (`motion::sim_speed_for_wish`). Client-side prediction integrates this for
     // smooth motion between the 20 Hz snapshots (`smooth_online_avatar_display`).
     let mag = Vec2::new(v.x, v.z).length();
+    // The avatar's height on the flat plane the sim simulates: the display, with
+    // the two things only the client knows about taken back off (`terrain_lift`
+    // is the measured ground, `floor_lift` the storey it is standing on). This is
+    // the frame every number below is in.
+    //
+    // **Predicted, not authoritative, and that is the point.** Both the altitude
+    // factor and the gravity arc used to read a height that only advances at the
+    // sim's 20 Hz tick — a staircase. Flight rides altitude, so a climb re-scaled
+    // the whole velocity twenty times a second in steps: at a kilometre up each
+    // snapshot moved the height by ~10 m, which is an 8 % jump in *horizontal*
+    // speed as well, and the follow camera leads by that same velocity
+    // (`free_camera::FOLLOW_LEAD_MAX`), so the view lurched with it. The
+    // authoritative height was chosen to stop a high flight rubber-banding, and
+    // it does not: reconciliation compares positions, and a factor derived from a
+    // height that is itself reconciled converges on the sim's answer anyway —
+    // continuously, instead of in twenty steps a second.
+    let flat_y =
+        (avatar_state.display_position.y - avatar_state.terrain_lift - avatar_state.floor_lift)
+            .max(motion::GROUND_Y);
     // Flight rides altitude, exactly as `SimWorld::step` applies it at
-    // integration: the sim derives the factor from its authoritative `y`, and
-    // predicting from the same function on the same (flat-frame) height is what
-    // keeps a high flight from rubber-banding.
+    // integration.
     let lift = if avatar_state.is_flying {
-        motion::fly_altitude_factor(avatar_state.position.y)
+        motion::fly_altitude_factor(flat_y)
     } else {
         1.0
     };
@@ -1451,8 +1468,12 @@ pub fn send_network_intent(
         if jump {
             avatar_state.vertical_velocity = motion::JUMP_SPEED;
         }
+        // `flat_y`, so the storey comes off as well as the ground. It did not,
+        // and standing on an upper floor therefore predicted a fall from the
+        // height of that floor every frame — a correction the reconciler then
+        // had to undo, for as long as you stood indoors above the ground one.
         let step = motion::step_fall(
-            avatar_state.display_position.y - avatar_state.terrain_lift,
+            flat_y,
             avatar_state.vertical_velocity,
             motion::GROUND_Y,
             time.delta_secs().max(1e-4),
