@@ -72,3 +72,28 @@ look = [-88.0, 0.0]
 time = 12.0
 fog = 0.05
 clouds = 0.0
+
+# **The two views that show the shoreline as a shoreline.** Every preset above
+# sits within thirty metres of the surface, which is where the bank-in-the-mirror
+# term was designed and tuned — and from down there it reads as a reflection.
+# From a few hundred metres up it is a rim, because the camera direction barely
+# changes across the frame and so the band lands on the same side of every water
+# body at once. That is the frame this manifest had no way to see.
+
+[[shot]]
+name = "edge-canal"
+description = "The Verbindingskanaal from 300 m — a city quay, the case the bank term is right about"
+at = [53.21263, 6.57016, 300]
+look = [-30.0, 90.0]
+time = 11.0
+fog = 0.08
+clouds = 0.0
+
+[[shot]]
+name = "edge-lake"
+description = "Paterswoldsemeer from 350 m — an open bank with nothing standing on it, the case it is wrong about"
+at = [53.1720, 6.5640, 350]
+look = [-27.0, 99.5]
+time = 11.0
+fog = 0.06
+clouds = 0.0
