@@ -1025,7 +1025,7 @@ fn graphics_tab(
         egui::RichText::new(if shadows_forced_off {
             "Forced off for this run by CARTO_NO_SHADOWS."
         } else {
-            "Sun and moon shadow maps. Applies immediately — the lights are respawned."
+            "The sun's shadow maps. Applies immediately — the light is respawned."
         })
         .small()
         .color(theme::TEXT_DIM),

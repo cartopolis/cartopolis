@@ -43,9 +43,11 @@ pub(crate) fn setup_sky(
     let shadows = prefs.shadows_on();
     spawn_sun_light(&mut commands, &dev, shadows);
 
-    // Moonlight is a second, shadow-casting directional light. It only exists while
-    // it actually contributes (moon up at night); `manage_moon_light` spawns and
-    // despawns it so its 4 shadow cascades aren't rendered through the whole day.
+    // Moonlight is a second directional light — no longer a shadow-casting one
+    // (`spawn_moon_light`). It exists only while it actually contributes (moon up
+    // at night); `manage_lights` spawns and despawns it rather than leaving a
+    // light at zero illuminance in the scene all day, since bevy still computes
+    // its cascade frusta and still walks it in every fragment's light loop.
     if moon_light_wanted(&dev) {
         spawn_moon_light(&mut commands, &dev, shadows);
     }
@@ -72,6 +74,11 @@ pub(crate) fn setup_sky(
 /// across the ~79% of submitted triangles that cast. Latent today, because the
 /// phone tier defaults `shadows: false`; live the moment anyone uses the dev
 /// panel's toggle, and live for the Balanced rung as it stands.
+///
+/// Since 2026-09-11 only the sun casts, so "over two lights" is now at most four
+/// passes rather than eight — but the constant still answers for both lights,
+/// because the panic it exists to prevent is about the *configs* matching and does
+/// not care which of them is casting.
 ///
 /// Reading it as a `min` keeps the platform ceiling and the budget in the right
 /// relationship: neither can raise what the other refuses.
@@ -128,8 +135,9 @@ pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shad
 pub(crate) const SUN_DISK_ANGULAR_SIZE: f32 = 0.024;
 
 /// Threshold on `moonlight_factor` below which the moon light is despawned: its
-/// illuminance (and shadows) would be imperceptible, so paying for its cascade
-/// shadow passes is pure waste.
+/// illuminance would be imperceptible, so paying for a second directional light
+/// in every fragment's lighting loop is pure waste. (It stopped being a shadow
+/// cost on 2026-09-11 — the moon does not cast — but it is still a light.)
 pub(crate) const MOON_LIGHT_MIN: f32 = 0.002;
 
 /// Whether the moon light should currently exist (moon up, illuminated, at night).
@@ -137,10 +145,32 @@ pub(crate) fn moon_light_wanted(dev: &DevPanelState) -> bool {
     moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad) > MOON_LIGHT_MIN
 }
 
-/// Spawn the moon's directional light with its shadow cascades. Perceptually
-/// blue-gray, with a shorter shadow range than the sun — moon shadows only need to
-/// read up close.
-pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, shadows: bool) {
+/// Spawn the moon's directional light. Perceptually blue-gray, and — since
+/// 2026-09-11 — **not a shadow caster**.
+///
+/// It used to cast, which doubled every shadow cost in the scene for the whole of
+/// the night: a second set of cascades to rasterise every caster into, a second
+/// set of shadow maps in memory at the same `DirectionalLightShadowMap` size, and
+/// a second nine-tap lookup in every lit fragment. For a light at `MOONLIGHT_ILLUMINANCE`,
+/// which is four orders of magnitude under the sun.
+///
+/// This is the same argument `systems::light_shafts` already makes about the same
+/// light and settles the same way — "a second volumetric light doubles the march's
+/// shadow work for something nobody would see" — and it should have been made
+/// here first: a shaft is an optional effect, a shadow map is not.
+///
+/// What is lost is real and is worth naming so nobody re-adds it by accident:
+/// under a full moon on a clear night a building no longer lays a faint shadow
+/// across the street. That is a thing you have to go and look for; the frame it
+/// costs is a thing you feel.
+///
+/// The `shadows` argument is therefore unused for the map itself and kept only to
+/// keep the two spawners' signatures matched — `manage_lights` calls both from one
+/// command buffer and a divergence there is how the two lights come to disagree.
+/// The cascade config stays, identical to the sun's: bevy_light panics outright if
+/// two directional lights carry different `num_cascades`, whether or not either is
+/// casting.
+pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, _shadows: bool) {
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let illuminance = MOONLIGHT_ILLUMINANCE
         * moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad)
@@ -149,7 +179,11 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, sha
         DirectionalLight {
             color: Color::linear_rgb(0.55, 0.72, 1.0),
             illuminance,
-            shadow_maps_enabled: shadows && !env_flag("CARTO_NO_SHADOWS"),
+            // Never. See this function's own note — and note that bevy answers a
+            // light with this off by clearing its cascade visible-entity lists
+            // outright (`check_dir_light_mesh_visibility`), so it is a real
+            // saving in the caster pass and not only in the fragment lookup.
+            shadow_maps_enabled: false,
             ..default()
         },
         // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
@@ -177,8 +211,8 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, sha
 }
 
 /// Owns the sun/moon light lifecycle whenever the dev panel changes:
-///   - moon spawned at dusk / despawned at dawn, so its 4 shadow cascade passes
-///     only render while moonlight is actually visible;
+///   - moon spawned at dusk / despawned at dawn, so a second directional light is
+///     only in the scene while moonlight is actually visible;
 ///   - both lights respawned when the shadow toggle flips (Bevy 0.19's bevy_light
 ///     panics if `shadow_maps_enabled` is mutated on a live light, so it
 ///     despawns/respawns instead — keeping their cascade counts matched, the
