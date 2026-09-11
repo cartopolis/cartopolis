@@ -2048,6 +2048,11 @@ pub fn update_driver_arrow(
                 *cell,
                 ChildOf(root),
                 bevy::camera::visibility::NoFrustumCulling,
+                // Unculled means submitted to every cascade of every light, so
+                // this one flat kite would otherwise be re-rasterised into up to
+                // eight shadow maps while driving. It is a navigation mark, not a
+                // thing in the world; nothing should be darker under it.
+                bevy::light::NotShadowCaster,
                 DriverArrow,
                 crate::components::HideInSpace,
             ));

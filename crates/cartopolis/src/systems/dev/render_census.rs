@@ -36,6 +36,17 @@ pub struct RenderCounts {
     pub tris_total: usize,
     /// Triangles from meshes that cast shadows, i.e. what each cascade re-draws.
     pub tris_shadow: usize,
+    /// *Entities* that cast, which is not the same question as `tris_shadow` and
+    /// is the only one some of the casters answer at all.
+    ///
+    /// A mesh uploaded `RENDER_WORLD`-only counts 0 triangles here by
+    /// construction (see [`Self::triangles`]), and the clipmap tiles are exactly
+    /// that — so when the whole tile pyramid was being submitted to every cascade
+    /// of every light, unculled (fixed 2026-09-11; they carry `NotShadowCaster`
+    /// from spawn now), `tris_shadow` reported the same number before and after.
+    /// The cost of a caster is a draw and a pass over its fill whatever the main
+    /// world remembers of its geometry, so count them too.
+    pub shadow_casters: usize,
     pub tris_buildings: usize,
     pub tris_lod22: usize,
     pub tris_tiles: usize,
@@ -80,6 +91,7 @@ impl RenderCensus<'_, '_> {
             c.tris_total += tris;
             if !no_shadow {
                 c.tris_shadow += tris;
+                c.shadow_casters += 1;
             }
             if building {
                 c.tris_buildings += tris;

@@ -3840,6 +3840,7 @@ fn log_render_cost(
         draws = c.draws,
         ktris_total = c.tris_total / 1000,
         ktris_shadow = c.tris_shadow / 1000,
+        shadow_casters = c.shadow_casters,
         ktris_buildings = c.tris_buildings / 1000,
         ktris_lod22 = c.tris_lod22 / 1000,
         ktris_tiles = c.tris_tiles / 1000,

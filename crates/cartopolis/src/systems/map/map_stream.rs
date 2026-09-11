@@ -844,8 +844,7 @@ pub fn apply_terrain_to_tiles(
                     commands
                         .entity(entity)
                         .insert(Mesh3d(quad.clone()))
-                        .remove::<TileRelief>()
-                        .remove::<bevy::light::NotShadowCaster>();
+                        .remove::<TileRelief>();
                 }
             }
             continue;
@@ -874,17 +873,18 @@ pub fn apply_terrain_to_tiles(
         commands
             .entity(entity)
             .insert(Mesh3d(meshes.add(mesh)))
-            .insert(TileRelief { revision })
-            // The ground does not cast: four clipmap levels of relief are drawn
-            // again into every shadow cascade, which measured as ~2.5× the mesh's
-            // own cost (`ktris_shadow` 1.07M flat → 2.96M) — for self-shadowing
-            // that a 25 m field can barely express and that shows up mostly as
-            // acne. `lod22` gives up distant building shadows for the same reason.
-            // The trade is real and deliberate: a hill no longer darkens the
-            // valley behind it at a low sun. Over Dutch relief (±2 m) that is
-            // invisible; if the Veluwe ever needs it, it belongs to the finest
-            // level alone, not to all four.
-            .insert(bevy::light::NotShadowCaster);
+            .insert(TileRelief { revision });
+        // No `NotShadowCaster` here any more — every `StreamTile` carries it from
+        // spawn (see the comment at the spawn site). The reasoning this comment
+        // used to hold is still the reasoning, and is worth keeping: four clipmap
+        // levels of relief drawn again into every shadow cascade measured as
+        // ~2.5× the mesh's own cost (`ktris_shadow` 1.07M flat → 2.96M), for
+        // self-shadowing that a 25 m field can barely express and that shows up
+        // mostly as acne. `lod22` gives up distant building shadows for the same
+        // reason. The trade is real and deliberate: a hill no longer darkens the
+        // valley behind it at a low sun. Over Dutch relief (±2 m) that is
+        // invisible; if the Veluwe ever needs it, it belongs to the finest level
+        // alone, not to all four.
     }
     if built + curved > 0 && *last_revision != revision {
         *last_revision = revision;
@@ -1233,6 +1233,22 @@ pub fn update_map_stream(
             ChildOf(root),
             // Flat tiles + big_space rebasing confuse frustum culling; opt out.
             NoFrustumCulling,
+            // The ground never casts, on any tile, in any shape. This used to be
+            // inserted only by the relief path below, on the reasoning quoted
+            // there — which was right about relief and silently wrong about
+            // everything else: the line above opts these entities out of frustum
+            // culling, and `check_dir_light_mesh_visibility` answers
+            // `NoFrustumCulling` by pushing the entity into **every** cascade of
+            // **every** light with no test at all. So the whole clipmap pyramid —
+            // ~424 quads, including the ones behind the camera — was rasterised
+            // into up to eight shadow maps every frame, each one a ground plane
+            // covering its whole cascade, to cast a shadow that is by
+            // construction the same flat plane it is cast on.
+            //
+            // Opting out here rather than there also makes the relief path's job
+            // smaller: it no longer has to add the component on the way into a
+            // displaced mesh and remove it on the way back out.
+            bevy::light::NotShadowCaster,
             StreamTile { key },
             // Hidden from orbit alongside the ground disc (ADR-025).
             crate::components::HideInSpace,

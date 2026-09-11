@@ -724,9 +724,11 @@ pub(crate) fn frame_time_watchdog(
 /// Render-cost census: triangle counts by layer, plus the **shadow-caster**
 /// triangle load — the costs that mesh/image/material counts hide (a static scene
 /// with 26 meshes still hung the GPU). Shadow-caster triangles are re-rasterized
-/// once per shadow cascade (sun + moon, 4 each), so `ktris_shadow` weighs far
-/// heavier than its raw value and is usually what pins this iGPU; `draws` is the
-/// visible mesh count. Watch these against `frame_ms` to see what "too much" is.
+/// once per shadow cascade — the sun's, and since 2026-09-11 only the sun's — so
+/// `ktris_shadow` weighs heavier than its raw value and is usually what pins this
+/// iGPU; `draws` is the visible mesh count. Read `shadow_casters` beside it: a
+/// caster whose mesh is `RENDER_WORLD`-only contributes no triangles here and
+/// costs a pass anyway. Watch these against `frame_ms` to see what "too much" is.
 /// Hold the screen awake while navigating, and let the user say no.
 ///
 /// The window flag is derived from state rather than set at the two ends of

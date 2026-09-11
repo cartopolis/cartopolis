@@ -261,6 +261,18 @@ pub fn sync_particle_emitters(
                         // radius; there is no component that takes one, so the
                         // honest answer is not to cull this handful of entities.
                         bevy::camera::visibility::NoFrustumCulling,
+                        // Two reasons, and either alone would be enough. The
+                        // shadow pass rasterises the pool's *lattice* mesh, whose
+                        // vertices are all at the emitter's origin — the quads are
+                        // placed in the vertex shader, which the depth-only
+                        // pipeline does not run — so the shadow such an entity
+                        // casts bears no relation to the particles anyone can see.
+                        // And the material is `AlphaMode::Add`: a spark is light
+                        // being added, not an occluder, so even a correct shadow
+                        // of it would be wrong. The line above makes both matter,
+                        // because an unculled entity goes into every cascade of
+                        // every light with no test at all.
+                        bevy::light::NotShadowCaster,
                         ParticleEmitter {
                             effect: *effect,
                             armed_sequence: effect.burst.then_some(effect.sequence),

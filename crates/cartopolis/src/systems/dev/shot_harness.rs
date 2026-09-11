@@ -495,6 +495,10 @@ pub struct ShotMetrics {
     pub draws: usize,
     pub tris_total: usize,
     pub tris_shadow: usize,
+    /// Entities submitted to the shadow cascades. Not derivable from
+    /// `tris_shadow`, and the only one of the two that answers for a caster whose
+    /// mesh is `RENDER_WORLD`-only — see `render_census::RenderCounts`.
+    pub shadow_casters: usize,
     pub tris_buildings: usize,
     pub tris_lod22: usize,
     pub tris_tiles: usize,
@@ -964,7 +968,7 @@ pub struct ShotMetrics {
 /// were grouped as they were added), which is exactly why a row must be built by
 /// name rather than by position.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,flicker_px,\
-draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,fetch_outstanding,radius_bias,\
+draws,tris_total,tris_shadow,shadow_casters,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,fetch_outstanding,radius_bias,\
 tiles_occluded,aerial_tiles,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
@@ -2943,6 +2947,7 @@ pub fn drive_capture(
             draws: render.draws,
             tris_total: render.tris_total,
             tris_shadow: render.tris_shadow,
+            shadow_casters: render.shadow_casters,
             tris_buildings: render.tris_buildings,
             tris_lod22: render.tris_lod22,
             tris_tiles: render.tris_tiles,
@@ -3102,6 +3107,7 @@ pub fn drive_capture(
                     draws = m.draws,
                     ktris_total = m.tris_total / 1000,
                     ktris_shadow = m.tris_shadow / 1000,
+                    shadow_casters = m.shadow_casters,
                     worker_outstanding = m.worker_outstanding,
                     fetch_outstanding = m.fetch_outstanding,
                     radius_bias = m.radius_bias,
@@ -3558,6 +3564,7 @@ mod tests {
             draws: 0,
             tris_total: 0,
             tris_shadow: 0,
+            shadow_casters: 0,
             tris_buildings: 0,
             tris_lod22: 0,
             tris_tiles: 0,

@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
-triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3]
-updated: 2026-09-09
+triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
+updated: 2026-09-11
 ---
 
 # Where the frames go, and where they do not
@@ -581,3 +581,106 @@ and there is no workstation in the loop — so the shareable report
 (`systems::dev::diagnostics`) is the primary instrument, and since 2026-08-18 it
 carries frame time, draws, the triangle split and the three task-pool widths for
 that reason.
+
+## Where the shadows go (2026-09-11)
+
+Reported as "enabling shadows makes the viewer very slow". The *caster* side had
+been tuned hard and repeatedly — the terrain relief does not cast, `lod22` casts
+only from the camera's own cell (`SHADOW_RADIUS = 0`), the moon light is
+despawned by day, the map is 1024² below the desktop rung — and three things had
+never been looked at at all.
+
+### `NoFrustumCulling` is also "submit me to every cascade"
+
+This is the one worth carrying forward, because the component's name says nothing
+about it. `bevy_light::check_dir_light_mesh_visibility` tests each caster against
+each cascade frustum — *unless* the entity carries `NoFrustumCulling` or has no
+`Aabb`, in which case it goes into every cascade of every light with no test.
+
+Four things in this tree carried that component and no `NotShadowCaster`, and one
+of them is the whole ground:
+
+| entity | why it was unculled | what it cast |
+|---|---|---|
+| `StreamTile` (the clipmap) | flat quads + big_space rebasing | a ground plane, onto itself |
+| the route ribbon | same | a line lying *in* the road surface |
+| the driver arrow | same | a navigation mark |
+| particle emitters | the quads are placed in the vertex shader, so the AABB is the wrong volume | nothing coherent — the shadow pass runs bevy's own vertex shader over a lattice whose vertices are all at the origin |
+
+The tiles are the expensive one: the pyramid is a few hundred quads (the 424
+figure in CLAUDE.md's `handset_guarded` table is the count of tile *rasters* held,
+which is the same set), each covering its whole cascade, and *including the ones
+behind the camera*. They now carry
+`NotShadowCaster` from spawn. The comment that used to justify it on the relief
+path — "the ground does not cast" — was right about relief and had quietly never
+applied to the flat case, which is every tile most of the time.
+
+**`tris_shadow` could not have caught this and still cannot.** The tiles are
+uploaded `RENDER_WORLD`-only, so they count zero triangles from the main world by
+construction; the metric read the same before and after. `RenderCounts` carries
+`shadow_casters` — an entity count — since this, and it is in the `shot state`
+line, `--csv`, `--dump-state`, the dev panel and the shareable report.
+
+### The filter was never set, so every tier took bevy's most expensive one
+
+Everything above bounds what the shadow *pass* draws. Nothing bounded what the
+*main* pass reads: `ShadowFilteringMethod` appeared nowhere in the tree, so every
+rung took the `Gaussian` default — Castaño's nine taps approximating a 5×5
+kernel, per shadowed fragment, per light. At a handset's 2772×1272 with the sun
+and the moon both up that is the largest single shadow term in the frame, and no
+amount of caster work touches it.
+
+`Budget::shadow_filter` now answers it: `Gaussian` on the desktop rung,
+`Hardware2x2` (one hardware PCF tap) on balanced and phone. Balanced is the rung
+Android resolves to, and this is the purest example of that rung's stated brief —
+a shadow's *placement* is its shape, and the filter decides only how soft the edge
+is. `Temporal` is not reachable from a rung and should not become so: it is the
+right answer *with* TAA, and `surface-finish-and-occlusion.md` records why this
+codebase cannot run TAA.
+
+### The moon was a second shadow-casting light, all night
+
+Same illuminance argument `light_shafts` already makes about the same light and
+settles the same way — "a second volumetric light doubles the march's shadow work
+for something nobody would see" — except that a shaft is an optional effect and a
+shadow map is not. `spawn_moon_light` sets `shadow_maps_enabled: false`
+unconditionally now. Bevy answers a light with that off by clearing its cascade
+visible-entity lists outright, so it is a saving in the caster pass and not only
+in the fragment lookup.
+
+Its `CascadeShadowConfig` stays, identical to the sun's: the panic in bevy_light
+is about the two configs matching and does not care which of them is casting.
+
+### The cascades reached past anything that casts
+
+`shadow_distance_m` was 3 km (desktop) and 1.5 km (balanced) while the casters are
+bounded by `lod22`'s one z14 cell, ~1.5 km across at this latitude, plus whatever
+a low sun throws off it. The outer cascade covered a band where by construction
+nothing casts, and was paid for twice — as a pass, and as a share of the texel
+budget spent on ground nothing can darken. Now 1.5 km and 1 km, at the same
+cascade counts, so every cascade gets about twice the texel density: cheaper and
+sharper at once.
+
+**This is also the only distance LOD the casters have, deliberately.** A
+per-streamer shadow radius on the trees and the street furniture was drafted and
+dropped: bevy already culls every caster against every cascade frustum, so a
+second mechanism would be two answers to one question — and this repo's rule is
+to remove the overlap rather than arbitrate it.
+
+### Not done, and it is the big one
+
+**Nothing caches a shadow map.** The city is static and the sun moves 15°/hour,
+and bevy re-renders every cascade every frame regardless. Re-rendering the outer
+cascades only every N frames is the real structural win here and bevy 0.19 has no
+API for it — it is engine work, not a setting.
+
+### Unmeasured
+
+Everything above is a mechanism established by reading `bevy_light` and the call
+sites, not a millisecond figure. Frame times in this container are a CPU
+rasteriser's and the note's own table says not to gate on them; an earlier sweep
+had `CARTO_NO_SHADOWS` landing 48 ms *slower* than baseline. `shadow_casters` in
+`--dump-state` **is** trustworthy here and is the check that the caster changes
+did what they say. The split between the pass and the per-fragment lookup needs
+`cargo perf --features perf` on the `deck-gpu` runner, which is how the cloud
+shell was settled.

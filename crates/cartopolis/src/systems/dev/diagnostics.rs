@@ -291,8 +291,15 @@ fn compose(s: &DiagnosticsSources) -> String {
         ));
     }
     out.push_str(&format!(
-        "  draws {} | tris {} total, {} shadow-casting, {} buildings, {} lod22, {} tiles, {} globe\n",
-        c.draws, c.tris_total, c.tris_shadow, c.tris_buildings, c.tris_lod22, c.tris_tiles,
+        "  draws {} | tris {} total, {} shadow-casting ({} casters), {} buildings, {} lod22, \
+{} tiles, {} globe\n",
+        c.draws,
+        c.tris_total,
+        c.tris_shadow,
+        c.shadow_casters,
+        c.tris_buildings,
+        c.tris_lod22,
+        c.tris_tiles,
         c.tris_globe,
     ));
     out.push_str(&format!(

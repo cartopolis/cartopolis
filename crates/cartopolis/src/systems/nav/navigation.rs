@@ -1254,6 +1254,12 @@ pub fn update_route_visuals(
             ChildOf(root),
             // Flat, big_space-rebased geometry — same reason the map tiles opt out.
             bevy::camera::visibility::NoFrustumCulling,
+            // And, for the same reason, the same second component. An entity that
+            // opts out of frustum culling is pushed into *every* cascade of every
+            // light unconditionally, so a cross-town route was rasterised into up
+            // to eight shadow maps to cast a shadow from a ribbon lying in the
+            // road surface, half a metre above the ground it would be cast on.
+            bevy::light::NotShadowCaster,
             RouteVisual,
             // Hidden from orbit with the rest of the ground detail (ADR-025).
             crate::components::HideInSpace,

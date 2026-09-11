@@ -304,13 +304,20 @@ fn frame_tab(
     // Split by producer, so a regression names the streamer that caused it.
     // Shadow casters are counted apart because each cascade re-draws them — four
     // cascades make that number the one that matters.
+    //
+    // Both a triangle count and an entity count, because they answer different
+    // questions and one of them can be zero while the cost is real: a mesh
+    // uploaded `RENDER_WORLD`-only contributes no triangles from this side, and
+    // the whole clipmap pyramid is exactly that. The caster count is what shows
+    // it.
     stat(
         ui,
         "  shadowed",
         &format!(
-            "{} ({:.0}%)",
+            "{} ({:.0}%)  ·  {} casters",
             thousands(counts.tris_shadow),
             share(counts.tris_shadow, counts.tris_total),
+            thousands(counts.shadow_casters),
         ),
     );
     stat(ui, "  buildings", &thousands(counts.tris_buildings));
