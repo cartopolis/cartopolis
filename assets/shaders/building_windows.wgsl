@@ -116,6 +116,16 @@ const GLASS_ROUGHNESS: f32 = 0.14;
 /// incidence). Glass sits nearer 8%.
 const GLASS_REFLECTANCE: f32 = 0.72;
 
+/// Peak-to-peak spread of the wall's own roughness between lattice cells, around
+/// whatever the material asks for (0.95 on both building lanes).
+///
+/// Small on purpose. At this end of the parameter the specular lobe is broad
+/// either way, so ±0.05 is a change in how a wall *catches* a low sun and not a
+/// change in what it is made of — which is the whole ask. Widening it to where
+/// you can see it per cell turns a facade into a chequerboard, because the cell
+/// is a hard-edged lattice and nothing here blurs across one.
+const WALL_FINISH_RANGE: f32 = 0.10;
+
 /// Cheap 2D value hash. Not for cryptography and not for a large domain — it is
 /// asked for one number per window per frame.
 fn hash2(p: vec2<f32>) -> f32 {
@@ -316,6 +326,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // incidence than a rendered or brick wall, and it is that — not the
         // roughness alone — that puts the sky into the upper floors of a building
         // seen from across a square.
+        // The *wall* between the windows is not one finish either, and until this
+        // it was: one `perceptual_roughness: 0.95` on every square metre of every
+        // building in the country, so a whole street took the sun identically and
+        // the elevations read as printed card. Brick, render, stone panels and
+        // painted plaster are not the same material and do not need to be told
+        // apart by name to stop looking like one sheet — they need the highlight
+        // to break up at facade scale.
+        //
+        // It reuses `r`, the lattice cell's own draw, rather than hashing again:
+        // this is the largest geometry lane in the app and the question the whole
+        // module answers is "what can a facade have for free". One multiply and a
+        // `fract` decorrelate it from the lit-window decision it shares a hash
+        // with, which is enough for a roughness nobody is meant to read as a
+        // pattern. The cell is roughly a window bay, which is about the scale real
+        // facades change finish at — a panel, a bay, a stone course.
+        //
+        // Faded out by `blur` for the same reason the emissive and the glass
+        // roughness are: a per-cell value that survives below a pixel is a
+        // crawling sparkle across the far half of the city.
+        let finish = fract(r * 7.13) - 0.5;
+        pbr_input.material.perceptual_roughness = clamp(
+            pbr_input.material.perceptual_roughness + WALL_FINISH_RANGE * finish * (1.0 - blur),
+            0.0,
+            1.0,
+        );
+
         pbr_input.material.perceptual_roughness = mix(
             pbr_input.material.perceptual_roughness,
             GLASS_ROUGHNESS,
