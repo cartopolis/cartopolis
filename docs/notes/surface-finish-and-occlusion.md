@@ -5,8 +5,11 @@ triggers: [ScreenSpaceAmbientOcclusion, ssao, "ambient occlusion", Fxaa, Msaa,
   light_shafts.rs, wet_surfaces.rs, "light shafts", "god rays", "wet road", "rain",
   metallic_roughness_texture, road_material_image, "roughness", "reflectance",
   GLASS_ROUGHNESS, building_windows.wgsl, "looks flat", "looks like a model",
-  density_factor, "the world went dark", "too dark", "everything is dark"]
-updated: 2026-09-10
+  density_factor, "the world went dark", "too dark", "everything is dark",
+  ContactShadows, "contact shadow", wall_base_tone, wall_shade, ground_texture,
+  ground_finish_texture, WALL_FINISH_RANGE, "buildings look like they are floating",
+  "the ground is flat", "paving has no texture"]
+updated: 2026-09-11
 ---
 
 # Why the city read as a model, and the four things that were missing
@@ -274,3 +277,101 @@ Colour, exposure and lighting are not evidence on lavapipe
 lighting change. A `--shot` run proves the app still starts, still streams and
 still draws the same geometry; it cannot show you whether the city looks better.
 That is a workstation job.
+
+## What stopped being flat on 2026-09-11
+
+Four of the things the section above listed as still flat, done in the order that
+costs least.
+
+### The 3DBAG buildings had no ground contact, and the OSM ones always had
+
+`osm_buildings::wall_base_tone` has existed for as long as that lane has: the
+bottom row of wall vertices carries a darker tone that eases back to the wall
+colour at the eaves, a baked contact shadow. `lod22` — the lane that draws the
+**actual** city over the Netherlands, and the one whose buildings you are
+standing among — never called it. Every 3DBAG building was one flat tone from
+pavement to eaves.
+
+The curve is now `wall_shade(wall_h, y)` and both lanes evaluate it, which is the
+point: two lanes drawing the same city on two recipes is how they come to
+disagree in a way nobody notices for a year. The OSM lane gets it from
+interpolation across a base→eaves quad; the 3DBAG lane has to evaluate it per
+vertex, because a LoD2.2 shell is a triangle soup with no rows.
+
+It is **baked on the worker that builds the cell**, so it costs nothing in a
+frame, and it is there on every rung and every adapter — a handset, WebGL2,
+anyone who has switched the occlusion pass off. It is not a substitute for real
+occlusion and does not try to be: it knows about the ground and nothing else, so
+it says nothing about the alley between two blocks. It is the cue that stops an
+extrusion looking like it is hovering, which is the thing you see first.
+
+`SPAN_M`'s strange-looking role is worth keeping straight: the gradient runs the
+whole height of the wall by construction, so the *strength* is scaled down on a
+tall building rather than the span being clamped. Without that, a tower spreads a
+ground-contact effect over thirty metres of facade.
+
+### The wall between the windows was one roughness, everywhere
+
+`building_windows.wgsl` had already given the panes their own finish, and the
+argument for it applies just as well to what surrounds them: one
+`perceptual_roughness: 0.95` on every square metre of every building in the
+country means a whole street catches a low sun identically. `WALL_FINISH_RANGE`
+varies it ±0.05 per lattice cell — about a window bay, which is the scale real
+facades change finish at.
+
+It costs **no new hash**. It reuses `r`, the cell's own draw, decorrelated from
+the lit-window decision by one multiply and a `fract`. This is the largest
+geometry lane in the app, and the question the whole module answers is what a
+facade can have for free. It fades out on `blur` like everything else there —
+a per-cell value that survives below a pixel is a sparkle crawling across the far
+half of the city.
+
+### The ground between the roads has a finish now
+
+`cartopolis_geo::ground_texture` generates one small tiling metallic-roughness
+map, and `Paving`, `Built` and `Sand` sample it. **Roughness only** — the colour
+of the ground is the map's palette, argued over and reverted once already for
+being too saturated, and roughness varies how a surface catches the sun without
+touching a tone. It is the same reason this note gives for doing roughness before
+normal maps.
+
+Three things make it cheap. One image for every group that takes it, since the
+map says nothing about colour and the groups differ in nothing else. No new UVs:
+UV0 on an area surface is already **metres from the map anchor**, so a repeat
+every `GROUND_FINISH_M` is a `uv_transform` scale. And it *multiplies* the
+group's scalar rather than replacing it, so it slots into the three-term
+roughness stack this note already requires — `wet_surfaces` writes the scalar,
+this varies it, and neither knows about the other.
+
+The groups left out each have a reason, listed at `wants_ground_finish`. The
+short version: roads have their own and a better one, water is a shader, the
+vegetation groups have colour systems writing the same material, and the object
+groups' UV0 is not the anchor-metre projection this is scaled against.
+
+### Contact shadows, riding the occlusion setting
+
+`bevy_pbr::ContactShadows` (screen-space, `linear_steps: 8` against bevy's 16,
+over a 30 cm ray) is on whenever ambient occlusion is on **and** shadows are on.
+Two gates, each honest for its half.
+
+It has no preference of its own on purpose. It is `#[require(DepthPrepass)]`, and
+the depth prepass exists in this app only because the occlusion pass asked for
+it — so a third checkbox would be one that silently turns a second full-screen
+pass on, which is not something a Graphics tab should be able to hide. They are
+also the same cue ("nothing is darker where it meets anything else"), and this is
+the half a screen-space occlusion pass is worst at: at the contact its own radius
+has the least to work with. The shadow gate is the plainer one — these are
+shadows, and somebody who turned shadows off to get their frames back has not
+asked for a ray march instead.
+
+The removal order matters and is the same trap the note records for
+`ScreenSpaceAmbientOcclusion`'s required components: contact shadows come off
+*before* the prepass they read, in the same flush.
+
+### Still flat
+
+- **No normal maps.** Unchanged, and for the unchanged reason: bevy needs
+  `ATTRIBUTE_TANGENT` and none of the streamed meshes carry tangents.
+- **No screen-space reflections, no parallax, no decals.**
+- The ground finish is a *level*, not a pattern. There are still no paving slabs,
+  no kerb detail and no road-to-pavement joint beyond the depth rung.
