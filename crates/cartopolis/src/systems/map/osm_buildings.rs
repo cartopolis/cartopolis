@@ -1968,6 +1968,22 @@ impl MeshData {
         self.indices.extend_from_slice(&[ia, ib, ic]);
     }
 
+    /// [`MeshData::tri`] with a colour per corner.
+    ///
+    /// The 3DBAG lane's walls arrive as an arbitrary triangle soup, so its
+    /// ground-contact shading cannot come from a two-row quad's interpolation the
+    /// way `quad_facing_graded` gives it here — every vertex has to carry its own
+    /// tone. Dedup still works across the seam between two such triangles, because
+    /// the tone is a pure function of the vertex's own height and two triangles
+    /// sharing a corner therefore compute the same bits for it.
+    pub(crate) fn tri_graded(&mut self, a: Vec3, b: Vec3, c: Vec3, colors: [[f32; 4]; 3]) {
+        let n = (b - a).cross(c - a).normalize_or_zero();
+        let ia = self.vertex(a, n, colors[0]);
+        let ib = self.vertex(b, n, colors[1]);
+        let ic = self.vertex(c, n, colors[2]);
+        self.indices.extend_from_slice(&[ia, ib, ic]);
+    }
+
     /// Push a planar quad (a→b→c→d) as two triangles over **four** shared vertices.
     ///
     /// Not `tri(a,b,c) + tri(a,c,d)`: that emits six vertices and recomputes the
@@ -2501,10 +2517,30 @@ fn push_building(
 /// constant base tone would wash a tower's lower storeys with what should be a
 /// ground-contact effect).
 fn wall_base_tone(wall: [f32; 4], wall_h: f32) -> [f32; 4] {
+    let d = wall_shade(wall_h, 0.0);
+    [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
+}
+
+/// The ground-contact multiplier partway up a wall: [`wall_base_tone`]'s strength
+/// at the ground, easing linearly back to 1.0 at the eaves.
+///
+/// Split out so the 3DBAG lane can share it. That lane's walls are a triangle soup
+/// rather than a stack of base→eaves quads, so it cannot get the gradient from
+/// interpolation across two vertex rows the way the quads here do — it has to
+/// evaluate the same curve per vertex, and evaluating a *different* curve would
+/// put two lanes of the same city on two recipes.
+///
+/// `SPAN_M` is the one non-obvious part and the reason the strength is scaled
+/// rather than the span: the gradient runs the whole height of the wall by
+/// construction, so on a tower it would spread a ground-contact effect over
+/// thirty metres. Weakening it with height keeps the *integral* of the darkening
+/// roughly the storey or two it is meant to describe.
+pub(crate) fn wall_shade(wall_h: f32, y: f32) -> f32 {
     const STRENGTH: f32 = 0.25;
     const SPAN_M: f32 = 6.0;
-    let d = 1.0 - STRENGTH * (SPAN_M / wall_h.max(SPAN_M)).min(1.0);
-    [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
+    let strength = STRENGTH * (SPAN_M / wall_h.max(SPAN_M)).min(1.0);
+    let up = (y / wall_h.max(f32::EPSILON)).clamp(0.0, 1.0);
+    1.0 - strength * (1.0 - up)
 }
 
 /// Emit a grid of window quads on one wall face (proud of the wall), routing each

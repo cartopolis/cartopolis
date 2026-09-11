@@ -1456,19 +1456,44 @@ fn build_lod22_from_text(
                 .zip(&world_xz)
                 .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h + base, w.y - oz))
                 .collect();
+        // The building's own height above its base, for the ground-contact
+        // shading below. Taken from the shell's raw vertex heights rather than
+        // from `shell_datum_height`: that answers the 70th percentile of the
+        // *roof*, which is the right datum for counting storeys and the wrong one
+        // for "where does this wall stop", and it is only computed for shells
+        // carrying an id.
+        let wall_h = b.p.iter().map(|&(_, _, h)| h).fold(0.0f32, f32::max);
         for &(i, j, k, is_roof) in &b.t {
             let (a, bb, c) = (local[i], local[j], local[k]);
-            let color = if is_roof == 1 {
+            if is_roof == 1 {
                 let n = (bb - a).cross(c - a).normalize_or_zero();
-                if n.y.abs() > FLAT_ROOF_NORMAL_Y {
+                let color = if n.y.abs() > FLAT_ROOF_NORMAL_Y {
                     flat
                 } else {
                     roof_tile
-                }
-            } else {
-                wall
+                };
+                buf.tri(a, bb, c, color);
+                continue;
+            }
+            // Ground-contact darkening, baked into the wall vertices on the
+            // worker that builds the cell — so it costs nothing at all in a
+            // frame, and it is there on the rungs and the adapters where the
+            // screen-space occlusion pass is not (a handset, WebGL2, anyone who
+            // has turned it off). Until this, `lod22` — the lane that draws the
+            // actual city — gave every building one flat tone from pavement to
+            // eaves, while the OSM fallback lane beside it had carried
+            // `wall_base_tone` for as long as it had existed.
+            //
+            // It is not a substitute for real occlusion and does not try to be:
+            // it knows about the ground and about nothing else, so it says
+            // nothing about the alley between two blocks. It is the one cue that
+            // stops an extrusion looking like it is hovering, which is the thing
+            // you see first.
+            let tone = |v: Vec3| {
+                let d = crate::systems::osm_buildings::wall_shade(wall_h, v.y - base);
+                [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
             };
-            buf.tri(a, bb, c, color);
+            buf.tri_graded(a, bb, c, [tone(a), tone(bb), tone(c)]);
         }
     }
     if struck > 0 {
