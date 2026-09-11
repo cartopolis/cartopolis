@@ -981,6 +981,18 @@ pub fn setup_camera(
             // setting is flipped later, since a sample count and an occlusion
             // pass cannot both be on.
             budget.main_pass_msaa(restricted_sample_counts, prefs.ambient_occlusion_on()),
+            // How a shadow edge is filtered. Stated rather than left to bevy's
+            // required-component default for the same reason `tonemapping` below
+            // is: the default is the expensive one. `Gaussian` takes nine taps
+            // per shadowed fragment per light, and until this line existed every
+            // tier took it — including the one a phone resolves to, where it is
+            // nine taps over three and a half million pixels with the sun and the
+            // moon both up. See `quality::Budget::shadow_filter`.
+            //
+            // Unlike the sample count above, this is not re-applied by
+            // `render_features`: nothing can change it while the app runs, the
+            // rung being constant for the process.
+            budget.shadow_filter,
             // Explicit, because Bevy's required-component default is
             // `TonyMcMapface` and that samples a 3D LUT. On a tier with no `Hdr`
             // camera — no atmosphere, no bloom, i.e. the phone — bevy_pbr sets

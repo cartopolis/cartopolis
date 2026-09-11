@@ -49,6 +49,7 @@
 use std::sync::OnceLock;
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::light::ShadowFilteringMethod;
 use bevy::math::{UVec2, UVec3};
 use bevy::render::view::Msaa;
 
@@ -171,7 +172,43 @@ pub struct Budget {
     pub shadow_cascades: usize,
     /// How far the sun's cascades reach, in metres. The moon's is fixed and
     /// shorter; it is only ever a night-time fill light.
+    ///
+    /// This is also the only distance LOD the casters have, and that is on
+    /// purpose: `check_dir_light_mesh_visibility` tests every caster against
+    /// every cascade frustum, so anything past the reach is already not
+    /// submitted. A second per-streamer shadow radius beside this one would be
+    /// two mechanisms arbitrating the same question.
     pub shadow_distance_m: f32,
+    /// How a shadow's *edge* is filtered — the only shadow setting on this ladder
+    /// that costs per **pixel** rather than per triangle.
+    ///
+    /// Everything else here bounds what the shadow pass draws. This one bounds
+    /// what the *main* pass reads: bevy's default, [`ShadowFilteringMethod::Gaussian`],
+    /// takes nine taps with Castaño's filtering to approximate a 5×5 kernel, for
+    /// every shadowed fragment, for every light — so at a handset's 2772×1272
+    /// with the sun and the moon both up it is the largest single shadow cost in
+    /// the frame and none of the caster work above touches it.
+    /// [`ShadowFilteringMethod::Hardware2x2`] is one hardware PCF tap.
+    ///
+    /// It was never set at all until 2026-09-11, so every tier silently took the
+    /// nine-tap default.
+    ///
+    /// `Temporal` is not reachable from here and should not become so: it is the
+    /// good answer *when TAA is running*, and `docs/notes/surface-finish-and-occlusion.md`
+    /// records why this codebase cannot run TAA — `big_space` re-anchors the whole
+    /// coordinate frame as the camera moves, which is exactly what a history
+    /// buffer indexed by last frame's motion vectors cannot survive. Without TAA
+    /// the randomised filter is noise that crawls.
+    ///
+    /// Overridable per run with `CARTO_SHADOW_FILTER=fast|soft`, which is not
+    /// redundant with the rung: this is a per-pixel cost whose value is a
+    /// judgement about a picture, and the two questions it raises — "is the soft
+    /// edge worth it on a workstation" and "is the hard edge acceptable on a
+    /// phone" — cannot be answered on the same machine. The flag goes through
+    /// [`crate::env_value`], so it reaches a shipped Android build as
+    /// `debug.carto.shadow_filter` with no rebuild, the way `CARTO_NO_CLOUDS`
+    /// settled the globe cloud shell.
+    pub shadow_filter: ShadowFilteringMethod,
     /// Tonemapping curve for the main pass.
     ///
     /// A cost question only on a tier with no `Hdr` camera, which is most of what
@@ -463,7 +500,21 @@ impl Budget {
             msaa: Msaa::Sample2,
             atmosphere_luts: AtmosphereLuts::bevy_defaults(),
             shadow_cascades: 4,
-            shadow_distance_m: 3000.0,
+            // 1.5 km, not the 3 km this was. The reach has to cover the casters
+            // and nothing else, and the casters are bounded by `lod22`'s
+            // `SHADOW_RADIUS = 0` — only the camera's own z14 cell, which is
+            // ~1.5 km across at this latitude — plus whatever long shadow a low
+            // sun throws off it. The outer cascade was covering the 1.5–3 km band,
+            // where by construction nothing casts, and it was being paid for
+            // twice: once as a pass, and once as a quarter of the texel budget
+            // spent on ground nothing can darken. Halving the reach at the same
+            // cascade count is the rare change that is cheaper *and* sharper —
+            // every cascade gets ~2× the texel density it had.
+            shadow_distance_m: 1500.0,
+            // The rung that can afford the good edge, and the one with the widest
+            // shadows on screen — a workstation is where a hard 2×2 edge would be
+            // most visible.
+            shadow_filter: ShadowFilteringMethod::Gaussian,
             // The camera is `Hdr` here (atmosphere + bloom), so this is one
             // full-screen pass and the LUT is worth its fidelity.
             tonemapping: Tonemapping::TonyMcMapface,
@@ -537,11 +588,19 @@ impl Budget {
             // exists to avoid — so this rung is the one that gives up edges.
             msaa: Msaa::Off,
             atmosphere_luts: AtmosphereLuts::halved(),
-            // Three, and 1.5 km. An iGPU can afford shadows — this rung keeps
-            // them — but not a workstation's reach: the fourth cascade covers the
-            // 1.5–3 km band, which at street level is haze and rooftops.
+            // Three, and 1 km. An iGPU can afford shadows — this rung keeps them —
+            // but not a workstation's cascade count, and neither rung now reaches
+            // past what actually casts (see the desktop rung's note on the same
+            // field). 1 km still holds a 30 m building's shadow at a 2° sun.
             shadow_cascades: 3,
-            shadow_distance_m: 1500.0,
+            shadow_distance_m: 1000.0,
+            // The rung's whole brief is "keep the scene's shape, give up what
+            // costs fill", and this is the purest example of that on the ladder: a
+            // shadow's *placement* is its shape, and the filter decides only how
+            // soft the edge is. Nine taps per shadowed fragment per light is fill,
+            // and this is the rung Android resolves to — where it is nine taps
+            // over 3.5 million pixels.
+            shadow_filter: ShadowFilteringMethod::Hardware2x2,
             // This rung's brief is to keep the picture, and the sky is most of it.
             tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: false,
@@ -613,6 +672,9 @@ impl Budget {
             // the horizon.
             shadow_cascades: 2,
             shadow_distance_m: 800.0,
+            // Same reasoning as the rung above, more so: this is the floor, and a
+            // machine that reaches it has no fill to spend on an edge.
+            shadow_filter: ShadowFilteringMethod::Hardware2x2,
             // No atmosphere and no bloom means no `Hdr`, which means the curve
             // runs per fragment rather than once — so it must not sample a LUT.
             tonemapping: Tonemapping::AcesFitted,
@@ -808,6 +870,12 @@ pub fn report_budget() {
         tier = ?resolved.tier,
         chose = SOURCE.get().copied().unwrap_or("auto"),
         shadows = resolved.shadows,
+        // Beside `shadows` because it is the shadow setting a reader is least
+        // likely to guess: it costs per pixel rather than per caster, and
+        // `CARTO_SHADOW_FILTER` can have moved it off the rung's own answer.
+        shadow_filter = ?resolved.shadow_filter,
+        shadow_cascades = resolved.shadow_cascades,
+        shadow_distance_m = resolved.shadow_distance_m,
         bloom = resolved.bloom,
         sky_ibl = resolved.sky_ibl,
         detail_layers = resolved.detail_layers,
@@ -1058,10 +1126,44 @@ fn detect(preferred: Option<&str>) -> Budget {
 /// that only exists in the Android build is a rule no test on any other host can
 /// see.
 fn on_this_machine(budget: Budget) -> Budget {
-    if cfg!(target_os = "android") {
+    let budget = if cfg!(target_os = "android") {
         handset_guarded(budget)
     } else {
         budget
+    };
+    with_shadow_filter_override(budget)
+}
+
+/// Apply `CARTO_SHADOW_FILTER`, if it is set.
+///
+/// Applied *after* the handset guard rather than before, which is the order every
+/// debugging switch in this module wants: the guard is a rule about the machine
+/// and a flag is an instruction for this run, and a flag that the guard could
+/// overrule would be a flag that silently did nothing on the one device it exists
+/// to measure.
+fn with_shadow_filter_override(budget: Budget) -> Budget {
+    let Some(filter) = crate::env_value("CARTO_SHADOW_FILTER").and_then(|v| parse_filter(&v))
+    else {
+        return budget;
+    };
+    Budget {
+        shadow_filter: filter,
+        ..budget
+    }
+}
+
+/// The two words `CARTO_SHADOW_FILTER` takes.
+///
+/// Named for what they cost rather than for bevy's variants: `Gaussian` and
+/// `Hardware2x2` describe the algorithm, and the question anybody setting this is
+/// asking is which of them is fast and which is soft. Anything else is `None` —
+/// so a typo falls through to the rung rather than resolving to some third
+/// answer, and `detect`'s own logging still reports what was resolved.
+fn parse_filter(value: &str) -> Option<ShadowFilteringMethod> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fast" | "hard" | "hardware" | "2x2" => Some(ShadowFilteringMethod::Hardware2x2),
+        "soft" | "gaussian" | "pcf" => Some(ShadowFilteringMethod::Gaussian),
+        _ => None,
     }
 }
 
@@ -1411,6 +1513,24 @@ mod tests {
                 lower.shadow_distance_m <= upper.shadow_distance_m,
                 "shadow_distance_m: {name}"
             );
+            // `ShadowFilteringMethod` has no ordering of its own — it is an enum
+            // of three named techniques, not a quality number — so the ladder
+            // needs one stated here. Ranking it rather than asserting the pair
+            // directly is what keeps the rule readable if a fourth filter ever
+            // arrives: give it a rank and the test keeps meaning what it says.
+            fn filter_cost(f: ShadowFilteringMethod) -> u8 {
+                match f {
+                    ShadowFilteringMethod::Hardware2x2 => 0,
+                    // Eight taps to nine, so they rank together; neither is
+                    // reachable from a rung today (see `Budget::shadow_filter`).
+                    ShadowFilteringMethod::Temporal => 1,
+                    ShadowFilteringMethod::Gaussian => 1,
+                }
+            }
+            assert!(
+                filter_cost(lower.shadow_filter) <= filter_cost(upper.shadow_filter),
+                "shadow_filter: {name}"
+            );
             assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
             assert!(
                 lower.water_octaves <= upper.water_octaves,
@@ -1654,5 +1774,33 @@ mod tests {
         assert!(b.multiscattering.min_element() > 0);
         assert!(b.sky_view.min_element() > 0);
         assert!(b.aerial_view.min_element() > 0);
+    }
+
+    /// The vocabulary of `CARTO_SHADOW_FILTER`, and the thing that makes a
+    /// debugging switch safe to leave in: a word it does not know resolves to
+    /// `None` so the rung's own answer stands. The alternative — falling back to
+    /// one of the two — is a typo that silently changes the picture being
+    /// measured, which is exactly the failure this switch exists to avoid.
+    #[test]
+    fn the_shadow_filter_switch_takes_two_words_and_refuses_the_rest() {
+        for word in ["fast", "hard", "hardware", "2x2", " FAST "] {
+            assert_eq!(
+                parse_filter(word),
+                Some(ShadowFilteringMethod::Hardware2x2),
+                "{word}"
+            );
+        }
+        for word in ["soft", "gaussian", "pcf", "Soft"] {
+            assert_eq!(
+                parse_filter(word),
+                Some(ShadowFilteringMethod::Gaussian),
+                "{word}"
+            );
+        }
+        // `temporal` among them: it is a real bevy variant and it is deliberately
+        // unreachable here, so naming it must not work by accident.
+        for word in ["", "temporal", "off", "1", "smooth"] {
+            assert_eq!(parse_filter(word), None, "{word} should name no filter");
+        }
     }
 }
