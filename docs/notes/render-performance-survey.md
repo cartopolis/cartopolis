@@ -615,11 +615,36 @@ behind the camera*. They now carry
 path — "the ground does not cast" — was right about relief and had quietly never
 applied to the flat case, which is every tile most of the time.
 
-**`tris_shadow` could not have caught this and still cannot.** The tiles are
-uploaded `RENDER_WORLD`-only, so they count zero triangles from the main world by
-construction; the metric read the same before and after. `RenderCounts` carries
-`shadow_casters` — an entity count — since this, and it is in the `shot state`
-line, `--csv`, `--dump-state`, the dev panel and the shareable report.
+### Measured
+
+Lavapipe, 480×270, Groningen from 3 km at −30°/35°, `CARTO_QUALITY=balanced`,
+noon, clear, dry, both runs settled. The only difference between them is the four
+`NotShadowCaster` insertions; everything else is the same binary and the same
+scene, which the identical draw and triangle totals confirm.
+
+| | before | after |
+|---|---|---|
+| `draws` | 488 | 488 |
+| `tris_total` | 1688 | 1688 |
+| `tris_shadow` | 1368 | **0** |
+| `shadow_casters` | 158 | **44** |
+
+**114 of 158 casters, 72 %, were things that cannot cast a meaningful shadow** —
+and every one of them was going into every cascade of every light with no
+frustum test. At this viewpoint the route, the driver arrow and the particle
+emitters are all absent, so the whole difference is the ground.
+
+**`tris_shadow` alone is not enough, though it is not blind here either.** The
+first draft of this section claimed the metric could not see the change at all,
+on the reasoning that the clipmap is uploaded `RENDER_WORLD`-only and counts zero
+triangles from the main world. The measurement says otherwise: it moved 1368 → 0,
+because the relief and curvature grids `map_stream` builds *are* main-world
+meshes. What the reasoning got right is the direction — 1688 counted triangles
+for a 488-draw scene means most of the geometry (the 3DBAG shells, the globe)
+contributes nothing to either column, so a caster can still be invisible to
+`tris_shadow` while costing a pass. Read both. `RenderCounts::shadow_casters` is
+the entity count, and it reaches the `shot state` line, `--csv`, `--dump-state`,
+`--expect`, the dev panel and the shareable report.
 
 ### The filter was never set, so every tier took bevy's most expensive one
 
@@ -674,13 +699,21 @@ and bevy re-renders every cascade every frame regardless. Re-rendering the outer
 cascades only every N frames is the real structural win here and bevy 0.19 has no
 API for it — it is engine work, not a setting.
 
-### Unmeasured
+### What is still unmeasured
 
-Everything above is a mechanism established by reading `bevy_light` and the call
-sites, not a millisecond figure. Frame times in this container are a CPU
-rasteriser's and the note's own table says not to gate on them; an earlier sweep
-had `CARTO_NO_SHADOWS` landing 48 ms *slower* than baseline. `shadow_casters` in
-`--dump-state` **is** trustworthy here and is the check that the caster changes
-did what they say. The split between the pass and the per-fragment lookup needs
-`cargo perf --features perf` on the `deck-gpu` runner, which is how the cloud
-shell was settled.
+The caster counts above are measured. **No millisecond figure is**, and none
+should be taken from this container: frame times here are a CPU rasteriser's and
+the table at the top of this note says not to gate on them — an earlier sweep had
+`CARTO_NO_SHADOWS` landing 48 ms *slower* than baseline. Nothing above should be
+read as a frame-rate claim.
+
+The filter, the moon and the cascade reach have no caster-count signature at all,
+so they are untested by the A/B above; they rest on reading `bevy_light` and the
+call sites. Splitting the shadow cost between the caster pass and the
+per-fragment lookup needs `cargo perf --features perf` on the `deck-gpu` runner,
+which is how the cloud shell was settled — and `CARTO_SHADOW_FILTER` exists so
+that run needs no rebuild.
+
+One practical note for whoever does it: five of six capture attempts on this
+container were killed by the OOM killer with eight other sessions compiling. The
+3 km viewpoint at 480×270 is what fits; a 100 m street view did not.
