@@ -1479,7 +1479,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
     // where the round-robin cursor happened to be — a script's behaviour would
     // then change with the number of other scripts in the world, which is the
     // kind of thing that reproduces once a week.
-    let mut posted: Vec<(i64, i64, i64, String)> = Vec::new();
+    let mut posted: Vec<(i64, i64, String)> = Vec::new();
 
     let mut bank = WORLD_FUEL_PER_TICK;
     let start = *cursor % ids.len();
