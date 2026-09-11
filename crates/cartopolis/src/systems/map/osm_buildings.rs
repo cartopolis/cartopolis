@@ -1126,6 +1126,12 @@ pub fn update_buildings(
         // mass-despawn burst `platform::stream` owns a queue to prevent.
         let retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
         osm.far.retire_all(retired);
+        // And the colliders with them, or the patch leaves a city's worth of
+        // invisible walls behind: collision matches what is drawn, and nothing of
+        // this patch is drawn here any more. `lod22` publishes its own footprints
+        // for these cells — including the hollow ones, which an extruded OSM
+        // footprint over the top would seal shut again.
+        colliders.clear_detail();
         osm.last_center = None;
     }
     // `coverage_resolved` holds the FIRST fetch those few startup frames: a
