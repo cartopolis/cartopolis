@@ -228,10 +228,30 @@ const BLADE_HEIGHT_M: f32 = 0.38;
 /// comes from the tone gradient rather than from bare ground between blades.
 const BLADE_WIDTH_M: f32 = 0.013;
 
-/// How far a blade may be jittered off its lattice slot, as a fraction of the
-/// slot spacing. Just under half, so blades never swap places and the density
-/// stays exactly what [`SLOTS`] says.
-const JITTER_FRAC: f32 = 0.9;
+/// How far a blade may be jittered off its lattice slot, as a multiple of the
+/// slot spacing — the shader offsets by ±half of this.
+///
+/// **Deliberately past 1.0, so a blade can leave the cell it was born in.** At
+/// the old 0.9 it could not: ±0.45 of a cell is textbook stratified sampling,
+/// which is a *good* point set for integration and the wrong one for a lawn,
+/// because every blade stays in its own row and the rows stay visible. Seen along
+/// either axis at a grazing angle that reads as corduroy — the artefact reported
+/// on 2026-09-11, and no amount of jitter under half a cell can remove it,
+/// because the constraint *is* the artefact.
+///
+/// Past 1.0 two neighbours can occupy the same ground and a cell can come up
+/// empty. Both are wanted: real grass grows in clumps with gaps between them, and
+/// the density this trades away is statistical only — the blade *count* is still
+/// exactly `slots²`, since every slot still draws.
+///
+/// The other half of the fix is that the lattice's rows are staggered half a cell
+/// against each other (`turf::blade_lattice`). Neither alone is enough: stagger
+/// without jitter is a neat hexagonal grid, and jitter without stagger is what
+/// this was.
+///
+/// It is paid for in the patch's `Aabb`, which has to grow by the jitter radius
+/// or the blades that wander out of their patch pop at the frustum edge.
+const JITTER_FRAC: f32 = 1.3;
 
 /// Sway amplitude at [`FULL_SWAY_WIND`], as a fraction of blade height, and the
 /// wind speed the ramp saturates at.
@@ -797,6 +817,10 @@ pub fn update_grass(
             commands.entity(e).despawn();
         }
         let half = pool.tier.patch_m * 0.5;
+        // How far the shader may throw a blade off its slot, in metres — the same
+        // product `update_grass` hands the material, and the reason the box below
+        // is wider than the patch.
+        let jitter_m = pool.tier.patch_m / pool.tier.slots as f32 * JITTER_FRAC * 0.5;
         for _ in 0..pool.offsets.len() {
             let id = commands
                 .spawn((
@@ -821,9 +845,15 @@ pub fn update_grass(
                     // (per-blade 1.4 × per-clump 1.35 × vigour 1.08 ≈ 2.05) with
                     // slack — a blade taller than its patch's Aabb pops out at
                     // the frustum edge with nothing anywhere to say why.
+                    //
+                    // The *lateral* slack is the same rule in the other axis, and
+                    // it is new with `JITTER_FRAC` past 1.0: a blade may now be
+                    // offset more than half a cell, so the outermost row leaves
+                    // the patch it belongs to. Without this the box still claims
+                    // the old bounds and those blades wink out at the screen edge.
                     Aabb::from_min_max(
-                        Vec3::new(-half, -1.0, -half),
-                        Vec3::new(half, pool.tier.height_m * 2.5, half),
+                        Vec3::new(-half - jitter_m, -1.0, -half - jitter_m),
+                        Vec3::new(half + jitter_m, pool.tier.height_m * 2.5, half + jitter_m),
                     ),
                 ))
                 .id();

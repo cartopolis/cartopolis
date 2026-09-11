@@ -436,10 +436,39 @@ pub fn blade_lattice(side: u32, spacing: f32) -> BladeLattice {
         colors: vec![[1.0, 1.0, 1.0, 1.0]; verts],
         indices: Vec::with_capacity(blades * BLADE_TRIS as usize * 3),
     };
+    // Rows are staggered half a cell against each other — hexagonal packing
+    // rather than a square grid, and it is the whole reason this loop is not two
+    // multiplications.
+    //
+    // A square lattice has *rows*, and the shader's jitter cannot remove them: it
+    // offsets each blade by up to half a cell, so a blade never leaves the cell it
+    // was born in and the rows survive as rows. Looking along either axis at a
+    // grazing angle they line up into the corduroy a ploughed field has, which is
+    // exactly what a lawn does not look like. Offsetting alternate rows by half a
+    // cell breaks the alignment along both axes at once, costs nothing (the slots
+    // are placed once, into a mesh every patch shares) and leaves the count, the
+    // spacing and the density exactly as they were.
+    //
+    // ±a quarter rather than one row at +a half, so the patch's own bounds are
+    // unchanged and `the_lattice_fills_its_patch_and_nothing_more` still holds;
+    // what matters is the *relative* half-cell between neighbouring rows.
+    //
+    // **`side` must be even**, or the wrap puts two same-phase rows against each
+    // other at the patch seam and the artefact comes back once per patch instead
+    // of once per cell. Asserted rather than documented, because every caller's
+    // value is a constant and a future odd one would be a silent regression.
+    debug_assert!(
+        side % 2 == 0,
+        "a staggered lattice needs an even side, got {side}"
+    );
     for j in 0..side {
+        let stagger = if j % 2 == 0 { -0.25 } else { 0.25 };
         for i in 0..side {
             let base = lattice.positions.len() as u32;
-            let (x, z) = ((i as f32 + 0.5) * spacing, (j as f32 + 0.5) * spacing);
+            let (x, z) = (
+                (i as f32 + 0.5 + stagger) * spacing,
+                (j as f32 + 0.5) * spacing,
+            );
             for role in 0..BLADE_VERTS {
                 lattice.positions.push([x, 0.0, z]);
                 lattice.uvs.push([role as f32, 0.0]);
