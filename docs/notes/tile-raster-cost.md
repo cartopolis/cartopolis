@@ -91,6 +91,13 @@ TTFB dominates body 18:1 even cold — measured from the VPS where RTT ≈ 0, so
 that is TLS plus server time per request, already hidden by concurrency; it is
 not a bandwidth story on this link.
 
+**That 2 s is the reading the warm stores were built from** — see
+[keeping-what-was-expensive.md](keeping-what-was-expensive.md). Caching the
+*source* bytes cannot move a fill dominated by scan conversion, so since
+2026-09-11 `map_stream` keeps the rasterised mip chain of a retired tile and
+`lod22` keeps its merged meshes' handles. Neither touches a cold fill; both
+remove the rebuild on a return.
+
 **A 256² render costs ~72% of a 512² one, not 25% — and batching did not
 change that.** Scan conversion scales with area (≈25 ms of the 67.6 at 512²);
 the rest is size-independent, per-path work. Before the batching it was

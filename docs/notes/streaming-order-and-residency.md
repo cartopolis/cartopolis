@@ -1,7 +1,7 @@
 ---
 topic: streaming-order-and-residency
-triggers: [fetch_gate, cell_source, cell_bundle, load_control, "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far"]
-updated: 2026-09-08
+triggers: [fetch_gate, cell_source, cell_bundle, load_control, take_shed, "shed", "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far"]
+updated: 2026-09-11
 ---
 
 # What decides the order things stream in, and how much of them stays
@@ -57,6 +57,14 @@ is what each does when it acts. A deferred upload arrives a frame later and the
 settle test waits for it; a narrower ring means content never fetched at all, so
 two runs of `cargo shots` would differ for a reason no image could show.
 `radius_bias` is in `--dump-state` so a capture states what it was given.
+
+**It has a cheaper move than the ring now.** Since 2026-09-11 `lod22` may hold
+the meshes of cells that have left its ring
+([keeping-what-was-expensive.md](keeping-what-was-expensive.md)), and those bytes
+count toward the same residency figure while being drawn by nothing — so the
+controller sheds them first (`SHED_AFTER_S`, 1 s, outside the dwell) and only
+narrows the ring if that was not enough. Every other thing it could free is on
+screen; this is the first that is not.
 
 ## Ring distance is a poor detail axis for a small ring, and that is the whole rule
 
