@@ -2363,7 +2363,28 @@ const ROAD_CASING_M: f32 = 0.75;
 /// Past this the join emits two outer vertices and a fill triangle rather than a
 /// single stretched one — see [`ribbon`] on why clamping the miter *in place* is
 /// not the same thing.
-const MITER_LIMIT: f32 = 2.5;
+///
+/// **2.5 was a stroke-join default, not a number about roads**, and it is too
+/// generous by a wide margin: a join may reach `2.5 · half` from the centre line,
+/// which is an 11 m spike on a 9 m street and a 27 m one on a motorway. The
+/// Groningen fixture has a worked example — feature 69's first linestring is a
+/// `tertiary` turning head that reverses through **128.2°**, whose miter of
+/// `1 / cos(64.1°) = 2.29` slipped under the old limit and drew a ten-metre
+/// tongue of tarmac out into the field past the road it serves.
+///
+/// 1.5 instead, for one reason that can be stated: a right angle mitres at
+/// `1 / cos 45° = 1.414`, and a street grid's right angles are corners the map is
+/// asserting (the same licence [`ROUND_MAX_DEG`] draws). So every corner up to
+/// ~96° keeps its point and nothing in an ordinary city moves; past that the
+/// point stops being a shape a road has, and a bevel — the chord between the two
+/// square corners — is what a turning head actually looks like.
+///
+/// **It has to stay a ratio, not a distance.** [`kerb_band`] zips the carriageway
+/// against a second, wider run of this same code and relies on every join
+/// decision being independent of the width; a limit in metres would let the fill
+/// and its kerb bevel at different corners, desynchronise the two chains and drop
+/// the band to its slab fallback.
+const MITER_LIMIT: f32 = 1.5;
 
 /// Fraction of the shorter adjacent segment that the **inner** corner may
 /// backtrack over. See [`ribbon`]: the inner miter runs back `half / tan(θ/2)`
@@ -3278,6 +3299,16 @@ fn junction_extent(
     feature_index: usize,
     out_dir: [f32; 2],
 ) -> f32 {
+    // Bisecting switch: `CARTO_NO_STUB=1` lays every ribbon with a square end, so
+    // a shape at a junction can be told apart from the stub that fills it. Read
+    // once — this runs at every junction end, and the perf tests time it.
+    #[cfg(test)]
+    {
+        static NO_STUB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *NO_STUB.get_or_init(|| std::env::var("CARTO_NO_STUB").is_ok()) {
+            return 0.0;
+        }
+    }
     nodes
         .get(&node_key(end))
         .map(|at| {
@@ -6251,15 +6282,16 @@ mod tests {
             "road overdraw: {doubled}/{covered} px = {:.2}%",
             frac * 100.0
         );
-        // 0.81 % measured (2026-08-26), and it is not zero because a ribbon still
-        // laps over *itself* where a bevel fills a tight corner. That is the one
-        // collision this never had to settle: one ribbon is one material, one
-        // colour and one run of texture coordinates, so which of its own two
-        // triangles wins cannot be seen. The bound is a little over the
-        // measurement, to catch the cut being skipped rather than a fixture that
-        // gains a street.
+        // 0.37 % measured (2026-09-11), down from 0.81 % while a ribbon was still
+        // exempt from being cut against *itself*. That exemption was excused as
+        // invisible — one material, one colour, one run of texture coordinates —
+        // and the last clause is false: `v` is metres travelled, so a ribbon that
+        // doubles back carries different lane markings on its two layers at the
+        // same depth. What is left is the overlap kept on purpose, a flyover and
+        // the road beneath it. The bound is a little over the measurement, to
+        // catch the cut being skipped rather than a fixture that gains a street.
         assert!(
-            frac < 0.02,
+            frac < 0.01,
             "{:.2}% of covered road pixels are covered twice",
             frac * 100.0
         );
@@ -7911,6 +7943,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A join may not throw a spike into the field.
+    ///
+    /// [`MITER_LIMIT`] bounds how far the outer corner may stand from the centre
+    /// line, and the bevel is what enforces it. This measures the geometry rather
+    /// than the constant: every vertex of the built ribbon, against the line it
+    /// was built on.
+    #[test]
+    fn a_reversal_is_bevelled_rather_than_drawn_as_a_spike() {
+        let seg_dist = |p: [f32; 2], a: [f32; 2], b: [f32; 2]| -> f32 {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 1e-9 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p[0] - (a[0] + dx * t)).hypot(p[1] - (a[1] + dy * t))
+        };
+        for turn in [30.0f32, 60.0, 90.0, 100.0, 128.2, 150.0, 170.0] {
+            for half in [2.0f32, 4.5, 11.0] {
+                let (verts, centre) = corner(turn, 6.0, half);
+                let worst = verts
+                    .iter()
+                    .map(|(p, _)| {
+                        centre
+                            .windows(2)
+                            .map(|w| seg_dist(*p, w[0], w[1]))
+                            .fold(f32::MAX, f32::min)
+                    })
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    worst <= half * MITER_LIMIT + 1e-3,
+                    "a {turn}° turn on a {:.0} m road reaches {worst:.2} m from its centre \
+                     line, past the {:.2} m the miter limit allows",
+                    half * 2.0,
+                    half * MITER_LIMIT,
+                );
+            }
+        }
+
+        // …and the limit is where it is for a reason, which is the half of this
+        // that would otherwise drift. A right angle mitres at `1 / cos 45°` and
+        // **keeps its point** — a street grid's right angles are corners the map
+        // asserts, the same licence `ROUND_MAX_DEG` draws. A reversal does not:
+        // the Groningen fixture's feature 69 is a `tertiary` turning head that
+        // reverses through 128.2°, and its miter of `1 / cos 64.1° = 2.29` slipped
+        // under the old limit of 2.5 and drew a ten-metre tongue of tarmac out
+        // into the field past the end of the road.
+        assert!(
+            MITER_LIMIT >= 1.0 / std::f32::consts::FRAC_PI_4.cos(),
+            "a right angle must keep its point",
+        );
+        assert!(
+            MITER_LIMIT < 1.0 / 64.1f32.to_radians().cos(),
+            "a 128° reversal must bevel rather than mitre",
+        );
     }
 
     /// Clipping, not clamping: geometry in the MVT buffer zone must be *cut* at
