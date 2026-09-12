@@ -117,7 +117,23 @@ pub fn apply_render_features(
     // The **shadow** gate is the plainer one: these are shadows. Somebody who has
     // turned shadows off to get their frames back has not asked for a
     // per-fragment ray march instead.
-    let want_contact = want_ao && prefs.shadows_on();
+    //
+    // And the third: **not on a software adapter**, the same refusal
+    // `AppPrefs::light_shafts_on` already makes and for the same reason. A
+    // screen-space march is per-fragment work, a CPU rasteriser is where
+    // per-fragment work is least affordable, and this container is where the
+    // headless smokes run — the street capture there already spends seconds a
+    // frame and reports `slow frame` before anything is added to it. Measured on
+    // 2026-09-12: with contact shadows on, that capture stalled hard enough for
+    // `platform::watchdog` to dump every thread asleep on a futex, and the gate
+    // scored it a failure with no assertion having failed.
+    //
+    // Unlike the other two this is not a preference anyone can overrule, because
+    // it is not about what looks good — asking a rasteriser with no fragment
+    // budget for more fragment work does not produce a slower picture, it
+    // produces no picture.
+    let software = crate::quality::capabilities().is_some_and(|caps| caps.software_renderer);
+    let want_contact = want_ao && prefs.shadows_on() && !software;
 
     if want_ao != has_ao {
         let mut cmd = commands.entity(cam);

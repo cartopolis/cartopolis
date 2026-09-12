@@ -368,6 +368,31 @@ The removal order matters and is the same trap the note records for
 `ScreenSpaceAmbientOcclusion`'s required components: contact shadows come off
 *before* the prepass they read, in the same flush.
 
+**And they are refused on a software adapter**, beside volumetric fog and for the
+same reason: a screen-space march is per-fragment work, and a CPU rasteriser is
+where per-fragment work is least affordable.
+
+Note the difference from ambient occlusion, which is deliberately *kept* here:
+that one compiles the depth and normal prepasses, which are the things most
+likely to break a pipeline, and paying three seconds a frame for it is how such
+a failure gets caught in this container instead of on a phone. Contact shadows
+compile nothing the occlusion pass has not already compiled, so keeping them
+buys no coverage.
+
+**This was first written up with a measurement it does not have, and the
+correction is the useful part.** The street flicker smoke failed on the landing
+gate at 901 s with `platform::watchdog` dumping every thread asleep on a futex,
+and that was read as contact shadows stalling the capture. It was not: 901 s is
+`verify-branch`'s own `timeout 900` plus a second, the step simply ran out of
+budget, and the same step failed identically with contact shadows refused. The
+watchdog output is what a *slow* process looks like, not what a stalled one
+looks like, and the two are indistinguishable from that dump alone. The refusal
+above stands on the light-shafts precedent, not on this.
+
+Unlike the other two gates this one is not overridable, because it is not a
+judgement about the picture: asking a rasteriser with no fragment budget for more
+fragment work does not produce a slower picture, it produces no picture.
+
 ### Still flat
 
 - **No normal maps.** Unchanged, and for the unchanged reason: bevy needs
