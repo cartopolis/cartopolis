@@ -5320,30 +5320,27 @@ mod tests {
             "every texel is within {SHORE_MAX_DIST_M} m of a building"
         );
 
-        // And the two fields must not be the same picture at different sizes: a
-        // building stands inland, so sample the bank field where the *shore*
-        // field says open water and check that at least some of those texels
-        // still have a building near them and some do not.
+        // And it must not be the shore field wearing a smaller size. Seed the
+        // transform from the water polygons by mistake and every assert above
+        // still holds — the giveaway is that the zeros would then coincide, so
+        // look for **land that is not a building**: a street, a garden, a quay.
+        // The first version of this test asked for open water instead, meaning a
+        // texel 60 m from any bank, and a canal city does not have one.
         let step = field.size / field.bank_size;
-        let mut near_a_building = 0usize;
-        let mut clear = 0usize;
+        let mut land_without_a_building = 0usize;
         for by in 0..field.bank_size {
             for bx in 0..field.bank_size {
-                let s = field.data[((by * step) * field.size + bx * step) as usize];
-                if s < u8::MAX {
-                    continue; // not open water
-                }
-                if field.bank[(by * field.bank_size + bx) as usize] < 64 {
-                    near_a_building += 1;
-                } else {
-                    clear += 1;
+                let shore = field.data[((by * step) * field.size + bx * step) as usize];
+                let bank = field.bank[(by * field.bank_size + bx) as usize];
+                if shore == 0 && bank > 0 {
+                    land_without_a_building += 1;
                 }
             }
         }
         assert!(
-            near_a_building > 0 && clear > 0,
-            "open water is uniformly {near_a_building} near / {clear} clear of buildings, \
-             so the bank field is carrying the shore field's answer"
+            land_without_a_building > 0,
+            "every land texel is also a building texel, so the bank field is \
+             carrying the shore field's answer"
         );
     }
 
