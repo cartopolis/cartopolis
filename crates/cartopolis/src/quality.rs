@@ -473,13 +473,22 @@ impl Budget {
             fps_cap: Some(60.0),
             upload_bytes_per_frame: None,
             resident_bytes_target: None,
-            // 1 GiB, which at 1,365 kB per 512² ground tile is roughly 760 of
-            // them — a couple of clipmaps' worth of city held behind the live
-            // one, so flying out and back costs an upload rather than another
-            // 68 ms of scan conversion per tile. A workstation has the memory to
-            // spare and is the machine where `cargo shots`, a route preview and
-            // a fly-through all revisit ground they have already drawn.
-            warm_bytes: 1024 * 1024 * 1024,
+            // 512 MiB, which at 1,365 kB per 512² ground tile is roughly 380 of
+            // them — a clipmap's worth of city held behind the live one, so
+            // flying out and back costs an upload rather than another 68 ms of
+            // scan conversion per tile. This is the machine where `cargo shots`,
+            // a route preview and a fly-through all revisit ground they have
+            // already drawn.
+            //
+            // It started at 1 GiB and was halved on 2026-09-12, not from a
+            // measurement of what a return journey needs but from one of what
+            // this costs: the store reached 339 MB inside four minutes of a
+            // ground-level fill over Groningen, on top of a process already
+            // holding a Bevy world and ~1 GB of streamed content. Nothing bounds
+            // that sum, and the honest position is that the pool should be a
+            // fraction of the process rather than a peer of it. `CARTO_WARM_MB`
+            // is there for anyone who measures otherwise.
+            warm_bytes: 512 * 1024 * 1024,
             // 512 MiB, and the rung with no `resident_bytes_target` at all is the
             // only one where a number this size is not a claim about a ceiling.
             // Groningen's whole streamed scene measured 969 MB on this rung, of

@@ -429,6 +429,40 @@ mod tests {
         CellStream::new(policy())
     }
 
+    /// The contract the warm pools depend on: a cell whose finished form the
+    /// caller already holds must stop being requestable, or the streamer fetches,
+    /// parses and meshes the very cell it has just re-spawned, then draws the
+    /// rebuild over it.
+    #[test]
+    fn an_adopted_cell_is_not_requested_again() {
+        let mut s = stream();
+        assert!(s.request(7, 0.0), "a fresh cell is requestable");
+        s.forget(&7);
+        assert!(!s.is_requested(&7), "forget did not release it");
+
+        s.adopt(7);
+        assert!(s.is_requested(&7));
+        assert!(
+            !s.request(7, 1.0),
+            "an adopted cell was queued for a fetch it does not need"
+        );
+    }
+
+    /// And adopting clears the failure history, so a cell that had failed before
+    /// the pool got hold of it is not left in a backoff the pool has made
+    /// irrelevant.
+    #[test]
+    fn adopting_clears_a_failure() {
+        let mut s = stream();
+        s.request(1, 0.0);
+        for _ in 0..3 {
+            s.failed(&1, 0.0);
+        }
+        assert!(s.exhausted(&1));
+        s.adopt(1);
+        assert!(!s.exhausted(&1));
+    }
+
     #[test]
     fn the_bound_holds_and_a_drained_result_frees_a_slot() {
         let mut s = stream();
