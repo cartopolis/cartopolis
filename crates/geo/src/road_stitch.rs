@@ -143,6 +143,14 @@ fn from_mm(v: i32) -> f32 {
 #[derive(Clone, Copy)]
 struct Tri {
     ribbon: u32,
+    /// Which triangle of that ribbon this is, counting from zero.
+    ///
+    /// A ribbon is cut against *itself* as well as against its superiors (see
+    /// [`cut_ribbon`]), and this is the order that cut runs in: the earlier
+    /// triangle keeps the ground. It has to be a strict total order for the same
+    /// reason `priority` does — an order with a draw in it cuts both sides out of
+    /// the ground they share and opens a hole.
+    seq: u32,
     /// Corners on the millimetre lattice, wound as `push_triangle_up` wound them
     /// — which is one consistent direction for every road triangle in the tile,
     /// and therefore safe to feed to a non-zero fill rule as a set.
@@ -183,7 +191,7 @@ impl Buckets {
             tris: Vec::new(),
         };
         for (i, r) in ribbons.iter().enumerate() {
-            for t in r.indices.chunks_exact(3) {
+            for (seq, t) in r.indices.chunks_exact(3).enumerate() {
                 let flat: [[f32; 2]; 3] = [
                     flat_of(&r.positions, t[0]),
                     flat_of(&r.positions, t[1]),
@@ -193,6 +201,7 @@ impl Buckets {
                 let id = me.tris.len() as u32;
                 me.tris.push(Tri {
                     ribbon: i as u32,
+                    seq: seq as u32,
                     p: [
                         IntPoint::new(to_mm(flat[0][0]), to_mm(flat[0][1])),
                         IntPoint::new(to_mm(flat[1][0]), to_mm(flat[1][1])),
@@ -425,7 +434,7 @@ fn cut_ribbon(
     };
 
     let y = r.positions.first().map_or(0.0, |p| p[1]);
-    for t in r.indices.chunks_exact(3) {
+    for (seq, t) in r.indices.chunks_exact(3).enumerate() {
         let vs = [
             r.positions[t[0] as usize],
             r.positions[t[1] as usize],
@@ -457,14 +466,34 @@ fn cut_ribbon(
         for c in scratch.iter() {
             let other = &buckets.tris[*c as usize];
             let j = other.ribbon as usize;
-            if j == i || !overlaps(&tb, &other.bbox) {
+            if !overlaps(&tb, &other.bbox) {
                 continue;
             }
-            let o = &ribbons[j];
-            // A flyover and the road under it are two surfaces in one place, so
-            // they are never each other's blockers.
-            if o.bridge != r.bridge || o.priority <= r.priority {
-                continue;
+            if j == i {
+                // A ribbon laps over *itself* wherever its centre line doubles
+                // back — a hairpin, a spur drawn out and back along one
+                // alignment. The two layers are the same material, which is why
+                // this used to be left alone, but they are **not** the same
+                // texture: `v` is metres travelled, so the returning leg carries
+                // different lane dashes and edge lines from the outgoing one at
+                // the same depth. That is a per-pixel coin flip that re-rolls
+                // with the view matrix — the very thing the cut exists to
+                // remove, surviving inside the one case it exempted.
+                //
+                // The earlier triangle keeps the ground. Adjacent strip
+                // triangles share an edge and `tris_overlap` reads a shared edge
+                // as *not* overlapping, so an honest strip is untouched and only
+                // a fold loses its second layer.
+                if other.seq >= seq as u32 {
+                    continue;
+                }
+            } else {
+                let o = &ribbons[j];
+                // A flyover and the road under it are two surfaces in one place,
+                // so they are never each other's blockers.
+                if o.bridge != r.bridge || o.priority <= r.priority {
+                    continue;
+                }
             }
             if !tris_overlap(&subj, &other.p) {
                 continue;
@@ -644,6 +673,59 @@ mod tests {
         assert!(
             (area(&ribbons[1]) - 20.0).abs() < 1e-3,
             "the bridge is whole"
+        );
+    }
+
+    /// A ribbon laps over **itself** wherever its centre line doubles back, and
+    /// that used to be left alone on the grounds that one ribbon is one material
+    /// and one run of texture coordinates. It is not: `v` is metres travelled, so
+    /// the returning leg carries different lane dashes from the outgoing one at
+    /// the same depth, and which draws is a coin flip that re-rolls with the view
+    /// matrix. The fold loses its second layer.
+    ///
+    /// The Groningen fixture's worked example is feature 69 — a `tertiary`
+    /// turning head whose two legs are 5 m apart while the road is drawn 9 m
+    /// wide, so the legs cover each other outright.
+    #[test]
+    fn a_ribbon_that_folds_back_keeps_one_layer() {
+        let mut r = bar(0.0, 0.0, 10.0, 2.0, 1);
+        // The same ribbon laid back over its own first half.
+        let base = r.positions.len() as u32;
+        r.positions.extend([
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [5.0, 0.0, 2.0],
+            [0.0, 0.0, 2.0],
+        ]);
+        r.uvs
+            .extend([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        r.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        let mut ribbons = vec![r];
+        assert!(
+            (area(&ribbons[0]) - 30.0).abs() < 1e-3,
+            "the fold is 10 m² of doubled ground before the cut",
+        );
+        stitch(&mut ribbons);
+        assert!(
+            (area(&ribbons[0]) - 20.0).abs() < 1e-3,
+            "the ribbon should cover its 10 x 2 m of ground exactly once, not {}",
+            area(&ribbons[0]),
+        );
+    }
+
+    /// …and the ordinary strip is untouched by that. Every quad of a ribbon
+    /// shares an edge with its neighbour, and a shared edge is not an overlap —
+    /// if it were read as one, the cut would nibble a hairline out of every
+    /// triangle in the tile.
+    #[test]
+    fn the_shared_edges_of_one_strip_are_not_a_fold() {
+        let mut ribbons = vec![bar(0.0, 0.0, 10.0, 2.0, 1)];
+        let before = ribbons[0].indices.clone();
+        stitch(&mut ribbons);
+        assert_eq!(
+            ribbons[0].indices, before,
+            "a strip's own shared edges must not cut it",
         );
     }
 
