@@ -564,13 +564,14 @@ fn spawn_geometry_task(
                             // tiles.
                             // The surveyed paving goes down first, under the road
                             // ribbons that will be laid over it — and it is also
-                            // what tells `tessellate_roads` to leave the footways
-                            // and cycle paths alone, since this cell draws those
-                            // as real shapes rather than as constant-width lines.
+                            // what tells `tessellate_roads` to leave the footways,
+                            // the cycle paths and the pedestrian streets alone,
+                            // since this cell draws those as real shapes rather
+                            // than as constant-width lines.
                             let paved = crate::systems::surveyed::surveyed_paving(
                                 &paving, cell.0, cell.1, tile_m,
                             );
-                            let surveyed_paths = !paved.is_empty();
+                            let surveyed_paving = !paved.is_empty();
                             cell_places.surveyed.3 = paved.len();
                             meshes.extend(crate::systems::paving::build_paving_meshes(
                                 &paved, mesh_bytes,
@@ -593,7 +594,7 @@ fn spawn_geometry_task(
                                 tile_m,
                                 &mut decks,
                                 mesh_bytes,
-                                surveyed_paths,
+                                surveyed_paving,
                             ) {
                                 Ok(roads) => {
                                     meshes.extend(roads.ground);

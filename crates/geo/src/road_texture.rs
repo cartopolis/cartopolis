@@ -179,6 +179,29 @@ pub fn road_class(kind: &str, flags: StreetFlags) -> Option<RoadClass> {
     })
 }
 
+/// Does a paving survey describe this `streets` kind as a real shape, so the
+/// constant-width ribbon for it must not also be drawn over a surveyed cell?
+///
+/// Deliberately beside [`road_class`] so the two cannot drift, exactly as
+/// [`is_rail_kind`] is: it names the kinds that map to [`RoadClass::Path`],
+/// **plus `pedestrian`**, which maps to [`RoadClass::Minor`] because that is what
+/// it looks like where nobody has surveyed it — a street you can walk down, wide
+/// enough to carry a delivery van, and cased at its kerb.
+///
+/// That difference is the whole reason this is not a test on the class. A rule
+/// keyed on `RoadClass::Path` alone left every pedestrian street and every
+/// pedestrian square drawing a 5 m tarmac ribbon with wheel tracks and kerbs on
+/// top of the paving the survey had already laid there — the Grote Markt in
+/// Groningen is mapped as fourteen separate `pedestrian` ways, so it came out as
+/// a scatter of tarmac stubs across the square (2026-09-11).
+#[must_use]
+pub fn surveyed_paving_supersedes(kind: &str) -> bool {
+    matches!(
+        kind,
+        "footway" | "path" | "cycleway" | "steps" | "track" | "pedestrian"
+    )
+}
+
 /// Is this `streets` kind track rather than road?
 ///
 /// Deliberately beside [`road_class`] so the two cannot drift: it names the same

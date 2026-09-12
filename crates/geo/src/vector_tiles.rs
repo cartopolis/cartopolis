@@ -32,7 +32,9 @@ use tiny_skia::{
 
 use std::collections::HashMap;
 
-use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
+use crate::road_texture::{
+    road_class, road_width_m, surveyed_paving_supersedes, RoadClass, StreetFlags,
+};
 
 /// One tile body, parsed **once**, with its decoded features memoised per layer.
 ///
@@ -2437,7 +2439,7 @@ pub fn tessellate_roads(
     tile_m: f32,
     decks: &mut [BridgeDeck],
     max_bytes: Option<usize>,
-    surveyed_paths: bool,
+    surveyed_paving: bool,
 ) -> Result<RoadTessellation, String> {
     let Some(meta) = tile.layer("streets") else {
         return Ok(RoadTessellation::default());
@@ -2487,12 +2489,14 @@ pub fn tessellate_roads(
         let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
-        // Over a cell whose paving was surveyed, the footways and cycle paths are
-        // drawn from that survey as real shapes (`crate::paving`), so the
-        // constant-width ribbon for the same path must not also be drawn. This is
-        // the one class the two sources both describe; everything else on the
-        // vehicle network stays with OSM, marked and cased, everywhere.
-        if surveyed_paths && class == RoadClass::Path {
+        // Over a cell whose paving was surveyed, the footways, cycle paths and
+        // pedestrian streets are drawn from that survey as real shapes
+        // (`crate::paving`), so the constant-width ribbon for the same ground must
+        // not also be drawn. The test is on the *kind*, not on the class: a
+        // pedestrian street is a `RoadClass::Minor`, so a class-level rule left it
+        // paving squares in tarmac. Everything else on the vehicle network stays
+        // with OSM, marked and cased, everywhere.
+        if surveyed_paving && surveyed_paving_supersedes(kind_of(feature).unwrap_or("")) {
             continue;
         }
         let bridge = flag_of(feature, "bridge");
@@ -6181,11 +6185,13 @@ mod tests {
     }
 
     /// Over a cell whose paving was surveyed, the footway and cycle ribbons must
-    /// not be drawn — those two are the only classes both sources describe, and
-    /// drawing them twice puts a constant-width line down the middle of a real
-    /// pavement. Every other class is OSM's and must survive the flag untouched.
+    /// not be drawn — drawing them twice puts a constant-width line down the
+    /// middle of a real pavement. Every other *class* is OSM's and must survive
+    /// the flag: `Minor` stays, because a residential street is still OSM's even
+    /// though the pedestrian streets inside that class now go
+    /// ([`surveyed_paving_also_drops_the_pedestrian_ribbons`] is what pins those).
     #[test]
-    fn surveyed_paths_drop_the_path_ribbons_and_nothing_else() {
+    fn surveyed_paving_drops_the_path_ribbons_and_no_whole_class_else() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("fixture");
         let groups = |surveyed: bool| -> Vec<SurfaceGroup> {
             let mut g: Vec<SurfaceGroup> =
@@ -6219,6 +6225,62 @@ mod tests {
                 "{group:?} is OSM's and must still be drawn"
             );
         }
+    }
+
+    /// A pedestrian street is paving, and the survey draws it — so its ribbon has
+    /// to go the same way a footway's does.
+    ///
+    /// It is **not** a [`RoadClass::Path`], so the class-level rule above missed
+    /// it entirely and laid a 5 m tarmac ribbon with wheel tracks and a kerb band
+    /// over every surveyed square. Groningen's Grote Markt is mapped as fourteen
+    /// separate `pedestrian` ways, so what it drew was a scatter of tarmac stubs
+    /// — each one ending where its way ended, kerbed all the way round the cut —
+    /// lying on the pink paving the survey had already put there (2026-09-11).
+    ///
+    /// The assertion is on the **`Minor` vertex count** rather than on the group
+    /// list, because that is the only place the loss can show: pedestrian shares
+    /// its class with every residential and service street in the tile, so the
+    /// group survives and only gets smaller.
+    #[test]
+    fn surveyed_paving_also_drops_the_pedestrian_ribbons() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("fixture");
+        let pedestrian = tile.layer("streets").map_or(0, |meta| {
+            tile.features(meta)
+                .iter()
+                .filter(|f| kind_of(f) == Some("pedestrian"))
+                .count()
+        });
+        assert!(
+            pedestrian > 0,
+            "the fixture carries no pedestrian street — this test proves nothing"
+        );
+        let minor_vertices = |surveyed: bool| -> usize {
+            super::tessellate_roads(&tile, 1472.0, &mut [], None, surveyed)
+                .expect("roads")
+                .ground
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.group,
+                        SurfaceGroup::Road(RoadClass::Minor)
+                            | SurfaceGroup::RoadCasing(RoadClass::Minor)
+                    )
+                })
+                .map(|m| m.positions.len())
+                .sum()
+        };
+        let with_osm = minor_vertices(false);
+        let with_survey = minor_vertices(true);
+        assert!(
+            with_survey < with_osm,
+            "the pedestrian ribbons must be dropped over surveyed paving \
+             ({with_osm} vertices before, {with_survey} after)"
+        );
+        assert!(
+            with_survey > 0,
+            "only the pedestrian ways go — the residential streets in the same \
+             class are OSM's and must still be drawn"
+        );
     }
 
     #[test]
