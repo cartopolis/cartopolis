@@ -38,6 +38,15 @@ where it constrains future work it is in `docs/notes/`.
   captures that photograph the avatar (`--shot-mode avatar`, `--ui sit`,
   `--ui driver`) still get one.
 
+### Fixed
+
+- **A pedestrian street is no longer paved as a carriageway** where the Kadaster
+  survey already describes the ground. It was classed with residential and
+  service streets, so it got a 5 m tarmac ribbon with wheel tracks and a kerb,
+  laid over the real surveyed paving — and since a square is mapped as several
+  separate ways, what you stood on was a scatter of tarmac stubs. Groningen's
+  Grote Markt is the case that showed it. Unsurveyed ground is unchanged.
+
 ## 1.0.0 — 2026-08-10
 
 The first tagged release. There was one rolling `continuous` prerelease before
