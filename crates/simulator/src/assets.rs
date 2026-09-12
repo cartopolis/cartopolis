@@ -464,6 +464,17 @@ pub fn inspect(bytes: &[u8]) -> Result<AssetFacts, String> {
         ));
     }
 
+    // A document with no geometry in it parses, hashes and stores perfectly well
+    // and draws nothing, which is the one outcome an uploader cannot debug from
+    // the other side. It became reachable when the JSON form was accepted —
+    // `{"asset":{"version":"2.0"}}` is a *valid* glTF document — so the rule that
+    // used to fall out of "binary only" is now stated.
+    if triangles == 0 {
+        return Err(
+            "that file has no geometry in it — a model needs at least one mesh to draw".to_string(),
+        );
+    }
+
     Ok(AssetFacts {
         hash: content_hash(bytes),
         byte_size: bytes.len() as u64,
@@ -664,12 +675,23 @@ mod tests {
             0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ];
         let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        // Geometry as well as the texture: a file with no mesh in it is refused
+        // on its own terms now, and this test is about the texture.
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let mut bin = Vec::new();
+        for v in positions {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let mesh = base64::engine::general_purpose::STANDARD.encode(&bin);
         let doc = format!(
             r#"{{
                 "asset": {{"version": "2.0"}},
                 "images": [{{"uri": "data:image/png;base64,{encoded}"}}],
-                "buffers": [],
-                "bufferViews": []
+                "meshes": [{{"primitives": [{{"attributes": {{"POSITION": 0}}}}]}}],
+                "accessors": [{{"bufferView": 0, "componentType": 5126, "count": 3,
+                                "type": "VEC3", "min": [0,0,0], "max": [1,1,0]}}],
+                "bufferViews": [{{"buffer": 0, "byteOffset": 0, "byteLength": 36}}],
+                "buffers": [{{"byteLength": 36, "uri": "data:application/octet-stream;base64,{mesh}"}}]
             }}"#
         );
         let repacked = repack_gltf(doc.as_bytes())
@@ -681,6 +703,17 @@ mod tests {
         let facts = inspect(&repacked).expect("a model");
         assert_eq!(facts.textures, 1);
         assert_eq!(facts.largest_texture, 1);
+    }
+
+    /// A valid glTF document with nothing in it is a file that would draw
+    /// nothing. It only became reachable when the JSON form was accepted.
+    #[test]
+    fn refuses_a_document_with_no_geometry() {
+        let repacked = repack_gltf(br#"{"asset":{"version":"2.0"}}"#)
+            .expect("it is a glTF document")
+            .expect("and it repacks");
+        let err = inspect(&repacked).unwrap_err();
+        assert!(err.contains("no geometry"), "{err}");
     }
 
     /// Anything that is neither is refused before a parser sees it.

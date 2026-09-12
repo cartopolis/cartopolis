@@ -420,18 +420,24 @@ async fn the_store_needs_a_session() {
     assert_eq!(status, 401);
 }
 
-/// A file that is not a self-contained binary glTF is refused, and the refusal
-/// says what to do about it.
+/// A file that is not a self-contained glTF is refused, and the refusal says what
+/// to do about it.
+///
+/// The rule moved when the JSON form became acceptable. It is no longer "binary
+/// only" — a `.gltf` carrying its buffers as data URIs is repacked — it is
+/// **self-contained only**, so what each of these three cases gets back is a
+/// different sentence about a different problem.
 #[tokio::test]
-async fn only_a_self_contained_glb_is_accepted() {
+async fn only_a_self_contained_gltf_is_accepted() {
     let (handle, _dir) = server().await;
     let alice = sign_in(&handle, "alice", "alicepw").await;
 
+    // Not glTF at all.
     let (status, body) = upload(
         &handle,
         &alice,
-        br#"{"asset":{"version":"2.0"}}"#.to_vec(),
-        "Json",
+        b"FBX binary\x1a\x00".to_vec(),
+        "Fbx",
         "own",
     )
     .await;
@@ -440,6 +446,79 @@ async fn only_a_self_contained_glb_is_accepted() {
         body["error"].as_str().unwrap_or("").contains(".glb"),
         "{body}"
     );
+
+    // glTF that names a file beside it — the case the whole restriction exists
+    // for, since fetching it would make this server issue a request of the
+    // uploader's choosing.
+    let (status, body) = upload(
+        &handle,
+        &alice,
+        br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"model.bin"}]}"#.to_vec(),
+        "External",
+        "own",
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("model.bin"),
+        "{body}"
+    );
+
+    // A valid glTF document with nothing in it: self-contained, parseable, and
+    // would draw nothing.
+    let (status, body) = upload(
+        &handle,
+        &alice,
+        br#"{"asset":{"version":"2.0"}}"#.to_vec(),
+        "Empty",
+        "own",
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("no geometry"),
+        "{body}"
+    );
+}
+
+/// …and a `.gltf` that carries everything with it is accepted, repacked, and
+/// stored as the `.glb` every reader downstream expects.
+#[tokio::test]
+async fn an_embedded_gltf_is_repacked_and_stored() {
+    use base64::Engine as _;
+    let (handle, _dir) = server().await;
+    let alice = sign_in(&handle, "alice", "alicepw").await;
+
+    let mut bin = Vec::new();
+    for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bin);
+    let doc = format!(
+        r#"{{"asset":{{"version":"2.0"}},
+             "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+             "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",
+                            "min":[0,0,0],"max":[1,1,0]}}],
+             "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}}],
+             "buffers":[{{"byteLength":36,
+                          "uri":"data:application/octet-stream;base64,{encoded}"}}]}}"#
+    );
+
+    let (status, item) = upload(&handle, &alice, doc.into_bytes(), "Embedded", "own").await;
+    assert_eq!(status, 201, "{item}");
+    assert_eq!(item["triangles"].as_u64(), Some(1));
+
+    // What came back out is a GLB, whatever went in.
+    let hash = item["asset"].as_str().expect("a hash").to_string();
+    let (status, bytes) = raw(
+        "GET",
+        format!("{}/api/assets/{hash}.glb", base(&handle)),
+        Some(alice.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(bytes.starts_with(b"glTF"), "the store holds one format");
 }
 
 /// A file nothing refers to may be forgotten; one a person still holds may not,
