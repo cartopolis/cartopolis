@@ -2,6 +2,7 @@
 
 pub mod ai_assistant;
 pub mod bookmarks;
+pub mod building_card;
 pub mod chat;
 pub mod chat_overlay;
 pub mod data_layers;

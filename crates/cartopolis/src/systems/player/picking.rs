@@ -17,6 +17,50 @@ use big_space::prelude::GridCell;
 
 const MARQUEE_DRAG_THRESHOLD_PX: f32 = 4.0;
 
+/// The camera cell, the map anchor and the session, bundled.
+///
+/// Not a grouping for its own sake: [`prim_picking`] was at Bevy's 16-parameter
+/// cap, so anything it learns has to be paid for by something it already knows.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PrimPickWorld<'w, 's> {
+    /// The camera's floating-origin cell — the main `cameras` query has no
+    /// `GridCell`.
+    cameras:
+        Query<'w, 's, (&'static GridCell, &'static Transform), With<crate::components::FreeCamera>>,
+    anchor: Res<'w, crate::resources::MapAnchor>,
+    online: Option<Res<'w, crate::resources::OnlineSession>>,
+}
+
+/// Whether the last left click this system processed landed on a prim.
+///
+/// The world behind the prims wants clicks too — `building_select::pick_building`
+/// is the second consumer — and "did the prim layer already take this one?" has to
+/// be answerable *after* [`prim_picking`] has run, for a press that selected a
+/// prim and for one that merely *touched* a scripted one, which deliberately
+/// leaves the selection alone.
+///
+/// The world behind the prims wants clicks too — `building_select::pick_building`
+/// is the second consumer — and "did the prim layer already take this one?" has to
+/// be answerable *after* [`prim_picking`] has run, for a press that selected a
+/// prim and for one that merely *touched* a scripted one, which deliberately
+/// leaves the selection alone.
+///
+/// Written on **every** press [`prim_picking`] evaluates, hit or miss, which is
+/// what keeps it from going stale: the presses it skips are the ones
+/// `pick_building` skips too, for the same reasons (egui has the pointer, there is
+/// no cursor, there is no camera).
+#[derive(Resource, Default)]
+pub struct PrimClick {
+    took: bool,
+}
+
+impl PrimClick {
+    /// Did a prim take the most recent press?
+    pub fn took(&self) -> bool {
+        self.took
+    }
+}
+
 // ─── Primary picking ─────────────────────────────────────────────────────────
 
 /// System for handling prim picking and selection via raycasting.
@@ -33,13 +77,16 @@ pub fn prim_picking(
     selected_query: Query<Entity, With<Selected>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     gizmo_state: Res<crate::systems::gizmo::GizmoState>,
-    // For the context menu's geographic point: the camera's floating-origin cell
-    // (the `cameras` query above has no `GridCell`) and the map anchor to measure
-    // against.
-    geo_cameras: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
-    map_anchor: Res<crate::resources::MapAnchor>,
-    online: Option<Res<crate::resources::OnlineSession>>,
+    // For the context menu's geographic point and the touch message. Bundled into
+    // one `SystemParam` because Bevy caps a system at 16 parameters and this one
+    // was at the cap — the same wall `free_camera::camera_controls` hit when touch
+    // input arrived. Three related things that are read together, so the bundle is
+    // also the honest grouping.
+    world: PrimPickWorld,
+    // Whether this press was spent on a prim, for the world behind them.
+    mut prim_click: ResMut<PrimClick>,
 ) {
+    let (geo_cameras, map_anchor, online) = (&world.cameras, &world.anchor, &world.online);
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
     if egui_manager.ctx.egui_wants_pointer_input() {
         return;
@@ -104,6 +151,14 @@ pub fn prim_picking(
     }
 
     let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+
+    // Recorded before the branches below, and for every press, because what
+    // `building_select` needs to know is whether the *ray* found a prim — not what
+    // this system then chose to do about it. A scripted prim is worked rather than
+    // selected, and a press that works one is still a press that was spent.
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        prim_click.took = hit_prim.is_some();
+    }
 
     // Left-click: select / deselect / start marquee
     if mouse_buttons.just_pressed(MouseButton::Left) {

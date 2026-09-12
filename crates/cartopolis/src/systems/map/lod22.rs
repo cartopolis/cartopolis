@@ -332,11 +332,11 @@ type DatedCount = (usize, usize);
 /// with viewpoints is how an afternoon goes.
 type DoorCount = usize;
 
-/// Each drawn shell's BAG id and its measured storey datum, metres above its own
-/// base. See [`shell_datum_height`] — this is the only place in the client that
-/// knows how tall a building actually is, because the height only exists in the
-/// LoD2.2 geometry and is thrown away the moment the mesh is merged.
-type ShellHeights = Vec<(String, f32)>;
+/// Each drawn shell's BAG id and what its geometry measures. See [`ShellMeasure`]
+/// and [`shell_stats`] — this is the only place in the client that knows how tall
+/// a building actually is, or how much of it there is, because all of that exists
+/// only on the LoD2.2 vertices and is thrown away the moment the mesh is merged.
+type ShellStats = Vec<(String, ShellMeasure)>;
 
 type Lod22Build = (
     GridCell,
@@ -344,7 +344,7 @@ type Lod22Build = (
     Vec<crate::systems::collision::Footprint>,
     DatedCount,
     DoorCount,
-    ShellHeights,
+    ShellStats,
 );
 
 /// The mesh assets a live cell's entities are drawn from, kept beside the
@@ -376,7 +376,7 @@ struct WarmCell {
     footprints: Vec<crate::systems::collision::Footprint>,
     dated: DatedCount,
     doors: DoorCount,
-    heights: HashMap<String, f32>,
+    heights: HashMap<String, ShellMeasure>,
     detail: load_control::Detail,
 }
 
@@ -448,10 +448,10 @@ pub struct Lod22Buildings {
     /// written down. Recorded at dispatch rather than on completion so a cell in
     /// flight is already accounted for and cannot be promoted twice.
     built_detail: HashMap<(i64, i64), load_control::Detail>,
-    /// Each loaded shell's storey datum, metres ([`shell_datum_height`]), keyed
-    /// by BAG identificatie. Per cell so it is evicted with the cell it was
+    /// Each loaded shell's measurements ([`ShellMeasure`]), keyed by BAG
+    /// identificatie. Per cell so they are evicted with the cell they were
     /// measured from, exactly as the colliders are.
-    heights: HashMap<(i64, i64), HashMap<String, f32>>,
+    heights: HashMap<(i64, i64), HashMap<String, ShellMeasure>>,
     /// Terrain-field revision these cells were built against. The field arrives a
     /// second or two after the anchor, so the first cells are always built on flat
     /// ground and have to be rebuilt onto the measured one.
@@ -518,6 +518,21 @@ impl Lod22Buildings {
         self.doors.values().sum()
     }
 
+    /// Every material this lane draws with — the shells' and the imported models'.
+    ///
+    /// Both, and that matters: `building_select` writes the ghosted building's
+    /// outline into all of them, and a LoD3 model standing in for a shell is drawn
+    /// with the second one. Ghosting only the shells would leave an imported
+    /// building opaque around an avatar standing in it, which is the one case
+    /// where somebody has gone to the trouble of modelling the inside.
+    pub fn material_handles(&self) -> Vec<Handle<BuildingMaterial>> {
+        self.material
+            .iter()
+            .chain(self.interior_material.iter())
+            .cloned()
+            .collect()
+    }
+
     /// How tall a building's shell is, metres above its own base — the datum
     /// `systems::interiors` divides into storeys. `None` for a building whose
     /// LoD2.2 cell is not loaded, which every caller must read as "one storey",
@@ -526,6 +541,16 @@ impl Lod22Buildings {
     /// Linear in loaded cells (a handful) and a hash lookup in each; called once
     /// per building when the interior set is rebuilt, not per frame.
     pub fn shell_height(&self, id: &str) -> Option<f32> {
+        self.shell_measure(id).map(|m| m.datum_m)
+    }
+
+    /// Everything this lane measured about a building's shell — the storey datum,
+    /// the roof area and the volume. `None` for a building whose LoD2.2 cell is
+    /// not loaded.
+    ///
+    /// Same cost as [`Self::shell_height`], which is a thin wrapper over it:
+    /// linear in loaded cells (a handful) and a hash lookup in each.
+    pub fn shell_measure(&self, id: &str) -> Option<ShellMeasure> {
         self.heights.values().find_map(|c| c.get(id).copied())
     }
 }
@@ -1273,7 +1298,7 @@ fn build_lod22_from_text(
     // storeys. Measured here because this is the only lane that ever sees the
     // height: it arrives on the vertices, is baked into a merged mesh, and is
     // unrecoverable from anything downstream.
-    let mut heights: ShellHeights = Vec::new();
+    let mut heights: ShellStats = Vec::new();
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -1308,14 +1333,6 @@ fn build_lod22_from_text(
             struck += 1;
             continue;
         }
-        // Only a shell has a storey datum worth taking. An imported model is many
-        // elements and brings its own floors (`systems::lod3`), so measuring one
-        // would report the height of a wall panel as the height of a building.
-        if b.class.is_empty() && !b.id.is_empty() {
-            if let Some(h) = shell_datum_height(&b.p, &b.t) {
-                heights.push((b.id.clone(), h));
-            }
-        }
         let (wall, roof_tile) = crate::systems::osm_buildings::building_palette_dated(
             blat,
             blng,
@@ -1342,6 +1359,15 @@ fn build_lod22_from_text(
             b.p.iter()
                 .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
                 .collect();
+        // Only a shell is worth measuring. An imported model is many elements and
+        // brings its own floors (`systems::lod3`), so measuring one would report
+        // the height of a wall panel as the height of a building — and its volume
+        // as the volume of a slab.
+        if b.class.is_empty() && !b.id.is_empty() {
+            if let Some(m) = shell_stats(&world_xz, &b.p, &b.t) {
+                heights.push((b.id.clone(), m));
+            }
+        }
         // The register's own outline where we have it, and the convex hull of the
         // mesh where we do not.
         //
@@ -1523,6 +1549,95 @@ fn build_lod22_from_text(
             heights,
         )),
     )
+}
+
+/// What a building's shell measures: how tall it is, how much roof it has, and
+/// how much building there is.
+///
+/// **All three are read off the geometry the client already has, and that is the
+/// point.** 3DBAG publishes `b3_h_dak_70p`, `b3_opp_dak_plat + b3_opp_dak_schuin`
+/// and `b3_volume_lod22` as attributes, so the obvious way to put a roof area and
+/// a volume on the building card is to ship them from cartopy's extractor — a
+/// change in a second repository, a pipeline re-run for every city and a cache-key
+/// bump, all to carry numbers *derived from the very triangles already in this
+/// buffer*. Measuring them here costs one pass over a soup this function was
+/// walking anyway, needs no wire change, and works on any cell already cached.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShellMeasure {
+    /// The storey datum, metres above the building's own base. See
+    /// [`shell_datum_height`].
+    pub datum_m: f32,
+    /// Total roof surface area, m² — flat and pitched together, which is what
+    /// 3DBAG's own two columns add up to. It is the *sloping* area, so a pitched
+    /// roof measures more than the footprint under it.
+    pub roof_area_m2: f32,
+    /// Enclosed volume, m³.
+    ///
+    /// The divergence-theorem sum over the triangles, with the origin moved to the
+    /// building's own first vertex at ground level. Both halves of that are
+    /// load-bearing. The soup carries no floor — a LoD2.2 solid is the surface
+    /// above its base — and a missing face contributes nothing to this sum exactly
+    /// when its plane passes through the origin, which the base plane (y = 0) does.
+    /// And the recentring is what keeps it computable at all: the vertices are
+    /// metres from the *map anchor*, so at kilometre offsets the triple product of
+    /// a 10 m building is the difference of two enormous numbers.
+    pub volume_m3: f32,
+    /// The highest vertex, metres above the building's own base — the ridge.
+    ///
+    /// Deliberately the number [`Self::datum_m`] refuses to be: the datum is the
+    /// eaves, because storeys stack under a roof, and this is the top of the roof,
+    /// because a highlight drawn to the eaves leaves a pitched roof sticking out
+    /// of it unselected.
+    pub top_m: f32,
+}
+
+/// Measure a shell: its storey datum, its roof area and its volume.
+///
+/// `xz` is each vertex in metres (the same local frame the mesh is built in) and
+/// `p` carries the height on its third component; they are indexed alike.
+fn shell_stats(
+    xz: &[Vec2],
+    p: &[(f64, f64, f32)],
+    t: &[(usize, usize, usize, u8)],
+) -> Option<ShellMeasure> {
+    let datum_m = shell_datum_height(p, t)?;
+    // Recentre on the building's own first vertex — see `ShellMeasure::volume_m3`.
+    let o = *xz.first()?;
+    let at = |ix: usize| -> Option<[f64; 3]> {
+        let q = xz.get(ix)?;
+        let h = p.get(ix)?.2;
+        Some([f64::from(q.x - o.x), f64::from(h), f64::from(q.y - o.y)])
+    };
+    let mut roof = 0.0f64;
+    let mut vol6 = 0.0f64;
+    let mut top = 0.0f32;
+    for &(_, _, h) in p {
+        top = top.max(h);
+    }
+    for &(i, j, k, is_roof) in t {
+        let (Some(a), Some(b), Some(c)) = (at(i), at(j), at(k)) else {
+            continue;
+        };
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        if is_roof == 1 {
+            roof += 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        }
+        vol6 += a[0] * n[0] + a[1] * n[1] + a[2] * n[2];
+    }
+    Some(ShellMeasure {
+        datum_m,
+        roof_area_m2: roof as f32,
+        // Absolute, because nothing promises which way a 3DBAG soup is wound and
+        // a negative volume is the same building inside out.
+        volume_m3: (vol6.abs() / 6.0) as f32,
+        top_m: top.max(datum_m),
+    })
 }
 
 /// The height a building's storeys are counted against, metres above its own

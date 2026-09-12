@@ -644,6 +644,29 @@ pub struct ShotMetrics {
     /// Doors drawn on facades from the register's entrance points
     /// (`lod22::DoorCount`).
     pub building_doors: usize,
+    /// Whether a building is selected, and whether the avatar is standing inside
+    /// one (`systems::building_select`).
+    ///
+    /// Both are the assertable half of a feature whose visible half is a pane of
+    /// tinted glass — and colour is not evidence on this container's software
+    /// rasteriser (`docs/notes/headless-shots-software-renderer.md`). `--ui
+    /// building` selects the nearest building so a capture has something to
+    /// photograph; `building_indoors` is what says the avatar got through the
+    /// door, which is the thing that used to be impossible.
+    pub building_selected: bool,
+    pub building_indoors: bool,
+    /// Glass shells standing (`systems::building_select::BuildingShell`) and how
+    /// many the view actually rendered.
+    ///
+    /// Two numbers for the reason `route_meshes`/`route_rendered` are two: a shell
+    /// that is built but not rendered is a visibility or culling problem, one that
+    /// is rendered but unseen is a depth, alpha or placement problem — and a
+    /// translucent pane on a software rasteriser is exactly the thing a capture
+    /// cannot settle on its own. Without these, "I see no glass" and "the glass
+    /// was never built" are the same picture, which is how the door work lost an
+    /// afternoon to camera angles.
+    pub building_shell_meshes: usize,
+    pub building_shell_rendered: usize,
     /// Flood-defence pieces streamed in (`systems::dikes`), and how many of them
     /// have had their crest measured against the fine height model.
     ///
@@ -949,7 +972,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
@@ -1675,6 +1698,7 @@ const UI_ELEMENTS: &[&str] = &[
     "signin",
     "chat",
     "sit",
+    "building",
     "locate",
     "fire",
     "all",
@@ -2317,6 +2341,62 @@ pub fn seat_scripted_avatar(
     });
 }
 
+/// `--ui building` selects the building nearest the avatar, so a capture has the
+/// card and the glass to photograph.
+///
+/// **Nearest, not clicked.** The pick is a ray through a cursor and a headless run
+/// has neither, so the thing under test — the card's layout, the highlight's
+/// placement on a real register outline — is reachable only by naming a building
+/// some other way. Picking the nearest one is the only choice a scripted camera
+/// position can make that is repeatable: which building *is* nearest depends on
+/// where the shot put the avatar, which the preset already states.
+///
+/// It runs every frame rather than once per shot, because the facts arrive over
+/// several seconds and a selection made before the BAG cell landed would name
+/// nothing. Once something is selected it leaves it alone — reselecting each frame
+/// would rebuild the glass mesh at frame rate.
+pub fn select_scripted_building(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut selection: ResMut<crate::systems::building_select::BuildingSelection>,
+    facts: Res<crate::systems::building_facts::BuildingFacts>,
+    avatar: Res<crate::resources::AvatarState>,
+    anchor: Res<crate::resources::MapAnchor>,
+) {
+    let panels = harness.ui_for(progress.index);
+    let all = panels.iter().any(|u| u == "all");
+    if !(all || panels.iter().any(|u| u == "building")) {
+        selection.clear();
+        return;
+    }
+    if selection.selected.is_some() {
+        return;
+    }
+    let Some(geo) = anchor.geo else {
+        return;
+    };
+    let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+        geo,
+        f64::from(avatar.position.x),
+        f64::from(avatar.position.z),
+    );
+    // Distance to the outline's first vertex, which is what `BuildingFacts::near`
+    // already measures against and is exact enough at these ranges — a building is
+    // metres across and the nearest two are rarely a tie.
+    let nearest = facts
+        .near(lat, lng, 80.0)
+        .into_iter()
+        .filter_map(|(id, b)| {
+            let &(blat, blng) = b.footprint.first()?;
+            let d = (blat - lat).powi(2) + (blng - lng).powi(2);
+            Some((d, id))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some((_, id)) = nearest {
+        selection.selected = Some(std::sync::Arc::from(id));
+    }
+}
+
 /// `--ui locate` lights the device-tracking switch and hands it a fix, so a
 /// capture can photograph the arrow that marks where the phone is
 /// (`systems::locate::render_locate_arrow`).
@@ -2485,6 +2565,9 @@ pub struct ShotReadouts<'w, 's> {
     interiors: Res<'w, crate::systems::interiors::Interiors>,
     /// The same layer's support field, for its storey tally.
     interior_floors: Res<'w, crate::systems::interiors::InteriorFloors>,
+    /// What is selected and what the avatar is standing in — see
+    /// `ShotMetrics::building_selected`.
+    building_selection: Res<'w, crate::systems::building_select::BuildingSelection>,
     /// The flood defences, for their two counts alone — see
     /// `ShotMetrics::flood_defences`.
     dikes: Res<'w, crate::systems::dikes::Dikes>,
@@ -2516,6 +2599,14 @@ pub struct VisualCounts<'w, 's> {
         's,
         &'static bevy::camera::visibility::ViewVisibility,
         With<crate::components::RouteVisual>,
+    >,
+    /// The glass shells over the selected and occupied buildings
+    /// (`systems::building_select`). See `ShotMetrics::building_shell_meshes`.
+    shells: Query<
+        'w,
+        's,
+        &'static bevy::camera::visibility::ViewVisibility,
+        With<crate::systems::building_select::BuildingShell>,
     >,
     agents: Query<
         'w,
@@ -2913,6 +3004,10 @@ pub fn drive_capture(
             flood_defences_measured: readouts.dikes.measured(),
             interior_rooms: readouts.interiors.rooms(),
             interior_storeys: readouts.interior_floors.storeys(),
+            building_selected: readouts.building_selection.is_selected(),
+            building_indoors: readouts.building_selection.is_indoors(),
+            building_shell_meshes: visuals.shells.iter().count(),
+            building_shell_rendered: visuals.shells.iter().filter(|vv| vv.get()).count(),
             building_doors: readouts.lod22.doors(),
             lod22_dated: readouts.lod22.dated().0,
             lod22_elements: readouts.lod22.dated().1,
@@ -3500,6 +3595,10 @@ mod tests {
             flood_defences_measured: 0,
             interior_rooms: 0,
             interior_storeys: 0,
+            building_selected: false,
+            building_indoors: false,
+            building_shell_meshes: 0,
+            building_shell_rendered: 0,
             building_doors: 0,
             lod22_dated: 0,
             lod22_elements: 0,

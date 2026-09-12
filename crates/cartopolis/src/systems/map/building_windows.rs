@@ -117,7 +117,42 @@ pub struct BuildingWindows {
     /// rgb: the lit colour, linear. a unused.
     #[uniform(102)]
     pub lit: Vec4,
+    /// x: how many of [`Self::ghost_ring`]'s points are live, 0 for nothing
+    /// ghosted. y, z, w unused.
+    ///
+    /// The ghosted building is the one the avatar is standing in: its **walls**
+    /// are discarded so you can see the room and the avatar behind them, and
+    /// `systems::building_select` draws a translucent shell where they were. The
+    /// roof is kept — see the shader.
+    ///
+    /// A uniform rather than a per-vertex key for the reason this whole module
+    /// exists: four bytes a vertex on the largest geometry in the app, carried
+    /// forever, to serve a state that is off almost all of the time.
+    #[uniform(104)]
+    pub ghost: Vec4,
+    /// The ghost ring's bounding box in render-space XZ — `(min x, min z, max x,
+    /// max z)`. The broad phase, and not optional: without it every wall fragment
+    /// in the city walks the polygon while anything is ghosted.
+    #[uniform(105)]
+    pub ghost_bounds: Vec4,
+    /// The ghost ring in render-space XZ, two points per element (`xy` then `zw`).
+    ///
+    /// **Render space, so it is rewritten every frame** — under `big_space` the
+    /// origin jumps a whole `WORLD_CELL_EDGE` as the camera crosses a grid cell,
+    /// which is the trap this file's `WINDOW_LATTICE` note is entirely about. A
+    /// ring is 32 floats and there is one material; paying for it once a frame is
+    /// cheaper than any arrangement that makes the shader solve it.
+    #[uniform(106)]
+    pub ghost_ring: [Vec4; GHOST_RING_VEC4S],
 }
+
+/// How many `vec4`s the ghost ring is packed into — two points each, so 32
+/// points. See [`BuildingWindows::ghost_ring`]; the shader's `GHOST_MAX_POINTS`
+/// is the same number and they must agree.
+pub const GHOST_RING_VEC4S: usize = 16;
+/// Ring points the shader can hold. A BAG outline simplified at 10 cm is about
+/// nine of them.
+pub const GHOST_MAX_POINTS: usize = GHOST_RING_VEC4S * 2;
 
 impl Default for BuildingWindows {
     fn default() -> Self {
@@ -135,6 +170,9 @@ impl Default for BuildingWindows {
             // or one: a wholly black building reads as missing, and a wholly lit
             // one is the thing this exists to stop.
             block: Vec4::new(BLOCK_M, BLOCK_PERIOD, 0.08, 0.5),
+            ghost: Vec4::ZERO,
+            ghost_bounds: Vec4::ZERO,
+            ghost_ring: [Vec4::ZERO; GHOST_RING_VEC4S],
         }
     }
 }

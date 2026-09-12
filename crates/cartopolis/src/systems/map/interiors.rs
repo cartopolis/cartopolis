@@ -36,6 +36,8 @@
 //!   ceiling down — so from outside a room is invisible and costs no fill, which
 //!   is the state it is in for all but a few seconds of a session.
 
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use big_space::prelude::BigSpace;
 
@@ -206,7 +208,7 @@ pub fn update_interiors(
         // still in flight, which reads as one storey — so a building gains its
         // upper floors when its shell lands, on the rebuild the growing facts
         // index triggers anyway.
-        let Some(room) = plan_room(&ring, lod22.shell_height(id)) else {
+        let Some(room) = plan_room(Arc::from(id), &ring, lod22.shell_height(id)) else {
             continue;
         };
         build_room(&mut buf, &room, &doors);
@@ -263,6 +265,21 @@ pub fn update_interiors(
 /// exactly the value `AvatarState::position` carries — so the floor you stand on
 /// and the floor you can see are derived from one ring and cannot disagree.
 pub struct Room {
+    /// The BAG identificatie of the building this room is inside.
+    ///
+    /// Carried so [`InteriorFloors::building_at`] can *name* the building the
+    /// avatar is standing in, which is what `building_select` draws its glass
+    /// around. A ring cannot name itself.
+    id: Arc<str>,
+    /// The building's own outline, uninset — the same ring
+    /// `collision::Footprint` was built from.
+    ///
+    /// The room's walls stand [`WALL_INSET_M`] inside it, so "am I in this room"
+    /// and "am I in this building" disagree over a 22 cm band. `building_at` asks
+    /// the second one, so an avatar standing in a doorway — which is exactly that
+    /// band — is already counted as inside, and the glass goes up as it crosses
+    /// the wall rather than a step later.
+    outline: Vec<Vec2>,
     /// The inset outline: where the room's walls stand.
     ring: Vec<Vec2>,
     /// How many storeys are stacked in it, at least one.
@@ -373,6 +390,23 @@ impl InteriorFloors {
     pub fn storeys(&self) -> usize {
         self.rooms.iter().map(|r| r.storeys).sum()
     }
+
+    /// Which building `p` (anchored world XZ) is standing in, if any.
+    ///
+    /// **Tested against the building's outline, not the room's inset walls**, so
+    /// the answer agrees with `collision::Footprint`, which is built from the same
+    /// ring — and so the doorway itself, a 22 cm band between the two, counts as
+    /// inside rather than as neither.
+    ///
+    /// It answers only for a building that has a *room* in it, which is what makes
+    /// it safe to key a see-through shell off: a sealed building is never reported,
+    /// so its walls are never dissolved to show an interior it does not have.
+    pub fn building_at(&self, p: Vec2) -> Option<&Arc<str>> {
+        self.rooms
+            .iter()
+            .find(|r| point_in_ring(&r.outline, p))
+            .map(|r| &r.id)
+    }
 }
 
 /// Advance the avatar's interior floor level one frame, and answer where it now
@@ -451,11 +485,13 @@ pub fn can_hold_a_room(outline: &[Vec2]) -> bool {
 
 /// Lay out one building's interior: inset the outline, and find somewhere to put
 /// the stairs. `None` if the outline is too small to stand in.
-fn plan_room(ring: &[Vec2], height_m: Option<f32>) -> Option<Room> {
+fn plan_room(id: Arc<str>, ring: &[Vec2], height_m: Option<f32>) -> Option<Room> {
     let inset = room_ring(ring)?;
     let wanted = storeys_for(height_m);
     let stair = (wanted > 1).then(|| find_stair(&inset)).flatten();
     Some(Room {
+        id,
+        outline: ring.to_vec(),
         // A building with nowhere to put a flight gets its ground floor and
         // nothing else. The alternative — stacking the storeys anyway — is rooms
         // that can only be reached by flying, which is not what a floor is.
@@ -1018,10 +1054,16 @@ mod tests {
         }
     }
 
+    /// A stand-in BAG identificatie. Nothing under test reads it — it exists so
+    /// `InteriorFloors::building_at` can name the building a room is in.
+    fn test_id() -> Arc<str> {
+        Arc::from("0014100010903891")
+    }
+
     /// A room big enough to hold a staircase, for the storey tests below. 12 m
     /// square: comfortably over `STAIR_RUN_M` plus its end clearances on a side.
     fn tall_room(height: Option<f32>) -> Room {
-        plan_room(&square(12.0), height).expect("a 12 m square is a room")
+        plan_room(test_id(), &square(12.0), height).expect("a 12 m square is a room")
     }
 
     #[test]
@@ -1029,7 +1071,7 @@ mod tests {
         let mut buf = RoomMesh::default();
         build_room(
             &mut buf,
-            &plan_room(&square(10.0), None).expect("a 10 m square is a room"),
+            &plan_room(test_id(), &square(10.0), None).expect("a 10 m square is a room"),
             &[Vec2::new(5.0, 0.0)],
         );
         let up = buf.normals.iter().filter(|n| n[1] > 0.9).count();
@@ -1041,7 +1083,7 @@ mod tests {
     /// A cupboard is not a room.
     #[test]
     fn a_footprint_too_small_to_stand_in_gets_nothing() {
-        assert!(plan_room(&square(1.0), Some(12.0)).is_none());
+        assert!(plan_room(test_id(), &square(1.0), Some(12.0)).is_none());
     }
 
     /// The whole stack has to fit *under* the roof. A ceiling poking out through
@@ -1079,7 +1121,7 @@ mod tests {
         // Big enough to stand in (`MIN_ROOM_M2`), and no wall on it reaches
         // `STAIR_RUN_M` plus its end clearances.
         let small = square(2.8);
-        let room = plan_room(&small, Some(20.0)).expect("still a room");
+        let room = plan_room(test_id(), &small, Some(20.0)).expect("still a room");
         assert!(room.stair.is_none());
         assert_eq!(room.storeys, 1);
     }
@@ -1095,7 +1137,7 @@ mod tests {
             Vec2::new(9.0, 1.2),
             Vec2::new(0.0, 1.2),
         ];
-        let room = plan_room(&corridor, Some(20.0)).expect("still a room");
+        let room = plan_room(test_id(), &corridor, Some(20.0)).expect("still a room");
         assert!(
             room.stair.is_none(),
             "a 1.2 m corridor cannot hold a {STAIR_WIDTH_M} m flight"
@@ -1263,7 +1305,7 @@ mod tests {
             ),
         ];
         for (name, outline) in shapes {
-            let Some(room) = plan_room(&outline, Some(20.0)) else {
+            let Some(room) = plan_room(test_id(), &outline, Some(20.0)) else {
                 continue;
             };
             let mut buf = RoomMesh::default();

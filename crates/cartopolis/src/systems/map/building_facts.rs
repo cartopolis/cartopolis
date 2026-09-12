@@ -103,6 +103,34 @@ pub fn use_label(mask: u16) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// **Every** use in the mask, in bit order.
+///
+/// [`use_label`] answers with the first one because a one-line readout has room
+/// for one word. A shop with flats over it is the ordinary Dutch street, so a
+/// panel that has room to say so should say so — dropping the rest there would be
+/// a register fact quietly thrown away in the one place somebody went looking for
+/// it.
+pub fn use_labels(mask: u16) -> Vec<&'static str> {
+    const NAMES: [(u16, &str); 11] = [
+        (uses::HOME, "homes"),
+        (uses::SHOP, "shops"),
+        (uses::OFFICE, "offices"),
+        (uses::MEETING, "meeting place"),
+        (uses::INDUSTRY, "industry"),
+        (uses::EDUCATION, "education"),
+        (uses::HEALTHCARE, "healthcare"),
+        (uses::LODGING, "lodging"),
+        (uses::SPORT, "sport"),
+        (uses::CELL, "detention"),
+        (uses::OTHER, "other"),
+    ];
+    NAMES
+        .iter()
+        .filter(|(bit, _)| mask & bit != 0)
+        .map(|(_, name)| *name)
+        .collect()
+}
+
 /// What the register says about a building's existence.
 ///
 /// Almost every building is `InUse`, which is why the wire omits the field for it.
@@ -148,6 +176,27 @@ impl BuildingStatus {
     /// deciding whether to light the windows or draw it at all.
     pub fn standing(self) -> bool {
         matches!(self, Self::InUse | Self::InUseUnmeasured | Self::Renovation)
+    }
+
+    /// The register's own answer, in English, for a readout.
+    ///
+    /// `None` for the two ordinary in-use values: a card that says "status: in
+    /// use" about nineteen buildings in twenty has spent a row on nothing. The
+    /// rest are all worth reading — a building under construction or awaiting
+    /// demolition is a fact about the street you are standing in.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::InUse | Self::InUseUnmeasured => None,
+            Self::Permit => Some("permit granted"),
+            Self::UnderConstruction => Some("under construction"),
+            Self::Renovation => Some("being renovated"),
+            Self::OutOfUse => Some("out of use"),
+            Self::DemolitionPermit => Some("demolition permit"),
+            Self::Demolished => Some("demolished"),
+            Self::NotRealised => Some("never built"),
+            Self::Withdrawn => Some("registration withdrawn"),
+            Self::Unknown => Some("unknown"),
+        }
     }
 }
 

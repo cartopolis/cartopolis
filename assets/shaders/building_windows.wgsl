@@ -64,6 +64,34 @@
 // windows lit in the deadest and the liveliest block.
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> block: vec4<f32>;
 
+// ─── The ghosted building ────────────────────────────────────────────────────
+//
+// One building's walls are taken out of this pass, so you can see into it —
+// which is what happens when the avatar walks inside one. `systems::interiors`
+// has already built the room behind the wall, and `building_select` draws a
+// translucent shell in the wall's place; this is the half that has to *stop*
+// drawing, because a merged cell mesh has no per-building entity to hide.
+//
+// It is a polygon test on a uniform rather than a per-vertex key, and the reason
+// is the one the module note gives for the windows: a vertex attribute on this
+// lane costs four bytes on the largest geometry in the app, permanently, to serve
+// a state that is off almost always. The ring is rewritten each frame in render
+// space, so the floating origin is somebody else's problem.
+//
+// x: how many ring points are live (0 = nothing ghosted, and then this whole
+// block is two instructions). y, z, w unused.
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var<uniform> ghost: vec4<f32>;
+// The ring's bounding box in render-space XZ: min x, min z, max x, max z. The
+// broad phase — without it every wall fragment in the city walks the polygon.
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var<uniform> ghost_bounds: vec4<f32>;
+// The ring, two points per element (xy then zw), in render-space XZ.
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> ghost_ring: array<vec4<f32>, 16>;
+
+/// Ring points this shader can hold. A BAG outline simplified at 10 cm is about
+/// nine points; anything longer is simplified again on the CPU before it is sent,
+/// which moves a tint boundary by centimetres and nothing else.
+const GHOST_MAX_POINTS: i32 = 32;
+
 /// A normal this far off horizontal is a wall. Roofs — including the steep
 /// pitched ones 3DBAG actually carries — stay above it and get nothing.
 const WALL_NORMAL_Y: f32 = 0.42;
@@ -95,6 +123,41 @@ fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(h) * 43758.5453123);
 }
 
+/// One ring point, out of the packed pairs.
+fn ghost_point(i: i32) -> vec2<f32> {
+    let v = ghost_ring[i / 2];
+    return select(v.xy, v.zw, (i & 1) == 1);
+}
+
+/// Is this fragment on the wall of the ghosted building?
+///
+/// Even-odd, the same test `collision::Footprint::contains` runs on the CPU over
+/// the same ring — so what you can see through is what you can walk through.
+fn in_ghost(p: vec2<f32>) -> bool {
+    let n = min(i32(ghost.x), GHOST_MAX_POINTS);
+    if n < 3 {
+        return false;
+    }
+    if p.x < ghost_bounds.x || p.x > ghost_bounds.z
+        || p.y < ghost_bounds.y || p.y > ghost_bounds.w {
+        return false;
+    }
+    var inside = false;
+    var j = n - 1;
+    for (var i = 0; i < n; i = i + 1) {
+        let a = ghost_point(i);
+        let b = ghost_point(j);
+        if (a.y > p.y) != (b.y > p.y) {
+            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+            if p.x < x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    return inside;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
@@ -113,6 +176,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // mode is real and silent, not because it fixed that.
     let horiz_len = length(vec2<f32>(n.x, n.z));
     let is_wall = abs(n.y) < WALL_NORMAL_Y && horiz_len > 1e-3;
+
+    // The ghosted building loses its **walls** and keeps its roof. That is not a
+    // saving, it is the picture: a building whose roof went too would be a hole in
+    // the street with a floor in it, and the roof standing over a glass shell is
+    // what a cutaway looks like. `is_wall` is already the right question and is
+    // already answered.
+    if is_wall && in_ghost(in.world_position.xz) {
+        discard;
+    }
 
     // Computed **outside** the branch on purpose: `fwidth` below is a derivative,
     // and a derivative taken in non-uniform control flow is undefined — naga

@@ -1965,6 +1965,8 @@ fn run_client() {
         .init_resource::<systems::dikes::Dikes>()
         .init_resource::<systems::interiors::Interiors>()
         .init_resource::<systems::interiors::InteriorFloors>()
+        .init_resource::<systems::building_select::BuildingSelection>()
+        .init_resource::<systems::picking::PrimClick>()
         .init_resource::<systems::street_detail::StreetDetail>()
         .init_resource::<systems::tall_structures::TallStructures>()
         .init_resource::<systems::collision::BuildingColliders>()
@@ -2173,6 +2175,13 @@ fn run_client() {
                     .after(systems::geo_nav::apply_teleport)
                     .after(systems::shot_harness::hold_scripted_camera_mode)
                     .before(systems::free_camera::camera_controls),
+                // `--ui building`: select the building nearest the avatar, since a
+                // headless run has no cursor to click one with. After the teleport,
+                // which is what decides where "nearest" is measured from; the glass
+                // it asks for is built by `update_building_shells` on the next
+                // frame, which a settling capture has hundreds of.
+                systems::shot_harness::select_scripted_building
+                    .after(systems::geo_nav::apply_teleport),
                 // `--ui locate`: a fix with no provider, so the device arrow can
                 // be photographed at all.
                 //
@@ -2357,6 +2366,18 @@ fn run_client() {
                 systems::surveyed::prefetch_bgt_coverage,
                 systems::crops::prefetch_brp_coverage,
                 systems::interiors::update_interiors,
+                // Which building the avatar is standing in, and the glass that
+                // answers. Chained after the rooms because `track_indoors` reads
+                // the set `update_interiors` has just published — a frame's lag
+                // there is a frame in which the collider still seals a doorway the
+                // avatar has already walked through.
+                (
+                    systems::building_select::track_indoors,
+                    systems::building_select::clear_selection_on_reanchor,
+                    systems::building_select::update_building_shells,
+                )
+                    .chain()
+                    .after(systems::interiors::update_interiors),
                 // The flood defences: stream, measure the crest, hand the names
                 // to the label placer. Chained because each step reads what the
                 // one before it wrote, and the whole run is a few hundred lines
@@ -2749,6 +2770,10 @@ fn run_client() {
                 // the click isn't treated as a world selection.
                 systems::picking::prim_picking.after(systems::gizmo::handle_gizmo_interaction),
                 systems::picking::update_marquee.after(systems::picking::prim_picking),
+                // The buildings behind the prims. **After** `prim_picking`, which
+                // is what gets to say whether the click was already spent — see
+                // `picking::PrimClick`.
+                systems::building_select::pick_building.after(systems::picking::prim_picking),
                 systems::picking::render_marquee.after(systems::picking::update_marquee),
                 systems::picking::handle_delete_key,
                 systems::picking::highlight_selected_prim,
@@ -2786,6 +2811,16 @@ fn run_client() {
                 // the Search panel, and doing it before the chain runs means the
                 // panel never draws a frame over the card it just opened.
                 systems::place_card::render_place_card.before(systems::ui::render_main_menu),
+                // The building card, on the same terms and for the same reasons:
+                // a floating `Area` above the dock, outside the Phase 7b chain,
+                // suppressed by whatever owns the bottom of the screen. **After**
+                // the place card, which is anchored to the same centre-bottom —
+                // they are never both up (one comes from a search pick, the other
+                // from a click on the map) and the order makes that definite
+                // rather than a race if they ever are.
+                systems::building_card::render_building_card
+                    .after(systems::place_card::render_place_card)
+                    .before(systems::ui::render_main_menu),
                 systems::ui::toggle_ai_panel_shortcut,
                 systems::dev_panel::toggle_dev_panel_shortcut,
                 // Nested to stay under the per-tuple system limit: the driver runs after

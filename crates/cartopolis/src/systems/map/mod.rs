@@ -3,6 +3,7 @@
 pub mod aerial;
 pub mod atmosphere_patch;
 pub mod building_facts;
+pub mod building_select;
 pub mod building_windows;
 // Throwing the downloaded map away, and the three layers of cache that have to
 // be emptied in the right order for that to be visible.
