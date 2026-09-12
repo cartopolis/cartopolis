@@ -242,6 +242,21 @@ where
         self.failed.remove(key);
     }
 
+    /// This cell is served and nothing was fetched for it — the caller already
+    /// held its finished form.
+    ///
+    /// [`succeeded`](Self::succeeded) is not enough on its own: it clears the
+    /// failure history but says nothing about `requested`, which is what stops a
+    /// cell being asked for twice. A cell restored out of a warm pool was
+    /// [`forgotten`](Self::forget) when it left the ring, so without this the
+    /// streamer would re-request it the moment it re-entered — fetching,
+    /// parsing and meshing the very cell it had just re-spawned, and then
+    /// overwriting it.
+    pub fn adopt(&mut self, key: K) {
+        self.failed.remove(&key);
+        self.requested.insert(key);
+    }
+
     /// This cell failed. Drops it from `requested` so the backoff (rather than a
     /// separate retry loop) decides when [`request`](Self::request) lets it back
     /// in. Returns the attempt count.

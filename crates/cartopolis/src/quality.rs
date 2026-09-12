@@ -327,6 +327,47 @@ pub struct Budget {
     /// streaming, and a ring that narrowed itself on a workstation would be
     /// taking away a view nobody was struggling to render.
     pub resident_bytes_target: Option<usize>,
+    /// How much **system memory** the streamers may spend keeping the finished
+    /// form of a retired cell, so returning to it costs an upload instead of a
+    /// rebuild (`platform::warm`).
+    ///
+    /// Unrelated to every other number in this struct, and the difference is the
+    /// one thing to keep straight about it: `upload_bytes_per_frame` and
+    /// `resident_bytes_target` bound what the *GPU* holds, because that is what
+    /// loses a device. This bounds what the CPU holds, which costs a device
+    /// nothing and costs the low-memory killer everything.
+    ///
+    /// The value it buys is measured in `docs/notes/tile-raster-cost.md`: a warm
+    /// *disk* cache takes a 27.8 s fill of Groningen to 25.7 s, because the cost
+    /// is scan conversion rather than fetching. Only keeping the raster itself
+    /// can move that, and a 512² ground tile's mip chain is a fixed 1,365 kB —
+    /// so this divided by 1.4 MB is roughly how many ground tiles a return
+    /// journey gets for free.
+    ///
+    /// `CARTO_WARM_MB` overrides it ([`warm_ceiling`]), and `0` is off.
+    pub warm_bytes: usize,
+    /// How much **graphics memory** may be spent holding the meshes of cells
+    /// that have left the ring, so returning to one is a re-spawn rather than a
+    /// re-fetch, re-parse, re-merge and re-upload (`systems::lod22`).
+    ///
+    /// This is the only cache in the client that spends the quantity
+    /// [`Self::resident_bytes_target`] bounds, so three rules travel with it and
+    /// none is optional. It is **inside** that target, not added to it — the
+    /// bytes appear in `upload_meter::resident_bytes` exactly as live ones do,
+    /// because they are live ones that nothing is drawing. It is the **first
+    /// thing shed** when `systems::load_control` finds the target exceeded,
+    /// which is what makes it safe to hold at all: everything else the
+    /// controller can free is on screen, and this is not. And it is **0 on any
+    /// handset** ([`handset_guarded`]), because the 2026-08-19 Adreno 840 that
+    /// lost its Vulkan device did so holding streamed content it was still
+    /// using, with every rate guard in force.
+    ///
+    /// What it buys where it is on: a LoD2.2 cell returning to range currently
+    /// re-reads a multi-megabyte registry file, re-parses it, re-merges the
+    /// mesh on a worker and uploads the result. A retained handle skips all
+    /// four, and costs no system memory at all — the building meshes are
+    /// `RENDER_WORLD` only, so there is no CPU-side copy left to hold.
+    pub warm_gpu_bytes: usize,
 }
 
 /// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
@@ -432,6 +473,21 @@ impl Budget {
             fps_cap: Some(60.0),
             upload_bytes_per_frame: None,
             resident_bytes_target: None,
+            // 1 GiB, which at 1,365 kB per 512² ground tile is roughly 760 of
+            // them — a couple of clipmaps' worth of city held behind the live
+            // one, so flying out and back costs an upload rather than another
+            // 68 ms of scan conversion per tile. A workstation has the memory to
+            // spare and is the machine where `cargo shots`, a route preview and
+            // a fly-through all revisit ground they have already drawn.
+            warm_bytes: 1024 * 1024 * 1024,
+            // 512 MiB, and the rung with no `resident_bytes_target` at all is the
+            // only one where a number this size is not a claim about a ceiling.
+            // Groningen's whole streamed scene measured 969 MB on this rung, of
+            // which the LoD2.2 cells are the bulk, so this is roughly a ring's
+            // worth of buildings held behind the live one — enough that walking
+            // out of a district and back is a re-spawn, and not so much that the
+            // pool is the largest thing in the process.
+            warm_gpu_bytes: 512 * 1024 * 1024,
         }
     }
 
@@ -497,6 +553,19 @@ impl Budget {
             // the gigabyte that lost a device. Set here rather than left `None`
             // because this is the rung Android's automatic answer resolves to.
             resident_bytes_target: Some(700 * 1024 * 1024),
+            // A quarter of the desktop allowance. This is the rung Android's
+            // automatic answer resolves to, so the ceiling has to suit a phone
+            // with a good GPU rather than a workstation: 256 MiB is ~190 ground
+            // tiles at this rung's full-size raster, enough that walking a few
+            // blocks and coming back is free, and small enough to be
+            // unremarkable beside the app's own footprint. `handset_guarded`
+            // holds it down further on Android whatever rung is chosen by hand.
+            warm_bytes: 256 * 1024 * 1024,
+            // A third of the desktop pool, against a 700 MB residency target it
+            // now has to fit inside. `handset_guarded` takes it to 0, so this is
+            // what a thin laptop or an integrated GPU gets and not what a phone
+            // resolving to this rung gets.
+            warm_gpu_bytes: 160 * 1024 * 1024,
         }
     }
 
@@ -569,6 +638,19 @@ impl Budget {
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.
             fps_cap: None,
+            // Off. This rung is reached by a person asking for battery saver or
+            // by a machine that could not hold 30 fps, and on both the scarce
+            // thing is memory rather than the redraw: `crates/geo/src/perf.rs`
+            // is built on the observation that on a phone allocation *is*
+            // malloc contention plus cache pressure plus, eventually, the
+            // low-memory killer. Trading that for a faster return to ground the
+            // camera has already left is the wrong way round here.
+            warm_bytes: 0,
+            // Off, for the reason above it and one sharper: this rung's whole
+            // brief is a machine that could not hold a frame rate, and holding
+            // graphics memory for a view nobody is looking at is the last thing
+            // such a machine should spend.
+            warm_gpu_bytes: 0,
         }
     }
 
@@ -725,6 +807,8 @@ pub fn report_budget() {
         tile_px = resolved.tile_px,
         render_scale = resolved.render_scale,
         upload_kb = upload_ceiling().map_or(0, |bytes| bytes / 1024),
+        warm_mb = warm_ceiling() / (1024 * 1024),
+        warm_gpu_mb = warm_gpu_ceiling() / (1024 * 1024),
         "render budget in force"
     );
 }
@@ -777,6 +861,50 @@ pub fn upload_ceiling() -> Option<usize> {
             Some(0) => None,
             Some(kb) => Some(kb * 1024),
             None => budget().upload_bytes_per_frame,
+        }
+    })
+}
+
+/// Bytes of system memory the warm cell store may hold, with `CARTO_WARM_MB`
+/// folded in. `0` is off.
+///
+/// The same shape as [`upload_ceiling`] and memoised for the same reason — every
+/// streamer asks once at construction, and `env_value` is a system-property read
+/// on Android and a query-string parse on the web.
+///
+/// **No scripted-capture exemption**, unlike `load_control`'s ring and like
+/// `stream_ledger`'s budget, and the rule that decides which way round is what
+/// the mechanism does when it acts. A narrower ring means content that is never
+/// fetched, so two `cargo shots` runs would differ for a reason no image could
+/// show. A warm hit produces the *same bytes* the rebuild would have produced —
+/// it changes how long a capture takes to settle and nothing about what settles
+/// — and a manifest run is six viewpoints over one city in one launch, which is
+/// the revisiting case this exists for.
+#[must_use]
+pub fn warm_ceiling() -> usize {
+    static CEILING: OnceLock<usize> = OnceLock::new();
+    *CEILING.get_or_init(|| {
+        match crate::env_value("CARTO_WARM_MB").and_then(|v| v.parse::<usize>().ok()) {
+            Some(mb) => mb * 1024 * 1024,
+            None => budget().warm_bytes,
+        }
+    })
+}
+
+/// Bytes of graphics memory the retained-mesh pool may hold, with
+/// `CARTO_WARM_GPU_MB` folded in. `0` is off, which is every handset.
+///
+/// Separate from [`warm_ceiling`] because the two bound different scarcities and
+/// a single knob would tie them together: a workstation wants a large system
+/// memory cache *and* a large retained-mesh pool, while a phone wants a small
+/// one of the first and none of the second.
+#[must_use]
+pub fn warm_gpu_ceiling() -> usize {
+    static CEILING: OnceLock<usize> = OnceLock::new();
+    *CEILING.get_or_init(|| {
+        match crate::env_value("CARTO_WARM_GPU_MB").and_then(|v| v.parse::<usize>().ok()) {
+            Some(mb) => mb * 1024 * 1024,
+            None => budget().warm_gpu_bytes,
         }
     })
 }
@@ -1039,9 +1167,33 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         // needs. The minimum, not an overwrite, so a rung asking for less keeps
         // its own number.
         resident_bytes_target: Some(resident),
+        // System memory, guarded on the same principle as the two above but for
+        // a different scarcity: a handset's risk is the low-memory killer, not
+        // the graphics device. The minimum, so the phone rung's own `0` survives
+        // and only a rung asking for *more* is brought down.
+        warm_bytes: budget.warm_bytes.min(HANDSET_WARM_BYTES),
+        // **Zero, not a minimum.** Every other guard here takes the smaller of
+        // two numbers, because every other one is a rung asking for too much of
+        // something a handset has some of. This is the one cache that spends the
+        // resource whose exhaustion is a lost Vulkan device and a crash report,
+        // and no amount of it is worth a phone's return journey being quick.
+        warm_gpu_bytes: 0,
         ..budget
     }
 }
+
+/// What a handset may keep in system memory for a return journey, whatever rung
+/// it is on.
+///
+/// 128 MB — roughly 90 of this rung's 256² ground tiles, so a walk round a block
+/// and back is free while a fly-out is not. Deliberately a small fraction of
+/// [`HANDSET_RESIDENT_BYTES`]: a phone that is already holding 400 MB of streamed
+/// content on the GPU, a Bevy world, an egui context and the browser-sized native
+/// heap behind them has no business quietly adding another 256 MB it never
+/// reports. Chosen rather than measured — nothing in this container can watch an
+/// Android process get killed for its resident set — and it is one const so a
+/// measurement can move it.
+const HANDSET_WARM_BYTES: usize = 128 * 1024 * 1024;
 
 /// What a handset may hold, whatever rung it is on.
 ///

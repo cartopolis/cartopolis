@@ -272,9 +272,15 @@ impl BuildingColliders {
     pub fn set_cell(&mut self, cell: (i64, i64), fps: Vec<Footprint>) {
         self.lod22.insert(cell, fps);
     }
-    /// Drop one LoD2.2 cell's footprints (cell despawned).
-    pub fn remove_cell(&mut self, cell: (i64, i64)) {
-        self.lod22.remove(&cell);
+    /// Drop one LoD2.2 cell's footprints (cell despawned), handing them back.
+    ///
+    /// The return value is what `lod22`'s retained-cell pool keeps: a cell whose
+    /// meshes are held has to come back with the walls that matched them, and
+    /// re-deriving footprints from a mesh is not possible — they are built from
+    /// the register's outlines on a worker, and the mesh is a triangle soup by
+    /// the time it is here. Every other caller ignores it.
+    pub fn remove_cell(&mut self, cell: (i64, i64)) -> Option<Vec<Footprint>> {
+        self.lod22.remove(&cell)
     }
     /// Drop every LoD2.2 cell's footprints (re-anchor).
     pub fn clear_lod22(&mut self) {

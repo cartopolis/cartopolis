@@ -36,6 +36,7 @@ pub mod orientation;
 pub mod photo;
 pub mod storage;
 pub mod stream;
+pub mod warm;
 pub mod watchdog;
 pub mod work;
 pub mod workers;

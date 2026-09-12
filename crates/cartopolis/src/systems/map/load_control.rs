@@ -108,6 +108,24 @@ const MAX_BIAS: i64 = 2;
 /// Continuous seconds over the ceiling before the ring is tightened.
 const TIGHTEN_AFTER_S: f64 = 3.0;
 
+/// Continuous seconds over the ceiling before the **retained-mesh pool** is
+/// dropped — the cheap half of this controller's response, and the one it
+/// reaches for first.
+///
+/// Deliberately shorter than [`TIGHTEN_AFTER_S`], and deliberately not subject
+/// to [`MIN_DWELL_S`], because the two responses do not cost the same thing. A
+/// step of radius takes away map the person is looking at and retears a ring in
+/// every streamer, which is why it is slow and rationed. Dropping the pool takes
+/// away nothing that is drawn: the bytes belong to cells that have already left
+/// the ring, and the only cost of losing them is that a return journey rebuilds
+/// what it would otherwise have re-spawned.
+///
+/// So the order is shed at one second, tighten at three — and the two seconds
+/// between them are the shed's chance to work. If the pool was the pressure, the
+/// residency falls, the run of over-ceiling samples ends on its own and the
+/// tighten never arrives. If it was not, the countdown is undisturbed.
+const SHED_AFTER_S: f64 = 1.0;
+
 /// Continuous seconds comfortably under it before a step is given back.
 const RELAX_AFTER_S: f64 = 30.0;
 
@@ -131,6 +149,18 @@ struct Control {
     over_since: Option<f64>,
     /// When the current run of comfortably-under samples began.
     under_since: Option<f64>,
+    /// Set when the retained-mesh pool should be dropped, until someone reads it.
+    ///
+    /// An edge rather than a level, so a streamer that reads it clears its pool
+    /// once rather than on every frame the machine is over its ceiling.
+    shed: bool,
+    /// Whether this run of over-ceiling samples has already had its shed.
+    ///
+    /// Cleared the moment residency comes back under the ceiling, so a later
+    /// spell of pressure gets its own. Without it the shed fires every frame
+    /// after the first second, which costs nothing once the pool is empty and
+    /// reads, in a log, as a controller doing something when it is not.
+    shed_done: bool,
 }
 
 const IDLE: Control = Control {
@@ -138,7 +168,23 @@ const IDLE: Control = Control {
     changed_at: None,
     over_since: None,
     under_since: None,
+    shed: false,
+    shed_done: false,
 };
+
+/// Whether a streamer holding a retained-mesh pool should drop it now.
+///
+/// Consuming: the flag is an edge, so the first reader clears it. There is one
+/// reader today (`systems::lod22`); a second would need this to fan out rather
+/// than to race, and the assertion in `a_shed_is_consumed_once` is what would
+/// fail when somebody adds it.
+#[must_use]
+pub fn take_shed() -> bool {
+    let mut control = CONTROL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::replace(&mut control.shed, false)
+}
 
 static CONTROL: Mutex<Control> = Mutex::new(IDLE);
 
@@ -191,6 +237,7 @@ pub fn observe(
             *control,
             meter.resident_bytes,
             ceiling,
+            crate::quality::warm_gpu_ceiling() > 0,
             time.elapsed_secs_f64(),
         );
         (before != control.bias).then_some((before, control.bias))
@@ -208,8 +255,13 @@ pub fn observe(
 
 /// The decision itself: pure over the state, the measurement and the clock, so
 /// every rule above can be asserted without a renderer, a scene or a wall clock.
+///
+/// `pool` says whether there is a retained-mesh pool to shed at all — passed in
+/// rather than read from [`crate::quality`], because a `OnceLock` resolved from
+/// the machine this happens to be running on is exactly the kind of hidden input
+/// the sentence above promises this function does not have.
 #[must_use]
-fn step(mut control: Control, resident: usize, ceiling: usize, now: f64) -> Control {
+fn step(mut control: Control, resident: usize, ceiling: usize, pool: bool, now: f64) -> Control {
     let over = resident > ceiling;
     #[allow(clippy::cast_precision_loss)]
     let comfortable = (resident as f64) < (ceiling as f64) * RELAX_FRACTION;
@@ -220,6 +272,33 @@ fn step(mut control: Control, resident: usize, ceiling: usize, now: f64) -> Cont
     // sustained pressure, and a one-frame dip means the pressure is not sustained.
     control.over_since = over.then(|| control.over_since.unwrap_or(now));
     control.under_since = comfortable.then(|| control.under_since.unwrap_or(now));
+    // The pressure is off, so the next run of it gets a shed of its own.
+    if control.over_since.is_none() {
+        control.shed_done = false;
+    }
+
+    // Shed before tighten, and *before* the dwell gate — the dwell exists because
+    // a radius change retears every streamer's ring, and dropping cells nobody is
+    // drawing retears nothing.
+    //
+    // **Once per run of pressure, and it does not touch `over_since`.** Both
+    // halves of that were wrong in the first version and the second is what the
+    // tests caught: resetting the countdown meant a machine whose pressure was
+    // the live ring rather than the pool re-shed an already-empty pool every
+    // second for ever and never reached the tighten at all. What gives the shed
+    // its chance is not a reset here but the residency actually falling — if
+    // dropping the pool was enough, the next sample is under the ceiling,
+    // `over_since` clears on its own and the map is never touched. If it was not
+    // enough the countdown runs on undisturbed and the ring narrows on time.
+    if pool
+        && !control.shed_done
+        && control
+            .over_since
+            .is_some_and(|since| now - since >= SHED_AFTER_S)
+    {
+        control.shed = true;
+        control.shed_done = true;
+    }
 
     if control.changed_at.is_some_and(|at| now - at < MIN_DWELL_S) {
         return control;
@@ -235,6 +314,12 @@ fn step(mut control: Control, resident: usize, ceiling: usize, now: f64) -> Cont
             changed_at: Some(now),
             over_since: None,
             under_since: None,
+            // Carried, never cleared: `take_shed` is the only consumer, and a
+            // request dropped here would be one a streamer never heard.
+            shed: control.shed,
+            // A change resets `over_since`, so the run of pressure that follows
+            // it is a new one and is entitled to its own shed.
+            shed_done: false,
         };
     }
     if control.bias > 0
@@ -247,6 +332,12 @@ fn step(mut control: Control, resident: usize, ceiling: usize, now: f64) -> Cont
             changed_at: Some(now),
             over_since: None,
             under_since: None,
+            // Carried, never cleared: `take_shed` is the only consumer, and a
+            // request dropped here would be one a streamer never heard.
+            shed: control.shed,
+            // A change resets `over_since`, so the run of pressure that follows
+            // it is a new one and is entitled to its own shed.
+            shed_done: false,
         };
     }
     control
@@ -287,7 +378,8 @@ mod detail_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        step, Control, IDLE, MAX_BIAS, MIN_DWELL_S, RELAX_AFTER_S, RELAX_FRACTION, TIGHTEN_AFTER_S,
+        step, Control, IDLE, MAX_BIAS, MIN_DWELL_S, RELAX_AFTER_S, RELAX_FRACTION, SHED_AFTER_S,
+        TIGHTEN_AFTER_S,
     };
 
     const CEILING: usize = 400 * 1024 * 1024;
@@ -299,13 +391,106 @@ mod tests {
 
     /// Feed one measurement repeatedly from `t0` to `t1`, a sample every 100 ms —
     /// roughly a frame, and enough resolution for the thresholds here.
-    fn run(mut control: Control, resident: usize, from: f64, to: f64) -> Control {
+    fn run(control: Control, resident: usize, from: f64, to: f64) -> Control {
+        // `false`: no retained-mesh pool, which is every handset and is the
+        // state every test written before the pool existed assumes.
+        run_with(false, control, resident, from, to)
+    }
+
+    fn run_with(pool: bool, mut control: Control, resident: usize, from: f64, to: f64) -> Control {
         let mut now = from;
         while now <= to {
-            control = step(control, resident, CEILING, now);
+            control = step(control, resident, CEILING, pool, now);
             now += 0.1;
         }
         control
+    }
+
+    /// The cheap response comes first and comes sooner: a machine that holds a
+    /// retained-mesh pool sheds it a second into the pressure, well before the
+    /// three seconds that would take a step of radius off the map.
+    #[test]
+    fn pressure_sheds_the_retained_pool_before_it_narrows_the_ring() {
+        let after = run_with(true, IDLE, OVER, 0.0, SHED_AFTER_S + 0.2);
+        assert!(after.shed, "the pool was not shed under pressure");
+        assert_eq!(
+            after.bias, 0,
+            "the ring was narrowed before the cheap option"
+        );
+    }
+
+    /// And that is the whole of the trade: when the pool *was* the pressure,
+    /// dropping it takes the residency back under the ceiling and the map is
+    /// never touched. The streamer freeing its meshes is what the second reading
+    /// stands for here.
+    #[test]
+    fn a_shed_that_relieves_the_pressure_leaves_the_map_alone() {
+        let shed = run_with(true, IDLE, OVER, 0.0, SHED_AFTER_S + 0.2);
+        assert!(shed.shed);
+        let after = run_with(
+            true,
+            shed,
+            SETTLED,
+            SHED_AFTER_S + 0.3,
+            TIGHTEN_AFTER_S + 5.0,
+        );
+        assert_eq!(after.bias, 0, "the ring narrowed after the shed had worked");
+    }
+
+    /// And when it was not the pressure — the live ring is — the controller
+    /// still reaches the expensive answer, on the original schedule.
+    ///
+    /// This is the case the first version of the shed got wrong: it reset the
+    /// countdown, so a machine over its ceiling for a different reason re-shed an
+    /// empty pool every second and never tightened at all.
+    #[test]
+    fn pressure_that_outlives_the_shed_still_tightens() {
+        let after = run_with(true, IDLE, OVER, 0.0, TIGHTEN_AFTER_S + 0.5);
+        assert!(after.shed, "the cheap option was skipped");
+        assert_eq!(after.bias, 1, "the expensive one never arrived");
+    }
+
+    /// Once per run of pressure, not once a frame. An empty pool re-shed every
+    /// frame costs nothing and misreports the controller as acting.
+    #[test]
+    fn the_pool_is_shed_once_per_run_of_pressure() {
+        let mut control = IDLE;
+        let mut sheds = 0;
+        let mut now = 0.0;
+        while now <= TIGHTEN_AFTER_S + 5.0 {
+            control = step(control, OVER, CEILING, true, now);
+            // Stand in for `take_shed`, which is what a streamer does with it.
+            if std::mem::replace(&mut control.shed, false) {
+                sheds += 1;
+            }
+            now += 0.1;
+        }
+        // Two at most: one for the first run of pressure, and one for the run
+        // that starts again after the tighten resets the countdown.
+        assert!(
+            (1..=2).contains(&sheds),
+            "the pool was shed {sheds} times in one spell of pressure"
+        );
+    }
+
+    /// A rung with no pool — every handset — behaves exactly as it did before
+    /// this existed.
+    #[test]
+    fn a_machine_with_no_pool_never_sheds() {
+        let after = run_with(false, IDLE, OVER, 0.0, TIGHTEN_AFTER_S + 0.5);
+        assert!(!after.shed);
+        assert_eq!(after.bias, 1);
+    }
+
+    /// A pending request survives the observations between it being made and a
+    /// streamer reading it — clearing it in `step` would drop sheds on the floor
+    /// whenever the reader's system happened to run after the controller's.
+    #[test]
+    fn a_pending_shed_is_not_cleared_by_later_observations() {
+        let shed = run_with(true, IDLE, OVER, 0.0, SHED_AFTER_S + 0.2);
+        assert!(shed.shed);
+        let later = run_with(true, shed, SETTLED, 5.0, 8.0);
+        assert!(later.shed, "the request was lost before anyone read it");
     }
 
     #[test]
@@ -326,7 +511,7 @@ mod tests {
     #[test]
     fn a_dip_under_the_ceiling_restarts_the_countdown() {
         let mut control = run(IDLE, OVER, 0.0, TIGHTEN_AFTER_S - 0.5);
-        control = step(control, SETTLED, CEILING, TIGHTEN_AFTER_S - 0.4);
+        control = step(control, SETTLED, CEILING, false, TIGHTEN_AFTER_S - 0.4);
         control = run(control, OVER, TIGHTEN_AFTER_S - 0.3, TIGHTEN_AFTER_S + 0.5);
         assert_eq!(control.bias, 0, "the countdown survived a dip");
     }

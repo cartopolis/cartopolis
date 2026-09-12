@@ -347,6 +347,49 @@ type Lod22Build = (
     ShellHeights,
 );
 
+/// The mesh assets a live cell's entities are drawn from, kept beside the
+/// entities so that retiring the cell can hold on to them.
+///
+/// The entities are what leave; the meshes are what were expensive. Reading them
+/// back off the entities at retire time would need a `Query<&Mesh3d>` and would
+/// find nothing for a cell whose entities are already in the despawn queue, so
+/// they are recorded here as each piece is spawned.
+struct LiveMeshes {
+    grid_cell: GridCell,
+    /// One per piece: the mesh, and whether it is an imported model's interior
+    /// (which picks the double-sided material).
+    pieces: Vec<(Handle<Mesh>, bool)>,
+    /// What these meshes occupy on the GPU, by `upload_meter`'s own reckoning —
+    /// so the pool is bounded in the units `resident_bytes_target` is in.
+    bytes: usize,
+}
+
+/// A retired cell held whole, so returning to it is a re-spawn.
+///
+/// Everything here was thrown away on the way out and rebuilt on the way back
+/// in: the meshes (a registry fetch, a serde parse and a merge on a worker), the
+/// collision footprints, the register join tallies and the storey data. Only the
+/// entities are not kept — they are cheap, and an entity that exists but is not
+/// drawn is a thing every other system would have to learn about.
+struct WarmCell {
+    meshes: LiveMeshes,
+    footprints: Vec<crate::systems::collision::Footprint>,
+    dated: DatedCount,
+    doors: DoorCount,
+    heights: HashMap<String, f32>,
+    detail: load_control::Detail,
+}
+
+impl crate::platform::warm::WarmSize for WarmCell {
+    fn warm_bytes(&self) -> usize {
+        // The mesh bytes and nothing else. The footprints and the tallies beside
+        // them are kilobytes of CPU state, and counting those into a ceiling that
+        // exists to bound *graphics* memory would make the number mean two
+        // things at once.
+        self.meshes.bytes
+    }
+}
+
 /// A cell taken off the stream but not fully spawned: the remaining pieces land
 /// one `stream_ledger` admission at a time, a frame apart. See the apply loop in
 /// [`update_lod22`] for why a cell may not land whole.
@@ -417,6 +460,22 @@ pub struct Lod22Buildings {
     /// drops `cells` — a parked piece from the old anchor spawning into the new
     /// world would stand in the wrong place for the life of the ring.
     partial: Option<PartialCell>,
+    /// The mesh handles behind each live cell's entities, so a retirement can
+    /// keep them.
+    live: HashMap<(i64, i64), LiveMeshes>,
+    /// Cells that have left the ring but whose meshes are still held, bounded by
+    /// [`crate::quality::Budget::warm_gpu_bytes`].
+    ///
+    /// **This is the one cache in the client that spends graphics memory**, and
+    /// the three rules that make that safe live with the budget field rather
+    /// than here. The one this module owes: it is shed on demand
+    /// (`load_control::take_shed`), and shedding must be complete rather than
+    /// partial — a controller that asked for room and got a quarter of it would
+    /// go on to narrow the ring anyway, having paid for both.
+    retained: crate::platform::warm::WarmStore<(i64, i64), WarmCell>,
+    /// Cells re-spawned out of [`Self::retained`] over the life of the process,
+    /// for `--dump-state`.
+    warm_restored: u32,
 }
 
 impl Lod22Buildings {
@@ -439,6 +498,19 @@ impl Lod22Buildings {
         self.dated
             .values()
             .fold((0, 0), |(m, t), (cm, ct)| (m + cm, t + ct))
+    }
+
+    /// Building cells re-spawned out of the retained-mesh pool over the life of
+    /// the process, and what that pool is holding now.
+    ///
+    /// For `--dump-state`, and both halves are machine-independent: a count of
+    /// cells and a count of asset bytes, neither of which the adapter touches.
+    /// The second is a *share* of `gpu_resident_kb` rather than an addition to
+    /// it, so a capture that reports 300 MB resident with 80 MB retained is
+    /// saying 80 of those 300 belong to buildings nothing is drawing.
+    #[must_use]
+    pub fn warm_stats(&self) -> (u32, usize) {
+        (self.warm_restored, self.retained.bytes())
     }
 
     /// Doors drawn across the loaded cells. See [`DoorCount`].
@@ -483,8 +555,61 @@ impl Default for Lod22Buildings {
             terrain_revision: 0,
             bag_revision: 0,
             partial: None,
+            live: HashMap::new(),
+            retained: crate::platform::warm::WarmStore::new(crate::quality::warm_gpu_ceiling()),
+            warm_restored: 0,
         }
     }
+}
+
+/// The lane's two shared materials, created on first use.
+///
+/// Lifted out of the apply loop when the restore path grew a second caller: a
+/// cell re-spawned from the retained pool has to be drawn with the *same* two
+/// handles as a freshly built one, or the window shader's single uniform write
+/// (`building_windows`) lights one set of buildings and not the other.
+fn cell_materials(
+    lod: &mut Lod22Buildings,
+    materials: &mut Assets<BuildingMaterial>,
+) -> (Handle<BuildingMaterial>, Handle<BuildingMaterial>) {
+    let material = lod
+        .material
+        .get_or_insert_with(|| {
+            materials.add(BuildingMaterial {
+                base: StandardMaterial {
+                    base_color: Color::WHITE,
+                    perceptual_roughness: 0.95,
+                    double_sided: !BACKFACE_CULL,
+                    cull_mode: if BACKFACE_CULL {
+                        Some(bevy::render::render_resource::Face::Back)
+                    } else {
+                        None
+                    },
+                    ..default()
+                },
+                extension: BuildingWindows::default(),
+            })
+        })
+        .clone();
+    let interior_material = lod
+        .interior_material
+        .get_or_insert_with(|| {
+            materials.add(BuildingMaterial {
+                base: StandardMaterial {
+                    base_color: Color::WHITE,
+                    perceptual_roughness: 0.95,
+                    // The one difference from the shells' material, and the whole
+                    // reason there are two: you can be inside one of these, where
+                    // the wall in front of you shows its back.
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                },
+                extension: BuildingWindows::default(),
+            })
+        })
+        .clone();
+    (material, interior_material)
 }
 
 /// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
@@ -546,6 +671,13 @@ pub fn update_lod22(
         lod.stream.reset();
         lod.anchor = None;
         lod.partial = None;
+        // Held cells go with the live ones, and for a stronger reason than
+        // tidiness: each carries a `GridCell` that means a place under the *old*
+        // anchor, and every one of the four causes here — a re-anchor, a new
+        // terrain field, the BAG coverage answer, the LoD3 manifest — changes
+        // either where a building stands or what colour it is.
+        lod.live.clear();
+        lod.retained.clear();
     }
 
     // The Layers panel's 3DBAG toggle: on the off-edge, tear down like a
@@ -570,6 +702,12 @@ pub fn update_lod22(
         lod.no_shadow.clear();
         lod.stream.reset();
         lod.partial = None;
+        // Unticking the layer is the user saying they do not want these
+        // buildings; holding a ring of them in graphics memory against a change
+        // of mind is exactly the trade `map_geometry`'s detail toggle refuses
+        // for the same reason.
+        lod.live.clear();
+        lod.retained.clear();
     }
     lod.enabled_was = enabled;
     if !enabled {
@@ -647,6 +785,10 @@ pub fn update_lod22(
         lod.doors.remove(&c);
         lod.built_detail.remove(&c);
         lod.heights.remove(&c);
+        // Dropped, not retained: a promotion exists *because* this mesh is the
+        // wrong one, so keeping it would only give the restore path something to
+        // hand back that the ring would promote again.
+        lod.live.remove(&c);
         if let Some(entities) = lod.cells.remove(&c) {
             for e in entities {
                 lod.stream.retire(e);
@@ -661,6 +803,20 @@ pub fn update_lod22(
         // `forget` is what drops it from the stream's `requested` set and hands
         // its slots back. The re-fetch is a disk-cache read.
         lod.stream.forget(&c);
+    }
+
+    // The controller has asked for room, and this pool is the cheapest place to
+    // find it — nothing in it is on screen. Complete rather than partial: see the
+    // field's own note. Dropping the handles is what frees the graphics memory;
+    // `upload_meter` sees the `Removed` events next frame and the residency it
+    // reports falls, which is what `load_control` is waiting for.
+    if load_control::take_shed() && !lod.retained.is_empty() {
+        tracing::info!(
+            cells = lod.retained.len(),
+            freed_mb = lod.retained.bytes() / (1024 * 1024),
+            "dropped the retained building cells to make room"
+        );
+        lod.retained.clear();
     }
 
     // Queue missing covered cells, nearest first. `CellStream::request` is also the
@@ -681,6 +837,69 @@ pub fn update_lod22(
     // was filled from somewhere else.
     use crate::platform::fetch_gate::ring_distance;
     to_request.sort_by_key(|c| ring_distance(*c, ccx, ccy));
+
+    // Re-spawn one held cell, nearest first, before anything is queued for it.
+    //
+    // **One per frame, matching [`MAX_BUILDS_PER_FRAME`].** A restore uploads
+    // nothing — that is the whole point of it — so `stream_ledger` has nothing to
+    // admit and the frame's byte budget is not what bounds this. What is still
+    // real is the command buffer: re-entering a ring can bring five cells at
+    // once, and spawning five cells' worth of entities in one frame is the
+    // *despawn* burst's twin. A cap that matches the build cap keeps the two
+    // paths costing the same.
+    let restore = to_request
+        .iter()
+        .copied()
+        .find(|c| !lod.stream.is_requested(c) && lod.retained.holds(c));
+    if let Some(c) = restore.filter(|_| lod.partial.is_none()) {
+        if let Some(warm) = lod.retained.take(&c) {
+            let (material, interior_material) = cell_materials(&mut lod, &mut materials);
+            let mut spawned = Vec::with_capacity(warm.meshes.pieces.len());
+            for (mesh, inside) in &warm.meshes.pieces {
+                let id = commands
+                    .spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(if *inside {
+                            interior_material.clone()
+                        } else {
+                            material.clone()
+                        }),
+                        Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                        warm.meshes.grid_cell,
+                        ChildOf(root),
+                        Lod22Mesh,
+                        HideInSpace,
+                    ))
+                    .id();
+                spawned.push(id);
+            }
+            // The shadow-LOD pass at the foot of this system acts on boundary
+            // crossings against `no_shadow`, which this cell is not in — so it
+            // will decide for these entities this frame, and there is nothing to
+            // pre-set here.
+            lod.cells.insert(c, spawned);
+            lod.dated.insert(c, warm.dated);
+            lod.doors.insert(c, warm.doors);
+            lod.heights.insert(c, warm.heights);
+            lod.built_detail.insert(c, warm.detail);
+            lod.live.insert(c, warm.meshes);
+            colliders.set_cell(c, warm.footprints);
+            // The far tier may have taken this cell over while we were away, the
+            // same case the freshly-built path handles once its last piece is up.
+            osm.evict_far_cell(c);
+            // Without this the cell is re-requested on the very next line and
+            // rebuilt over the meshes just re-spawned.
+            lod.stream.adopt(c);
+            lod.warm_restored += 1;
+            tracing::info!(
+                cell = ?c,
+                pieces = lod.cells.get(&c).map_or(0, Vec::len),
+                held_mb = lod.retained.bytes() / (1024 * 1024),
+                "lod22 cell restored from memory"
+            );
+        }
+    }
+
     for c in to_request {
         let rank = ring_distance(c, ccx, ccy);
         lod.stream.request_ranked(c, rank, now);
@@ -817,46 +1036,10 @@ pub fn update_lod22(
     // Drain the cell in application: spawn the pieces the frame's ledger admits,
     // park the rest for the next frame.
     if let Some(mut partial) = lod.partial.take() {
-        let material = lod
-            .material
-            .get_or_insert_with(|| {
-                materials.add(BuildingMaterial {
-                    base: StandardMaterial {
-                        base_color: Color::WHITE,
-                        perceptual_roughness: 0.95,
-                        double_sided: !BACKFACE_CULL,
-                        cull_mode: if BACKFACE_CULL {
-                            Some(bevy::render::render_resource::Face::Back)
-                        } else {
-                            None
-                        },
-                        ..default()
-                    },
-                    extension: BuildingWindows::default(),
-                })
-            })
-            .clone();
-        let interior_material = lod
-            .interior_material
-            .get_or_insert_with(|| {
-                materials.add(BuildingMaterial {
-                    base: StandardMaterial {
-                        base_color: Color::WHITE,
-                        perceptual_roughness: 0.95,
-                        // The one difference from the shells' material, and the
-                        // whole reason there are two: you can be inside one of
-                        // these, where the wall in front of you shows its back.
-                        double_sided: true,
-                        cull_mode: None,
-                        ..default()
-                    },
-                    extension: BuildingWindows::default(),
-                })
-            })
-            .clone();
+        let (material, interior_material) = cell_materials(&mut lod, &mut materials);
         while let Some((mesh, _)) = partial.pieces.first() {
-            if !crate::systems::stream_ledger::admit(crate::systems::stream_ledger::mesh_cost(mesh))
-            {
+            let cost = crate::systems::stream_ledger::mesh_cost(mesh);
+            if !crate::systems::stream_ledger::admit(cost) {
                 break;
             }
             let (mesh, inside) = partial.pieces.remove(0);
@@ -865,8 +1048,9 @@ pub fn update_lod22(
             // `HideInSpace`, the despawn queue — acts per mesh entity, and a
             // parent would mean each of them learning to walk children for a
             // hierarchy with nothing else to do.
+            let mesh_handle = meshes.add(mesh);
             let mut entity = commands.spawn((
-                Mesh3d(meshes.add(mesh)),
+                Mesh3d(mesh_handle.clone()),
                 MeshMaterial3d(if inside {
                     interior_material.clone()
                 } else {
@@ -886,6 +1070,18 @@ pub fn update_lod22(
             }
             let id = entity.id();
             lod.cells.entry(partial.cell).or_default().push(id);
+            // Keep the handle and what it costs, so retiring this cell can hold
+            // the mesh rather than free it. `mesh_cost` is the same figure
+            // `stream_ledger` admitted it on and the same one `upload_meter`
+            // counts as resident, which is what lets the pool be bounded in the
+            // units the residency target is written in.
+            let live = lod.live.entry(partial.cell).or_insert(LiveMeshes {
+                grid_cell: partial.grid_cell,
+                pieces: Vec::new(),
+                bytes: 0,
+            });
+            live.bytes += cost;
+            live.pieces.push((mesh_handle, inside));
         }
         if partial.pieces.is_empty() {
             // The far tier may already hold this cell — queued before the
@@ -913,10 +1109,10 @@ pub fn update_lod22(
         .copied()
         .collect();
     for c in stale {
-        lod.dated.remove(&c);
-        lod.doors.remove(&c);
-        lod.built_detail.remove(&c);
-        lod.heights.remove(&c);
+        let dated = lod.dated.remove(&c);
+        let doors = lod.doors.remove(&c);
+        let detail = lod.built_detail.remove(&c);
+        let heights = lod.heights.remove(&c);
         if let Some(entities) = lod.cells.remove(&c) {
             for e in entities {
                 lod.stream.retire(e);
@@ -928,9 +1124,45 @@ pub fn update_lod22(
         if lod.partial.as_ref().is_some_and(|p| p.cell == c) {
             lod.partial = None;
         }
-        colliders.remove_cell(c);
+        let footprints = colliders.remove_cell(c);
         lod.no_shadow.remove(&c);
         lod.stream.forget(&c);
+        // Hold the whole cell if there is room for it. The entities are gone
+        // either way; what this decides is whether coming back is a re-spawn or
+        // another registry fetch, serde parse, merge and upload.
+        //
+        // **Only a cell that is complete and accounted for.** A cell dropped
+        // mid-application above has no entry in `live` yet, and any of the other
+        // five being absent means a state this pool cannot faithfully restore —
+        // in which case the `remove` in the scrutinee has already dropped the
+        // handles and the return is an ordinary rebuild.
+        if let (
+            Some(meshes),
+            Some(footprints),
+            Some(dated),
+            Some(doors),
+            Some(heights),
+            Some(detail),
+        ) = (
+            lod.live.remove(&c),
+            footprints,
+            dated,
+            doors,
+            heights,
+            detail,
+        ) {
+            lod.retained.put(
+                c,
+                WarmCell {
+                    meshes,
+                    footprints,
+                    dated,
+                    doors,
+                    heights,
+                    detail,
+                },
+            );
+        }
     }
 
     // Shadow LOD: cells within SHADOW_RADIUS cast shadows, the rest don't. Only act

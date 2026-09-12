@@ -171,11 +171,26 @@ pub struct StreamTile {
 /// the full packed mip chain ready for a cheap `Image` assembly + GPU upload on
 /// the main thread — the PNG decode and mip generation (the expensive parts) never
 /// touch the render loop, so streaming new tiles while moving doesn't hitch.
+///
+/// Also what [`MapStream::warm`] keeps after a tile is retired, which is why it
+/// is `Clone`: this is the finished form, so a tile that comes back into range
+/// can be rebuilt from one without touching the tile server, the MVT parser or
+/// tiny-skia.
+#[derive(Clone)]
 struct DecodedTile {
     data: Vec<u8>,
     width: u32,
     height: u32,
     mip_count: u32,
+}
+
+impl crate::platform::warm::WarmSize for DecodedTile {
+    fn warm_bytes(&self) -> usize {
+        // The mip chain is the whole of it — the other three fields are its
+        // shape. A 512² RGBA8 chain is 1,398,100 bytes every time, because the
+        // raster size is the tier's and not the content's.
+        self.data.len()
+    }
 }
 
 #[derive(Resource)]
@@ -205,6 +220,21 @@ pub struct MapStream {
     /// levels are derived from it down to `MIN_ZOOM`.
     current_zoom: u32,
     loaded: HashMap<TileKey, Entity>,
+    /// Rasterised tiles kept after they were retired, so panning back, zooming
+    /// back in or shooting a second viewpoint over the same city re-uploads a
+    /// texture instead of rebuilding it.
+    ///
+    /// **This streamer is where the time goes.** `docs/notes/tile-raster-cost.md`
+    /// attributes ~29 s of the ~38 s of worker time in a cold Groningen fill to
+    /// `map_tiles` scan conversion, and measures a fully warm *disk* cache as
+    /// buying only 2 s of a 27.8 s fill — the bytes were never what was
+    /// expensive. Half the tier's whole system-memory allowance goes here for
+    /// that reason; `map_geometry` takes the other half.
+    warm: crate::platform::warm::WarmStore<TileKey, DecodedTile>,
+    /// Tiles served from [`Self::warm`] since the last report, for the `tile
+    /// fill` line. A counter rather than a read of the store's own total,
+    /// because the interesting number is the rate during a burst.
+    warm_served: u32,
     /// The requested/in-flight/failed bookkeeping, the results sink, the
     /// concurrency bound and the bounded despawn queue (`platform::stream`).
     ///
@@ -321,6 +351,17 @@ impl MapStream {
     /// mapping other systems build on.
     pub fn geo_anchor(&self) -> Option<(f64, f64, u32)> {
         self.anchor
+    }
+
+    /// Ground tiles served from the warm store instead of being rebuilt, over
+    /// the life of the process, and what the store is holding right now.
+    ///
+    /// For `--dump-state`, which is where a `cargo shots` manifest run can state
+    /// whether its second viewpoint over the same city re-rasterised the ground
+    /// or re-uploaded it. Colour is not evidence on this container's software
+    /// rasteriser; a count is.
+    pub fn warm_stats(&self) -> (u32, usize) {
+        (self.warm.hits(), self.warm.bytes())
     }
 
     /// Are tiles still being fetched or retired? Used by the `--shot` harness to
@@ -481,6 +522,12 @@ impl Default for MapStream {
             pending_reanchor: None,
             current_zoom: 0,
             loaded: HashMap::new(),
+            // Half the tier's allowance: this streamer and `map_geometry` are
+            // the two that hold anything worth holding, and this is the one the
+            // measurement points at. Integer-halved, so a `0` allowance (the
+            // phone rung, `CARTO_WARM_MB=0`) stays off.
+            warm: crate::platform::warm::WarmStore::new(crate::quality::warm_ceiling() / 2),
+            warm_served: 0,
             requeues: 0,
             tiles: CellStream::new(Policy {
                 max_in_flight: TILE_MAX_IN_FLIGHT,
@@ -1126,6 +1173,12 @@ pub fn update_map_stream(
     // mutably borrows `stream`; `TileKey` is `Copy`, so reading one out costs
     // nothing and no 424-entry clone is needed.
     let gen = stream.fetch_generation;
+    // Everything held for a previous fetch generation is wrong, not merely old:
+    // a re-anchor moves every tile's world position and a source switch changes
+    // what its pixels are. Discarding here, where the generation is already read
+    // out, keeps that rule in one place rather than in the three functions that
+    // bump it.
+    stream.warm.set_generation(gen);
     // The level centres, for the rank below. Eight entries, cloned out because the
     // loop body borrows `stream` mutably.
     let level_centres: Vec<(u32, i64, i64)> = stream
@@ -1212,6 +1265,26 @@ pub fn update_map_stream(
             jobs.push(key);
         }
         for key in jobs {
+            // Held from the last time this tile was on screen? Then there is no
+            // fetch, no MVT parse and no scan conversion to do — push the
+            // finished mip chain straight into the sink the worker would have
+            // pushed it into, so the upload path, the byte ledger and
+            // `CellStream`'s slot accounting are all unchanged.
+            //
+            // Looked up *after* `next_job`, which means a warm hit spends a
+            // `fetch_gate` slot for the one frame it takes `apply_stream_textures`
+            // to drain it. That costs nothing real: uploads are capped at
+            // `MAX_UPLOADS_PER_FRAME` and by `stream_ledger`'s byte budget, so
+            // even an entirely warm ring could not be applied faster than this.
+            // Looking it up before dispatch would mean reaching inside
+            // `Dispatcher`'s queue for the sake of a bound that is not binding.
+            if let Some(warm) = stream.warm.take(&key) {
+                if let Ok(mut g) = results.lock() {
+                    g.push((key, Some(warm)));
+                }
+                stream.warm_served += 1;
+                continue;
+            }
             // The **only** place a consumer changes basemap source. `map_geometry`,
             // `globe`, `navigation` and the router keep reading
             // `OsmTileUrlTemplate`: they want MVT geometry, not pixels, and the
@@ -1298,11 +1371,23 @@ pub fn apply_stream_textures(
     let now = time.elapsed_secs_f64();
     if now >= *next_report {
         *next_report = now + 2.0;
+        // Read out first: `ResMut` derefs as a whole, so the macro cannot borrow
+        // one field mutably and another immutably in the same expression.
+        let warm_served = std::mem::take(&mut stream.warm_served);
+        let warm_held = stream.warm.len();
+        let warm_mb = stream.warm.bytes() / (1024 * 1024);
         tracing::info!(
             in_flight = stream.tiles.in_flight(),
             awaiting_upload = tiles.iter().count(),
             loaded = stream.loaded.len(),
             requeued = stream.requeues,
+            // How much of this burst cost nothing but an upload, and how much of
+            // the allowance that is buying. Beside `requeued` on purpose: the two
+            // together say whether a ring is filling, refetching, or being
+            // re-served from memory.
+            warm_served,
+            warm_held,
+            warm_mb,
             "tile fill"
         );
     }
@@ -1397,6 +1482,21 @@ pub fn apply_stream_textures(
                 }
             }
             Some(decoded) => {
+                // Keep the finished mip chain for a return journey *before* it is
+                // moved into the image, because `TILE_TEXTURE_USAGE` is
+                // `RENDER_WORLD` only: once uploaded there is no CPU copy left to
+                // keep, so this is the single moment it can be taken.
+                //
+                // The cost is one memcpy of the chain — ~1.4 MB, a few hundred
+                // microseconds — against the 48–68 ms of scan conversion it saves
+                // if the tile is ever wanted again. `put` is a no-op when the
+                // store is disabled, so the phone rung does not pay the copy
+                // either. Cloned rather than shared behind an `Arc` because
+                // `Image::data` owns its bytes: sharing would only move the copy,
+                // not remove it.
+                if !stream.warm.disabled() {
+                    stream.warm.put(key, decoded.clone());
+                }
                 // Decode + mipmaps already done off-thread; just assemble and upload.
                 let bevy_image = crate::systems::tile_loader::image_from_mip_chain(
                     decoded.width,

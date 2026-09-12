@@ -851,6 +851,27 @@ pub struct ShotMetrics {
     /// The most it ever occupied during the run, in kB. A capture that peaks well
     /// above where it settles has still asked the driver for the peak.
     pub gpu_resident_peak_kb: usize,
+    /// Ground tiles this run rebuilt from system memory rather than from the
+    /// tile server and tiny-skia (`platform::warm`), and the megabytes that
+    /// store is holding at the shutter.
+    ///
+    /// Machine-independent — a count of cells and a count of bytes, neither of
+    /// which the adapter touches — so both may be gated. The pair is what says
+    /// whether a multi-viewpoint run was warm: a `cargo shots` manifest crosses
+    /// the same city six times, and `warm_tile_hits` distinguishes "the second
+    /// shot settled quickly" from "the second shot settled quickly *because* it
+    /// re-rasterised nothing".
+    pub warm_tile_hits: u32,
+    pub warm_tile_mb: f32,
+    /// The same pair for the 3D buildings (`systems::lod22`), whose retained
+    /// form is graphics memory rather than system memory.
+    ///
+    /// `warm_cell_mb` is part of `gpu_resident_kb`, not extra to it — these are
+    /// live assets that nothing is drawing — so the two read together say how
+    /// much of a capture's residency is the return-journey pool. 0 on every
+    /// handset, where the pool is switched off outright.
+    pub warm_cell_restores: u32,
+    pub warm_cell_mb: f32,
     /// The streaming account for this capture's window (placement → settle
     /// verdict): HTTP requests completed, errors, body megabytes received, and
     /// the summed time to first byte / body-read time (`platform::http::stats`).
@@ -934,7 +955,7 @@ traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
-gpu_resident_peak_kb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
+gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
 fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
 worker_jobs,worker_busy_ms,worker_wait_ms,worker_split";
 
@@ -992,6 +1013,8 @@ impl ShotMetrics {
 /// costs a column some readability — never its label.
 const CSV_PRECISION: &[(&str, usize)] = &[
     ("settled_s", 2),
+    ("warm_tile_mb", 1),
+    ("warm_cell_mb", 1),
     ("frame_ms", 2),
     ("frame_ms_max", 2),
     ("space_factor", 4),
@@ -2929,6 +2952,10 @@ pub fn drive_capture(
             upload_peak_asset_kb: readouts.uploads.peak_asset_kb(),
             gpu_resident_kb: readouts.uploads.resident_kb(),
             gpu_resident_peak_kb: readouts.uploads.peak_resident_kb(),
+            warm_tile_hits: stream.warm_stats().0,
+            warm_tile_mb: stream.warm_stats().1 as f32 / (1024.0 * 1024.0),
+            warm_cell_restores: readouts.lod22.warm_stats().0,
+            warm_cell_mb: readouts.lod22.warm_stats().1 as f32 / (1024.0 * 1024.0),
             fetch_count: progress.fetch_window.requests,
             fetch_errors: progress.fetch_window.errors,
             fetch_mb: progress.fetch_window.bytes as f32 / (1024.0 * 1024.0),
@@ -3022,6 +3049,10 @@ pub fn drive_capture(
                     upload_peak_asset_kb = m.upload_peak_asset_kb,
                     gpu_resident_kb = m.gpu_resident_kb,
                     gpu_resident_peak_kb = m.gpu_resident_peak_kb,
+                    warm_tile_hits = m.warm_tile_hits,
+                    warm_tile_mb = m.warm_tile_mb,
+                    warm_cell_restores = m.warm_cell_restores,
+                    warm_cell_mb = m.warm_cell_mb,
                     fetch_count = m.fetch_count,
                     fetch_errors = m.fetch_errors,
                     fetch_mb = format!("{:.2}", m.fetch_mb),
@@ -3507,6 +3538,10 @@ mod tests {
             upload_peak_asset_kb: 0,
             gpu_resident_kb: 0,
             gpu_resident_peak_kb: 0,
+            warm_tile_hits: 0,
+            warm_tile_mb: 0.0,
+            warm_cell_restores: 0,
+            warm_cell_mb: 0.0,
             software_renderer: true,
             vram_allocated_kb: 0,
             vram_reserved_kb: 0,
