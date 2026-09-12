@@ -47,6 +47,10 @@ glam.workspace = true
 # (`assets::inspect`). Already in the tree — `bevy_gltf` builds it for the client
 # — so naming it here costs the dependency graph nothing new.
 gltf = { version = "1.4", default-features = false, features = ["utils"] }
+# Decoding the data URIs in a self-contained `.gltf` so it can be repacked into a
+# `.glb` (`assets::repack_gltf`). Already in the tree several times over — every
+# HTTP and TLS crate here pulls one — so this is a name, not a new dependency.
+base64 = "0.22"
 # Reading a texture's dimensions out of its header, which is the only way to tell
 # a small file from a small *image*: a decompression bomb is tiny on disk.
 image.workspace = true

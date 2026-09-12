@@ -1,7 +1,7 @@
 ---
 topic: content
 triggers: [assets.rs, library.rs, model_assets.rs, model_library.rs, "PrimDto::model", glb, glTF, inventory, "shared library", upload, licence, CC0, "CC BY", Quaternius, Kenney, "asset hash", sim://]
-updated: 2026-09-05
+updated: 2026-09-11
 ---
 
 # Models a person uploads, and the library they can share them to
@@ -75,13 +75,33 @@ This follows [mvt-capacity-guard.md](mvt-capacity-guard.md), which is the standi
 warning: a guard that predicted a cost from the shape of a file before parsing it
 refused real content and was reverted the same day.
 
-**Binary glTF only.** A `.gltf` names its buffers and images as separate files, so
-accepting one would mean either fetching whatever it names — an upload that makes
-the server issue requests of the uploader's choosing — or storing a model that
-cannot be drawn. Every buffer must be the GLB's own chunk and every image a view
-into it; a `Uri` on either is refused. A data URI is refused for the same reason
-plus one more: base64 in the JSON is a third larger than it needs to be and is a
-way past a limit measured on the file.
+**Self-contained glTF only, and the store holds one form of it.** What is refused
+is a file that points *outside itself*: fetching whatever an uploader's JSON names
+would make the server issue requests of a stranger's choosing, and storing it
+unfetched would mean a model nothing can draw. So a `Uri` on a buffer or an image
+is a refusal, in either spelling of the format.
+
+A `.gltf` whose buffers and images are **data URIs** has no such problem, and
+since 2026-09-11 it is accepted: `assets::repack_gltf` decodes them, merges every
+buffer into one blob, moves each image into a `bufferView` with its media type,
+and writes a GLB. Repacking rather than storing two formats is what keeps this to
+one decision — the store, `/api/assets/{hash}.glb`, the client's `sim://` reader
+and Bevy's loader all still see one kind of file. It was excluded at first on the
+grounds that base64 is a third larger than the bytes it carries, which is true and
+is an argument about *the wire*, not about what can be stored; and it made
+Blender's three-entry export menu a coin flip, since "glTF Embedded" is a perfectly
+self-contained file that was refused.
+
+Two consequences. The repack is always **smaller** than the upload, so the byte
+ceiling applied to the read still bounds what is stored. And the same model sent
+both ways is **two files** — the hash is of the stored bytes, and deduplication
+has never been more than identical bytes.
+
+**FBX is not accepted.** Nothing in Rust parses it and Bevy has no loader, so it
+would mean Blender headless or Autodesk's SDK on the VPS, a large C++ parser fed
+attacker-controlled files, and a conversion that is lossy and ambiguous about
+units, axis and materials. Blender's glTF exporter is the path everyone already
+takes to get FBX into a web engine, and the refusal names the format to export.
 
 Validation happens on the server because it happens **once, for everyone**. A
 client that skips it cannot be detected, and the first anyone would hear about a
@@ -105,6 +125,39 @@ which is right when the wire and the API share a hostname — and
 `model_assets::derive_api_base` answers `None` for loopback rather than guessing,
 because a wrong base fails as a network error instead of as "this server did not
 say".
+
+### A dev sim had no model store at all, and said the wrong thing about it
+
+Fixed 2026-09-11. `derive_api_base` answering `None` for loopback is right — the
+HTTP port is a separate `--http-listen` and nothing in the game port implies it —
+but the consequence was that the *documented* dev loop (`cargo run -p
+cartopolis_simulator`, sign in to `127.0.0.1:4747`) had no model API, and the
+Models panel told a signed-in person to sign in. Every report of "uploading does
+nothing" traced back to this, not to the upload.
+
+Three parts, and the shape of each matters:
+
+- The **binary** defaults `--http-listen` to `127.0.0.1:4748` when nothing asked
+  (`main.rs`), and falls back to off with a warning when that port is taken — an
+  `--http-listen` that *was* asked for still fails the boot, because a deployment
+  that cannot bind its listener must not come up looking healthy. `SimConfig::default`
+  still says `None`, so the tests and every embedded `serve` are untouched.
+- `SimConfig::resolved_api_base_url` answers an unset `api_base_url` with the
+  listener's own address **only when the listener is loopback**. The hosted sim
+  binds `172.17.0.1:4748` behind Caddy: telling a browser that address would
+  replace a working derivation with one that cannot resolve.
+- The panel separates "not signed in" from "this server has no model store", since
+  the second is the operator's to fix and the first is not.
+
+### Sharing is asked at upload now
+
+The licence question was already asked there; the *use* of the answer was two
+visits away — upload, wait for the list, find the row, press Share. A "Share it
+with everyone on this server" checkbox sits under the licence radio group, is
+absent (and forced off) for `other`, and the client chains
+`POST /api/inventory/{id}/share` onto the upload's answer. The two server routes
+stay separate: uploading something you may not redistribute is a legitimate act,
+and the refusal still lives on the server.
 
 ### Deployment: `cartopolis.org` proxies three prefixes, not `/api/*`
 

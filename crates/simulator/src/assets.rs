@@ -167,6 +167,198 @@ pub fn store(dir: &str, hash: &str, bytes: &[u8]) -> std::io::Result<()> {
 /// The error strings are what a person sees in the upload dialog, so they say
 /// what was measured and what the ceiling is. "Rejected" with no number is a
 /// message that sends someone to a maintainer.
+/// Turn a self-contained `.gltf` into the `.glb` everything downstream expects,
+/// or leave a `.glb` alone.
+///
+/// # Why accept the JSON form at all
+///
+/// It is the same format. What made `.glb` the only accepted spelling is that a
+/// `.gltf` normally *names* its buffers and textures as separate files, and an
+/// upload that makes the server fetch a URL of the uploader's choosing is not an
+/// upload — it is a request generator sitting inside a private network. That
+/// argument is about external references and says nothing about the case where
+/// everything is already in the file as a data URI, which Blender writes when
+/// asked for "glTF Embedded" and which a person has no way of knowing is the
+/// wrong one of the three menu entries.
+///
+/// So: external references are refused exactly as before, and a self-contained
+/// one is **repacked** here rather than stored as it arrived. Repacking rather
+/// than accepting two formats is what keeps this one decision: the store, the
+/// download route, the client's `sim://` reader and Bevy's loader all continue to
+/// see one kind of file, and the hash names what was stored.
+///
+/// # Two consequences worth knowing
+///
+/// The output is always **smaller** than the input — base64 is a third larger
+/// than the bytes it encodes — so the byte ceiling applied to the upload still
+/// bounds what is stored.
+///
+/// And the same model uploaded both ways is **two files**: the hash is of the
+/// bytes stored, and a repack is not byte-identical to whatever a different
+/// exporter would have produced. Deduplication is a property of identical bytes
+/// and has never been more than that.
+pub fn repack_gltf(bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    if bytes.starts_with(b"glTF") {
+        return Ok(None);
+    }
+    // A glTF JSON document, or nothing this understands. Checked on the first
+    // non-whitespace byte rather than on the file extension, which the upload
+    // route never sees.
+    if !bytes
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{')
+    {
+        return Err("that is neither a .glb nor a .gltf — export as glTF".to_string());
+    }
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("that .gltf will not parse: {e}"))?;
+    if doc["asset"]["version"].as_str().is_none() {
+        return Err("that JSON file is not a glTF document".to_string());
+    }
+
+    let mut blob: Vec<u8> = Vec::new();
+    // Where each of the document's buffers ended up in the single blob.
+    let mut buffer_starts: Vec<usize> = Vec::new();
+    let buffers = doc["buffers"].as_array().cloned().unwrap_or_default();
+    for buffer in &buffers {
+        let uri = buffer["uri"].as_str().ok_or_else(|| {
+            // A buffer with no `uri` means "the GLB's own binary chunk", which a
+            // .gltf does not have. Nothing can supply those bytes.
+            "that .gltf expects a binary chunk it does not carry — export it as .glb".to_string()
+        })?;
+        let data = decode_data_uri(uri)?;
+        align(&mut blob);
+        buffer_starts.push(blob.len());
+        blob.extend_from_slice(&data);
+    }
+
+    // Every view moves onto the one buffer, keeping its index so accessors do not
+    // have to be touched at all.
+    let mut views = doc["bufferViews"].as_array().cloned().unwrap_or_default();
+    for view in &mut views {
+        let index = view["buffer"].as_u64().unwrap_or(0) as usize;
+        let start = *buffer_starts
+            .get(index)
+            .ok_or_else(|| "that .gltf refers to a buffer it does not have".to_string())?;
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+        view["buffer"] = serde_json::json!(0);
+        view["byteOffset"] = serde_json::json!(start + offset);
+    }
+
+    // Images named by a data URI become views of their own; images that already
+    // ride a view are left exactly as they are.
+    let mut images = doc["images"].as_array().cloned().unwrap_or_default();
+    for image in &mut images {
+        let Some(uri) = image["uri"].as_str().map(str::to_string) else {
+            continue;
+        };
+        let mime = data_uri_mime(&uri).ok_or_else(|| {
+            "that .gltf has a texture with no type on it — export the textures embedded".to_string()
+        })?;
+        let data = decode_data_uri(&uri)?;
+        align(&mut blob);
+        let start = blob.len();
+        blob.extend_from_slice(&data);
+        views.push(serde_json::json!({
+            "buffer": 0,
+            "byteOffset": start,
+            "byteLength": data.len(),
+        }));
+        let object = image
+            .as_object_mut()
+            .ok_or_else(|| "that .gltf has an image that is not an object".to_string())?;
+        object.remove("uri");
+        object.insert("bufferView".into(), serde_json::json!(views.len() - 1));
+        object.insert("mimeType".into(), serde_json::json!(mime));
+    }
+
+    doc["buffers"] = serde_json::json!([{ "byteLength": blob.len() }]);
+    doc["bufferViews"] = serde_json::Value::Array(views);
+    if !images.is_empty() {
+        doc["images"] = serde_json::Value::Array(images);
+    }
+    Ok(Some(write_glb(&doc, &blob)?))
+}
+
+/// The bytes behind a `data:` URI, or a refusal naming what was pointed at.
+///
+/// Base64 only. The percent-encoded form of a data URI is legal and is not what
+/// any exporter writes, and accepting it would mean a second decoder for a case
+/// nobody produces.
+fn decode_data_uri(uri: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let Some(rest) = uri.strip_prefix("data:") else {
+        // The external-reference refusal, which is the whole reason the JSON form
+        // was not accepted before. It names what it saw, truncated: a URI can be
+        // any length and this sentence is shown to a person.
+        let shown: String = uri.chars().take(40).collect();
+        return Err(format!(
+            "that model refers to a file outside itself ({shown}) — export it with the buffers              and textures embedded, or as .glb"
+        ));
+    };
+    let Some((_mime, payload)) = rest.split_once(";base64,") else {
+        return Err("that model has a data URI this server cannot read — export it as .glb".into());
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("that model has a data URI that will not decode: {e}"))
+}
+
+/// The media type in a `data:` URI, for an image that is about to become a view.
+///
+/// glTF requires `mimeType` beside a `bufferView` image — the loader has no file
+/// name to guess from — so a data URI with no type on it cannot be repacked.
+fn data_uri_mime(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("data:")?;
+    let (mime, _) = rest.split_once(";base64,")?;
+    let mime = mime.trim();
+    (!mime.is_empty()).then(|| mime.to_string())
+}
+
+/// Pad to the four-byte alignment glTF requires of a buffer view's offset.
+fn align(blob: &mut Vec<u8>) {
+    while blob.len() % 4 != 0 {
+        blob.push(0);
+    }
+}
+
+/// The container: a header, the JSON chunk, and the binary chunk.
+///
+/// Both chunks are padded to four bytes, and with what the specification asks
+/// for: spaces after the JSON (so it stays parseable as text) and zeros after the
+/// binary.
+fn write_glb(doc: &serde_json::Value, blob: &[u8]) -> Result<Vec<u8>, String> {
+    let mut json = serde_json::to_vec(doc).map_err(|e| format!("could not rewrite it: {e}"))?;
+    while json.len() % 4 != 0 {
+        json.push(b' ');
+    }
+    let mut bin = blob.to_vec();
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+    let total = 12 + 8 + json.len() + if bin.is_empty() { 0 } else { 8 + bin.len() };
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(
+        &(u32::try_from(total).map_err(|_| "that model is too large")?).to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &(u32::try_from(json.len()).map_err(|_| "that model is too large")?).to_le_bytes(),
+    );
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+    if !bin.is_empty() {
+        out.extend_from_slice(
+            &(u32::try_from(bin.len()).map_err(|_| "that model is too large")?).to_le_bytes(),
+        );
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&bin);
+    }
+    Ok(out)
+}
+
 pub fn inspect(bytes: &[u8]) -> Result<AssetFacts, String> {
     if bytes.len() > MAX_ASSET_BYTES {
         return Err(format!(
@@ -178,14 +370,17 @@ pub fn inspect(bytes: &[u8]) -> Result<AssetFacts, String> {
     if bytes.is_empty() {
         return Err("that file is empty".to_string());
     }
-    // Binary glTF only, and the magic is the test. A `.gltf` JSON file names its
-    // buffers and images as separate files, so accepting one would mean either
-    // fetching whatever it names — an upload that makes the server issue
-    // requests of the uploader's choosing — or storing a model that cannot be
-    // drawn. `.glb` carries everything in one file, which is the property the
-    // whole store is built on.
+    // Binary glTF only by the time anything gets here, and the magic is the
+    // test. A `.gltf` that named its buffers and images as separate files would
+    // mean either fetching whatever it names — an upload that makes the server
+    // issue requests of the uploader's choosing — or storing a model that cannot
+    // be drawn; a self-contained one has already been repacked into this form by
+    // `repack_gltf`. One file carrying everything is the property the whole store
+    // is built on.
     if !bytes.starts_with(b"glTF") {
-        return Err("that is not a .glb file — export as binary glTF".to_string());
+        // Reached only when something bypassed `repack_gltf`, which is where an
+        // upload's format is decided and which hands this a GLB or an error.
+        return Err("that is not a .glb file — export as glTF Binary (.glb)".to_string());
     }
 
     let gltf =
@@ -377,7 +572,121 @@ mod tests {
     /// mean either fetching what it names or storing something undrawable.
     #[test]
     fn refuses_json_gltf() {
+        // `inspect` itself still takes binary glTF only. The JSON form is decided
+        // one step earlier, in `repack_gltf`, which either hands this a GLB or
+        // refuses — see the round trip below.
         let err = inspect(br#"{"asset":{"version":"2.0"}}"#).unwrap_err();
+        assert!(err.contains(".glb"), "{err}");
+    }
+
+    /// A self-contained `.gltf` — Blender's "glTF Embedded" — is repacked and
+    /// then reads as exactly the model it describes.
+    #[test]
+    fn repacks_an_embedded_gltf() {
+        use base64::Engine;
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let mut bin = Vec::new();
+        for v in positions {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bin);
+        let doc = format!(
+            r#"{{
+                "asset": {{"version": "2.0"}},
+                "scene": 0,
+                "scenes": [{{"nodes": [0]}}],
+                "nodes": [{{"mesh": 0}}],
+                "meshes": [{{"primitives": [{{"attributes": {{"POSITION": 0}}}}]}}],
+                "accessors": [{{"bufferView": 0, "componentType": 5126, "count": 3,
+                                "type": "VEC3", "min": [0,0,0], "max": [1,1,0]}}],
+                "bufferViews": [{{"buffer": 0, "byteOffset": 0, "byteLength": 36}}],
+                "buffers": [{{"byteLength": 36, "uri": "data:application/octet-stream;base64,{encoded}"}}]
+            }}"#
+        );
+        let repacked = repack_gltf(doc.as_bytes())
+            .expect("an embedded gltf is acceptable")
+            .expect("and it is repacked");
+        assert!(repacked.starts_with(b"glTF"));
+        // Base64 is a third larger than what it carries, so a repack can only
+        // shrink — which is what keeps the byte ceiling applied to the upload a
+        // bound on what is stored.
+        assert!(repacked.len() < doc.len());
+        let facts = inspect(&repacked).expect("and it is a model");
+        assert_eq!(facts.triangles, 1);
+        assert_eq!(facts.nodes, 1);
+    }
+
+    /// A `.glb` is not touched: the repack step has to be invisible to the format
+    /// that was already right.
+    #[test]
+    fn leaves_a_glb_alone() {
+        assert!(repack_gltf(&one_triangle())
+            .expect("a glb is acceptable")
+            .is_none());
+    }
+
+    /// The refusal the whole restriction exists for. A `.gltf` naming a file
+    /// beside it must not send the server looking for it.
+    #[test]
+    fn refuses_a_gltf_that_names_a_file_beside_it() {
+        let doc = br#"{
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": 36, "uri": "model.bin"}]
+        }"#;
+        let err = repack_gltf(doc).unwrap_err();
+        assert!(err.contains("model.bin"), "{err}");
+    }
+
+    /// …including when the file it names is a URL, which is the case that would
+    /// make the simulator fetch something for a stranger.
+    #[test]
+    fn refuses_a_gltf_that_names_a_url() {
+        let doc = br#"{
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": 4, "uri": "http://169.254.169.254/latest/meta-data/"}]
+        }"#;
+        let err = repack_gltf(doc).unwrap_err();
+        assert!(err.contains("outside itself"), "{err}");
+    }
+
+    /// A texture in a data URI becomes a view of its own, and keeps the media
+    /// type the loader needs — a `bufferView` image with no `mimeType` is a
+    /// texture nothing can decode.
+    #[test]
+    fn an_embedded_texture_becomes_a_view() {
+        use base64::Engine;
+        // A 1×1 PNG, which is enough for the repack; `inspect` reads its header.
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let doc = format!(
+            r#"{{
+                "asset": {{"version": "2.0"}},
+                "images": [{{"uri": "data:image/png;base64,{encoded}"}}],
+                "buffers": [],
+                "bufferViews": []
+            }}"#
+        );
+        let repacked = repack_gltf(doc.as_bytes())
+            .expect("acceptable")
+            .expect("repacked");
+        let gltf = gltf::Gltf::from_slice(&repacked).expect("a readable glb");
+        let image = gltf.images().next().expect("the image survived");
+        assert!(matches!(image.source(), gltf::image::Source::View { .. }));
+        let facts = inspect(&repacked).expect("a model");
+        assert_eq!(facts.textures, 1);
+        assert_eq!(facts.largest_texture, 1);
+    }
+
+    /// Anything that is neither is refused before a parser sees it.
+    #[test]
+    fn refuses_something_that_is_neither() {
+        let err = repack_gltf(b"FBX binary  \x1a\x00").unwrap_err();
         assert!(err.contains(".glb"), "{err}");
     }
 

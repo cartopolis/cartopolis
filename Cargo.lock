@@ -2255,6 +2255,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "axum",
+ "base64 0.22.1",
  "blake2",
  "bytes",
  "cartopolis_core",

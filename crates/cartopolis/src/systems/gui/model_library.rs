@@ -37,6 +37,17 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::model_assets;
 use crate::systems::{icons, theme};
 
+/// What the store accepts, said before the file dialog opens.
+///
+/// Kept in step with `simulator::assets` by hand — the limits are the server's
+/// and are enforced there, for everyone, because a client that skipped them
+/// could not be detected. Saying them here is so a person exports the right
+/// thing, not so anything is decided here.
+const UPLOAD_FORMAT_HINT: &str = "glTF: .glb, or a .gltf with everything embedded in it \
+                                  (the server repacks that one). A file that points at a .bin or \
+                                  a texture beside it is refused, not fetched. Up to 16 MB, \
+                                  250,000 triangles, 4,000 nodes, 2048 px textures.";
+
 /// One line of somebody's inventory, as the server describes it.
 #[derive(Debug, Clone, Default)]
 pub struct InventoryItem {
@@ -150,6 +161,10 @@ pub struct ModelLibraryState {
     pub upload_name: String,
     pub upload_licence: Licence,
     pub upload_attribution: String,
+    /// Whether this upload goes straight into the shared library. Asked here
+    /// rather than as a second visit to the list, and forced off for a licence
+    /// that may not be handed on.
+    pub upload_share: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +201,26 @@ fn fetch_library(inbox: Inbox) {
         .detach();
 }
 
-fn upload(inbox: Inbox, bytes: Vec<u8>, name: String, licence: Licence, attribution: String) {
+/// Upload a model, and publish it in the same breath when that is what was asked
+/// for.
+///
+/// **One action, not two.** Uploading and sharing stay separate routes on the
+/// server — a person may upload something they are not allowed to hand on — but
+/// putting a model in the library was two trips through the panel: upload, wait
+/// for the list to come back, find the row, press Share. The question that second
+/// trip asks is the one already answered at upload, where the licence is stated,
+/// so it is asked there and the chain runs here.
+///
+/// Chained inside the same task rather than queued as a second request, because
+/// it needs the inventory id the upload answers with.
+fn upload(
+    inbox: Inbox,
+    bytes: Vec<u8>,
+    name: String,
+    licence: Licence,
+    attribution: String,
+    share_too: bool,
+) {
     IoTaskPool::get()
         .spawn(async move {
             let query = format!(
@@ -196,6 +230,32 @@ fn upload(inbox: Inbox, bytes: Vec<u8>, name: String, licence: Licence, attribut
                 encode(&attribution)
             );
             let reply = match model_assets::api_upload(&query, bytes).await {
+                Ok(body) if share_too && licence.may_share() => {
+                    match uploaded_item_id(&body) {
+                        Some(id) => {
+                            let payload = format!(r#"{{"name":{}}}"#, json_string(&name));
+                            match model_assets::api_post(
+                                &format!("/api/inventory/{id}/share"),
+                                Some(payload),
+                            )
+                            .await
+                            {
+                                Ok(_) => Reply::Done(format!("Uploaded “{name}” and shared it.")),
+                                // The file landed either way, so this says which
+                                // half happened rather than reading as though the
+                                // whole thing failed.
+                                Err(e) => Reply::Failed(format!(
+                                    "Uploaded “{name}”, but sharing it: {}",
+                                    server_message(&e)
+                                )),
+                            }
+                        }
+                        None => Reply::Done(format!(
+                            "Uploaded “{name}”, but the server did not say which item it is, \
+                             so it is not shared yet."
+                        )),
+                    }
+                }
                 Ok(_) => Reply::Done(format!("Uploaded “{name}”.")),
                 // The server's refusals are written to be shown — they say what
                 // was measured and what the limit is — so they are passed
@@ -205,6 +265,14 @@ fn upload(inbox: Inbox, bytes: Vec<u8>, name: String, licence: Licence, attribut
             push(&inbox, reply);
         })
         .detach();
+}
+
+/// The inventory id out of what `POST /api/assets` answers with — the created
+/// item, in the same shape the listing carries.
+fn uploaded_item_id(body: &str) -> Option<i64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["id"].as_i64())
 }
 
 /// Publish a model to everyone on this server.
@@ -383,7 +451,12 @@ pub fn poll_model_library(mut state: ResMut<ModelLibraryState>) {
             }
             model_file::Outcome::Cancelled => {
                 state.pick = None;
-                state.status.clear();
+                // Said rather than silently cleared. On Linux the file chooser is
+                // `org.freedesktop.portal.FileChooser` over DBus, and a desktop
+                // with no portal running answers exactly as a person who pressed
+                // Cancel does — so "nothing happened" needs a line either way, or
+                // the button reads as broken.
+                state.status = "No file chosen.".into();
             }
             model_file::Outcome::Failed(e) => {
                 state.pick = None;
@@ -437,7 +510,16 @@ pub fn render_model_library_panel(
     }
     // Offline there is no simulator, so there is no store and no inventory. The
     // panel says so rather than showing two empty lists that look like a failure.
-    let signed_in = online.is_some() && model_assets::have_endpoint();
+    //
+    // **Two reasons, two sentences.** These used to be one flag, and a signed-in
+    // person whose server never said where its model store is was told to sign
+    // in — which is not something they can act on, and made a working panel look
+    // broken. A server can be joined and still have no HTTP surface (no
+    // `--http-listen`) or one the client cannot derive, and that is the
+    // operator's to fix, not the player's.
+    let have_session = online.is_some();
+    let have_store = model_assets::have_endpoint();
+    let signed_in = have_session && have_store;
 
     if signed_in && !state.loaded {
         state.loaded = true;
@@ -456,6 +538,7 @@ pub fn render_model_library_panel(
     let mut upload_name = std::mem::take(&mut state.upload_name);
     let mut upload_attribution = std::mem::take(&mut state.upload_attribution);
     let mut upload_licence = state.upload_licence;
+    let mut upload_share = state.upload_share;
     let items = std::mem::take(&mut state.items);
     let entries = std::mem::take(&mut state.entries);
     let busy = state.busy;
@@ -479,12 +562,14 @@ pub fn render_model_library_panel(
         360.0,
         |ui| {
             if !signed_in {
-                ui.label(
-                    egui::RichText::new(
-                        "Models live on a simulator. Sign in to a server to see yours.",
-                    )
-                    .color(theme::TEXT_DIM),
-                );
+                let message = if have_session {
+                    "This server did not say where its model store is, so there is nothing \
+                     to show. An operator turns one on with --http-listen, or names it with \
+                     api_base_url."
+                } else {
+                    "Models live on a simulator. Sign in to a server to see yours."
+                };
+                ui.label(egui::RichText::new(message).color(theme::TEXT_DIM));
                 return;
             }
 
@@ -537,7 +622,16 @@ pub fn render_model_library_panel(
                                         .hint_text("Credit line, e.g. “Bench by A. N. Other”"),
                                 );
                             }
-                            if !upload_licence.may_share() {
+                            if upload_licence.may_share() {
+                                ui.checkbox(
+                                    &mut upload_share,
+                                    "Share it with everyone on this server",
+                                );
+                            } else {
+                                // Not merely disabled: a checkbox left ticked
+                                // from a previous answer would be a promise the
+                                // server is about to refuse.
+                                upload_share = false;
                                 ui.label(
                                     egui::RichText::new(
                                         "You will be able to use this, but not share it.",
@@ -549,9 +643,33 @@ pub fn render_model_library_panel(
                             if ui.button("Upload").clicked() {
                                 want_upload = true;
                             }
-                        } else if ui.button("Add a model…").clicked() {
-                            want_pick = true;
+                        } else {
+                            if ui.button("Add a model…").clicked() {
+                                want_pick = true;
+                            }
+                            // What to export before opening the dialog, because a
+                            // refusal after a 12 MB upload is a slow way to learn
+                            // it. The numbers are the server's
+                            // (`simulator::assets`) and this says the same thing
+                            // its refusals do.
+                            ui.label(
+                                egui::RichText::new(UPLOAD_FORMAT_HINT)
+                                    .small()
+                                    .color(theme::TEXT_DIM),
+                            );
                         }
+                    } else {
+                        // Android: no document picker (`platform::model_file`).
+                        // Said, rather than left as a panel that silently cannot
+                        // do the thing the panel is named after.
+                        ui.label(
+                            egui::RichText::new(
+                                "Adding a model needs a desktop or a browser. \
+                                 Anything in the library can be placed from here.",
+                            )
+                            .small()
+                            .color(theme::TEXT_DIM),
+                        );
                     }
                     if busy {
                         ui.label(egui::RichText::new("Working…").color(theme::TEXT_DIM));
@@ -693,6 +811,7 @@ pub fn render_model_library_panel(
     state.upload_name = upload_name;
     state.upload_attribution = upload_attribution;
     state.upload_licence = upload_licence;
+    state.upload_share = upload_share;
     state.items = items;
     state.entries = entries;
 
@@ -705,7 +824,7 @@ pub fn render_model_library_panel(
         match model_file::start() {
             Ok(pick) => {
                 state.pick = Some(pick);
-                state.status = "Choose a .glb file…".into();
+                state.status = "Choose a model…".into();
             }
             Err(e) => state.status = e,
         }
@@ -719,12 +838,14 @@ pub fn render_model_library_panel(
             };
             state.busy = true;
             state.status = "Uploading…".into();
+            let share_too = state.upload_share && state.upload_licence.may_share();
             upload(
                 state.inbox.clone(),
                 bytes,
                 name,
                 state.upload_licence,
                 state.upload_attribution.clone(),
+                share_too,
             );
             state.upload_name.clear();
             state.upload_attribution.clear();
@@ -821,6 +942,22 @@ mod tests {
     #[test]
     fn leaves_a_plain_error_alone() {
         assert_eq!(server_message("connection refused"), "connection refused");
+    }
+
+    /// Publishing on upload needs the id the upload answered with; it is the
+    /// created inventory item, in the listing's own shape.
+    #[test]
+    fn reads_the_new_items_id() {
+        let body = r#"{"id":42,"name":"Bench","asset":"aa","triangles":812,"licence":"cc0"}"#;
+        assert_eq!(uploaded_item_id(body), Some(42));
+    }
+
+    /// An answer this does not recognise must not be guessed at — the upload
+    /// still happened, and the panel says the sharing half did not.
+    #[test]
+    fn an_unrecognised_answer_has_no_id() {
+        assert_eq!(uploaded_item_id("created"), None);
+        assert_eq!(uploaded_item_id(r#"{"asset":"aa"}"#), None);
     }
 
     /// Only a licence that permits redistribution offers Share. The panel is not

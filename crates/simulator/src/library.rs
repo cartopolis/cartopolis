@@ -317,10 +317,21 @@ async fn upload_asset(
     // async runtime shared with every connected client's frame loop. `body` is
     // already whole in memory, so the move is a pointer.
     let bytes = body.to_vec();
-    let facts = tokio::task::spawn_blocking(move || assets::inspect(&bytes).map(|f| (f, bytes)))
-        .await
-        .map_err(|e| internal(anyhow::anyhow!("model inspection panicked: {e}")))?
-        .map_err(bad)?;
+    let facts = tokio::task::spawn_blocking(move || {
+        // A self-contained `.gltf` is repacked into the `.glb` everything
+        // downstream expects; a `.glb` passes straight through and an external
+        // reference is refused here rather than fetched (`assets::repack_gltf`).
+        // What is inspected, hashed and stored is always the repacked bytes, so
+        // there is exactly one kind of file in the store.
+        let bytes = match assets::repack_gltf(&bytes)? {
+            Some(repacked) => repacked,
+            None => bytes,
+        };
+        assets::inspect(&bytes).map(|f| (f, bytes))
+    })
+    .await
+    .map_err(|e| internal(anyhow::anyhow!("model inspection panicked: {e}")))?
+    .map_err(bad)?;
     let (facts, bytes) = facts;
 
     // The file lands before the row does. The other order leaves a database that
