@@ -91,13 +91,28 @@ mod imp {
                     .set_title("Model to upload")
                     // A convenience, not a guarantee — "All files" is always
                     // reachable — which is another reason the server does the
-                    // deciding.
-                    .add_filter("Binary glTF", &["glb"])
+                    // deciding. `.gltf` is offered because the server repacks a
+                    // self-contained one; it still refuses a `.gltf` that names
+                    // files beside it, which a file dialog cannot tell apart.
+                    .add_filter("glTF model", &["glb", "gltf"])
                     .pick_file()
                     .await;
                 let outcome = match picked {
                     Some(file) => Outcome::Ready(file.read().await),
-                    None => Outcome::Cancelled,
+                    // Cancelled *or* no chooser at all. The `xdg-portal` backend
+                    // talks to `org.freedesktop.portal.FileChooser` over DBus
+                    // (see the dependency's own note in Cargo.toml), and a
+                    // desktop session with no portal running answers the same
+                    // `None` a person pressing Cancel does. rfd gives us nothing
+                    // to tell them apart, so the log says what was asked for and
+                    // the caller shows a line either way.
+                    None => {
+                        tracing::info!(
+                            "the file chooser returned nothing (cancelled, or no \
+                             xdg-desktop-portal on this session)"
+                        );
+                        Outcome::Cancelled
+                    }
                 };
                 if let Ok(mut slot) = slot.lock() {
                     *slot = Some(outcome);
@@ -135,7 +150,7 @@ mod imp {
             .dyn_into()
             .map_err(|_| "the file input was not an input element".to_string())?;
         input.set_type("file");
-        input.set_accept(".glb,model/gltf-binary");
+        input.set_accept(".glb,.gltf,model/gltf-binary,model/gltf+json");
         let _ = input.style().set_property("display", "none");
 
         let on_change = {

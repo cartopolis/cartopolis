@@ -265,6 +265,36 @@ impl SimConfig {
         }
     }
 
+    /// What to tell a client about where this server's HTTP surface is
+    /// (`ServerHelloAck::api_base_url`).
+    ///
+    /// The configured value wins. When nothing was configured — the default — a
+    /// **loopback** HTTP listener is answered with its own address, and anything
+    /// else is left to the client to derive from the address it connected to.
+    ///
+    /// The asymmetry is the whole point. A deployment binds the listener to a
+    /// private address behind a reverse proxy (`172.17.0.1:4748` on the hosted
+    /// sim), which no client can reach and which the client must therefore *not*
+    /// be told; it reaches the wire and the API on one public hostname and
+    /// derives that itself. A development sim binds loopback, and there the
+    /// client cannot derive anything at all — `model_assets::derive_api_base`
+    /// answers `None` for a loopback address, deliberately, because the HTTP port
+    /// is a separate `--http-listen` that nothing in the game port implies. So
+    /// the documented dev loop (`cargo run -p cartopolis_simulator`, sign in to
+    /// `127.0.0.1:4747`) had no model store at all: uploading, the inventory and
+    /// the library were all inert, and the panel said "sign in to a server" to
+    /// somebody who was signed in.
+    #[must_use]
+    pub fn resolved_api_base_url(&self) -> String {
+        if !self.api_base_url.is_empty() {
+            return self.api_base_url.clone();
+        }
+        match self.http_listen.as_deref() {
+            Some(addr) if is_loopback_bind(addr) => format!("http://{addr}"),
+            _ => String::new(),
+        }
+    }
+
     /// The compiled chat filter. Built per caller — it is a few dozen short
     /// strings, and a connection builds one once.
     #[must_use]
@@ -300,5 +330,81 @@ impl SimConfig {
         if let Some(ref v) = cli.texture_dir {
             self.texture_dir.clone_from(v);
         }
+    }
+}
+
+/// Whether a `host:port` bind is one only this machine can reach.
+///
+/// A string test rather than a `SocketAddr` parse plus `is_loopback`, because
+/// `localhost:4748` is a perfectly ordinary thing to write in a config file and
+/// does not parse as a `SocketAddr` at all.
+fn is_loopback_bind(addr: &str) -> bool {
+    let host = match addr.rsplit_once(':') {
+        Some((h, _)) => h,
+        None => addr,
+    };
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A development sim binds loopback and is told to say so: the client cannot
+    /// work the HTTP port out from the game port, so without this there is no
+    /// model store on the documented dev loop.
+    #[test]
+    fn a_loopback_listener_answers_its_own_address() {
+        let config = SimConfig {
+            http_listen: Some("127.0.0.1:4748".into()),
+            ..SimConfig::default()
+        };
+        assert_eq!(config.resolved_api_base_url(), "http://127.0.0.1:4748");
+    }
+
+    /// The hosted sim binds the docker gateway and sits behind Caddy. That
+    /// address is reachable from nothing the client runs on, so the server says
+    /// nothing and the client derives the public hostname it connected to.
+    #[test]
+    fn a_private_listener_says_nothing() {
+        let config = SimConfig {
+            http_listen: Some("172.17.0.1:4748".into()),
+            ..SimConfig::default()
+        };
+        assert!(config.resolved_api_base_url().is_empty());
+
+        let wildcard = SimConfig {
+            http_listen: Some("0.0.0.0:4748".into()),
+            ..SimConfig::default()
+        };
+        assert!(wildcard.resolved_api_base_url().is_empty());
+    }
+
+    /// Configured wins over derived, in both directions — including an operator
+    /// who binds loopback and puts a proxy in front of it.
+    #[test]
+    fn a_configured_base_wins() {
+        let config = SimConfig {
+            http_listen: Some("127.0.0.1:4748".into()),
+            api_base_url: "https://sim.example.org".into(),
+            ..SimConfig::default()
+        };
+        assert_eq!(config.resolved_api_base_url(), "https://sim.example.org");
+    }
+
+    /// No listener at all is no API, whatever the address looks like.
+    #[test]
+    fn no_listener_is_no_api() {
+        assert!(SimConfig::default().resolved_api_base_url().is_empty());
+    }
+
+    #[test]
+    fn loopback_spellings() {
+        assert!(is_loopback_bind("127.0.0.1:4748"));
+        assert!(is_loopback_bind("localhost:4748"));
+        assert!(is_loopback_bind("[::1]:4748"));
+        assert!(!is_loopback_bind("172.17.0.1:4748"));
+        assert!(!is_loopback_bind("0.0.0.0:4748"));
     }
 }

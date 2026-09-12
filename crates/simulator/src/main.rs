@@ -8,6 +8,10 @@ use std::sync::Arc;
 /// Environment variable carrying the password for `--create-admin`.
 const ADMIN_PASSWORD_ENV: &str = "CARTO_ADMIN_PASSWORD";
 
+/// Where the HTTP surface goes when nobody said. Loopback, so a development
+/// server never publishes an unencrypted API to the network by accident.
+const DEV_HTTP_LISTEN: &str = "127.0.0.1:4748";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -35,6 +39,29 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // The dev loop is `cargo run -p cartopolis_simulator`, and with no HTTP
+    // listener that server has no model store, no registration and nothing a
+    // browser can connect to — the Models panel in the client is inert and says
+    // "sign in to a server" to somebody who is signed in. So the *binary*
+    // defaults one on loopback. `SimConfig::default` deliberately still says
+    // `None`: the tests and every embedded use of `serve` get exactly the TCP
+    // listener they had.
+    //
+    // A port already in use is not fatal here, unlike an `--http-listen` that was
+    // asked for: a second dev sim on the same machine must still boot.
+    if config.http_listen.is_none() {
+        match std::net::TcpListener::bind(DEV_HTTP_LISTEN) {
+            Ok(probe) => {
+                drop(probe);
+                config.http_listen = Some(DEV_HTTP_LISTEN.to_string());
+            }
+            Err(e) => tracing::warn!(
+                "no --http-listen given and {DEV_HTTP_LISTEN} is taken ({e}); \
+                 running without an HTTP surface, so this server has no model store"
+            ),
+        }
+    }
+
     let config = Arc::new(config);
     tracing::info!(
         listen = %config.listen,
@@ -45,6 +72,13 @@ async fn main() -> anyhow::Result<()> {
         max_scripts = config.max_scripts,
         tile_template = %config.osm_tile_url_template,
         texture_dir = %config.texture_dir,
+        asset_dir = %config.asset_dir,
+        // What clients are told about the model API, which is the one thing a
+        // silent failure here looks like from the other side.
+        api_base = %{
+            let base = config.resolved_api_base_url();
+            if base.is_empty() { "(client derives it)".to_string() } else { base }
+        },
         "simulator"
     );
 

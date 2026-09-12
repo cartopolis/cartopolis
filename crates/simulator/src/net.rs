@@ -436,7 +436,7 @@ pub async fn handle_connection<T: FrameTransport>(
         username,
         session_token,
         osm_tile_url_template: config.osm_tile_url_template.clone(),
-        api_base_url: config.api_base_url.clone(),
+        api_base_url: config.resolved_api_base_url(),
     })?;
     framed.send(Bytes::from(ack)).await?;
 
