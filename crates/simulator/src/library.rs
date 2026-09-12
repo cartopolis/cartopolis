@@ -31,7 +31,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use bytes::Bytes;
 use rusqlite::{Connection, OptionalExtension};
@@ -75,7 +75,16 @@ pub fn routes() -> Router<HttpState> {
             post(share_item).delete(unshare_item),
         )
         .route("/api/library", get(browse_library))
+        // Under `/api/library` rather than a prefix of its own, and that is not
+        // cosmetic: `cartopolis.org` proxies three named prefixes to this server
+        // and nothing else (`model-assets-and-inventory.md`), so a fourth would
+        // be a Caddy change on the host before any client could read it.
+        .route("/api/library/placeholders", get(list_placeholders))
         .route("/api/library/{hash}/take", post(take_from_library))
+        .route(
+            "/api/admin/library/placeholders/{kind}",
+            put(set_placeholder).delete(clear_placeholder),
+        )
         .route("/api/admin/library", get(admin_list_library))
         .route("/api/admin/library/{hash}", patch(curate_entry))
         .route("/api/admin/assets", get(admin_list_assets))
@@ -673,6 +682,173 @@ pub struct BrowseQuery {
 ///
 /// Hidden entries are absent. Uncurated ones are present, because a library that
 /// only shows what an operator has been round to is empty on the day it opens.
+// ---------------------------------------------------------------------------
+// What the street's own objects look like here
+// ---------------------------------------------------------------------------
+
+/// One form of street object, and the model this server draws instead of it.
+///
+/// `V18__placeholder_models.sql` has the argument for why this is world-wide and
+/// not per person. In short: nobody placed a lamppost, so nobody owns the
+/// decision about it; two people on one street seeing different lampposts is a
+/// disagreement about what is there rather than a preference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaceholderModel {
+    /// A slug from `cartopolis_core::placeholders`.
+    pub kind: String,
+    /// The asset hash to draw. Fetched over `/api/assets/{hash}.glb` like any
+    /// other model — a placeholder is not a new kind of file.
+    pub asset: String,
+    pub scale: f32,
+    /// Degrees, added to the angle the client computed for the object.
+    pub yaw_offset: f32,
+    /// What it replaces, for an operator reading the list back.
+    pub set_by: String,
+}
+
+/// What an operator sends to set one.
+#[derive(Debug, Deserialize)]
+struct PlaceholderBody {
+    asset: String,
+    scale: Option<f32>,
+    yaw_offset: Option<f32>,
+}
+
+/// The whole table, for any signed-in client.
+///
+/// Not admin-only, and not optional either: this is what the client has to read
+/// before it draws a street, so it sits beside `/api/library` on the surface a
+/// player already reaches. There is nothing in it a player could not see by
+/// walking outside and looking at a lamppost.
+async fn list_placeholders(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<PlaceholderModel>>> {
+    require_session(&state, &headers)?;
+    let rows = with_conn(&state, |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT kind, asset_hash, scale, yaw_offset, set_by
+               FROM placeholder_models
+              ORDER BY kind",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PlaceholderModel {
+                    kind: row.get(0)?,
+                    asset: row.get(1)?,
+                    scale: row.get(2)?,
+                    yaw_offset: row.get(3)?,
+                    set_by: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })?;
+    Ok(Json(rows))
+}
+
+/// Replace a form with a model, or change how the replacement is placed.
+///
+/// Three refusals, and each is a thing that would otherwise fail silently on
+/// every client at once rather than here: a slug this build does not know, a hash
+/// no file was ever stored under, and a scale outside what could be a street
+/// object. The client cannot report any of them — it draws a city from a register
+/// and has nowhere to say "that lamppost did not load".
+async fn set_placeholder(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Json(body): Json<PlaceholderBody>,
+) -> ApiResult<Json<PlaceholderModel>> {
+    let (_principal, username) = require_admin(&state, &headers)?;
+    if !cartopolis_core::placeholders::is_placeholder_kind(&kind) {
+        return Err(bad(format!(
+            "{kind} is not a street object this server draws — one of: {}",
+            cartopolis_core::placeholders::PLACEHOLDER_KINDS.join(", ")
+        )));
+    }
+    if !assets::is_hash(&body.asset) {
+        return Err(bad("that is not an asset hash"));
+    }
+    let scale = body.scale.unwrap_or(1.0);
+    if !scale.is_finite()
+        || scale < cartopolis_core::placeholders::MIN_PLACEHOLDER_SCALE
+        || scale > cartopolis_core::placeholders::MAX_PLACEHOLDER_SCALE
+    {
+        return Err(bad(format!(
+            "a scale of {scale} is outside {}–{}",
+            cartopolis_core::placeholders::MIN_PLACEHOLDER_SCALE,
+            cartopolis_core::placeholders::MAX_PLACEHOLDER_SCALE
+        )));
+    }
+    let yaw_offset = body.yaw_offset.unwrap_or(0.0);
+    if !yaw_offset.is_finite() {
+        return Err(bad("that is not an angle"));
+    }
+
+    with_conn_api(&state, |conn| {
+        let known: bool = conn
+            .query_row(
+                "SELECT 1 FROM assets WHERE hash = ?1",
+                rusqlite::params![body.asset],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| internal(e.into()))?
+            .unwrap_or(false);
+        if !known {
+            return Err(ApiError(
+                StatusCode::NOT_FOUND,
+                "no model is stored under that hash".into(),
+            ));
+        }
+        conn.execute(
+            "INSERT INTO placeholder_models (kind, asset_hash, scale, yaw_offset, set_by)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (kind) DO UPDATE SET
+                 asset_hash = excluded.asset_hash,
+                 scale      = excluded.scale,
+                 yaw_offset = excluded.yaw_offset,
+                 set_by     = excluded.set_by,
+                 set_at     = datetime('now')",
+            rusqlite::params![kind, body.asset, scale, yaw_offset, username],
+        )
+        .map_err(|e| internal(e.into()))?;
+        Ok(())
+    })?;
+
+    tracing::info!(%kind, asset = %body.asset, scale, "placeholder model set");
+    Ok(Json(PlaceholderModel {
+        kind,
+        asset: body.asset,
+        scale,
+        yaw_offset,
+        set_by: username,
+    }))
+}
+
+/// Put a form back to the shape built into the client.
+///
+/// Deleting an unset one is not an error: "there is no override for a bin" is the
+/// state the caller asked for, and answering 404 would make a tidy-up script fail
+/// on a server that was already tidy.
+async fn clear_placeholder(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> ApiResult<StatusCode> {
+    require_admin(&state, &headers)?;
+    with_conn(&state, |conn| {
+        conn.execute(
+            "DELETE FROM placeholder_models WHERE kind = ?1",
+            rusqlite::params![kind],
+        )?;
+        Ok(())
+    })?;
+    tracing::info!(%kind, "placeholder model cleared");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn browse_library(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -890,11 +1066,23 @@ async fn admin_forget_asset(
         return Err(ApiError(StatusCode::NOT_FOUND, "no such model".into()));
     }
     let (in_world, held_by) = with_conn(&state, |conn| reference_counts(conn, &hash))?;
-    if in_world > 0 || held_by > 0 {
+    // A placeholder is the third way a file is referred to, and the one nobody
+    // would think to check: it is on no prim and in nobody's inventory, and
+    // removing it would leave every lamppost in the city pointing at a hash the
+    // store no longer has.
+    let standing_in: i64 = with_conn(&state, |conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM placeholder_models WHERE asset_hash = ?1",
+            rusqlite::params![hash],
+            |row| row.get(0),
+        )?)
+    })?;
+    if in_world > 0 || held_by > 0 || standing_in > 0 {
         return Err(ApiError(
             StatusCode::CONFLICT,
             format!(
-                "that model is on {in_world} prim(s) and in {held_by} inventory(ies); it cannot be removed while anything refers to it"
+                "that model is on {in_world} prim(s), in {held_by} inventory(ies) and stands in for \
+                 {standing_in} kind(s) of street object; it cannot be removed while anything refers to it"
             ),
         ));
     }

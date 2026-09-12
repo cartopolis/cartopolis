@@ -39,6 +39,7 @@ pub mod model_assets;
 pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
+pub mod placeholder_models;
 pub mod render_features;
 pub mod render_scale;
 pub mod rendering;

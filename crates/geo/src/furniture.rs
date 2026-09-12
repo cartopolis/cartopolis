@@ -167,7 +167,107 @@ impl FurnitureKind {
     fn takes_angle_from_path(self) -> bool {
         !matches!(self, Self::Fountain | Self::Artwork)
     }
+
+    /// The name this form travels under when an operator replaces it with a
+    /// model (`cartopolis_core::placeholders`).
+    ///
+    /// Spelled out rather than derived from the variant name: these strings are
+    /// in a server's database and in cartopy's UI, so renaming a variant here
+    /// must not silently re-point every row that used to match it.
+    #[must_use]
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Bench => "bench",
+            Self::Bin => "bin",
+            Self::Recycling => "recycling",
+            Self::Shelter => "shelter",
+            Self::PicnicTable => "picnic-table",
+            Self::Cabinet => "cabinet",
+            Self::Board => "board",
+            Self::Fountain => "fountain",
+            Self::Artwork => "artwork",
+            Self::Swing => "swing",
+            Self::Lamp => "lamp",
+            Self::Car => "car",
+            Self::Bicycle => "bicycle",
+            Self::Person => "person",
+            Self::Boat => "boat",
+        }
+    }
+
+    /// The form a slug names, or `None` for one this build does not know.
+    ///
+    /// `None` rather than a default: a placeholder set against a form that no
+    /// longer exists must draw the thing it always drew, not an arbitrary other
+    /// object wearing somebody's model.
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        ALL_FURNITURE_KINDS
+            .iter()
+            .copied()
+            .find(|kind| kind.slug() == slug)
+    }
 }
+
+/// A set of forms, small enough to be `Copy` and to sit in a job's parameters.
+///
+/// A bitmask and not a `HashSet` for one reason: it rides in the client's
+/// `DetailWants`, which is compared every frame to decide whether the live cells
+/// have to be rebuilt. A set that allocated would make that comparison a heap
+/// walk on the frame loop, and — worse — `DetailWants` is `Copy` precisely so it
+/// can be handed to a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FurnitureMask(u16);
+
+impl FurnitureMask {
+    /// The empty set: every form draws the shape built into this client.
+    pub const NONE: Self = Self(0);
+
+    fn bit(kind: FurnitureKind) -> u16 {
+        // `position` over the table rather than a discriminant cast: the enum has
+        // no explicit values, and a reordering must not silently re-point a bit.
+        let index = ALL_FURNITURE_KINDS
+            .iter()
+            .position(|k| *k == kind)
+            .expect("every form is in ALL_FURNITURE_KINDS");
+        1 << index
+    }
+
+    #[must_use]
+    pub fn with(self, kind: FurnitureKind) -> Self {
+        Self(self.0 | Self::bit(kind))
+    }
+
+    #[must_use]
+    pub fn contains(self, kind: FurnitureKind) -> bool {
+        self.0 & Self::bit(kind) != 0
+    }
+
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// Every form, for the two places that have to walk the whole set: the slug
+/// lookup above and the test that pins it against the shared vocabulary.
+pub const ALL_FURNITURE_KINDS: &[FurnitureKind] = &[
+    FurnitureKind::Bench,
+    FurnitureKind::Bin,
+    FurnitureKind::Recycling,
+    FurnitureKind::Shelter,
+    FurnitureKind::PicnicTable,
+    FurnitureKind::Cabinet,
+    FurnitureKind::Board,
+    FurnitureKind::Fountain,
+    FurnitureKind::Artwork,
+    FurnitureKind::Swing,
+    FurnitureKind::Lamp,
+    FurnitureKind::Car,
+    FurnitureKind::Bicycle,
+    FurnitureKind::Person,
+    FurnitureKind::Boat,
+];
 
 /// Where a form can be sat on, in the object's own frame (+z front).
 ///
@@ -970,6 +1070,32 @@ pub fn default_paint(kind: FurnitureKind) -> u32 {
 ///
 /// `max_bytes` is `None` on every rung without an upload ceiling, which restores
 /// the single-mesh behaviour exactly.
+/// [`build_furniture_meshes`] without the forms in `skip`.
+///
+/// A form the server draws with an uploaded model of its own
+/// (`systems::placeholder_models`) must not also be built out of boxes here. It
+/// is filtered at the source rather than hidden afterwards: hiding costs the
+/// extraction, the merge and the upload for geometry nobody sees.
+///
+/// A copy of the surviving instances is made only when there is something to
+/// skip, so the ordinary case — no placeholders anywhere — allocates nothing.
+#[must_use]
+pub fn build_furniture_meshes_except(
+    items: &[FurnitureInstance],
+    skip: FurnitureMask,
+    max_bytes: Option<usize>,
+) -> Vec<SurfaceMesh> {
+    if skip.is_empty() {
+        return build_furniture_meshes(items, max_bytes);
+    }
+    let kept: Vec<FurnitureInstance> = items
+        .iter()
+        .filter(|item| !skip.contains(item.kind))
+        .copied()
+        .collect();
+    build_furniture_meshes(&kept, max_bytes)
+}
+
 #[must_use]
 pub fn build_furniture_meshes(
     items: &[FurnitureInstance],
@@ -1286,6 +1412,51 @@ pub fn paving_base(factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::vector_tiles::synth;
+
+    /// The forms and the shared placeholder vocabulary are one list seen from two
+    /// crates, and nothing but this test keeps them equal. A form missing a slug
+    /// is a placeholder a curator can set and that overrides nothing; a slug with
+    /// no form is a row the client silently drops.
+    #[test]
+    fn every_form_has_a_slug_the_wire_knows() {
+        use cartopolis_core::placeholders::PLACEHOLDER_KINDS;
+        let ours: std::collections::BTreeSet<&str> =
+            ALL_FURNITURE_KINDS.iter().map(|k| k.slug()).collect();
+        let theirs: std::collections::BTreeSet<&str> = PLACEHOLDER_KINDS.iter().copied().collect();
+        assert_eq!(ours, theirs);
+        assert_eq!(
+            ours.len(),
+            ALL_FURNITURE_KINDS.len(),
+            "a slug is duplicated"
+        );
+    }
+
+    /// Fifteen forms into sixteen bits. This is the test that fails the day a
+    /// sixteenth is added, which is the only warning the mask can give.
+    #[test]
+    fn the_mask_holds_every_form() {
+        assert!(
+            ALL_FURNITURE_KINDS.len() <= 16,
+            "FurnitureMask is a u16 and there are now {} forms",
+            ALL_FURNITURE_KINDS.len()
+        );
+        let mut mask = FurnitureMask::NONE;
+        assert!(mask.is_empty());
+        for kind in ALL_FURNITURE_KINDS {
+            assert!(!mask.contains(*kind));
+            mask = mask.with(*kind);
+            assert!(mask.contains(*kind));
+        }
+        assert!(!mask.is_empty());
+    }
+
+    #[test]
+    fn a_slug_round_trips() {
+        for kind in ALL_FURNITURE_KINDS {
+            assert_eq!(FurnitureKind::from_slug(kind.slug()), Some(*kind));
+        }
+        assert_eq!(FurnitureKind::from_slug("lamppost"), None);
+    }
 
     const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),

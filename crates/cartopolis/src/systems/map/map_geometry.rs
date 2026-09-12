@@ -37,6 +37,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::furniture;
+use crate::systems::furniture::FurnitureMask;
 use crate::systems::globe::GlobeState;
 use crate::systems::grass::GrassAreas;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
@@ -147,6 +148,10 @@ pub struct CellStores<'w> {
     /// these are: keyed by cell, filled from the same parse, and retired on
     /// exactly the same events.
     roads: ResMut<'w, crate::systems::traffic::DriveNetwork>,
+    /// The operator's street-object models, for the same reason again: what it
+    /// holds per cell is a queue of objects to stand up, which has to be dropped
+    /// with the cell it belongs to (`systems::placeholder_models`).
+    placeholders: ResMut<'w, crate::systems::placeholder_models::PlaceholderModels>,
 }
 
 /// Everything a surface cell needs to *make a material out of*, in one parameter
@@ -404,6 +409,15 @@ struct DetailWants {
     /// Same rule as the rest: with the layer off this is not built, so turning
     /// it off costs nothing at all rather than only saving the draw call.
     grass: bool,
+    /// Street forms this server draws with an uploaded model instead
+    /// (`systems::placeholder_models`). Those are **not meshed** — a lamppost
+    /// replaced by a model must not also be six boxes — and the instances are
+    /// stood up as glTF scenes after the cell lands.
+    ///
+    /// It belongs here rather than in the spawn path for the reason the flags
+    /// above do: the geometry is decided on the worker, so a change has to retear
+    /// the live cells, and this struct's comparison is what does that.
+    modelled: FurnitureMask,
 }
 
 impl DetailWants {
@@ -415,6 +429,7 @@ impl DetailWants {
         furniture: true,
         shore: true,
         grass: true,
+        modelled: FurnitureMask::NONE,
     };
 }
 
@@ -743,8 +758,15 @@ fn spawn_geometry_task(
                                         meshes.extend(furniture::build_line_meshes(
                                             &lines, mesh_bytes,
                                         ));
-                                        meshes.extend(furniture::build_furniture_meshes(
-                                            &items, mesh_bytes,
+                                        // A form this server replaces with a model
+                                        // is not meshed at all — it is stood up as
+                                        // a glTF scene once the cell lands
+                                        // (`systems::placeholder_models`). Skipped
+                                        // at the source rather than hidden later,
+                                        // so an overridden lamppost costs no
+                                        // vertices, no upload and no draw.
+                                        meshes.extend(furniture::build_furniture_meshes_except(
+                                            &items, wants.modelled, mesh_bytes,
                                         ));
                                         // Keep the instances, not just their meshes:
                                         // they are where the props stand, which is
@@ -763,8 +785,11 @@ fn spawn_geometry_task(
                                 // (`systems::parking`).
                                 match parking::extract_parking(&tile, tile_m, veg_seed(cell)) {
                                     Ok(items) => {
-                                        meshes.extend(furniture::build_furniture_meshes(
-                                            &items, mesh_bytes,
+                                        // …and a replaced car is replaced in the
+                                        // car parks too: a placeholder is about a
+                                        // form, not about which extractor placed it.
+                                        meshes.extend(furniture::build_furniture_meshes_except(
+                                            &items, wants.modelled, mesh_bytes,
                                         ));
                                         cell_places.vehicles = items;
                                     }
@@ -778,8 +803,8 @@ fn spawn_geometry_task(
                                 // same material, same toggle.
                                 match moorings::extract_moorings(&tile, tile_m, veg_seed(cell)) {
                                     Ok(items) => {
-                                        meshes.extend(furniture::build_furniture_meshes(
-                                            &items, mesh_bytes,
+                                        meshes.extend(furniture::build_furniture_meshes_except(
+                                            &items, wants.modelled, mesh_bytes,
                                         ));
                                         // Boats are not solid — a collider on
                                         // water the avatar cannot walk on is an
@@ -1012,6 +1037,23 @@ impl MapSurfaces {
             .map(|(group, handle)| (*group, handle))
     }
 
+    /// Whether this cell is still live — asked by anything that spawns into a
+    /// cell some frames after the cell was built (`systems::placeholder_models`).
+    #[must_use]
+    pub fn holds(&self, cell: Cell) -> bool {
+        self.loaded.contains_key(&cell)
+    }
+
+    /// Hang one more entity off a live cell, so it is retired with it.
+    ///
+    /// The alternative — a second store keyed by cell, retired alongside — is
+    /// what every "an object outlived its cell" bug in this file has been.
+    pub fn attach(&mut self, cell: Cell, entity: Entity) {
+        if let Some(entities) = self.loaded.get_mut(&cell) {
+            entities.push(entity);
+        }
+    }
+
     /// Retire every live cell (used on a re-anchor, or when the source stops being
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
@@ -1084,6 +1126,7 @@ pub fn update_map_surfaces(
         stores.decks.clear();
         stores.grass.clear();
         stores.roads.clear();
+        stores.placeholders.clear_queue();
     }
     // So does the ground moving under them. The measured field lands a second or
     // two after the anchor it belongs to, by which time these cells have already
@@ -1111,6 +1154,7 @@ pub fn update_map_surfaces(
         stores.decks.clear();
         stores.grass.clear();
         stores.roads.clear();
+        stores.placeholders.clear_queue();
     }
 
     // The cells hold whatever detail was wanted when their worker ran, so turning
@@ -1128,6 +1172,7 @@ pub fn update_map_surfaces(
         furniture: furniture_lod.enabled,
         shore: sea_state.shading,
         grass: stores.grass.enabled,
+        modelled: stores.placeholders.mask(),
     };
     if surfaces.detail_wants != Some(wants) {
         surfaces.detail_wants = Some(wants);
@@ -1137,6 +1182,7 @@ pub fn update_map_surfaces(
         stores.decks.clear();
         stores.grass.clear();
         stores.roads.clear();
+        stores.placeholders.clear_queue();
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -1173,6 +1219,7 @@ pub fn update_map_surfaces(
         stores.decks.remove_cell(&c);
         stores.grass.remove_cell(&c);
         stores.roads.remove_cell(&c);
+        stores.placeholders.forget_cell(c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -1259,6 +1306,44 @@ pub fn update_map_surfaces(
         stores
             .roads
             .insert_cell(c, wx, wz, std::mem::take(&mut cell_places.drive_lines));
+        // Whatever this server draws with a model of its own is queued to be stood
+        // up (`systems::placeholder_models`). The worker has already left those
+        // forms out of the merged furniture mesh, so this is the *only* geometry
+        // they get — and it is queued rather than spawned, because a dense cell is
+        // hundreds of instances and a teleport lands several cells at once.
+        //
+        // Both lists, because a placeholder is about a *form*: replacing the
+        // parked car replaces it in the car parks (`cell_places.vehicles`) exactly
+        // as replacing the bench replaces it on the pavement.
+        if !stores.placeholders.is_empty() {
+            let mask = stores.placeholders.mask();
+            let queued: Vec<(String, Transform)> = cell_places
+                .furniture
+                .iter()
+                .chain(cell_places.vehicles.iter())
+                .filter(|f| mask.contains(f.kind))
+                .filter_map(|f| {
+                    let p = stores.placeholders.get(f.kind)?;
+                    let x = wx + f.x;
+                    let z = wz + f.z;
+                    Some((
+                        p.hash.clone(),
+                        Transform {
+                            // The ground under a street object is the measured
+                            // field, the same one its boxes would have been
+                            // built onto (`systems::terrain`), and 0 wherever
+                            // there is no field.
+                            translation: Vec3::new(x, terrain.at(x, z), z),
+                            rotation: Quat::from_rotation_y(f.yaw + p.yaw_offset),
+                            scale: Vec3::splat(p.scale),
+                        },
+                    ))
+                })
+                .collect();
+            for (hash, transform) in queued {
+                stores.placeholders.enqueue(c, &hash, transform);
+            }
+        }
         stores.places.insert_cell(c, wx, wz, cell_places);
         // Same origin, same lifetime, same retire path — see `CellStores`.
         if let Some(area) = grass {

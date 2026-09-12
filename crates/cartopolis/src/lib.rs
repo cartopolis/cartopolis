@@ -2077,6 +2077,7 @@ fn run_client() {
     }
     app.init_resource::<systems::script_editor::ScriptEditorState>();
     app.init_resource::<systems::model_library::ModelLibraryState>();
+    app.init_resource::<systems::placeholder_models::PlaceholderModels>();
     app.init_resource::<resources::RightPanel>();
     app.init_resource::<systems::session::SessionState>();
     let screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
@@ -2574,6 +2575,14 @@ fn run_client() {
                 // Same for the street furniture, over its own (much lower) band.
                 systems::street_furniture::update_furniture_lod
                     .after(systems::map_geometry::update_map_surfaces),
+                // Stand up the models this server draws its street objects with,
+                // a bounded number per frame. After the surface build, which is
+                // what queues them and what owns the cell they are attached to —
+                // running first would spawn into cells that do not exist yet.
+                systems::placeholder_models::spawn_placeholder_models
+                    .after(systems::map_geometry::update_map_surfaces),
+                // …and ask the server what those are, once per session.
+                systems::placeholder_models::poll_placeholders,
                 // Near-field grass: slide the patch pool along its lattice, keep
                 // the coverage mask under it and drive the sway from the live
                 // wind. After the surface build, which is what fills the per-cell
