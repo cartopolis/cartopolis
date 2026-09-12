@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, round_corners, corner_cut, "faceted road", "roads look polygonal", "road is a curve", "junction mouth", "side street", "roads look wrong", ribbon_kinds]
-updated: 2026-09-10
+triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, road_stitch.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung", "kerb", "casing", i_overlay, cut_band, round_corners, corner_cut, "faceted road", "roads look polygonal", "road is a curve", "junction mouth", "side street", "roads look wrong", ribbon_kinds, MITER_LIMIT, "spike", "road seam", "tarmac in the field"]
+updated: 2026-09-11
 ---
 
 # One street arrives as a chain of features, and most of its "junctions" are not
@@ -190,8 +190,9 @@ in_depth`, which prints the figure):
 were swept at 8, 16 and 32 against eight sub-bands and every one measures 0.51 %:
 what is left is a ribbon overlapping *itself* — shared triangle edges and the
 bevel corner fills — which shares a rung by definition and no ladder can
-separate. It is also the benign case: one material, one colour, and the same UV
-on both sides of the overlap.
+separate. It was also called the benign case — one material, one colour, and the
+same UV on both sides of the overlap. **The UV half of that is false**, and the
+last sections of this note are what it cost.
 
 The prior figures are kept above because the *shape* of that table is the useful
 part: the largest single win was the adjacency rule in `assign_road_ties`, not
@@ -235,7 +236,9 @@ So `cartopolis_geo::road_stitch` cuts the ribbons against each other instead.
 Each ribbon keeps only the ground no higher-priority ribbon claims; what is drawn
 is a partition. **Road pixels covered twice: 76.1 % → 0.81 %**, and the covered
 area itself moves by 4 pixels in 423,028 (0.001 %) — nothing was given up but the
-double coverage. `the_road_sheet_is_a_partition` prints both figures.
+double coverage. `the_road_sheet_is_a_partition` prints both figures. (The 0.81 %
+residue was excused here as a ribbon lapping over *itself*, which no ladder can
+separate. That excuse did not survive being looked at either — see below.)
 
 Standing facts about the cut:
 
@@ -454,3 +457,96 @@ further angular gain. `ROUND_STEP_DEG` is 8 for that reason and not by taste.
 `the_road_sheet_is_a_partition` is unchanged at 0.81 %, and every one of the
 join tests above still passes — the fillet changes what the centre line *is*,
 not how two of them meet.
+
+## A ribbon laps over *itself*, and that is not benign either (2026-09-11)
+
+Twice above, a residual overlap is excused on the grounds that a ribbon
+overlapping itself cannot be seen: "one material, one colour, and the same UV on
+both sides". The first two clauses are true. **The third is not.** `v` is metres
+travelled along the road, so where a centre line doubles back the returning leg
+carries different lane dashes and a different edge line from the outgoing one, at
+the same depth and on the same rung. Which one draws is a per-pixel coin flip
+that re-rolls with the view matrix — the exact failure `road_stitch` was built to
+remove, surviving inside the one case it exempted.
+
+So `cut_ribbon` no longer skips `j == i`. A triangle is cut against the earlier
+triangles of its own ribbon as well as against its superiors, `Tri::seq` being
+that order. It has to be strict and total for the same reason `priority` does: an
+order with a draw in it cuts both sides out of the ground they share and opens a
+hole. Adjacent strip triangles share an edge, and `tris_overlap` reads a shared
+edge as *not* overlapping, so an honest strip passes through untouched.
+`the_shared_edges_of_one_strip_are_not_a_fold` guards that, and it matters more
+than it looks: read a shared edge as an overlap and the cut nibbles a hairline
+out of every triangle in the tile.
+
+Measured on the fixture:
+
+| | before | after |
+|---|---|---|
+| road pixels covered twice | 3,501 (0.81 %) | **1,574 (0.37 %)** |
+| `Road(Minor)` drawn twice by its own class | 919 | **1** |
+| `Road(Carriageway)` | 1,394 | 408 |
+| in one 100 m window on a tee junction | 18,637 (4.2 %) | **12** |
+| **covered ribbon pixels** | 421,555 | **421,555** |
+
+The covered area does not move by a single pixel, which is the measurement that
+says a fold was removed rather than road deleted. What is left is the overlap
+kept on purpose: every remaining pair at the interchange is `bridge=false`
+against `bridge=true`.
+
+## A miter limit of 2.5 is a stroke default, not a number about roads (2026-09-11)
+
+The same fixture street exposed a second defect, and the two look nothing alike
+until you find the vertex they share. Feature 69's first linestring is a
+`tertiary` turning head:
+
+```
+0   382.080  411.377
+1   382.080  416.260   turn  23.2°
+2   384.277  421.387   turn 128.2°   <- reverses here
+3   387.207  416.016   turn  28.6°
+4   387.207  410.889
+```
+
+It runs ten metres, reverses, and comes back five metres to the east. Tagged
+`tertiary` it is drawn **9 m wide** — wider than the gap between its own two
+legs, which is why the legs cover each other outright and why it was the worst
+self-overlap in the tile. And a mitred join at 128.2° puts the outer corner at
+`1 / cos 64.1° = 2.29` half-widths from the centre line: **10.3 m**. `MITER_LIMIT`
+was 2.5, so 2.29 slipped under it, and the street ended in a ten-metre tongue of
+tarmac thrown out into the field past the road it serves.
+
+2.5 is roughly what a stroke renderer defaults to (SVG's is 4). At that bound a
+9 m street may throw an 11 m spike and a 22 m motorway a 27 m one, which is not a
+shape any road has. **1.5 instead**, and the number is set by one fact: a right
+angle mitres at `1 / cos 45° = 1.414`, and a street grid's right angles are
+corners the map is asserting — the same licence `ROUND_MAX_DEG` draws. So every
+corner up to ~96° keeps its point and nothing in an ordinary city moves; past
+that the join bevels, and the chord between the two square corners is what a
+turning head actually looks like.
+
+**It has to stay a ratio, not a distance**, and that is the load-bearing part. A
+metric bound ("no join may reach more than 2 m past the square corner") is the
+tempting form and it scales correctly with width, but `kerb_band` zips the
+carriageway against a second, wider run of the *same* join code and relies on
+every one of those decisions being independent of the width. Make the limit
+metric and the fill and its kerb bevel at different corners, the two chains
+desynchronise, and the band silently drops to its slab fallback.
+
+Cost, on the fixture: the road sheet gives up 2,612 px of a 446,044 px window,
+which at that scale is 18 m² — the area of the spike, and nothing else.
+`a_reversal_is_bevelled_rather_than_drawn_as_a_spike` measures every ribbon
+vertex against the centre line it was built on over seven turn angles and three
+widths, and pins the constant from both sides so neither bound can drift.
+
+**Two lessons worth keeping.** A self-overlap is only invisible if *every*
+per-vertex attribute agrees across it, and on a textured road one of them never
+does. And a join limit inherited from stroke rendering is a number about ink, not
+about tarmac: the bevel is not a fallback for pathological input, it is the
+normal shape of a road that turns hard.
+
+The pictures behind all of this are `dump_road_ribbons`' two outputs, windowed
+with `CARTO_DUMP_WIN="333,354,100"` on the fixture's tee junction.
+`CARTO_NO_STUB=1` was added alongside: it lays every ribbon with a square end, so
+a shape at a junction can be told apart from the stub that fills it. That switch
+is what ruled the stub out here — the spike was unchanged without it.
