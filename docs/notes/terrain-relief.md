@@ -339,7 +339,7 @@ the harness's busy list beside `terrain`. The two are different questions — "h
 field arrived" and "is the ground drawn with it yet" — and only the second decides what
 the picture shows.
 
-## Sub-metre is a shading problem, not a geometry one (measured 2026-09-13)
+## Sub-metre is a shading problem, not a geometry one (built 2026-09-13)
 
 3.125 m is what gives a street a gradient. It is not what gives it a kerb, and the
 two are different problems with different answers.
@@ -357,27 +357,41 @@ carriageway, the lip of a quay, a rut across a verge. All of that is **shading, 
 silhouette** — the same observation `water.wgsl` is built on, where a canal is two
 triangles and every wave lives in the normal.
 
-So the intended shape, when it is built:
+So `systems::ground_detail` puts it in the normal:
 
 * `terrain::encode_slope` turns the tier into an `Rg8Snorm` slope texture on the
   worker that already baked it.
 * It holds a **residual** — the slope minus a box blur of itself at
   `MAX_GROUND_EDGE_M` — because the mesh underneath already carries the coarse
   gradient in its vertices, and adding the raw slope would apply every gradient twice.
-* A `MaterialExtension` over the ground materials perturbs the normal by it.
-* Its uniform is the box's centre in **render** space, so it has to be rewritten when
-  the box re-centres or the floating origin jumps. Unlike `building_windows`, which
-  rewrites its ring every frame against a single material, there are hundreds of
-  ground materials — so this one is written on change only, a few times a minute on
-  foot at worst.
+* `GroundDetailExtension` over `StandardMaterial` perturbs the normal by it
+  (`shaders/ground_detail.wgsl`), so the sun, the shadows, the fog and the atmosphere's
+  environment map all still reach the ground exactly as before.
+* Its uniform is the box's centre in **render** space, rewritten when the box
+  re-centres or the floating origin jumps. Unlike `building_windows`, which rewrites
+  its ring every frame against a single material, there are hundreds of ground
+  materials — so this one is written on change only, a few times a minute on foot at
+  worst.
+* `params.w` is 0 with the layer off, outside the Netherlands or before the tier
+  lands, which makes the shader the plain PBR path plus one comparison.
+* `CARTO_NO_GROUND_DETAIL=1` strips it, and `ground_detail_ready` /
+  `ground_detail_sample_m` are in `--dump-state`. Both exist because this is a
+  *shading* term and colour and lighting are not evidence on the container's software
+  rasteriser — the only honest A/B is the same scene with the term removed.
 
-The work it needs, and the reason it is not in the same change as the 3.125 m field:
-the ground materials are plain `StandardMaterial` today, and extending them reaches
-`map_geometry`'s shared per-group map, `map_stream`'s per-tile materials, and the
-consumers that repaint them (`vegetation`, `wet_surfaces`, `street_furniture`,
-`street_detail`). The volumetric groups — canopy, trunk, furniture — must be kept
-*out* of it: a tree's normals describe the tree, and giving them the ground's
-sub-metre slope is the same mistake `stand_on_terrain` already refuses to make.
+Measured over the Veluwe at 45 m, settled, the same viewpoint with the switch on and
+off: `ground_detail_ready` true / false, `ground_detail_sample_m` 0.50 / 0.00, and
+14.0 % of pixels differ (5.7 % by more than 4/255).
+
+**It is on the clipmap tiles only.** The vector ground surfaces — paving,
+carriageways, verges, squares, which are what you look at in a city — and the road
+groups still take the plain path. Extending it there means converting
+`map_geometry`'s shared per-group material map and the four consumers that repaint it
+(`vegetation`, `wet_surfaces`, `street_furniture`, `street_detail`), and adding the
+same three bindings to `road_depth.wgsl`. The volumetric groups must be kept *out* of
+it: a tree's normals describe the tree, and giving a canopy the ground's sub-metre
+slope is the mistake `stand_on_terrain` already refuses to make. `refresh_ground_detail`
+reserves a negative `params.w` for that opt-out.
 
 ## Still flat, deliberately or otherwise
 

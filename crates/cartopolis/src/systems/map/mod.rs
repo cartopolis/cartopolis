@@ -22,6 +22,7 @@ pub mod globe;
 pub mod globe_ocean;
 pub mod globe_weather;
 pub mod grass;
+pub mod ground_detail;
 pub mod height;
 pub mod interiors;
 // The fog volume the sun's light shafts are marched through; the camera and the

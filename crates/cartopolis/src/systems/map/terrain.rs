@@ -294,6 +294,11 @@ struct FineBake {
     gen: u32,
     water_rev: u32,
     samples: Option<(Vec<f32>, usize)>,
+    /// The same ground as a **slope residual**, `Rg8Snorm`, [`FINE_GRID`]² —
+    /// `systems::ground_detail` binds it to the ground materials so a surface can shade
+    /// at half a metre without carrying a vertex there. Produced on the worker that
+    /// already holds the samples rather than in a second pass over them.
+    slope: Option<Vec<u8>>,
 }
 
 /// The measured ground near the anchor, as a sampled field.
@@ -387,6 +392,9 @@ pub struct TerrainField {
     /// to run on.
     fine_job: Option<(Vec2, u32)>,
     fine_sink: std::sync::Arc<std::sync::Mutex<Option<FineBake>>>,
+    /// The tier's residual slope, waiting for `systems::ground_detail` to take it.
+    /// `None` once taken — it is a megabyte and there is no second reader.
+    fine_slope: Option<Vec<u8>>,
     /// Bumped whenever the fine tier changes.
     ///
     /// Deliberately **not** `revision`. That one is the retear signal: sixteen systems
@@ -446,6 +454,17 @@ impl TerrainField {
     #[must_use]
     pub fn fine_ready(&self) -> bool {
         self.fine.is_ready()
+    }
+
+    /// Take the tier's residual-slope texels, if a bake has just handed some over.
+    ///
+    /// Consumed rather than borrowed: `systems::ground_detail` copies it straight into
+    /// an `Image`, and a second copy sitting here for the life of the tier would serve
+    /// nobody.
+    #[must_use]
+    pub fn take_fine_slope(&mut self) -> Option<(Vec<u8>, usize, Vec2, f32)> {
+        let bytes = self.fine_slope.take()?;
+        Some((bytes, FINE_GRID, self.fine.centre, FINE_HALF_M))
     }
 
     /// The measured surface height of the water at a point, in the world's own frame,
@@ -1031,7 +1050,7 @@ fn bake_fine(
     centre: Vec2,
     datum: f32,
     water: &crate::systems::water_levels::WaterLevelField,
-) -> Option<(Vec<f32>, usize)> {
+) -> Option<(Vec<f32>, usize, Vec<u8>)> {
     let n = FINE_GRID;
     let map = RdAffine::fit(anchor, centre);
     let step = f64::from(FINE_HALF_M) * 2.0 / (n - 1) as f64;
@@ -1055,12 +1074,79 @@ fn bake_fine(
     // box itself, and a half-metre grid has no hole a capped reach could helpfully
     // leave open.
     fill_holes(&mut raw, n, None);
-    Some((
-        raw.into_iter()
-            .map(|v| if v.is_finite() { v - datum } else { 0.0 })
-            .collect(),
-        carved,
-    ))
+    let samples: Vec<f32> = raw
+        .into_iter()
+        .map(|v| if v.is_finite() { v - datum } else { 0.0 })
+        .collect();
+    let slope = encode_slope(&samples, n, FINE_SAMPLE_M);
+    Some((samples, carved, slope))
+}
+
+/// Metres of rise per metre of run that a fully-saturated texel of the slope texture
+/// stands for. A 12 cm kerb over half a metre is 0.24, so a full ±1 covers anything a
+/// street has and quantises to 1/127 ≈ 0.5°. Must equal `SLOPE_RANGE` in
+/// `shaders/ground_detail.wgsl`.
+pub const DETAIL_SLOPE_RANGE: f32 = 1.0;
+
+/// Texels of the fine grid the *geometry* already carries between its own vertices.
+///
+/// The detail texture holds a **residual**: the slope the ground has, minus the slope
+/// the mesh under it is already drawn with. Without the subtraction every ground
+/// gradient would be applied twice — once in the vertices and once in the normal — and
+/// a hillside would shade as if it were half again as steep.
+///
+/// One [`MAX_GROUND_EDGE_M`] of fine samples, rounded odd so the box is centred.
+const DETAIL_CARRIED_TEXELS: usize = 25;
+
+/// Encode the fine tier's residual slope as `Rg8Snorm`, `n²` texels.
+///
+/// Central differences on the tier's own grid, minus a box blur of the same, so what
+/// survives is exactly what a mesh with [`MAX_GROUND_EDGE_M`] edges cannot express: the
+/// kerb, the camber, the quay lip, the rut. Separable, four passes over the grid, on
+/// the worker that baked it.
+fn encode_slope(samples: &[f32], n: usize, sample_m: f32) -> Vec<u8> {
+    let mut gx = vec![0.0f32; n * n];
+    let mut gz = vec![0.0f32; n * n];
+    let inv = 1.0 / (2.0 * sample_m);
+    for z in 0..n {
+        for x in 0..n {
+            let (xm, xp) = (x.saturating_sub(1), (x + 1).min(n - 1));
+            let (zm, zp) = (z.saturating_sub(1), (z + 1).min(n - 1));
+            gx[z * n + x] = (samples[z * n + xp] - samples[z * n + xm]) * inv;
+            gz[z * n + x] = (samples[zp * n + x] - samples[zm * n + x]) * inv;
+        }
+    }
+    let mut out = vec![0u8; n * n * 2];
+    let r = DETAIL_CARRIED_TEXELS / 2;
+    let mut lo = vec![0.0f32; n * n];
+    for (channel, g) in [&gx, &gz].into_iter().enumerate() {
+        // Separable box blur: the horizontal pass lands in `lo` and the vertical reads
+        // it back, differencing into the output as it goes.
+        for z in 0..n {
+            for x in 0..n {
+                let mut sum = 0.0;
+                for d in 0..DETAIL_CARRIED_TEXELS {
+                    let sx = (x + d).saturating_sub(r).min(n - 1);
+                    sum += g[z * n + sx];
+                }
+                lo[z * n + x] = sum / DETAIL_CARRIED_TEXELS as f32;
+            }
+        }
+        for x in 0..n {
+            for z in 0..n {
+                let mut sum = 0.0;
+                for d in 0..DETAIL_CARRIED_TEXELS {
+                    let sz = (z + d).saturating_sub(r).min(n - 1);
+                    sum += lo[sz * n + x];
+                }
+                let carried = sum / DETAIL_CARRIED_TEXELS as f32;
+                let residual = (g[z * n + x] - carried) / DETAIL_SLOPE_RANGE;
+                out[(z * n + x) * 2 + channel] =
+                    ((residual.clamp(-1.0, 1.0) * 127.0).round() as i8) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// Install a finished fine-tier bake.
@@ -1088,6 +1174,7 @@ pub fn apply_fine_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStream
         field.drop_fine_samples();
         return;
     };
+    field.fine_slope = done.slope;
     field.carved_fine = carved;
     field.fine = TerrainSnapshot {
         samples: std::sync::Arc::new(samples),
@@ -1190,13 +1277,16 @@ pub fn update_fine_terrain(
     crate::platform::workers::submit(
         "terrain_fine",
         Box::new(move || {
-            let samples = bake_fine(&job, anchor, want, datum, &water);
+            let baked = bake_fine(&job, anchor, want, datum, &water);
+            let slope = baked.as_ref().map(|(_, _, s)| s.clone());
+            let samples = baked.map(|(s, carved, _)| (s, carved));
             if let Ok(mut g) = sink.lock() {
                 *g = Some(FineBake {
                     centre: want,
                     gen,
                     water_rev,
                     samples,
+                    slope,
                 });
             }
         }),

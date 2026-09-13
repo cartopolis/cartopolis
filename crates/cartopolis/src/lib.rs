@@ -1837,6 +1837,9 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::particles::ParticleMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
+        // The basemap and the ground surfaces, carrying the half-metre residual slope
+        // the geometry is too coarse to hold (`systems::ground_detail`).
+        .add_plugins(MaterialPlugin::<systems::ground_detail::GroundMaterial>::default())
         // The LoD2.2 buildings' walls, with the window pattern on them
         // (`systems::building_windows`).
         .add_plugins(MaterialPlugin::<systems::building_windows::BuildingMaterial>::default())
@@ -2000,6 +2003,8 @@ fn run_client() {
         .insert_resource(user_store)
         .init_resource::<systems::map_stream::MapStream>()
         .init_resource::<systems::map_stream::ReliefBacklog>()
+        .init_resource::<systems::ground_detail::GroundDetail>()
+        .init_resource::<systems::ground_detail::GridCellOrigin>()
         // The Settings ▸ Storage button's request, and what came of it.
         .init_resource::<systems::cache_reset::CacheReset>()
         .init_resource::<resources::MapAnchor>()
@@ -2476,6 +2481,15 @@ fn run_client() {
                 // Install a field bake that landed. Before the ask, so a box that
                 // finished this frame is the one the ask compares against.
                 systems::terrain::apply_coarse_terrain.after(systems::map_stream::apply_reanchor),
+                // The sub-metre half: the tier's slope into a shared texture, and the
+                // render-space uniform that tells the ground materials where it is.
+                // After `apply_fine_terrain`, which is what hands the texels over.
+                systems::ground_detail::track_grid_origin,
+                systems::ground_detail::receive_ground_detail
+                    .after(systems::terrain::apply_fine_terrain),
+                systems::ground_detail::refresh_ground_detail
+                    .after(systems::ground_detail::receive_ground_detail)
+                    .after(systems::ground_detail::track_grid_origin),
                 // The half-metre tier under the camera. After the coarse field, whose
                 // datum it borrows and whose answer it fades into at its rim.
                 systems::terrain::update_fine_terrain

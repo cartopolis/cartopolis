@@ -271,7 +271,7 @@ pub struct MapStream {
     gen_shared: Arc<AtomicU32>,
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
-    placeholder: Option<Handle<StandardMaterial>>,
+    placeholder: Option<Handle<crate::systems::ground_detail::GroundMaterial>>,
     /// The last computed clipmap: each level's centre tile (the cache key) and the
     /// desired set it produced. Rebuilding 424 entries plus a 424-entry spawn order
     /// every frame was pure waste — the desired set only changes when the camera
@@ -562,7 +562,7 @@ const DEFAULT_ANCHOR_ZOOM: u32 = 17;
 pub fn init_map_stream(
     mut stream: ResMut<MapStream>,
     mut published: ResMut<crate::resources::MapAnchor>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     _tile_url: Res<OsmTileUrlTemplate>,
 ) {
     if stream.anchor.is_some() {
@@ -582,18 +582,26 @@ pub fn init_map_stream(
     // ever shows this (see `MapBackstop`), and there it should read as blank paper
     // continuous with the tiles around it.
     const PAPER: u32 = crate::systems::vector_tiles::palette::PAPER;
-    stream.placeholder = Some(materials.add(StandardMaterial {
-        base_color: Color::srgb(
-            ((PAPER >> 16) & 0xFF) as f32 / 255.0,
-            ((PAPER >> 8) & 0xFF) as f32 / 255.0,
-            (PAPER & 0xFF) as f32 / 255.0,
-        ),
-        // Fully matte: default reflectance puts a grazing-angle Fresnel sheen on
-        // distant ground, bleaching the far map toward white.
-        perceptual_roughness: 1.0,
-        reflectance: 0.0,
-        ..default()
-    }));
+    stream.placeholder = Some(
+        materials.add(crate::systems::ground_detail::GroundMaterial {
+            base: StandardMaterial {
+                base_color: Color::srgb(
+                    ((PAPER >> 16) & 0xFF) as f32 / 255.0,
+                    ((PAPER >> 8) & 0xFF) as f32 / 255.0,
+                    (PAPER & 0xFF) as f32 / 255.0,
+                ),
+                // Fully matte: default reflectance puts a grazing-angle Fresnel sheen on
+                // distant ground, bleaching the far map toward white.
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            },
+            // Zero, not opted out: `refresh_ground_detail` fills it in when a tier lands.
+            // The placeholder is only ever the coarsest ring, where the box does not
+            // reach — but it costs nothing to let it, and one rule is fewer than two.
+            extension: default(),
+        }),
+    );
 
     // The two numbers that set the ceiling on how fast the map can fill, and which
     // were invisible while both silently sat at Bevy's default of 4 (see the
@@ -1408,7 +1416,9 @@ pub fn apply_stream_textures(
     mut commands: Commands,
     mut stream: ResMut<MapStream>,
     mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
+    detail: Res<crate::systems::ground_detail::GroundDetail>,
+    origin: Res<crate::systems::ground_detail::GridCellOrigin>,
     tiles: Query<
         Entity,
         (
@@ -1569,12 +1579,18 @@ pub fn apply_stream_textures(
                     crate::systems::tile_loader::ground_sampler(),
                 );
                 let handle = images.add(bevy_image);
-                let mat = materials.add(StandardMaterial {
-                    base_color_texture: Some(handle),
-                    // Matte, like the placeholder — no grazing-angle sheen.
-                    perceptual_roughness: 1.0,
-                    reflectance: 0.0,
-                    ..default()
+                let mat = materials.add(crate::systems::ground_detail::GroundMaterial {
+                    base: StandardMaterial {
+                        base_color_texture: Some(handle),
+                        // Matte, like the placeholder — no grazing-angle sheen.
+                        perceptual_roughness: 1.0,
+                        reflectance: 0.0,
+                        ..default()
+                    },
+                    // The half-metre residual slope, if a tier has landed. Read at
+                    // spawn like `WaterSeaState`, and kept in step afterwards by
+                    // `ground_detail::refresh_ground_detail`.
+                    extension: detail.extension(&origin),
                 });
                 commands
                     .entity(entity)

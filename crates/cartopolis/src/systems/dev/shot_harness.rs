@@ -858,6 +858,15 @@ pub struct ShotMetrics {
     /// would show.
     pub fine_terrain_ready: bool,
     pub fine_terrain_sample_m: f32,
+    /// The sub-metre ground layer (`systems::ground_detail`): whether the shared slope
+    /// texture is bound, and what one texel of it spans.
+    ///
+    /// Assertable for the reason `terrain_sample_m` is, only more so: this one is a
+    /// *shading* term, and colour and lighting are not evidence on the container's
+    /// software rasteriser. `0.0` with the layer stripped
+    /// (`CARTO_NO_GROUND_DETAIL=1`), out of AHN, or before the tier lands.
+    pub ground_detail_ready: bool,
+    pub ground_detail_sample_m: f32,
     /// Registered water bodies loaded (`systems::water_levels`), the terrain samples the
     /// two bakes rewrote to a measured level, and how far below the world's zero the
     /// deepest registered water sits.
@@ -1012,7 +1021,8 @@ lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
-terrain_ready,terrain_relief_m,terrain_sample_m,fine_terrain_ready,fine_terrain_sample_m,water_rings,\
+terrain_ready,terrain_relief_m,terrain_sample_m,fine_terrain_ready,fine_terrain_sample_m,\
+ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
 gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
 fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
@@ -1087,6 +1097,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
     ("fine_terrain_sample_m", 2),
+    ("ground_detail_sample_m", 2),
     ("water_drop_m", 2),
     ("shaft_volume_m", 1),
     ("fetch_mb", 2),
@@ -2562,6 +2573,7 @@ pub struct ShotReadouts<'w, 's> {
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
     relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
+    ground_detail: Res<'w, crate::systems::ground_detail::GroundDetail>,
     water_levels: Res<'w, crate::systems::water_levels::WaterLevels>,
     furniture: Res<'w, crate::systems::street_furniture::FurnitureLod>,
     surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
@@ -3094,6 +3106,8 @@ pub fn drive_capture(
             // lowers it on a handset, and a metric that reported the nominal number
             // there would say the phone measured ground it never asked for.
             terrain_sample_m: readouts.terrain.sample_m(),
+            ground_detail_ready: readouts.ground_detail.slope.is_some(),
+            ground_detail_sample_m: readouts.ground_detail.sample_m,
             fine_terrain_ready: readouts.terrain.fine_ready(),
             fine_terrain_sample_m: if readouts.terrain.fine_ready() {
                 crate::systems::terrain::FINE_SAMPLE_M
@@ -3205,6 +3219,8 @@ pub fn drive_capture(
                     terrain_sample_m = format!("{:.2}", m.terrain_sample_m),
                     fine_terrain_ready = m.fine_terrain_ready,
                     fine_terrain_sample_m = format!("{:.2}", m.fine_terrain_sample_m),
+                    ground_detail_ready = m.ground_detail_ready,
+                    ground_detail_sample_m = format!("{:.2}", m.ground_detail_sample_m),
                     water_rings = m.water_rings,
                     water_carved_coarse = m.water_carved_coarse,
                     water_carved_fine = m.water_carved_fine,
@@ -3703,6 +3719,8 @@ mod tests {
             height_patches: 0,
             fine_terrain_ready: false,
             fine_terrain_sample_m: 0.0,
+            ground_detail_ready: false,
+            ground_detail_sample_m: 0.0,
             water_rings: 0,
             water_carved_coarse: 0,
             water_carved_fine: 0,
