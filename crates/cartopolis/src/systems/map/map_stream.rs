@@ -692,6 +692,18 @@ fn level_y(base_zoom: u32, zoom: u32) -> f32 {
     -0.03 - 0.4 * base_zoom.saturating_sub(zoom) as f32
 }
 
+/// Basemap tiles whose relief mesh is still owed, this frame.
+///
+/// **A capture can otherwise photograph flat ground and call itself settled.** The
+/// relief meshes are built [`MAX_RELIEF_BUILDS_PER_FRAME`] at a time — the documented
+/// guard against an upload burst — and over a city ~166 tiles qualify, so a cold
+/// clipmap is ~83 frames from being shaped. Nothing in the settle test knew that: the
+/// tile *streams* went quiet, `terrain_ready` said true, and the shutter fired on a
+/// plane. Measured 2026-09-13 on the Posbank at `--wait 20`, which is where this
+/// resource came from.
+#[derive(Resource, Default)]
+pub struct ReliefBacklog(pub usize);
+
 /// Marker on a tile whose flat quad has been replaced by ground lifted onto the
 /// terrain field, carrying the field revision it was built for.
 #[derive(Component)]
@@ -699,34 +711,61 @@ pub struct TileRelief {
     revision: u32,
 }
 
-/// Subdivisions per side for a relief tile of `tile_m` metres: one quad per
-/// terrain sample, so the mesh carries exactly the measurements the field holds
-/// and not one vertex more.
+/// Subdivisions per side for a relief tile of `tile_m` metres: a constant count,
+/// bounded by what the field actually measures.
 ///
-/// This has to be a function of the tile, not a constant. The clipmap's finest
-/// zoom follows altitude — over a Dutch city it is z17, a **184 m** tile, not the
-/// ~1.5 km one a fixed 48 was sized for — and the same constant is applied to all
-/// four levels that qualify for relief. That put 4,608 triangles on a tile the
-/// field describes with 7 samples across: ~8× over-subdivided per axis, 64× in
-/// triangles, interpolating detail that was never measured. Measured on the
-/// Groningen anchor (2026-07-31, `--offline`, settled, 60 m): the basemap went
-/// from 3k triangles flat to **942k** with relief, the shadow pass from 1.07M to
-/// 2.96M, and the frame rate from ~26 fps to 10–11 — which is also what made the
-/// egui panels feel broken, the click bridge spending one pass per pointer event.
+/// **A clipmap level is twice the size and twice as far out as the one above it**, so
+/// every level's tiles subtend about the same solid angle and a constant division
+/// count is what puts a constant number of *pixels* on a quad. The world-space rule
+/// this replaced — one quad per [`TERRAIN_SAMPLE_M`] on every level — spent its
+/// triangles the other way round: at 25 m sampling a 2,500 m tile got 100 divisions
+/// and 20k triangles for ground kilometres away, while the tile underfoot got 8.
 ///
-/// Sizing off [`TERRAIN_SAMPLE_M`] instead keeps every level agreeing with the
-/// *same* field to within one interpolation step. That matters beyond the triangle
-/// count: relieved levels are stacked only 0.4 m apart, so a coarse level that
-/// approximated the ground more crudely than the fine one above it would poke
-/// through it on any slope.
-fn relief_divisions(tile_m: f32) -> usize {
-    // A backstop on one mesh, not a quality knob — and deliberately above what
-    // [`RELIEF_MAX_TILE_M`] can ask for (~100), because a level that subdivided
-    // *more* coarsely than the one above it is the poke-through this rule exists
-    // to prevent. The field is 256 samples across, so nothing inside it can
-    // honestly ask for more than that either.
-    const MAX_DIVISIONS: usize = 128;
-    ((tile_m / crate::systems::terrain::TERRAIN_SAMPLE_M).ceil() as usize).clamp(1, MAX_DIVISIONS)
+/// It was not an oversight. Relieved levels are stacked only 0.4 m apart, so a coarse
+/// level that approximated the ground more crudely than the fine one above it would
+/// poke through it on any slope, and matching every level to the field was the way to
+/// make that impossible. It also pinned the field: the coarsest relieved tile at 128
+/// divisions cannot describe anything finer than `RELIEF_MAX_TILE_M / 128` = 19.5 m,
+/// so the field could never go below 25 m however much relief was being thrown away.
+///
+/// The poke-through is now prevented where it belongs, in what the mesh samples:
+/// `displaced_grid` reads `TerrainSnapshot::floor_at` at its own quad size, a lower
+/// envelope that cannot rise above the measured ground. So a level may be as coarse
+/// as its distance deserves, and the budget goes to the ground you are standing on.
+///
+/// The earlier trap is still live and is what the upper bound is for. A **fixed**
+/// count was tried once (`RELIEF_DIVISIONS = 48`, sized for a ~1.5 km tile) and
+/// applied to a 184 m one; measured on the Groningen anchor (2026-07-31, `--offline`,
+/// settled, 60 m) the basemap went from 3k triangles flat to **942k**, the shadow pass
+/// from 1.07M to 2.96M, and the frame rate from ~26 fps to 10–11 — which is also what
+/// made the egui panels feel broken, the click bridge spending one pass per pointer
+/// event. The difference here is the second clamp: a tile never gets more divisions
+/// than the field has samples across it, so a fine level asks for detail that exists
+/// and a coarse one asks for a lot less than it used to.
+fn relief_divisions(tile_m: f32, sample_m: f32) -> usize {
+    // One quad per ~1/32 of a tile. Chosen against the triangle budget rather than
+    // the picture: ~166 tiles qualify for relief over a Dutch city, and 2·32²
+    // triangles each is ~340k — the same order as the 373k the per-sample rule cost
+    // at 25 m, which measured 35–45 fps.
+    const RELIEF_DIVISIONS: usize = 32;
+    // Never finer than the measurements: below this a grid interpolates ground
+    // nothing surveyed and pays full geometry price for it.
+    //
+    // The field's *live* spacing, not `TERRAIN_SAMPLE_M`, because a handset asks for a
+    // coarser box (`quality::Budget::terrain_grid`) — reading the constant there would
+    // hand the machine with the least to spend four times the vertices it can use.
+    // **Floored, not rounded up.** `ceil` is what the per-sample rule used and it is
+    // wrong for a bound that means "never finer than the measurements": a tile that is
+    // not a whole number of samples across gets one division too many and its quads
+    // land between them. A 10 m tile at 3.125 m sampling is the case — four divisions
+    // is 2.5 m quads — and `relief_grid_is_constant_per_level_and_never_finer_than_the_field`
+    // is what found it.
+    let by_field = if sample_m > 0.0 {
+        (tile_m / sample_m).floor() as usize
+    } else {
+        RELIEF_DIVISIONS
+    };
+    RELIEF_DIVISIONS.min(by_field).max(1)
 }
 
 /// Largest tile that gets relief, in metres. Coarser levels of the clipmap span
@@ -773,8 +812,10 @@ pub fn apply_terrain_to_tiles(
     field: Res<crate::systems::terrain::TerrainField>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut tiles: Query<(Entity, &StreamTile, &mut Transform, Option<&TileRelief>)>,
+    mut backlog: ResMut<ReliefBacklog>,
     mut last_revision: Local<u32>,
 ) {
+    backlog.0 = 0;
     let Some((clat, clng, base_zoom)) = stream.anchor else {
         return;
     };
@@ -829,7 +870,7 @@ pub fn apply_terrain_to_tiles(
         // and their own sag is millimetres.
         let curve_divs = crate::systems::globe::curvature_divisions(gs, globe.radius);
         let divisions = if relieved {
-            relief_divisions(gs).max(curve_divs)
+            relief_divisions(gs, field.sample_m()).max(curve_divs)
         } else {
             curve_divs
         };
@@ -852,6 +893,9 @@ pub fn apply_terrain_to_tiles(
         if relief.is_some_and(|r| r.revision == revision) {
             continue;
         }
+        // Counted before the per-frame cap turns it away, because this is the number
+        // the settle test needs: "how much of the ground is still the flat quad".
+        backlog.0 += 1;
         // Two budgets, because the two meshes are three orders of magnitude
         // apart: a relief grid follows a 25 m field and can run to 128 divisions,
         // while a curve-only grid is at most 7 and exists to hide a quarter-metre
@@ -886,6 +930,7 @@ pub fn apply_terrain_to_tiles(
         // invisible; if the Veluwe ever needs it, it belongs to the finest level
         // alone, not to all four.
     }
+    backlog.0 = backlog.0.saturating_sub(built + curved);
     if built + curved > 0 && *last_revision != revision {
         *last_revision = revision;
         tracing::info!(
@@ -1622,55 +1667,66 @@ mod tests {
         assert_eq!(hidden.len(), 5, "the root and its four unpainted children");
     }
 
-    /// The relief grid must follow the tile, not a constant. A fixed 48 was sized
-    /// for a ~1.5 km tile and then applied to the 184 m ones the clipmap actually
-    /// streams over a city, which is where the 942k-triangle basemap came from.
+    /// The relief grid must be constant per *level* and never finer than the field.
+    ///
+    /// Two rules, and the history is that each was learned by breaking the other. A
+    /// fixed 48 divisions was sized for a ~1.5 km tile and applied to the 184 m ones
+    /// the clipmap actually streams over a city, which is where the 942k-triangle
+    /// basemap came from — hence the upper bound. Then one quad per field sample was
+    /// applied to *every* level, which spent 20k triangles on ground 3 km away and
+    /// pinned the field at 25 m — hence the constant.
     #[test]
-    fn relief_grid_matches_the_field_not_the_zoom() {
+    fn relief_grid_is_constant_per_level_and_never_finer_than_the_field() {
         let sample = crate::systems::terrain::TERRAIN_SAMPLE_M;
         assert!(
-            (sample - 25.1).abs() < 0.2,
-            "the field is a 25 m grid; this test's numbers assume it: {sample}"
+            (sample - 3.125).abs() < 0.01,
+            "the field is a 3.125 m grid; this test's numbers assume it: {sample}"
         );
 
-        // The four clipmap levels that qualify for relief at Dutch latitudes.
-        for (tile_m, want) in [(184.0, 8), (368.0, 15), (736.0, 30), (1471.0, 59)] {
+        // Every level a Dutch city streams gets the same count — same triangles, and
+        // (a clipmap level being twice the size and twice as far out) about the same
+        // pixels per quad.
+        for tile_m in [184.0, 368.0, 736.0, 1471.0, RELIEF_MAX_TILE_M] {
             assert_eq!(
-                relief_divisions(tile_m),
-                want,
-                "a {tile_m} m tile wants one quad per sample"
+                relief_divisions(tile_m, sample),
+                32,
+                "a {tile_m} m tile should get the level-constant count"
             );
         }
 
-        // Across the whole relief range, a quad is never coarser than a sample (the
-        // level above would poke through it) and never much finer (geometry paid
-        // for detail nothing measured). The cap must not bite inside this range.
-        for tile_m in [50.0, 184.0, 400.0, 1471.0, RELIEF_MAX_TILE_M] {
-            let quad_m = tile_m / relief_divisions(tile_m) as f32;
+        // Below that, the field is the bound: a tile smaller than 32 samples across
+        // must not invent vertices between measurements.
+        for tile_m in [10.0f32, 25.0, 90.0] {
+            let d = relief_divisions(tile_m, sample);
+            let quad_m = tile_m / d as f32;
             assert!(
-                quad_m <= sample,
-                "{tile_m} m tile: {quad_m} m quads under-describe the field"
-            );
-            assert!(
-                quad_m > sample * 0.5,
+                quad_m >= sample,
                 "{tile_m} m tile: {quad_m} m quads interpolate detail nothing measured"
             );
         }
 
-        // And the finest tile is an order of magnitude cheaper than the old fixed
-        // grid — the frame-rate regression this fixes.
+        // And the whole relieved set is affordable. ~166 tiles qualify over a Dutch
+        // city; the per-sample rule at 25 m cost ~373k triangles there and measured
+        // 35–45 fps, so that is the ceiling this has to stay under.
         let tris = |d: usize| d * d * 2;
+        let total: usize = [(184.0, 49), (368.0, 49), (736.0, 49), (1471.0, 19)]
+            .iter()
+            .map(|&(m, tiles): &(f32, usize)| tris(relief_divisions(m, sample)) * tiles)
+            .sum();
         assert!(
-            tris(relief_divisions(184.0)) * 30 < tris(48),
-            "the z17 tile should be >30x cheaper than the old fixed 48"
+            total < 400_000,
+            "the relieved clipmap is {total} triangles; the 25 m per-sample rule was 373k"
         );
     }
 
     /// A tile far coarser than the field still yields a bounded mesh.
     #[test]
     fn relief_grid_is_bounded() {
-        assert_eq!(relief_divisions(1.0e6), 128);
-        assert_eq!(relief_divisions(0.0), 1);
+        let sample = crate::systems::terrain::TERRAIN_SAMPLE_M;
+        assert_eq!(relief_divisions(1.0e6, sample), 32);
+        assert_eq!(relief_divisions(0.0, sample), 1);
+        // A coarser field (a handset's) buys fewer vertices, not the same ones.
+        assert_eq!(relief_divisions(184.0, 12.5), 14);
     }
 
     use crate::systems::vector_tiles::SubTile;

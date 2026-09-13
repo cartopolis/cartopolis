@@ -2297,7 +2297,7 @@ fn water_surface(
         normals,
         colors,
         rungs,
-        crate::systems::terrain::MAX_GROUND_EDGE_M,
+        terrain.ground_edge_m(),
     );
     for p in positions.iter_mut() {
         let (wx, wz) = (origin.x + p[0], origin.y + p[2]);
@@ -2360,7 +2360,7 @@ fn stand_on_terrain(
             normals,
             colors,
             rungs,
-            crate::systems::terrain::MAX_GROUND_EDGE_M,
+            terrain.ground_edge_m(),
         );
     }
     for p in positions.iter_mut() {

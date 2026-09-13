@@ -840,6 +840,15 @@ pub struct ShotMetrics {
     /// ~2 m), and a field with relief in it that something downstream isn't using.
     pub terrain_ready: bool,
     pub terrain_relief_m: f32,
+    /// What the field actually samples at, in metres.
+    ///
+    /// Assertable, because relief is a *gradient* and a gradient is a function of the
+    /// spacing: over a Dutch city the same ground reads a 0.46° median slope at 25 m
+    /// and 1.34° at 3.125 m, which is the difference between shading the ground within
+    /// ±4 % of flat and ±20 %. `terrain_relief_m` cannot see that — it is the range
+    /// over the whole box and barely moves — so a capture that wants to state the
+    /// ground has slopes in it has to assert this.
+    pub terrain_sample_m: f32,
     /// Whether the half-metre tier under the camera has baked
     /// (`terrain::update_fine_terrain`), and what it actually samples at.
     ///
@@ -1003,7 +1012,7 @@ lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
-terrain_ready,terrain_relief_m,fine_terrain_ready,fine_terrain_sample_m,water_rings,\
+terrain_ready,terrain_relief_m,terrain_sample_m,fine_terrain_ready,fine_terrain_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
 gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
 fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
@@ -1076,6 +1085,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("globe_texture_mb", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
+    ("terrain_sample_m", 2),
     ("fine_terrain_sample_m", 2),
     ("water_drop_m", 2),
     ("shaft_volume_m", 1),
@@ -2551,6 +2561,7 @@ pub struct ShotReadouts<'w, 's> {
     vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
     water_levels: Res<'w, crate::systems::water_levels::WaterLevels>,
     furniture: Res<'w, crate::systems::street_furniture::FurnitureLod>,
     surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
@@ -2851,6 +2862,11 @@ pub fn drive_capture(
         ("surfaces", surfaces.streaming_busy()),
         ("osm_buildings", osm.streaming_busy()),
         ("lod22", lod22.streaming_busy()),
+        ("terrain", readouts.terrain.streaming_busy()),
+        // Not the same question as `terrain`: that one is "has the field arrived",
+        // this one is "is the ground drawn with it yet". They are ~83 frames apart
+        // over a city and only the second decides what the picture shows.
+        ("relief", readouts.relief_backlog.0 > 0),
         ("grass", readouts.grass.streaming_busy()),
         ("street_detail", readouts.street_detail.streaming_busy()),
         ("tall_structures", readouts.tall_structures.streaming_busy()),
@@ -3074,6 +3090,10 @@ pub fn drive_capture(
             height_patches: readouts.height.fetched,
             terrain_ready: readouts.terrain.is_ready(),
             terrain_relief_m: readouts.terrain.range_m.1 - readouts.terrain.range_m.0,
+            // The live spacing, not the constant: `quality::Budget::terrain_grid`
+            // lowers it on a handset, and a metric that reported the nominal number
+            // there would say the phone measured ground it never asked for.
+            terrain_sample_m: readouts.terrain.sample_m(),
             fine_terrain_ready: readouts.terrain.fine_ready(),
             fine_terrain_sample_m: if readouts.terrain.fine_ready() {
                 crate::systems::terrain::FINE_SAMPLE_M
@@ -3182,6 +3202,7 @@ pub fn drive_capture(
                     height_patches = m.height_patches,
                     terrain_ready = m.terrain_ready,
                     terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
+                    terrain_sample_m = format!("{:.2}", m.terrain_sample_m),
                     fine_terrain_ready = m.fine_terrain_ready,
                     fine_terrain_sample_m = format!("{:.2}", m.fine_terrain_sample_m),
                     water_rings = m.water_rings,
@@ -3688,6 +3709,7 @@ mod tests {
             water_drop_m: 0.0,
             terrain_ready: false,
             terrain_relief_m: 0.0,
+            terrain_sample_m: 0.0,
             upload_peak_kb: 0,
             upload_peak_asset_kb: 0,
             gpu_resident_kb: 0,

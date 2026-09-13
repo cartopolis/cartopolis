@@ -253,6 +253,19 @@ pub struct Budget {
     /// the backdrop between the polygons. It would not be acceptable on a tier
     /// where the imagery is the map.
     pub tile_px: u32,
+    /// Samples per side in the terrain field's 6.4 km box (`systems::terrain`).
+    ///
+    /// **A memory and a bandwidth rung, not a picture one.** 2049² is one 12 MB
+    /// request per map anchor and 17 MB resident, plus a 5.6 MB lower-envelope
+    /// pyramid over it — which is what it takes for a Dutch street to have a
+    /// gradient at all (`docs/notes/terrain-relief.md`). A handset is the machine
+    /// where that download is somebody's data allowance and that resident set is the
+    /// low-memory killer, so [`handset_guarded`] brings it down; the picture cost is
+    /// real and is the honest trade, not a hidden one.
+    ///
+    /// Always one more than a power of two, so the *intervals* halve exactly and the
+    /// pyramid divides (`terrain::TERRAIN_GRID` says why).
+    pub terrain_grid: usize,
     /// Linear scale for the 3D main pass, as a fraction of the render target.
     ///
     /// **The one knob the phone tier was missing entirely.** `index.html` caps the
@@ -478,6 +491,11 @@ const PHONE_UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
 /// 2026-08-19, that one field is 424 MB — see [`handset_guarded`] for the table.
 const HANDSET_TILE_PX: u32 = 256;
 
+/// Samples per side of the terrain field a handset may ask for, whatever rung it is
+/// on. 513² over 6.4 km is 12.5 m ground: 780 kB per anchor against 12 MB, and 1 MB
+/// resident against 22 MB.
+const HANDSET_TERRAIN_GRID: usize = 513;
+
 impl Budget {
     /// The settings the rest of the codebase is written against.
     pub(crate) const fn desktop() -> Self {
@@ -520,6 +538,7 @@ impl Budget {
             tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: true,
             tile_px: crate::systems::vector_tiles::TILE_PX,
+            terrain_grid: crate::systems::terrain::TERRAIN_GRID,
             render_scale: 1.0,
             fps_cap: Some(60.0),
             upload_bytes_per_frame: None,
@@ -605,6 +624,7 @@ impl Budget {
             tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: false,
             tile_px: crate::systems::vector_tiles::TILE_PX,
+            terrain_grid: crate::systems::terrain::TERRAIN_GRID,
             // Native resolution: an integrated GPU is bandwidth-limited, not
             // resolution-limited, and this rung's brief is to keep the picture.
             render_scale: 1.0,
@@ -684,6 +704,11 @@ impl Budget {
             // the flat map's raster size later does not silently raise the
             // phone's with it.
             tile_px: 256,
+            // Quarter the samples per side of the desktop rungs: 513² is 12.5 m
+            // ground, 780 kB on the wire and 1 MB resident. Two rungs coarser than
+            // the box a workstation gets and still twice as fine as the 25 m every
+            // machine had until 2026-09-13.
+            terrain_grid: 513,
             // A half, which is **a quarter of the fragments**: a Fairphone 4's
             // 1080×2340 (2.53 Mpx) is rendered at 540×1170 (0.63 Mpx) and blitted
             // up. The chrome is untouched at the full panel resolution, so what
@@ -1272,6 +1297,10 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
     Budget {
         upload_bytes_per_frame: Some(ceiling),
         tile_px: budget.tile_px.min(HANDSET_TILE_PX),
+        // The terrain box, on the same rule as `tile_px`: a rung picked by hand in
+        // Settings ▸ Graphics must not hand a phone a 12 MB request per anchor and
+        // 22 MB of samples to hold. The minimum, so the phone rung's own 513 stands.
+        terrain_grid: budget.terrain_grid.min(HANDSET_TERRAIN_GRID),
         radius_bias: budget.radius_bias.max(1),
         // The total, guarded the same way and for the same reason as the rate: a
         // rung picked by hand in Settings must not delete a ceiling the machine
@@ -1506,6 +1535,10 @@ mod tests {
             );
             assert!(lower.tile_px <= upper.tile_px, "tile_px: {name}");
             assert!(
+                lower.terrain_grid <= upper.terrain_grid,
+                "terrain_grid: {name}"
+            );
+            assert!(
                 lower.shadow_cascades <= upper.shadow_cascades,
                 "shadow_cascades: {name}"
             );
@@ -1662,6 +1695,14 @@ mod tests {
             assert!(
                 guarded.radius_bias >= 1,
                 "{name}: the full streaming radius is a memory budget, not a rung"
+            );
+            // 12 MB of AHN per map anchor and 22 MB held for it is a desktop's
+            // trade, not a phone's — and unlike the two above it is somebody's
+            // data allowance as well as their memory.
+            assert!(
+                guarded.terrain_grid <= HANDSET_TERRAIN_GRID,
+                "{name}: a {}² terrain field on a handset",
+                guarded.terrain_grid
             );
             // Everything else is a judgement about the picture and stays the
             // person's to make. "Full detail" on a phone still means full detail —

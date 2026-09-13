@@ -1999,6 +1999,7 @@ fn run_client() {
         .init_resource::<systems::bookmarks::BookmarksState>()
         .insert_resource(user_store)
         .init_resource::<systems::map_stream::MapStream>()
+        .init_resource::<systems::map_stream::ReliefBacklog>()
         // The Settings ▸ Storage button's request, and what came of it.
         .init_resource::<systems::cache_reset::CacheReset>()
         .init_resource::<resources::MapAnchor>()
@@ -2470,11 +2471,16 @@ fn run_client() {
                 systems::terrain::update_terrain_field
                     .after(systems::map_stream::apply_reanchor)
                     .after(systems::water_levels::update_water_levels)
+                    .after(systems::terrain::apply_coarse_terrain)
                     .before(systems::height::poll_height_layer),
+                // Install a field bake that landed. Before the ask, so a box that
+                // finished this frame is the one the ask compares against.
+                systems::terrain::apply_coarse_terrain.after(systems::map_stream::apply_reanchor),
                 // The half-metre tier under the camera. After the coarse field, whose
                 // datum it borrows and whose answer it fades into at its rim.
                 systems::terrain::update_fine_terrain
                     .after(systems::terrain::update_terrain_field)
+                    .after(systems::terrain::apply_coarse_terrain)
                     .after(systems::water_levels::update_water_levels)
                     .after(systems::terrain::apply_fine_terrain)
                     .before(systems::height::poll_height_layer),

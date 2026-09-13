@@ -84,7 +84,12 @@ const MAX_ATTEMPTS: u32 = 2;
 ///
 /// Note what this is *not*: a memory bound. A 1024² patch is 4 MB decoded, and the
 /// caller that asks for one owes [`HeightLayer::drop_patch`] when it has baked it.
-const MAX_GRID: u32 = 2048;
+///
+/// 4096 rather than 2048 because the terrain field asks for 2049² — one more than a
+/// power of two, so that the *intervals* between its samples halve exactly (see
+/// `terrain::TERRAIN_GRID`). Measured against the live service 2026-09-13: 2049² is
+/// 12.3 MB in 4.5 s.
+const MAX_GRID: u32 = 4096;
 
 /// How far from the map anchor, in RD metres, a cached patch is kept.
 ///
