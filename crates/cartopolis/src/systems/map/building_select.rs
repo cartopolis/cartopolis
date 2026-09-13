@@ -196,15 +196,27 @@ fn prism(
 
 // ─── Picking ─────────────────────────────────────────────────────────────────
 
-/// Left-click a building to select it; click empty ground to deselect.
+/// Left-click a building to select it; click empty ground to deselect. **On
+/// touch it takes two taps**, and a single one leaves the selection alone.
 ///
 /// Runs **after** `picking::prim_picking` and stands down when that took the
 /// click: a prim is a thing somebody placed and a building is the scenery behind
 /// it, so a click that resolves to both is the prim's. Shift is likewise left
 /// alone — it is the prim marquee's modifier.
+///
+/// **Why a finger is asked twice.** The emulated mouse presses `Left` the
+/// instant a finger lands (`systems::touch`), because a tap has to be a click
+/// somewhere — but so does the first frame of a pan, of a pinch and of a
+/// long press, and every one of those was opening the card over the map and
+/// laying glass on a building nobody had chosen. A cursor has a hover and a
+/// still hand to say "this one"; a finger has neither, so the second tap is
+/// what says it. The same reasoning makes a *single* tap inert rather than a
+/// deselect: a card dismissed by the first frame of a pan is the same accident
+/// the other way round, and the card has a ✕.
 pub fn pick_building(
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    touch: Res<crate::systems::touch::TouchGestures>,
     egui: Res<EguiManager>,
     mut selection: ResMut<BuildingSelection>,
     facts: Res<BuildingFacts>,
@@ -216,6 +228,10 @@ pub fn pick_building(
     cameras: Query<(&Camera, &GlobalTransform, &GridCell), With<FreeCamera>>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) || keyboard.pressed(KeyCode::ShiftLeft) {
+        return;
+    }
+    // A finger's first tap is not an answer — see the doc above.
+    if touch.touch_click() && !touch.double_tap() {
         return;
     }
     // The click belongs to egui, or to the prim it landed on — see

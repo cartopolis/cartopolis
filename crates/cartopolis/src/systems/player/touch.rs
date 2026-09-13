@@ -69,6 +69,18 @@ const HOLD_SLOP_PTS: f32 = 14.0;
 /// How long the primary finger must stay put before it counts as a right-click.
 const LONG_PRESS_SECS: f32 = 0.55;
 
+/// How long after a tap lifts a second one still counts as a double tap.
+///
+/// Comfortably under [`LONG_PRESS_SECS`], because the two verbs must not be
+/// reachable by the same pair of timings: a finger that dawdles is asking for
+/// the context menu, not for the second half of a double tap.
+const DOUBLE_TAP_SECS: f32 = 0.4;
+
+/// How far apart (points) the two taps may land and still be one double tap.
+/// Wider than [`HOLD_SLOP_PTS`] — a finger lifts and comes back down, and it
+/// does not come back to the same pixel.
+const DOUBLE_TAP_SLOP_PTS: f32 = 44.0;
+
 /// Two-finger metrics below this separation (points) are refused: as the fingers
 /// meet, the pinch ratio and especially the twist angle go to infinity on
 /// sub-pixel noise.
@@ -175,6 +187,27 @@ pub struct TouchGestures {
     press: Option<Press>,
     /// A `Left` release owed to the next frame — see [`emulate_mouse`].
     deferred_release: bool,
+    /// Was the `Left` press `ButtonInput` reports as `just_pressed` **this**
+    /// frame a finger's, and was it the second tap of a double tap?
+    ///
+    /// These are the previous frame's `pending_*`, shifted into view at the top
+    /// of [`recognize_touch_gestures`]. They have to be shifted because the
+    /// press is *written* one frame before `ButtonInput` reports it (see
+    /// [`emulate_mouse`]'s ordering note), and the consumer asking "was that
+    /// click a finger's?" asks on the frame `just_pressed` fires.
+    touch_click: bool,
+    double_tap: bool,
+    /// The same two verdicts about the press written this frame.
+    pending_click: bool,
+    pending_double: bool,
+    /// Where and when the last tap lifted. A tap is a press that stayed put and
+    /// let go before the long press claimed it; a drag or a menu clears it, so
+    /// tap-drag-tap is not a double tap.
+    last_tap: Option<(Vec2, f32)>,
+    /// Seconds since the recogniser started, accumulated from the frame delta.
+    /// Its own clock rather than `Time`'s, so the state machine stays a pure
+    /// function of the frames handed to it.
+    clock: f32,
     /// Has a finger touched the glass at all this session? A latch, never
     /// cleared.
     ///
@@ -200,6 +233,10 @@ struct Press {
     /// Set once the `Left` press has actually been written, so the matching
     /// release can never precede it.
     pressed: bool,
+    /// Set when this press *completed* a double tap. Its lift then records no
+    /// new tap, so a finger drumming on the glass fires the verb on the second
+    /// beat and not on every beat after it.
+    paired: bool,
 }
 
 impl Default for TouchGestures {
@@ -217,6 +254,12 @@ impl Default for TouchGestures {
             primary: None,
             press: None,
             deferred_release: false,
+            touch_click: false,
+            double_tap: false,
+            pending_click: false,
+            pending_double: false,
+            last_tap: None,
+            clock: 0.0,
             ever_touched: false,
         }
     }
@@ -272,6 +315,24 @@ impl TouchGestures {
     pub fn ever(&self) -> bool {
         self.ever_touched
     }
+
+    /// Did this frame's `just_pressed(Left)` come from a finger?
+    ///
+    /// It is per *press*, not per session: a touchscreen laptop driven with a
+    /// mouse answers `false`, so a consumer that asks more of a finger than of a
+    /// cursor does not also ask it of the cursor.
+    pub fn touch_click(&self) -> bool {
+        self.touch_click
+    }
+
+    /// …and was that press the second tap of a double tap?
+    ///
+    /// The finger's answer to "did you mean it?". A single tap is the cheapest
+    /// thing a hand can do by accident — every pan and every pinch begins with
+    /// one — so a verb that opens something over the map asks for two.
+    pub fn double_tap(&self) -> bool {
+        self.double_tap
+    }
 }
 
 /// Recognise this frame's gestures and emulate the mouse from the primary
@@ -285,6 +346,11 @@ pub fn recognize_touch_gestures(
     mut mouse_button: MessageWriter<MouseButtonInput>,
     mut windows: Query<(Entity, &mut Window)>,
 ) {
+    // Last frame's press is the one `ButtonInput` reports this frame, so its
+    // verdicts come into view now — before anything below can write new ones.
+    gestures.touch_click = std::mem::take(&mut gestures.pending_click);
+    gestures.double_tap = std::mem::take(&mut gestures.pending_double);
+
     // A frame with no window at all (shutdown, or a `--shot` run, which has no
     // touchscreen by construction) has nothing to emulate against.
     let Some((window_entity, mut window)) = windows.iter_mut().next() else {
@@ -484,6 +550,7 @@ fn emulate_mouse(
     delta_secs: f32,
 ) -> Emulated {
     let mut out = Emulated::default();
+    gestures.clock += delta_secs;
 
     // A release owed from last frame, paid before anything else may press.
     let paid_release = gestures.deferred_release;
@@ -496,8 +563,18 @@ fn emulate_mouse(
     if let Some(id) = gestures.primary {
         if !fingers.iter().any(|(other, _)| *other == id) {
             gestures.primary = None;
-            if gestures.press.take().is_some_and(|p| p.pressed) {
-                gestures.deferred_release = true;
+            if let Some(lifted) = gestures.press.take() {
+                if lifted.pressed {
+                    gestures.deferred_release = true;
+                }
+                // Remember it as half of a double tap only if it was a tap: a
+                // press that wandered is a drag, one the long press claimed is
+                // a context menu, and one that already closed a pair is spent.
+                // Every other case also *forgets* the tap before it, so
+                // tap-drag-tap cannot pass for two in a row.
+                let was_a_tap =
+                    lifted.strayed <= HOLD_SLOP_PTS && !lifted.long_press_sent && !lifted.paired;
+                gestures.last_tap = was_a_tap.then_some((lifted.at, gestures.clock));
             }
         }
     }
@@ -518,6 +595,7 @@ fn emulate_mouse(
                 strayed: 0.0,
                 long_press_sent: false,
                 pressed: false,
+                paired: false,
             });
         }
     }
@@ -544,7 +622,9 @@ fn emulate_mouse(
     };
     out.cursor = Some(aim);
 
-    let Some(press) = gestures.press.as_mut() else {
+    // A copy, written back on every path out: the double-tap verdict below
+    // reads the rest of `gestures`, which a live `as_mut` borrow would forbid.
+    let Some(mut press) = gestures.press else {
         return out;
     };
     press.held += delta_secs;
@@ -552,6 +632,16 @@ fn emulate_mouse(
 
     if !press.pressed {
         press.pressed = true;
+        gestures.pending_click = true;
+        // Decided on the press rather than on the lift, so the second tap acts
+        // the moment it lands — a verb that waited for the lift would feel
+        // slower than the single tap it replaced.
+        gestures.pending_double = gestures.last_tap.is_some_and(|(was, when)| {
+            gestures.clock - when <= DOUBLE_TAP_SECS
+                && press.at.distance(was) <= DOUBLE_TAP_SLOP_PTS
+        });
+        press.paired = gestures.pending_double;
+        gestures.press = Some(press);
         out.buttons.push((MouseButton::Left, ButtonState::Pressed));
         return out;
     }
@@ -574,6 +664,7 @@ fn emulate_mouse(
         out.buttons
             .push((MouseButton::Right, ButtonState::Released));
     }
+    gestures.press = Some(press);
     out
 }
 
@@ -813,6 +904,176 @@ mod tests {
         emulate_mouse(&mut g, &one(180.0, 200.0), DT);
         let aimed = emulate_mouse(&mut g, &pair(50.0), DT).cursor;
         assert_eq!(aimed, Some(Vec2::new(200.0, 200.0)));
+    }
+
+    // ── the double tap ───────────────────────────────────────────────────
+    //
+    // The verdict is written as `pending_*` and only shifted into the public
+    // `double_tap()` by the system, a frame later — which is the frame
+    // `ButtonInput` reports the press on. These tests read the pending fields
+    // because they drive the state machine directly;
+    // `a_double_tap_is_reported_on_the_frame_the_click_arrives` pins the shift.
+
+    /// Land a finger. The press, and the verdict on it, both happen here.
+    fn land(g: &mut TouchGestures, at: Vec2) {
+        emulate_mouse(g, &[(0, at)], DT);
+    }
+
+    /// One whole tap: land, lift, and let the owed release be paid, so the next
+    /// finger down is free to take the pointer.
+    fn tap(g: &mut TouchGestures, at: Vec2) {
+        land(g, at);
+        for _ in 0..2 {
+            emulate_mouse(g, &[], DT);
+        }
+    }
+
+    #[test]
+    fn two_taps_in_the_same_place_are_a_double_tap() {
+        let mut g = TouchGestures::default();
+        tap(&mut g, Vec2::new(200.0, 300.0));
+        assert!(!g.pending_double, "one tap is never a double tap");
+        // Not the same pixel — a finger that lifts and returns never is.
+        land(&mut g, Vec2::new(206.0, 294.0));
+        assert!(g.pending_click, "still an ordinary emulated press");
+        assert!(g.pending_double);
+    }
+
+    /// And a third tap is not a second double tap, or a finger drumming on the
+    /// glass would fire the verb on every other beat.
+    #[test]
+    fn a_third_tap_starts_over() {
+        let mut g = TouchGestures::default();
+        tap(&mut g, Vec2::new(200.0, 300.0));
+        tap(&mut g, Vec2::new(200.0, 300.0));
+        assert!(g.pending_double, "the second tap");
+        land(&mut g, Vec2::new(200.0, 300.0));
+        assert!(!g.pending_double, "the third");
+    }
+
+    /// The case the whole thing exists for: the first frame of a pan is a press
+    /// too, and two pans in a row must not add up to a double tap.
+    #[test]
+    fn a_drag_is_not_half_of_a_double_tap() {
+        let mut g = TouchGestures::default();
+        emulate_mouse(&mut g, &[(0, Vec2::new(200.0, 300.0))], DT);
+        emulate_mouse(&mut g, &[(0, Vec2::new(200.0, 380.0))], DT);
+        for _ in 0..2 {
+            emulate_mouse(&mut g, &[], DT);
+        }
+        land(&mut g, Vec2::new(200.0, 380.0));
+        assert!(!g.pending_double);
+    }
+
+    /// A long press is the context menu's verb and is not a tap either.
+    #[test]
+    fn a_long_press_is_not_half_of_a_double_tap() {
+        let mut g = TouchGestures::default();
+        let at = Vec2::new(200.0, 300.0);
+        for _ in 0..((LONG_PRESS_SECS / DT) as usize + 2) {
+            emulate_mouse(&mut g, &[(0, at)], DT);
+        }
+        for _ in 0..2 {
+            emulate_mouse(&mut g, &[], DT);
+        }
+        land(&mut g, at);
+        assert!(!g.pending_double);
+    }
+
+    #[test]
+    fn two_taps_far_apart_are_two_taps() {
+        let mut g = TouchGestures::default();
+        tap(&mut g, Vec2::new(100.0, 100.0));
+        land(&mut g, Vec2::new(300.0, 400.0));
+        assert!(!g.pending_double);
+    }
+
+    #[test]
+    fn a_second_tap_that_comes_too_late_is_a_fresh_one() {
+        let mut g = TouchGestures::default();
+        let at = Vec2::new(200.0, 300.0);
+        tap(&mut g, at);
+        for _ in 0..((DOUBLE_TAP_SECS / DT) as usize + 2) {
+            emulate_mouse(&mut g, &[], DT);
+        }
+        land(&mut g, at);
+        assert!(!g.pending_double);
+    }
+
+    /// The wiring, and the off-by-one it would be easy to ship: the press is
+    /// *written* one frame before `ButtonInput` reports it, so the verdict has
+    /// to arrive with the click and not before it. A consumer reads both on the
+    /// same frame — `building_select::pick_building` is the one that does.
+    #[test]
+    fn a_double_tap_is_reported_on_the_frame_the_click_arrives() {
+        use bevy::input::touch::{TouchInput, TouchPhase};
+        use bevy::window::{PrimaryWindow, WindowPlugin};
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::input::InputPlugin,
+            WindowPlugin::default(),
+        ))
+        .init_resource::<TouchGestures>()
+        .init_resource::<UiClaimRegions>()
+        .add_systems(Update, recognize_touch_gestures);
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<PrimaryWindow>>()
+            .single(app.world())
+            .expect("primary window");
+
+        // What a consumer would see each frame — the three booleans
+        // `pick_building` reads together.
+        let mut seen: Vec<(bool, bool, bool)> = Vec::new();
+        let mut frame = |app: &mut App, event: Option<(TouchPhase, Vec2)>| {
+            if let Some((phase, position)) = event {
+                app.world_mut().write_message(TouchInput {
+                    phase,
+                    position,
+                    window,
+                    force: None,
+                    id: 0,
+                });
+            }
+            app.update();
+            let clicked = app
+                .world()
+                .resource::<ButtonInput<MouseButton>>()
+                .just_pressed(MouseButton::Left);
+            let gestures = app.world().resource::<TouchGestures>();
+            seen.push((clicked, gestures.touch_click(), gestures.double_tap()));
+        };
+
+        let at = Vec2::new(200.0, 300.0);
+        frame(&mut app, Some((TouchPhase::Started, at)));
+        frame(&mut app, Some((TouchPhase::Ended, at)));
+        frame(&mut app, None);
+        frame(&mut app, None);
+        frame(&mut app, Some((TouchPhase::Started, at)));
+        frame(&mut app, None);
+        frame(&mut app, None);
+
+        let clicks: Vec<_> = seen.iter().filter(|(clicked, ..)| *clicked).collect();
+        assert_eq!(clicks.len(), 2, "one click per tap: {seen:?}");
+        assert_eq!(
+            *clicks[0],
+            (true, true, false),
+            "the first tap is a finger's, and opens nothing"
+        );
+        assert_eq!(
+            *clicks[1],
+            (true, true, true),
+            "the second is the double tap"
+        );
+        // And the verdict is spent with the click: a later frame must not still
+        // be claiming a press that has already been acted on.
+        assert_eq!(
+            seen.last().copied(),
+            Some((false, false, false)),
+            "{seen:?}"
+        );
     }
 
     // ── the UI's fingers ─────────────────────────────────────────────────

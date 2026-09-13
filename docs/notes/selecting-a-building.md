@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "see through walls", "avatar inside a building", bagviewer]
-updated: 2026-09-11
+triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double tap", "touch", "see through walls", "avatar inside a building", bagviewer]
+updated: 2026-09-13
 ---
 
 # Selecting a building, and seeing into one
@@ -44,6 +44,30 @@ Adding one parameter to `prim_picking` put it over **Bevy's 16-parameter cap**,
 which is a compile error that reads as "`prim_picking` is not a system set". The
 camera-cell / anchor / session trio is a `SystemParam` now (`PrimPickWorld`) — the
 same wall `free_camera::camera_controls` hit when touch input arrived.
+
+## On touch it takes two taps
+
+The emulated mouse presses `Left` on the frame a finger **lands**
+(`systems::touch`, and it has to — a tap can be over in two frames). So can the
+first frame of a pan, of a pinch and of a long press, and all four reach
+`pick_building` as one indistinguishable `just_pressed`. The card was therefore
+opening over the map, with glass on a building nobody had chosen, at the start of
+every pan. Reported 2026-09-13 as "too easy to open on touch"; fixed by asking a
+finger for a **double tap** (`TouchGestures::touch_click` +
+`TouchGestures::double_tap`).
+
+Three things about the shape of that:
+
+- **Only the finger is asked twice.** The gate is per press, not per session, so
+  a mouse — which has a hover and a still hand to say "this one" — still selects
+  on one click, on a touchscreen laptop included.
+- **A single tap is inert, not a deselect.** The accident runs both ways: a card
+  dismissed by the first frame of a pan is the same annoyance. Deselect is the
+  card's ✕, a double tap on empty ground, or a re-anchor.
+- **Nothing else here changed.** A scripted prim is still worked on one tap and
+  the context menu is still the long press — a building is the only click
+  consumer that *opens* something over the map, which is what earns it the extra
+  tap. `docs/notes/touch-input.md` has the mechanism and the frame-shift trap.
 
 ## Roof area and volume are measured, not fetched
 

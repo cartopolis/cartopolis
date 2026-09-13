@@ -1,7 +1,7 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
-updated: 2026-08-16
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
+updated: 2026-09-13
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -152,6 +152,46 @@ steerable. Worse, it gave the one gesture whose meaning is settled across every
 map application there is (pinch = zoom) a different meaning in one mode. The
 verbs moved to on-screen controls instead (`systems::map_osd`, below) and the
 gesture arms were deleted rather than left as a second way to do it.
+
+## A tap is the cheapest thing a hand can do by accident
+
+The emulated `Left` press fires on the frame a finger **lands**, and it has to:
+a tap is over in a few frames, and a bridge that waited for the lift would lose
+every short one. The consequence is that the first frame of a pan, of a pinch
+and of a long press is also a click — so every consumer that acts on
+`just_pressed(Left)` acts on all four.
+
+That was tolerable while the click consumers were small and reversible (pick a
+prim, drop a route pin). `building_select::pick_building` is not: it opens a
+panel over the map and lays glass on a building, and on a phone it went off
+under the thumb at the start of every pan. Reported 2026-09-13 as "the building
+info is too easy to open on touch".
+
+So `TouchGestures` answers two more questions about the press `ButtonInput`
+reports this frame — [`touch_click()`](../../crates/cartopolis/src/systems/player/touch.rs)
+("was it a finger's?") and `double_tap()` ("…and was it the second of a pair?")
+— and the building pick asks for both. Four things about it:
+
+- **It is per press, not per session.** `ever()` already latches "has this
+  session been touched" and is the wrong instrument here: a touchscreen laptop
+  driven with a mouse would inherit the double click, which nobody asked for.
+  A cursor has a hover and a still hand to say "this one"; a finger has neither.
+- **Both verdicts are shifted a frame.** The press is *written* in
+  `emulate_mouse` and reaches `ButtonInput` on the next frame (that ordering is
+  the module's own, and deliberate), so the answer has to arrive **with** the
+  click and not before it. `recognize_touch_gestures` shifts `pending_*` into
+  view at the top of the frame; getting this wrong would gate on the previous
+  press and is invisible in any single-frame test.
+- **A single tap is inert, not a deselect.** The accident works in both
+  directions — a card dismissed by the first frame of a pan is the same
+  annoyance — and the card has a ✕.
+- **A drag, a long press, or a spent pair is not half of a double tap**, so
+  tap-drag-tap and a finger drumming on the glass both fire nothing. The window
+  (`DOUBLE_TAP_SECS` = 0.4 s) sits under `LONG_PRESS_SECS` = 0.55 s on purpose:
+  the two verbs must not be reachable by the same pair of timings.
+
+Nothing else asks for the double tap yet. It is a gate to reach for when a
+click consumer *opens* something over the map, not a new default.
 
 ## The on-screen controls, and why Earth is the touch camera
 
