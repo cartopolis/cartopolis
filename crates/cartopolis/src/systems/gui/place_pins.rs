@@ -260,7 +260,8 @@ pub(crate) fn place_delta(
         // left at 0 over relief hangs in the air above its own hillside, or sinks
         // into it — and the pin is *pointing at* a place, so where its tip lands is
         // the whole feature.
-        let delta = DVec3::new(wx, f64::from(terrain.at(wx as f32, wz as f32)), wz) - cam_world;
+        let delta =
+            DVec3::new(wx, f64::from(terrain.ground_at(wx as f32, wz as f32)), wz) - cam_world;
         (delta.x.hypot(delta.z) < MAX_FLAT_RANGE_M).then_some(delta)
     }
 }

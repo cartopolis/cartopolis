@@ -534,7 +534,7 @@ pub fn update_transit_vehicles(
     for &(_, id, pos, yaw, transport, line) in &target {
         // On the measured ground: a bus is a thing standing in the street, and the
         // street has moved.
-        let ground = terrain.at(pos.x, pos.y);
+        let ground = terrain.ground_at(pos.x, pos.y);
         let (cell, local) = grid.translation_to_grid(Vec3::new(pos.x, ground, pos.y).as_dvec3());
         let translation = local + Vec3::new(0.0, BUS_HEIGHT * 0.5, 0.0);
         let rotation = Quat::from_rotation_y(yaw);

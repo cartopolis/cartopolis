@@ -840,6 +840,28 @@ pub struct ShotMetrics {
     /// ~2 m), and a field with relief in it that something downstream isn't using.
     pub terrain_ready: bool,
     pub terrain_relief_m: f32,
+    /// Whether the half-metre tier under the camera has baked
+    /// (`terrain::update_fine_terrain`), and what it actually samples at.
+    ///
+    /// Two fields because they answer different questions, and the second catches a
+    /// silent regression: a capture reporting `fine_terrain_ready=true` with
+    /// `fine_terrain_sample_m` near 25 has a bug no picture on a software rasteriser
+    /// would show.
+    pub fine_terrain_ready: bool,
+    pub fine_terrain_sample_m: f32,
+    /// Registered water bodies loaded (`systems::water_levels`), the terrain samples the
+    /// two bakes rewrote to a measured level, and how far below the world's zero the
+    /// deepest registered water sits.
+    ///
+    /// Four numbers because they fail in different places, and telling those apart from
+    /// outside is otherwise impossible: `water_rings > 0` with `water_carved_coarse == 0`
+    /// is the register arriving but the carve not reaching the field the basemap is
+    /// displaced by; a large `water_drop_m` with nothing visible is the carve working and
+    /// something downstream hiding it. Finding that distinction by eye cost a day.
+    pub water_rings: usize,
+    pub water_carved_coarse: usize,
+    pub water_carved_fine: usize,
+    pub water_drop_m: f32,
     /// The largest single frame's worth of GPU uploads over the whole run, in kB
     /// (`systems::upload_meter`).
     ///
@@ -981,7 +1003,8 @@ lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
-terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
+terrain_ready,terrain_relief_m,fine_terrain_ready,fine_terrain_sample_m,water_rings,\
+water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
 gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
 fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
 worker_jobs,worker_busy_ms,worker_wait_ms,worker_split";
@@ -1053,6 +1076,8 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("globe_texture_mb", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
+    ("fine_terrain_sample_m", 2),
+    ("water_drop_m", 2),
     ("shaft_volume_m", 1),
     ("fetch_mb", 2),
 ];
@@ -2526,6 +2551,7 @@ pub struct ShotReadouts<'w, 's> {
     vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    water_levels: Res<'w, crate::systems::water_levels::WaterLevels>,
     furniture: Res<'w, crate::systems::street_furniture::FurnitureLod>,
     surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
     osm_buildings: Res<'w, crate::systems::osm_buildings::OsmBuildings>,
@@ -3048,6 +3074,16 @@ pub fn drive_capture(
             height_patches: readouts.height.fetched,
             terrain_ready: readouts.terrain.is_ready(),
             terrain_relief_m: readouts.terrain.range_m.1 - readouts.terrain.range_m.0,
+            fine_terrain_ready: readouts.terrain.fine_ready(),
+            fine_terrain_sample_m: if readouts.terrain.fine_ready() {
+                crate::systems::terrain::FINE_SAMPLE_M
+            } else {
+                0.0
+            },
+            water_rings: readouts.water_levels.len(),
+            water_carved_coarse: readouts.terrain.carved_coarse,
+            water_carved_fine: readouts.terrain.carved_fine,
+            water_drop_m: readouts.terrain.water_drop_m(),
             upload_peak_kb: readouts.uploads.peak_kb(),
             upload_peak_asset_kb: readouts.uploads.peak_asset_kb(),
             gpu_resident_kb: readouts.uploads.resident_kb(),
@@ -3146,6 +3182,12 @@ pub fn drive_capture(
                     height_patches = m.height_patches,
                     terrain_ready = m.terrain_ready,
                     terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
+                    fine_terrain_ready = m.fine_terrain_ready,
+                    fine_terrain_sample_m = format!("{:.2}", m.fine_terrain_sample_m),
+                    water_rings = m.water_rings,
+                    water_carved_coarse = m.water_carved_coarse,
+                    water_carved_fine = m.water_carved_fine,
+                    water_drop_m = format!("{:.2}", m.water_drop_m),
                     upload_peak_kb = m.upload_peak_kb,
                     upload_peak_asset_kb = m.upload_peak_asset_kb,
                     gpu_resident_kb = m.gpu_resident_kb,
@@ -3638,6 +3680,12 @@ mod tests {
             avatar_rendered: 0,
             ground_m: f32::NAN,
             height_patches: 0,
+            fine_terrain_ready: false,
+            fine_terrain_sample_m: 0.0,
+            water_rings: 0,
+            water_carved_coarse: 0,
+            water_carved_fine: 0,
+            water_drop_m: 0.0,
             terrain_ready: false,
             terrain_relief_m: 0.0,
             upload_peak_kb: 0,

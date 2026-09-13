@@ -1105,7 +1105,7 @@ pub fn drive_traffic(
         };
         let facing = car.heading;
 
-        let y = terrain.at(pos.x, pos.y) + CAR_RIDE_HEIGHT;
+        let y = terrain.ground_at(pos.x, pos.y) + CAR_RIDE_HEIGHT;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;

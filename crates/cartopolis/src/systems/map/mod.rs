@@ -60,6 +60,7 @@ pub mod tile_loader;
 pub mod tile_source;
 pub mod vegetation;
 pub mod water;
+pub mod water_levels;
 pub mod weather;
 // The ground's answer to the rain the sky already draws.
 pub mod wet_surfaces;

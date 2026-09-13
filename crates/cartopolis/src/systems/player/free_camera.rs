@@ -1929,7 +1929,7 @@ pub fn camera_controls(
 
             // Prevent going below ground — including the measured ground, or flying
             // low over the Veluwe puts the camera inside the hill.
-            let ground_height = terrain.at(
+            let ground_height = terrain.ground_at(
                 camera_cell.x as f32 * WORLD_CELL_EDGE + camera_transform.translation.x,
                 camera_cell.z as f32 * WORLD_CELL_EDGE + camera_transform.translation.z,
             );

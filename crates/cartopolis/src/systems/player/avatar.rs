@@ -698,7 +698,7 @@ fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
 /// the resting height — not a half-height offset.
 ///
 /// Public because collision's snap-out backstop has to reconstruct the same
-/// ground the movement path stands on (`GROUND_HEIGHT + terrain.at(..)`), and a
+/// ground the movement path stands on (`GROUND_HEIGHT + terrain.ground_at(..)`), and a
 /// second copy of the number there is exactly the drift CLAUDE.md's
 /// "standing height comes from THREE places" note is about.
 pub const GROUND_HEIGHT: f32 = 0.05;
@@ -1795,7 +1795,7 @@ pub fn smooth_online_avatar_display(
             is_stalled(avatar_state.snapshot_age),
             dt,
         );
-        avatar_state.terrain_lift = terrain.at(flat.x, flat.z);
+        avatar_state.terrain_lift = terrain.ground_at(flat.x, flat.z);
         // The storey, on top of the ground. Sampled from `flat` — the reconciled
         // sim position, which is the frame `interiors` builds its rooms in and the
         // frame `send_network_intent` resolves collision in — so the floor the
@@ -2095,7 +2095,7 @@ pub fn handle_avatar_movement(
         // walls of every upper storey stop being walls.
         let airborne = transform.translation.y
             > GROUND_HEIGHT
-                + terrain.at(transform.translation.x, transform.translation.z)
+                + terrain.ground_at(transform.translation.x, transform.translation.z)
                 + avatar_state.floor_lift
                 + AIRBORNE_EPS;
         if !airborne && layers.buildings_enabled && !colliders.is_empty() {
@@ -2138,7 +2138,7 @@ pub fn handle_avatar_movement(
         delta_time,
     );
     let ground_y =
-        GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z) + floor;
+        GROUND_HEIGHT + terrain.ground_at(transform.translation.x, transform.translation.z) + floor;
     if avatar_state.is_flying {
         // Ramped, not switched — `motion::step_fly_vertical`, the same curve the
         // sim runs and `send_network_intent` predicts. Descent stops asking once

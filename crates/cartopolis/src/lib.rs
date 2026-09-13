@@ -1971,6 +1971,7 @@ fn run_client() {
         .init_resource::<systems::tall_structures::TallStructures>()
         .init_resource::<systems::collision::BuildingColliders>()
         .init_resource::<systems::height::HeightLayer>()
+        .init_resource::<systems::water_levels::WaterLevels>()
         .init_resource::<systems::terrain::TerrainField>()
         .insert_resource({
             // `--height` and `--aerial` are the only way into those two layers in a
@@ -2461,9 +2462,25 @@ fn run_client() {
                 // Terrain relief: one measured box per anchor, baked into the field
                 // every ground-attached system samples. Asks *before* the queue is
                 // polled so a fetch it starts is dispatched the same frame.
+                // The measured water levels the two terrain bakes carve with. Before
+                // them, so a cell that lands is folded into the same frame's bake
+                // rather than costing an extra re-bake of the whole field.
+                systems::water_levels::update_water_levels
+                    .after(systems::map_stream::apply_reanchor),
                 systems::terrain::update_terrain_field
                     .after(systems::map_stream::apply_reanchor)
+                    .after(systems::water_levels::update_water_levels)
                     .before(systems::height::poll_height_layer),
+                // The half-metre tier under the camera. After the coarse field, whose
+                // datum it borrows and whose answer it fades into at its rim.
+                systems::terrain::update_fine_terrain
+                    .after(systems::terrain::update_terrain_field)
+                    .after(systems::water_levels::update_water_levels)
+                    .after(systems::terrain::apply_fine_terrain)
+                    .before(systems::height::poll_height_layer),
+                // Install a bake that landed. Before the ask, so a box that finished
+                // this frame is the one the ask compares against.
+                systems::terrain::apply_fine_terrain.after(systems::map_stream::apply_reanchor),
             ),
             systems::map_stream::init_map_stream,
             // Re-anchor requests (from teleports / globe descent) drop the old

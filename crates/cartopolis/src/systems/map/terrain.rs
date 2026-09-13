@@ -52,6 +52,8 @@
 
 use bevy::prelude::*;
 
+use crate::components::FreeCamera;
+use crate::grid::WORLD_CELL_EDGE;
 use crate::systems::data_layers::DataLayers;
 use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
@@ -74,6 +76,38 @@ const TERRAIN_GRID: usize = 256;
 /// pays full geometry price for them. [`displaced_grid`]'s callers size themselves
 /// off this rather than off a constant chosen for one zoom level.
 pub const TERRAIN_SAMPLE_M: f32 = TERRAIN_HALF_M * 2.0 / (TERRAIN_GRID as f32 - 1.0);
+
+/// Half-extent of the **fine tier** in world metres (a 512 m box), and its grid.
+///
+/// 0.5 m is AHN's own sampling, and the reason to want it is that 25 m cannot express
+/// what a person standing on the ground is looking at. Measured on the Zuiderhaven
+/// 2026-09-11: at half a metre a Groningen canal is a clean 10.5 m run of no-data
+/// between two distinct bank levels; at 25 m it is one sample.
+///
+/// The size is a memory and a citizenship decision, not a quality one. One WCS request
+/// answers a 1024² box (1.5 MB on the wire, 4 MB decoded, 0.5 s measured); the *whole*
+/// coarse box at half a metre would be 12800², 625 MB and 144 requests. So this is a
+/// tier that follows the camera, never a replacement for the field.
+pub const FINE_HALF_M: f32 = 256.0;
+const FINE_GRID: usize = 1024;
+
+/// Ground metres between adjacent fine samples (~0.5 m).
+pub const FINE_SAMPLE_M: f32 = FINE_HALF_M * 2.0 / (FINE_GRID as f32 - 1.0);
+
+/// How far the camera may drift from the fine tier's centre before a new box is
+/// fetched. The centre is snapped to this lattice, which *is* the hysteresis: the
+/// wanted box only changes when the camera crosses a line, so a camera sitting still
+/// asks for nothing and walking back onto a box re-uses it.
+const FINE_RECENTRE_M: f32 = 96.0;
+
+/// Width of the ring, in world metres, over which the fine tier fades into the coarse
+/// field at its own boundary.
+///
+/// Not the [`edge_taper`] the coarse field uses, and the difference matters: that one
+/// fades to *flat*, because outside the coarse field there are no measurements at all.
+/// Here there are — the coarse field covers this ground too — so the fine tier fades to
+/// **the coarse answer**, and the two agree at the rim instead of meeting at a step.
+const FINE_BLEND_M: f32 = 24.0;
 
 /// Fraction of the half-extent held at full strength before the edge taper begins.
 const TAPER_START: f32 = 0.82;
@@ -101,6 +135,27 @@ pub struct TerrainSnapshot {
     samples: std::sync::Arc<Vec<f32>>,
     /// Half-extent the samples span, in world metres.
     half_m: f32,
+    /// Samples per side. Carried rather than read off [`TERRAIN_GRID`], because there
+    /// is now more than one resolution: the coarse field is 256² over 6.4 km and the
+    /// fine tier is [`FINE_GRID`]² over [`FINE_HALF_M`]. A snapshot that took its row
+    /// stride from a module constant would silently index the other one's samples as
+    /// if they were its own.
+    grid: usize,
+    /// Centre of the box, in the anchored world-XZ frame. `(0, 0)` for the coarse
+    /// field, which is centred on the map anchor by construction; the fine tier
+    /// follows the camera and is not.
+    centre: Vec2,
+}
+
+/// One finished fine-tier bake, on its way back from a worker.
+///
+/// `samples` is `None` for a box AHN has no measurement anywhere in — an answer, and
+/// one the tier has to remember rather than re-ask.
+struct FineBake {
+    centre: Vec2,
+    gen: u32,
+    water_rev: u32,
+    samples: Option<(Vec<f32>, usize)>,
 }
 
 /// The measured ground near the anchor, as a sampled field.
@@ -135,6 +190,57 @@ pub struct TerrainField {
     /// Lowest and highest sample, metres relative to the datum — the field's own
     /// answer to "is there any relief here at all".
     pub range_m: (f32, f32),
+    /// Water-ring revision the coarse field was baked against. The rings land *after*
+    /// the field they carve, so "answered" is a pair: re-bake when either the anchor or
+    /// the set of rings moves. Without the second half the first field over a city is
+    /// the only one that ever exists, and it is the one baked before any water arrived.
+    answered_water_rev: Option<u32>,
+    /// The measured water levels the bakes carved with, kept so the surfaces can be
+    /// drawn against the same numbers. One build per bake rather than one per mesh.
+    water: crate::systems::water_levels::WaterLevelField,
+    /// Samples the last coarse and fine bakes actually rewrote to a water level.
+    ///
+    /// Reported in `--dump-state`, and the reason is a wrong turn worth not taking
+    /// twice: `terrain_relief_m` was read as evidence the carve had done nothing, and
+    /// it is not — it is the range over the whole 6.4 km box, which already spans tens
+    /// of metres of the Hondsrug, so a canal cut to −4 m never widens it. "Did the
+    /// carve write anything" has to be counted where it happens.
+    pub carved_coarse: usize,
+    pub carved_fine: usize,
+    /// The half-metre tier around the camera ([`FINE_HALF_M`]), empty until one lands.
+    /// Read through [`TerrainField::ground_at`] and nowhere else.
+    fine: TerrainSnapshot,
+    /// Centre of the box the fine tier has *answered* for, so a camera sitting still
+    /// costs a comparison rather than a bake.
+    fine_wanted: Option<Vec2>,
+    /// Map-anchor generation the fine tier's centre is expressed in.
+    ///
+    /// Not redundant with `answered_gen`. The coarse field is centred on the anchor by
+    /// construction, so a re-anchor re-fetches it and the centre is still `(0,0)`; the
+    /// fine tier carries an *offset* from that anchor, and a re-anchor moves the origin
+    /// those metres are counted from. Without this the tier would keep describing
+    /// ground a few hundred metres from where it claims to be — silently, because it
+    /// would still be perfectly smooth.
+    fine_gen: Option<u32>,
+    /// Water-ring revision the fine tier was baked against; the rings land after it too.
+    fine_water_rev: Option<u32>,
+    /// The bake in flight, and where its answer lands.
+    ///
+    /// On `platform::workers` rather than inline, for the reason the grass mask is:
+    /// resampling 1024² samples and closing their holes is ~30 million operations,
+    /// which is a frame or more even on a desktop. The tier re-centres every ~96 m of
+    /// walking, so inline this would be a visible hitch every half-minute on foot — and
+    /// a long frame is the documented way to lose the device on the hardware this has
+    /// to run on.
+    fine_job: Option<(Vec2, u32)>,
+    fine_sink: std::sync::Arc<std::sync::Mutex<Option<FineBake>>>,
+    /// Bumped whenever the fine tier changes.
+    ///
+    /// Deliberately **not** `revision`. That one is the retear signal: sixteen systems
+    /// answer it by rebuilding every map cell, both building streamers, the interiors
+    /// and the route line. The fine tier re-centres every ~96 m of walking, so folding
+    /// it into `revision` would retear the whole city about every minute on foot.
+    pub fine_revision: u32,
 }
 
 impl TerrainField {
@@ -144,13 +250,110 @@ impl TerrainField {
         self.ground.clone()
     }
 
+    /// Ground height at a point, preferring the half-metre tier where it reaches.
+    ///
+    /// **For point consumers only** — the avatar's footing, the collision eject, a car
+    /// on a road, a pin over the map. Anything that *bakes a mesh* must keep calling
+    /// [`TerrainSnapshot::at`] on the coarse field, and that is not a style preference:
+    /// subdivision is sized off [`TERRAIN_SAMPLE_M`] ([`MAX_GROUND_EDGE_M`],
+    /// `map_stream::relief_divisions`), so a mesh with a vertex every 24 m that sampled
+    /// a half-metre field would alias it — and would change shape every time the tier
+    /// re-centres, which is a 25 m grid twitching as you walk.
+    ///
+    /// Same contract as `at`: `0.0` when nothing is known, so a caller adds it
+    /// unconditionally.
+    #[must_use]
+    pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
+        let coarse = self.ground.at(wx, wz);
+        if !self.fine.is_ready() {
+            return coarse;
+        }
+        let w = self.fine.rim_weight(wx, wz);
+        if w <= 0.0 {
+            return coarse;
+        }
+        coarse + (self.fine.at(wx, wz) - coarse) * w
+    }
+
+    /// Whether the half-metre tier currently carries measurements.
+    #[must_use]
+    pub fn fine_ready(&self) -> bool {
+        self.fine.is_ready()
+    }
+
+    /// The measured surface height of the water at a point, in the world's own frame,
+    /// or `None` where no registered body covers it.
+    ///
+    /// Deliberately *not* the ground under it: the ground there has been carved to this
+    /// minus a bed (`water_levels::bed_below_surface_m`), so a sheet laid on the ground
+    /// would be half a metre under its own canal.
+    #[must_use]
+    pub fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
+        self.water
+            .level_near(wx, wz, crate::systems::water_levels::JOIN_TOLERANCE_M)
+            .map(|nap| nap - self.datum_m)
+    }
+
+    /// Whether any registered water is loaded at all.
+    #[must_use]
+    pub fn has_water_levels(&self) -> bool {
+        !self.water.is_empty()
+    }
+
+    /// How far below the world's own zero the deepest registered water surface sits, in
+    /// metres. `0.0` with nothing loaded.
+    ///
+    /// Paired with `carved_*` it separates "the register says nothing here" from "it
+    /// says four metres and nothing moved".
+    #[must_use]
+    pub fn water_drop_m(&self) -> f32 {
+        self.water
+            .lowest_nap()
+            .map_or(0.0, |nap| self.datum_m - nap)
+    }
+
     fn clear(&mut self) {
+        self.clear_fine();
         if !self.is_ready() {
             return;
         }
         self.ground = TerrainSnapshot::default();
         self.range_m = (0.0, 0.0);
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Drop the fine tier's samples, keeping the record of which box was asked for.
+    ///
+    /// The split from [`clear_fine`](Self::clear_fine) is not tidiness. A box AHN has
+    /// nothing for — a lake, the far side of the border — is an *answer*, and one this
+    /// has to remember: forgetting it here would re-queue the same request and re-bake a
+    /// million samples on the next frame, and every frame after, for as long as the
+    /// camera stood there. The coarse field carries a scar from exactly this bug (see
+    /// `answered_gen`).
+    fn drop_fine_samples(&mut self) {
+        if !self.fine.is_ready() {
+            return;
+        }
+        self.fine = TerrainSnapshot::default();
+        self.fine_revision = self.fine_revision.wrapping_add(1);
+    }
+
+    /// Drop the fine tier *and* forget what was asked for. For the cases where the
+    /// question itself stopped being meaningful: the layer switched off, the coarse
+    /// field it borrows a datum from going away, and a re-anchor.
+    fn clear_fine(&mut self) {
+        self.fine_wanted = None;
+        self.fine_gen = None;
+        self.fine_water_rev = None;
+        // Abandon whatever is on a worker: it measures ground in a frame that no longer
+        // exists. The job still runs and still writes to the sink — nothing can cancel a
+        // queued closure — so the sink is emptied here and the result is matched against
+        // the live generation when it is drained.
+        self.fine_job = None;
+        if let Ok(mut g) = self.fine_sink.lock() {
+            *g = None;
+        }
+        self.drop_fine_samples();
     }
 }
 
@@ -179,8 +382,9 @@ impl TerrainSnapshot {
         if self.samples.is_empty() {
             return 0.0;
         }
-        let n = TERRAIN_GRID;
+        let n = self.grid;
         let span = self.half_m * 2.0;
+        let (wx, wz) = (wx - self.centre.x, wz - self.centre.y);
         // Sample coordinates, in grid cells from the south-west corner.
         let fx = (wx + self.half_m) / span * (n - 1) as f32;
         let fz = (wz + self.half_m) / span * (n - 1) as f32;
@@ -196,6 +400,30 @@ impl TerrainSnapshot {
         a + (b - a) * tz
     }
 
+    /// How much this snapshot should be trusted at a world-XZ point: 1 through the
+    /// middle, easing to 0 over [`FINE_BLEND_M`] at the boundary, and 0 outside.
+    ///
+    /// Smoothstepped rather than linear for the reason [`edge_taper`] is: a linear ramp
+    /// meets full strength at a crease, and on a blend between two *different
+    /// measurements* of the same ground that crease is a visible ridge running round a
+    /// square.
+    #[must_use]
+    fn rim_weight(&self, wx: f32, wz: f32) -> f32 {
+        if self.samples.is_empty() || self.half_m <= 0.0 {
+            return 0.0;
+        }
+        let d = (wx - self.centre.x).abs().max((wz - self.centre.y).abs());
+        let inner = (self.half_m - FINE_BLEND_M).max(0.0);
+        if d <= inner {
+            return 1.0;
+        }
+        if d >= self.half_m {
+            return 0.0;
+        }
+        let t = ((d - inner) / (self.half_m - inner)).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    }
+
     /// Surface normal at a world-XZ point, from the field's own slope (central
     /// differences over one grid step). `+Y` on flat ground and wherever the field
     /// is absent.
@@ -204,7 +432,7 @@ impl TerrainSnapshot {
         if self.samples.is_empty() {
             return Vec3::Y;
         }
-        let d = self.half_m * 2.0 / (TERRAIN_GRID - 1) as f32;
+        let d = self.half_m * 2.0 / (self.grid - 1) as f32;
         let dx = self.at(wx + d, wz) - self.at(wx - d, wz);
         let dz = self.at(wx, wz + d) - self.at(wx, wz - d);
         Vec3::new(-dx, 2.0 * d, -dz).normalize()
@@ -232,6 +460,7 @@ pub fn update_terrain_field(
     mut height: ResMut<HeightLayer>,
     stream: Res<MapStream>,
     dl: Res<DataLayers>,
+    levels: Res<crate::systems::water_levels::WaterLevels>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -241,10 +470,16 @@ pub fn update_terrain_field(
         // The layer can come back on without the anchor moving, so this is not an
         // answer for the current generation — leave `answered_gen` alone and let
         // the bake run when it does.
+        // Both halves of the answer, or switching the layer back on would find the
+        // water half still satisfied.
         field.answered_gen = None;
+        field.answered_water_rev = None;
         return;
     }
-    if field.answered_gen == Some(stream.anchor_generation) {
+    let water_rev = levels.revision;
+    if field.answered_gen == Some(stream.anchor_generation)
+        && field.answered_water_rev == Some(water_rev)
+    {
         return;
     }
 
@@ -254,12 +489,15 @@ pub fn update_terrain_field(
     let Some(patch) = height.patch(req) else {
         return;
     };
-    let Some((samples, datum)) = bake(patch, anchor, TERRAIN_HALF_M) else {
+    let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
+    field.water = water.clone();
+    let Some((samples, datum, carved)) = bake(patch, anchor, TERRAIN_HALF_M, &water) else {
         // A box AHN has nothing at all for (all sea, or over the border): stay
         // flat rather than re-asking every frame — `HeightLayer` caches the patch,
         // so this costs one comparison from here on. Recording the generation is
         // what makes that true; see `answered_gen`.
         field.answered_gen = Some(stream.anchor_generation);
+        field.answered_water_rev = Some(water_rev);
         field.clear();
         return;
     };
@@ -269,8 +507,12 @@ pub fn update_terrain_field(
     field.ground = TerrainSnapshot {
         samples: std::sync::Arc::new(samples),
         half_m: TERRAIN_HALF_M,
+        grid: TERRAIN_GRID,
+        centre: Vec2::ZERO,
     };
     field.answered_gen = Some(stream.anchor_generation);
+    field.answered_water_rev = Some(water_rev);
+    field.carved_coarse = carved;
     field.datum_m = datum;
     field.range_m = (lo, hi);
     field.revision = field.revision.wrapping_add(1);
@@ -313,7 +555,12 @@ fn field_request(anchor: (f64, f64, u32), half: f32) -> HeightRequest {
 /// anchor's own ground and taper the edge to zero.
 ///
 /// `None` when the patch has no usable sample under the field at all.
-fn bake(patch: &HeightPatch, anchor: (f64, f64, u32), half: f32) -> Option<(Vec<f32>, f32)> {
+fn bake(
+    patch: &HeightPatch,
+    anchor: (f64, f64, u32),
+    half: f32,
+    water: &crate::systems::water_levels::WaterLevelField,
+) -> Option<(Vec<f32>, f32, usize)> {
     let n = TERRAIN_GRID;
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
@@ -349,6 +596,13 @@ fn bake(patch: &HeightPatch, anchor: (f64, f64, u32), half: f32) -> Option<(Vec<
         median_finite(&raw)?
     };
 
+    // The same carve the fine tier gets, and it matters here for a different reason:
+    // this is the field the basemap clipmap is displaced by
+    // (`map_stream::apply_terrain_to_tiles`), so without it the ground runs flat across
+    // a canal the water sheet has just dropped into. At 25 m a city canal is about one
+    // sample wide, so what this buys is a shallow dip rather than a trench — the tier
+    // that can express the banks is the fine one.
+    let carved = carve_water(&mut raw, n, half, Vec2::ZERO, water);
     fill_holes(&mut raw, n);
     let mut samples = vec![0.0f32; n * n];
     for z in 0..n {
@@ -358,7 +612,260 @@ fn bake(patch: &HeightPatch, anchor: (f64, f64, u32), half: f32) -> Option<(Vec<
             samples[z * n + x] = h * edge_taper(x, z, n);
         }
     }
-    Some((samples, datum))
+    Some((samples, datum, carved))
+}
+
+/// World-XZ → RD metres over a small box, as an affine map.
+///
+/// The coarse bake runs `wgs84_to_rd` per sample and says so — "genuinely is per
+/// sample" — which is affordable at 65,536 samples and is not at a million. The
+/// polynomial is smooth, and over a box this size it is *linear*: sampled at the centre
+/// and differenced 100 m either way, the worst error over a 512 m box is **15 mm**
+/// anywhere in the Netherlands (measured 2026-09-11, pinned by
+/// `the_affine_rd_map_is_exact_enough_for_half_metre_samples`). Against a half-metre
+/// sample spacing that is 3 % of a cell.
+#[derive(Clone, Copy)]
+struct RdAffine {
+    origin: [f64; 2],
+    per_x: [f64; 2],
+    per_z: [f64; 2],
+}
+
+impl RdAffine {
+    /// Fit about `centre`, a point in the anchored world-XZ frame.
+    fn fit(anchor: (f64, f64, u32), centre: Vec2) -> Self {
+        // Wide enough that the difference is not dominated by the polynomial's own
+        // rounding, small enough to stay in the linear regime.
+        const D: f64 = 100.0;
+        let at = |wx: f64, wz: f64| -> [f64; 2] {
+            let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
+            wgs84_to_rd(lat, lng)
+        };
+        let (cx, cz) = (f64::from(centre.x), f64::from(centre.y));
+        let origin = at(cx, cz);
+        let (xp, xm) = (at(cx + D, cz), at(cx - D, cz));
+        let (zp, zm) = (at(cx, cz + D), at(cx, cz - D));
+        Self {
+            origin,
+            per_x: [(xp[0] - xm[0]) / (2.0 * D), (xp[1] - xm[1]) / (2.0 * D)],
+            per_z: [(zp[0] - zm[0]) / (2.0 * D), (zp[1] - zm[1]) / (2.0 * D)],
+        }
+    }
+
+    /// `dx`/`dz` are metres from the centre this was fitted about.
+    fn at(&self, dx: f64, dz: f64) -> [f64; 2] {
+        [
+            self.origin[0] + self.per_x[0] * dx + self.per_z[0] * dz,
+            self.origin[1] + self.per_x[1] * dx + self.per_z[1] * dz,
+        ]
+    }
+}
+
+/// The RD box to ask AHN for, to cover the fine tier's world square.
+///
+/// Axis-aligned in RD around a square that is not, so it is a little larger than the
+/// square — the two frames differ by the meridian convergence, under a degree in the
+/// Netherlands. Corners *and* edge midpoints, for the reason [`field_request`] gives.
+fn fine_request(anchor: (f64, f64, u32), centre: Vec2) -> HeightRequest {
+    let map = RdAffine::fit(anchor, centre);
+    let h = f64::from(FINE_HALF_M);
+    let mut min = [f64::MAX, f64::MAX];
+    let mut max = [f64::MIN, f64::MIN];
+    for dz in [-h, 0.0, h] {
+        for dx in [-h, 0.0, h] {
+            let rd = map.at(dx, dz);
+            min = [min[0].min(rd[0]), min[1].min(rd[1])];
+            max = [max[0].max(rd[0]), max[1].max(rd[1])];
+        }
+    }
+    HeightRequest {
+        model: HeightModel::Terrain,
+        min,
+        max,
+        grid: FINE_GRID as u32,
+    }
+}
+
+/// Resample a measured patch into the fine tier's world-XZ grid.
+///
+/// Two things differ from [`bake`] and both are deliberate. The datum is **passed in**
+/// rather than derived: the tier has to be expressed against the same zero as the
+/// coarse field it blends into, and a tier that picked its own centre sample would step
+/// by that difference at the rim. And there is no [`edge_taper`] — the fade is
+/// [`TerrainSnapshot::rim_weight`], applied at lookup against the coarse answer rather
+/// than baked toward flat.
+///
+/// `None` when the box holds no measurement at all.
+fn bake_fine(
+    patch: &HeightPatch,
+    anchor: (f64, f64, u32),
+    centre: Vec2,
+    datum: f32,
+    water: &crate::systems::water_levels::WaterLevelField,
+) -> Option<(Vec<f32>, usize)> {
+    let n = FINE_GRID;
+    let map = RdAffine::fit(anchor, centre);
+    let step = f64::from(FINE_HALF_M) * 2.0 / (n - 1) as f64;
+    let mut raw = vec![f32::NAN; n * n];
+    let mut any = false;
+    for z in 0..n {
+        let dz = -f64::from(FINE_HALF_M) + z as f64 * step;
+        for x in 0..n {
+            let dx = -f64::from(FINE_HALF_M) + x as f64 * step;
+            if let Some(v) = patch.at(map.at(dx, dz)) {
+                raw[z * n + x] = v;
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    let carved = carve_water(&mut raw, n, FINE_HALF_M, centre, water);
+    fill_holes_unbounded(&mut raw, n);
+    Some((
+        raw.into_iter()
+            .map(|v| if v.is_finite() { v - datum } else { 0.0 })
+            .collect(),
+        carved,
+    ))
+}
+
+/// Install a finished fine-tier bake.
+///
+/// Separate from the system that asks for it so the ask is never blocked on the answer,
+/// and ordered before it so a box that lands this frame is installed this frame.
+pub fn apply_fine_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStream>) {
+    let Some(done) = field.fine_sink.lock().ok().and_then(|mut g| g.take()) else {
+        return;
+    };
+    // A result from before a re-anchor measures ground in a frame that has moved.
+    // Dropping it silently is right: `clear_fine` has already forgotten the ask, so the
+    // next frame requests the box again in the new frame's coordinates.
+    if done.gen != stream.anchor_generation {
+        return;
+    }
+    field.fine_job = None;
+    // Answered, whether or not there was anything there. Recording it for the no-data
+    // case is what stops a lake or a border box from re-baking a million samples every
+    // frame for the rest of the session.
+    field.fine_wanted = Some(done.centre);
+    field.fine_gen = Some(done.gen);
+    field.fine_water_rev = Some(done.water_rev);
+    let Some((samples, carved)) = done.samples else {
+        field.drop_fine_samples();
+        return;
+    };
+    field.carved_fine = carved;
+    field.fine = TerrainSnapshot {
+        samples: std::sync::Arc::new(samples),
+        half_m: FINE_HALF_M,
+        grid: FINE_GRID,
+        centre: done.centre,
+    };
+    field.fine_revision = field.fine_revision.wrapping_add(1);
+    tracing::debug!(
+        centre_x = done.centre.x,
+        centre_z = done.centre.y,
+        sample_m = FINE_SAMPLE_M,
+        carved,
+        "fine terrain tier baked"
+    );
+}
+
+/// Keep the half-metre tier under the camera.
+///
+/// Gated on the coarse field being ready, because the tier borrows that field's datum
+/// and fades into its answer — without it there is nothing to be relative *to*.
+///
+/// The centre is snapped to a [`FINE_RECENTRE_M`] lattice rather than tracked against a
+/// drift threshold. That is the whole hysteresis: the wanted box only changes when the
+/// camera crosses a lattice line, so a camera jittering on the spot asks for nothing,
+/// and a cached box is re-used exactly when you walk back onto it. The camera is never
+/// more than ~68 m from the centre, leaving ≥188 m of measured ground in every
+/// direction.
+pub fn update_fine_terrain(
+    mut field: ResMut<TerrainField>,
+    mut height: ResMut<HeightLayer>,
+    stream: Res<MapStream>,
+    dl: Res<DataLayers>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    levels: Res<crate::systems::water_levels::WaterLevels>,
+    camera: Query<(&big_space::prelude::GridCell, &Transform), With<FreeCamera>>,
+) {
+    if !dl.height_enabled || !field.is_ready() {
+        field.clear_fine();
+        return;
+    }
+    let Some(anchor) = stream.geo_anchor() else {
+        field.clear_fine();
+        return;
+    };
+    let Ok((cell, tf)) = camera.single() else {
+        return;
+    };
+    // Freeze from orbit, like every other streamer. Half-metre ground is not a question
+    // anything on screen can express from 60 km up, and the camera up there would drag
+    // the box across a continent.
+    if globe.altitude_m(cell, tf) as f32 > crate::systems::globe::GLOBE_SHOW_ALT {
+        return;
+    }
+    let cam = Vec2::new(
+        cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x,
+        cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z,
+    );
+    // A re-anchor moves the origin these metres are counted from, so the tier describes
+    // the wrong ground the instant it happens.
+    if field.fine_gen != Some(stream.anchor_generation) {
+        field.clear_fine();
+    }
+    let snap = |v: f32| (v / FINE_RECENTRE_M).round() * FINE_RECENTRE_M;
+    let want = Vec2::new(snap(cam.x), snap(cam.y));
+    // Nothing to do while this box is the live one and the rings have not moved, and
+    // nothing to do while any box is on a worker — a camera crossing lattice lines
+    // faster than the bake finishes would otherwise queue one job per frame.
+    if (field.fine_wanted == Some(want) && field.fine_water_rev == Some(levels.revision))
+        || field.fine_job.is_some()
+    {
+        return;
+    }
+    if !HeightLayer::covers(anchor.0, anchor.1) {
+        field.clear_fine();
+        return;
+    }
+
+    let req = fine_request(anchor, want);
+    // `patch` queues on the first ask and answers `None` until it lands; the tier keeps
+    // the box it already has, which is why walking does not flicker back to 25 m ground
+    // while the next one is in flight.
+    let Some(patch) = height.patch(req) else {
+        return;
+    };
+    // 4 MB cloned onto the worker, once per re-centre. The alternative is holding the
+    // layer's cache borrowed across a job, which it cannot be.
+    let job = patch.clone();
+    height.drop_patch(&req);
+
+    let gen = stream.anchor_generation;
+    let datum = field.datum_m;
+    let water_rev = levels.revision;
+    let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
+    let sink = field.fine_sink.clone();
+    field.fine_job = Some((want, gen));
+    crate::platform::workers::submit(
+        "terrain_fine",
+        Box::new(move || {
+            let samples = bake_fine(&job, anchor, want, datum, &water);
+            if let Ok(mut g) = sink.lock() {
+                *g = Some(FineBake {
+                    centre: want,
+                    gen,
+                    water_rev,
+                    samples,
+                });
+            }
+        }),
+    );
 }
 
 /// Strength of the field at a grid position: 1 through the middle, easing to 0 at
@@ -373,6 +880,175 @@ fn edge_taper(x: usize, z: usize, n: usize) -> f32 {
     // Smoothstep, so the field flattens without a crease where the taper starts.
     let s = t * t * (3.0 - 2.0 * t);
     1.0 - s
+}
+
+/// Replace the ground inside a registered water body with the water's own measured
+/// level, minus a bed.
+///
+/// **This is the whole point of the water layer, and the order it runs in is the
+/// substance of it.** A canal is a hole in AHN's ground model — the laser does not come
+/// back off water — and until now the next thing to touch that hole was the fill, which
+/// closes it with the average of whatever surrounds it. Around a canal that is its two
+/// quays, so the ground under the water was *raised to street level* and the water
+/// sheet laid on top. Measured over Groningen: a two-to-five-metre error, and one that
+/// looked deliberate.
+///
+/// So the carve goes **before** the fill, and inside a ring it takes the **lower** of
+/// what is there and the water.
+///
+/// It used to write only into no-data, on the rule that a measurement outranks the
+/// register. That rule is right at half a metre and wrong at twenty-five, and the
+/// difference is what made this invisible for a day: at 0.5 m a Groningen canal is
+/// 96.5 % no-data, but the coarse field asks PDOK for 25 m samples and gets the banks
+/// *averaged into* the water cells, so 89 % of them carry a value and the carve skipped
+/// them. Measured 2026-09-12: 379 of ~3,400 coarse samples over registered water were
+/// being written, the basemap never dipped, and the water sheet dropped out of sight
+/// under a ground that had not moved.
+///
+/// Those values are not measurements of a canal bed. AHN is a laser and water does not
+/// return one — there is no ground reading under water at any resolution, only
+/// interpolation bleeding in from the edges. The register is the better statement about
+/// that ground, so inside a surveyed water body it wins.
+///
+/// `min` rather than an assignment, so the one thing a real measurement can still do is
+/// say the bed is *deeper* — a dredged channel keeps its depth.
+///
+/// The fill still runs afterwards, and still closes the holes this did not fill — the
+/// buildings, the bridge decks, the water outside the Netherlands.
+fn carve_water(
+    grid: &mut [f32],
+    n: usize,
+    half_m: f32,
+    centre: Vec2,
+    water: &crate::systems::water_levels::WaterLevelField,
+) -> usize {
+    if water.is_empty() {
+        return 0;
+    }
+    let bed = crate::systems::water_levels::bed_below_surface_m();
+    let step = half_m * 2.0 / (n - 1) as f32;
+    let mut carved = 0;
+    for z in 0..n {
+        let wz = centre.y - half_m + z as f32 * step;
+        for x in 0..n {
+            let i = z * n + x;
+            let wx = centre.x - half_m + x as f32 * step;
+            let Some(level) = water.level_at(wx, wz) else {
+                continue;
+            };
+            let bed_m = level - bed;
+            let before = grid[i];
+            grid[i] = if before.is_finite() {
+                before.min(bed_m)
+            } else {
+                bed_m
+            };
+            if before != grid[i] {
+                carved += 1;
+            }
+        }
+    }
+    carved
+}
+
+/// Relaxation passes over the cells [`fill_holes_unbounded`] invented.
+const FILL_SMOOTH_PASSES: usize = 4;
+
+/// Close no-data holes of **any size**, in two sweeps plus a short relaxation.
+///
+/// [`fill_holes`] cannot be reused here and the reason is a unit mistake waiting to
+/// happen: it is a fixed number of one-cell dilations, documented as "~150 m of reach"
+/// — true only at the coarse field's 25 m sampling. At half a metre the same six passes
+/// reach **3 m**, so every building footprint would stay an unfilled pit. Scaling the
+/// pass count instead would mean ~300 passes over a million samples.
+///
+/// So: a chamfer distance transform carrying the nearest measured value (two sweeps,
+/// O(n)), then a few Jacobi passes restricted to the cells that were filled. The
+/// transform alone leaves a ridge along the Voronoi boundary down the middle of
+/// anything wide, and the relaxation is what turns that crease into the smooth
+/// interpolation the mean-of-neighbours fill produced. Measurements are never written,
+/// only holes.
+fn fill_holes_unbounded(grid: &mut [f32], n: usize) {
+    if grid.iter().all(|v| v.is_finite()) {
+        return;
+    }
+    // `best` is the squared chamfer distance to the nearest measurement; `FAR` is "no
+    // source seen yet" and must be finite, because it is compared and added to.
+    const FAR: i32 = i32::MAX / 4;
+    const ORTHO: i32 = 3;
+    const DIAG: i32 = 4;
+    let mut best = vec![FAR; grid.len()];
+    let mut val = vec![0.0f32; grid.len()];
+    let filled: Vec<bool> = grid.iter().map(|v| !v.is_finite()).collect();
+    for i in 0..grid.len() {
+        if grid[i].is_finite() {
+            best[i] = 0;
+            val[i] = grid[i];
+        }
+    }
+    let relax =
+        |x: usize, z: usize, nx: i32, nz: i32, w: i32, best: &mut [i32], val: &mut [f32]| {
+            if nx < 0 || nz < 0 || nx >= n as i32 || nz >= n as i32 {
+                return;
+            }
+            let from = nz as usize * n + nx as usize;
+            let to = z * n + x;
+            let cand = best[from].saturating_add(w);
+            if cand < best[to] {
+                best[to] = cand;
+                val[to] = val[from];
+            }
+        };
+    for z in 0..n {
+        for x in 0..n {
+            let (xi, zi) = (x as i32, z as i32);
+            relax(x, z, xi - 1, zi, ORTHO, &mut best, &mut val);
+            relax(x, z, xi, zi - 1, ORTHO, &mut best, &mut val);
+            relax(x, z, xi - 1, zi - 1, DIAG, &mut best, &mut val);
+            relax(x, z, xi + 1, zi - 1, DIAG, &mut best, &mut val);
+        }
+    }
+    for z in (0..n).rev() {
+        for x in (0..n).rev() {
+            let (xi, zi) = (x as i32, z as i32);
+            relax(x, z, xi + 1, zi, ORTHO, &mut best, &mut val);
+            relax(x, z, xi, zi + 1, ORTHO, &mut best, &mut val);
+            relax(x, z, xi + 1, zi + 1, DIAG, &mut best, &mut val);
+            relax(x, z, xi - 1, zi + 1, DIAG, &mut best, &mut val);
+        }
+    }
+    for (i, v) in grid.iter_mut().enumerate() {
+        if !v.is_finite() {
+            *v = val[i];
+        }
+    }
+    // Smooth the invented ground only. Four passes takes the Voronoi crease out of a
+    // canal-width hole without moving anything measured.
+    let mut prev = vec![0.0f32; grid.len()];
+    for _ in 0..FILL_SMOOTH_PASSES {
+        prev.copy_from_slice(grid);
+        for z in 0..n {
+            for x in 0..n {
+                let i = z * n + x;
+                if !filled[i] {
+                    continue;
+                }
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+                    if nx < 0 || nz < 0 || nx >= n as i32 || nz >= n as i32 {
+                        continue;
+                    }
+                    sum += prev[nz as usize * n + nx as usize];
+                    count += 1.0;
+                }
+                if count > 0.0 {
+                    grid[i] = sum / count;
+                }
+            }
+        }
+    }
 }
 
 /// Close no-data holes by repeated neighbour averaging. Each pass reaches one cell
@@ -683,6 +1359,181 @@ fn median_finite(grid: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
 
+    /// The fine bake replaces a million `wgs84_to_rd` evaluations with one affine map
+    /// fitted about the box centre. That is only allowed while the error stays far
+    /// below the sample spacing it is addressing — so measure it, at four corners of
+    /// the country, rather than trusting that a polynomial "is smooth".
+    ///
+    /// A failure here does not look like a failure: every sample would land a little
+    /// off the ground it claims to measure, which reads as a slightly wrong height and
+    /// nothing else.
+    #[test]
+    fn the_affine_rd_map_is_exact_enough_for_half_metre_samples() {
+        // Comfortably under FINE_SAMPLE_M (~0.5 m); measured worst case is ~15 mm.
+        const TOLERANCE_M: f64 = 0.1;
+        for anchor in [
+            (53.2194, 6.5665, 14u32),
+            (52.0907, 5.1214, 14),
+            (51.4400, 5.4800, 14),
+            (53.4400, 6.9000, 14),
+        ] {
+            let centre = Vec2::new(1_500.0, -900.0);
+            let map = RdAffine::fit(anchor, centre);
+            let mut worst: f64 = 0.0;
+            for dz in [-FINE_HALF_M, -128.0, 0.0, 128.0, FINE_HALF_M] {
+                for dx in [-FINE_HALF_M, -128.0, 0.0, 128.0, FINE_HALF_M] {
+                    let (lat, lng) = world_to_lat_lng(
+                        anchor,
+                        f64::from(centre.x) + f64::from(dx),
+                        f64::from(centre.y) + f64::from(dz),
+                    );
+                    let exact = wgs84_to_rd(lat, lng);
+                    let approx = map.at(f64::from(dx), f64::from(dz));
+                    worst = worst.max((exact[0] - approx[0]).hypot(exact[1] - approx[1]));
+                }
+            }
+            assert!(
+                worst < TOLERANCE_M,
+                "affine RD map is {worst:.3} m off at {anchor:?}; the fine tier samples \
+                 every {FINE_SAMPLE_M} m, so this is no longer a shortcut"
+            );
+        }
+    }
+
+    /// The tier must agree with the coarse field at its own rim, or walking out of it
+    /// is a step rather than a loss of detail.
+    #[test]
+    fn the_fine_tier_fades_into_the_coarse_answer_at_its_rim() {
+        let mut field = ramp_field(0.0);
+        let centre = Vec2::new(100.0, -50.0);
+        // A tier that disagrees with the (flat, zero) coarse field everywhere.
+        field.fine = TerrainSnapshot {
+            samples: std::sync::Arc::new(vec![10.0; 4 * 4]),
+            half_m: FINE_HALF_M,
+            grid: 4,
+            centre,
+        };
+
+        let mid = field.ground_at(centre.x, centre.y);
+        assert!(
+            (mid - 10.0).abs() < 1e-3,
+            "the tier should be trusted completely in the middle, got {mid}"
+        );
+        let out = field.ground_at(centre.x + FINE_HALF_M + 1.0, centre.y);
+        assert!(
+            out.abs() < 1e-6,
+            "outside the box the coarse answer must be returned unchanged, got {out}"
+        );
+        let rim = field.ground_at(centre.x + FINE_HALF_M, centre.y);
+        assert!(
+            rim.abs() < 1e-3,
+            "the tier must reach zero weight at its boundary, got {rim}"
+        );
+        // And it has to get there smoothly.
+        let mut prev = field.ground_at(centre.x + FINE_HALF_M - FINE_BLEND_M - 1.0, centre.y);
+        let mut step = 0.0f32;
+        for i in 0..=64 {
+            let t = i as f32 / 64.0;
+            let x = centre.x + FINE_HALF_M - FINE_BLEND_M - 1.0 + t * (FINE_BLEND_M + 2.0);
+            let h = field.ground_at(x, centre.y);
+            step = step.max((h - prev).abs());
+            prev = h;
+        }
+        assert!(
+            step < 1.0,
+            "the blend has a {step} m cliff in it; a smoothstep should spread 10 m over \
+             {FINE_BLEND_M} m"
+        );
+    }
+
+    /// The fine fill has to close holes far wider than the coarse one ever sees — a
+    /// building footprint is 20 m, which is 40 samples at half a metre.
+    #[test]
+    fn the_unbounded_fill_closes_a_hole_the_pass_count_fill_cannot() {
+        let n = 64;
+        let mut grid = vec![1.0f32; n * n];
+        for z in 12..52 {
+            for x in 12..52 {
+                grid[z * n + x] = f32::NAN;
+            }
+        }
+        let mut dilated = grid.clone();
+        fill_holes(&mut dilated, n);
+        assert!(
+            dilated.iter().any(|v| !v.is_finite()),
+            "this test is not testing anything: the pass-count fill closed the hole"
+        );
+
+        fill_holes_unbounded(&mut grid, n);
+        assert!(
+            grid.iter().all(|v| v.is_finite()),
+            "the unbounded fill left a hole open"
+        );
+        let (lo, hi) = grid
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+        assert!(
+            (lo - 1.0).abs() < 1e-3 && (hi - 1.0).abs() < 1e-3,
+            "filling a hole in flat ground invented relief: {lo}..{hi}"
+        );
+    }
+
+    /// The carve has to reach ground AHN *did* return a value for. At 25 m the value
+    /// over a canal is the banks averaged in by resampling, not a bed — skipping those
+    /// samples is what kept the basemap flat for a day.
+    #[test]
+    fn the_carve_overwrites_resampled_ground_but_keeps_a_deeper_reading() {
+        let n = 8;
+        let half = 100.0f32;
+        // One ring covering the whole grid, surface at 0 m NAP.
+        let field = crate::systems::water_levels::WaterLevelField::build_for_test(
+            0.0,
+            &[
+                [-half * 2.0, -half * 2.0],
+                [half * 2.0, -half * 2.0],
+                [half * 2.0, half * 2.0],
+                [-half * 2.0, half * 2.0],
+            ],
+        );
+        let bed = crate::systems::water_levels::bed_below_surface_m();
+
+        let mut grid = vec![5.0f32; n * n];
+        grid[0] = f32::NAN; // a genuine hole
+        grid[1] = -9.0; // a dredged channel: deeper than the surface
+        let carved = carve_water(&mut grid, n, half, Vec2::ZERO, &field);
+
+        assert!(carved > 0, "nothing was carved at all");
+        assert!(
+            (grid[0] - (0.0 - bed)).abs() < 1e-5,
+            "a hole inside the ring must take the water's own level"
+        );
+        assert!(
+            (grid[1] - -9.0).abs() < 1e-5,
+            "a deeper measurement must survive: the bed can be lower than the surface"
+        );
+        assert!(
+            (grid[5] - (0.0 - bed)).abs() < 1e-5,
+            "resampled bank height inside the ring must be overwritten, not skipped"
+        );
+    }
+
+    /// Nothing registered must leave the field byte-identical.
+    #[test]
+    fn an_empty_water_field_changes_no_sample() {
+        let n = 8;
+        let mut grid = vec![5.0f32; n * n];
+        let before = grid.clone();
+        let carved = carve_water(
+            &mut grid,
+            n,
+            100.0,
+            Vec2::ZERO,
+            &crate::systems::water_levels::WaterLevelField::default(),
+        );
+        assert_eq!(carved, 0);
+        assert_eq!(grid, before);
+    }
+
     /// A field whose samples are a known ramp, bypassing the fetch.
     fn ramp_field(per_metre: f32) -> TerrainField {
         let n = TERRAIN_GRID;
@@ -698,6 +1549,8 @@ mod tests {
             ground: TerrainSnapshot {
                 samples: std::sync::Arc::new(samples),
                 half_m: half,
+                grid: n,
+                centre: Vec2::ZERO,
             },
             ..Default::default()
         }
@@ -1021,7 +1874,16 @@ mod tests {
             h,
             samples,
         };
-        let (baked, datum) = bake(&patch, anchor, TERRAIN_HALF_M).expect("patch covers the field");
+        // No registered water: this test is about the ramp the patch carries, and an
+        // empty field is also the everywhere-outside-the-Netherlands case.
+        let (baked, datum, carved) = bake(
+            &patch,
+            anchor,
+            TERRAIN_HALF_M,
+            &crate::systems::water_levels::WaterLevelField::default(),
+        )
+        .expect("patch covers the field");
+        assert_eq!(carved, 0, "an empty water field must carve nothing");
         // The datum is the ground at the anchor, and the field is zero there. The
         // tolerance is the synthetic patch's own 125 m sample spacing: `at` takes
         // the nearest measurement, deliberately, so the centre reads the cell it

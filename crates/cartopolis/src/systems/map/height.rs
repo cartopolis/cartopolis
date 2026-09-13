@@ -71,10 +71,20 @@ const HEIGHT_MIN_INTERVAL_S: f64 = 0.15;
 /// nothing for is not re-asked every frame for the rest of the session.
 const MAX_ATTEMPTS: u32 = 2;
 
-/// Largest grid a single request may ask for. A patch is meant to be a handful of
-/// samples over a specific thing; anything larger belongs in several requests, and
-/// this is the stop on a caller that computes a silly number.
-const MAX_GRID: u32 = 256;
+/// Largest grid a single request may ask for. The stop on a caller that computes a
+/// silly number, and nothing more principled than that.
+///
+/// It was 256 on the reasoning that a patch is a handful of samples over a specific
+/// thing. The fine terrain tier (`terrain::FINE_GRID`) is the counter-example: it wants
+/// AHN's own half-metre grid over a 512 m box, which is one 1024² request or sixteen
+/// 256² ones, and sixteen round trips to a shared public service to assemble one answer
+/// is worse citizenship than one. Measured against the live service 2026-09-11 — 256²
+/// is 99 kB in 0.6 s, 1024² is 1.5 MB in 0.5 s, 2048² is 6.4 MB in 1.5 s — so the
+/// ceiling is what PDOK will actually serve, not a guess.
+///
+/// Note what this is *not*: a memory bound. A 1024² patch is 4 MB decoded, and the
+/// caller that asks for one owes [`HeightLayer::drop_patch`] when it has baked it.
+const MAX_GRID: u32 = 2048;
 
 /// How far from the map anchor, in RD metres, a cached patch is kept.
 ///
@@ -344,6 +354,21 @@ impl HeightLayer {
             self.dispatch.queue(req);
         }
         None
+    }
+
+    /// Drop one cached patch, keeping the record that it was asked for.
+    ///
+    /// For the consumer that reads a patch **once** and keeps its own baked copy —
+    /// `terrain`'s fine tier, whose 1024² box is 4 MB and whose next ask is a different
+    /// box anyway. Without this the distance prune ([`CACHE_KEEP_M`], 8 km) is the only
+    /// removal there is, and walking a kilometre would leave ten of them resident for a
+    /// consumer that will never look at one again.
+    ///
+    /// `requested` and `failed` are deliberately untouched: this says "I am done with
+    /// the answer", not "ask again". A caller that wants a re-fetch has moved its box,
+    /// which is a different key.
+    pub fn drop_patch(&mut self, req: &HeightRequest) {
+        self.patches.remove(&req.key());
     }
 
     /// Whether a request has been answered — by a patch or by giving up on it. Lets

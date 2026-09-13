@@ -2,9 +2,18 @@
 topic: rijkswaterstaat-water-levels
 triggers: [Rijkswaterstaat, waterwebservices, ddapi20, WATHTE, Waterhoogte, NAP,
   "water level", "canal level", "river level", peilgebied, "water at its real height",
-  OphalenCatalogus, OphalenWaarnemingen]
-updated: 2026-08-30
+  OphalenCatalogus, OphalenWaarnemingen, WaterBody, "3d basisvoorziening", CityJSON,
+  vastpeil, zomerpeil, winterpeil, IMWA, "canal depth", quay, fill_holes, water_levels.rs]
+updated: 2026-09-13
 ---
+
+# Water levels: where they are, and what still stops the canals
+
+> **Superseded in part, 2026-09-13.** Two of this note's conclusions were wrong; the
+> corrections are at the bottom under *What 2026-09-13 changed*. A measured,
+> per-polygon water level **does** exist nationally (the Kadaster's `WaterBody`, not
+> Rijkswaterstaat's stations) and is wired in as `systems::water_levels`; and the
+> geometry obstacle is not the one described here. Read that section first.
 
 # Rijkswaterstaat water levels: checked and not taken
 
@@ -214,3 +223,132 @@ The GeoTIFF comes back **Deflate-compressed with the floating-point predictor**
 (compression 8, predictor 3), so a naive strip read gives nonsense — undo the
 horizontal byte difference per row, then de-interleave the four byte planes
 MSB-first before reading each float.
+
+## What 2026-09-13 changed
+
+Re-checked while answering "the canals in Groningen are at quay height — can't you
+deduct that from the data sources?". Four findings; two correct this note, and one is
+now shipped as `crates/cartopolis/src/systems/map/water_levels.rs`.
+
+### The `peilgebied` pointer above is wrong, and it was worth checking
+
+The closing paragraph suggested the water boards' `peilgebied` areas would answer the
+join question a station cannot. **They carry no level.** PDOK publishes them nationally
+(`https://api.pdok.nl/hwh/waterschappen-waterbeheergebieden-imwa/ogc/v1`, collections
+`peilgebied`, `peilbesluitgebied`, `peilafwijkinggebied`); over Groningen `peilgebied`
+returns "Eemsboezem", Waterschap Hunze en Aa's, and every attribute is a code, a name
+or a status. `peilbesluitgebied` the same.
+
+Rijkswaterstaat's own **`peilgebieden`** layer, a different dataset
+(`https://geo.rijkswaterstaat.nl/services/ogc/gdr/water_en_bodem_ro/ogc/features/v1`),
+*does* carry `vastpeil` / `zomerpeil` / `winterpeil`. They are **mostly null**: sampled
+over six city centres, only Utrecht had values (`vastpeil` 0.55 and −0.40 m NAP);
+Groningen, Amsterdam, Leiden, Rivierenland and Zeeland were null. The right field
+exists and the data behind it does not, nationally.
+
+### The Kadaster ships a measured level per polygon, and that settles the join
+
+`basisbestand_gebouwen_terreinen` in the 3D basisvoorziening
+([3d-basisvoorziening.md](3d-basisvoorziening.md)) — the collection that note lists as
+"ground, water, roads" — contains **`WaterBody` objects with an AHN-draped z**.
+
+Measured on the Groningen centre 2 km block (`volledig_2025_232000_582000.zip`,
+14.1 MB → 77.7 MB of CityJSON, fetched 2026-09-11):
+
+| | |
+|---|---|
+| `WaterBody` objects in the block | **53** |
+| geometry | `MultiSurface`, LoD 1.2, `3df_class: "Water"`, BGT `Waterdeel_vlak` attributes |
+| each body's own z spread | flat: 2,541 vertices over 0.61–0.64 m; 444 vertices all at −0.69 |
+| median z across the 53 | **−0.46 m NAP** (range −1.47 to +3.29) |
+
+Against the quays this note measured at +1.1 to +4.6 m NAP, and Rijkswaterstaat's
+`groningen` station at −0.91 m. **These are polygons carrying a level**, which is what
+the station register could not supply, and they are national, CC BY 4.0, in the same
+2 km sheets the buildings already come in. Over four Groningen blocks: 528 rings,
+214 ha of water, **40–150 kB per cell** after a quarter-metre Douglas-Peucker.
+
+**Extract the boundary with directed edges.** An edge is on the boundary when its
+reverse is absent; counting them undirected loses the winding, so a vertex where two
+parts of one body touch gets several outgoing edges and the walk chains through it into
+a self-crossing polygon spanning both. Even-odd point-in-polygon then answers nonsense
+for that ring, silently — the first version of this had 40 such rings and produced an
+A/B capture that looked plausible and was junk.
+
+### The geometry obstacle is a different one
+
+This note says the blocker is that "the basemap clipmap is eight opaque layers deep and
+nothing cuts holes in it", and gives the finest level's resting height as y = −0.03 m.
+**That describes the flat case only.** With the height layer on,
+`map_stream::apply_terrain_to_tiles` rebuilds every clipmap tile under
+`RELIEF_MAX_TILE_M` (2,500 m) as a grid displaced by the terrain field — the ground
+already follows measured relief, and nothing needs a hole cut in it. The canal has to
+be *in* the field.
+
+Two things stopped that, and neither is the one above:
+
+1. **The field actively filled the canal in.** AHN's DTM is no-data over water (the
+   Verbindingskanaal box sampled 2026-09-11 is 100 % no-data, the Schuitendiep 64 %), so
+   a canal arrives as a hole — and `terrain::fill_holes` closes holes by averaging their
+   neighbours inward over six dilations, written so a cut-out viaduct does not read as a
+   pit. Over a canal that averages the two quays together. **Fixed**: `terrain::carve_water`
+   runs *before* the fill.
+2. **25 m cannot express a canal.** `TERRAIN_SAMPLE_M` is ~25 m and the water board's own
+   recorded width for the Reitdiep is 25.3 m — one sample across, which cannot have two
+   banks. **Partly fixed**: `terrain::FINE_HALF_M`, a 512 m half-metre tier under the
+   camera, one WCS request per re-centre. It feeds **point** consumers only
+   (`TerrainField::ground_at`), because subdivision everywhere else is sized off
+   `TERRAIN_SAMPLE_M` and a mesh with a vertex every 24 m sampling a half-metre field
+   would alias it.
+
+### What is still not solved
+
+The basemap is displaced by the *coarse* field, so it dips by only as much as 25 m
+sampling can express — measured 2026-09-12, the waterline on screen moved **1 px** where
+the drop asked for five. The water surface is therefore clamped to the ground drawn
+under it (`map_geometry::water_surface`): the measured level wins in the middle of a
+body, and at the bank the water rises to meet the quay rather than vanishing under an
+opaque basemap. That is the honest picture of what the ground model can currently say,
+and it deepens on its own as the field gets finer.
+
+Making a canal actually *look* like a canal needs the clipmap relief grid refined near a
+registered ring, or the quads inside one omitted and the staircase edge covered by an
+apron earcut from the real outline. Neither is done. The arithmetic that rules out the
+naive version: refining the finest level uniformly to 4 m is 343k triangles against the
+**708** the whole clipmap uses today, and `map_stream.rs` already records a uniform
+relief grid taking the frame rate from 26 fps to 10.
+
+### One trap in the metrics
+
+`terrain_relief_m` is **not** evidence about the carve. It is the range over the whole
+6.4 km box, which already spans 37.7 m of the Hondsrug, so a canal cut to −4 m never
+widens it — an identical value proves nothing either way. That misreading cost half a
+day. `water_carved_coarse` / `water_carved_fine` / `water_drop_m` in `--dump-state`
+count it where it happens, and are what found the real bug.
+
+### How the new numbers were measured
+
+```bash
+# Water-board peilgebied areas: present over Groningen, no level attribute.
+curl -s "https://api.pdok.nl/hwh/waterschappen-waterbeheergebieden-imwa/ogc/v1\
+/collections/peilgebied/items?bbox=6.560,53.215,6.575,53.225&limit=5&f=json"
+
+# Rijkswaterstaat's peilgebieden: the level fields exist, mostly unpopulated.
+curl -s "https://geo.rijkswaterstaat.nl/services/ogc/gdr/water_en_bodem_ro/ogc\
+/features/v1/collections/peilgebieden/items?bbox=5.105,52.082,5.135,52.100&f=json"
+
+# The Kadaster sheet index, then the block. Note -L: the download 302s.
+curl -s "https://api.pdok.nl/kadaster/3d-basisvoorziening/ogc/v1/collections\
+/basisbestand_gebouwen_terreinen/items?bbox=6.560,53.215,6.570,53.222&limit=60&f=json"
+curl -sL -o t.zip "https://download.pdok.nl/kadaster/basisvoorziening-3d/v1_0\
+/2025/volledig/volledig_2025_232000_582000.zip"
+```
+
+The `WaterBody` z values come from that CityJSON directly: every object of
+`type == "WaterBody"`, its boundaries walked to vertex indices, each index read out of
+`vertices` and put back through `transform.scale[2]` and `transform.translate[2]`.
+
+**The extractor is not written yet.** These cells were produced by a throwaway script
+against a loopback host to develop the client side; the real one belongs beside the
+other four in [cartopy](where-the-map-data-is-built.md), and until it exists
+`water_levels` finds no coverage and every consumer behaves exactly as it did before.

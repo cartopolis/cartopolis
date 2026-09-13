@@ -2238,6 +2238,86 @@ fn build_mesh(
 ///   earcut's two-triangle answer for a field has no vertices in the middle to
 ///   follow anything with.
 ///
+/// Place a cell's water, at the measured level where the register reaches it.
+///
+/// Water used to take one height for the whole mesh, because a body is level and
+/// following the ground per vertex would tilt a lake down the valley it sits in.
+/// That stays true, and it stops being the whole story once the level is *measured*:
+/// one Groningen cell holds bodies at −0.08, −0.77, −0.86 and −1.19 m NAP, so a
+/// single height is wrong for all but one of them.
+///
+/// Two things then have to hold at once, and the second is what this function is
+/// really for.
+///
+/// **The level comes from the register, per vertex**, which gives each body its own
+/// flat surface for free — the lookup is by position and every registered body is
+/// flat. Outside the Netherlands nothing is registered and the ground's own level is
+/// used, which is exactly the old behaviour.
+///
+/// **And the surface may never sink below the ground drawn under it.** The register
+/// knows a canal is 2 m down; the *field the basemap is displaced by* samples every
+/// 25 m and can only render a blurred, shallower dip. Taking the measured level
+/// literally therefore put the water several metres under an opaque basemap that had
+/// barely moved — the sheet vanished, and what you saw was flat painted map where
+/// rendered water with its shore shading used to be. Measured 2026-09-12: the
+/// waterline moved 1 px when the drop asked for five.
+///
+/// So the surface is clamped to the ground beneath it. In the middle of a body the
+/// carve has taken the ground below the water and the measured level wins; at the
+/// bank, where 25 m cannot cut a kerb, the water rises to meet the quay instead of
+/// disappearing under it. That reads as a bank rather than as a wall, which is the
+/// honest picture of what the ground model can currently say — and it gets deeper on
+/// its own as the field gets finer, with no change here.
+///
+/// The mesh is refined first because earcut emits **only the polygon's boundary**:
+/// with no interior vertices the clamp could only ever be evaluated at the banks,
+/// where it is the ground level, and every body would be flat at quay height again.
+#[allow(clippy::too_many_arguments)]
+fn water_surface(
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+    uvs: &mut Vec<[f32; 2]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
+    origin: Vec2,
+    terrain: &TerrainField,
+) {
+    let fallback = terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
+    if !terrain.has_water_levels() {
+        for p in positions.iter_mut() {
+            p[1] += fallback;
+        }
+        return;
+    }
+    crate::systems::terrain::refine_for_terrain(
+        positions,
+        indices,
+        uvs,
+        normals,
+        colors,
+        rungs,
+        crate::systems::terrain::MAX_GROUND_EDGE_M,
+    );
+    for p in positions.iter_mut() {
+        let (wx, wz) = (origin.x + p[0], origin.y + p[2]);
+        let level = terrain.water_surface_at(wx, wz).unwrap_or(fallback);
+        p[1] += level.max(terrain.at(wx, wz));
+    }
+    // The surface is no longer planar, so the normals earcut left behind describe a
+    // shape that is not there any more.
+    if !normals.is_empty() {
+        *normals = positions
+            .iter()
+            .map(|p| {
+                terrain
+                    .normal_at(origin.x + p[0], origin.y + p[2])
+                    .to_array()
+            })
+            .collect();
+    }
+}
+
 /// Ground surfaces get a fresh normal from the field's own slope; the vegetation
 /// groups keep theirs (a tree's normals describe the tree, not the hill).
 #[allow(clippy::too_many_arguments)]
@@ -2256,15 +2336,20 @@ fn stand_on_terrain(
         group,
         SurfaceGroup::Canopy | SurfaceGroup::Trunk | SurfaceGroup::Furniture
     );
-    // Both of these want *one* height for the whole thing, for opposite reasons: a
-    // water body is level, and a viaduct is straight — the ground under it dipping
-    // into a valley is precisely what it does not do.
-    if matches!(group, SurfaceGroup::Water | SurfaceGroup::BridgeDeck) {
+    // A viaduct wants *one* height for the whole thing: it is straight, and the
+    // ground under it dipping into a valley is precisely what it does not do.
+    if matches!(group, SurfaceGroup::BridgeDeck) {
         let level =
             terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
         for p in positions.iter_mut() {
             p[1] += level;
         }
+        return;
+    }
+    if matches!(group, SurfaceGroup::Water) {
+        water_surface(
+            positions, indices, uvs, normals, colors, rungs, origin, terrain,
+        );
         return;
     }
     if !volumetric {

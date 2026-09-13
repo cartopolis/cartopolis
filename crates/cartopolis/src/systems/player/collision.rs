@@ -596,7 +596,7 @@ pub fn eject_avatar_from_buildings(
     //
     // The ground this is measured against is the *measured* one. Offline the
     // transform is the avatar's state rather than a display offset, so standing
-    // still on a hill puts `translation.y` at `GROUND_HEIGHT + terrain.at(..)` —
+    // still on a hill puts `translation.y` at `GROUND_HEIGHT + terrain.ground_at(..)` —
     // which above 0.15 m of relief already exceeds `AIRBORNE_EPS`, and the snap-out
     // backstop then never ran. A teleport that landed inside a building stranded
     // the avatar there for good. `avatar::handle_avatar_movement` computes the same
@@ -607,7 +607,7 @@ pub fn eject_avatar_from_buildings(
     // and neither this backstop nor the slide that runs before it does anything
     // at all — which is a storey whose walls are a picture.
     let ground_y = crate::systems::avatar::GROUND_HEIGHT
-        + terrain.at(tf.translation.x, tf.translation.z)
+        + terrain.ground_at(tf.translation.x, tf.translation.z)
         + avatar_state.floor_lift;
     if avatar_state.is_flying || tf.translation.y > ground_y + crate::systems::avatar::AIRBORNE_EPS
     {
