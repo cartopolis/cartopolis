@@ -192,6 +192,44 @@ that spans more than `max_click_duration` (0.8 s). At 10–11 fps with hitches, 
 checkboxes and close buttons stop responding while the camera still feels fine. Any
 change that halves the frame rate shows up there first.
 
+## 25 m is not a free parameter — three constants pin it (measured 2026-09-13)
+
+`TERRAIN_GRID` reads like a quality dial you could simply turn up. It is not. The
+relief mesh has an invariant, encoded in
+`map_stream::tests::relief_grid_matches_the_field_not_the_zoom`:
+
+    quad_m <= TERRAIN_SAMPLE_M
+
+A relief quad may never be *coarser* than a field sample, or the clipmap level above
+pokes through the one below it. And `relief_divisions` is capped at
+`MAX_DIVISIONS = 128`, so the coarsest tile that still qualifies for relief —
+`RELIEF_MAX_TILE_M`, 2,500 m — forces
+
+    TERRAIN_SAMPLE_M >= RELIEF_MAX_TILE_M / MAX_DIVISIONS = 19.5 m
+
+**25 m is therefore about as fine as the field can be** without moving one of the
+other two. Tried 2026-09-13, wanting 6.25 m so that a canal (the Reitdiep is 25.3 m
+wide, i.e. one sample) could be expressed: the test failed on the first run, because a
+1,471 m tile capped at 128 divisions gives 11.5 m quads against a 6.25 m field.
+
+The three ways out, and what each costs:
+
+- **Raise `MAX_DIVISIONS`.** A 1,471 m tile at 6.25 m is 236 divisions — 111k triangles
+  for one tile. This is the direction that took the frame rate from 26 fps to 10 the
+  last time (see `relief_divisions`' own comment).
+- **Lower `RELIEF_MAX_TILE_M`** so large tiles stop qualifying and are sunk instead.
+  Cheap in triangles, but it puts a step at the relief ring's edge where the sunk plane
+  begins — invisible over Dutch polder, not over the Veluwe.
+- **Stop asking the field to carry the detail.** Cut the clipmap inside the feature and
+  add its own geometry — for water, a hole plus quay walls. Costs no triangles and
+  applies to every level uniformly (so nothing pokes through), but needs every clipmap
+  tile's `StandardMaterial` replaced by an extended one with a discard mask.
+
+**Do not size any of this from `tris_tiles`.** It is a *visible* count at the shot's
+viewpoint, not what was built — at a ground-level Groningen view it reads 252 while the
+built relief geometry is orders of magnitude more. Reading it as the budget is what made
+a finer field look free.
+
 ## Still flat, deliberately or otherwise
 
 * The **globe tier** — from orbit, 100 m of Veluwe is far below a pixel.
