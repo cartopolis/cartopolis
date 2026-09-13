@@ -538,7 +538,7 @@ So the verdict moved to where the code already is:
 
 which runs the same commands out of the same workflow file — `cargo fmt
 --check`, `cargo test --locked --workspace --exclude cartopolis_android`, and,
-when the diff can change a frame, the three headless smokes and the wasm and
+when the diff can change a frame, the two headless smokes and the wasm and
 android target checks. It scopes itself with `ci.yml`'s own deny-list (a commit
 touching only `docs/`, `crates/simulator/`, `.forgejo/`, `.claude/` and `*.md`
 cannot change a frame) and it **names on stdout everything it skipped**, because a gate that
@@ -598,7 +598,7 @@ silently stops moving — with the reason in the one place nobody reads.
 ### The verdict is still CI's, and it now arrives afterwards
 
 CI has not been switched off. The push to `main` runs it, and on `main` it runs
-**more** than a pull request ever did: the three render smokes and both
+**more** than a pull request ever did: the two render smokes and both
 cross-target lanes are `main`-only. What changed is when the answer lands.
 
 That is a real weakening and is worth stating plainly rather than dressing up.

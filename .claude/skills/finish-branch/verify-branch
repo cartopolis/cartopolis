@@ -43,7 +43,7 @@
 #
 # `auto` reads the diff against the base and mirrors ci.yml's own deny-list: a
 # commit touching nothing outside `docs/`, `crates/simulator/`, `.forgejo/`,
-# `.claude/` and `*.md` cannot change a frame, so it skips the three render
+# `.claude/` and `*.md` cannot change a frame, so it skips the two render
 # smokes. The
 # cross-target lanes are skipped for the same class of change plus anything that
 # cannot reach a `cfg` — everything skipped is *named on stdout*, because a gate
@@ -134,7 +134,7 @@ fi
 
 steps="fmt"
 $compile && steps="$steps tests"
-$render  && steps="$steps smoke-orbit smoke-flicker smoke-phone"
+$render  && steps="$steps smoke-orbit smoke-phone"
 $targets && steps="$steps wasm android"
 [ -n "$only" ] && steps=$(printf '%s' "$only" | tr ',' ' ')
 
@@ -186,7 +186,7 @@ fi
 # The smokes launch the client. If the workspace did not build there is nothing
 # to launch, and each of these costs up to 15 minutes discovering that.
 if printf '%s' "$failed" | grep -qw tests; then
-    for s in smoke-orbit smoke-flicker smoke-phone; do
+    for s in smoke-orbit smoke-phone; do
         want "$s" && { skipped="$skipped $s"; }
     done
     want smoke-orbit && echo "
@@ -203,23 +203,6 @@ timeout 900 cargo run --locked -p cartopolis -- \\
     --expect 'settled==true' --expect 'globe_rendered>0' \\
     --expect 'draws<=200' --expect 'upload_peak_asset_kb<=8192' || {
         echo "the metrics behind it:"; cat /tmp/verify_orbit.json 2>/dev/null \\
-            || echo "(no dump: the run died before it captured)"; exit 1; }
-CMD
-fi
-
-if want smoke-flicker; then
-    # Depth stability. A z-fight re-rolls per view matrix, so no single still can
-    # show one — every coplanar-flicker bug in this tree shipped past a green
-    # screenshot job. 1500 is a disaster gate, not a microscope: the settled
-    # floor at this viewpoint is ~500 px of pedestrians and a known wall edge.
-    run smoke-flicker "headless flicker capture: nothing is z-fighting down the street" <<CMD
-timeout 900 cargo run --locked -p cartopolis -- \\
-    --shot /tmp/verify_flicker.png --dump-state /tmp/verify_flicker.json \\
-    --flicker --time 12 --fog 0 --clouds 0 --rain 0 \\
-    --at 53.2194,6.5665,100 --look=-60,0 \\
-    --size 640x360 --settle 2 --wait 120 --hide-ui \\
-    --expect 'settled==true' --expect 'flicker_px<=1500' || {
-        echo "the metrics behind it:"; cat /tmp/verify_flicker.json 2>/dev/null \\
             || echo "(no dump: the run died before it captured)"; exit 1; }
 CMD
 fi

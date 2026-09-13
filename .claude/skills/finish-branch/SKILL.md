@@ -39,7 +39,7 @@ a pull request:
 
 It runs the commands out of `.forgejo/workflows/ci.yml` — `cargo fmt --check`,
 `cargo test --locked --workspace`, and, when the diff can change a frame, the
-three headless smokes and the wasm/android target checks. It prints what it
+two headless smokes and the wasm/android target checks. It prints what it
 skipped and why, and a pass writes a receipt keyed on the head sha.
 
 **4. Land it.** One command, and it does the verify above if you have not:

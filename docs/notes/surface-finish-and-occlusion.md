@@ -387,7 +387,9 @@ and that was read as contact shadows stalling the capture. It was not: 901 s is
 budget, and the same step failed identically with contact shadows refused. The
 watchdog output is what a *slow* process looks like, not what a stalled one
 looks like, and the two are indistinguishable from that dump alone. The refusal
-above stands on the light-shafts precedent, not on this.
+above stands on the light-shafts precedent, not on this. (That gate is retired —
+[retired/flicker-gate.md](retired/flicker-gate.md) — and this is one of the two
+false findings it produced.)
 
 Unlike the other two gates this one is not overridable, because it is not a
 judgement about the picture: asking a rasteriser with no fragment budget for more

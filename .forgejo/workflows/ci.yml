@@ -450,42 +450,6 @@ jobs:
               exit 1
             }
 
-      # The depth-stability smoke: photograph a pavement-heavy street view twice,
-      # ~5 cm apart, and count the pixels that flipped (`--flicker`, the
-      # `flicker_px` metric). A z-fight between coplanar surfaces re-rolls per
-      # pixel under any camera move, so it is invisible to every single-still job
-      # here — which is how the road-over-road, water-over-land and
-      # ghost-pavement fights all shipped green. Depth resolution is geometry,
-      # which lavapipe rasterises faithfully, so this *is* gateable on the
-      # software renderer.
-      #
-      # 1500 is a disaster gate, not a microscope, and the calibration is worth
-      # keeping: measured 2026-08-29 at this viewpoint, the settled floor is
-      # ~500 px — pedestrians walking between the pair's captures plus a known
-      # small wall-edge fight — and identical-geometry overlaps inside one mesh
-      # rasterise deterministically, so a subtle fight can sit *below* the
-      # floor. What cannot: a ladder regression of the road-flicker kind (the
-      # RUNG_ULP=4 bug repainted ~2 % of a frame, ~5,000 px at this size), a
-      # depth-bias reorder, or a layer newly fighting another across the street
-      # floor. The environment is pinned (noon, clear, dry) because a drifting
-      # cloud shadow would flip half the frame legitimately.
-      - name: Headless flicker smoke (street)
-        if: github.ref == 'refs/heads/main' && steps.scope.outputs.render == 'true'
-        timeout-minutes: 15
-        env:
-          CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
-        run: |
-          cargo run --locked -j "$JOBS" -p cartopolis -- \
-            --shot /tmp/flicker.png --dump-state /tmp/flicker.json \
-            --flicker --time 12 --fog 0 --clouds 0 --rain 0 \
-            --at 53.2194,6.5665,100 --look=-60,0 \
-            --size 640x360 --settle 2 --wait 120 --hide-ui \
-            --expect 'settled==true' --expect 'flicker_px<=1500' || {
-              echo "::error::flicker smoke failed — the metrics behind it:"
-              cat /tmp/flicker.json 2>/dev/null || echo "(no dump: the run died before it captured)"
-              exit 1
-            }
-
       # The same frame on the tier Android actually runs, because the one above
       # cannot see the phone's scene at all.
       #
