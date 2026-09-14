@@ -1194,24 +1194,35 @@ pub fn update_lod22(
     // when a cell crosses the boundary (tracked in `no_shadow`), so a stationary
     // camera issues no commands. This is a mesh-level toggle; the forbidden runtime
     // change is the directional lights' `num_cascades` — see CLAUDE.md.
-    let snapshot: Vec<((i64, i64), Vec<Entity>)> =
-        lod.cells.iter().map(|(&k, v)| (k, v.clone())).collect();
-    for ((cx, cy), entities) in snapshot {
-        let near = (cx - ccx).abs().max((cy - ccy).abs()) <= SHADOW_RADIUS;
-        let off = lod.no_shadow.contains(&(cx, cy));
+    // Only the cells that *cross* the boundary are collected, and only their keys:
+    // `lod.cells` is read and `lod.no_shadow` written in the same pass, so
+    // something has to be copied out to end the borrow — but a stationary camera
+    // crosses nothing, so in the steady state this allocates an empty `Vec` rather
+    // than cloning every live cell's entity list every frame.
+    let crossing: Vec<((i64, i64), bool)> = lod
+        .cells
+        .keys()
+        .map(|&(cx, cy)| {
+            let near = (cx - ccx).abs().max((cy - ccy).abs()) <= SHADOW_RADIUS;
+            ((cx, cy), near)
+        })
+        .filter(|(cell, near)| *near == lod.no_shadow.contains(cell))
+        .collect();
+    for (cell, near) in crossing {
         // The whole cell crosses the boundary at once — it is one cell's worth of
         // geometry however many pieces it was cut into — so the `no_shadow` set
         // stays keyed by cell and the commands fan out over its entities.
-        if near && off {
+        let entities = lod.cells.get(&cell).cloned().unwrap_or_default();
+        if near {
             for e in entities {
                 commands.entity(e).remove::<bevy::light::NotShadowCaster>();
             }
-            lod.no_shadow.remove(&(cx, cy));
-        } else if !near && !off {
+            lod.no_shadow.remove(&cell);
+        } else {
             for e in entities {
                 commands.entity(e).insert(bevy::light::NotShadowCaster);
             }
-            lod.no_shadow.insert((cx, cy));
+            lod.no_shadow.insert(cell);
         }
     }
 }
