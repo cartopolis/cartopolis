@@ -3570,7 +3570,7 @@ mod mark_preview {
     const PREVIEW_RADII: [f32; 4] = [84.0, 40.0, 22.0, 12.0];
 
     #[test]
-    #[ignore]
+    #[ignore = "eyeball hatch: it writes PNGs to look at, it asserts nothing"]
     fn write_mark_preview() {
         let ppp = 2.0_f32;
         for radius in PREVIEW_RADII {

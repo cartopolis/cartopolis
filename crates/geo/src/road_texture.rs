@@ -836,7 +836,7 @@ mod tests {
     /// so the markings can be looked at.
     /// `cargo test -p cartopolis_geo dump_road_textures -- --ignored`
     #[test]
-    #[ignore]
+    #[ignore = "eyeball hatch: it writes PNGs to look at, it asserts nothing"]
     fn dump_road_textures() {
         for class in CLASSES {
             let t = road_texture(class);

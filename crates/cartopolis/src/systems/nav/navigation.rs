@@ -2460,7 +2460,7 @@ mod tests {
     ///   cargo test -p cartopolis solves_a_real_route -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore]
+    #[ignore = "fetches real tiles over the network"]
     fn solves_a_real_route() {
         let template = std::env::var("CARTO_TILE_URL")
             .unwrap_or_else(|_| "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}".to_string());
@@ -2519,7 +2519,7 @@ mod tests {
     /// cargo test -p cartopolis cost_model_bench -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn cost_model_bench() {
         let template = std::env::var("CARTO_TILE_URL")
             .unwrap_or_else(|_| "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}".to_string());
@@ -2609,7 +2609,7 @@ mod tests {
     /// cargo test -p cartopolis coarse_zoom_probe -- --ignored --nocapture
     /// ```
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn coarse_zoom_probe() {
         let template = std::env::var("CARTO_TILE_URL")
             .unwrap_or_else(|_| "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}".to_string());
