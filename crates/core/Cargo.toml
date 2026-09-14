@@ -24,6 +24,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# Note the workspace entry turns `approx`'s default features off; see the
+# comment there, it is load-bearing for the build and not a size trim.
 approx = { workspace = true }
 
 [lints]

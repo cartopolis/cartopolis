@@ -48,7 +48,27 @@ unused = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0"
-approx = "0.5"
+# `default-features = false`, and it is not a size trim — it is what keeps the
+# whole Bevy stack down to one artifact per build.
+#
+# `approx` is `cartopolis_core`'s dev-dependency *and* a dependency of
+# `bevy_winit`, which asks for it with no features. Taking the default (`std`)
+# here made the resolved feature set for `approx` depend on whether core's tests
+# were in the build — they are under `--workspace`, they are not under
+# `cargo test -p cartopolis`. Features are part of a unit's `-C metadata` and
+# that hash propagates upward, so `approx` → `bevy_winit` → `bevy_internal` →
+# `bevy` → `cartopolis` each resolved to two different artifacts: switching
+# build scope recompiled the client's test target (89 s) and left a second
+# 164 MB copy of it in `target/`.
+#
+# The feature costs nothing to give up. `approx` is `#![no_std]` unconditionally
+# and declares `std = []` — an empty feature that gates no code — so
+# `assert_relative_eq!` is identical either way.
+#
+# It must be set *here* rather than on the dev-dependency: cargo ignores a
+# member's `default-features = false` when the workspace entry did not say so,
+# and only warns.
+approx = { version = "0.5", default-features = false }
 # The simulator's HTTP surface: the browser transport (`/ws`) and the account
 # admin API, on one listener. Only `cartopolis_simulator` depends on it — the
 # client never does, so this costs the Bevy build nothing.
