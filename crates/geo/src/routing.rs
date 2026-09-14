@@ -1029,11 +1029,11 @@ impl RoadGraph {
     ///
     /// The access filter matters: snapping a car onto the footpath that happens to
     /// run closest to the address strands the search at a node it can never leave.
-    /// [`Self::route`] snaps into the [routable core](Self::routable_core) instead —
-    /// this plain nearest-usable-node is a public primitive kept for callers that
-    /// want the raw snap, and is exercised by the routing diagnostics.
+    /// [`Self::route`] snaps into the [routable core](Self::routable_core) instead,
+    /// and asks this one only to tell its two failures apart: a point with no
+    /// usable road near it at all is "no road there", while a point with one that
+    /// merely isn't in the same component is a genuine `NoPath`.
     #[must_use]
-    #[allow(dead_code)]
     pub fn nearest_node(&self, lat: f64, lng: f64, mode: TravelMode, max_m: f64) -> Option<u32> {
         self.nearest_node_where(lat, lng, max_m, |id| {
             self.edges[id as usize]

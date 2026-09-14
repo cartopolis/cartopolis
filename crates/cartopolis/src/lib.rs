@@ -54,7 +54,7 @@ use components::Avatar;
 use resources::{
     AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
     ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState,
-    MouseState, OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
+    OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
 };
 use systems::egui_manager::EguiPlugin;
 use systems::*;
@@ -1854,7 +1854,6 @@ fn run_client() {
         .init_resource::<resources::NetPredictionHealth>()
         .init_resource::<LocalAvatarSimId>()
         .init_resource::<CameraState>()
-        .init_resource::<MouseState>()
         .init_resource::<systems::touch::TouchGestures>()
         .init_resource::<systems::touch::UiClaimRegions>()
         // A scripted run never sees the server handshake that normally supplies the

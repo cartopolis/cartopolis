@@ -27,7 +27,7 @@
 
 use crate::furniture::{FurnitureInstance, FurnitureKind};
 use crate::scatter::{hash3, rand01};
-use crate::vector_tiles::{clipped_rings, palette, TileData, WATER_LAYERS};
+use crate::vector_tiles::{clipped_rings, TileData, WATER_LAYERS};
 
 /// Above this mean half-width a water polygon is open water, not a canal, and
 /// gets no boats.
@@ -257,11 +257,6 @@ fn on_tile_border(a: [f32; 2], b: [f32; 2], tile_m: f32) -> bool {
         || (on(a[1], 0.0) && on(b[1], 0.0))
         || (on(a[1], tile_m) && on(b[1], tile_m))
 }
-
-/// The no-tint value, for a form with no `Paint` part. Kept so the module reads
-/// the same as its siblings.
-#[allow(dead_code)]
-const NO_PAINT: u32 = palette::FURNITURE;
 
 #[cfg(test)]
 mod tests {

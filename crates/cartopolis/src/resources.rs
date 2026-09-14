@@ -1588,14 +1588,6 @@ pub struct CameraState {
     pub drive_lookahead: Vec2,
 }
 
-#[derive(Resource, Default)]
-#[allow(dead_code)] // drag/pan state kept for future mouse interaction
-pub struct MouseState {
-    pub last_position: Option<Vec2>,
-    pub is_dragging: bool,
-    pub is_panning: bool,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CameraMode {
     Avatar, // Default: camera follows avatar
