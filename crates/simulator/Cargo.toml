@@ -8,12 +8,24 @@ license.workspace = true
 [lib]
 name = "cartopolis_simulator"
 path = "src/lib.rs"
+# There is not one runnable doc fence in this crate — the only fenced block is
+# the ```lua sample in `scripting`'s module docs — but `cargo test` cannot know
+# that without running rustdoc over the crate to look, which it does on every
+# invocation of the suite. `cartopolis` and `cartopolis_geo` already collect
+# none, for a harder reason of their own (rustdoc is not given
+# `.cargo/config.toml`'s rustflags). Turn this back on in the same commit as the
+# first example worth executing.
+doctest = false
 
 # The *binary* keeps the short name: it is what a user runs, and unlike the
 # package name it never appears in a dependency graph or a `-p` flag.
 [[bin]]
 name = "simulator"
 path = "src/main.rs"
+# No tests in the binary — it parses the config and calls into the lib, which is
+# where the suite lives. Same reason as the client's shim: an enabled harness
+# costs a full link per `cargo test` to run zero tests.
+test = false
 
 [dependencies]
 anyhow.workspace = true

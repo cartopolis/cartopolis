@@ -28,6 +28,12 @@ doctest = false
 [[bin]]
 name = "cartopolis"
 path = "src/main.rs"
+# The shim has no tests and never will — everything real is in the lib, which is
+# the whole point of the split described in `main.rs`. Left on, `cargo test`
+# builds and links a *second* harness for it anyway (`Running unittests
+# src/main.rs ... 0 passed`), and that link is the crate's full dependency graph:
+# a ~120 MB binary produced on every run of the suite to execute nothing.
+test = false
 
 [features]
 # There is no `solo` feature any more (removed 2026-08-21): the in-process

@@ -9,6 +9,13 @@ edition.workspace = true
 # The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
 license.workspace = true
 
+[lib]
+# No runnable doc fence in the crate, so the rustdoc pass `cargo test` makes to
+# look for one finds nothing every time. The other three owned crates already
+# collect none; see `cartopolis_simulator`'s manifest for the same note, and turn
+# this back on in the same commit as the first example worth executing.
+doctest = false
+
 [dependencies]
 glam = { workspace = true }
 postcard = { workspace = true }
