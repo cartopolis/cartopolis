@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -174,8 +174,9 @@ reports this frame — [`touch_click()`](../../crates/cartopolis/src/systems/pla
 
 - **It is per press, not per session.** `ever()` already latches "has this
   session been touched" and is the wrong instrument here: a touchscreen laptop
-  driven with a mouse would inherit the double click, which nobody asked for.
-  A cursor has a hover and a still hand to say "this one"; a finger has neither.
+  driven with a mouse would be judged by the finger's timings and the finger's
+  44 pt slop whenever it was the mouse doing the clicking. Each press is asked
+  in the way the device that made it can answer.
 - **Both verdicts are shifted a frame.** The press is *written* in
   `emulate_mouse` and reaches `ButtonInput` on the next frame (that ordering is
   the module's own, and deliberate), so the answer has to arrive **with** the
@@ -189,6 +190,19 @@ reports this frame — [`touch_click()`](../../crates/cartopolis/src/systems/pla
   tap-drag-tap and a finger drumming on the glass both fire nothing. The window
   (`DOUBLE_TAP_SECS` = 0.4 s) sits under `LONG_PRESS_SECS` = 0.55 s on purpose:
   the two verbs must not be reachable by the same pair of timings.
+
+**Desktop was given the same verb a day later**, and the reason is worth
+recording because the first fix got it wrong: the bullet above used to say a
+cursor "has a hover and a still hand to say *this one*". It does — and it is
+still holding the same button down to orbit the camera, so a desktop drag over
+the city begins with exactly the `just_pressed` a tap does, and the card was
+opening on it. The mechanism is not shared, though, and should not be:
+`building_select` measures the cursor's pair itself, in twenty lines, because a
+cursor does not lift and come back — it sits where the first click left it, so a
+6 pt slop between successive *press* positions rejects a drag with nothing
+tracking the drag. That shortcut is unavailable to a finger, which is the whole
+reason `Press` carries `strayed` and `long_press_sent`.
+`docs/notes/selecting-a-building.md` has the pair as one decision.
 
 Nothing else asks for the double tap yet. It is a gate to reach for when a
 click consumer *opens* something over the map, not a new default.

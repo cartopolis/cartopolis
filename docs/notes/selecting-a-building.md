@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double tap", "touch", "see through walls", "avatar inside a building", bagviewer]
-updated: 2026-09-13
+triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double click", "double tap", "touch", "see through walls", "avatar inside a building", bagviewer]
+updated: 2026-09-14
 ---
 
 # Selecting a building, and seeing into one
@@ -45,29 +45,49 @@ which is a compile error that reads as "`prim_picking` is not a system set". The
 camera-cell / anchor / session trio is a `SystemParam` now (`PrimPickWorld`) — the
 same wall `free_camera::camera_controls` hit when touch input arrived.
 
-## On touch it takes two taps
+## It takes two presses, on both devices
 
-The emulated mouse presses `Left` on the frame a finger **lands**
+The first press is not a choice on either device, because on both it is *also*
+the first frame of a camera move.
+
+On touch the emulated mouse presses `Left` on the frame a finger **lands**
 (`systems::touch`, and it has to — a tap can be over in two frames). So can the
 first frame of a pan, of a pinch and of a long press, and all four reach
-`pick_building` as one indistinguishable `just_pressed`. The card was therefore
-opening over the map, with glass on a building nobody had chosen, at the start of
-every pan. Reported 2026-09-13 as "too easy to open on touch"; fixed by asking a
-finger for a **double tap** (`TouchGestures::touch_click` +
-`TouchGestures::double_tap`).
+`pick_building` as one indistinguishable `just_pressed`. Reported 2026-09-13 as
+"too easy to open on touch"; fixed by asking a finger for a **double tap**
+(`TouchGestures::touch_click` + `TouchGestures::double_tap`).
 
-Three things about the shape of that:
+Desktop was left on one click in that fix, on the reasoning that a cursor has a
+hover and a still hand to say "this one". It does — and it is still holding the
+same button down to orbit: `free_camera` rotates in Follow and Fly and pans in
+Earth on a held `Left`, so every drag over the city begins with a `just_pressed`
+here too, and this system sees only the press. By the time the drag has revealed
+itself as a drag, the card is open over the map and the glass is on a building
+nobody chose. Same accident, same answer (2026-09-14): **a double click**.
 
-- **Only the finger is asked twice.** The gate is per press, not per session, so
-  a mouse — which has a hover and a still hand to say "this one" — still selects
-  on one click, on a touchscreen laptop included.
-- **A single tap is inert, not a deselect.** The accident runs both ways: a card
-  dismissed by the first frame of a pan is the same annoyance. Deselect is the
-  card's ✕, a double tap on empty ground, or a re-anchor.
-- **Nothing else here changed.** A scripted prim is still worked on one tap and
-  the context menu is still the long press — a building is the only click
-  consumer that *opens* something over the map, which is what earns it the extra
-  tap. `docs/notes/touch-input.md` has the mechanism and the frame-shift trap.
+Four things about the shape of that:
+
+- **Each device is asked in the way it can answer.** A finger goes through the
+  gesture recogniser, which knows what else the hand was doing;
+  `touch::TouchGestures` carries the timings and the frame-shift trap
+  (`docs/notes/touch-input.md`). A cursor is measured in `building_select` itself
+  against `DOUBLE_CLICK_SECS` / `DOUBLE_CLICK_SLOP_PTS`, because a mouse press is
+  only ever visible on the frame it happens and *where* it happened is all a
+  double click is made of. The gate picks the branch per **press**, never per
+  session, so a touchscreen laptop driven with a mouse gets the mouse's rule.
+- **The cursor needs no drag tracking to reject a drag**, which is why its half
+  is twenty lines and the finger's is a state machine. A cursor does not lift and
+  come back: it is sitting where the first click left it. Press, orbit 200 px,
+  release, press — and the second press is 200 px from the first, well outside
+  the 6 pt slop. The finger's 44 pt slop cannot lean on that, hence `Press`'s
+  explicit `strayed` and `long_press_sent`.
+- **A single press is inert, not a deselect.** The accident runs both ways: a
+  card dismissed by the first frame of an orbit is the same annoyance. Deselect
+  is the card's ✕, a double press on empty ground, or a re-anchor.
+- **Nothing else here changed.** A scripted prim is still worked on one press and
+  the context menu is still the long press or the right button — a building is
+  the only click consumer that *opens* something over the map, which is what
+  earns it the extra press.
 
 ## Roof area and volume are measured, not fetched
 

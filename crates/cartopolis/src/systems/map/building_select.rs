@@ -68,6 +68,24 @@ const MAX_PICK_M: f32 = 900.0;
 /// over the ground, and a building is tens of metres across.
 const PICK_CORRIDOR_M: f64 = 120.0;
 
+/// How long after a click a second one still counts as one double click,
+/// seconds.
+///
+/// The same number the finger is given (`touch::DOUBLE_TAP_SECS`), and for once
+/// that is not symmetry for its own sake: it is the middle of the range the
+/// desktops themselves use (Windows ships 0.5 s, egui's own widgets 0.3), so
+/// there is nothing to be gained by the two halves of this one verb disagreeing.
+const DOUBLE_CLICK_SECS: f32 = 0.4;
+
+/// And how far apart on the glass the two presses may land, in window points.
+///
+/// A seventh of the finger's slop, because a cursor does not lift and come back
+/// — it is still sitting where the first click left it. That is also what makes
+/// a *drag* fail this test with nothing tracking the drag: press, orbit 200 px,
+/// release, press again, and the second press is measured from where the drag
+/// ended rather than from where it began.
+const DOUBLE_CLICK_SLOP_PTS: f32 = 6.0;
+
 /// How far outside its own wall the highlight's glass stands, metres.
 ///
 /// Enough to win the depth fight with the shell it is laid over, and small enough
@@ -196,27 +214,35 @@ fn prism(
 
 // ─── Picking ─────────────────────────────────────────────────────────────────
 
-/// Left-click a building to select it; click empty ground to deselect. **On
-/// touch it takes two taps**, and a single one leaves the selection alone.
+/// **Double-click a building to select it.** A single press — by cursor or by
+/// finger — leaves the selection exactly as it was.
 ///
 /// Runs **after** `picking::prim_picking` and stands down when that took the
 /// click: a prim is a thing somebody placed and a building is the scenery behind
 /// it, so a click that resolves to both is the prim's. Shift is likewise left
 /// alone — it is the prim marquee's modifier.
 ///
-/// **Why a finger is asked twice.** The emulated mouse presses `Left` the
-/// instant a finger lands (`systems::touch`), because a tap has to be a click
-/// somewhere — but so does the first frame of a pan, of a pinch and of a
-/// long press, and every one of those was opening the card over the map and
-/// laying glass on a building nobody had chosen. A cursor has a hover and a
-/// still hand to say "this one"; a finger has neither, so the second tap is
-/// what says it. The same reasoning makes a *single* tap inert rather than a
-/// deselect: a card dismissed by the first frame of a pan is the same accident
-/// the other way round, and the card has a ✕.
+/// **Why it is asked twice, on both.** The first press is not a choice on either
+/// device, because on both it is also the first frame of a camera move. On touch
+/// the emulated mouse presses `Left` the instant a finger lands
+/// (`systems::touch`), because a tap has to be a click somewhere — but so does
+/// the first frame of a pan, of a pinch and of a long press. On desktop
+/// `free_camera` orbits and pans on a held `Left`, so every drag over the city
+/// begins with a `just_pressed` here too, and this system sees only the press —
+/// by the time the drag has revealed itself as a drag, the card is open and the
+/// glass is on a building nobody chose. So the *second* press is what says "this
+/// one", and the two devices ask it in the two ways they can: a finger through
+/// `TouchGestures::double_tap`, which has a whole gesture recogniser behind it,
+/// and a cursor through [`DOUBLE_CLICK_SECS`] / [`DOUBLE_CLICK_SLOP_PTS`] here.
+///
+/// The same reasoning makes a single press inert rather than a **deselect**: a
+/// card dismissed by the first frame of an orbit is the same accident the other
+/// way round, and the card has a ✕.
 pub fn pick_building(
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     touch: Res<crate::systems::touch::TouchGestures>,
+    time: Res<Time>,
     egui: Res<EguiManager>,
     mut selection: ResMut<BuildingSelection>,
     facts: Res<BuildingFacts>,
@@ -226,12 +252,9 @@ pub fn pick_building(
     prim_click: Res<crate::systems::picking::PrimClick>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform, &GridCell), With<FreeCamera>>,
+    mut last_click: Local<Option<(Vec2, f32)>>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) || keyboard.pressed(KeyCode::ShiftLeft) {
-        return;
-    }
-    // A finger's first tap is not an answer — see the doc above.
-    if touch.touch_click() && !touch.double_tap() {
         return;
     }
     // The click belongs to egui, or to the prim it landed on — see
@@ -251,6 +274,25 @@ pub fn pick_building(
     let Some(cursor) = windows.iter().next().and_then(|w| w.cursor_position()) else {
         return;
     };
+    // The first press is not an answer on either device — see the doc above.
+    // A finger's verdict comes from the gesture recogniser, which knows what
+    // else the hand was doing; a cursor's is measured here, because a mouse
+    // press is only ever visible on the frame it happens and where it happened
+    // is all a double click is made of.
+    let asked_twice = if touch.touch_click() {
+        touch.double_tap()
+    } else {
+        let now = time.elapsed_secs();
+        let paired = closes_a_double_click(*last_click, cursor, now);
+        // A pair that closed starts the next one from scratch, so a hand
+        // drumming on the button opens the card on the second click and not on
+        // every click after it. `Press::paired` is the finger's half of this.
+        *last_click = (!paired).then_some((cursor, now));
+        paired
+    };
+    if !asked_twice {
+        return;
+    }
     let Ok((camera, cam_gt, cam_cell)) = cameras.single() else {
         return;
     };
@@ -263,6 +305,17 @@ pub fn pick_building(
     let dir = *ray.direction;
 
     selection.selected = nearest_building_along(&facts, &lod, geo, origin, dir);
+}
+
+/// Does a press here and now close a double click with the one remembered in
+/// `last`?
+///
+/// Pure, and both halves are in window points and seconds. `None` — no click
+/// yet, or the last one already closed a pair — is never half of one.
+fn closes_a_double_click(last: Option<(Vec2, f32)>, at: Vec2, now: f32) -> bool {
+    last.is_some_and(|(was, when)| {
+        now - when <= DOUBLE_CLICK_SECS && at.distance(was) <= DOUBLE_CLICK_SLOP_PTS
+    })
 }
 
 /// The offset between render space and the anchored world frame: the floating
@@ -914,5 +967,68 @@ mod tests {
     fn a_degenerate_prism_builds_nothing() {
         assert!(prism_mesh(&square(10.0), 4.0, 4.0).is_none());
         assert!(prism_mesh(&[Vec2::ZERO, Vec2::X], 0.0, 3.0).is_none());
+    }
+
+    // ─── The desktop double click ────────────────────────────────────────────
+
+    /// The accident this exists to stop: the press that starts a camera orbit.
+    #[test]
+    fn one_click_is_never_a_double_click() {
+        assert!(!closes_a_double_click(None, Vec2::new(100.0, 100.0), 0.0));
+    }
+
+    #[test]
+    fn two_clicks_in_the_same_place_are_a_double_click() {
+        let first = Some((Vec2::new(100.0, 100.0), 1.0));
+        assert!(closes_a_double_click(
+            first,
+            Vec2::new(100.0, 100.0),
+            1.0 + DOUBLE_CLICK_SECS * 0.5
+        ));
+    }
+
+    #[test]
+    fn a_slow_second_click_is_not_one() {
+        let first = Some((Vec2::new(100.0, 100.0), 1.0));
+        assert!(!closes_a_double_click(
+            first,
+            Vec2::new(100.0, 100.0),
+            1.0 + DOUBLE_CLICK_SECS + 0.01
+        ));
+    }
+
+    /// A press, a 200 px orbit, a release, a press: the second one is measured
+    /// from where the drag *ended*, which is what makes a drag fail this test
+    /// with nothing at all tracking the drag.
+    #[test]
+    fn a_drag_is_not_half_of_a_double_click() {
+        let first = Some((Vec2::new(100.0, 100.0), 1.0));
+        assert!(!closes_a_double_click(first, Vec2::new(300.0, 100.0), 1.05));
+    }
+
+    /// The cursor's half of `Press::paired`: clearing the memory on a closed
+    /// pair is what stops a drumming hand firing on every click after the
+    /// second.
+    #[test]
+    fn a_closed_pair_does_not_start_the_next_one() {
+        let mut last = None;
+        let at = Vec2::new(100.0, 100.0);
+        let mut fired = Vec::new();
+        for (i, t) in [0.0_f32, 0.1, 0.2, 0.3].into_iter().enumerate() {
+            let paired = closes_a_double_click(last, at, t);
+            last = (!paired).then_some((at, t));
+            if paired {
+                fired.push(i);
+            }
+        }
+        assert_eq!(fired, vec![1, 3], "the second beat and the fourth, not 1-3");
+    }
+
+    /// The two devices must not be reachable by one another's timings: a finger
+    /// that dawdles is asking for the context menu (`touch::LONG_PRESS_SECS`,
+    /// 0.55 s), and the cursor's window is the same 0.4 s the finger gets.
+    #[test]
+    fn the_double_click_window_is_under_the_long_press() {
+        assert!(DOUBLE_CLICK_SECS < 0.55);
     }
 }
