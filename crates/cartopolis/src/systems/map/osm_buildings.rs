@@ -749,11 +749,19 @@ impl Default for OsmBuildings {
             detail_entities: Vec::new(),
             far: CellStream::new(Policy {
                 // Paced by the endpoint (`overpass_pace`): concurrent against our
-                // own instance, serial against a public one — which is what a
-                // shared endpoint is owed, and where the spacing comes from the
-                // throttle inside the fetch.
+                // own instance, serial and spaced against a public one — which is
+                // what a shared endpoint is owed.
+                //
+                // **Both halves of the pace belong here**, not in the fetch. The
+                // spacing used to be a `thread::sleep` the task took after its own
+                // request, which paces by parking an `IoTaskPool` thread for 800 ms
+                // a cell — every other fetch in the app queues behind it — and
+                // which the web build had to `cfg` away, leaving it with no pacing
+                // against a public instance at all. The dispatcher spaces
+                // *dispatches*, costs no thread, and is the same thing
+                // `data_layers` already does with this function's answer.
                 max_in_flight: overpass_pace().0,
-                min_interval_secs: 0.0,
+                min_interval_secs: overpass_pace().1.as_secs_f64(),
                 max_attempts: FAR_CELL_MAX_ATTEMPTS,
                 backoff_secs: FAR_CELL_BACKOFF_SECS,
                 backoff_doublings: FAR_CELL_BACKOFF_DOUBLINGS,
@@ -2876,17 +2884,6 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
          way[\"building:part\"]({south},{west},{north},{east}););out geom;"
     );
     let fetched = overpass_query(&query).await?;
-    // Space out live queries against a public instance so a multi-cell patch
-    // doesn't burst-trip its limit; zero (skipped) against our own host.
-    // Native only: a blocking sleep on the pool thread (as the old worker did); the
-    // wasm build skips it (it cannot block) and leans on cache + the far dispatcher.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let (_, throttle) = overpass_pace();
-        if !throttle.is_zero() {
-            std::thread::sleep(throttle);
-        }
-    }
     // Validate *before* persisting: `parse_buildings` rejects a `remark` response
     // (Overpass's 200-status error channel), so a transient timeout is never cached
     // as a permanently-empty cell.

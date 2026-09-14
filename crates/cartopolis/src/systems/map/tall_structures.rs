@@ -126,13 +126,6 @@ async fn fetch_cell_text(cx: i64, cy: i64) -> Result<String, String> {
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, TALL_ZOOM);
     let bbox = format!("{south},{west},{north},{east}");
     let fetched = overpass_query(&tall_query(&bbox)).await?;
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let (_, throttle) = crate::systems::osm_buildings::overpass_pace();
-        if !throttle.is_zero() {
-            std::thread::sleep(throttle);
-        }
-    }
     storage::put(storage::Namespace::Cache, &key, fetched.as_bytes()).await;
     Ok(fetched)
 }
@@ -534,8 +527,13 @@ impl Default for TallStructures {
             terrain_revision: 0,
             enabled_was: true,
             cells: CellStream::new(Policy {
+                // Both halves of the endpoint's pace, for the reason
+                // `osm_buildings`' own far stream states: the spacing is the
+                // dispatcher's job, not a `thread::sleep` parking a pool thread.
                 max_in_flight: crate::systems::osm_buildings::overpass_pace().0,
-                min_interval_secs: 0.0,
+                min_interval_secs: crate::systems::osm_buildings::overpass_pace()
+                    .1
+                    .as_secs_f64(),
                 max_attempts: MAX_ATTEMPTS,
                 backoff_secs: BACKOFF_SECS,
                 backoff_doublings: BACKOFF_DOUBLINGS,
