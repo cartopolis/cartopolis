@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
 triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
-updated: 2026-09-11
+updated: 2026-09-14
 ---
 
 # Where the frames go, and where they do not
@@ -276,12 +276,63 @@ conclusions hold; its cost model does not.
 The real duplicate is `PAINT_ORDER` listing `buildings` and `streets` **twice**.
 The decode is memoised; the path building and the bounds scan are not.
 
+### …and sharing the rest of that duplicate was measured and rejected (2026-09-14)
+
+The obvious next step is to memoise the other two per-layer things the second pass
+redoes: `geometry_bounds`, which walks every coordinate of every feature, and the
+`streets` paint order, which is a filter plus a sort whose comparator calls
+`street_style` and two flag probes — O(n log n) attribute lookups, rebuilt for the
+casing pass and again for the fill pass. It was built (a `HashMap` per concern
+keyed on `Layer::layer_index`, the sort decorated so the key is read once), it is
+exactly value-preserving, and `culling_off_screen_features_changes_no_pixels` and
+the allocation budgets both pass with it in.
+
+**It buys nothing measurable.** Paired `bench_overzoom_cull` runs, release, this
+container, per tile:
+
+| factor 2, cull | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| before | 44.66 ms | 40.84 ms | 38.53 ms |
+| after | 36.96 ms | 42.56 ms | 40.46 ms |
+
+The first pair looked like −17 % and was an ordering artefact — that run's *before*
+is simply the slowest of the three befores. Runs 2 and 3 put the memoised version
+marginally behind. The arithmetic agrees and is the part to keep: the duplicated
+bounds scan is a linear pass over ~50k coordinates, order **50 µs**, against a tile
+that costs 18–45 ms. It is a tenth of a percent of the thing it sits inside.
+
+So the duplicate is real and it is **not where the time is** — the time is
+tiny-skia's scan conversion, as `tile-raster-cost.md` has said throughout. Two
+hash maps and a memo protocol in the hottest loop in the tree is not worth a
+saving under the noise floor. Reverted. Re-open only with a profile that puts
+`geometry_bounds` somewhere visible.
+
+**The path building genuinely cannot be shared** either, which is worth stating so
+it is not tried: the two passes over a layer build *different* paths from the same
+features — a fill against an outline, a casing stroke against a fill stroke — and
+the batching runs are keyed on colour and width, so there is nothing common to
+keep.
+
 ## Open, with the reason they are still open
 
-- **`osm_buildings` blocks io-pool threads with `std::thread::sleep`** on three
-  paths inside `async fn`s. `async-io` is in the graph only transitively; making
-  it a direct dependency, with the reactor thread that implies on Android, is a
-  decision to take on its own.
+- **`osm_buildings` blocks io-pool threads with `std::thread::sleep`** on two
+  paths inside `async fn`s — the retry backoff and `pace_fallback`, both inside
+  `overpass_query`, both spanning attempts and endpoints within a single call so
+  a dispatcher cannot express them. `async-io` is in the graph only transitively;
+  making it a direct dependency, with the reactor thread that implies on Android,
+  is a decision to take on its own.
+
+  It was three paths per *module* until 2026-09-14, and those were a different
+  thing: `osm_buildings`, `street_detail` and `tall_structures` each paced their
+  own per-cell Overpass queries by sleeping 800 ms on the pool thread *after*
+  their own request. The spacing is the dispatcher's job — `data_layers` had
+  already moved it there — so each stream's `Policy` now carries
+  `overpass_pace().1` and the sleeps are gone. Two things came with it. The
+  spacing had to be `cfg`-ed away on wasm, which cannot block, so the web build
+  had **no** pacing against a public instance at all; it has it now, from the same
+  declaration. And the parking was never only its own stream's problem — a
+  `IoTaskPool` thread held for 800 ms a cell is one every other fetch in the app
+  queues behind.
 - **egui is a second full-resolution pass over the swapchain** with `LoadOp::Load`
   — a full tile-memory load and store of the 1080×2340 output, every frame, purely
   to composite the UI. Merging it into the `upscaling` pass removes the round trip
