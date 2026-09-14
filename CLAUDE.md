@@ -6,6 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Scope builds to the crate you changed — avoid `cargo build` without `-p` unless you need an integration check.
 
+**Inside a build slot, do the opposite for anything that runs the tests.** A slot
+is warmed with `cargo check --workspace --exclude cartopolis_android --all-targets`
+and `cargo test --workspace --exclude cartopolis_android --no-run`, and the build
+*scope* is part of the artifact key: under resolver v2 a `-p` invocation unifies
+features over only the packages it selects, so it resolves a different feature set
+for the shared dependencies and re-fingerprints every crate above them. Measured
+2026-09-14 in a slot where the warmed `--workspace` command was a genuine no-op:
+`cargo check -p cartopolis` cost **72.7 s** and `cargo test -p cartopolis --no-run`
+cost **190.1 s**, and the second artifact set took the slot to 25 GB against the
+warmer's 18 GB ceiling — which costs the *next* agent a ~500 s re-warm. Prefer
+
+```bash
+cargo test --locked --workspace --exclude cartopolis_android   # what CI runs, what the slot is warm for
+```
+
+and keep `-p` for a session that stays in one crate and will pay the first build
+once. `docs/notes/test-suite-build-cost.md` has the measurements.
+
 ```bash
 # Type-check shared protocol types
 cargo check -p cartopolis_core
@@ -39,10 +57,24 @@ crates/cartopolis_android/build-apk.sh          # → $CARGO_TARGET_DIR/android/
 
 Unit tests live in `#[cfg(test)]` modules inside `cartopolis`, which is a lib target
 plus a shim bin, so `cargo test -p cartopolis` links the rlib rather than rebuilding
-the whole crate under `cfg(test)`. Note `cargo check`
+the whole crate under `cfg(test)`. Both shim bins (`cartopolis`, `simulator`) carry
+`test = false` and all four owned libs carry `doctest = false`, so `cargo test`
+links a harness only for targets that have tests to run — the client's shim alone
+was a 121.8 MB link per suite build to execute zero of them. Note `cargo check`
 does **not** compile `cfg(test)` code — the suite silently rotted through the egui 0.35
 migration until someone ran it, so run the tests, not just a check, when touching egui
 or the building geometry.
+
+**Running the tests is free; building them is the cost.** 1,531 tests execute in
+under three seconds. Nothing is gained by making a test faster, and a test that
+buys real coverage costs nothing to run.
+
+**Recorded tiles live in `crates/geo/src/testdata.rs`, embedded once.** Reach for
+`testdata::groningen()` rather than a fresh `include_bytes!` — the macro does not
+deduplicate, and eleven modules each naming the same 495 KB fixture put twelve
+copies of it in the test binary. `testdata`'s own tests pin both that rule and the
+`static`-not-`const` half of it (a `const` is substituted per use site, so it lands
+in several codegen units anyway).
 
 **Linker:** `.cargo/config.toml` uses `clang + lld` on Linux. If linking is slow, switch to `mold` (`fuse-ld=mold`).
 
