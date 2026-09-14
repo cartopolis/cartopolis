@@ -98,7 +98,7 @@ const RAIN_EPSILON: f32 = 0.01;
 /// dropped on each pass, which is what keeps this from growing with the session.
 #[derive(Resource, Default)]
 pub struct DrySurfaces {
-    plain: HashMap<AssetId<StandardMaterial>, DryLook>,
+    plain: HashMap<AssetId<crate::systems::ground_detail::GroundMaterial>, DryLook>,
     roads: HashMap<AssetId<RoadMaterial>, DryLook>,
     /// The wetness the materials were last written for, so a steady state costs
     /// nothing at all.
@@ -125,7 +125,7 @@ pub fn apply_wet_surfaces(
     dev: Res<DevPanelState>,
     surfaces: Res<MapSurfaces>,
     mut dry: ResMut<DrySurfaces>,
-    mut plain: ResMut<Assets<StandardMaterial>>,
+    mut plain: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     mut roads: ResMut<Assets<RoadMaterial>>,
 ) {
     let wet = dev.precipitation.clamp(0.0, 1.0);
@@ -154,8 +154,8 @@ pub fn apply_wet_surfaces(
         let look = *dry
             .plain
             .entry(handle.id())
-            .or_insert_with(|| DryLook::of(&mat));
-        look.apply(&mut mat, wet);
+            .or_insert_with(|| DryLook::of(&mat.base));
+        look.apply(&mut mat.base, wet);
     }
     for (group, handle) in surfaces.road_materials() {
         live_roads.push(handle.id());

@@ -71,15 +71,34 @@ const RUNG_SHADER_LOCATION: u32 = 8;
 /// Roads and their casings, ordered by [`ATTRIBUTE_ROAD_RUNG`].
 pub type RoadMaterial = ExtendedMaterial<StandardMaterial, RoadDepthExtension>;
 
-/// Adds nothing but the vertex stage — the fragment is `StandardMaterial`'s,
-/// unchanged, which is what keeps a road lit by the same sun, shadow cascades,
-/// fog and environment map as the ground it lies on.
+/// The vertex stage that applies the depth rung, plus the sub-metre ground slope the
+/// flat surfaces carry (`systems::ground_detail`) — a carriageway's camber is exactly
+/// the kind of half-metre relief no mesh here can hold.
+///
+/// The three bindings and their meaning are `GroundDetailExtension`'s, deliberately at
+/// the same numbers, so the *fragment* shader is literally the same file. Two material
+/// types, two vertex stages, one description of what the ground looks like up close.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
-pub struct RoadDepthExtension {}
+pub struct RoadDepthExtension {
+    /// xy: the detail box's centre in render-space XZ. z: 1 / its half-extent.
+    /// w: strength, `0.0` when there is no tier to read.
+    #[uniform(100)]
+    pub detail: Vec4,
+    #[texture(101)]
+    #[sampler(102)]
+    pub slope: Option<Handle<Image>>,
+}
 
 impl MaterialExtension for RoadDepthExtension {
     fn vertex_shader() -> ShaderRef {
         "shaders/road_depth.wgsl".into()
+    }
+
+    /// `ground_detail`'s, not one of our own: the ladder is a *vertex* trick and the
+    /// fragment has nothing to add to it beyond the slope every other ground surface
+    /// already gets.
+    fn fragment_shader() -> ShaderRef {
+        "shaders/ground_detail.wgsl".into()
     }
 
     // `prepass_vertex_shader` is deliberately left at bevy's default. The rung is

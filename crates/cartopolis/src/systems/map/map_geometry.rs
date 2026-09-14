@@ -40,6 +40,7 @@ use crate::systems::furniture;
 use crate::systems::furniture::FurnitureMask;
 use crate::systems::globe::GlobeState;
 use crate::systems::grass::GrassAreas;
+use crate::systems::ground_detail::{GroundDetailExtension, GroundMaterial};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::moorings;
@@ -160,12 +161,12 @@ pub struct CellStores<'w> {
 /// the three it already held.
 ///
 /// There are three material types because there are three shaders. The flat
-/// ground groups are plain `StandardMaterial`; water owns its wave shader; roads
-/// carry the depth ladder in a vertex attribute (`systems::road_depth`) and so
-/// need a pipeline that declares it.
+/// ground groups carry the sub-metre slope (`systems::ground_detail`); water owns
+/// its wave shader; roads carry the depth ladder in a vertex attribute
+/// (`systems::road_depth`) and so need a pipeline that declares it.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SurfaceMaterials<'w> {
-    plain: ResMut<'w, Assets<StandardMaterial>>,
+    plain: ResMut<'w, Assets<GroundMaterial>>,
     water: ResMut<'w, Assets<WaterMaterial>>,
     road: ResMut<'w, Assets<RoadMaterial>>,
     images: ResMut<'w, Assets<Image>>,
@@ -300,7 +301,7 @@ pub struct MapSurfaces {
     /// and the anchor generation (`platform::stream`).
     stream: CellStream<Cell, Tessellated>,
     /// One material per surface group, created on first use.
-    materials: HashMap<SurfaceGroup, Handle<StandardMaterial>>,
+    materials: HashMap<SurfaceGroup, Handle<GroundMaterial>>,
     /// The same, for the road groups — they carry the depth ladder in a vertex
     /// attribute, so they draw with [`RoadMaterial`] and cannot share the map
     /// above. Still one handle per group: the ordering is per *vertex* precisely
@@ -974,7 +975,7 @@ impl MapSurfaces {
     /// these handles — one write per group repaints every live cell, which is the
     /// same reason the handles are shared in the first place.
     #[must_use]
-    pub fn material(&self, group: SurfaceGroup) -> Option<&Handle<StandardMaterial>> {
+    pub fn material(&self, group: SurfaceGroup) -> Option<&Handle<GroundMaterial>> {
         self.materials.get(&group)
     }
 
@@ -994,8 +995,8 @@ impl MapSurfaces {
     pub(crate) fn group_material(
         &mut self,
         group: SurfaceGroup,
-        materials: &mut Assets<StandardMaterial>,
-    ) -> Handle<StandardMaterial> {
+        materials: &mut Assets<GroundMaterial>,
+    ) -> Handle<GroundMaterial> {
         debug_assert!(
             !matches!(group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)),
             "road materials carry a texture and are created by update_map_surfaces"
@@ -1004,11 +1005,14 @@ impl MapSurfaces {
             .entry(group)
             .or_insert_with(|| {
                 let [r, g, b] = group.base_color();
-                materials.add(StandardMaterial {
-                    base_color: Color::srgb(r, g, b),
-                    perceptual_roughness: group.perceptual_roughness(),
-                    depth_bias: group.depth_bias(),
-                    ..default()
+                materials.add(GroundMaterial {
+                    base: StandardMaterial {
+                        base_color: Color::srgb(r, g, b),
+                        perceptual_roughness: group.perceptual_roughness(),
+                        depth_bias: group.depth_bias(),
+                        ..default()
+                    },
+                    extension: ground_detail_for(group),
                 })
             })
             .clone()
@@ -1020,7 +1024,7 @@ impl MapSurfaces {
     /// hard surfaces take the full treatment.
     pub(crate) fn ground_materials(
         &self,
-    ) -> impl Iterator<Item = (SurfaceGroup, &Handle<StandardMaterial>)> {
+    ) -> impl Iterator<Item = (SurfaceGroup, &Handle<GroundMaterial>)> {
         self.materials
             .iter()
             .map(|(group, handle)| (*group, handle))
@@ -1420,7 +1424,7 @@ pub fn update_map_surfaces(
                         let base = road_base_material(sm.group, &mut mats.images);
                         mats.road.add(RoadMaterial {
                             base,
-                            extension: RoadDepthExtension {},
+                            extension: RoadDepthExtension::default(),
                         })
                     })
                     .clone();
@@ -1446,22 +1450,25 @@ pub fn update_map_surfaces(
                     .entry(sm.group)
                     .or_insert_with(|| {
                         let [r, g, b] = sm.group.base_color();
-                        mats.plain.add(StandardMaterial {
-                            base_color: Color::srgb(r, g, b),
-                            perceptual_roughness: sm.group.perceptual_roughness(),
-                            metallic_roughness_texture: finish,
-                            // UV0 on an area surface is **metres from the map
-                            // anchor**, so this is what turns a distance into a
-                            // number of repeats. Set unconditionally: with no
-                            // texture bound there is nothing for it to transform,
-                            // and a field that is only sometimes right is worse
-                            // than one that is always the same.
-                            uv_transform: ground_finish_uv(),
-                            // What actually resolves the coplanar ground stack —
-                            // see `SurfaceGroup::depth_bias`. Physical separation
-                            // is only millimetres and cannot survive the far plane.
-                            depth_bias: sm.group.depth_bias(),
-                            ..default()
+                        mats.plain.add(GroundMaterial {
+                            base: StandardMaterial {
+                                base_color: Color::srgb(r, g, b),
+                                perceptual_roughness: sm.group.perceptual_roughness(),
+                                metallic_roughness_texture: finish,
+                                // UV0 on an area surface is **metres from the map
+                                // anchor**, so this is what turns a distance into a
+                                // number of repeats. Set unconditionally: with no
+                                // texture bound there is nothing for it to transform,
+                                // and a field that is only sometimes right is worse
+                                // than one that is always the same.
+                                uv_transform: ground_finish_uv(),
+                                // What actually resolves the coplanar ground stack —
+                                // see `SurfaceGroup::depth_bias`. Physical separation
+                                // is only millimetres and cannot survive the far plane.
+                                depth_bias: sm.group.depth_bias(),
+                                ..default()
+                            },
+                            extension: ground_detail_for(sm.group),
                         })
                     })
                     .clone();
@@ -1604,16 +1611,19 @@ pub fn resolve_bridge_decks(
             .entry(SurfaceGroup::BridgeDeck)
             .or_insert_with(|| {
                 let [r, g, b] = SurfaceGroup::BridgeDeck.base_color();
-                mats.plain.add(StandardMaterial {
-                    base_color: Color::srgb(r, g, b),
-                    perceptual_roughness: SurfaceGroup::BridgeDeck.perceptual_roughness(),
-                    depth_bias: SurfaceGroup::BridgeDeck.depth_bias(),
-                    // The fascia is a single band of quads with no inside to
-                    // speak of, and a ring's winding out of MVT is not something
-                    // to bet a whole structure's visibility on.
-                    double_sided: true,
-                    cull_mode: None,
-                    ..default()
+                mats.plain.add(GroundMaterial {
+                    base: StandardMaterial {
+                        base_color: Color::srgb(r, g, b),
+                        perceptual_roughness: SurfaceGroup::BridgeDeck.perceptual_roughness(),
+                        depth_bias: SurfaceGroup::BridgeDeck.depth_bias(),
+                        // The fascia is a single band of quads with no inside to
+                        // speak of, and a ring's winding out of MVT is not something
+                        // to bet a whole structure's visibility on.
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    },
+                    extension: ground_detail_for(SurfaceGroup::BridgeDeck),
                 })
             })
             .clone();
@@ -1661,7 +1671,7 @@ pub fn resolve_bridge_decks(
                     let base = road_base_material(sm.group, &mut mats.images);
                     mats.road.add(RoadMaterial {
                         base,
-                        extension: RoadDepthExtension {},
+                        extension: RoadDepthExtension::default(),
                     })
                 })
                 .clone();
@@ -1874,6 +1884,26 @@ fn build_deck_mesh(decks: &[BridgeDeck], heights: &[f32]) -> SurfaceMesh {
         colors: Vec::new(),
         rungs: Vec::new(),
     }
+}
+
+/// What a group's material is created with, for the sub-metre slope layer.
+///
+/// Zero for the ground — `ground_detail::refresh_ground_detail` fills it in on the
+/// frame after, and its material count is what makes a newly streamed cell get one.
+/// **Opted out for the volumetric groups**: a canopy's normals describe the tree and
+/// a bench's describe the bench, which is the same rule `stand_on_terrain` follows
+/// when it refuses to re-derive their normals from the field.
+fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
+    if matches!(
+        group,
+        SurfaceGroup::Canopy | SurfaceGroup::Trunk | SurfaceGroup::Furniture
+    ) {
+        return GroundDetailExtension {
+            params: crate::systems::ground_detail::DETAIL_OPTED_OUT,
+            slope: None,
+        };
+    }
+    GroundDetailExtension::default()
 }
 
 /// The `StandardMaterial` half of a road or casing material.

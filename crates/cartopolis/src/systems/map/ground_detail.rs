@@ -112,6 +112,13 @@ impl GroundDetail {
     }
 }
 
+/// The `params` a surface that must never take the detail is created with.
+///
+/// The volumetric groups — canopy, trunk, street furniture — share this material type
+/// so there are not two, but a tree's normals describe the tree, not the hill.
+/// [`refresh_ground_detail`] leaves any material with a negative strength alone.
+pub const DETAIL_OPTED_OUT: Vec4 = Vec4::new(0.0, 0.0, 0.0, -1.0);
+
 /// How much of the measured residual slope reaches the normal.
 ///
 /// One, and it is written down rather than left implicit: the texture is a
@@ -226,15 +233,19 @@ pub fn refresh_ground_detail(
     detail: Res<GroundDetail>,
     origin: Res<GridCellOrigin>,
     mut materials: ResMut<Assets<GroundMaterial>>,
-    mut applied: Local<Option<(u32, Vec2)>>,
+    mut roads: ResMut<Assets<crate::systems::road_depth::RoadMaterial>>,
+    mut applied: Local<Option<(u32, Vec2, usize)>>,
 ) {
-    let want = (detail.revision, origin.0);
+    // The count is the third of the three, and it is not padding: a ground material
+    // created *after* the last write — a cell that streamed in, a tile that landed —
+    // would otherwise keep the zero strength it was built with until the box happened
+    // to move again. `wet_surfaces::DryLook` guards itself the same way and for the
+    // same reason.
+    let want = (detail.revision, origin.0, materials.len() + roads.len());
     if *applied == Some(want) {
         return;
     }
-    // Nothing to write into yet — but do not record the state as applied, or the
-    // first materials to be created after this frame would never be corrected.
-    if materials.is_empty() {
+    if materials.is_empty() && roads.is_empty() {
         return;
     }
     *applied = Some(want);
@@ -245,14 +256,23 @@ pub fn refresh_ground_detail(
         let Some(mut material) = materials.get_mut(id) else {
             continue;
         };
-        // A negative strength will mean "opted out, never overwrite" when the
-        // volumetric surface groups join this material type — a canopy's normals
-        // describe the tree, not the hill. Nothing sets it yet: the clipmap tiles are
-        // the only holders and every one of them wants the detail.
+        // Opted out at creation and never overwritten — see [`DETAIL_OPTED_OUT`].
         if material.extension.params.w < 0.0 {
             continue;
         }
         material.extension.params = params;
+        if material.extension.slope != slope {
+            material.extension.slope = slope.clone();
+        }
+    }
+    // The road groups carry the same three bindings on their own extension, because
+    // they need a vertex stage of their own and cannot share the material type.
+    let road_ids: Vec<AssetId<crate::systems::road_depth::RoadMaterial>> = roads.ids().collect();
+    for id in road_ids {
+        let Some(mut material) = roads.get_mut(id) else {
+            continue;
+        };
+        material.extension.detail = params;
         if material.extension.slope != slope {
             material.extension.slope = slope.clone();
         }

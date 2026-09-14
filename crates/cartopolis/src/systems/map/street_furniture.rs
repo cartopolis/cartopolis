@@ -63,7 +63,7 @@ impl FurnitureLod {
 pub fn update_furniture_lod(
     mut lod: ResMut<FurnitureLod>,
     dl: Res<crate::systems::data_layers::DataLayers>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     surfaces: Res<MapSurfaces>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -90,7 +90,7 @@ pub fn update_furniture_lod(
     let paving = paving_base(factor);
     if let Some(handle) = surfaces.material(SurfaceGroup::Furniture) {
         if let Some(mut mat) = materials.get_mut(handle) {
-            mat.base_color = Color::linear_rgb(paving[0], paving[1], paving[2]);
+            mat.base.base_color = Color::linear_rgb(paving[0], paving[1], paving[2]);
         }
     }
 

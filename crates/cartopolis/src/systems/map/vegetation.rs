@@ -72,7 +72,7 @@ impl VegetationLod {
 pub fn update_vegetation_lod(
     mut lod: ResMut<VegetationLod>,
     dl: Res<crate::systems::data_layers::DataLayers>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     surfaces: Res<MapSurfaces>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -131,7 +131,7 @@ pub fn update_vegetation_lod(
 }
 
 fn set_base_color(
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<crate::systems::ground_detail::GroundMaterial>,
     surfaces: &MapSurfaces,
     group: SurfaceGroup,
     linear: [f32; 3],
@@ -142,5 +142,5 @@ fn set_base_color(
     let Some(mut mat) = materials.get_mut(handle) else {
         return;
     };
-    mat.base_color = Color::linear_rgb(linear[0], linear[1], linear[2]);
+    mat.base.base_color = Color::linear_rgb(linear[0], linear[1], linear[2]);
 }

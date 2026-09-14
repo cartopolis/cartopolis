@@ -1333,6 +1333,7 @@ pub fn update_street_detail(
     mut sd: ResMut<StreetDetail>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut ground: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
     time: Res<Time>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -1493,6 +1494,7 @@ pub fn update_street_detail(
                     &mut sd,
                     &mut meshes,
                     &mut materials,
+                    &mut ground,
                     surfaces,
                     &veg_lod,
                     root,
@@ -1543,6 +1545,7 @@ fn spawn_cell(
     sd: &mut StreetDetail,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    ground: &mut Assets<crate::systems::ground_detail::GroundMaterial>,
     surfaces: &mut crate::systems::map_geometry::MapSurfaces,
     veg_lod: &crate::systems::vegetation::VegetationLod,
     root: Entity,
@@ -1566,7 +1569,7 @@ fn spawn_cell(
                 };
                 // The shared vegetation material + marker: the altitude fade and
                 // the Trees toggle then treat surveyed and scattered trees alike.
-                let material = surfaces.group_material(group, materials);
+                let material = surfaces.group_material(group, ground);
                 commands
                     .spawn((
                         placement,

@@ -383,15 +383,26 @@ Measured over the Veluwe at 45 m, settled, the same viewpoint with the switch on
 off: `ground_detail_ready` true / false, `ground_detail_sample_m` 0.50 / 0.00, and
 14.0 % of pixels differ (5.7 % by more than 4/255).
 
-**It is on the clipmap tiles only.** The vector ground surfaces — paving,
-carriageways, verges, squares, which are what you look at in a city — and the road
-groups still take the plain path. Extending it there means converting
-`map_geometry`'s shared per-group material map and the four consumers that repaint it
-(`vegetation`, `wet_surfaces`, `street_furniture`, `street_detail`), and adding the
-same three bindings to `road_depth.wgsl`. The volumetric groups must be kept *out* of
-it: a tree's normals describe the tree, and giving a canopy the ground's sub-metre
-slope is the mistake `stand_on_terrain` already refuses to make. `refresh_ground_detail`
-reserves a negative `params.w` for that opt-out.
+**Everything flat on the ground carries it**: the clipmap tiles, the vector surface
+groups, and the roads. The roads reach it a different way and it is worth knowing why —
+they need a *vertex* stage of their own for the depth ladder, so they cannot share the
+material type, but they declare the same three bindings at the same numbers and name
+`shaders/ground_detail.wgsl` as their **fragment** shader. Two material types, two
+vertex stages, one description of what the ground looks like up close.
+
+The volumetric groups — canopy, trunk, street furniture — are deliberately **out** of
+it. A tree's normals describe the tree, and giving a canopy the ground's sub-metre
+slope is the same mistake `stand_on_terrain` refuses to make when it keeps their
+normals instead of re-deriving them from the field. They are created with a negative
+`params.w`, which `refresh_ground_detail` treats as a permanent opt-out.
+
+Two details that are easy to get wrong. `refresh_ground_detail` keys its
+already-applied test on the **material count** as well as the box and the origin,
+because a cell that streams in after the last write would otherwise keep the zero
+strength it was built with until the box next moved; `wet_surfaces::DrySurfaces` guards
+itself the same way. And the ground materials must share *one* `Image` handle, rewritten
+in place on each re-centre — handing out a new handle would rebuild hundreds of bind
+groups for a buffer whose size never changes.
 
 ## Still flat, deliberately or otherwise
 
