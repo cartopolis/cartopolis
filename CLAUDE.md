@@ -6,23 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Scope builds to the crate you changed — avoid `cargo build` without `-p` unless you need an integration check.
 
-**Inside a build slot, do the opposite for anything that runs the tests.** A slot
-is warmed with `cargo check --workspace --exclude cartopolis_android --all-targets`
-and `cargo test --workspace --exclude cartopolis_android --no-run`, and the build
-*scope* is part of the artifact key: under resolver v2 a `-p` invocation unifies
-features over only the packages it selects, so it resolves a different feature set
-for the shared dependencies and re-fingerprints every crate above them. Measured
-2026-09-14 in a slot where the warmed `--workspace` command was a genuine no-op:
-`cargo check -p cartopolis` cost **72.7 s** and `cargo test -p cartopolis --no-run`
-cost **190.1 s**, and the second artifact set took the slot to 25 GB against the
-warmer's 18 GB ceiling — which costs the *next* agent a ~500 s re-warm. Prefer
+**Prefer the workspace-scoped commands inside a build slot.** A slot is warmed
+with `cargo check --workspace --exclude cartopolis_android --all-targets` and
+`cargo test --workspace --exclude cartopolis_android --no-run`, so those are
+already built; `-p` skips only packages the slot has. It matters most for
+`cargo check -p cartopolis`, which resolves 19 units' worth of different features
+from the warmed `--all-targets` check (a lib-only build genuinely has no
+dev-dependencies) and so builds its own artifact set. `cargo test -p cartopolis`
+is free either way since the `approx` fix — see
+`docs/notes/test-suite-build-cost.md`, which also has what a build and a run
+actually cost.
 
 ```bash
 cargo test --locked --workspace --exclude cartopolis_android   # what CI runs, what the slot is warm for
 ```
 
-and keep `-p` for a session that stays in one crate and will pay the first build
-once. `docs/notes/test-suite-build-cost.md` has the measurements.
 
 ```bash
 # Type-check shared protocol types
@@ -65,9 +63,15 @@ does **not** compile `cfg(test)` code — the suite silently rotted through the 
 migration until someone ran it, so run the tests, not just a check, when touching egui
 or the building geometry.
 
-**Running the tests is free; building them is the cost.** 1,531 tests execute in
-under three seconds. Nothing is gained by making a test faster, and a test that
-buys real coverage costs nothing to run.
+**Integration tests go in `tests/integration/`, as a module of its `main.rs` —
+not a new `tests/*.rs`.** Every direct child of `tests/` is a separate target, so
+cargo links a whole binary for it and then runs those binaries **one after
+another**; only the tests inside one binary share libtest's thread pool. The
+simulator's ten files were 364.9 MB of links and a 16.0 s sequential run for 58
+tests; as one target they are 38.4 MB and 4.4 s. This holds only while no suite
+touches process-global state — each binds `127.0.0.1:0`, uses its own
+`tempfile::TempDir`, and installs no global logger. A suite that genuinely needs
+process isolation gets its own target *and* a comment saying why.
 
 **Recorded tiles live in `crates/geo/src/testdata.rs`, embedded once.** Reach for
 `testdata::groningen()` rather than a fresh `include_bytes!` — the macro does not
