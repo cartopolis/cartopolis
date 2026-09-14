@@ -76,21 +76,6 @@ use crate::systems::theme;
 
 // ─── Platform predicate ───────────────────────────────────────────────────────
 
-/// Material's minimum touch target, in dp (density-independent pixels, 1/160 in
-/// — about 7.6 mm, which is roughly a fingertip). `theme::style` sets
-/// `interact_size` to 40×24 pt, and 24 pt is ~36 dp on the phone tier: fine for
-/// a row you press once, too small for a key you press forty times in a row.
-const MIN_TOUCH_DP: f32 = 48.0;
-
-/// `index.html`'s `MAX_DPR` on the phone tier — the device pixels per CSS pixel
-/// the render budget is willing to draw (`docs/notes/wasm-performance.md`). It
-/// appears here because it is *also* the magnification the stage transform
-/// applies to every egui point on the web, which is the thing this module needs
-/// in order to know how big a point physically is. Duplicated rather than
-/// plumbed because the page decides it before any Rust exists; if it changes
-/// there, `dp_per_point`'s arithmetic changes with it.
-const WEB_PHONE_MAX_DPR: f32 = 1.5;
-
 /// Resolve "does this platform need an on-screen keyboard", given the pieces.
 ///
 /// Split out from [`platform_wants_keyboard`] so the policy is testable without
@@ -135,32 +120,21 @@ pub fn platform_wants_keyboard() -> bool {
     )
 }
 
-/// How many dp one egui point covers, which is the only way to size a key in a
-/// physical unit from inside this process.
+/// The shortest a key may be, in egui points — Material's 48 dp minimum touch
+/// target converted through [`theme::dp_per_point`].
 ///
-/// The chain, per platform:
-///
-///   - **Native (and Android).** winit's scale factor *is* the display density,
-///     so one window logical point is exactly one dp, and an egui point is
-///     `ui_scale` window points ([`EguiManager::window_to_ui`]). → `ui_scale`.
-///   - **Web.** A CSS pixel is a dp on a phone (a Fairphone 4 reports 393 CSS px
-///     for 1080 device px at density 2.75), but the render budget's stage
-///     transform sizes the canvas to viewport ÷ k and scales it back up by k, so
-///     one *window* point covers k CSS px. → `ui_scale · k`.
-///
-/// `k` is `max(1, dpr / MAX_DPR, √(pixel budget))` in `index.html`, and only the
-/// middle term is reconstructible from here. Using it alone therefore
-/// **under**-estimates k, which over-estimates the number of points in 48 dp and
-/// so makes the keys slightly *larger* than the guideline rather than smaller —
-/// the safe direction for a floor, and the reason this is not plumbed through
-/// from JS for a number that is already only accurate to a rounding.
-fn dp_per_point(ui_scale: f32, display_scale: f32, web_phone: bool) -> f32 {
-    let stage_k = if web_phone {
-        (display_scale / WEB_PHONE_MAX_DPR).max(1.0)
-    } else {
-        1.0
-    };
-    (ui_scale * stage_k).max(0.1)
+/// The conversion itself lives in `theme`, not here: the dock discs, the close
+/// button and the driver rail ask the same question, and this module having
+/// carried its own copy of the constant and the arithmetic is how a second
+/// answer got into the tree. What stays here is the one thing that is the
+/// keyboard's own — that a key is held to the *floor* a row is held to, because
+/// a key is pressed forty times in a row where a row is pressed once.
+fn min_key_height_pts(ui_scale: f32, display_scale: f32) -> f32 {
+    theme::min_touch_target_pts(theme::dp_per_point(
+        ui_scale,
+        display_scale,
+        cfg!(target_arch = "wasm32") && crate::quality::is_phone(),
+    ))
 }
 
 // ─── Key vocabulary ───────────────────────────────────────────────────────────
@@ -453,13 +427,10 @@ fn layout(viewport: egui::Rect, min_key_h: f32, field: Option<egui::Rect>) -> Sl
 /// size.
 #[must_use]
 pub fn expected_height(viewport: egui::Rect, ui_scale: f32, display_scale: f32) -> f32 {
-    let min_key_h = MIN_TOUCH_DP
-        / dp_per_point(
-            ui_scale,
-            display_scale,
-            cfg!(target_arch = "wasm32") && crate::quality::is_phone(),
-        );
-    layout(viewport, min_key_h, None).rect.height() + EDGE_MARGIN
+    layout(viewport, min_key_height_pts(ui_scale, display_scale), None)
+        .rect
+        .height()
+        + EDGE_MARGIN
 }
 
 // ─── Resource ─────────────────────────────────────────────────────────────────
@@ -714,12 +685,7 @@ impl OnScreenKeyboard {
         }
 
         let viewport = ctx.viewport_rect();
-        let min_key_h = MIN_TOUCH_DP
-            / dp_per_point(
-                ui_scale,
-                display_scale,
-                cfg!(target_arch = "wasm32") && crate::quality::is_phone(),
-            );
+        let min_key_h = min_key_height_pts(ui_scale, display_scale);
         // This frame's rect for the field, which we only have because this system
         // is ordered after the panels: `read_response` reads the *current* pass.
         let field = kb
@@ -1515,34 +1481,13 @@ mod tests {
         assert_eq!(text, "Ac", "typed {text:?}");
     }
 
-    /// 48 dp has to become a number of points, and the conversion is different on
-    /// each platform because the *magnification* is: Android magnifies with
-    /// `ui_scale`, the web with `index.html`'s stage transform. Getting this
-    /// backwards is how a key ends up 3.8 mm tall on the one platform that has no
-    /// other keyboard.
-    #[test]
-    fn a_key_is_at_least_48_dp_tall_on_both_phone_platforms() {
-        // Android: ui_scale 1.5, no stage transform.
-        let android = dp_per_point(1.5, 2.75, false);
-        assert!((android - 1.5).abs() < 1e-6);
-        assert!((MIN_TOUCH_DP / android - 32.0).abs() < 0.01);
-
-        // Web phone tier: ui_scale 1.0, k ≈ dpr / 1.5 = 1.83 on a Fairphone 4.
-        let web = dp_per_point(1.0, 2.75, true);
-        assert!((web - 2.75 / 1.5).abs() < 1e-6);
-        assert!(MIN_TOUCH_DP / web > 25.0 && MIN_TOUCH_DP / web < 27.0);
-
-        // A desktop forced on with `?osk`: a point is a point.
-        assert!((dp_per_point(1.0, 1.0, false) - 1.0).abs() < 1e-6);
-    }
-
     /// The phone this was sized for: 274 × 609 pt of egui viewport. The keyboard
     /// has to fit inside it, keep its 48 dp of key height, and leave most of the
     /// screen alone.
     #[test]
     fn the_keyboard_fits_a_phone_viewport() {
         let vp = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(274.0, 609.0));
-        let min_key_h = MIN_TOUCH_DP / dp_per_point(1.5, 2.75, false);
+        let min_key_h = theme::min_touch_target_pts(theme::dp_per_point(1.5, 2.75, false));
         let slab = layout(vp, min_key_h, None);
 
         assert!(vp.contains_rect(slab.rect), "slab {:?} escaped", slab.rect);

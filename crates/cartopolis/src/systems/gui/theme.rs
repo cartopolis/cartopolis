@@ -158,7 +158,7 @@ pub const ACCENT_RING: Color32 = Color32::from_rgb(0xE5, 0xEC, 0xEF);
 /// pointer is held on it.
 ///
 /// A press has to move the surface in the opposite direction from a hover, or
-/// the two states are one state: [`primary_button`] lifts to [`ACCENT_BRIGHT`]
+/// the two states are one state: [`primary_button_sized`] lifts to [`ACCENT_BRIGHT`]
 /// under the pointer and sinks to this while held, which is what makes a click
 /// on the app's one call-to-action *feel* like a click.
 ///
@@ -403,7 +403,7 @@ pub const SIZE_SUB: f32 = 12.5;
 /// that has to state a size; otherwise leave the size off entirely.
 pub const SIZE_BODY: f32 = 14.0;
 /// The one number a box is *about*: the HUD's clock, a primary button's label
-/// ([`primary_button`]). One per box — a second is just body text.
+/// ([`primary_button_sized`]). One per box — a second is just body text.
 pub const SIZE_VALUE: f32 = 15.0;
 /// A panel header's title, in the brand face ([`panel_header`]).
 pub const SIZE_TITLE: f32 = 17.0;
@@ -450,7 +450,6 @@ pub const RADIUS_LG: u8 = 14;
 /// A pill: fully rounded whatever the height. epaint clamps a corner radius to
 /// half the shortest side, so this is "as round as it can be" rather than a
 /// pixel count — which is what makes it safe on a box of any size.
-#[allow(dead_code)] // vocabulary, no caller yet — see the note by `CHIP_PADDING`
 pub const RADIUS_PILL: u8 = u8::MAX;
 
 // ─── Touch targets ────────────────────────────────────────────────────────────
@@ -465,7 +464,6 @@ pub const RADIUS_PILL: u8 = u8::MAX;
 /// viewport drops below `responsive_right_panel`'s 240 pt floor and a docked
 /// panel is wider than the screen it docks in — so the interactive sizes are
 /// raised on the touch tier instead, and this is the number they are raised to.
-#[allow(dead_code)] // read by `min_touch_target_pts` and the tests until the widgets convert
 pub const MIN_TOUCH_TARGET_DP: f32 = 48.0;
 
 /// `index.html`'s `MAX_DPR` on the phone tier — device pixels per CSS pixel the
@@ -474,7 +472,6 @@ pub const MIN_TOUCH_TARGET_DP: f32 = 48.0;
 /// egui point on the web, i.e. the thing that decides how big a point physically
 /// is. Duplicated rather than plumbed, because the page decides it before any
 /// Rust exists; if it changes there, [`dp_per_point`] changes with it.
-#[allow(dead_code)] // ditto — `onscreen_keyboard.rs` still carries its own copy
 pub const WEB_PHONE_MAX_DPR: f32 = 1.5;
 
 /// How many dp one egui point covers — the only way to size anything in a
@@ -499,7 +496,6 @@ pub const WEB_PHONE_MAX_DPR: f32 = 1.5;
 /// and `onscreen_keyboard.rs` having had to compute its own is how a second
 /// answer gets into the tree.
 #[must_use]
-#[allow(dead_code)] // the copy in `onscreen_keyboard.rs` converts to this
 pub fn dp_per_point(ui_scale: f32, display_scale: f32, web_phone: bool) -> f32 {
     let stage_k = if web_phone {
         (display_scale / WEB_PHONE_MAX_DPR).max(1.0)
@@ -511,7 +507,6 @@ pub fn dp_per_point(ui_scale: f32, display_scale: f32, web_phone: bool) -> f32 {
 
 /// [`MIN_TOUCH_TARGET_DP`] converted to points, given a [`dp_per_point`].
 #[must_use]
-#[allow(dead_code)] // no caller until the driver rail and the keyboard convert
 pub fn min_touch_target_pts(dp_per_point: f32) -> f32 {
     MIN_TOUCH_TARGET_DP / dp_per_point.max(0.1)
 }
@@ -1338,7 +1333,6 @@ pub fn overlay_frame() -> egui::Frame {
 /// chips in this app are painted rather than laid out — a pin label is a galley
 /// and a `rect_filled` under it, which no `Frame` can reach — and those sites
 /// need the same two numbers.
-#[allow(dead_code)]
 pub const CHIP_PADDING: egui::Vec2 = egui::vec2(6.0, 3.0);
 
 /// The frame around a small text chip painted over the map: a place-pin label,
@@ -1354,7 +1348,6 @@ pub const CHIP_PADDING: egui::Vec2 = egui::vec2(6.0, 3.0);
 /// tile rather than a box of controls, so it is darker, tighter, and rounded with
 /// [`RADIUS_SM`] because at ~20 pt tall [`RADIUS`] would make it a lozenge. Add a
 /// `.stroke(...)` for the ones that carry a folder's colour.
-#[allow(dead_code)]
 pub fn chip_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(LABEL_CHIP)
@@ -1365,17 +1358,13 @@ pub fn chip_frame() -> egui::Frame {
         ))
 }
 
-/// Smallest width of a primary button, in points — wide enough that a two-letter
-/// label ("Go") is still a button rather than a square.
-#[allow(dead_code)]
-pub const PRIMARY_BUTTON_MIN_WIDTH: f32 = 120.0;
 /// Height of a primary button on a pointer. Under a finger it grows to
 /// [`row_height`], which is larger.
-#[allow(dead_code)]
 const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 
 /// **The** call to action on a screen: filled with the accent, labelled in
-/// [`INK`] at [`SIZE_VALUE`], and taller than an ordinary button.
+/// [`INK`] at [`SIZE_VALUE`], taller than an ordinary button, and at least
+/// `min_width` points wide.
 ///
 /// There should be at most one per screen, and it should be the thing you came to
 /// do — Sign in, Start driving. Everything else is `ui.button`.
@@ -1385,13 +1374,11 @@ const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 /// equally-primary "▶ Driver mode" was a plain `ui.button`, so the same rank read
 /// as two different ones. `INK` on `ACCENT` and not white is the palette's rule for
 /// text on the accent (12.7:1 against 1.4:1) and is unit-tested below.
-#[allow(dead_code)]
-pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    primary_button_sized(ui, label, PRIMARY_BUTTON_MIN_WIDTH)
-}
-
-/// [`primary_button`] with the minimum width stated — for a CTA that has to fill
-/// the card it sits in.
+///
+/// The width is always stated by the caller. A no-width `primary_button` wrapper
+/// over a `PRIMARY_BUTTON_MIN_WIDTH` constant shipped beside this and never grew
+/// a caller — both CTAs in the app fill the card they sit in — so it went rather
+/// than sit behind an `allow(dead_code)` hiding the next genuinely dead thing.
 ///
 /// **The label is centred by two growable atoms, not by the surrounding layout.**
 /// egui 0.35 takes a button's atom alignment from `ui.layout()` — and a top-down
@@ -1401,7 +1388,7 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 /// orange bar with a word stuck in the corner. An empty [`egui::Atom::grow`]
 /// either side is the fix that does not touch where the *button* itself sits,
 /// which the alternative — wrapping it in a `Align::Center` layout — would,
-/// centring the narrow [`primary_button`] variant in its row as a side effect.
+/// centring a narrow button in its row as a side effect.
 ///
 /// **And it answers the pointer.** The fill was a flat [`ACCENT`] in every
 /// state, so the one control on the screen whose whole job is to be pressed gave
@@ -1413,7 +1400,6 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 /// about to take — the same thing egui's own `Button` does internally, and the
 /// reason `next_auto_id` is safe here is that it reports the next id without
 /// consuming it.
-#[allow(dead_code)]
 pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> egui::Response {
     let height = PRIMARY_BUTTON_HEIGHT.max(row_height());
     let was = ui.ctx().read_response(ui.next_auto_id());
@@ -3515,6 +3501,14 @@ mod tests {
         // Web phone: ui_scale 1.0, and a Fairphone 4's 2.75× DPR through the
         // stage transform.
         let web = dp_per_point(1.0, 2.75, true);
+        // A desktop — including one that forced the on-screen keyboard on with
+        // `?osk` — magnifies nothing, so a point is a dp.
+        assert!((dp_per_point(1.0, 1.0, false) - 1.0).abs() < 1e-6);
+        // And the keyboard's own floor, which is the tightest consumer of the
+        // pair: 48 dp at `ui_scale` 1.5 is a 32 pt key.
+        assert!((min_touch_target_pts(android) - 32.0).abs() < 0.01);
+        let web_key = min_touch_target_pts(web);
+        assert!(web_key > 25.0 && web_key < 27.0, "web key {web_key} pt");
         for (name, dp_per_pt) in [("android", android), ("web", web)] {
             let row_dp = TOUCH_ROW_PTS * dp_per_pt;
             assert!(
