@@ -496,16 +496,8 @@ pub fn blade_lattice(side: u32, spacing: f32) -> BladeLattice {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/groningen_z14.mvt"
-    ));
-
     fn fixture() -> (TileData, f32) {
-        (
-            TileData::parse(GRONINGEN_Z14).expect("fixture parses"),
-            1500.0,
-        )
+        (crate::testdata::groningen(), 1500.0)
     }
 
     #[test]

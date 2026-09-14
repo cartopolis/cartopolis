@@ -1035,17 +1035,10 @@ pub fn rand01(h: u64, stream: u32) -> f32 {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/groningen_z14.mvt"
-    ));
-
-    /// The fixture, parsed. The scatter takes a shared [`TileData`] now (one parse
-    /// per streamed cell, shared with the tessellators — `TileData`'s docs say
-    /// why), so each test that wants it in isolation makes its own.
-    fn fixture() -> TileData {
-        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
-    }
+    // The scatter takes a shared `TileData` now (one parse per streamed cell,
+    // shared with the tessellators — `TileData`'s docs say why), so each test
+    // that wants it in isolation makes its own.
+    use crate::testdata::groningen as fixture;
 
     /// The fixture is a city tile with woodland and parks in it, so the scatter
     /// must produce trees, keep them inside the tile, and stay under the cap.
@@ -1085,7 +1078,7 @@ mod tests {
     #[test]
     fn no_tree_stands_in_water() {
         let tile_m = 1472.0;
-        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let tile = fixture();
         let extent = tile
             .layer("water_polygons")
             .map_or(4096.0, TileData::extent);
@@ -1112,7 +1105,7 @@ mod tests {
     #[test]
     fn no_tree_stands_on_a_street() {
         let tile_m = 1472.0;
-        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let tile = fixture();
         let mask = RoadMask::build(&tile, tile_m);
         assert!(
             !mask.segs.is_empty(),
@@ -1436,7 +1429,7 @@ mod tests {
     /// What a real cell actually costs. `cargo test -p cartopolis_geo
     /// dump_vegetation_cost -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn dump_vegetation_cost() {
         let tile_m = 1472.0;
         let trees = scatter_vegetation(&fixture(), tile_m, 42).expect("scatter");

@@ -311,14 +311,7 @@ pub fn extract_addresses(tile: &TileData, tile_m: f32) -> Result<Vec<Address>, S
 mod tests {
     use super::*;
 
-    const FIXTURE: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/groningen_z14.mvt"
-    ));
-
-    fn fixture() -> TileData {
-        TileData::parse(FIXTURE).expect("fixture parses")
-    }
+    use crate::testdata::groningen as fixture;
 
     /// The layer really is there and really does carry names. This is the claim
     /// the whole feature rests on, and it is about *data*, not code — so it is

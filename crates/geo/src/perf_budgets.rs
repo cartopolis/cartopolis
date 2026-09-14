@@ -26,13 +26,11 @@
 use crate::perf::{self, Cost};
 use crate::vector_tiles::{SubTile, TileData, NOMINAL_Z14_TILE_M};
 
-/// The tile every measurement in `docs/notes/tile-raster-cost.md` was taken on:
-/// 495 KB of Groningen at z14, 8,552 buildings and 95 streets.
-const GRONINGEN: &[u8] = include_bytes!("../tests/fixtures/groningen_z14.mvt");
-
-/// A sparser tile, so a regression that only shows up on dense data is
-/// distinguishable from one that scales with the fixed overhead of a parse.
-const LOWZOOM: &[u8] = include_bytes!("../tests/fixtures/lowzoom_10_526_334.mvt");
+// The tile every measurement in `docs/notes/tile-raster-cost.md` was taken on:
+// 495 KB of Groningen at z14, 8,552 buildings and 95 streets — and a sparser
+// one, so a regression that only shows up on dense data is distinguishable from
+// one that scales with the fixed overhead of a parse.
+use crate::testdata::{GRONINGEN_Z14 as GRONINGEN, LOWZOOM_526_334 as LOWZOOM};
 
 fn parse(bytes: &[u8]) -> TileData {
     TileData::parse(bytes).expect("fixture parses")

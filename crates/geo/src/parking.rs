@@ -316,15 +316,9 @@ mod tests {
     use super::*;
     use crate::vector_tiles::{mesh_upload_bytes, SurfaceGroup};
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../geo/tests/fixtures/groningen_z14.mvt"
-    ));
-    const TILE_M: f32 = 1472.0;
+    use crate::testdata::groningen as fixture;
 
-    fn fixture() -> TileData {
-        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
-    }
+    const TILE_M: f32 = 1472.0;
 
     /// The fixture is a city tile with 56 car parks and 15 cycle parks in it, so
     /// the fill must produce both, keep them inside the tile and stay under the cap.

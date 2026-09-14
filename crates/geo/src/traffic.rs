@@ -296,15 +296,9 @@ fn simplify(points: &[[f32; 2]], min_m: f32) -> Vec<[f32; 2]> {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../geo/tests/fixtures/groningen_z14.mvt"
-    ));
-    const TILE_M: f32 = 1472.0;
+    use crate::testdata::groningen as fixture;
 
-    fn fixture() -> TileData {
-        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
-    }
+    const TILE_M: f32 = 1472.0;
 
     #[test]
     fn the_fixture_yields_a_drivable_network() {

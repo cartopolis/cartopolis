@@ -2302,13 +2302,9 @@ mod tests {
     use super::*;
     use crate::vector_tiles::synth;
 
-    /// The same real z14 Groningen tile the renderer tests use.
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/groningen_z14.mvt"
-    ));
-    /// Its tile coordinates (see `vector_tiles::tests`).
-    const TILE: (i64, i64) = (8490, 5319);
+    // The same real z14 Groningen tile the renderer tests use, and its tile
+    // coordinates.
+    use crate::testdata::{GRONINGEN_TILE as TILE, GRONINGEN_Z14};
 
     fn graph() -> RoadGraph {
         let mut g = RoadGraph::new(53.2194);
@@ -2671,7 +2667,7 @@ mod tests {
     /// not a gate — the numbers it prints are quoted in
     /// `docs/notes/grade-separation.md`.
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn grade_separation_diagnostic() {
         // Each variant is expressed by *relaxing* the finished graph's inputs
         // before noding, so there is no knob in production code: dropping every

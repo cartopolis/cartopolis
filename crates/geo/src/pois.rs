@@ -168,14 +168,7 @@ pub fn point_feature(properties: &[(&str, &str)]) -> Feature {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/groningen_z14.mvt"
-    ));
-
-    fn tile() -> TileData {
-        TileData::parse(GRONINGEN_Z14).expect("parse")
-    }
+    use crate::testdata::groningen as tile;
 
     fn shop(f: &Feature) -> Option<usize> {
         tag_str(f, "shop").map(|_| 0)

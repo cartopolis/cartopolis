@@ -7,7 +7,7 @@ updated: 2026-08-24
 # Vector-tile rasterisation cost
 
 Measured 2026-07-25 on the Groningen z14 fixture
-(`crates/cartopolis/tests/fixtures/groningen_z14.mvt`, 495 KB, 8552 buildings /
+(`crates/geo/tests/fixtures/groningen_z14.mvt`, 495 KB, 8552 buildings /
 95 streets), `dev-bevy` with `cartopolis` forced to `opt-level = 3`, min-of-30
 with warmup:
 

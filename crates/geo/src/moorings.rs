@@ -262,15 +262,9 @@ fn on_tile_border(a: [f32; 2], b: [f32; 2], tile_m: f32) -> bool {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../geo/tests/fixtures/groningen_z14.mvt"
-    ));
-    const TILE_M: f32 = 1472.0;
+    use crate::testdata::groningen as fixture;
 
-    fn fixture() -> TileData {
-        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
-    }
+    const TILE_M: f32 = 1472.0;
 
     /// Groningen is a canal city, so the fixture must moor boats — inside its own
     /// cell, under the cap, and every one of them a boat.

@@ -1458,17 +1458,11 @@ mod tests {
         assert_eq!(FurnitureKind::from_slug("lamppost"), None);
     }
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../geo/tests/fixtures/groningen_z14.mvt"
-    ));
     const TILE_M: f32 = 1000.0;
 
-    /// The fixture, parsed. `extract_furniture` takes a `TileData` because on the
-    /// worker it shares one with every other consumer of the same tile body.
-    fn fixture() -> TileData {
-        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
-    }
+    // `extract_furniture` takes a `TileData` because on the worker it shares one
+    // with every other consumer of the same tile body.
+    use crate::testdata::groningen as fixture;
 
     #[test]
     fn the_fixture_furnishes_a_street() {

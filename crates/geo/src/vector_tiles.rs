@@ -4892,12 +4892,9 @@ mod tests {
     };
     use super::*;
 
-    /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
-    /// (now self-hosted at tiles.cartopolis.org; the archive is identical).
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/groningen_z14.mvt"
-    ));
+    // A real z14 tile over Groningen, from the VersaTiles Shortbread source
+    // (now self-hosted at tiles.cartopolis.org; the archive is identical).
+    use crate::testdata::GRONINGEN_Z14;
 
     /// A `TileData` shared by several consumers must produce byte-for-byte what
     /// each of them produced from its own parse. This is the whole safety claim
@@ -5070,16 +5067,7 @@ mod tests {
     /// as fixtures so a future guard has to pass them before it ships.
     #[test]
     fn low_zoom_tiles_decode() {
-        for (name, body) in [
-            (
-                "10/526/334",
-                &include_bytes!("../tests/fixtures/lowzoom_10_526_334.mvt")[..],
-            ),
-            (
-                "10/534/336",
-                &include_bytes!("../tests/fixtures/lowzoom_10_534_336.mvt")[..],
-            ),
-        ] {
+        for (name, body) in crate::testdata::LOWZOOM_TILES {
             let tile = match TileData::parse(body) {
                 Ok(t) => t,
                 Err(e) => panic!("{name} must decode — the live basemap serves it: {e}"),
@@ -5505,7 +5493,7 @@ mod tests {
     /// justification is a number. `cargo test -p cartopolis_geo bench_overzoom_cull
     /// -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn bench_overzoom_cull() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
         for factor in [2u32, 4, 8] {
@@ -5535,7 +5523,7 @@ mod tests {
     /// double the measured total. `cargo test -p cartopolis_geo --release
     /// dump_paint_split -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn dump_paint_split() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
         let whole = || render_mvt_culled(&tile, SubTile::WHOLE, TILE_PX, NOMINAL_Z14_TILE_M, false);
@@ -5578,7 +5566,7 @@ mod tests {
     /// `dump_png`'s. `cargo test -p cartopolis_geo --release bench_vello_cpu
     /// -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn bench_vello_cpu() {
         use vello_cpu::color::{AlphaColor, Srgb};
         use vello_cpu::kurbo::{Affine, BezPath, Cap, Join, Stroke as VStroke};
@@ -5812,7 +5800,7 @@ mod tests {
     /// dump_png -- --ignored --nocapture` writes the fixture at z14 and at an
     /// overzoomed z17 so the styling can actually be looked at.
     #[test]
-    #[ignore]
+    #[ignore = "eyeball hatch: it writes PNGs to look at, it asserts nothing"]
     fn dump_png() {
         for (name, sub) in [
             ("/tmp/vt_z14.png", SubTile::WHOLE),
@@ -5842,7 +5830,7 @@ mod tests {
     /// feature counts, and one feature's attributes. Useful when a layer renders
     /// blank and the question is "is it the style or the data?".
     #[test]
-    #[ignore]
+    #[ignore = "eyeball hatch: it prints a tile's contents, it asserts nothing"]
     fn dump_layers() {
         let owned = std::env::var("CARTO_DUMP_MVT")
             .ok()
@@ -5954,7 +5942,7 @@ mod tests {
     /// triangles each layer would cost if tessellated instead of rasterised, and
     /// what the raster path costs in CPU time for comparison.
     #[test]
-    #[ignore]
+    #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn dump_geometry_cost() {
         let reader = Reader::new(GRONINGEN_Z14.to_vec()).unwrap();
         let meta = reader.get_layer_metadata().unwrap();
@@ -6694,7 +6682,7 @@ mod tests {
     /// `cargo test -p cartopolis_geo dump_road_ribbons -- --ignored
     /// --nocapture`; `CARTO_DUMP_WIN="x,z,size"` (tile metres) zooms to a junction.
     #[test]
-    #[ignore]
+    #[ignore = "eyeball hatch: it writes a PNG to look at, it asserts nothing"]
     fn dump_road_ribbons() {
         const PX: usize = 1200;
         let tile_m = 1000.0f32;

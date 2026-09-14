@@ -51,6 +51,11 @@ pub mod perf;
 #[cfg(test)]
 mod perf_budgets;
 
+/// The recorded tiles the suite measures against. See the module docs for why
+/// they are embedded in one place rather than eleven.
+#[cfg(test)]
+pub(crate) mod testdata;
+
 // Two readers of the tile's `pois` layer, kept separate on purpose: `places`
 // answers "what can the avatar walk up to" (proximity prompts, house numbers,
 // street furniture as colliders), `pois` answers "what stands on the map"
