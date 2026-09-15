@@ -2067,6 +2067,7 @@ fn run_client() {
         .init_resource::<systems::dikes::Dikes>()
         .init_resource::<systems::interiors::Interiors>()
         .init_resource::<systems::interiors::InteriorFloors>()
+        .init_resource::<systems::tunnels::TunnelBores>()
         .init_resource::<systems::building_select::BuildingSelection>()
         .init_resource::<systems::picking::PrimClick>()
         .init_resource::<systems::street_detail::StreetDetail>()
@@ -2956,6 +2957,10 @@ fn run_client() {
             // through. Before movement, so a bench that streamed in this frame is
             // solid on the frame it appears.
             systems::collision::sync_prop_colliders.before(avatar::handle_avatar_movement),
+            // The tunnel walls, on the same terms and for the same reason: a bore
+            // that streamed in this frame is a floor on the frame it appears, and
+            // a floor with no walls is a way to walk out into solid ground.
+            systems::collision::sync_bore_colliders.before(avatar::handle_avatar_movement),
             // What the avatar is standing next to, and the nearest house number.
             systems::interact::track_interaction_target.after(avatar::handle_avatar_movement),
             // Before `send_network_intent`, which is what puts a triggered emote on

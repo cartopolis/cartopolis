@@ -88,6 +88,10 @@ pub mod scatter;
 // The drivable network behind ambient traffic, off the same `streets` layer the
 // roads and the routing graph are built from.
 pub mod traffic;
+// Roads that run under the ground. Split from `vector_tiles` rather than folded
+// into `tessellate_roads` because a bore is not on the road sheet: it has its own
+// depth, its own walls and roof, and a hole it needs cut in the ground.
+pub mod tunnels;
 pub mod turf;
 pub mod vector_tiles;
 

@@ -1698,7 +1698,7 @@ pub fn smooth_online_avatar_display(
     time: Res<Time>,
     mut avatar_query: Query<&mut Transform, With<Avatar>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
-    floors: Res<crate::systems::interiors::InteriorFloors>,
+    footing: crate::systems::interiors::Footing,
     mut health: ResMut<crate::resources::NetPredictionHealth>,
     // The age this system saw last frame, so the gap a snapshot closed can be read
     // off the frame it resets on. A `Local` and not a field on the resource: it is
@@ -1801,12 +1801,7 @@ pub fn smooth_online_avatar_display(
         // frame `send_network_intent` resolves collision in — so the floor the
         // avatar stands on is the floor it can see and the wall it just walked
         // through.
-        let floor = crate::systems::interiors::step_floor_lift(
-            &floors,
-            &mut avatar_state,
-            Vec2::new(flat.x, flat.z),
-            dt,
-        );
+        let floor = footing.step(&mut avatar_state, Vec2::new(flat.x, flat.z), dt);
         avatar_state.display_position = flat + Vec3::Y * (avatar_state.terrain_lift + floor);
         // What the follow camera leads by. The predicted velocity is the honest
         // answer online: it is precisely the rate `display_position` advances at
@@ -1844,7 +1839,7 @@ pub fn handle_avatar_movement(
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
-    floors: Res<crate::systems::interiors::InteriorFloors>,
+    footing: crate::systems::interiors::Footing,
     // How long Space has been held this press, and whether the hold has already
     // been spent on a flight toggle (so it fires once, not every frame past the
     // threshold).
@@ -2098,14 +2093,25 @@ pub fn handle_avatar_movement(
                 + terrain.ground_at(transform.translation.x, transform.translation.z)
                 + avatar_state.floor_lift
                 + AIRBORNE_EPS;
-        if !airborne && layers.buildings_enabled && !colliders.is_empty() {
+        // Underground, the surface world is not what is around you: the
+        // building over a tunnel is seven metres up and its footprint is not a
+        // wall down here, while the bore's own wall is the only thing that is
+        // (`systems::tunnels`). So the two collision worlds are exclusive, and
+        // which one applies is decided by the floor the avatar is standing on.
+        let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
+        if !airborne && (in_bore || (layers.buildings_enabled && !colliders.is_empty())) {
             use crate::grid::WORLD_CELL_EDGE;
             let base = Vec2::new(
                 grid_cell.x as f32 * WORLD_CELL_EDGE,
                 grid_cell.z as f32 * WORLD_CELL_EDGE,
             );
             let from = base + Vec2::new(transform.translation.x, transform.translation.z);
-            let resolved = colliders.slide(from, from + Vec2::new(delta.x, delta.z));
+            let to = from + Vec2::new(delta.x, delta.z);
+            let resolved = if in_bore {
+                colliders.slide_in_bore(from, to)
+            } else {
+                colliders.slide(from, to)
+            };
             transform.translation.x = resolved.x - base.x;
             transform.translation.z = resolved.y - base.y;
         } else {
@@ -2131,8 +2137,7 @@ pub fn handle_avatar_movement(
     // terrain above it — the ground level is whatever is under your feet, and a
     // first-floor slab is as much "the ground" as a hillside is. Sampled in the
     // frame `interiors` built its rooms in, which is this transform's.
-    let floor = crate::systems::interiors::step_floor_lift(
-        &floors,
+    let floor = footing.step(
         &mut avatar_state,
         Vec2::new(transform.translation.x, transform.translation.z),
         delta_time,

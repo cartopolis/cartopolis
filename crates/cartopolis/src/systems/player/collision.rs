@@ -257,9 +257,50 @@ pub struct BuildingColliders {
     /// it. Same lifetime contract as `lod22`: the streamer that draws the mesh
     /// publishes the collider, so a wall you can see is a wall you cannot cross.
     features: HashMap<(i64, i64), Vec<Footprint>>,
+    /// The tunnel carriageways, as **hollow** footprints — what stops the avatar
+    /// is the wall, and only while it is down there.
+    ///
+    /// Kept apart from every other list and never mixed into `iter`, because a
+    /// bore is a collider *or* it is nothing depending on which side of the
+    /// ground the avatar is: from the pavement over a tunnel there must be no
+    /// wall at all, and from inside it there must be nothing else. Mirrored from
+    /// `tunnels::TunnelBores` rather than published by the streamer, the same way
+    /// the props are mirrored from `WorldPlaces`, so the wall you are stopped by
+    /// and the floor you are standing on come from one description of one bore.
+    bores: Vec<Footprint>,
 }
 
 impl BuildingColliders {
+    /// Replace the tunnel corridors.
+    pub fn set_bores(&mut self, bores: Vec<Footprint>) {
+        self.bores = bores;
+    }
+
+    /// Resolve a walk that is happening **inside** a bore.
+    ///
+    /// The surface world is not consulted at all: seven metres up there is a
+    /// building over this tunnel and its footprint is not a wall down here. The
+    /// corridor's own wall is, and a move that crosses it is refused — without
+    /// which stepping sideways leaves the carriageway, finds no deck under the
+    /// next step and puts the avatar back on the surface, which reads as being
+    /// fired through the road.
+    #[must_use]
+    pub fn slide_in_bore(&self, from: Vec2, to: Vec2) -> Vec2 {
+        let crosses = |a: Vec2, b: Vec2| self.bores.iter().any(|f| f.crosses_wall(a, b));
+        if !crosses(from, to) {
+            return to;
+        }
+        let slide_x = Vec2::new(to.x, from.y);
+        if !crosses(from, slide_x) {
+            return slide_x;
+        }
+        let slide_z = Vec2::new(from.x, to.y);
+        if !crosses(from, slide_z) {
+            return slide_z;
+        }
+        from
+    }
+
     /// Replace the OSM detail-patch footprints.
     pub fn set_detail(&mut self, fps: Vec<Footprint>) {
         self.detail = fps;
@@ -501,6 +542,27 @@ impl BuildingColliders {
             allowed.normalize() * speed
         }
     }
+
+    /// [`Self::steer_velocity`] for an avatar that is inside a bore: the same
+    /// probe-and-slide, against the tunnel walls instead of the surface world.
+    ///
+    /// No eject arm. Ejecting means "you are inside something solid, come out",
+    /// and a hollow corridor has no inside to be stuck in — being in it is the
+    /// ordinary case.
+    #[must_use]
+    pub fn steer_in_bore(&self, pos: Vec2, wish: Vec2) -> Vec2 {
+        let speed = wish.length();
+        if speed < 1e-6 {
+            return wish;
+        }
+        let probe = pos + wish / speed * COLLIDE_PROBE_M;
+        let allowed = self.slide_in_bore(pos, probe) - pos;
+        if allowed.length_squared() < 1e-6 {
+            Vec2::ZERO
+        } else {
+            allowed.normalize() * speed
+        }
+    }
 }
 
 /// Mirror the streamed street furniture into the collider index, so the props the
@@ -528,6 +590,30 @@ pub fn sync_prop_colliders(
     } else {
         Vec::new()
     });
+}
+
+/// Mirror the streamed bores into the collider index, on exactly the terms
+/// [`sync_prop_colliders`] mirrors the street furniture: one description of a
+/// tunnel, read by the floor the avatar stands on and the wall it is stopped by.
+///
+/// No layer gate. The furniture one exists because a hidden bench must not be an
+/// invisible wall, and the same argument says the opposite here: these walls are
+/// only ever consulted while the avatar is *inside* the bore, where taking them
+/// away does not remove an obstacle, it removes the only thing keeping the avatar
+/// out of solid ground.
+pub fn sync_bore_colliders(
+    bores: Res<crate::systems::tunnels::TunnelBores>,
+    mut colliders: ResMut<BuildingColliders>,
+) {
+    if !bores.is_changed() {
+        return;
+    }
+    colliders.set_bores(
+        bores
+            .corridors()
+            .filter_map(|ring| Footprint::with_doors(ring, &[], true))
+            .collect(),
+    );
 }
 
 /// Convex hull (counter-clockwise) of XZ points via Andrew's monotone chain.

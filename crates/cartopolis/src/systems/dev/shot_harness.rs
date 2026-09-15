@@ -687,6 +687,14 @@ pub struct ShotMetrics {
     /// did before it could count storeys, so the two readings together are what
     /// say whether the division is live at all.
     pub interior_storeys: usize,
+    /// Bores standing in the streamed cells (`systems::tunnels`).
+    ///
+    /// The one number that separates the three ways a capture over a tunnel comes
+    /// back looking empty: no tunnel in the tile at all, a tunnel that was built
+    /// but is roofed over from this viewpoint, and a tunnel whose mesh failed. It
+    /// counts the *bores* — the floor-and-walls description the avatar walks in —
+    /// rather than meshes, because that is the half a picture cannot show.
+    pub tunnel_bores: usize,
     /// Doors drawn on facades from the register's entrance points
     /// (`lod22::DoorCount`).
     pub building_doors: usize,
@@ -869,6 +877,14 @@ pub struct ShotMetrics {
     /// proves nothing.
     pub avatar_meshes: usize,
     pub avatar_rendered: usize,
+    /// The floor the avatar is standing on, metres relative to the ground under
+    /// it: a building's storey above (`systems::interiors`), a tunnel's
+    /// carriageway below (`systems::tunnels`), 0 outdoors at ground level.
+    ///
+    /// This is the only way a headless run can say the avatar is *in* the tunnel
+    /// rather than over it. A picture cannot: from the deck and from the pavement
+    /// seven metres up, the same bore fills the frame with the same asphalt.
+    pub avatar_floor_m: f32,
     /// Measured ground level at the map anchor, metres above NAP, and how many
     /// patches the height layer has fetched (`systems::height`). `NaN` and 0 mean
     /// the layer is off, out of AHN's coverage, or has not answered yet — which is
@@ -1058,10 +1074,10 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_bores,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
-avatar_meshes,avatar_rendered,\
+avatar_meshes,avatar_rendered,avatar_floor_m,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,terrain_sample_m,fine_terrain_ready,fine_terrain_sample_m,\
 ground_detail_ready,ground_detail_sample_m,water_rings,\
@@ -1135,6 +1151,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("veg_factor", 4),
     ("furniture_factor", 4),
     ("globe_texture_mb", 2),
+    ("avatar_floor_m", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
@@ -2735,6 +2752,7 @@ pub struct ShotReadouts<'w, 's> {
     /// shafts take four GPU runs to diagnose.
     prefs: Res<'w, crate::resources::AppPrefs>,
     avatar: AvatarReadout<'w, 's>,
+    avatar_state: Res<'w, crate::resources::AvatarState>,
     census: crate::systems::render_census::RenderCensus<'w, 's>,
     /// The wall clock, for the frame-time columns only. Everything else the
     /// harness schedules against is deliberately the *virtual* clock — see
@@ -2765,6 +2783,7 @@ pub struct ShotReadouts<'w, 's> {
     places: Res<'w, crate::systems::world_places::WorldPlaces>,
     /// The near-camera interior layer, for its room count alone.
     interiors: Res<'w, crate::systems::interiors::Interiors>,
+    tunnels: Res<'w, crate::systems::tunnels::TunnelBores>,
     /// The same layer's support field, for its storey tally.
     interior_floors: Res<'w, crate::systems::interiors::InteriorFloors>,
     /// What is selected and what the avatar is standing in — see
@@ -3271,6 +3290,7 @@ pub fn drive_capture(
             prop_colliders: readouts.places.props().count(),
             flood_defences: readouts.dikes.len(),
             flood_defences_measured: readouts.dikes.measured(),
+            tunnel_bores: readouts.tunnels.bore_count(),
             interior_rooms: readouts.interiors.rooms(),
             interior_storeys: readouts.interior_floors.storeys(),
             building_selected: readouts.building_selection.is_selected(),
@@ -3297,6 +3317,7 @@ pub fn drive_capture(
                 .count(),
             avatar_meshes: avatar_counts.0,
             avatar_rendered: avatar_counts.1,
+            avatar_floor_m: readouts.avatar_state.floor_lift,
             globe_entities: visuals.globe.iter().count(),
             globe_visible: visuals
                 .globe
@@ -3948,6 +3969,7 @@ mod tests {
             prop_colliders: 0,
             flood_defences: 0,
             flood_defences_measured: 0,
+            tunnel_bores: 0,
             interior_rooms: 0,
             interior_storeys: 0,
             building_selected: false,
@@ -3983,6 +4005,7 @@ mod tests {
             particle_emitters: 0,
             particle_quads: 0,
             avatar_meshes: 0,
+            avatar_floor_m: 0.0,
             avatar_rendered: 0,
             ground_m: f32::NAN,
             height_patches: 0,

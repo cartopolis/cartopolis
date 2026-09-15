@@ -1,0 +1,1300 @@
+//! Roads that run under the ground, and the hole you get into them by.
+//!
+//! No Bevy: a tile in, [`SurfaceMesh`]es out. The streaming half is
+//! `systems::tunnels`, and `docs/notes/tunnels.md` has the reasoning this module
+//! only summarises.
+//!
+//! # What was here before
+//!
+//! Nothing. A way Shortbread flags as a tunnel was refused by
+//! [`drawn_street`](crate::vector_tiles::drawn_street), dropped from the raster
+//! paint and dropped from the street labels, so a bore was a gap in the map —
+//! no carriageway, no markings, no name, no portal. That was a deliberate choice
+//! and it was right as far as it went: painting a tunnel *on the ground* rules a
+//! pale band across every junction it passes under, which is a lie about what is
+//! up there. What it never did was draw the tunnel anywhere else.
+//!
+//! So the rule changes shape rather than going away. A tunnel still leaves the
+//! ground sheet — it is not on the ground — and it is drawn **below** it instead,
+//! as a carriageway with walls and a roof, which is what it is.
+//!
+//! # The tiles carry a boolean and nothing else
+//!
+//! Not a depth, and — measured on the Groningen fixture, which is what
+//! [`tests::the_tiles_say_which_streets_are_tunnels`] pins — **not a `layer`
+//! either**: ten streets in that tile are flagged `tunnel` and the attribute set
+//! is `kind, bridge, tunnel, rail, oneway, oneway_reverse, link, surface`, with no
+//! `layer` anywhere in the layer. (`vector_tiles::layer_of` reads one and its doc
+//! said Shortbread carries it on `streets`; on this tileset it answers 0 for every
+//! street there is, which also makes the raster's "flyover paints over what it
+//! crosses" sort a no-op. Left alone here — it is a separate thing to fix.)
+//!
+//! So every bore is one level deep, [`LEVEL_DEPTH_M`], and that is a convention
+//! rather than a measurement. It is the one number here a real source could
+//! replace.
+//!
+//! # An arcade is flagged a tunnel too, so ask the buildings
+//!
+//! OSM's `tunnel` also covers `building_passage` — a way through a building, at
+//! ground level, that people walk down — and roughly a quarter of the flagged ways
+//! around Groningen's centre are those. With no `layer` to separate them, sinking
+//! every flagged way seven metres would put a hole under a shopping street.
+//!
+//! The tile answers it: a passage runs *through a building* and a bore does not,
+//! and the `buildings` layer is in the same tile this is read from. So
+//! [`building_passages`] tests each flagged way against the building polygons, and
+//! what comes back stays on the ground sheet as ordinary road. It is the same move
+//! `interiors` makes with a door's normal — probe the data rather than assume a
+//! rule — and it fails in the safe direction: a bore we mistake for a passage is
+//! drawn where it always was, not drawn as a hole.
+//!
+//! # The portal is this module's invention too, and it has to be
+//!
+//! OSM tags the tunnel at full depth for its whole length, and the road that
+//! *descends* to the portal is an ordinary surface way with nothing on it to say
+//! it is a ramp. Drawn literally, that is a carriageway seven metres down meeting
+//! a carriageway at ground level with a vertical step between them — a hole in
+//! the road you fall into. [`bridge-heights.md`](../../../docs/notes/bridge-heights.md)
+//! describes the same constraint from the other side and accepts the step, because
+//! a deck with abrupt ends still reads as a deck. A tunnel cannot accept it: the
+//! step *is* the way in.
+//!
+//! So the ramp is built inside the tagged tunnel: the deck rises to meet the
+//! ground over [`ramp_m`] at each genuine portal, at [`MAX_GRADE`]. Two
+//! consequences follow and both are deliberate. A tunnel shorter than two ramps
+//! never reaches full depth — which is honest for an underpass and wrong for a
+//! bore under a hill, and the tiles cannot tell those apart. And the mouth sits
+//! *inside* the tagged length rather than at its end.
+//!
+//! An end is a portal only when the line genuinely ends there. A run cut by the
+//! tile border continues in the next tile and is held at full depth, so the two
+//! halves meet at the border at the same depth; and an end that another tunnel
+//! run also ends on is a tagging split, not a mouth ([`portal_ends`]).
+//!
+//! # The roof stops where it would surface
+//!
+//! There is no separate "how long is the opening" constant: the ceiling is drawn
+//! wherever it fits under the ground ([`CEILING_MAX_Y`]) and is absent where the
+//! rising deck would push it through, which is exactly the open approach. The
+//! plan corridor of that roofless stretch comes back as a [`mouth`](TunnelTessellation::mouths)
+//! — it is the ground the caller has to take away, or the tunnel is a room with
+//! a lid over its own entrance.
+
+use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
+use crate::vector_tiles::{
+    clip_polyline, flag_of, kind_of, road_rung, SurfaceGroup, SurfaceMesh, TileData, VERTEX_BYTES,
+};
+use geo_types::Geometry;
+use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay::{Overlay, ShapeType};
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::i_float::int::point::IntPoint;
+use mvt_reader::feature::Feature;
+
+/// Depth of one OSM `layer` level, in metres, measured to the carriageway.
+///
+/// A road tunnel is its clearance plus its roof plus its pavement: 4.8 m of
+/// headroom, a slab, and the make-up under the deck. Seven metres is the round
+/// number that lands on, and it is *a convention, not a measurement* — see the
+/// module note. `layer=-2` is twice it, which is how a tunnel under a tunnel
+/// (the Julianaweg under the Groningen ring) keeps its order.
+pub const LEVEL_DEPTH_M: f32 = 7.0;
+
+/// Headroom over a path bore's deck, in metres. A cycle underpass is signed at
+/// 2.5 m and feels like it.
+pub const PATH_CLEARANCE_M: f32 = 2.6;
+
+/// Headroom over the carriageway, in metres.
+///
+/// The Dutch minimum over a trunk road is 4.6 m and the sign at the portal reads
+/// 4.5; 4.8 puts the soffit above the tallest thing that may legally drive under
+/// it without making the bore read as a cathedral.
+pub const CLEARANCE_M: f32 = 4.8;
+
+/// Depth of a bore carrying a path rather than traffic, in metres.
+///
+/// A cycle underpass is not a road tunnel with smaller cars in it: 2.5 m of
+/// headroom against 4.8, a thinner deck, and no ventilation over it. Measured
+/// from the other end — a Dutch fietstunnel's ramps typically drop about 3.5 m.
+///
+/// Giving these the road's seven metres is not merely too deep, it is the
+/// difference between a shallow dip and nothing at all: they are **short**, the
+/// ramp is derived from the depth, and a 30 m underpass ramping toward 7 m
+/// reaches a metre and looks like a mistake in the ground.
+pub const PATH_DEPTH_M: f32 = 3.6;
+
+/// Steepest grade a road bore's portal ramp may take, as a fraction.
+///
+/// Six per cent. Dutch practice holds a motorway ramp near four and a city
+/// underpass near seven; the middle keeps a 7 m descent inside 120 m, which is
+/// short enough that both ends of an ordinary urban tunnel still reach full
+/// depth.
+pub const MAX_GRADE: f32 = 0.06;
+
+/// …and for a path, where the ramp is a person on a bicycle rather than a lorry.
+///
+/// Ten per cent. The Dutch design norm for a cycle ramp is nearer five, but that
+/// is a norm about *comfort over the whole approach*, and the approach here is
+/// only the part inside the tagged tunnel — the rest of the real ramp is an
+/// ordinary path way this cannot see.
+pub const PATH_GRADE: f32 = 0.10;
+
+/// Highest the soffit may be and still be a roof, in metres below ground.
+///
+/// Slightly under the ground rather than flush with it: a ceiling at exactly
+/// `y = 0` is coplanar with the ground sheet over it, which is the depth fight
+/// this codebase has spent the most effort removing elsewhere. Six hundred
+/// millimetres is also roughly a real slab, so the number is not arbitrary in
+/// two ways at once.
+pub const CEILING_MAX_Y: f32 = -0.6;
+
+/// Thickness the walls are drawn with — zero. They are single quads.
+///
+/// A retaining wall has a thickness in the world and drawing it would double the
+/// wall count for a surface nobody can get behind: the inner face is the only one
+/// any camera reaches, because the outer face is buried in the ground the bore is
+/// cut into.
+const WALL_TOP_Y: f32 = 0.0;
+
+/// Two ends of a run and whether each is a portal.
+type PortalEnds = [bool; 2];
+
+/// One bore's plan corridor and the depth along it, for the consumers that need
+/// to know where the road *is* rather than what it looks like: the avatar's
+/// footing, and the ground cut at the mouth.
+#[derive(Clone, Debug, Default)]
+pub struct Bore {
+    /// Centre line, tile-local metres.
+    pub centre: Vec<[f32; 2]>,
+    /// Deck level at each centre vertex, metres (negative — below the ground
+    /// sheet, before the terrain field displaces both together).
+    pub deck_y: Vec<f32>,
+    /// Half the carriageway width, metres.
+    pub half_w: f32,
+    /// Headroom over the deck, metres. Carried rather than read off
+    /// [`CLEARANCE_M`] so a consumer asking "am I inside this bore" gets the
+    /// answer for *this* bore.
+    pub clearance: f32,
+}
+
+impl Bore {
+    /// The deck level under `p`, if `p` is over this bore's carriageway.
+    ///
+    /// `None` rather than zero for "not over it", because zero is a real answer
+    /// here — the deck reaches ground level at the portal — and a caller that
+    /// cannot tell those apart puts the avatar on a tunnel floor in the middle of
+    /// a field.
+    #[must_use]
+    pub fn deck_under(&self, p: [f32; 2]) -> Option<f32> {
+        let mut best: Option<(f32, f32)> = None;
+        for i in 0..self.centre.len().saturating_sub(1) {
+            let (a, b) = (self.centre[i], self.centre[i + 1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len_sq = dx * dx + dy * dy;
+            if len_sq <= 1e-9 {
+                continue;
+            }
+            // Clamped projection: past either end of a segment the nearest point
+            // is that end, which is what makes a chain of segments behave as one
+            // corridor with rounded ends rather than as a set of infinite strips.
+            let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+            let (cx, cy) = (a[0] + dx * t, a[1] + dy * t);
+            let d = (p[0] - cx).hypot(p[1] - cy);
+            if d > self.half_w {
+                continue;
+            }
+            let y = self.deck_y[i] + (self.deck_y[i + 1] - self.deck_y[i]) * t;
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, y));
+            }
+        }
+        best.map(|(_, y)| y)
+    }
+
+    /// The carriageway's plan outline, closed.
+    ///
+    /// The same offsets the walls were built on, so the surface the avatar is
+    /// stopped by and the wall it can see are one shape rather than two
+    /// descriptions of one.
+    #[must_use]
+    pub fn corridor(&self) -> Vec<[f32; 2]> {
+        let sides = offset_sides(&self.centre, self.half_w);
+        let mut ring: Vec<[f32; 2]> = Vec::with_capacity(self.centre.len() * 2 + 1);
+        for s in &sides.left {
+            ring.push(s[0]);
+        }
+        if let Some(last) = sides.left.last() {
+            ring.push(last[1]);
+        }
+        for s in sides.right.iter().rev() {
+            ring.push(s[1]);
+        }
+        if let Some(first) = sides.right.first() {
+            ring.push(first[0]);
+        }
+        if let Some(&head) = ring.first() {
+            ring.push(head);
+        }
+        ring
+    }
+}
+
+/// Everything one tile's tunnels produce.
+#[derive(Default)]
+pub struct TunnelTessellation {
+    /// The drawn bore: deck, walls and roof.
+    pub meshes: Vec<SurfaceMesh>,
+    /// Plan corridors of the roofless approaches, tile-local metres, each a
+    /// closed ring. **The caller must cut these out of the ground**, or the
+    /// portal is roofed by the ground sheet and the tunnel cannot be entered.
+    pub mouths: Vec<Vec<[f32; 2]>>,
+    /// Every bore in the tile, for footing and collision.
+    pub bores: Vec<Bore>,
+}
+
+/// True for a way the tiles flag as a tunnel.
+///
+/// **Not the same question as "is it a bore"**, and the difference is the whole of
+/// [`building_passages`]: this is every flagged way, including the arcades, and it
+/// is what keeps all of them off the ground road sheet at the point where the
+/// buildings are not available to ask (`vector_tiles::drawn_street`, and the
+/// scatter and furniture layers that read it). `tessellate_roads` re-admits the
+/// passages once it has the tile.
+#[must_use]
+pub fn underground(feature: &Feature) -> bool {
+    flag_of(feature, "tunnel")
+}
+
+/// Which of the tile's streets are ways *through a building* rather than bores.
+///
+/// Feature indices into `tile.features(streets)`. A way is a passage when a point
+/// on it lies inside one of the tile's building polygons — tested at several
+/// points along the line and decided by the majority, because a bore that passes
+/// under one corner of a building is still a bore, and a passage clipped by the
+/// tile edge may start outside the wall it runs through.
+#[must_use]
+pub fn building_passages(
+    tile: &TileData,
+    features: &[Feature],
+) -> std::collections::HashSet<usize> {
+    let mut out = std::collections::HashSet::new();
+    let Some(meta) = tile.layer("buildings") else {
+        // No buildings in this tile: nothing here is a passage. Which is the
+        // right answer and not merely the available one — a building passage
+        // with no building drawn around it is a way through nothing.
+        return out;
+    };
+    let rings: Vec<(Bbox, Vec<[f32; 2]>)> = tile
+        .features(meta)
+        .iter()
+        .filter_map(|f| match &f.geometry {
+            Geometry::Polygon(p) => Some(p.exterior().0.iter().map(|c| [c.x, c.y]).collect()),
+            Geometry::MultiPolygon(mp) => {
+                mp.0.first()
+                    .map(|p| p.exterior().0.iter().map(|c| [c.x, c.y]).collect())
+            }
+            _ => None,
+        })
+        .filter(|ring: &Vec<[f32; 2]>| ring.len() >= 4)
+        .map(|ring| (bbox_of_ring(&ring), ring))
+        .collect();
+    if rings.is_empty() {
+        return out;
+    }
+    for (fi, feature) in features.iter().enumerate() {
+        if !underground(feature) {
+            continue;
+        }
+        let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => lines.push(ls),
+            Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+            _ => continue,
+        }
+        let mut inside = 0usize;
+        let mut tested = 0usize;
+        for ls in lines {
+            let pts: Vec<[f32; 2]> = ls.0.iter().map(|c| [c.x, c.y]).collect();
+            for p in sample_points(&pts) {
+                tested += 1;
+                if rings
+                    .iter()
+                    .any(|(b, ring)| point_in_bbox(p, b) && point_in_ring(p, ring))
+                {
+                    inside += 1;
+                }
+            }
+        }
+        if tested > 0 && inside * 2 > tested {
+            out.insert(fi);
+        }
+    }
+    out
+}
+
+/// A handful of points along a line: both ends and three interior fractions.
+fn sample_points(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let at = |t: f32| -> [f32; 2] {
+        let f = t * (pts.len() - 1) as f32;
+        let i = (f.floor() as usize).min(pts.len() - 2);
+        let u = f - i as f32;
+        [
+            pts[i][0] + (pts[i + 1][0] - pts[i][0]) * u,
+            pts[i][1] + (pts[i + 1][1] - pts[i][1]) * u,
+        ]
+    };
+    vec![at(0.05), at(0.25), at(0.5), at(0.75), at(0.95)]
+}
+
+fn point_in_bbox(p: [f32; 2], b: &Bbox) -> bool {
+    p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]
+}
+
+/// Even-odd point in ring.
+fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[j]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// How deep this bore's deck runs, in metres (positive), and the grade its ramp
+/// may take.
+///
+/// The tiles carry no depth and no level, so the only thing left to vary it by is
+/// what the bore carries — and that one distinction matters more than it looks,
+/// because the ramp length is derived from the depth. See [`PATH_DEPTH_M`].
+fn depth_and_grade(class: RoadClass) -> (f32, f32) {
+    match class {
+        RoadClass::Path => (PATH_DEPTH_M, PATH_GRADE),
+        _ => (LEVEL_DEPTH_M, MAX_GRADE),
+    }
+}
+
+/// Length of the portal ramp for a bore of this depth and grade, in metres.
+#[must_use]
+pub fn ramp_m(depth: f32, grade: f32) -> f32 {
+    depth / grade.max(1e-3)
+}
+
+/// Depth at distance `s` along a run whose full depth is `depth` and whose total
+/// length is `total`, given which ends are portals.
+///
+/// The two ramps are applied independently and the *shallower* of the two wins,
+/// so a run shorter than two ramps sags to a dish rather than crossing itself.
+fn depth_at(s: f32, total: f32, depth: f32, grade: f32, portals: PortalEnds) -> f32 {
+    let ramp = ramp_m(depth, grade).max(1e-3);
+    let mut d = depth;
+    if portals[0] {
+        d = d.min(depth * (s / ramp).clamp(0.0, 1.0));
+    }
+    if portals[1] {
+        d = d.min(depth * ((total - s) / ramp).clamp(0.0, 1.0));
+    }
+    d
+}
+
+/// Which ends of each line are genuine portals.
+///
+/// An end is a portal when the line ends there *and* no other tunnel line ends
+/// on the same spot. Shortbread merges ways by attribute, but a tunnel whose
+/// tagging changes half way — a name, a lane count, a second level — arrives as
+/// two lines meeting end to end, and ramping both of them there would build two
+/// portals facing each other in the middle of a bore.
+fn portal_ends(lines: &[Vec<[f32; 2]>]) -> Vec<PortalEnds> {
+    // Ends are compared on a decimetre lattice: the same node reaches two
+    // features through the same integer tile coordinate, so this only has to
+    // survive the scale to metres.
+    let key = |p: [f32; 2]| -> (i32, i32) { ((p[0] * 10.0) as i32, (p[1] * 10.0) as i32) };
+    let mut counts: std::collections::HashMap<(i32, i32), u32> = std::collections::HashMap::new();
+    for line in lines {
+        if let (Some(&h), Some(&t)) = (line.first(), line.last()) {
+            *counts.entry(key(h)).or_default() += 1;
+            *counts.entry(key(t)).or_default() += 1;
+        }
+    }
+    lines
+        .iter()
+        .map(|line| match (line.first(), line.last()) {
+            (Some(&h), Some(&t)) => [
+                counts.get(&key(h)).copied().unwrap_or(0) <= 1,
+                counts.get(&key(t)).copied().unwrap_or(0) <= 1,
+            ],
+            _ => [false, false],
+        })
+        .collect()
+}
+
+/// A corridor's two offset sides, per segment.
+///
+/// Per segment rather than per vertex: a shared offset vertex is a mitre, and a
+/// mitre runs to infinity at a sharp turn — the spike `navigation::ribbon`
+/// documents shooting across a junction. Each segment gets its own butt-ended
+/// pair and the notch left on the outside of a bend is filled with a triangle,
+/// which can neither spike nor pinch.
+struct Sides {
+    left: Vec<[[f32; 2]; 2]>,
+    right: Vec<[[f32; 2]; 2]>,
+}
+
+fn offset_sides(centre: &[[f32; 2]], half: f32) -> Sides {
+    let mut left = Vec::with_capacity(centre.len().saturating_sub(1));
+    let mut right = Vec::with_capacity(centre.len().saturating_sub(1));
+    for i in 0..centre.len().saturating_sub(1) {
+        let (a, b) = (centre[i], centre[i + 1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy).max(1e-6);
+        // Left normal in tile space (x east, y south).
+        let n = [-dy / len * half, dx / len * half];
+        left.push([[a[0] + n[0], a[1] + n[1]], [b[0] + n[0], b[1] + n[1]]]);
+        right.push([[a[0] - n[0], a[1] - n[1]], [b[0] - n[0], b[1] - n[1]]]);
+    }
+    Sides { left, right }
+}
+
+/// Mesh under construction: positions, indices, UVs, normals, rungs.
+#[derive(Default)]
+struct Build {
+    positions: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+    uvs: Vec<[f32; 2]>,
+    normals: Vec<[f32; 3]>,
+    rungs: Vec<f32>,
+}
+
+impl Build {
+    fn tri(&mut self, p: [[f32; 3]; 3], uv: [[f32; 2]; 3], n: [f32; 3], rung: f32) {
+        let base = self.positions.len() as u32;
+        for k in 0..3 {
+            self.positions.push(p[k]);
+            self.uvs.push(uv[k]);
+            self.normals.push(n);
+            self.rungs.push(rung);
+        }
+        self.indices.extend([base, base + 1, base + 2]);
+    }
+
+    /// A quad as two triangles, wound `a b c` / `a c d`.
+    fn quad(&mut self, p: [[f32; 3]; 4], uv: [[f32; 2]; 4], n: [f32; 3], rung: f32) {
+        self.tri([p[0], p[1], p[2]], [uv[0], uv[1], uv[2]], n, rung);
+        self.tri([p[0], p[2], p[3]], [uv[0], uv[2], uv[3]], n, rung);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    fn into_mesh(self, group: SurfaceGroup) -> SurfaceMesh {
+        SurfaceMesh {
+            group,
+            positions: self.positions,
+            indices: self.indices,
+            uvs: self.uvs,
+            normals: self.normals,
+            colors: Vec::new(),
+            rungs: self.rungs,
+        }
+    }
+}
+
+/// Upward normal, for the deck.
+const UP: [f32; 3] = [0.0, 1.0, 0.0];
+/// Downward, for the soffit.
+const DOWN: [f32; 3] = [0.0, -1.0, 0.0];
+
+/// Build every tunnel in one tile.
+///
+/// `tile_m` is the tile's side in metres, as everywhere else in this crate;
+/// `max_bytes` cuts the result into several meshes the way the other builders do,
+/// because bevy's upload budget writes one whole asset per frame and cannot
+/// spread a single huge one (`docs/notes/upload-bursts.md`).
+#[must_use]
+pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> TunnelTessellation {
+    let mut out = TunnelTessellation::default();
+    let Some(meta) = tile.layer("streets") else {
+        return out;
+    };
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
+    let scale = tile_m / extent;
+    // The ways through a building stay on the ground sheet, where
+    // `tessellate_roads` draws them.
+    let passages = building_passages(tile, &features);
+
+    // Every tunnel line in the tile, in metres, before anything is built: the
+    // portal test needs to see all of them at once. Each carries which of its
+    // ends are the *line's* own, as against a cut by the tile border.
+    let mut runs: Vec<(usize, Vec<[f32; 2]>, PortalEnds)> = Vec::new();
+    for (fi, feature) in features.iter().enumerate() {
+        if !underground(feature) || passages.contains(&fi) {
+            continue;
+        }
+        let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => lines.push(ls),
+            Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+            _ => continue,
+        }
+        for ls in lines {
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x, c.y])
+                    .collect();
+            let (Some(&head), Some(&tail)) = (pts.first(), pts.last()) else {
+                continue;
+            };
+            for run in clip_polyline(&pts, 0.0, extent) {
+                // A run the tile border cut carries on into the neighbour, so
+                // only an end that is still the line's own end can be a mouth.
+                let own = [run.first() == Some(&head), run.last() == Some(&tail)];
+                let metres: Vec<[f32; 2]> =
+                    run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+                if metres.len() < 2 {
+                    continue;
+                }
+                runs.push((fi, metres, own));
+            }
+        }
+    }
+    if runs.is_empty() {
+        return out;
+    }
+
+    // An end is a portal when the line ends there, the border did not cut it,
+    // and no second tunnel run ends on the same point.
+    let lines: Vec<Vec<[f32; 2]>> = runs.iter().map(|(_, l, _)| l.clone()).collect();
+    let unshared = portal_ends(&lines);
+
+    let mut deck = Build::default();
+    // The class the open deck buffer is drawing markings for. A batch takes the
+    // class of the run that opened it, exactly as the ground road sheet's
+    // per-group meshes do — the alternative is a mesh per class per cell, for a
+    // difference that is which dashes are painted on a carriageway nobody sees
+    // two of at once.
+    let mut deck_class: Option<RoadClass> = None;
+    let mut shell = Build::default();
+    let mut meshes: Vec<SurfaceMesh> = Vec::new();
+
+    for (idx, (fi, centre, own)) in runs.iter().enumerate() {
+        let feature = &features[*fi];
+        let flags = StreetFlags {
+            oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+            link: flag_of(feature, "link"),
+        };
+        let kind = kind_of(feature).unwrap_or("");
+        let Some(class) = road_class(kind, flags) else {
+            continue;
+        };
+        let half = road_width_m(kind, flags) * 0.5;
+        if half <= 0.0 {
+            continue;
+        }
+        let (depth, grade) = depth_and_grade(class);
+        let portals = [own[0] && unshared[idx][0], own[1] && unshared[idx][1]];
+
+        // Distance along the centre line at each vertex, and the deck level there.
+        let mut travelled = Vec::with_capacity(centre.len());
+        let mut total = 0.0f32;
+        for i in 0..centre.len() {
+            if i > 0 {
+                total += (centre[i][0] - centre[i - 1][0]).hypot(centre[i][1] - centre[i - 1][1]);
+            }
+            travelled.push(total);
+        }
+        let deck_y: Vec<f32> = travelled
+            .iter()
+            .map(|&s| -depth_at(s, total, depth, grade, portals))
+            .collect();
+
+        let clearance = if matches!(class, RoadClass::Path) {
+            PATH_CLEARANCE_M
+        } else {
+            CLEARANCE_M
+        };
+        let sides = offset_sides(centre, half);
+        deck_class.get_or_insert(class);
+        let tex = class.texture_length_m().max(1.0);
+        let rung = road_rung(class, half * 2.0, true, idx as u64) as f32;
+
+        for i in 0..sides.left.len() {
+            let (l0, l1) = (sides.left[i][0], sides.left[i][1]);
+            let (r0, r1) = (sides.right[i][0], sides.right[i][1]);
+            let (y0, y1) = (deck_y[i], deck_y[i + 1]);
+            let (v0, v1) = (travelled[i] / tex, travelled[i + 1] / tex);
+
+            // Deck. `u` runs across the carriageway so the lane markings register
+            // with the geometry, exactly as a surface road's do.
+            deck.quad(
+                [
+                    [l0[0], y0, l0[1]],
+                    [r0[0], y0, r0[1]],
+                    [r1[0], y1, r1[1]],
+                    [l1[0], y1, l1[1]],
+                ],
+                [[0.0, v0], [1.0, v0], [1.0, v1], [0.0, v1]],
+                UP,
+                rung,
+            );
+
+            // Walls, inward-facing: the outer face is buried in the ground the
+            // bore is cut into and no camera can reach it.
+            let n_left = wall_normal(l0, l1, true);
+            shell.quad(
+                [
+                    [l0[0], y0, l0[1]],
+                    [l1[0], y1, l1[1]],
+                    [l1[0], WALL_TOP_Y, l1[1]],
+                    [l0[0], WALL_TOP_Y, l0[1]],
+                ],
+                [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
+                n_left,
+                0.0,
+            );
+            let n_right = wall_normal(r0, r1, false);
+            shell.quad(
+                [
+                    [r1[0], y1, r1[1]],
+                    [r0[0], y0, r0[1]],
+                    [r0[0], WALL_TOP_Y, r0[1]],
+                    [r1[0], WALL_TOP_Y, r1[1]],
+                ],
+                [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
+                n_right,
+                0.0,
+            );
+
+            // Roof, where one fits under the ground. Absent over the approach,
+            // which is what opens the mouth — see the module note.
+            let (c0, c1) = (y0 + clearance, y1 + clearance);
+            if c0 <= CEILING_MAX_Y && c1 <= CEILING_MAX_Y {
+                shell.quad(
+                    [
+                        [l0[0], c0, l0[1]],
+                        [l1[0], c1, l1[1]],
+                        [r1[0], c1, r1[1]],
+                        [r0[0], c0, r0[1]],
+                    ],
+                    [[0.0, v0], [0.0, v1], [1.0, v1], [1.0, v0]],
+                    DOWN,
+                    0.0,
+                );
+            }
+
+            // The notch on the outside of a bend, in the deck and in both walls.
+            if i + 1 < sides.left.len() {
+                let p = centre[i + 1];
+                let y = deck_y[i + 1];
+                let v = v1;
+                let next_l = sides.left[i + 1][0];
+                let next_r = sides.right[i + 1][0];
+                // Which way the corner turns decides which side has the gap; the
+                // other side's triangle is degenerate to a hair and costs three
+                // vertices to keep the code one case.
+                deck.tri(
+                    [
+                        [p[0], y, p[1]],
+                        [l1[0], y, l1[1]],
+                        [next_l[0], y, next_l[1]],
+                    ],
+                    [[0.5, v], [0.0, v], [0.0, v]],
+                    UP,
+                    rung,
+                );
+                deck.tri(
+                    [
+                        [p[0], y, p[1]],
+                        [next_r[0], y, next_r[1]],
+                        [r1[0], y, r1[1]],
+                    ],
+                    [[0.5, v], [1.0, v], [1.0, v]],
+                    UP,
+                    rung,
+                );
+                // Walls: a vertical quad closing the gap between the two offset
+                // points. Without it a bend is a slot you can see the void
+                // through from inside the bore.
+                shell.quad(
+                    [
+                        [l1[0], y, l1[1]],
+                        [next_l[0], y, next_l[1]],
+                        [next_l[0], WALL_TOP_Y, next_l[1]],
+                        [l1[0], WALL_TOP_Y, l1[1]],
+                    ],
+                    [[v, 0.0], [v, 0.0], [v, 1.0], [v, 1.0]],
+                    n_left,
+                    0.0,
+                );
+                shell.quad(
+                    [
+                        [next_r[0], y, next_r[1]],
+                        [r1[0], y, r1[1]],
+                        [r1[0], WALL_TOP_Y, r1[1]],
+                        [next_r[0], WALL_TOP_Y, next_r[1]],
+                    ],
+                    [[v, 0.0], [v, 0.0], [v, 1.0], [v, 1.0]],
+                    n_right,
+                    0.0,
+                );
+            }
+        }
+
+        // The roofless stretches, as plan corridors for the caller to cut out of
+        // the ground. Keyed on the roof being missing rather than on the portal
+        // flag, so the hole and the absent ceiling are decided by one test and
+        // cannot disagree about where the opening is.
+        out.mouths
+            .extend(mouth_rings(centre, &deck_y, half, clearance));
+
+        out.bores.push(Bore {
+            centre: centre.clone(),
+            deck_y,
+            half_w: half,
+            clearance,
+        });
+
+        // Cut the meshes loose as they fill, the same contract every other
+        // builder in this crate keeps.
+        if let Some(limit) = max_bytes {
+            if deck.positions.len() * VERTEX_BYTES >= limit && !deck.is_empty() {
+                let group = SurfaceGroup::TunnelDeck(deck_class.take().unwrap_or(class));
+                meshes.push(std::mem::take(&mut deck).into_mesh(group));
+            }
+            if shell.positions.len() * VERTEX_BYTES >= limit && !shell.is_empty() {
+                meshes.push(std::mem::take(&mut shell).into_mesh(SurfaceGroup::TunnelShell));
+            }
+        }
+    }
+
+    if !deck.is_empty() {
+        let group = SurfaceGroup::TunnelDeck(deck_class.unwrap_or(RoadClass::Minor));
+        meshes.push(deck.into_mesh(group));
+    }
+    if !shell.is_empty() {
+        meshes.push(shell.into_mesh(SurfaceGroup::TunnelShell));
+    }
+    out.meshes = meshes;
+    out
+}
+
+/// Inward normal of a wall segment. `left` picks which side of the direction the
+/// interior is on.
+fn wall_normal(a: [f32; 2], b: [f32; 2], left: bool) -> [f32; 3] {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = dx.hypot(dy).max(1e-6);
+    let (nx, ny) = (-dy / len, dx / len);
+    if left {
+        [-nx, 0.0, -ny]
+    } else {
+        [nx, 0.0, ny]
+    }
+}
+
+/// The plan corridors of every roofless stretch of one run.
+///
+/// Empty when the run is roofed end to end, which is what a bore whose portals
+/// both lie in neighbouring tiles looks like from here. A run with no roof at all
+/// — an underpass shorter than two ramps — comes back as a single corridor over
+/// its whole length, because the whole of it is open to the sky.
+fn mouth_rings(
+    centre: &[[f32; 2]],
+    deck_y: &[f32],
+    half: f32,
+    clearance: f32,
+) -> Vec<Vec<[f32; 2]>> {
+    // Roofless where the soffit would surface. The same test the mesh used.
+    let open = |i: usize| deck_y[i] + clearance > CEILING_MAX_Y;
+    let last = centre.len().saturating_sub(1);
+    let first_roofed = (0..centre.len()).find(|&i| !open(i));
+    let Some(first_roofed) = first_roofed else {
+        return mouth_ring(centre, half).into_iter().collect();
+    };
+    let last_roofed = (0..centre.len()).rev().find(|&i| !open(i)).unwrap_or(last);
+    let mut out = Vec::new();
+    if first_roofed > 0 {
+        out.extend(mouth_ring(&centre[0..=first_roofed], half));
+    }
+    if last_roofed < last {
+        out.extend(mouth_ring(&centre[last_roofed..=last], half));
+    }
+    out
+}
+
+/// One corridor as a closed ring, a little wider than the carriageway.
+fn mouth_ring(run: &[[f32; 2]], half: f32) -> Option<Vec<[f32; 2]>> {
+    if run.len() < 2 {
+        return None;
+    }
+    let run: Vec<[f32; 2]> = run.to_vec();
+    // A little wider than the carriageway: the walls stand at the carriageway
+    // edge and the ground has to come away from *outside* them, or a hairline of
+    // sheet is left standing on top of the wall.
+    let sides = offset_sides(&run, half + 0.5);
+    let mut ring: Vec<[f32; 2]> = Vec::with_capacity(run.len() * 2 + 1);
+    for s in &sides.left {
+        ring.push(s[0]);
+    }
+    if let Some(last) = sides.left.last() {
+        ring.push(last[1]);
+    }
+    for s in sides.right.iter().rev() {
+        ring.push(s[1]);
+    }
+    if let Some(first) = sides.right.first() {
+        ring.push(first[0]);
+    }
+    let head = *ring.first()?;
+    ring.push(head);
+    Some(ring)
+}
+
+/// Take the ground away over every opening.
+///
+/// **Without this there is no tunnel**, only a room with a lid over its own
+/// entrance: the approach is roofless by construction ([`mouth_rings`]) and the
+/// ground sheet is what would otherwise roof it. It is the same operation
+/// `road_stitch` performs on the road ribbons, for the same reason and on the
+/// same integer millimetre lattice — a boundary produced by subtracting one
+/// shape from another is built from the subtracted shape's own vertices, so the
+/// hole's edge and the wall standing in it are the same line rather than two
+/// opinions about one line.
+///
+/// What is cut: every sheet that is *ground*. Not the bore's own deck, walls and
+/// roof, obviously; not a bridge deck, which is a structure that may legitimately
+/// cross an open cut; and not the volumetric groups, because a third of a tree is
+/// not a smaller tree — a canopy standing in the opening is left standing, which
+/// is wrong in the small and much less wrong than the alternative.
+pub fn cut_ground(meshes: &mut [SurfaceMesh], mouths: &[Vec<[f32; 2]>]) {
+    if mouths.is_empty() {
+        return;
+    }
+    let clips: Vec<(Bbox, Vec<IntPoint<i32>>)> = mouths
+        .iter()
+        .filter(|ring| ring.len() >= 4)
+        .map(|ring| {
+            let pts: Vec<IntPoint<i32>> = ring
+                .iter()
+                .take(ring.len() - 1)
+                .map(|p| IntPoint::new(to_mm(p[0]), to_mm(p[1])))
+                .collect();
+            (bbox_of_ring(ring), pts)
+        })
+        .filter(|(_, pts)| pts.len() >= 3)
+        .collect();
+    if clips.is_empty() {
+        return;
+    }
+    let mut overlay: Overlay<i32> = Overlay::new(64);
+    for mesh in meshes.iter_mut() {
+        if !is_ground(mesh.group) {
+            continue;
+        }
+        cut_mesh(mesh, &clips, &mut overlay);
+    }
+}
+
+/// Whether a group is a sheet lying on the ground, and so something the opening
+/// has to be taken out of.
+fn is_ground(group: SurfaceGroup) -> bool {
+    !matches!(
+        group,
+        SurfaceGroup::TunnelDeck(_)
+            | SurfaceGroup::TunnelShell
+            | SurfaceGroup::BridgeDeck
+            | SurfaceGroup::Canopy
+            | SurfaceGroup::Trunk
+            | SurfaceGroup::Furniture
+    )
+}
+
+type Bbox = [f32; 4];
+
+fn bbox_of_ring(ring: &[[f32; 2]]) -> Bbox {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in ring {
+        b[0] = b[0].min(p[0]);
+        b[1] = b[1].min(p[1]);
+        b[2] = b[2].max(p[0]);
+        b[3] = b[3].max(p[1]);
+    }
+    b
+}
+
+fn bbox_overlaps(a: &Bbox, b: &Bbox) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+}
+
+/// Integer millimetres of tile-local metres — `road_stitch`'s lattice, for the
+/// reason its module note gives.
+fn to_mm(v: f32) -> i32 {
+    (v * 1000.0).round() as i32
+}
+
+fn from_mm(v: i32) -> f32 {
+    v as f32 / 1000.0
+}
+
+/// Barycentric weights of `p` in `tri`, as `road_stitch` computes them: the way
+/// every attribute of a cut triangle is carried over rather than re-derived.
+fn barycentric(tri: [[f32; 2]; 3], p: [f32; 2]) -> [f32; 3] {
+    let (x1, y1) = (tri[0][0], tri[0][1]);
+    let (x2, y2) = (tri[1][0], tri[1][1]);
+    let (x3, y3) = (tri[2][0], tri[2][1]);
+    let det = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
+    if det.abs() < 1e-12 {
+        return [1.0, 0.0, 0.0];
+    }
+    let l1 = ((y2 - y3) * (p[0] - x3) + (x3 - x2) * (p[1] - y3)) / det;
+    let l2 = ((y3 - y1) * (p[0] - x3) + (x1 - x3) * (p[1] - y3)) / det;
+    [l1, l2, 1.0 - l1 - l2]
+}
+
+/// Subtract the openings from one mesh, in place.
+fn cut_mesh(
+    mesh: &mut SurfaceMesh,
+    clips: &[(Bbox, Vec<IntPoint<i32>>)],
+    overlay: &mut Overlay<i32>,
+) {
+    let has_uv = !mesh.uvs.is_empty();
+    let has_n = !mesh.normals.is_empty();
+    let has_c = !mesh.colors.is_empty();
+    let has_r = !mesh.rungs.is_empty();
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(mesh.positions.len());
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut rungs: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(mesh.indices.len());
+    let mut touched = false;
+
+    for t in mesh.indices.chunks_exact(3) {
+        let vi = [t[0] as usize, t[1] as usize, t[2] as usize];
+        let vs = [
+            mesh.positions[vi[0]],
+            mesh.positions[vi[1]],
+            mesh.positions[vi[2]],
+        ];
+        let flat = [
+            [vs[0][0], vs[0][2]],
+            [vs[1][0], vs[1][2]],
+            [vs[2][0], vs[2][2]],
+        ];
+        let tb = bbox_of_ring(&flat);
+        let subj = [
+            IntPoint::new(to_mm(flat[0][0]), to_mm(flat[0][1])),
+            IntPoint::new(to_mm(flat[1][0]), to_mm(flat[1][1])),
+            IntPoint::new(to_mm(flat[2][0]), to_mm(flat[2][1])),
+        ];
+
+        // Copy a vertex across unchanged, attributes and all.
+        let push_src = |positions: &mut Vec<[f32; 3]>,
+                        uvs: &mut Vec<[f32; 2]>,
+                        normals: &mut Vec<[f32; 3]>,
+                        colors: &mut Vec<[f32; 4]>,
+                        rungs: &mut Vec<f32>,
+                        k: usize| {
+            positions.push(mesh.positions[vi[k]]);
+            if has_uv {
+                uvs.push(mesh.uvs[vi[k]]);
+            }
+            if has_n {
+                normals.push(mesh.normals[vi[k]]);
+            }
+            if has_c {
+                colors.push(mesh.colors[vi[k]]);
+            }
+            if has_r {
+                rungs.push(mesh.rungs[vi[k]]);
+            }
+        };
+
+        overlay.clear();
+        let mut any = false;
+        for (cb, contour) in clips {
+            if !bbox_overlaps(&tb, cb) {
+                continue;
+            }
+            overlay.add_contour(contour, ShapeType::Clip);
+            any = true;
+        }
+        if !any {
+            let base = positions.len() as u32;
+            for k in 0..3 {
+                push_src(
+                    &mut positions,
+                    &mut uvs,
+                    &mut normals,
+                    &mut colors,
+                    &mut rungs,
+                    k,
+                );
+            }
+            indices.extend([base, base + 1, base + 2]);
+            continue;
+        }
+        touched = true;
+        overlay.add_contour(&subj, ShapeType::Subject);
+        let kept = overlay.overlay(OverlayRule::Difference, FillRule::NonZero);
+        for shape in &kept {
+            let mut flat_xy: Vec<f64> = Vec::new();
+            let mut holes: Vec<usize> = Vec::new();
+            for (ci, contour) in shape.iter().enumerate() {
+                if contour.len() < 3 {
+                    continue;
+                }
+                if ci > 0 {
+                    holes.push(flat_xy.len() / 2);
+                }
+                for p in contour {
+                    flat_xy.push(f64::from(from_mm(p.x)));
+                    flat_xy.push(f64::from(from_mm(p.y)));
+                }
+            }
+            if flat_xy.len() < 6 {
+                continue;
+            }
+            let Ok(tris) = earcutr::earcut(&flat_xy, &holes, 2) else {
+                continue;
+            };
+            for c in tris.chunks_exact(3) {
+                let mut out = [[0.0f32; 3]; 3];
+                let mut w3 = [[0.0f32; 3]; 3];
+                for (k, idx) in c.iter().enumerate() {
+                    let p = [flat_xy[idx * 2] as f32, flat_xy[idx * 2 + 1] as f32];
+                    let w = barycentric(flat, p);
+                    w3[k] = w;
+                    out[k] = [
+                        p[0],
+                        w[0] * vs[0][1] + w[1] * vs[1][1] + w[2] * vs[2][1],
+                        p[1],
+                    ];
+                }
+                // Earcut keeps its input's orientation, which the difference does
+                // not guarantee; ground geometry is single-sided and faces up.
+                let cross = (out[1][0] - out[0][0]) * (out[2][2] - out[0][2])
+                    - (out[1][2] - out[0][2]) * (out[2][0] - out[0][0]);
+                if cross.abs() < f32::EPSILON {
+                    continue;
+                }
+                let order = if cross < 0.0 { [0, 1, 2] } else { [0, 2, 1] };
+                let base = positions.len() as u32;
+                for k in order {
+                    let w = w3[k];
+                    positions.push(out[k]);
+                    if has_uv {
+                        uvs.push([
+                            w[0] * mesh.uvs[vi[0]][0]
+                                + w[1] * mesh.uvs[vi[1]][0]
+                                + w[2] * mesh.uvs[vi[2]][0],
+                            w[0] * mesh.uvs[vi[0]][1]
+                                + w[1] * mesh.uvs[vi[1]][1]
+                                + w[2] * mesh.uvs[vi[2]][1],
+                        ]);
+                    }
+                    if has_n {
+                        normals.push(mesh.normals[vi[0]]);
+                    }
+                    if has_c {
+                        let mut col = [0.0f32; 4];
+                        for ch in 0..4 {
+                            col[ch] = w[0] * mesh.colors[vi[0]][ch]
+                                + w[1] * mesh.colors[vi[1]][ch]
+                                + w[2] * mesh.colors[vi[2]][ch];
+                        }
+                        colors.push(col);
+                    }
+                    if has_r {
+                        rungs.push(mesh.rungs[vi[0]]);
+                    }
+                }
+                indices.extend([base, base + 1, base + 2]);
+            }
+        }
+    }
+
+    if !touched {
+        return;
+    }
+    mesh.positions = positions;
+    mesh.indices = indices;
+    mesh.uvs = uvs;
+    mesh.normals = normals;
+    mesh.colors = colors;
+    mesh.rungs = rungs;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ramp_reaches_the_ground_at_a_portal_and_full_depth_inside() {
+        let depth = LEVEL_DEPTH_M;
+        let total = 400.0;
+        let portals = [true, true];
+        assert!(depth_at(0.0, total, depth, MAX_GRADE, portals).abs() < 1e-6);
+        assert!((depth_at(total, total, depth, MAX_GRADE, portals)).abs() < 1e-6);
+        assert!((depth_at(total * 0.5, total, depth, MAX_GRADE, portals) - depth).abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_end_at_the_tile_border_is_held_at_full_depth() {
+        let depth = LEVEL_DEPTH_M;
+        let total = 400.0;
+        // Only the far end is a portal, so the border end keeps its depth and the
+        // two halves of a tunnel crossing a tile edge meet flush.
+        let d = depth_at(0.0, total, depth, MAX_GRADE, [false, true]);
+        assert!((d - depth).abs() < 1e-3, "border end surfaced: {d}");
+    }
+
+    #[test]
+    fn a_short_tunnel_sags_instead_of_crossing_itself() {
+        let depth = LEVEL_DEPTH_M;
+        // Far shorter than two ramps.
+        let total = 40.0;
+        let mid = depth_at(total * 0.5, total, depth, MAX_GRADE, [true, true]);
+        assert!(mid > 0.0, "an underpass with no depth at all");
+        assert!(mid < depth, "a 40 m underpass reached full depth: {mid}");
+    }
+
+    #[test]
+    fn two_runs_meeting_end_to_end_build_no_portal_between_them() {
+        let a = vec![[0.0, 0.0], [50.0, 0.0]];
+        let b = vec![[50.0, 0.0], [100.0, 0.0]];
+        let ends = portal_ends(&[a, b]);
+        assert_eq!(ends[0], [true, false], "a tagging split became a portal");
+        assert_eq!(ends[1], [false, true]);
+    }
+
+    #[test]
+    fn the_deck_is_found_under_the_carriageway_and_not_beside_it() {
+        let bore = Bore {
+            centre: vec![[0.0, 0.0], [100.0, 0.0]],
+            deck_y: vec![-7.0, -7.0],
+            half_w: 6.0,
+            clearance: CLEARANCE_M,
+        };
+        assert_eq!(bore.deck_under([50.0, 0.0]), Some(-7.0));
+        assert_eq!(bore.deck_under([50.0, 5.9]), Some(-7.0));
+        assert!(bore.deck_under([50.0, 8.0]).is_none());
+        assert!(bore.deck_under([-20.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn the_hole_in_the_ground_covers_exactly_the_stretch_with_no_roof() {
+        // A straight 600 m bore with a portal at each end: roofed in the middle,
+        // open at both approaches, so two corridors come back.
+        let centre: Vec<[f32; 2]> = (0..=60).map(|i| [i as f32 * 10.0, 0.0]).collect();
+        let total = 600.0;
+        let deck_y: Vec<f32> = centre
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                -depth_at(
+                    i as f32 * 10.0,
+                    total,
+                    LEVEL_DEPTH_M,
+                    MAX_GRADE,
+                    [true, true],
+                )
+            })
+            .collect();
+        let rings = mouth_rings(&centre, &deck_y, 6.0, CLEARANCE_M);
+        assert_eq!(rings.len(), 2, "a portal at each end should open two holes");
+        for ring in &rings {
+            assert!(ring.len() >= 4);
+            assert_eq!(ring.first(), ring.last(), "the hole is not a closed ring");
+        }
+    }
+
+    /// What the live tiles actually carry, read off the Groningen fixture: this
+    /// is the one thing in this module that is a claim about the data rather
+    /// than about the geometry, and it is the claim the whole module rests on.
+    #[test]
+    fn the_tiles_say_which_streets_are_tunnels() {
+        let bytes = &include_bytes!("../tests/fixtures/groningen_z14.mvt")[..];
+        let tile = TileData::parse(bytes).expect("fixture parses");
+        let meta = tile.layer("streets").expect("a streets layer");
+        let features = tile.features(meta);
+        let flagged = features
+            .iter()
+            .filter(|f| crate::vector_tiles::flag_of(f, "tunnel"))
+            .count();
+        let below = features.iter().filter(|f| underground(f)).count();
+        assert!(flagged > 0, "no street in the fixture is flagged a tunnel");
+        assert_eq!(
+            below, flagged,
+            "`underground` is the bare flag now — the tiles carry no `layer`"
+        );
+        // **No `layer` anywhere in the layer.** This is the measurement the
+        // depth convention rests on: if a tileset ever starts carrying one,
+        // this fails and `full_depth` has something better to read.
+        assert!(
+            features
+                .iter()
+                .all(|f| crate::vector_tiles::layer_of(f) == 0),
+            "a street carries a `layer` now — `full_depth` can stop guessing"
+        );
+        // And the arcades are told apart from the bores by the buildings around
+        // them, which is the other half of having no `layer` to read.
+        let passages = building_passages(&tile, &features);
+        assert!(
+            passages.len() < flagged,
+            "every flagged way was called a building passage"
+        );
+    }
+
+    /// Build the fixture's bores and report them, so a capture that says the
+    /// avatar is not standing on one can be told from a bore that is not there.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn dump_the_fixture_bores() {
+        // `CARTO_TUNNEL_TILE=/path/to.mvt` to read a live tile instead.
+        let owned = std::env::var("CARTO_TUNNEL_TILE")
+            .ok()
+            .map(|p| std::fs::read(p).expect("tile reads"));
+        let bytes: &[u8] = match &owned {
+            Some(b) => b,
+            None => &include_bytes!("../tests/fixtures/groningen_z14.mvt")[..],
+        };
+        let tile = TileData::parse(bytes).expect("fixture parses");
+        let out = build_tunnels(&tile, 1471.0, None);
+        println!("bores={} mouths={}", out.bores.len(), out.mouths.len());
+        for (i, b) in out.bores.iter().enumerate() {
+            let deepest = b.deck_y.iter().copied().fold(0.0f32, f32::min);
+            println!(
+                "bore {i}: half_w={:.1} pts={} deepest={:.2} head={:?} tail={:?}",
+                b.half_w,
+                b.centre.len(),
+                deepest,
+                b.centre.first(),
+                b.centre.last()
+            );
+        }
+        for (i, m) in out.mouths.iter().enumerate() {
+            let b = bbox_of_ring(m);
+            println!(
+                "mouth {i}: x {:.0}..{:.0} z {:.0}..{:.0}",
+                b[0], b[2], b[1], b[3]
+            );
+        }
+    }
+
+    #[test]
+    fn a_bore_roofed_end_to_end_opens_no_hole() {
+        let centre = vec![[0.0, 0.0], [100.0, 0.0]];
+        let deck_y = vec![-LEVEL_DEPTH_M, -LEVEL_DEPTH_M];
+        assert!(mouth_rings(&centre, &deck_y, 6.0, CLEARANCE_M).is_empty());
+    }
+}
