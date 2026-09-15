@@ -155,17 +155,12 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
     lat_lng_to_world, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
 };
+use crate::systems::ground_stack::GroundLayer;
 use crate::systems::icons;
 use crate::systems::navigation::RouteState;
 use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};
 use crate::systems::routing::{format_distance, format_duration, Maneuver, Route};
 use crate::systems::theme;
-use crate::systems::vector_tiles;
-
-/// Rung on the shared depth ladder for the driver arrow — above the route line it
-/// follows, and above every road (`road_depth`'s
-/// `everything_drawn_over_a_road_clears_the_road_ladder` pins that).
-pub(crate) const ARROW_RUNG: f32 = 24.0;
 
 // ─── Tuning ──────────────────────────────────────────────────────────────────
 
@@ -1999,15 +1994,14 @@ pub fn update_driver_arrow(
         Some(p) => p.fill.clone(),
         None => {
             // Unlit for the same reason the route line is: this is a UI affordance
-            // drawn into the scene, and it has to stay legible at night. The depth
-            // bias puts it above the route line, which is itself above the ground
-            // stack (`navigation::ROUTE_Y` explains that fight in full). Rung 24 on
-            // the shared ladder — the step is what keeps a rung clear of the
-            // rounding noise, see `vector_tiles::DEPTH_BIAS_STEP`.
+            // drawn into the scene, and it has to stay legible at night. Its place
+            // above the route line — which is itself above the ground stack
+            // (`navigation::ROUTE_Y` explains that fight in full) — is the top of
+            // `ground_stack::GroundLayer`, not a number chosen here.
             let fill = materials.add(StandardMaterial {
                 base_color: Color::srgb(0.20, 0.60, 0.98),
                 unlit: true,
-                depth_bias: ARROW_RUNG * vector_tiles::DEPTH_BIAS_STEP,
+                depth_bias: GroundLayer::DriverArrow.depth_bias(),
                 cull_mode: None,
                 ..default()
             });

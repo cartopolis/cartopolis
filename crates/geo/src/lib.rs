@@ -24,6 +24,11 @@ mod flat_fill;
 pub mod furniture;
 // The tiling roughness map the flat ground groups sample, so paving and built
 // land stop being one perfectly uniform sheet beside a textured road.
+// **The** order of everything drawn flat on the ground: one ordered list, from
+// which both the depth bias and the millimetre height are derived. Every
+// recurring z-fight in this tree was two statements of that order disagreeing, so
+// there is now only one.
+pub mod ground_stack;
 pub mod ground_texture;
 pub mod mip;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split

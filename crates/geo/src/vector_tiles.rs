@@ -32,6 +32,7 @@ use tiny_skia::{
 
 use std::collections::HashMap;
 
+use crate::ground_stack::GroundLayer;
 use crate::road_texture::{
     road_class, road_width_m, surveyed_paving_supersedes, RoadClass, StreetFlags,
 };
@@ -291,56 +292,13 @@ pub const MAX_OVERZOOM_SHIFT: u32 = 31;
 /// loop that follows is over the bbox and would otherwise insert ~10^14 entries.
 pub const TILE_BUFFER_FRAC: f32 = 0.25;
 
-/// Depth-buffer units between adjacent rungs of the coplanar ground stack, and of
-/// everything else drawn flat on it (the route line, the driver arrow).
+/// Depth-buffer units between adjacent rungs of the coplanar ground stack.
 ///
-/// Every bias in the scene is a small integer rung times this, so scaling it moves
-/// the whole stack together and cannot reorder it. It exists because the rungs used
-/// to *be* the bias: neighbours one unit apart, which is one ULP of the depth
-/// buffer and below the per-frame rounding noise. See [`SurfaceGroup::depth_bias`]
-/// for why the millimetre `y_offset`s stop covering for that as you climb.
-///
-/// 16 was not enough on its own — lakes still took the occasional triangle
-/// through the surface at the oblique angles a low camera looks at the middle
-/// distance with, where the depth gradient across a pixel is at its steepest.
-/// This is the blunt lever for that; the sharp one is `bias.slope_scale`, which
-/// is the textbook remedy for grazing angles and is *proportional* to that
-/// gradient, but `StandardMaterial` exposes only `constant` and reaching the
-/// other field means wrapping every surface group in an `ExtendedMaterial` to
-/// get at `MaterialExtension::specialize`. If a lake ever flickers again, that
-/// is the fix — not another doubling here.
-pub const DEPTH_BIAS_STEP: f32 = 64.0;
-
-/// The group rung the whole road stack stands on, just above `Water` at 4.
-///
-/// Roads do not get a rung *each* any more — `road_rung` orders them, per vertex,
-/// in the same depth-buffer units this ladder is denominated in. See
-/// [`SurfaceGroup::depth_rung`].
-const ROAD_BAND_FOOT: f32 = 6.0;
-
-/// The first group rung above every road rung, in [`DEPTH_BIAS_STEP`] units.
-///
-/// `road_depth` adds `rung × ROAD_RUNG_ULP` ULPs on top of `ROAD_BAND_FOOT`, so
-/// the band the road ladder occupies is that many ULPs tall and anything meant to
-/// draw *over* a road has to start above it.
-///
-/// The `2.0` is a truncation guard plus a whole rung of clear air: `as u32`
-/// rounds the band's height *down*, so one of those units only gets the ceiling
-/// back level with the tallest road rung. Without the second the margin would be
-/// whatever the division happened to leave, and silently negative if the ladder
-/// ever grew past the next multiple.
-///
-/// The band is two rungs tall now rather than 399 (see [`ROAD_DEPTH_RUNGS`]), and
-/// that matters to more than tidiness. Five things in the client are drawn *over*
-/// roads by a hard-coded rung on this same ladder — the zebra paint at 10.5, the
-/// route line's casing and fill at 18 and 20, the street labels at 23 and the
-/// driver arrow at 24 — and when the road ladder grew to 399 rungs its ceiling
-/// climbed to 1,916 depth units and swallowed every one of them. A zebra crossing
-/// on anything wider than a residential street was being drawn underneath the
-/// tarmac.
-const ROAD_BAND_CEILING: f32 = ROAD_BAND_FOOT
-    + 2.0
-    + (ROAD_DEPTH_RUNGS as f32 * ROAD_RUNG_ULP / DEPTH_BIAS_STEP) as u32 as f32;
+/// Re-exported from [`crate::ground_stack`], which is where the ladder itself
+/// lives. It stays visible under this name because most of the tree reaches the
+/// stack through `systems::vector_tiles`, and because the step is what
+/// `assets/shaders/road_depth.wgsl` has to agree with.
+pub use crate::ground_stack::DEPTH_BIAS_STEP;
 
 /// Which sub-rectangle of a source tile to draw, when the requested tile is deeper
 /// than [`MAX_SOURCE_ZOOM`]. `factor` is 2^(requested_z − source_z); `(x, y)` is the
@@ -1262,157 +1220,65 @@ impl SurfaceGroup {
         ]
     }
 
+    /// Which rung of [`GroundLayer`] — **the** ground stack — this group draws on.
+    ///
+    /// One exhaustive `match`, and it is the only thing in the crate that decides
+    /// where a surface group stands. Everything else about the ordering — the
+    /// depth bias, the millimetre height, the room reserved for the road band — is
+    /// derived from the layer, so a group cannot be high in one denomination and
+    /// low in another. That disagreement is what every recurring z-fight in this
+    /// area turned out to be; `ground_stack`'s module docs have the history.
+    ///
+    /// Being exhaustive is the load-bearing part: a new `SurfaceGroup` does not
+    /// compile until somebody says where in the stack it goes.
+    #[must_use]
+    pub fn layer(self) -> GroundLayer {
+        match self {
+            Self::Built => GroundLayer::Built,
+            Self::Grass => GroundLayer::Grass,
+            Self::Crop => GroundLayer::Crop,
+            Self::Forest => GroundLayer::Forest,
+            Self::Sand => GroundLayer::Sand,
+            Self::Water => GroundLayer::Water,
+            Self::Paving => GroundLayer::Paving,
+            // Both road groups share the band's foot, and that is the point: the
+            // road hierarchy — class, then casing, then width — is `road_rung`,
+            // carried per *vertex* inside the band, not a second ladder here. It
+            // used to be one, denominated in millimetres, and the two crossed over
+            // in the middle distance.
+            Self::Road(_) | Self::RoadCasing(_) => GroundLayer::Road,
+            Self::BridgeDeck => GroundLayer::BridgeDeck,
+            Self::Canopy | Self::Trunk | Self::Furniture => GroundLayer::Standing,
+        }
+    }
+
     /// Height in metres, relative to the ground plane at y = 0.
     ///
-    /// Surfaces sit in the narrow window **between the map tile's top face and the
-    /// buildings' base**: `map_stream` spawns each tile as a 0.04 m cuboid centred
-    /// at −0.03, so the finest tier's top face is at −0.01, and every building
-    /// (3DBAG and Overpass alike) stands on y = 0. Drawing surfaces *above* zero —
-    /// the first attempt — pushed grass and water up through the bottom courses of
-    /// the buildings, which is the green bleeding out from under the grey.
-    ///
-    /// The window is only 10 mm. That is enough to settle the stack at street
-    /// range and nowhere near enough from the air: measured in depth-buffer units
-    /// a geometric gap shrinks as 1/z, so these offsets fade out exactly as you
-    /// climb. [`Self::depth_bias`] is what has to hold at altitude; these fix the
-    /// ordering intent and carry it up close.
-    ///
-    /// The millimetres inside the window are **not** spread evenly, because the
-    /// fights are not equally visible. Land against land is pale green against
-    /// pale grey and can lose without anyone noticing; land against water is the
-    /// one that shows, dark against pale, and it is the one that came back as
-    /// triangles flickering up through a lake. So the land groups stay packed at
-    /// 1 mm apart and water takes the widest gap in the stack — 4 mm of clear air
-    /// under it, 2 mm over it to the roads. Spend the window where the contrast
-    /// is.
+    /// [`GroundLayer::y_offset`] — derived from the same rung as the depth bias,
+    /// so the two cannot contradict each other.
     #[must_use]
     pub fn y_offset(self) -> f32 {
-        match self {
-            Self::Built => -0.0095,
-            Self::Grass => -0.0085,
-            // Half a step above the grass rather than the usual millimetre, and
-            // that is the whole spacing argument: a crop parcel only ever
-            // overlaps `Grass` — the register covers farmland, which OSM draws as
-            // grass — and it is never coplanar with a wood or a beach, so it does
-            // not need a rung of its own between them.
-            Self::Crop => -0.0080,
-            Self::Forest | Self::Sand => -0.0075,
-            Self::Water => -0.0035,
-            // Paving sits between the fills and the roads in height as it does in
-            // depth, and for the same reason: it is laid *on* the ground and
-            // driven *over* at the kerb.
-            Self::Paving => -0.0025,
-            // Roads go on top of every natural surface — a street crosses a park,
-            // never the other way round.
-            Self::Road(_) => -0.0015,
-            // The same plane as the fills, and not approximately: the road sheet
-            // is exactly flat and its whole ordering — fills, casings, classes —
-            // is the per-vertex rung applied in depth (`road_rung`,
-            // `systems::road_depth`). A casing that sat a step lower *in height*
-            // is how this used to work, and it put every casing in the tile under
-            // every fill in the tile, which contradicted the bias that put a wide
-            // road's kerb over a path it crosses. The two crossed over in the
-            // middle distance, slicing a kerb line across a junction at some
-            // camera heights and not others.
-            Self::RoadCasing(_) => -0.0015,
-            // Trees are real 3D geometry standing *on* the ground, not another
-            // sheet in the coplanar stack, so they take the ground plane itself.
-            // A bridge deck is the same kind of thing: it carries its own height,
-            // which is a measurement and not a place in this millimetre ladder.
-            Self::BridgeDeck | Self::Canopy | Self::Trunk | Self::Furniture => 0.0,
-        }
+        self.layer().y_offset()
     }
 
-    /// Depth-buffer bias, which is what actually stops the flicker.
+    /// Depth-buffer bias, which is what actually stops the flicker at range.
     ///
-    /// The rung ladder below is multiplied by [`DEPTH_BIAS_STEP`], and the spacing
-    /// is the whole point. `StandardMaterial::depth_bias` reaches the hardware
-    /// depth bias — Bevy's `StandardMaterial::specialize` writes it to
-    /// `DepthStencilState::bias.constant`, and `ExtendedMaterial` chains to the
-    /// base's `specialize`, so the water material gets it too. But that field is
-    /// denominated in **depth-buffer ULPs**, not world units, so a ladder in steps
-    /// of 1.0 buys exactly one ULP between neighbours — less than the rasteriser's
-    /// own rounding noise, which re-rolls every frame as the view matrix moves.
-    ///
-    /// The `y_offset` millimetres do not make up the difference at range. The depth
-    /// buffer is reversed-z `Depth32Float`, so for a primitive at depth `D` one
-    /// bias unit is `r = 2^(e-23) ≈ D·1.19e-7`; expressing a geometric gap `Δy` in
-    /// those units gives `Δy / (1.19e-7 · z)`, which **decays as 1/z**. Water sits
-    /// 2 mm above Forest: ~3.4 ULP of margin at 5 km, ~1.1 ULP at 15 km. Climbing
-    /// collapses that term until only the ladder is left, which is why the flicker
-    /// appears when the camera moves in *height* and freezes when it stops.
-    ///
-    /// Widening the ladder is safe at every range precisely because the unit is
-    /// proportional to the primitive's own depth: the apparent world-space shift is
-    /// `1.19e-7 · bias · z`, so water's 256 units (rung 4 × the 64-unit step) read
-    /// as ~15 cm at 5 km and ~150 µm at 10 m. It cannot punch through a building,
-    /// which is separated by metres of honest depth.
-    ///
-    /// `bias.slope_scale` stays 0 — `StandardMaterial` exposes only `constant`, and
-    /// reaching the other field would mean wrapping every group in an
-    /// `ExtendedMaterial` just to get at `MaterialExtension::specialize`.
+    /// [`GroundLayer::depth_bias`]. The unit is a depth-buffer ULP, whose apparent
+    /// world shift is `1.19e-7 · bias · z` — it grows with range exactly as the
+    /// buffer's own quantum does, which is why the ordering neither decays nor
+    /// runs away. The millimetre `y_offset`s cannot do that job on their own: a
+    /// geometric gap's significance shrinks as 1/z, so climbing collapses it and
+    /// only the ladder is left.
     #[must_use]
     pub fn depth_bias(self) -> f32 {
-        self.depth_rung() * DEPTH_BIAS_STEP
+        self.layer().depth_bias()
     }
 
-    /// The group's rung in the coplanar ground stack, low to high. Ordering intent
-    /// only; [`Self::depth_bias`] turns it into depth-buffer units.
+    /// The group's rung in the ground stack, low to high. Ordering intent only;
+    /// [`Self::depth_bias`] turns it into depth-buffer units.
     #[must_use]
     pub fn depth_rung(self) -> f32 {
-        match self {
-            Self::Built => 1.0,
-            Self::Grass => 2.0,
-            // Half a rung above the grass it is drawn over, for the reason
-            // `y_offset` gives. At [`DEPTH_BIAS_STEP`] that is 32 ULP of margin —
-            // half the ladder's usual step and still two orders above the
-            // rasteriser's own rounding noise — and it keeps every field under
-            // the water (4), under the paving (5) and under the road band.
-            Self::Crop => 2.5,
-            Self::Forest | Self::Sand => 3.0,
-            Self::Water => 4.0,
-            // Above the ground fills, below the road band — and that ordering is
-            // what makes the two sources safe to mix. A surveyed pavement and a
-            // nominal-width OSM carriageway do not agree about where the kerb is,
-            // so they overlap by a few tens of centimetres here and there; with
-            // the road above, that overlap reads as tarmac meeting the kerb,
-            // which is what it looks like from the pavement. Level with the road
-            // it would be a z-fight running the length of every street.
-            Self::Paving => 5.0,
-            // **Every road group shares one rung, and that is the point.** The
-            // road hierarchy — class, then casing, then width, then the tie
-            // colouring — used to be split across two ladders denominated
-            // differently: this one in depth ULPs (which grow with range) and a
-            // second in millimetres of real height (which shrink as 1/z). Two
-            // ladders that must agree is a standing bug, and it fired twice: once
-            // as a class inversion that made a street's tarmac vanish at some
-            // camera distances, and again as an ordering that dissolved entirely
-            // past ~200 m, where 24 µm stops being worth a single ULP.
-            //
-            // So there is one ladder now. It is `road_rung`, it is carried per
-            // *vertex* rather than per material, and `systems::road_depth` adds
-            // it here in the vertex stage at [`ROAD_RUNG_ULP`] each. This value is
-            // only the **foot** of the band it lives in — above water, below
-            // anything a road is drawn under.
-            Self::Road(_) | Self::RoadCasing(_) => ROAD_BAND_FOOT,
-            // A deck is above the tracks, which are above the tarmac — and that
-            // ordering is the *whole* point of the group. A flyover measured at
-            // ~0 m (a Dutch canal bridge sits at street level, with the water
-            // below) has no honest depth to separate it from the road it carries,
-            // so this rung is what stops the rails painting over the viaduct.
-            //
-            // It clears the *top* of the road band, not the foot: the whole road
-            // ladder is above `ROAD_BAND_FOOT` now, so a fixed 11.0 would put the
-            // deck underneath most of it.
-            Self::BridgeDeck => ROAD_BAND_CEILING,
-            // Above the whole coplanar ground stack. Trees resolve against it by
-            // honest depth — they stand a metre or ten above the plane — but the
-            // ground sheets are biased *forward* to settle their own z-fight, and
-            // a grass sheet at 2.0 would otherwise punch through a trunk base.
-            // Street furniture stands on the same plane and wants the same rung —
-            // a bench's legs are exactly the thin thing a biased sheet swallows.
-            Self::Canopy | Self::Trunk | Self::Furniture => ROAD_BAND_CEILING + 1.0,
-        }
+        self.layer().rung() as f32
     }
 
     /// Roughness for the group's material. Water is excluded — it has its own
@@ -1651,22 +1517,65 @@ pub fn mesh_upload_bytes(vertices: usize, indices: usize) -> usize {
     vertices * VERTEX_BYTES + indices * INDEX_BYTES
 }
 
-/// Tessellate a tile's area layers into one mesh per [`SurfaceGroup`].
+/// Tessellate a tile's area layers into one mesh per [`SurfaceGroup`], **cut so
+/// that no two of them cover the same ground**.
 ///
 /// `tile_m` is the tile's ground size in metres, so the output is directly in world
 /// units. Only water and landuse are handled here — buildings deliberately are not,
 /// because 3DBAG (ADR-027) and the Overpass detail patches (ADR-022) already supply
 /// them in 3D, and they are ~75% of a tile's triangles.
+///
+/// # Why the fills are cut
+///
+/// [`crate::ground_stack`] orders one layer against another, and that is all a
+/// depth ladder can ever do. It cannot order a layer against **itself** — two
+/// polygons of one group share a rung by definition — and the tile is full of
+/// them: a cemetery inside a park, a playground inside a recreation ground, a
+/// village green inside a meadow all arrive as separate `land` features that all
+/// resolve to [`SurfaceGroup::Grass`]. Measured on the Groningen z14 fixture
+/// before this cut, **9.7 % of the grass and 3.1 % of the built land was covered
+/// twice by its own polygons**, and there was nothing anywhere in the tree that
+/// could decide which copy to draw.
+///
+/// That is the same fight, and the same answer, as the road ribbons'
+/// ([`crate::road_stitch`], whose module note has the argument in full): a
+/// coplanar overlap is not a tie to be broken, it is geometry that should not be
+/// there. Each feature keeps only the ground no higher-priority feature claims,
+/// and what is drawn is then a partition.
+///
+/// The cut runs **across groups as well as within them**, which costs nothing
+/// extra — the same pass, the same index — and takes the other 10 % out of the
+/// ladder's hands too. Measured on the same fixture, a fifth of the woodland lies
+/// under grass and nearly a quarter of the water does. The ladder still holds them
+/// apart, and now has almost nothing left to hold.
+///
+/// **Priority, high to low: the layer's rung, then the smaller polygon.** The rung
+/// is the map's own order — water over grass, never the other way round. Within a
+/// group the smaller feature wins because it is the *more specific* statement
+/// about that ground: a cemetery drawn inside a park is a cemetery, and swallowing
+/// it into the park is the one outcome nobody wants. The feature index breaks the
+/// remaining ties, because the order has to be strict — an order with a draw in it
+/// cuts both sides out of the ground they share and opens a hole.
+///
+/// # What this does *not* let the ladder retire
+///
+/// The cut is per tile, and a feature reaching across a tile boundary is two
+/// features in two tiles that never see each other. The bias is what settles those,
+/// as it settles a flyover over the road beneath it. Removing the overlap makes the
+/// ladder a backstop instead of the mechanism; it does not make it optional.
+///
+/// It also means **a group cut out from under another may not be hidden on its
+/// own**, or a hole opens where the one above it used to be. No layer toggle
+/// reaches these groups today (`DataLayers` has none for water or landuse) and one
+/// that did would have to exclude its group from the cut.
 pub fn tessellate_surfaces(
     tile: &TileData,
     tile_m: f32,
     max_bytes: Option<usize>,
 ) -> Result<Vec<SurfaceMesh>, String> {
-    let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
-    // Groups that filled up and were cut loose mid-tile. They keep their slot in
-    // `builders` (emptied), so later features of the same group carry on
-    // accumulating into a fresh buffer rather than reopening a finished one.
-    let mut full: Vec<SurfaceMesh> = Vec::new();
+    // One entry per *feature*, because the cut needs to tell them apart. They are
+    // merged into one mesh per group afterwards, exactly as before.
+    let mut fills: Vec<crate::road_stitch::Ribbon> = Vec::new();
 
     for meta in tile.layers() {
         // (layer, fixed group) — `land` resolves its group per feature instead.
@@ -1687,67 +1596,124 @@ pub fn tessellate_surfaces(
                     None => continue,
                 },
             };
-            let slot = match builders.iter().position(|(g, _, _)| *g == group) {
-                Some(i) => i,
-                None => {
-                    builders.push((group, Vec::new(), Vec::new()));
-                    builders.len() - 1
-                }
-            };
-            let (_, positions, indices) = &mut builders[slot];
+            let mut positions: Vec<[f32; 3]> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
             match &feature.geometry {
-                Geometry::Polygon(p) => tessellate_polygon(p, scale, extent, positions, indices),
+                Geometry::Polygon(p) => {
+                    tessellate_polygon(p, scale, extent, &mut positions, &mut indices);
+                }
                 Geometry::MultiPolygon(mp) => {
                     for p in mp {
-                        tessellate_polygon(p, scale, extent, positions, indices);
+                        tessellate_polygon(p, scale, extent, &mut positions, &mut indices);
                     }
                 }
                 _ => {}
             }
-
-            // Cut the group loose once it is over the frame's upload budget, at
-            // this feature boundary. **After** the feature rather than before it:
-            // unlike a tree, a polygon's vertex count is not known until it has
-            // been tessellated, so the choice is to overshoot by one feature or to
-            // guess. Overshooting by one is bounded and correct; a whole cell's
-            // worth is what this exists to stop.
-            //
-            // A single feature larger than the budget still goes as one mesh —
-            // splitting it would mean splitting a triangle fan across meshes, and
-            // bevy writes one whole asset per frame regardless, so there would be
-            // nothing to gain.
-            if max_bytes.is_some_and(|max| mesh_upload_bytes(positions.len(), indices.len()) >= max)
-            {
-                full.push(SurfaceMesh {
-                    group,
-                    positions: std::mem::take(positions),
-                    indices: std::mem::take(indices),
-                    uvs: Vec::new(),
-                    normals: Vec::new(),
-                    colors: Vec::new(),
-                    rungs: Vec::new(),
-                });
+            if indices.is_empty() {
+                continue;
             }
+            let fi = fills.len();
+            fills.push(crate::road_stitch::Ribbon {
+                group,
+                rung: 0.0,
+                priority: (
+                    group.layer().rung(),
+                    smaller_first(&positions, &indices),
+                    fi,
+                    0,
+                    0,
+                ),
+                // Not a bridge, and neither is anything else here — `stitch`'s
+                // bridge flag isolates a deck from the roads under it, and a
+                // ground fill has no such partner.
+                bridge: false,
+                positions,
+                // Flat-coloured and untextured: the group's material carries the
+                // tone (`SurfaceGroup::base_color`), so there is nothing per
+                // vertex for the cut to carry across.
+                uvs: Vec::new(),
+                colors: Vec::new(),
+                indices,
+            });
         }
     }
 
-    Ok(full
-        .into_iter()
-        .chain(
-            builders
-                .into_iter()
-                .filter(|(_, p, i)| !p.is_empty() && !i.is_empty())
-                .map(|(group, positions, indices)| SurfaceMesh {
-                    group,
-                    positions,
-                    indices,
-                    uvs: Vec::new(),
-                    normals: Vec::new(),
-                    colors: Vec::new(),
-                    rungs: Vec::new(),
-                }),
-        )
-        .collect())
+    crate::road_stitch::stitch(&mut fills);
+
+    // Back into one mesh per group, cutting a group loose whenever it passes the
+    // frame's upload budget — **after** the feature that crossed it rather than
+    // before, because a polygon's vertex count is not known until it has been
+    // tessellated, so the choice is to overshoot by one feature or to guess.
+    // Overshooting by one is bounded; a whole cell's worth is what this exists to
+    // stop. A single feature larger than the budget still goes as one mesh, since
+    // bevy writes one whole asset per frame regardless.
+    let mut out: Vec<SurfaceMesh> = Vec::new();
+    let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
+    for r in fills {
+        if r.indices.is_empty() {
+            continue;
+        }
+        let slot = match builders.iter().position(|(g, _, _)| *g == r.group) {
+            Some(i) => i,
+            None => {
+                builders.push((r.group, Vec::new(), Vec::new()));
+                builders.len() - 1
+            }
+        };
+        let (_, positions, indices) = &mut builders[slot];
+        let base = positions.len() as u32;
+        positions.extend(r.positions);
+        indices.extend(r.indices.iter().map(|i| i + base));
+        if max_bytes.is_some_and(|max| mesh_upload_bytes(positions.len(), indices.len()) >= max) {
+            out.push(SurfaceMesh {
+                group: r.group,
+                positions: std::mem::take(positions),
+                indices: std::mem::take(indices),
+                uvs: Vec::new(),
+                normals: Vec::new(),
+                colors: Vec::new(),
+                rungs: Vec::new(),
+            });
+        }
+    }
+    out.extend(
+        builders
+            .into_iter()
+            .filter(|(_, p, i)| !p.is_empty() && !i.is_empty())
+            .map(|(group, positions, indices)| SurfaceMesh {
+                group,
+                positions,
+                indices,
+                uvs: Vec::new(),
+                normals: Vec::new(),
+                colors: Vec::new(),
+                rungs: Vec::new(),
+            }),
+    );
+    Ok(out)
+}
+
+/// A feature's rank by size, **descending** — bigger area, smaller number — so it
+/// can go straight into `road_stitch`'s "larger priority wins" ordering and mean
+/// "the smaller polygon draws on top".
+///
+/// Twice the triangle area, summed and saturated into a `u32` of square metres.
+/// Quantising to the square metre is deliberate: two features of genuinely equal
+/// size then tie here and fall through to the feature index, which is stable,
+/// rather than being separated by a float's last bit — the same reason
+/// `road_stitch::Ribbon::priority` spells its tie-breaks out.
+fn smaller_first(positions: &[[f32; 3]], indices: &[u32]) -> u32 {
+    let mut twice_area = 0.0f32;
+    for t in indices.chunks_exact(3) {
+        let (a, b, c) = (
+            positions[t[0] as usize],
+            positions[t[1] as usize],
+            positions[t[2] as usize],
+        );
+        twice_area += ((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])).abs();
+    }
+    let sq_m = (twice_area * 0.5) as u32;
+    u32::MAX - sq_m.min(u32::MAX)
 }
 
 /// One bridge deck: a `bridges` polygon, tessellated but deliberately **not**
@@ -1975,15 +1941,16 @@ const CASING_RUNGS_PER_CLASS: u32 = 1;
 const ROAD_RUNGS_PER_CLASS: u32 = CASING_RUNGS_PER_CLASS + ROAD_WIDTH_SUBBANDS * ROAD_TIE_LAYERS;
 
 /// The highest depth bias any road vertex can reach: the foot of the road band
-/// plus the whole ladder standing on it.
+/// plus the whole per-vertex ladder standing on it.
 ///
 /// This is what anything drawn *over* a road has to clear — a bridge deck, a
-/// tree, a bench. `road_depth`'s
-/// `the_road_ladder_stays_under_everything_drawn_over_a_road` is what checks that
-/// they do, so growing the ladder can never silently push it through them.
+/// tree, a bench, a zebra crossing. It is [`GroundLayer::depth_bias_ceiling`],
+/// and `ground_stack`'s `the_road_band_holds_every_road_vertex` checks the whole
+/// stack against it, so growing the road ladder can never again silently push it
+/// through the things above.
 #[must_use]
 pub fn road_rung_ceiling() -> f32 {
-    ROAD_BAND_FOOT * DEPTH_BIAS_STEP + ROAD_DEPTH_RUNGS as f32 * ROAD_RUNG_ULP
+    GroundLayer::Road.depth_bias_ceiling()
 }
 
 /// A class's block index, low to high — **the** road hierarchy.
@@ -2634,6 +2601,8 @@ pub fn tessellate_roads(
                             bridge,
                             positions,
                             uvs,
+                            // A road's tone is in its texture, not its vertices.
+                            colors: Vec::new(),
                             indices,
                         });
                     };
@@ -2749,10 +2718,11 @@ pub fn tessellate_roads(
             // lets a bridge be cut by another bridge — which is exactly the
             // isolation this wants from the roads passing underneath.
             bridge: true,
-            // The slab is flat-coloured, so its texture coordinates are never
-            // read; `stitch` still indexes them per vertex, so they are present
-            // and zero rather than absent.
-            uvs: vec![[0.0, 0.0]; deck.positions.len()],
+            // The slab is flat-coloured and untextured, and both attribute sets
+            // are optional — `stitch` carries across only what a ribbon actually
+            // has.
+            uvs: Vec::new(),
+            colors: Vec::new(),
             positions: std::mem::take(&mut deck.positions),
             indices: std::mem::take(&mut deck.indices),
         });
@@ -7439,117 +7409,150 @@ mod tests {
         }
     }
 
+    /// **No surface group may cover the same ground twice.** This is the half of
+    /// the z-fight story `ground_stack` explicitly cannot reach: two polygons of
+    /// one group share a rung by definition, so a layer fighting itself has no
+    /// tie-break anywhere in the tree.
+    ///
+    /// It is not hypothetical. Measured on this fixture before
+    /// `tessellate_surfaces` started cutting, on 2026-09-15: **9.7 % of the grass
+    /// and 3.1 % of the built land** was covered twice by its own polygons — parks
+    /// with cemeteries in them, recreation grounds with playgrounds in them, every
+    /// one a separate `land` feature resolving to the same group. And the
+    /// 2026-08-29 ghost pavements were the same shape of bug in the surveyed
+    /// layer, found on a screen a fortnight after they shipped.
+    ///
+    /// The ceiling is not zero, and the reason is the tile buffer: a feature
+    /// clipped to the tile plus a buffer can reach past its own edge, and the cut
+    /// works on the millimetre lattice, so a sliver of a texel survives here and
+    /// there. It is well under a percent, which is the difference between a
+    /// residual and a layer.
     #[test]
-    fn surfaces_sit_between_the_map_tile_and_the_buildings() {
-        // `map_stream` spawns the finest tier as a 0.04 m cuboid centred at -0.03,
-        // so its top face is at -0.01; buildings stand on y = 0. A surface outside
-        // that window either sinks under the map or cuts into the buildings — the
-        // latter is what made grass bleed through the grey.
-        const TILE_TOP: f32 = -0.01;
-        const BUILDING_BASE: f32 = 0.0;
-        for group in [
-            SurfaceGroup::Water,
-            SurfaceGroup::Forest,
-            SurfaceGroup::Grass,
-            SurfaceGroup::Sand,
-            SurfaceGroup::Built,
-        ] {
-            let y = group.y_offset();
+    fn no_group_overlaps_itself() {
+        const CEILING: f32 = 1.0;
+        for (group, covered, twice) in group_coverage() {
+            if covered == 0 {
+                continue;
+            }
+            let pct = 100.0 * twice as f32 / covered as f32;
             assert!(
-                y > TILE_TOP && y < BUILDING_BASE,
-                "{group:?} at y={y} escapes the ground window"
-            );
-            assert!(
-                group.depth_bias() > 0.0,
-                "{group:?} must outrank the map tile"
-            );
-        }
-        // Water draws over land, and its bias must agree with its height.
-        assert!(SurfaceGroup::Water.y_offset() > SurfaceGroup::Grass.y_offset());
-        assert!(SurfaceGroup::Water.depth_bias() > SurfaceGroup::Grass.depth_bias());
-
-        // Water gets the widest gap in the stack, because dark-on-pale is the
-        // fight that shows when it is lost. Whoever next rebalances this window
-        // has to take the room from somewhere other than under the water.
-        let water_gap = SurfaceGroup::Water.y_offset() - SurfaceGroup::Forest.y_offset();
-        let land_gap = SurfaceGroup::Forest.y_offset() - SurfaceGroup::Grass.y_offset();
-        assert!(
-            water_gap >= 3.0 * land_gap,
-            "water sits {water_gap} m above the land sheets but they are {land_gap} m apart; \
-             the contrasty fight should get the widest gap"
-        );
-    }
-
-    /// A crop parcel is a fill laid over the generic green, so its whole place in
-    /// the world is "just above grass, below everything grass is already below".
-    /// Get it wrong in either direction and a province of fields either vanishes
-    /// under the lawn it replaces or paints over the canals crossing it.
-    #[test]
-    fn a_crop_parcel_sits_between_the_grass_and_the_wood() {
-        let crop = SurfaceGroup::Crop;
-        assert!(crop.depth_rung() > SurfaceGroup::Grass.depth_rung());
-        assert!(crop.depth_rung() < SurfaceGroup::Forest.depth_rung());
-        assert!(crop.depth_rung() < SurfaceGroup::Water.depth_rung());
-        assert!(crop.depth_rung() < SurfaceGroup::Paving.depth_rung());
-        assert!(crop.depth_rung() < SurfaceGroup::Road(RoadClass::Path).depth_rung());
-        // Height has to agree with depth, or the two orderings cross over in the
-        // middle distance — the bug the road band was built to end.
-        assert!(crop.y_offset() > SurfaceGroup::Grass.y_offset());
-        assert!(crop.y_offset() < SurfaceGroup::Forest.y_offset());
-        // …and it stays inside the millimetre window between the map tile's top
-        // face and the buildings' base.
-        assert!(crop.y_offset() > -0.01 && crop.y_offset() < 0.0);
-        // Half a rung is still 32 ULP at the ladder's step, which is where the
-        // margin claim in `depth_rung` comes from.
-        let gap = crop.depth_bias() - SurfaceGroup::Grass.depth_bias();
-        assert!(gap >= 8.0, "{gap} depth units is inside the rounding noise");
-    }
-
-    #[test]
-    fn depth_bias_rungs_clear_the_rounding_noise() {
-        // A bias is denominated in depth-buffer ULPs, and the interpolated depth
-        // carries a few ULPs of per-frame rounding noise. Neighbouring rungs one
-        // unit apart therefore cannot hold on their own, and the millimetre
-        // `y_offset`s that used to cover for them decay as 1/z — which is why the
-        // water surface flickered against the land when the camera changed
-        // altitude. Keep real distance between adjacent rungs.
-        const MIN_SEPARATION: f32 = 8.0;
-        let mut ladder: Vec<f32> = [
-            SurfaceGroup::Built,
-            SurfaceGroup::Grass,
-            SurfaceGroup::Forest,
-            SurfaceGroup::Sand,
-            SurfaceGroup::Water,
-            SurfaceGroup::Road(RoadClass::Path),
-            SurfaceGroup::Road(RoadClass::Minor),
-            SurfaceGroup::Road(RoadClass::Major),
-            SurfaceGroup::Road(RoadClass::Motorway),
-            SurfaceGroup::Road(RoadClass::Rail),
-            SurfaceGroup::Canopy,
-        ]
-        .into_iter()
-        .map(SurfaceGroup::depth_bias)
-        .collect();
-        ladder.sort_by(f32::total_cmp);
-        ladder.dedup();
-        for pair in ladder.windows(2) {
-            assert!(
-                pair[1] - pair[0] >= MIN_SEPARATION,
-                "rungs {} and {} are only {} depth units apart",
-                pair[0],
-                pair[1],
-                pair[1] - pair[0]
+                pct <= CEILING,
+                "{group:?} covers {twice} of its own {covered} texels twice ({pct:.1} %) — \
+                 no depth rung can order a layer against itself"
             );
         }
+    }
 
-        // A road crosses a canal on a bridge, never the other way round, and the
-        // canopy stands above the whole sheet stack.
-        assert!(
-            SurfaceGroup::Road(RoadClass::Path).depth_bias() > SurfaceGroup::Water.depth_bias()
-        );
-        assert!(
-            SurfaceGroup::Canopy.depth_bias() > SurfaceGroup::Road(RoadClass::Rail).depth_bias()
-        );
+    /// …and no two groups share ground either, which takes the other half out of
+    /// the ladder's hands.
+    ///
+    /// Measured before the cut: a fifth of the woodland lay under grass, nearly a
+    /// quarter of the water over it, and a tenth of the built land under it. The
+    /// ladder still orders what is left — a flyover over the road beneath it, and
+    /// anything that crosses a tile boundary, which is two features in two tiles
+    /// that never see each other — so this is a backstop becoming a backstop, not
+    /// a ladder becoming unnecessary.
+    #[test]
+    fn no_two_groups_share_ground() {
+        const CEILING: f32 = 1.0;
+        let masks = group_masks();
+        for (i, (ga, a)) in masks.iter().enumerate() {
+            for (gb, b) in masks.iter().skip(i + 1) {
+                let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count();
+                let area = a.iter().filter(|x| **x).count().max(1);
+                let pct = 100.0 * both as f32 / area as f32;
+                assert!(
+                    pct <= CEILING,
+                    "{ga:?} and {gb:?} share {both} texels ({pct:.1} % of {ga:?})"
+                );
+            }
+        }
+    }
+
+    /// One coverage count per group: texels its own triangles cover at all, and
+    /// texels they cover more than once.
+    fn group_coverage() -> Vec<(SurfaceGroup, usize, usize)> {
+        const N: usize = 1024;
+        let meshes = bytes::tessellate_surfaces(GRONINGEN_Z14, 1000.0).unwrap();
+        let mut counts: Vec<(SurfaceGroup, Vec<u16>)> = Vec::new();
+        for m in &meshes {
+            let slot = match counts.iter().position(|(g, _)| *g == m.group) {
+                Some(i) => i,
+                None => {
+                    counts.push((m.group, vec![0u16; N * N]));
+                    counts.len() - 1
+                }
+            };
+            rasterise(
+                m,
+                N,
+                |cell| *cell = cell.saturating_add(1),
+                &mut counts[slot].1,
+            );
+        }
+        counts
+            .into_iter()
+            .map(|(g, c)| {
+                (
+                    g,
+                    c.iter().filter(|v| **v >= 1).count(),
+                    c.iter().filter(|v| **v >= 2).count(),
+                )
+            })
+            .collect()
+    }
+
+    /// The same, as a plain covered/not-covered mask per group.
+    fn group_masks() -> Vec<(SurfaceGroup, Vec<bool>)> {
+        const N: usize = 1024;
+        let meshes = bytes::tessellate_surfaces(GRONINGEN_Z14, 1000.0).unwrap();
+        let mut masks: Vec<(SurfaceGroup, Vec<bool>)> = Vec::new();
+        for m in &meshes {
+            let slot = match masks.iter().position(|(g, _)| *g == m.group) {
+                Some(i) => i,
+                None => {
+                    masks.push((m.group, vec![false; N * N]));
+                    masks.len() - 1
+                }
+            };
+            rasterise(m, N, |cell| *cell = true, &mut masks[slot].1);
+        }
+        masks
+    }
+
+    /// Scan-convert a surface mesh onto an `N × N` grid over the tile, calling
+    /// `mark` on each covered cell. Centre sampling and no anti-aliasing: this
+    /// measures *coverage*, and a half-covered texel counted as covered by both of
+    /// two neighbours would read as an overlap that is not there.
+    fn rasterise<T>(m: &SurfaceMesh, n: usize, mark: impl Fn(&mut T), grid: &mut [T]) {
+        for t in m.indices.chunks_exact(3) {
+            let p: Vec<[f32; 2]> = t
+                .iter()
+                .map(|&i| {
+                    let v = m.positions[i as usize];
+                    [v[0] / 1000.0 * n as f32, v[2] / 1000.0 * n as f32]
+                })
+                .collect();
+            let (a, b, c) = (p[0], p[1], p[2]);
+            let minx = a[0].min(b[0]).min(c[0]).floor().max(0.0) as usize;
+            let maxx = ((a[0].max(b[0]).max(c[0]).ceil()).max(0.0) as usize).min(n - 1);
+            let miny = a[1].min(b[1]).min(c[1]).floor().max(0.0) as usize;
+            let maxy = ((a[1].max(b[1]).max(c[1]).ceil()).max(0.0) as usize).min(n - 1);
+            let side = |u: [f32; 2], v: [f32; 2], q: [f32; 2]| {
+                (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])
+            };
+            for y in miny..=maxy.max(miny) {
+                for x in minx..=maxx.max(minx) {
+                    let q = [x as f32 + 0.5, y as f32 + 0.5];
+                    let (s0, s1, s2) = (side(a, b, q), side(b, c, q), side(c, a, q));
+                    if (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0)
+                        || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0)
+                    {
+                        mark(&mut grid[y * n + x]);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

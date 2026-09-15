@@ -1,5 +1,5 @@
-//! Cutting the road ribbons against each other, so no two of them cover the same
-//! ground.
+//! Cutting coplanar ground surfaces against each other, so no two of them cover
+//! the same patch — the road ribbons first, and the ground fills since.
 //!
 //! Road ribbons used to **overlap by construction** — a junction stub crosses
 //! whatever it tees into, Shortbread's merged ways cross each other freely, and
@@ -66,6 +66,22 @@
 //! collision this ladder never had to settle: one ribbon is one material, one
 //! colour and one continuous run of texture coordinates, so which of its own two
 //! triangles wins is not visible.
+//!
+//! ## It is not only the roads any more
+//!
+//! `vector_tiles::tessellate_surfaces` cuts the ground *fills* through the same
+//! [`stitch`] — a cemetery inside a park is the same coplanar overlap a
+//! junction stub is, and 9.7 % of the grass over Groningen was covered twice by
+//! its own polygons. The module keeps its name because the roads are where the
+//! argument above was worked out, and because a `Ribbon` is still what it takes:
+//! a little mesh with a place in a strict order. Its two attribute sets are
+//! optional, so a fill passes neither and pays for neither.
+//!
+//! What that changed here is the index. A fill's triangles are nothing like a
+//! road's — see [`MIN_BUCKET_M`] — and sizing the grid to the geometry rather than
+//! to a carriageway took the fills from 317 ms to 49 ms *and* the roads from
+//! 534 ms to about 300 ms, for the same output. `docs/notes/the-ground-stack.md`
+//! carries both halves.
 
 use crate::vector_tiles::SurfaceGroup;
 use i_overlay::core::fill_rule::FillRule;
@@ -85,7 +101,7 @@ use i_overlay::i_float::int::point::IntPoint;
 /// is about ±1.3 × 10⁶ — comfortably inside `i32`.
 const MM_PER_M: f32 = 1000.0;
 
-/// Side of one bucket of the blocker index, in metres.
+/// Smallest side of one bucket of the blocker index, in metres.
 ///
 /// The index is what makes the cut affordable. A bounding box is a hopeless proxy
 /// for a road — a street running the diagonal of the tile has a box covering a
@@ -94,7 +110,25 @@ const MM_PER_M: f32 = 1000.0;
 /// answers cost a boolean against a contour hundreds of points long. Eight metres
 /// is a little under the narrowest carriageway plus its kerbs, so a bucket holds
 /// the handful of road triangles that genuinely pass through it.
-const BUCKET_M: f32 = 8.0;
+///
+/// It is a **floor** rather than the size, because the ground fills are cut by the
+/// same machinery and their triangles are nothing like a road's. Earcut answers a
+/// landuse polygon with as few triangles as it can, so a residential block arrives
+/// as two triangles spanning half the tile — at a fixed eight metres each of those
+/// is inserted into some 8,000 buckets and read back out of every one of them.
+/// Measured over the Groningen fixture: `tessellate_surfaces` went from 1.46 ms to
+/// **317 ms**, all of it index bookkeeping rather than geometry.
+const MIN_BUCKET_M: f32 = 8.0;
+
+/// How many buckets a triangle should span, on average.
+///
+/// [`Buckets::build`] sizes the grid from the mean triangle extent so that this
+/// holds whatever it is handed. One, because the point of the index is that the
+/// common case reads a single bucket's list and that list is already short:
+/// smaller and a big triangle pays to be written into hundreds of cells, larger
+/// and each lookup drags in neighbours the separating-axis test then has to
+/// reject.
+const SPANS_PER_TRI: f32 = 1.0;
 
 /// One ribbon as it comes out of `vector_tiles::ribbon`: its own little mesh, and
 /// where it stands in the cut order.
@@ -120,7 +154,16 @@ pub(crate) struct Ribbon {
     /// module note.
     pub bridge: bool,
     pub positions: Vec<[f32; 3]>,
+    /// Texture coordinates, or empty. A road ribbon carries them (the lane
+    /// markings are registered down the strip); a ground fill does not.
     pub uvs: Vec<[f32; 2]>,
+    /// Per-vertex colour, or empty. A surveyed pavement and a crop parcel carry
+    /// the form's own tone here; a road does not.
+    ///
+    /// Both attribute sets are optional and interpolated the same way — the cut
+    /// only ever produces points inside the triangle it is cutting, so the
+    /// barycentric weights carry whatever that triangle had across.
+    pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -161,6 +204,8 @@ struct Tri {
 /// Which road triangles pass through each bucket of a coarse grid over the tile.
 struct Buckets {
     origin: [f32; 2],
+    /// Side of one bucket, chosen from the data — see [`MIN_BUCKET_M`].
+    edge: f32,
     cols: usize,
     rows: usize,
     cells: Vec<Vec<u32>>,
@@ -181,14 +226,36 @@ impl Buckets {
         if world[0] > world[2] {
             world = [0.0, 0.0, 0.0, 0.0];
         }
-        let cols = (((world[2] - world[0]) / BUCKET_M).ceil() as usize + 1).max(1);
-        let rows = (((world[3] - world[1]) / BUCKET_M).ceil() as usize + 1).max(1);
+        // Size the grid to the geometry. One pass to measure the mean triangle,
+        // one to fill — cheap beside what a mis-sized grid costs.
+        let mut extent_sum = 0.0f32;
+        let mut tri_count = 0usize;
+        for r in ribbons {
+            for t in r.indices.chunks_exact(3) {
+                let b = bbox_of(&[
+                    flat_of(&r.positions, t[0]),
+                    flat_of(&r.positions, t[1]),
+                    flat_of(&r.positions, t[2]),
+                ]);
+                extent_sum += (b[2] - b[0]).max(b[3] - b[1]);
+                tri_count += 1;
+            }
+        }
+        let mean_extent = if tri_count > 0 {
+            extent_sum / tri_count as f32
+        } else {
+            MIN_BUCKET_M
+        };
+        let edge = (mean_extent / SPANS_PER_TRI).max(MIN_BUCKET_M);
+        let cols = (((world[2] - world[0]) / edge).ceil() as usize + 1).max(1);
+        let rows = (((world[3] - world[1]) / edge).ceil() as usize + 1).max(1);
         let mut me = Self {
             origin: [world[0], world[1]],
+            edge,
             cols,
             rows,
             cells: vec![Vec::new(); cols * rows],
-            tris: Vec::new(),
+            tris: Vec::with_capacity(tri_count),
         };
         for (i, r) in ribbons.iter().enumerate() {
             for (seq, t) in r.indices.chunks_exact(3).enumerate() {
@@ -221,8 +288,9 @@ impl Buckets {
     }
 
     fn range(&self, b: &Bbox) -> (usize, usize, usize, usize) {
+        let edge = self.edge;
         let cell = |v: f32, o: f32, n: usize| -> usize {
-            (((v - o) / BUCKET_M).floor().max(0.0) as usize).min(n.saturating_sub(1))
+            (((v - o) / edge).floor().max(0.0) as usize).min(n.saturating_sub(1))
         };
         let x0 = cell(b[0], self.origin[0], self.cols);
         let y0 = cell(b[1], self.origin[1], self.rows);
@@ -385,18 +453,27 @@ pub(crate) fn stitch(ribbons: &mut [Ribbon]) {
     // is a large share of what a cut costs, and there are thousands of them.
     let mut overlay: Overlay<i32> = Overlay::new(64);
     let mut scratch: Vec<u32> = Vec::new();
-    let mut cuts: Vec<(usize, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    let mut cuts: Vec<(usize, Cut)> = Vec::new();
 
     for i in 0..ribbons.len() {
-        if let Some((p, u, x)) = cut_ribbon(i, ribbons, &buckets, &mut overlay, &mut scratch) {
-            cuts.push((i, p, u, x));
+        if let Some(cut) = cut_ribbon(i, ribbons, &buckets, &mut overlay, &mut scratch) {
+            cuts.push((i, cut));
         }
     }
-    for (i, p, u, x) in cuts {
-        ribbons[i].positions = p;
-        ribbons[i].uvs = u;
-        ribbons[i].indices = x;
+    for (i, cut) in cuts {
+        ribbons[i].positions = cut.positions;
+        ribbons[i].uvs = cut.uvs;
+        ribbons[i].colors = cut.colors;
+        ribbons[i].indices = cut.indices;
     }
+}
+
+/// What survives one ribbon's cut.
+pub(crate) struct Cut {
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
 }
 
 /// The parts of one ribbon's triangles that no higher-priority ribbon claims, or
@@ -415,20 +492,28 @@ fn cut_ribbon(
     buckets: &Buckets,
     overlay: &mut Overlay<i32>,
     scratch: &mut Vec<u32>,
-) -> Option<(Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> {
+) -> Option<Cut> {
     let r = &ribbons[i];
+    let has_uvs = !r.uvs.is_empty();
+    let has_colors = !r.colors.is_empty();
     let mut touched = false;
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(r.positions.len());
     let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(r.uvs.len());
+    let mut colors: Vec<[f32; 4]> = Vec::with_capacity(r.colors.len());
     let mut indices: Vec<u32> = Vec::with_capacity(r.indices.len());
     // Vertices are re-emitted per triangle rather than shared. A cut triangle
     // needs its own anyway, and a road ribbon is a few hundred vertices — the
     // duplication costs less than de-duplicating them would.
-    let mut emit = |tri: [[f32; 3]; 3], uv: [[f32; 2]; 3]| {
+    let mut emit = |tri: [[f32; 3]; 3], uv: [[f32; 2]; 3], col: [[f32; 4]; 3]| {
         let base = positions.len() as u32;
         for k in 0..3 {
             positions.push(tri[k]);
-            uvs.push(uv[k]);
+            if has_uvs {
+                uvs.push(uv[k]);
+            }
+            if has_colors {
+                colors.push(col[k]);
+            }
         }
         indices.extend([base, base + 1, base + 2]);
     };
@@ -440,11 +525,16 @@ fn cut_ribbon(
             r.positions[t[1] as usize],
             r.positions[t[2] as usize],
         ];
-        let uv = [
-            r.uvs[t[0] as usize],
-            r.uvs[t[1] as usize],
-            r.uvs[t[2] as usize],
-        ];
+        let at_uv = |k: u32| if has_uvs { r.uvs[k as usize] } else { [0.0; 2] };
+        let at_col = |k: u32| {
+            if has_colors {
+                r.colors[k as usize]
+            } else {
+                [0.0; 4]
+            }
+        };
+        let uv = [at_uv(t[0]), at_uv(t[1]), at_uv(t[2])];
+        let col = [at_col(t[0]), at_col(t[1]), at_col(t[2])];
         let flat = [
             [vs[0][0], vs[0][2]],
             [vs[1][0], vs[1][2]],
@@ -512,7 +602,7 @@ fn cut_ribbon(
             continue;
         }
         if !any {
-            emit(vs, uv);
+            emit(vs, uv, col);
             continue;
         }
         touched = true;
@@ -545,6 +635,7 @@ fn cut_ribbon(
             for c in tris.chunks_exact(3) {
                 let mut out_p = [[0.0f32; 3]; 3];
                 let mut out_uv = [[0.0f32; 2]; 3];
+                let mut out_col = [[0.0f32; 4]; 3];
                 for (k, idx) in c.iter().enumerate() {
                     let p = [flat_xy[idx * 2] as f32, flat_xy[idx * 2 + 1] as f32];
                     let w = barycentric(flat, p);
@@ -553,6 +644,9 @@ fn cut_ribbon(
                         w[0] * uv[0][0] + w[1] * uv[1][0] + w[2] * uv[2][0],
                         w[0] * uv[0][1] + w[1] * uv[1][1] + w[2] * uv[2][1],
                     ];
+                    out_col[k] = std::array::from_fn(|ch| {
+                        w[0] * col[0][ch] + w[1] * col[1][ch] + w[2] * col[2][ch]
+                    });
                 }
                 // Ground geometry is single-sided and faces up; earcut keeps its
                 // input's orientation, which this one does not guarantee.
@@ -562,18 +656,24 @@ fn cut_ribbon(
                     continue;
                 }
                 if cross < 0.0 {
-                    emit(out_p, out_uv);
+                    emit(out_p, out_uv, out_col);
                 } else {
                     emit(
                         [out_p[0], out_p[2], out_p[1]],
                         [out_uv[0], out_uv[2], out_uv[1]],
+                        [out_col[0], out_col[2], out_col[1]],
                     );
                 }
             }
         }
     }
     drop(emit);
-    touched.then_some((positions, uvs, indices))
+    touched.then_some(Cut {
+        positions,
+        uvs,
+        colors,
+        indices,
+    })
 }
 
 #[cfg(test)]
@@ -591,6 +691,7 @@ mod tests {
             bridge: false,
             positions: vec![[x0, 0.0, z0], [x1, 0.0, z0], [x1, 0.0, z1], [x0, 0.0, z1]],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            colors: Vec::new(),
             indices: vec![0, 1, 2, 0, 2, 3],
         }
     }

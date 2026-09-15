@@ -56,8 +56,9 @@ use std::collections::HashMap;
 
 use crate::systems::data_layers::DataLayers;
 use crate::systems::globe::GlobeState;
+use crate::systems::ground_stack::GroundLayer;
 use crate::systems::theme;
-use crate::systems::vector_tiles::{StreetLabelLine, DEPTH_BIAS_STEP};
+use crate::systems::vector_tiles::StreetLabelLine;
 
 /// Texture height in world metres, per altitude ceiling. Stepped rather than
 /// continuous: the size has to stay in a readable range across a climb, but a
@@ -122,10 +123,6 @@ const SAME_NAME_GAP_M: f32 = 260.0;
 /// does it. Added to `TerrainField::at`, which is `0.0` with the Height layer off,
 /// so with no relief this is the flat `y` it always was.
 const LABEL_Y: f32 = 0.55;
-
-/// Rung on the shared depth-bias ladder: above the route ribbon (20) and its
-/// casing, below the driver arrow (24).
-pub(crate) const LABEL_RUNG: f32 = 23.0;
 
 /// Textures built per frame. Mass texture uploads are the documented way to lose
 /// the device on a weak iGPU (see CLAUDE.md), and a fresh ring of cells wants a
@@ -492,7 +489,7 @@ pub fn update_street_labels(
             // as at noon, so the sun does not get a vote.
             unlit: true,
             alpha_mode: AlphaMode::Blend,
-            depth_bias: LABEL_RUNG * DEPTH_BIAS_STEP,
+            depth_bias: GroundLayer::StreetLabel.depth_bias(),
             // Winding is not allowed to be the thing that hides it (the route
             // ribbon learned this the expensive way).
             cull_mode: None,

@@ -156,6 +156,7 @@ impl MaterialExtension for RoadDepthExtension {
 
 #[cfg(test)]
 mod tests {
+    use crate::systems::ground_stack::GroundLayer;
     use crate::systems::road_texture::RoadClass;
     use crate::systems::vector_tiles::{road_rung_ceiling, SurfaceGroup, ROAD_RUNG_ULP};
 
@@ -187,68 +188,49 @@ mod tests {
     /// The ladder grew from a handful of rungs to 399 when the road ordering moved
     /// into the depth buffer, and its ceiling went with it — from a couple of
     /// hundred depth units to 1,916. Four hard-coded rungs on the same ladder were
-    /// left where they were and were swallowed: the zebra paint at 672, the route
-    /// line's casing and fill at 1,152 and 1,280, the street labels at 1,472 and
-    /// the driver arrow at 1,536. A zebra crossing on anything wider than a
-    /// residential street was being drawn underneath the tarmac.
+    /// left where they were and were swallowed: the zebra paint, the route line's
+    /// casing and fill, the street labels and the driver arrow. A zebra crossing
+    /// on anything wider than a residential street was being drawn underneath the
+    /// tarmac.
     ///
     /// The test that existed then checked four *other* things — the bridge decks,
     /// the tree canopy, the trunks and the street furniture — and stayed green
-    /// throughout. So it checks all nine now, and takes the ceiling from
-    /// `road_rung_ceiling()` rather than from a number written down twice.
+    /// throughout. **That is the failure mode this version does not have**: it
+    /// walks [`GroundLayer::ALL`], so a flat thing added tomorrow is checked
+    /// tomorrow without anybody remembering to list it here.
+    ///
+    /// `ground_stack::the_road_band_holds_every_road_vertex` makes the same
+    /// assertion from the other side, over the derivation rather than over the
+    /// road ladder's arithmetic. Both are cheap and they fail for different
+    /// reasons: this one if `road_rung` outgrows its band, that one if the band is
+    /// mis-derived.
     #[test]
     fn everything_drawn_over_a_road_clears_the_road_ladder() {
-        use crate::systems::vector_tiles::DEPTH_BIAS_STEP;
         let ceiling = road_rung_ceiling();
-        for (what, rung) in [
-            ("zebra paint", crate::systems::street_detail::PAINT_RUNG),
-            (
-                "route casing",
-                crate::systems::navigation::ROUTE_CASING_RUNG,
-            ),
-            ("route line", crate::systems::navigation::ROUTE_RUNG),
-            ("street label", crate::systems::street_labels::LABEL_RUNG),
-            ("driver arrow", crate::systems::driver::ARROW_RUNG),
-        ] {
+        for layer in GroundLayer::ALL {
+            if layer.rung() <= GroundLayer::Road.rung() {
+                continue;
+            }
             assert!(
-                rung * DEPTH_BIAS_STEP > ceiling,
-                "{what} biases {} but the road ladder reaches {ceiling}",
-                rung * DEPTH_BIAS_STEP,
+                layer.depth_bias() > ceiling,
+                "{layer:?} biases {} but a road vertex reaches {ceiling}",
+                layer.depth_bias(),
             );
         }
     }
 
-    /// The road ladder lives *inside* the band `SurfaceGroup::depth_rung` leaves
-    /// for it. If the ladder outgrew that band, the tallest road rungs would climb
-    /// past the bridge decks and the street furniture and start drawing over them
-    /// — which is the same class of bug (two ladders disagreeing) that the
-    /// per-vertex rung exists to end, so it is worth an assertion rather than a
-    /// comment.
+    /// …and the ground sheets a road is drawn *over* stay under it, likewise over
+    /// the whole list rather than over a remembered four.
     #[test]
-    fn the_road_ladder_stays_under_everything_drawn_over_a_road() {
-        let ceiling = road_rung_ceiling();
-        for above in [
-            SurfaceGroup::BridgeDeck,
-            SurfaceGroup::Canopy,
-            SurfaceGroup::Trunk,
-            SurfaceGroup::Furniture,
-        ] {
+    fn the_road_ladder_stays_over_everything_a_road_is_drawn_on() {
+        let foot = SurfaceGroup::Road(RoadClass::Path).depth_bias();
+        for layer in GroundLayer::ALL {
+            if layer.rung() >= GroundLayer::Road.rung() {
+                continue;
+            }
             assert!(
-                above.depth_bias() > ceiling,
-                "{above:?} biases {} but the road ladder reaches {ceiling}",
-                above.depth_bias(),
-            );
-        }
-        // …and above the ground sheets a road is drawn over.
-        for below in [
-            SurfaceGroup::Water,
-            SurfaceGroup::Grass,
-            SurfaceGroup::Forest,
-            SurfaceGroup::Built,
-        ] {
-            assert!(
-                below.depth_bias() < SurfaceGroup::Road(RoadClass::Path).depth_bias(),
-                "{below:?} is not under the road band",
+                layer.depth_bias() < foot,
+                "{layer:?} is not under the road band"
             );
         }
     }

@@ -43,6 +43,7 @@ use crate::systems::geo_nav::{
     GeoNavState, GeoSuggestion, Teleport,
 };
 use crate::systems::globe::GlobeState;
+use crate::systems::ground_stack::GroundLayer;
 use crate::systems::icons;
 use crate::systems::map_stream::MapStream;
 use crate::systems::routing::{
@@ -50,7 +51,6 @@ use crate::systems::routing::{
 };
 use crate::systems::theme;
 use crate::systems::tile_loader::load_tile_image;
-use crate::systems::vector_tiles;
 use cartopolis_core::TileKey;
 use cartopolis_core::{tile_source_kind, TileSourceKind};
 
@@ -63,7 +63,7 @@ const MAX_SUGGESTIONS: usize = 6;
 /// Height of the route line above the ground plane, in metres.
 ///
 /// The map tile's top face is at −0.01 and the vector surfaces sit between that and
-/// 0 (see `vector_tiles::SurfaceGroup::y_offset`); buildings stand on 0. A route
+/// 0 (see `ground_stack::GroundLayer::y_offset`); buildings stand on 0. A route
 /// drawn *below* the buildings' base would be swallowed wherever it passes an
 /// arcade or a bridge pier, so it goes above.
 ///
@@ -72,16 +72,9 @@ const MAX_SUGGESTIONS: usize = 6;
 /// range, and the line came out shredded into horizontal bands where it lost the
 /// fight to the ground beneath it. Physical separation alone still cannot settle
 /// that — [`RouteMaterials`]' `depth_bias` is what actually does, exactly as
-/// `vector_tiles::SurfaceGroup::depth_bias` settles the surfaces among themselves —
+/// `ground_stack::GroundLayer::depth_bias` settles the surfaces among themselves —
 /// but half a metre is a comfortable margin and still reads as painted on the road.
 const ROUTE_Y: f32 = 0.5;
-
-/// Rungs on the shared depth ladder for the route line and its casing — above
-/// every road, below the street labels and the driver arrow. `road_depth`'s
-/// `everything_drawn_over_a_road_clears_the_road_ladder` is what keeps the first
-/// of those true when the road ladder changes shape.
-pub(crate) const ROUTE_RUNG: f32 = 20.0;
-pub(crate) const ROUTE_CASING_RUNG: f32 = 18.0;
 
 /// Half-widths in metres: a bright fill inside a darker casing, the way every road
 /// on the basemap is drawn, so the route reads as part of the map rather than an
@@ -1162,32 +1155,30 @@ pub fn update_route_visuals(
                     ..default()
                 })
             };
-            // Well clear of the ground stack, whose own rungs top out at 10
-            // (`vector_tiles::SurfaceGroup::depth_bias`). Matching that range was
-            // not enough: the route has to win against the *buildings* and the
-            // road surfaces too, and at street range the depth buffer's resolution
-            // is coarse enough that a near-tie shows up as banding. The route is a
+            // Well clear of the ground stack. Matching the surfaces' own range was
+            // not enough: the route has to win against the *buildings* and the road
+            // surfaces too, and at street range the depth buffer's resolution is
+            // coarse enough that a near-tie shows up as banding. The route is a
             // navigation aid — drawing it over the odd building corner is the right
             // trade against losing it under one.
             //
-            // These are rungs on the same ladder the surfaces use, so they carry
-            // the same `DEPTH_BIAS_STEP` — a bias is denominated in depth-buffer
-            // ULPs, and one rung of separation is below the rounding noise.
-            let rung = |n: f32| n * vector_tiles::DEPTH_BIAS_STEP;
+            // Which rung each of these is on is `ground_stack`'s to say, not this
+            // file's. The four used to be hand-picked numbers here (18, 20, 22, 22)
+            // on a ladder whose other end moved; see that module for what that cost.
             let p = RouteMaterials {
-                fill: line(0.16, 0.53, 0.90, rung(ROUTE_RUNG)),
-                casing: line(0.06, 0.22, 0.42, rung(ROUTE_CASING_RUNG)),
+                fill: line(0.16, 0.53, 0.90, GroundLayer::RouteLine.depth_bias()),
+                casing: line(0.06, 0.22, 0.42, GroundLayer::RouteCasing.depth_bias()),
                 start: line(
                     ROUTE_START_RGB[0],
                     ROUTE_START_RGB[1],
                     ROUTE_START_RGB[2],
-                    rung(22.0),
+                    GroundLayer::RoutePin.depth_bias(),
                 ),
                 finish: line(
                     ROUTE_FINISH_RGB[0],
                     ROUTE_FINISH_RGB[1],
                     ROUTE_FINISH_RGB[2],
-                    rung(22.0),
+                    GroundLayer::RoutePin.depth_bias(),
                 ),
             };
             commands.insert_resource(RouteMaterials {
@@ -2651,7 +2642,7 @@ mod tests {
                         continue;
                     };
                     bytes += body.len();
-                    if let Ok(td) = vector_tiles::TileData::parse(&body) {
+                    if let Ok(td) = crate::systems::vector_tiles::TileData::parse(&body) {
                         let _ = graph.add_tile(&td, *tile);
                     }
                 }

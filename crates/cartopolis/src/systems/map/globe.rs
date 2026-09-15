@@ -150,7 +150,14 @@ const QT_LIFT_PER_Z: f32 = 4.0;
 /// from, against the alternative of a blank planet over the map.
 const QT_SURFACE_SINK: f64 = 68.0;
 /// Per-zoom depth bias, in the same units as every other bias in the scene
-/// (`vector_tiles::DEPTH_BIAS_STEP` — see `SurfaceGroup::depth_bias`).
+/// (`ground_stack::DEPTH_BIAS_STEP`).
+///
+/// **A separate ladder, deliberately.** `ground_stack::GroundLayer` orders the
+/// sheets of the *ground* tier against each other; this orders the globe
+/// quadtree's zoom levels against each other, and the two are never on screen
+/// coplanar — the globe carries `HideInSpace`'s opposite and the flat tiles are
+/// gone by the time it is drawn. Sharing the unit is what makes them comparable;
+/// sharing the ladder would mean one list holding two things that never meet.
 ///
 /// `StandardMaterial::depth_bias` becomes wgpu's `DepthBiasState::constant`,
 /// which is denominated in *depth-buffer* units rather than metres. That is
