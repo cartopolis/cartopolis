@@ -139,6 +139,22 @@ pub const MAX_GRADE: f32 = 0.06;
 /// ordinary path way this cannot see.
 pub const PATH_GRADE: f32 = 0.10;
 
+/// How close to full depth the deck must be before a roof goes over it.
+///
+/// **This is what makes a portal read as a portal.** Without it the roof begins
+/// the moment a soffit fits under the ground — 5.4 m down for a road bore — and
+/// since that is most of the way down the ramp, the only stretch left open is the
+/// shallow end. The hole then shows a carriageway running from flush with the
+/// grass to a few metres down and no further, which is exactly what the first
+/// capture beside DUO looked like: a road at lawn level with a lid over the
+/// interesting part.
+///
+/// So the roof covers only the stretch that has reached depth and the ramp is an
+/// open cut — which is also what the thing being modelled looks like. Groningen's
+/// southern ring is a long open trench with three short lids over it, not a tube
+/// with a hole at each end.
+pub const ROOF_AT_DEPTH_M: f32 = 0.3;
+
 /// Highest the soffit may be and still be a roof, in metres below ground.
 ///
 /// Slightly under the ground rather than flush with it: a ceiling at exactly
@@ -351,6 +367,17 @@ fn sample_points(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 
 fn point_in_bbox(p: [f32; 2], b: &Bbox) -> bool {
     p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]
+}
+
+/// True where `p` falls in one of the openings.
+///
+/// For the layers that are cut by *instance* rather than by triangle: a third of
+/// a tree is not a smaller tree, so a canopy standing in the hole has to be
+/// dropped whole or kept whole. [`cut_ground`] says why it leaves them alone, and
+/// this is what the caller uses instead.
+#[must_use]
+pub fn in_a_mouth(mouths: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
+    mouths.iter().any(|ring| point_in_ring(p, ring))
 }
 
 /// Even-odd point in ring.
@@ -623,6 +650,14 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         } else {
             CLEARANCE_M
         };
+        // Roofed where the deck has reached depth *and* a soffit fits under the
+        // ground. One answer per vertex, computed once: the ceiling below and the
+        // hole cut in the ground both read it, so they cannot disagree about where
+        // the opening is — which is what two expressions of one rule eventually do.
+        let roofed: Vec<bool> = deck_y
+            .iter()
+            .map(|&y| y <= -(depth - ROOF_AT_DEPTH_M) && y + clearance <= CEILING_MAX_Y)
+            .collect();
         let sides = offset_sides(centre, half);
         deck_class.get_or_insert(class);
         let tex = class.texture_length_m().max(1.0);
@@ -678,7 +713,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             // Roof, where one fits under the ground. Absent over the approach,
             // which is what opens the mouth — see the module note.
             let (c0, c1) = (y0 + clearance, y1 + clearance);
-            if c0 <= CEILING_MAX_Y && c1 <= CEILING_MAX_Y {
+            if roofed[i] && roofed[i + 1] {
                 shell.quad(
                     [
                         [l0[0], c0, l0[1]],
@@ -755,7 +790,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         // flag, so the hole and the absent ceiling are decided by one test and
         // cannot disagree about where the opening is.
         out.mouths
-            .extend(mouth_rings(centre, &deck_y, half, clearance));
+            .extend(mouth_rings(centre, &roofed, half));
 
         out.bores.push(Bore {
             centre: centre.clone(),
@@ -807,14 +842,10 @@ fn wall_normal(a: [f32; 2], b: [f32; 2], left: bool) -> [f32; 3] {
 /// both lie in neighbouring tiles looks like from here. A run with no roof at all
 /// — an underpass shorter than two ramps — comes back as a single corridor over
 /// its whole length, because the whole of it is open to the sky.
-fn mouth_rings(
-    centre: &[[f32; 2]],
-    deck_y: &[f32],
-    half: f32,
-    clearance: f32,
-) -> Vec<Vec<[f32; 2]>> {
-    // Roofless where the soffit would surface. The same test the mesh used.
-    let open = |i: usize| deck_y[i] + clearance > CEILING_MAX_Y;
+fn mouth_rings(centre: &[[f32; 2]], roofed: &[bool], half: f32) -> Vec<Vec<[f32; 2]>> {
+    // The *same* per-vertex answer the ceiling was drawn from, not a second
+    // expression of the rule that could drift from it.
+    let open = |i: usize| !roofed[i];
     let last = centre.len().saturating_sub(1);
     let first_roofed = (0..centre.len()).find(|&i| !open(i));
     let Some(first_roofed) = first_roofed else {
@@ -1210,7 +1241,11 @@ mod tests {
                 )
             })
             .collect();
-        let rings = mouth_rings(&centre, &deck_y, 6.0, CLEARANCE_M);
+        let roofed: Vec<bool> = deck_y
+            .iter()
+            .map(|&y| y <= -(LEVEL_DEPTH_M - ROOF_AT_DEPTH_M) && y + CLEARANCE_M <= CEILING_MAX_Y)
+            .collect();
+        let rings = mouth_rings(&centre, &roofed, 6.0);
         assert_eq!(rings.len(), 2, "a portal at each end should open two holes");
         for ring in &rings {
             assert!(ring.len() >= 4);
@@ -1223,8 +1258,7 @@ mod tests {
     /// than about the geometry, and it is the claim the whole module rests on.
     #[test]
     fn the_tiles_say_which_streets_are_tunnels() {
-        let bytes = &include_bytes!("../tests/fixtures/groningen_z14.mvt")[..];
-        let tile = TileData::parse(bytes).expect("fixture parses");
+        let tile = crate::testdata::groningen();
         let meta = tile.layer("streets").expect("a streets layer");
         let features = tile.features(meta);
         let flagged = features
@@ -1264,11 +1298,10 @@ mod tests {
         let owned = std::env::var("CARTO_TUNNEL_TILE")
             .ok()
             .map(|p| std::fs::read(p).expect("tile reads"));
-        let bytes: &[u8] = match &owned {
-            Some(b) => b,
-            None => &include_bytes!("../tests/fixtures/groningen_z14.mvt")[..],
+        let tile = match &owned {
+            Some(b) => TileData::parse(b).expect("tile parses"),
+            None => crate::testdata::groningen(),
         };
-        let tile = TileData::parse(bytes).expect("fixture parses");
         let out = build_tunnels(&tile, 1471.0, None);
         println!("bores={} mouths={}", out.bores.len(), out.mouths.len());
         for (i, b) in out.bores.iter().enumerate() {
@@ -1294,7 +1327,6 @@ mod tests {
     #[test]
     fn a_bore_roofed_end_to_end_opens_no_hole() {
         let centre = vec![[0.0, 0.0], [100.0, 0.0]];
-        let deck_y = vec![-LEVEL_DEPTH_M, -LEVEL_DEPTH_M];
-        assert!(mouth_rings(&centre, &deck_y, 6.0, CLEARANCE_M).is_empty());
+        assert!(mouth_rings(&centre, &[true, true], 6.0).is_empty());
     }
 }

@@ -716,6 +716,20 @@ fn spawn_geometry_task(
                                             trees.extend(planted);
                                         }
                                         trees.extend(city);
+                                        // A canopy standing in an open cut is a
+                                        // tree growing out of a carriageway seven
+                                        // metres below it. Dropped whole rather
+                                        // than cut, for the reason `cut_ground`
+                                        // leaves the volumetric groups alone: a
+                                        // third of a tree is not a smaller tree.
+                                        if !cell_mouths.is_empty() {
+                                            trees.retain(|t| {
+                                                !cartopolis_geo::tunnels::in_a_mouth(
+                                                    &cell_mouths,
+                                                    [t.x, t.z],
+                                                )
+                                            });
+                                        }
                                         meshes.extend(scatter::build_vegetation_meshes(
                                             &trees,
                                             mesh_bytes,
@@ -796,6 +810,19 @@ fn spawn_geometry_task(
                                         meshes.extend(furniture::build_line_meshes(
                                             &lines, mesh_bytes,
                                         ));
+                                        // A bench or a lamppost standing in the
+                                        // open cut has the same problem a tree
+                                        // there does, and the same answer: the
+                                        // instance goes, and it goes before the
+                                        // list becomes colliders and prompts.
+                                        if !cell_mouths.is_empty() {
+                                            items.retain(|p| {
+                                                !cartopolis_geo::tunnels::in_a_mouth(
+                                                    &cell_mouths,
+                                                    [p.x, p.z],
+                                                )
+                                            });
+                                        }
                                         // A form this server replaces with a model
                                         // is not meshed at all — it is stood up as
                                         // a glTF scene once the cell lands
