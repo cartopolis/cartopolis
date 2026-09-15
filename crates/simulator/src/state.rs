@@ -467,12 +467,55 @@ impl SimWorld {
     /// anything. A real filter has to be computed per connection, which is a
     /// different piece of work: the snapshot would have to stop being a
     /// broadcast.
+    /// The full world: every prim and every avatar.
+    ///
+    /// Sent **once per connection**, at the handshake. See
+    /// [`Self::avatar_snapshot`] for why the repeating one carries no prims.
     pub fn snapshot(&self, tick: u64) -> NetMessage {
-        let prims: Vec<PrimDto> = self.prims.clone();
+        NetMessage::WorldSnapshot {
+            tick,
+            prims: self.prims.clone(),
+            avatars: self.avatar_dtos(),
+        }
+    }
 
-        // v0 multiplayer: replicate every avatar to all clients.
-        let avatars: Vec<AvatarStateDto> = self
-            .avatars
+    /// The repeating snapshot: avatars only, with an empty prim list.
+    ///
+    /// # Why the prims are not in here
+    ///
+    /// The client applies a snapshot's prim list on the *first* one it receives
+    /// and ignores it on every one after that (`network.rs`, the
+    /// `received_initial_world` branch) — prims change through `PrimUpsert` and
+    /// `PrimRemoved`, which is what the tick loop already sends. So the whole
+    /// list was being cloned out of the world, postcard-encoded, copied once per
+    /// connected client and then discarded on arrival, twenty times a second,
+    /// for as long as anyone was connected. At the default 1,000-prim ceiling
+    /// that is the largest single thing this server did per tick and none of it
+    /// reached a screen.
+    ///
+    /// This is deliberately **not** a wire change: `WorldSnapshot` still carries
+    /// a `prims` field and a connection still receives a full one. It moved from
+    /// the broadcast to the handshake, where the only client that needs it is.
+    /// An older client sees exactly what it saw before, because "the prim list in
+    /// a repeat snapshot" is a thing no client has ever read.
+    ///
+    /// One consequence to know, and it predates this: a client whose broadcast
+    /// receiver falls behind drops frames as `Lagged`, and a dropped `PrimUpsert`
+    /// is never resent. The repeating full prim list looked like it would repair
+    /// that and never did, since the client discards it. If prim resync becomes a
+    /// real problem, the fix is to notice the lag and resend, not to go back to
+    /// broadcasting the world.
+    pub fn avatar_snapshot(&self, tick: u64) -> NetMessage {
+        NetMessage::WorldSnapshot {
+            tick,
+            prims: Vec::new(),
+            avatars: self.avatar_dtos(),
+        }
+    }
+
+    /// v0 multiplayer: replicate every avatar to all clients.
+    fn avatar_dtos(&self) -> Vec<AvatarStateDto> {
+        self.avatars
             .iter()
             .map(|(&id, a)| AvatarStateDto {
                 id,
@@ -481,13 +524,7 @@ impl SimWorld {
                 emote: a.emote,
                 seated: a.seated,
             })
-            .collect();
-
-        NetMessage::WorldSnapshot {
-            tick,
-            prims,
-            avatars,
-        }
+            .collect()
     }
 
     /// Create a new prim in the world (Phase 3).
@@ -848,23 +885,45 @@ impl SimWorld {
     ///
     /// Best-effort: a failed write leaves the prim dirty for the next flush, and
     /// the in-memory value — which is what clients see — is unaffected.
+    ///
+    /// **One transaction for the whole batch, not one per prim.** Every statement
+    /// outside an explicit transaction is its own implicit one, so a flush of
+    /// forty moved prims was forty commits — forty journal round trips, on the
+    /// tick loop's thread, while it holds both this mutex and the world write
+    /// lock. Wrapping them makes it one commit regardless of how many scripts
+    /// moved something, which is the difference the batching costs nothing to
+    /// get.
+    ///
+    /// It does change the failure granularity, and the change is in the right
+    /// direction: a rolled-back batch leaves *every* id in the batch dirty, so
+    /// the retry on the next flush writes the same set the database rejected,
+    /// rather than a half-applied one.
     pub fn flush_dirty(&mut self) {
         if self.dirty.is_empty() {
             return;
         }
         // Lock before draining: a poisoned lock must leave the set intact for
         // the next flush, exactly as the doc above promises.
-        let Ok(conn) = self.conn.lock() else {
+        let Ok(mut conn) = self.conn.lock() else {
             tracing::warn!("db lock poisoned; script writes not persisted");
             return;
         };
         let ids: Vec<i64> = self.dirty.drain().collect();
-        for id in ids {
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!("could not begin the prim flush transaction: {e:#}");
+                self.dirty.extend(ids);
+                return;
+            }
+        };
+        let mut failed = false;
+        for &id in &ids {
             let Some(p) = self.prims.iter().find(|p| p.id == id) else {
                 continue;
             };
             if let Err(e) = crate::db::update_prim(
-                &conn,
+                &tx,
                 p.id,
                 p.position,
                 p.rotation,
@@ -879,11 +938,21 @@ impl SimWorld {
                 p.model.as_deref(),
             ) {
                 tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
-                // Keep the promise above: a failed write stays dirty, so a
-                // transiently locked or full database is retried on the next
-                // flush instead of silently rewinding the prim on restart.
-                self.dirty.insert(id);
+                failed = true;
+                break;
             }
+        }
+        // Keep the promise above: a batch that did not land stays dirty, so a
+        // transiently locked or full database is retried on the next flush
+        // instead of silently rewinding the prims on restart.
+        if failed {
+            drop(tx);
+            self.dirty.extend(ids);
+            return;
+        }
+        if let Err(e) = tx.commit() {
+            tracing::warn!("committing the prim flush failed: {e:#}");
+            self.dirty.extend(ids);
         }
     }
 }
@@ -907,6 +976,42 @@ mod tests {
             HashMap::new(),
         );
         (world, dir)
+    }
+
+    /// The repeating snapshot must not carry the prim list, and the handshake one
+    /// must.
+    ///
+    /// This is the property the whole split rests on: the client builds its prim
+    /// entities from the first `WorldSnapshot` and ignores the list in every one
+    /// after it, so putting the world in all of them was work that reached no
+    /// screen. If someone ever "fixes" `avatar_snapshot` by having it call
+    /// `snapshot`, this fails rather than quietly restoring twenty full world
+    /// serialisations a second.
+    #[test]
+    fn only_the_first_snapshot_carries_the_world() {
+        let (mut world, _dir) = test_world();
+        world
+            .add_prim(Vec3::ZERO, "box", GeoAnchor::default(), None, None)
+            .expect("add prim");
+        let id = world.spawn_avatar();
+
+        let NetMessage::WorldSnapshot { prims, avatars, .. } = world.snapshot(0) else {
+            panic!("snapshot")
+        };
+        assert_eq!(prims.len(), 1, "the handshake snapshot carries the world");
+        assert!(avatars.iter().any(|a| a.id == id));
+
+        let NetMessage::WorldSnapshot { prims, avatars, .. } = world.avatar_snapshot(1) else {
+            panic!("snapshot")
+        };
+        assert!(
+            prims.is_empty(),
+            "the repeating snapshot carries no prims; they travel as PrimUpsert"
+        );
+        assert!(
+            avatars.iter().any(|a| a.id == id),
+            "it does still carry avatars — that is the whole reason it repeats"
+        );
     }
 
     /// A hostile client must not be able to write a non-number into the

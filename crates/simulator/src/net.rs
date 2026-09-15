@@ -198,11 +198,11 @@ fn check_model(conn: &Arc<Mutex<rusqlite::Connection>>, model: Option<&str>) -> 
 /// Broadcast rather than answered to the actor alone: the budget is shared, so a
 /// prim someone else created is headroom this client no longer has, and finding
 /// that out from a refusal is finding out too late.
-async fn broadcast_capacity(world: &Arc<RwLock<SimWorld>>, tx: &broadcast::Sender<Vec<u8>>) {
+async fn broadcast_capacity(world: &Arc<RwLock<SimWorld>>, tx: &broadcast::Sender<Bytes>) {
     let usage = world.read().await.capacity();
     match encode_app_frame(&capacity_message(&usage)) {
         Ok(bytes) => {
-            let _ = tx.send(bytes);
+            let _ = tx.send(Bytes::from(bytes));
         }
         Err(e) => tracing::error!("capacity encode: {e}"),
     }
@@ -351,8 +351,8 @@ pub async fn handle_connection<T: FrameTransport>(
     mut framed: T,
     world: Arc<RwLock<SimWorld>>,
     config: Arc<SimConfig>,
-    mut snap_rx: broadcast::Receiver<Vec<u8>>,
-    tx_snap: broadcast::Sender<Vec<u8>>,
+    mut snap_rx: broadcast::Receiver<Bytes>,
+    tx_snap: broadcast::Sender<Bytes>,
     conn: Arc<Mutex<rusqlite::Connection>>,
     sessions: Arc<crate::auth::Sessions>,
     chat: Arc<crate::chat::ChatHub>,
@@ -490,6 +490,24 @@ pub async fn handle_connection<T: FrameTransport>(
     {
         let usage = world.read().await.capacity();
         let frame = encode_app_frame(&capacity_message(&usage))?;
+        framed.send(Bytes::from(frame)).await?;
+    }
+
+    // The one full snapshot this connection gets. The client builds its prim
+    // entities from the first `WorldSnapshot` it sees and ignores the prim list
+    // in every later one, so this is where the world arrives; the broadcast that
+    // follows carries avatars only (`SimWorld::avatar_snapshot`).
+    //
+    // Sent here rather than left to the next tick for a second reason: it is up
+    // to a whole tick period sooner, so a new arrival's world is drawn on join
+    // instead of up to 50 ms after it. Ordering is safe because this write goes
+    // out on `framed` before the select loop below reads its first broadcast
+    // frame, and a broadcast snapshot that was already queued cannot overtake it.
+    {
+        let frame = {
+            let w = world.read().await;
+            encode_app_frame(&w.snapshot(0))?
+        };
         framed.send(Bytes::from(frame)).await?;
     }
 
@@ -672,7 +690,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                         w.set_owner(prim.id, &principal_key);
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
-                                        let _ = tx_snap.send(broadcast_msg);
+                                        let _ = tx_snap.send(Bytes::from(broadcast_msg));
                                         drop(w);
                                         broadcast_capacity(&world, &tx_snap).await;
                                         tracing::debug!(request_id, "prim created and broadcast");
@@ -708,7 +726,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                     Ok(prim) => {
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
-                                        let _ = tx_snap.send(broadcast_msg);
+                                        let _ = tx_snap.send(Bytes::from(broadcast_msg));
                                         tracing::debug!(request_id, prim_id, "prim updated and broadcast");
                                     }
                                     Err(e) => {
@@ -741,7 +759,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             scripts.unload(prim_id);
                                             // Broadcast PrimRemoved to all clients
                                             let broadcast_msg = encode_app_frame(&NetMessage::PrimRemoved { id: prim_id })?;
-                                            let _ = tx_snap.send(broadcast_msg);
+                                            let _ = tx_snap.send(Bytes::from(broadcast_msg));
                                             drop(w);
                                             broadcast_capacity(&world, &tx_snap).await;
                                             tracing::debug!(request_id, prim_id, "prim deleted and broadcast");
@@ -771,12 +789,31 @@ pub async fn handle_connection<T: FrameTransport>(
                                 }
                             }
                             NetMessage::TextureCatalogRequest => {
-                                let entries = textures::list_textures(&config.texture_dir);
+                                // `spawn_blocking`, because this reads a directory
+                                // and then a manifest file off the disk. Both are
+                                // ordinary synchronous syscalls, and running them
+                                // here would park this worker thread — one of the
+                                // few that also carry the 20 Hz tick — for as long
+                                // as the filesystem takes to answer.
+                                let dir = config.texture_dir.clone();
+                                let entries = tokio::task::spawn_blocking(move || {
+                                    textures::list_textures(&dir)
+                                }).await.unwrap_or_default();
                                 let msg = encode_app_frame(&NetMessage::TextureCatalog { textures: entries })?;
                                 framed.send(Bytes::from(msg)).await?;
                             }
                             NetMessage::TextureRequest { request_id, texture_id } => {
-                                match textures::load_texture(&config.texture_dir, &texture_id) {
+                                // Same reason, and more of it: a texture is a whole
+                                // file read, sized by whatever the operator put in
+                                // the directory.
+                                let loaded = {
+                                    let dir = config.texture_dir.clone();
+                                    let id = texture_id.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        textures::load_texture(&dir, &id)
+                                    }).await.unwrap_or(None)
+                                };
+                                match loaded {
                                     Some(png_bytes) => {
                                         let msg = encode_app_frame(&NetMessage::TextureData { request_id, texture_id, png_bytes })?;
                                         framed.send(Bytes::from(msg)).await?;
@@ -819,7 +856,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             sender_name: display_name.clone(), sent_at_ms: now_ms,
                                             body, distance_m: None,
                                         })?;
-                                        chat.deliver_all(&display_name, &frame);
+                                        chat.deliver_all(&display_name, &Bytes::from(frame));
                                     }
                                     ChatScope::Room(room) => {
                                         // A member first, and a valid name first of
@@ -848,7 +885,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             sender_name: display_name.clone(), sent_at_ms: now_ms,
                                             body, distance_m: None,
                                         })?;
-                                        chat.deliver_room(&channel, &display_name, crate::chat::Lane::Text, &frame);
+                                        chat.deliver_room(&channel, &display_name, crate::chat::Lane::Text, &Bytes::from(frame));
                                     }
                                     ChatScope::Local { shout } => {
                                         if last_local.elapsed() < MIN_LOCAL_INTERVAL {
@@ -873,7 +910,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                                     sender_name: display_name.clone(), sent_at_ms: now_ms,
                                                     body: body.clone(), distance_m: Some(d),
                                                 })?;
-                                                chat.deliver_to(id, &display_name, crate::chat::Lane::Text, frame);
+                                                chat.deliver_to(id, &display_name, crate::chat::Lane::Text, Bytes::from(frame));
                                             }
                                         }
                                     }
@@ -1063,7 +1100,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                                     channel: VOICE_CHANNEL.into(), sender_id: avatar_id,
                                                     seq, payload: payload.clone(), distance_m: Some(d),
                                                 })?;
-                                                chat.deliver_to(id, &display_name, crate::chat::Lane::Voice, frame);
+                                                chat.deliver_to(id, &display_name, crate::chat::Lane::Voice, Bytes::from(frame));
                                             }
                                         }
                                     }
@@ -1087,7 +1124,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             channel: channel.clone(), sender_id: avatar_id,
                                             seq, payload, distance_m: None,
                                         })?;
-                                        chat.deliver_room_except(&channel, avatar_id, &display_name, crate::chat::Lane::Voice, &frame);
+                                        chat.deliver_room_except(&channel, avatar_id, &display_name, crate::chat::Lane::Voice, &Bytes::from(frame));
                                     }
                                     // Global voice is deliberately not carried: it is
                                     // an unbounded fan-out and the loudest abuse
@@ -1257,18 +1294,18 @@ pub async fn handle_connection<T: FrameTransport>(
                         // This channel carries prim upserts, removals and capacity
                         // updates as well as snapshots, so the filter is per-kind
                         // and not per-channel: an idle client still needs to be
-                        // told a prim changed, it just does not need thirty full
-                        // world states a second it cannot draw. `frame_kind` reads
-                        // the header rather than decoding the payload — decoding a
-                        // whole snapshot to discard it would cost more than
-                        // sending it.
+                        // told a prim changed, it just does not need everyone's
+                        // position twenty times a second while it is off screen.
+                        // `frame_kind` reads the header rather than decoding the
+                        // payload — decoding a snapshot to discard it would cost
+                        // more than sending it.
                         if !presence_active
                             && cartopolis_core::protocol::frame_kind(&bytes)
                                 == Some(cartopolis_core::protocol::MessageKind::WorldSnapshot)
                         {
                             continue;
                         }
-                        if let Err(e) = framed.send(Bytes::from(bytes)).await {
+                        if let Err(e) = framed.send(bytes).await {
                             outcome = Err(e.into());
                             break;
                         }
@@ -1317,11 +1354,103 @@ pub async fn handle_connection<T: FrameTransport>(
 /// rewinds.
 const SCRIPT_FLUSH_TICKS: u64 = 40;
 
+/// How long a tick takes, summarised into the log instead of into a metrics
+/// system this server does not have.
+///
+/// The number worth watching is not the average — it is the tail, and where in
+/// the tick it is spent. Two numbers are kept because they answer different
+/// questions: `locked` is how long the world's write lock was held, which is the
+/// time every connected client's own work is queued behind, and `total` is the
+/// whole tick including the encoding and fan-out that happen after the lock is
+/// dropped. A `total` near the period with a small `locked` is a busy but
+/// healthy server; a large `locked` is the thing that makes other connections
+/// wait.
+///
+/// Reported once a window rather than once a tick: at 20 Hz a per-tick line is
+/// 72,000 lines an hour, which is a log nobody reads.
+struct TickMeter {
+    window: u64,
+    ticks: u64,
+    total_sum: Duration,
+    total_max: Duration,
+    locked_sum: Duration,
+    locked_max: Duration,
+    /// Ticks in this window whose total exceeded the tick period — i.e. ticks
+    /// that could not have kept the cadence on their own.
+    over: u64,
+}
+
+impl TickMeter {
+    fn new(period: Duration) -> Self {
+        // A window of about thirty seconds at any tick rate, so the cadence of
+        // the log line does not change when `tick_hz` does.
+        let window = ((30.0 / period.as_secs_f64()).round() as u64).max(1);
+        Self {
+            window,
+            ticks: 0,
+            total_sum: Duration::ZERO,
+            total_max: Duration::ZERO,
+            locked_sum: Duration::ZERO,
+            locked_max: Duration::ZERO,
+            over: 0,
+        }
+    }
+
+    fn record(&mut self, total: Duration, locked: Duration, period: Duration) {
+        self.ticks += 1;
+        self.total_sum += total;
+        self.locked_sum += locked;
+        self.total_max = self.total_max.max(total);
+        self.locked_max = self.locked_max.max(locked);
+        if total > period {
+            self.over += 1;
+        }
+        if self.ticks < self.window {
+            return;
+        }
+        let n = self.ticks.max(1) as u32;
+        // `info` when a tick in the window overran the period, `debug` otherwise:
+        // a healthy server should not narrate itself, but a server that is
+        // missing its cadence should say so without anyone having to raise the
+        // log level first.
+        let mean_total_ms = (self.total_sum / n).as_secs_f64() * 1000.0;
+        let mean_locked_ms = (self.locked_sum / n).as_secs_f64() * 1000.0;
+        let max_total_ms = self.total_max.as_secs_f64() * 1000.0;
+        let max_locked_ms = self.locked_max.as_secs_f64() * 1000.0;
+        let over = self.over;
+        let ticks = self.ticks;
+        let budget_ms = period.as_secs_f64() * 1000.0;
+        if over > 0 {
+            tracing::info!(
+                ticks,
+                over,
+                budget_ms,
+                mean_total_ms,
+                max_total_ms,
+                mean_locked_ms,
+                max_locked_ms,
+                "tick timing"
+            );
+        } else {
+            tracing::debug!(
+                ticks,
+                budget_ms,
+                mean_total_ms,
+                max_total_ms,
+                mean_locked_ms,
+                max_locked_ms,
+                "tick timing"
+            );
+        }
+        *self = Self::new(period);
+    }
+}
+
 /// Periodically steps simulation and broadcasts postcard-encoded [`NetMessage::WorldSnapshot`] in app frames.
 pub async fn tick_loop(
     world: Arc<RwLock<SimWorld>>,
     config: Arc<SimConfig>,
-    tx: broadcast::Sender<Vec<u8>>,
+    tx: broadcast::Sender<Bytes>,
     // Owned, not shared: the host's command receiver is `!Sync`, so an `Arc` of it
     // could not cross a `tokio::spawn`. This is the one place that drains it, which
     // is the same reason [`ScriptHost`] and [`ScriptHandle`] are separate types.
@@ -1340,9 +1469,11 @@ pub async fn tick_loop(
     let max_step = period.as_secs_f32() * 5.0;
     let mut last_step = Instant::now();
     let mut tick: u64 = 0;
+    let mut meter = TickMeter::new(period);
     loop {
         interval.tick().await;
         tick += 1;
+        let tick_began = Instant::now();
         // Step by *measured* elapsed time, not the nominal period. Solo mode runs
         // this loop in-process alongside the Bevy render loop, so ticks routinely
         // land late; advancing a fixed 50 ms per tick let simulated time fall
@@ -1354,6 +1485,7 @@ pub async fn tick_loop(
         let dt = (now - last_step).as_secs_f32().min(max_step);
         last_step = now;
         let mut w = world.write().await;
+        let lock_taken = Instant::now();
         w.step(dt);
 
         // Scripts are applied at the tick barrier: everything the host produced
@@ -1409,7 +1541,7 @@ pub async fn tick_loop(
         if tick % SCRIPT_FLUSH_TICKS == 0 {
             w.flush_dirty();
         }
-        let snap = w.snapshot(tick);
+        let snap = w.avatar_snapshot(tick);
         let views = w.script_views();
         // Chat and console output need the world only for lookups; take what they
         // need here and release the write lock before any encoding or delivery.
@@ -1434,10 +1566,11 @@ pub async fn tick_loop(
                 .filter_map(|id| w.avatar_position(id).map(|p| (id, p)))
                 .collect()
         };
+        let locked_for = lock_taken.elapsed();
         drop(w);
 
         for bytes in script_frames {
-            let _ = tx.send(bytes);
+            let _ = tx.send(Bytes::from(bytes));
         }
         // A prim that deleted itself gives its budget back, and every client's
         // headroom display is stale until it is told.
@@ -1463,9 +1596,12 @@ pub async fn tick_loop(
                     body: text.clone(),
                     distance_m: Some(d),
                 }) {
-                    Ok(frame) => {
-                        chat.deliver_to(*id, name.as_str(), crate::chat::Lane::Text, frame)
-                    }
+                    Ok(frame) => chat.deliver_to(
+                        *id,
+                        name.as_str(),
+                        crate::chat::Lane::Text,
+                        Bytes::from(frame),
+                    ),
                     Err(e) => tracing::error!("script say encode: {e}"),
                 }
             }
@@ -1488,7 +1624,7 @@ pub async fn tick_loop(
                     at_ms: now_ms,
                 }) {
                     Ok(frame) => {
-                        let _ = tx.send(frame);
+                        let _ = tx.send(Bytes::from(frame));
                     }
                     Err(e) => tracing::error!("script output encode: {e}"),
                 }
@@ -1497,13 +1633,15 @@ pub async fn tick_loop(
 
         match encode_app_frame(&snap) {
             Ok(bytes) => {
-                let _ = tx.send(bytes);
+                let _ = tx.send(Bytes::from(bytes));
             }
             Err(e) => tracing::error!("snapshot encode: {e}"),
         }
         // Publish this tick's authoritative prim state for the next slice, so a
         // handler reads the world as it stands after everything applied above.
         scripts.tick(dt, views);
+
+        meter.record(tick_began.elapsed(), locked_for, period);
     }
 }
 

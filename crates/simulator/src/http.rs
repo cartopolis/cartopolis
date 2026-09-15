@@ -54,7 +54,7 @@ use uuid::Uuid;
 pub struct HttpState {
     pub world: Arc<RwLock<SimWorld>>,
     pub config: Arc<SimConfig>,
-    pub tx_snap: broadcast::Sender<Vec<u8>>,
+    pub tx_snap: broadcast::Sender<bytes::Bytes>,
     pub conn: Arc<Mutex<rusqlite::Connection>>,
     pub sessions: Arc<Sessions>,
     pub chat: Arc<crate::chat::ChatHub>,

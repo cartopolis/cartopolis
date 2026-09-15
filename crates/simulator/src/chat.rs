@@ -5,10 +5,14 @@
 //! form of the ADR's `ChatBus` seam — a trait can wrap it when multi-sim lands.
 //!
 //! It carries **voice as well as text**, and needed no generalising to do so: it
-//! deals in already-encoded frames (`Vec<u8>`), so the payload was always opaque
+//! deals in already-encoded frames (`Bytes`), so the payload was always opaque
 //! to it. Proximity voice is the text path with an audio frame in place of the
 //! string — including the per-recipient encode, which distance attenuation needs
 //! for exactly the reason `distance_m` already needed it.
+//!
+//! `Bytes` and not `Vec<u8>` for the fan-out's sake: a global line or a room's
+//! voice frame is handed to every member, and cloning a `Vec` there is a copy of
+//! the whole frame per recipient where a `Bytes` is a reference count.
 //!
 //! # Why every outbox is bounded, and why there are two of them
 //!
@@ -22,6 +26,7 @@
 //! and shrugged off. These are the same shape, with [`Lane`] deciding what
 //! "handled" means for a frame that does not fit.
 
+use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
@@ -79,8 +84,8 @@ const TEXT_BACKLOG: usize = 256;
 const VOICE_BACKLOG: usize = 64;
 
 struct Client {
-    text: mpsc::Sender<Vec<u8>>,
-    voice: mpsc::Sender<Vec<u8>>,
+    text: mpsc::Sender<Bytes>,
+    voice: mpsc::Sender<Bytes>,
     rooms: HashSet<String>,
     /// Usernames this connection refuses to hear, lowercased. Loaded from
     /// `blocks` at register time and updated in place by [`ChatHub::set_blocked`].
@@ -100,7 +105,7 @@ impl Client {
     /// `try_send` rather than `send().await` is the whole point: this is called
     /// from *other* clients' tasks, while the hub's mutex is held. An `.await`
     /// here would park a speaker's connection task on a listener's socket.
-    fn enqueue(&self, avatar_id: u64, lane: Lane, frame: Vec<u8>) {
+    fn enqueue(&self, avatar_id: u64, lane: Lane, frame: Bytes) {
         let tx = match lane {
             Lane::Text => &self.text,
             Lane::Voice => &self.voice,
@@ -154,7 +159,7 @@ impl ChatHub {
         &self,
         avatar_id: u64,
         blocked: impl IntoIterator<Item = String>,
-    ) -> (mpsc::Receiver<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
+    ) -> (mpsc::Receiver<Bytes>, mpsc::Receiver<Bytes>) {
         let (text, text_rx) = mpsc::channel(TEXT_BACKLOG);
         let (voice, voice_rx) = mpsc::channel(VOICE_BACKLOG);
         locked(&self.clients).insert(
@@ -221,22 +226,22 @@ impl ChatHub {
     /// it for one reason: it is what a recipient's block list is checked against.
     /// Passing it rather than deriving it from the frame keeps the hub's "opaque
     /// encoded bytes" property — it never has to decode a message to route it.
-    pub fn deliver_all(&self, from: &str, frame: &[u8]) {
+    pub fn deliver_all(&self, from: &str, frame: &Bytes) {
         let from = from.to_lowercase();
         for (id, c) in locked(&self.clients).iter() {
             if c.blocked.contains(&from) {
                 continue;
             }
-            c.enqueue(*id, Lane::Text, frame.to_vec());
+            c.enqueue(*id, Lane::Text, frame.clone());
         }
     }
 
     /// Deliver one encoded frame to members of a room.
-    pub fn deliver_room(&self, room: &str, from: &str, lane: Lane, frame: &[u8]) {
+    pub fn deliver_room(&self, room: &str, from: &str, lane: Lane, frame: &Bytes) {
         let from = from.to_lowercase();
         for (id, c) in locked(&self.clients).iter() {
             if c.rooms.contains(room) && !c.blocked.contains(&from) {
-                c.enqueue(*id, lane, frame.to_vec());
+                c.enqueue(*id, lane, frame.clone());
             }
         }
     }
@@ -251,12 +256,12 @@ impl ChatHub {
         except: u64,
         from: &str,
         lane: Lane,
-        frame: &[u8],
+        frame: &Bytes,
     ) {
         let from = from.to_lowercase();
         for (id, c) in locked(&self.clients).iter() {
             if *id != except && c.rooms.contains(room) && !c.blocked.contains(&from) {
-                c.enqueue(*id, lane, frame.to_vec());
+                c.enqueue(*id, lane, frame.clone());
             }
         }
     }
@@ -265,7 +270,7 @@ impl ChatHub {
     ///
     /// The block is applied here too, and it must be: proximity is the tier where
     /// somebody you have blocked can still walk up to you.
-    pub fn deliver_to(&self, avatar_id: u64, from: &str, lane: Lane, frame: Vec<u8>) {
+    pub fn deliver_to(&self, avatar_id: u64, from: &str, lane: Lane, frame: Bytes) {
         if let Some(c) = locked(&self.clients).get(&avatar_id) {
             if c.blocked.contains(&from.to_lowercase()) {
                 return;
@@ -321,7 +326,7 @@ mod tests {
 
         // Ten times the backlog, from a "speaker" that is not this connection.
         for _ in 0..VOICE_BACKLOG * 10 {
-            hub.deliver_to(1, "speaker", Lane::Voice, vec![0u8; 1500]);
+            hub.deliver_to(1, "speaker", Lane::Voice, Bytes::from(vec![0u8; 1500]));
         }
         let mut queued = 0;
         while voice_rx.try_recv().is_ok() {
@@ -341,13 +346,13 @@ mod tests {
         let (mut text_rx, _voice_rx) = hub.register(1, []);
 
         for _ in 0..VOICE_BACKLOG * 4 {
-            hub.deliver_to(1, "speaker", Lane::Voice, vec![0u8; 1500]);
+            hub.deliver_to(1, "speaker", Lane::Voice, Bytes::from(vec![0u8; 1500]));
         }
-        hub.deliver_to(1, "speaker", Lane::Text, b"hello".to_vec());
+        hub.deliver_to(1, "speaker", Lane::Text, Bytes::from_static(b"hello"));
 
         assert_eq!(
             text_rx.try_recv().ok(),
-            Some(b"hello".to_vec()),
+            Some(Bytes::from_static(b"hello")),
             "the text lane was consumed by voice"
         );
     }
@@ -375,15 +380,21 @@ mod tests {
         let (mut rx, _v) = hub.register(1, ["loud".to_string()]);
         hub.set_room(1, "room:x", true);
 
-        hub.deliver_all("loud", b"global".as_ref());
-        hub.deliver_room("room:x", "loud", Lane::Text, b"room".as_ref());
-        hub.deliver_to(1, "loud", Lane::Text, b"local".to_vec());
-        hub.deliver_room_except("room:x", 99, "loud", Lane::Voice, b"voice".as_ref());
+        hub.deliver_all("loud", &Bytes::from_static(b"global"));
+        hub.deliver_room("room:x", "loud", Lane::Text, &Bytes::from_static(b"room"));
+        hub.deliver_to(1, "loud", Lane::Text, Bytes::from_static(b"local"));
+        hub.deliver_room_except(
+            "room:x",
+            99,
+            "loud",
+            Lane::Voice,
+            &Bytes::from_static(b"voice"),
+        );
         assert!(rx.try_recv().is_err(), "a blocked speaker got through");
 
         // …and everyone else still arrives.
-        hub.deliver_all("quiet", b"global".as_ref());
-        assert_eq!(rx.try_recv().ok(), Some(b"global".to_vec()));
+        hub.deliver_all("quiet", &Bytes::from_static(b"global"));
+        assert_eq!(rx.try_recv().ok(), Some(Bytes::from_static(b"global")));
     }
 
     /// A block is stored and compared lowercased, so it cannot be walked around
@@ -392,7 +403,7 @@ mod tests {
     fn blocking_ignores_case_on_both_sides() {
         let hub = ChatHub::new();
         let (mut rx, _v) = hub.register(1, ["LoUd".to_string()]);
-        hub.deliver_all("lOuD", b"x".as_ref());
+        hub.deliver_all("lOuD", &Bytes::from_static(b"x"));
         assert!(rx.try_recv().is_err());
     }
 
@@ -402,15 +413,15 @@ mod tests {
     fn unblocking_lands_on_the_live_connection() {
         let hub = ChatHub::new();
         let (mut rx, _v) = hub.register(1, ["loud".to_string()]);
-        hub.deliver_all("loud", b"before".as_ref());
+        hub.deliver_all("loud", &Bytes::from_static(b"before"));
         assert!(rx.try_recv().is_err());
 
         hub.set_blocked(1, "Loud", false);
-        hub.deliver_all("loud", b"after".as_ref());
-        assert_eq!(rx.try_recv().ok(), Some(b"after".to_vec()));
+        hub.deliver_all("loud", &Bytes::from_static(b"after"));
+        assert_eq!(rx.try_recv().ok(), Some(Bytes::from_static(b"after")));
 
         hub.set_blocked(1, "loud", true);
-        hub.deliver_all("loud", b"again".as_ref());
+        hub.deliver_all("loud", &Bytes::from_static(b"again"));
         assert!(rx.try_recv().is_err());
     }
 

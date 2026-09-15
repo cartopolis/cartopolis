@@ -103,7 +103,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let sessions = Arc::new(auth::Sessions::persistent(conn.clone()));
     let chat = Arc::new(chat::ChatHub::new());
 
-    let (tx_snap, _) = broadcast::channel::<Vec<u8>>(256);
+    let (tx_snap, _) = broadcast::channel::<bytes::Bytes>(256);
     let script_handle = scripts_host.handle();
     // Each task returns a label so `task_ended` can say *which* one died.
     let mut tasks = tokio::task::JoinSet::new();
@@ -215,7 +215,7 @@ async fn accept_loop(
     listener: TcpListener,
     world: Arc<RwLock<state::SimWorld>>,
     config: Arc<SimConfig>,
-    tx_snap: broadcast::Sender<Vec<u8>>,
+    tx_snap: broadcast::Sender<bytes::Bytes>,
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
     sessions: Arc<auth::Sessions>,
     chat: Arc<chat::ChatHub>,

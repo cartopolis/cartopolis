@@ -138,8 +138,59 @@ pub fn open_and_migrate(path: &str) -> anyhow::Result<Connection> {
         std::fs::create_dir_all(parent).with_context(|| format!("create_dir_all {parent:?}"))?;
     }
     let mut conn = Connection::open(path).with_context(|| format!("open sqlite {path}"))?;
+    tune(&conn)?;
     migrate(&mut conn)?;
     Ok(conn)
+}
+
+/// Put the connection into the mode this server actually needs, which is not the
+/// one SQLite opens in.
+///
+/// Every write here runs on a Tokio worker thread behind the single shared
+/// `Mutex<Connection>`, so the time a commit spends in the kernel is time no
+/// other connection's work can start — including the 20 Hz tick. The defaults
+/// are the slowest possible choice for that shape:
+///
+/// * **`journal_mode = WAL`.** The default rollback journal creates, writes,
+///   fsyncs and deletes a separate `-journal` file around *every* transaction,
+///   and holds a whole-database write lock while it does. WAL appends to one
+///   file and lets readers run through a commit instead of waiting behind it.
+/// * **`synchronous = NORMAL`.** Under WAL this is the documented safe setting:
+///   a power cut can lose the last few transactions but cannot corrupt the
+///   database. `FULL` fsyncs on each commit, which is what makes a prim flush a
+///   disk-latency event rather than a memcpy. The thing being persisted is prim
+///   positions a script is about to move again, so losing the last instant of it
+///   costs nothing the tick loop's own flush cadence does not already cost.
+/// * **`busy_timeout`.** Nothing in this process contends — the mutex serialises
+///   it — but a second writer does exist in practice: `simulator --create-admin`
+///   against the live file, and whatever an operator has open. Without a timeout
+///   those meet an instant `SQLITE_BUSY` instead of waiting the moment out.
+///
+/// Best-effort on purpose. A database that refuses WAL (a network filesystem is
+/// the usual reason) is still a database this server can run on, so a refusal is
+/// logged and the boot continues — the alternative is a server that will not
+/// start over a performance setting.
+fn tune(conn: &Connection) -> anyhow::Result<()> {
+    // `query_row`, not `execute`: `PRAGMA journal_mode` *returns* the mode it
+    // ended up in, and rusqlite's `execute` treats a statement that yields a row
+    // as an error ("Execute returned results"). The returned value is also the
+    // only honest way to log what we actually got.
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+        .unwrap_or_else(|e| {
+            tracing::warn!("could not set journal_mode=WAL: {e}");
+            "unknown".into()
+        });
+    if !mode.eq_ignore_ascii_case("wal") {
+        tracing::warn!(mode = %mode, "sqlite is not in WAL mode; writes will be slower");
+    }
+    if let Err(e) = conn.pragma_update(None, "synchronous", "NORMAL") {
+        tracing::warn!("could not set synchronous=NORMAL: {e}");
+    }
+    if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+        tracing::warn!("could not set busy_timeout: {e}");
+    }
+    Ok(())
 }
 
 /// Bring an already-open connection up to the current schema.
@@ -1097,5 +1148,30 @@ mod tests {
         assert!(prim2_exists.is_none());
 
         Ok(())
+    }
+
+    /// The write mode is a property of the file, and it is set exactly once — at
+    /// `open_and_migrate`. Nothing downstream checks it, so a `tune` that stopped
+    /// being called would cost every commit a rollback journal and a full fsync
+    /// with nothing anywhere to say so.
+    #[test]
+    fn the_database_opens_in_wal_mode() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("wal.db");
+        let conn = open_and_migrate(path.to_str().unwrap()).expect("open");
+
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("journal_mode");
+        assert_eq!(mode.to_lowercase(), "wal");
+
+        // 1 is NORMAL. Under WAL that is the documented durable-enough setting:
+        // it cannot corrupt the file, it can only lose the last commits, and what
+        // is being committed here is prim positions a script is about to move
+        // again.
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .expect("synchronous");
+        assert_eq!(sync, 1, "synchronous = NORMAL");
     }
 }

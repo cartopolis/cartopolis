@@ -484,7 +484,7 @@ async fn delete_prim(
     // running a script for a prim nobody can see.
     state.scripts.unload(id);
     if let Ok(frame) = encode_app_frame(&NetMessage::PrimRemoved { id }) {
-        let _ = state.tx_snap.send(frame);
+        let _ = state.tx_snap.send(bytes::Bytes::from(frame));
     }
     tracing::info!(%who, prim_id = id, "prim deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -808,7 +808,7 @@ async fn install_content(
         // is AoI-filtered and carries no removals.
         state.scripts.unload(*id);
         if let Ok(frame) = encode_app_frame(&NetMessage::PrimRemoved { id: *id }) {
-            let _ = state.tx_snap.send(frame);
+            let _ = state.tx_snap.send(bytes::Bytes::from(frame));
         }
     }
 
@@ -965,7 +965,7 @@ async fn store_script(state: &HttpState, prim_id: i64, source: Option<&str>) -> 
 fn broadcast_upsert(state: &HttpState, prim: &PrimDto) {
     match encode_app_frame(&NetMessage::PrimUpsert { prim: prim.clone() }) {
         Ok(frame) => {
-            let _ = state.tx_snap.send(frame);
+            let _ = state.tx_snap.send(bytes::Bytes::from(frame));
         }
         Err(e) => tracing::error!("authoring upsert encode: {e}"),
     }
