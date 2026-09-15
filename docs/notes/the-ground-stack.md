@@ -1,0 +1,194 @@
+---
+topic: rendering
+triggers: [ground_stack.rs, GroundLayer, depth_bias, depth_rung, y_offset, DEPTH_BIAS_STEP, road_rung_ceiling, "z-fight", "z fight", "bleeds through", "bleeding through", "draws over", "flicker", "shimmer", "layer order", "z-index", "surfaces flicker", "water through the grass", "grass through the road", tessellate_surfaces, road_stitch.rs, "coplanar"]
+updated: 2026-09-15
+---
+
+# The ground stack: one list, and a sheet that does not overlap itself
+
+Everything a map draws flat on the ground is coplanar with its neighbours by
+construction. The rasteriser cannot separate coplanar surfaces — their depth
+values agree to the last few bits and the winner is decided by rounding, which
+re-rolls every frame the view matrix moves. So a map renderer needs two things,
+and they are different things:
+
+1. **An order**, for surfaces that genuinely overlap and must.
+2. **No overlap**, everywhere that overlap is an accident of the data.
+
+This tree has repeatedly had one and not the other, or has had the first written
+down in several places that disagreed. Both halves live here now.
+
+## Half one: the order is a list, not a set of numbers
+
+`cartopolis_geo::ground_stack::GroundLayer` is an ordered `enum`, and the
+declaration order *is* the ladder — a layer's rung is its discriminant. Both
+denominations are derived from that one position:
+
+* `depth_bias()` — depth-buffer ULPs, `rung × DEPTH_BIAS_STEP`, plus the whole
+  road band for anything above the road.
+* `y_offset()` — metres in the ten-millimetre window between the map tile's top
+  face and the buildings' base, accumulated from each layer's `clearance()`.
+
+Nobody writes a number down. That is the point.
+
+### What it replaced, and what each of those cost
+
+The order used to be stated in five places in three denominations:
+`SurfaceGroup::depth_rung` (eleven hand-written rungs), `SurfaceGroup::y_offset`
+(a second ladder in millimetres, written independently), `road_rung` (a third,
+per vertex, inside a band the first had to leave room for), **six** free constants
+in four client modules — zebra paint 10.5, route casing 18, route line 20, route
+pins 22, street label 23, driver arrow 24 — and `assets/shaders/road_depth.wgsl`'s
+hard-coded step.
+
+Six, not the five anyone knew about. `navigation.rs` had a bare `rung(22.0)` for
+the route's start and finish pins that was in no list, in no test, and in none of
+the post-mortems; it turned up while replacing the constants either side of it. A
+seventh could not exist now, because there is nothing to write down.
+
+Every recurring failure in this area was two of those disagreeing:
+
+| | |
+|---|---|
+| **Crossover** | The depth ladder grows with range (`1.19e-7 · bias · z`), the millimetre one shrinks as `1/z`. Where they ranked two roads differently the terms crossed in the middle distance and the winner flipped as the camera moved — reported as "part of the roads become invisible". |
+| **Dissolution** | 24 µm is worth 2.0 depth units at 100 m, 1.0 at 200 m, nothing beyond. The entire within-class road ladder stopped meaning anything past a couple of hundred metres. |
+| **Swallowing** | When the road band grew to 399 rungs its ceiling reached 1,916 depth units and climbed past all five hand-picked client constants at once. Every zebra crossing on a road wider than a residential street was drawn *underneath* the tarmac. |
+
+None of those was a wrong idea. Each was somebody picking a number without being
+able to see the other numbers.
+
+### Why the tests enumerate
+
+The test that should have caught the swallowed zebra crossing **existed and was
+green throughout** — it checked four other things (bridge decks, canopy, trunks,
+furniture) off a hand-written list. A list somebody maintains is a list somebody
+forgets.
+
+Every test in `ground_stack` and in `systems::road_depth` now walks
+`GroundLayer::ALL`, and `the_list_is_the_ladder` pins `ALL` against the
+discriminants so the list cannot fall out of step with the `enum` either. A flat
+thing added tomorrow is checked tomorrow, by tests nobody edits.
+
+### Where the millimetres go
+
+The window is ten millimetres and the fights inside it are not equally visible.
+Land against land is pale green against pale grey and can lose unnoticed; land
+against water is dark against pale, and it is the one that came back as triangles
+flickering up through a lake. So the land layers are packed half a millimetre
+apart and the water takes seven — `clearance()` is where that judgement lives, and
+it is a judgement about *contrast*, not about geometry.
+
+## Half two: a layer may not overlap itself, because no ladder can help it
+
+A ladder orders one layer against another. Two polygons of one layer share a rung
+by definition, and the tile is full of them — a cemetery inside a park, a
+playground inside a recreation ground, a village green inside a meadow all arrive
+as separate `land` features resolving to `SurfaceGroup::Grass`.
+
+**Measured on `crates/geo/tests/fixtures/groningen_z14.mvt`, 2026-09-15**, by
+rasterising each group's own triangles at 1024² over the tile and counting
+multi-covered texels:
+
+| group | covered | covered twice | |
+|---|---|---|---|
+| Grass | 166,188 | 16,134 | **9.7 %** |
+| Built | 825,757 | 25,283 | **3.1 %** |
+| Forest | 48,906 | 137 | 0.3 % |
+| Water | 34,594 | 86 | 0.2 % |
+
+And across groups, where the ladder *was* load-bearing:
+
+| | shared | |
+|---|---|---|
+| Forest under Grass | 9,321 | 19.1 % of the forest |
+| Water over Grass | 8,101 | 23.4 % of the water |
+| Built under Grass | 88,123 | 10.7 % of the built land |
+
+`tessellate_surfaces` cuts all of it now, the same way and with the same machinery
+as the road ribbons (`road_stitch`, whose module note carries the no-cracks
+argument: one millimetre lattice, integer booleans, a blocker's own vertices).
+Priority is the layer's rung, then the **smaller** polygon — the smaller feature is
+the more specific statement about that ground, so a cemetery drawn inside a park
+stays a cemetery — then the feature index, because the order has to be strict or
+the cut takes both sides out and opens a hole.
+
+Cutting across groups as well as within them costs nothing extra: same pass, same
+index.
+
+### What the cut costs, and the index bug it turned up
+
+Measured on the same fixture and box, 2026-09-15, `print_tile_pipeline_time`:
+
+| | before | after |
+|---|---|---|
+| `tessellate_surfaces` | 1.5 ms | **49 ms** |
+| `tessellate_roads` | 534 ms | **~300 ms** |
+
+The fills got 47 ms more expensive and the roads got 230 ms cheaper, because the
+first attempt at the fill cut cost **317 ms** and finding out why fixed something
+that had been quietly costing the roads nearly twice their run time.
+
+`road_stitch`'s bucket index was a fixed 8 m grid — a little under the narrowest
+carriageway plus its kerbs, which is right for a road triangle and absurd for a
+landuse one. Earcut answers a polygon with as few triangles as it can, so a
+residential block arrives as two triangles spanning half the tile, and each of
+those was written into some 8,000 buckets and read back out of every one. The grid
+is sized from the mean triangle extent now (`SPANS_PER_TRI`), with the 8 m as a
+floor. It is an acceleration structure only — the separating-axis test still
+decides — so the cut's output is unchanged and the road suite is untouched by it.
+
+Two ground layers are **not** in this pass, because they are not built by it:
+`Paving` (`crate::paving`, surveyed) and `Crop` (`crate::crops`, the BRP register).
+Each is a single-source layer whose own extractor already promises a partition —
+and the 2026-08-29 ghost pavements are what happens when one stops promising it,
+which is why `parse_surveyed_paving` carries an exact-repeat drop. The ladder
+orders them against everything else as before.
+
+## What the cut does *not* retire
+
+**The ladder is a backstop now, not the mechanism, and it is not optional.**
+
+* The cut is **per tile**. A feature crossing a tile boundary is two features in
+  two tiles that never see each other.
+* A flyover and the road beneath it are two real surfaces in one place. Cutting
+  one out of the other would be a lie about which is which; the rung is what holds
+  them apart, and `road_stitch` deliberately exempts them.
+* **A group cut out from under another may not be hidden on its own**, or a hole
+  opens where the one above it used to be. No `DataLayers` toggle reaches the
+  water or landuse groups today. One that did would have to exclude its group from
+  the cut.
+
+## The one hole neither half closes: relief
+
+With the Height layer on, `refine_for_terrain` splits each mesh's *own* triangles
+to `TerrainField::ground_edge_m()` and displaces the vertices. Two sheets over the
+same ground agree exactly where they share a vertex and disagree between them by
+the field's curvature across an edge — which on flat ground is nothing and on a
+dike or a canal bank is decimetres, orders of magnitude past the millimetre window
+and past any depth bias.
+
+It has not been reported, because the Height layer is off by default and because
+the Netherlands is mostly flat enough that the error is under the window. It is
+written down here so the next report is diagnosed in a minute rather than
+rediscovered: **if surfaces bleed only with Height on, it is the refinement, not
+the ladder.** The fix would be refining the ground sheets against a shared world
+lattice so any two of them land on the same vertices, not another millimetre.
+
+Water is a deliberate exception in the same area: a lake takes one level for the
+whole polygon, so at a bank it interpenetrates the land by the bank's height. That
+is what a water surface does.
+
+## Instruments
+
+* `--flicker` (see CLAUDE.md) — two captures ~5 cm apart, solid flipped pixels as
+  `flicker_px`. Its caveat is why it is a disaster gate rather than a fine one:
+  identical-geometry copies inside one mesh rasterise deterministically, so a coin
+  flip only shows where the copies *differ*. The sensitive views are shallow,
+  grazing and mid-distance — exactly where a low camera looks at a street.
+* `vector_tiles`'s `no_group_overlaps_itself` / `no_two_groups_share_ground` —
+  the measurements above, as tests with ceilings, run against the fixture on every
+  suite. They are what would have caught the 2026-08-29 ghost pavements in the
+  data rather than a fortnight later on a screen.
+* **Measure duplication in the data before tuning depth.** That recurrence was
+  seven superseded versions of one footway sharing a rung, and 79 % of the paved
+  area covered twice. No rung arithmetic could have said so.
