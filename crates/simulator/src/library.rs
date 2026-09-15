@@ -347,8 +347,18 @@ async fn upload_asset(
     // promises a model the store does not have, which every later reader has to
     // second-guess; this order can at worst leave a file nothing points at, which
     // is what the orphan listing is for.
-    assets::store(&state.config.asset_dir, &facts.hash, &bytes)
-        .map_err(|e| internal(anyhow::anyhow!("could not store the model: {e}")))?;
+    // The write is as blocking as the parse above it was, and the same size —
+    // up to `MAX_ASSET_BYTES` (16 MB) of synchronous `fs::write` — so it goes off
+    // the async workers too. Only the parse was moved when this route was
+    // written; the file I/O either side of it was left behind.
+    {
+        let dir = state.config.asset_dir.clone();
+        let hash = facts.hash.clone();
+        tokio::task::spawn_blocking(move || assets::store(&dir, &hash, &bytes))
+            .await
+            .map_err(|e| internal(anyhow::anyhow!("model store panicked: {e}")))?
+            .map_err(|e| internal(anyhow::anyhow!("could not store the model: {e}")))?;
+    }
 
     let item = with_conn(&state, |conn| {
         insert_asset(conn, &facts)?;
@@ -409,7 +419,16 @@ async fn download_asset(
             "an operator has taken that model down".into(),
         ));
     }
-    let Some(bytes) = assets::load(&state.config.asset_dir, hash) else {
+    // Off the async workers: this is a synchronous read of a file up to
+    // `MAX_ASSET_BYTES` (16 MB), and every client that draws a prim wearing a
+    // model asks for it. Doing it inline parks a worker thread for the whole
+    // read, and the thread it parks is one the tick loop shares.
+    let dir = state.config.asset_dir.clone();
+    let hash_owned = hash.to_string();
+    let loaded = tokio::task::spawn_blocking(move || assets::load(&dir, &hash_owned))
+        .await
+        .map_err(|e| internal(anyhow::anyhow!("model read panicked: {e}")))?;
+    let Some(bytes) = loaded else {
         return Err(ApiError(StatusCode::NOT_FOUND, "no such model".into()));
     };
     Ok((
