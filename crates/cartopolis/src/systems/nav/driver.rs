@@ -2244,7 +2244,6 @@ pub fn render_driver_hud(
     mut right_panel: ResMut<crate::resources::RightPanel>,
     data_layers: Res<crate::systems::data_layers::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
-    ai: Res<crate::resources::AiAssistantState>,
 ) {
     if !driver.active {
         return;
@@ -2489,11 +2488,10 @@ pub fn render_driver_hud(
 
     // ── The trip strip, right edge — unless a panel is docked there ──
     //
-    // `RightPanel` is the shared state; the three booleans are the older panels
-    // that only publish their own (`hud` ORs the same four for the same reason).
+    // `RightPanel` is the shared state; the two booleans are the older panels
+    // that only publish their own (`hud` ORs the same three for the same reason).
     let right_panel_open = data_layers.panel_open
         || bookmarks.panel_open
-        || ai.open
         || !right_panel.is(crate::resources::RightPanel::None);
 
     let ((hh, mm, _), local_clock) = clock.hms();

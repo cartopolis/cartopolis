@@ -17,7 +17,6 @@ developer tools. For build/run instructions and system requirements, see the
 - [Taking screenshots](#taking-screenshots)
   - [The documentation set (`cargo shots`)](#the-documentation-set-cargo-shots)
   - [One-off captures from the dev panel](#one-off-captures-from-the-dev-panel)
-- [AI assistant](#ai-assistant)
 - [Troubleshooting](#troubleshooting)
 
 ## Starting up
@@ -79,7 +78,6 @@ Movement is camera-relative. The full input reference:
 | T / R / S | Gizmo mode: translate / rotate / scale |
 | Delete / Backspace | Delete selected prims |
 | Ctrl + Shift + D | Toggle the developer panel (frame rate, draw counts, profiler) |
-| Ctrl + Shift + A | Toggle the AI assistant panel |
 
 ### Camera modes
 
@@ -261,7 +259,6 @@ rather than flip while looking at the map:
 - **Appearance** — pick your avatar. Only when you are signed in to a simulator:
   an appearance is something other people look at, so offline there is no
   occasion for one. Your saved choice comes back with the session.
-- **Assistant** (Ctrl + Shift + A) — the [AI assistant](#ai-assistant).
 - **Developer tools** (Ctrl + Shift + D) — the [developer panel](#developer-panel).
 
 Live transit boards and vehicles appear in the world when the relevant layers are
@@ -444,17 +441,6 @@ README images have identical dimensions no matter how big the window was.
 > the shot near the centre if your window isn't already widescreen. Maximising the
 > window before capturing gives the sharpest result (the fixed resolution upscales
 > from smaller windows).
-
-## AI assistant
-
-Open the AI panel with **Ctrl + Shift + A** (or ☰ ▸ Assistant) for
-LLM-assisted world building. It needs an Anthropic API key in the environment:
-
-```bash
-ANTHROPIC_KEY=sk-... cargo run -p cartopolis
-# Optionally override the model:
-ANTHROPIC_MODEL=claude-haiku-4-5-20251001 cargo run -p cartopolis
-```
 
 ## Troubleshooting
 

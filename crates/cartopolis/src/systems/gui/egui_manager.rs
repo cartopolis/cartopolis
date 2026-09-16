@@ -235,9 +235,10 @@ pub fn responsive_right_panel(
 /// the header with its ✕, and the close handling after the body returns.
 ///
 /// This sequence was repeated near-verbatim in eleven panel systems, and it
-/// carries an invariant that only a comment used to defend (see the note that
-/// was in `ai_assistant`): a panel must *collect* its close and write the slot
-/// **after** `show_collapsible` returns, never mid-frame from inside the draw
+/// carries an invariant that only a comment used to defend (the note lived in
+/// the since-removed assistant panel): a panel must *collect* its close and
+/// write the slot **after** `show_collapsible` returns, never mid-frame from
+/// inside the draw
 /// closure. The other half is the last line: a drag on the panel's edge that
 /// pulls it shut writes `open = false` and never touches the header, so a panel
 /// that consults only its ✕ reopens on the next frame — the slot still says it

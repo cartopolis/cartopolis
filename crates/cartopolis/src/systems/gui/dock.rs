@@ -6,8 +6,8 @@
 //! read as a taskbar, and the map ran out under it. The dock is what is left once
 //! each of those goes where it belongs: the composer over the map, where it now
 //! appears only while you are writing (`systems::chat_overlay`), the camera picker
-//! into the app menu, and Appearance and the Assistant with it (settings you
-//! visit, not things you flip while looking at the map).
+//! into the app menu, and Appearance with it (settings you visit, not things
+//! you flip while looking at the map).
 //!
 //! What remains is the places you actually go, centred, as discs in the same
 //! family as the compass in the corner. An icon and a tooltip carry a panel name

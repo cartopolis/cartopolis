@@ -197,9 +197,8 @@ pub fn render_main_menu(
                             ui.separator();
 
                             // Panels you *visit* rather than flip: Appearance is a
-                            // wardrobe and the Assistant is a conversation, so neither
-                            // earns a permanent disc in the dock next to the places you
-                            // actually navigate between.
+                            // wardrobe, so it does not earn a permanent disc in the
+                            // dock next to the places you actually navigate between.
                             //
                             // Nearby chat joined them when chatting stopped being a
                             // panel at all (`systems::chat_overlay`): the dock's Say
@@ -221,7 +220,6 @@ pub fn render_main_menu(
                                 // saved choice is not lost; it comes back with
                                 // the session that gives it a point.
                                 crate::resources::RightPanel::Appearance,
-                                crate::resources::RightPanel::Assistant,
                                 crate::resources::RightPanel::Chat,
                                 // Models is a cupboard you go to, not a place you
                                 // navigate between — same argument as Appearance
@@ -341,18 +339,6 @@ pub fn render_main_menu(
 // is a change to the map and belongs on it, not two taps deep in a card that
 // covers it — and the disc, cycling only the modes on offer, is also where
 // "Follow needs a signed-in session" is enforced for the UI.
-
-/// Toggle the AI panel with Ctrl+Shift+A.
-pub fn toggle_ai_panel_shortcut(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut right_panel: ResMut<RightPanel>,
-) {
-    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    if ctrl && shift && keyboard.just_pressed(KeyCode::KeyA) {
-        right_panel.toggle(RightPanel::Assistant);
-    }
-}
 
 /// Avatar chooser (☰ ▸ Appearance): pick body (Man/Woman) and clothing theme.
 /// Edits a draft; Apply commits it to the persisted store, which

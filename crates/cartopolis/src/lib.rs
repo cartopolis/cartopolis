@@ -52,7 +52,7 @@ pub(crate) const ASSET_ROOT: &str = "assets";
 use big_space::prelude::{BigSpace, GridCell};
 use components::Avatar;
 use resources::{
-    AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
+    AuthIdentity, AvatarChooserState, AvatarState, CameraState,
     ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState,
     OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
 };
@@ -151,7 +151,7 @@ struct Cli {
     hide_ui: bool,
 
     /// Open UI panels in `--shot` captures, comma-separated: `dev`, `layers`,
-    /// `places`, `ai`, `avatar`, `stats`, `route`, or `all`. The menu bar and
+    /// `places`, `avatar`, `stats`, `route`, or `all`. The menu bar and
     /// HUD already show (unless `--hide-ui`); this documents a panel too, e.g.
     /// `--ui dev` to capture the lighting/weather controls. `route` also seeds a
     /// demo route, so the planner is captured with a result in it.
@@ -1891,12 +1891,6 @@ fn run_client() {
         .init_resource::<PrimTextureCache>()
         .init_resource::<systems::rendering::MeshCache>()
         .init_resource::<systems::rendering::MaterialCache>()
-        .insert_resource(AiConfig {
-            api_key: std::env::var("ANTHROPIC_KEY").ok(),
-            model: std::env::var("ANTHROPIC_MODEL")
-                .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string()),
-        })
-        .init_resource::<AiAssistantState>()
         .init_resource::<AvatarChooserState>()
         // Which of the sky knobs below came from a flag, so `restore_sky_prefs`
         // leaves them alone (a flag is an instruction for this launch).
@@ -2839,7 +2833,7 @@ fn run_client() {
                 systems::ui::send_prim_mutations.after(systems::ui::render_edit_dialog),
             ),
         )
-        // Phase 7: AI assistant panel + top menu bar
+        // Phase 7: the top menu bar and the floating map chrome
         .add_systems(
             Update,
             (
@@ -2866,7 +2860,6 @@ fn run_client() {
                 systems::building_card::render_building_card
                     .after(systems::place_card::render_place_card)
                     .before(systems::ui::render_main_menu),
-                systems::ui::toggle_ai_panel_shortcut,
                 systems::dev_panel::toggle_dev_panel_shortcut,
                 // Nested to stay under the per-tuple system limit: the driver runs after
                 // the panel so a button click is seen the same frame it's captured.
@@ -2927,8 +2920,6 @@ fn run_client() {
                     sky::update_globe_clouds.after(systems::free_camera::camera_controls),
                     sky::update_rain.after(systems::free_camera::camera_controls),
                 ),
-                systems::ai_assistant::poll_ai_response
-                    .after(systems::ai_assistant::render_ai_panel),
             ),
         )
         // Phase 7b: the right-hand panel chain — ONE ordered declaration.
@@ -2964,7 +2955,6 @@ fn run_client() {
             (
                 systems::ui::render_main_menu,
                 systems::geo_nav::render_search_panel,
-                systems::ai_assistant::render_ai_panel,
                 systems::data_layers::render_data_layers_panel,
                 systems::bookmarks::render_bookmarks_panel,
                 // The route planner draws a floating bottom sheet, not a docked

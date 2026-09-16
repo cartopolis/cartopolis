@@ -1,6 +1,5 @@
 //! `systems::gui` — one file per concern; see systems/mod.rs for the map.
 
-pub mod ai_assistant;
 pub mod bookmarks;
 pub mod building_card;
 pub mod chat;

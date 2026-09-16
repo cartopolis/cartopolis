@@ -245,7 +245,7 @@ pub struct ShotHarness {
     pub wait: f32,
     /// Leave the egui overlay out of the capture.
     pub hide_ui: bool,
-    /// UI panels to open for the capture (`dev`, `layers`, `bookmarks`, `ai`,
+    /// UI panels to open for the capture (`dev`, `layers`, `bookmarks`,
     /// `avatar`, `stats`, or `all`) — see [`open_scripted_ui`]. Empty = just the
     /// always-on HUD + menu bar.
     pub ui: Vec<String>,
@@ -1732,7 +1732,6 @@ const UI_ELEMENTS: &[&str] = &[
     "profiler",
     "switches",
     "menu",
-    "ai",
     "avatar",
     "appearance",
     "layers",
@@ -1769,7 +1768,6 @@ pub fn open_scripted_ui(
     progress: Res<ShotProgress>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut tools: ResMut<crate::systems::dev_panel::DevTools>,
-    mut ai: ResMut<crate::resources::AiAssistantState>,
     mut avatar: ResMut<crate::resources::AvatarChooserState>,
     mut layers: ResMut<crate::systems::data_layers::DataLayers>,
     mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
@@ -1819,7 +1817,6 @@ pub fn open_scripted_ui(
     // the map now live — Set Home, Copy location and the way into Developer
     // tools. A control nothing can screenshot is a control nobody reviews.
     cards.menu.open = want("menu");
-    ai.open = want("ai");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
     bookmarks.panel_open = want("bookmarks") || want("places");
@@ -1842,8 +1839,6 @@ pub fn open_scripted_ui(
         crate::resources::RightPanel::Layers
     } else if want("places") || want("bookmarks") {
         crate::resources::RightPanel::Places
-    } else if want("ai") {
-        crate::resources::RightPanel::Assistant
     } else if want("search") {
         crate::resources::RightPanel::Search
     } else if want("avatar") || want("appearance") {

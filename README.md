@@ -11,7 +11,7 @@ It is written in Rust on the [Bevy](https://bevy.org/) engine, runs in a browser
 - **Raised from the map** — buildings from real footprints, measured terrain, routing, street names and points of interest.
 - **A sky that behaves** — physically-based atmosphere, day and night, sun, moon, stars and real forecast weather.
 - **Live city data** — departure boards and vehicle positions from the actual transit feed.
-- **Shared and editable** — an authoritative server keeps people, avatars and edits in sync; objects can be placed and reshaped in the world, with an AI panel to help.
+- **Shared and editable** — an authoritative server keeps people, avatars and edits in sync; objects can be placed and reshaped in the world.
 
 The map, the sky and the weather work anywhere on Earth. Three things do not, because they come from national open-data registries rather than a global one: **measured ground relief, high-detail (LoD2.2) buildings and live transit are the Netherlands only.** Everywhere else those degrade rather than break — the ground goes flat, buildings are extruded from their OpenStreetMap footprints, and the departure boards stay empty.
 

@@ -5,49 +5,6 @@ use futures_channel::mpsc::UnboundedSender;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-// ---------------------------------------------------------------------------
-// AI assistant
-// ---------------------------------------------------------------------------
-
-#[derive(Resource)]
-pub struct AiConfig {
-    pub api_key: Option<String>,
-    pub model: String,
-}
-
-impl Default for AiConfig {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            model: "claude-haiku-4-5-20251001".to_string(),
-        }
-    }
-}
-
-pub struct DisplayMessage {
-    pub is_user: bool,
-    pub text: String,
-}
-
-pub type PendingAiResponse = Arc<Mutex<Option<Result<serde_json::Value, String>>>>;
-
-#[derive(Resource, Default)]
-pub struct AiAssistantState {
-    pub open: bool,
-    pub input: String,
-    pub display_messages: Vec<DisplayMessage>,
-    /// Full conversation history in Anthropic Messages API format.
-    pub api_messages: Vec<serde_json::Value>,
-    /// Shared cell written by background thread, polled each frame.
-    pub pending: Option<PendingAiResponse>,
-    /// Set by render_ai_panel when user submits; consumed by poll_ai_response.
-    pub pending_send: bool,
-    /// Number of tool-call rounds in the current turn (safety cap).
-    pub tool_round: u8,
-    pub error: Option<String>,
-    pub scroll_to_bottom: bool,
-}
-
 /// Stand-in for the primary `Window` when there isn't one: a scripted `--shot`
 /// run is windowless (no winit event loop at all) and renders into an offscreen
 /// image, but egui still needs a screen to lay out and scissor against, and the
@@ -91,7 +48,6 @@ pub enum RightPanel {
     Layers,
     Places,
     Route,
-    Assistant,
     Chat,
     Appearance,
     Script,
@@ -132,9 +88,8 @@ impl RightPanel {
             Self::Places => "Saved places",
             Self::Route => "Route",
             // Sentence case throughout: these strings are the dock tooltip, the
-            // menu entry and the panel header, and "AI Assistant" beside "Map
+            // menu entry and the panel header, and "Nearby Chat" beside "Map
             // layers" read as two different applications.
-            Self::Assistant => "AI assistant",
             Self::Chat => "Nearby chat",
             Self::Appearance => "Appearance",
             Self::Script => "Script",
@@ -155,7 +110,7 @@ impl RightPanel {
     ///
     /// Lives on the enum rather than in the dock because the dock is no longer the
     /// only place a panel's icon appears: the header wears it too (and Appearance
-    /// and the Assistant have no dock button at all, only a menu entry).
+    /// has no dock button at all, only a menu entry).
     #[must_use]
     pub fn icon(self) -> &'static str {
         use crate::systems::icons;
@@ -165,7 +120,6 @@ impl RightPanel {
             Self::Layers => icons::LAYERS,
             Self::Places => icons::BOOKMARK,
             Self::Route => icons::ROUTE,
-            Self::Assistant => icons::ASSISTANT,
             Self::Chat => icons::CHAT,
             Self::Appearance => icons::APPEARANCE,
             Self::Script => icons::SCRIPT,

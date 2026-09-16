@@ -609,8 +609,8 @@ pub fn render_map_controls(
     // was started from is closed anyway.
     //
     // `RightPanel` is the whole answer. This used to also OR in `DataLayers::
-    // panel_open`, `BookmarksState::panel_open` and `AiAssistantState::open` — the
-    // booleans the panels carried before the shared dock existed. None of them is
+    // panel_open` and `BookmarksState::panel_open` — the booleans the panels
+    // carried before the shared dock existed. None of them is
     // cleared anywhere, and the old status readout *set* the bookmarks one when
     // you saved a place, so a single press of ☆ hid the compass and the locate
     // button for the rest of the session. Nothing writes them now

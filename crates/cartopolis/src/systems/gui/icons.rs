@@ -92,8 +92,6 @@ icons! {
     /// a 44 pt disc — the road's switchbacks collapse into a squiggle, while an
     /// arrow on a post still reads as an arrow on a post.
     ROUTE = "\u{e52e}", "directions";
-    /// AI assistant panel.
-    ASSISTANT = "\u{e65f}", "auto_awesome";
     /// Nearby chat panel.
     CHAT = "\u{e0c9}", "chat";
     /// Appearance (avatar) panel.
