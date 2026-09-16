@@ -712,11 +712,26 @@ fn level_y(base_zoom: u32, zoom: u32) -> f32 {
 #[derive(Resource, Default)]
 pub struct ReliefBacklog(pub usize);
 
-/// Marker on a tile whose flat quad has been replaced by ground lifted onto the
-/// terrain field, carrying the field revision it was built for.
+/// Clipmap tiles whose sheet has a tunnel opening taken out of it.
+///
+/// **The number is what makes the hole assertable.** A capture over a portal comes
+/// back the same whether the basemap was cut or merely happens to be hidden by a
+/// vector surface at that range and that angle — which is exactly the ambiguity
+/// that left "does the raster roof the opening?" unresolved for a day. This counts
+/// the tiles, so `--expect 'basemap_open_tiles>0'` states it instead.
+#[derive(Resource, Default)]
+pub struct BasemapHoles(pub usize);
+
+/// Marker on a tile whose flat quad has been replaced by a mesh of its own —
+/// ground lifted onto the terrain field, bent by the globe's curve, or opened over
+/// a tunnel mouth — carrying what it was built for.
 #[derive(Component)]
 pub struct TileRelief {
     revision: u32,
+    /// The openings this tile's sheet was cut against
+    /// ([`TunnelBores::mouth_digest`](crate::systems::tunnels::TunnelBores::mouth_digest)),
+    /// kept apart from `revision` because it is the one input that is per tile.
+    mouths: u64,
 }
 
 /// Subdivisions per side for a relief tile of `tile_m` metres: a constant count,
@@ -819,11 +834,14 @@ pub fn apply_terrain_to_tiles(
     stream: Res<MapStream>,
     field: Res<crate::systems::terrain::TerrainField>,
     globe: Res<crate::systems::globe::GlobeState>,
+    bores: Res<crate::systems::tunnels::TunnelBores>,
     mut tiles: Query<(Entity, &StreamTile, &mut Transform, Option<&TileRelief>)>,
     mut backlog: ResMut<ReliefBacklog>,
+    mut holes: ResMut<BasemapHoles>,
     mut last_revision: Local<u32>,
 ) {
     backlog.0 = 0;
+    holes.0 = 0;
     let Some((clat, clng, base_zoom)) = stream.anchor else {
         return;
     };
@@ -882,13 +900,20 @@ pub fn apply_terrain_to_tiles(
         } else {
             curve_divs
         };
-        let shaped = relieved || divisions > 1;
+        // **Every level needs the hole, not just the one you are looking at.** The
+        // pyramid stacks its levels 0.4 m apart and sinks the coarse ones by the
+        // field's depth — a few metres in a polder — so all of them are still well
+        // above a seven-metre carriageway. Cut only the finest and the bore opens
+        // onto z10 imagery instead of onto z17 imagery.
+        let mouths = bores.mouth_digest(centre, gs * 0.5);
+        let shaped = relieved || divisions > 1 || mouths != 0;
 
         if !shaped {
             if relief.is_some() {
-                // The field went away (layer off, out of coverage, re-anchored to
-                // Berlin) and the tile is small enough to be flat: back to the
-                // shared quad.
+                // Nothing shapes this tile any more — the field went away (layer
+                // off, out of coverage, re-anchored to Berlin), or the cell whose
+                // tunnels it was opened for was retired. Back to the shared quad,
+                // which is also how a hole is filled back in.
                 if let Some(quad) = stream.quads.get(&tile.key.z) {
                     commands
                         .entity(entity)
@@ -898,7 +923,13 @@ pub fn apply_terrain_to_tiles(
             }
             continue;
         }
-        if relief.is_some_and(|r| r.revision == revision) {
+        // What is *drawn* with a hole, not what is owed one: the component is the
+        // mesh that exists, and counting the wish would report an open basemap for
+        // the frames between a cell landing and its tiles being rebuilt.
+        if relief.is_some_and(|r| r.mouths != 0) {
+            holes.0 += 1;
+        }
+        if relief.is_some_and(|r| r.revision == revision && r.mouths == mouths) {
             continue;
         }
         // Counted before the per-frame cap turns it away, because this is the number
@@ -921,11 +952,17 @@ pub fn apply_terrain_to_tiles(
             continue;
         }
         *cost += 1;
-        let mesh = crate::systems::terrain::displaced_grid(&field, &globe, centre, gs, divisions);
+        let rings = if mouths == 0 {
+            Vec::new()
+        } else {
+            bores.mouths_near(centre, gs * 0.5)
+        };
+        let mesh =
+            crate::systems::terrain::displaced_grid(&field, &globe, centre, gs, divisions, &rings);
         commands
             .entity(entity)
             .insert(Mesh3d(meshes.add(mesh)))
-            .insert(TileRelief { revision });
+            .insert(TileRelief { revision, mouths });
         // No `NotShadowCaster` here any more — every `StreamTile` carries it from
         // spawn (see the comment at the spawn site). The reasoning this comment
         // used to hold is still the reasoning, and is worth keeping: four clipmap

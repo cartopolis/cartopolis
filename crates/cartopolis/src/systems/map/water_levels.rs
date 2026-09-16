@@ -413,22 +413,9 @@ pub fn update_water_levels(
     stream: Res<MapStream>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     globe: Res<GlobeState>,
-    dl: Res<crate::systems::data_layers::DataLayers>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
-    // Gated on the height layer, and not arbitrarily: the only consumers are the
-    // terrain bakes, which do nothing at all with the layer off. Streaming regardless
-    // would be a layer that is off still fetching, and its work still crowding a
-    // shared queue.
-    if !dl.height_enabled {
-        if !levels.cells.is_empty() {
-            levels.clear();
-            levels.stream.reset();
-            levels.anchor = None;
-        }
-        return;
-    }
     COVERAGE.ensure(now);
 
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {

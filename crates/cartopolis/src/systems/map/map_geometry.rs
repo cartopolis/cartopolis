@@ -54,6 +54,7 @@ use crate::systems::street_furniture::FurnitureLod;
 use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
 use crate::systems::tile_loader::load_tile_image;
+use crate::systems::tunnels::CellTunnels;
 use crate::systems::turf::GrassArea;
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
@@ -127,6 +128,10 @@ type Tessellated = (
     // when the layer is off; empty — and so dropped on arrival — for the many
     // cells of a city centre that hold no green at all.
     Option<GrassArea>,
+    // The cell's bores and the holes they need in the ground over their portals
+    // (`cartopolis_geo::tunnels`), which are places rather than triangles and so
+    // do not travel with the meshes above.
+    CellTunnels,
 );
 
 /// The per-cell stores that live and die with a surface cell: the street names
@@ -153,6 +158,10 @@ pub struct CellStores<'w> {
     /// holds per cell is a queue of objects to stand up, which has to be dropped
     /// with the cell it belongs to (`systems::placeholder_models`).
     placeholders: ResMut<'w, crate::systems::placeholder_models::PlaceholderModels>,
+    /// The tunnels under the cell (`systems::tunnels`), for the same reason as
+    /// all of these: built from this parse, keyed by this cell, and retired with
+    /// it — a bore whose mesh has gone must not still be a floor to stand on.
+    tunnels: ResMut<'w, crate::systems::tunnels::TunnelBores>,
 }
 
 /// Everything a surface cell needs to *make a material out of*, in one parameter
@@ -549,6 +558,8 @@ fn spawn_geometry_task(
                 let mut grass = None;
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
+                let mut cell_tunnels = Vec::new();
+                let mut cell_mouths = Vec::new();
                 let mut labels = Vec::new();
                 let mut cell_places = CellPlaces::default();
                 // **One** parse for all seven consumers. Each of them used to open
@@ -630,6 +641,32 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
                                 }
                             }
+                            // The roads that are *not* on the road sheet, because
+                            // they run under it (`cartopolis_geo::tunnels`). Built
+                            // here rather than inside `tessellate_roads` for the
+                            // reason the module note gives: a bore is a deck, two
+                            // walls and a roof at its own depth, and it owes the
+                            // ground a hole rather than a place in the coplanar
+                            // stack. The corridors it hands back travel with the
+                            // cell so the ground can be opened at the portal and
+                            // the avatar can find the floor down there.
+                            let tunnels = cartopolis_geo::tunnels::build_tunnels(
+                                &tile, tile_m, mesh_bytes,
+                            );
+                            // The ground over an open approach has to go, or the
+                            // portal is roofed by the sheet the bore was cut into
+                            // and there is no way in. Cut here, on this worker,
+                            // while the cell's ground meshes are still buffers —
+                            // the alternative is a hole punched in the fragment
+                            // shader, which would leave the sheet standing as
+                            // something to walk on and to stop the camera.
+                            cartopolis_geo::tunnels::cut_ground(
+                                &mut meshes,
+                                &tunnels.mouths,
+                            );
+                            cell_tunnels = tunnels.bores;
+                            cell_mouths = tunnels.mouths;
+                            meshes.extend(tunnels.meshes);
                             // Trees ride the same fetch and the same per-cell
                             // batching (`systems::vegetation`). Scattering and
                             // merging thousands of canopies is pure CPU work, so
@@ -679,6 +716,20 @@ fn spawn_geometry_task(
                                             trees.extend(planted);
                                         }
                                         trees.extend(city);
+                                        // A canopy standing in an open cut is a
+                                        // tree growing out of a carriageway seven
+                                        // metres below it. Dropped whole rather
+                                        // than cut, for the reason `cut_ground`
+                                        // leaves the volumetric groups alone: a
+                                        // third of a tree is not a smaller tree.
+                                        if !cell_mouths.is_empty() {
+                                            trees.retain(|t| {
+                                                !cartopolis_geo::tunnels::in_a_mouth(
+                                                    &cell_mouths,
+                                                    [t.x, t.z],
+                                                )
+                                            });
+                                        }
                                         meshes.extend(scatter::build_vegetation_meshes(
                                             &trees,
                                             mesh_bytes,
@@ -759,6 +810,19 @@ fn spawn_geometry_task(
                                         meshes.extend(furniture::build_line_meshes(
                                             &lines, mesh_bytes,
                                         ));
+                                        // A bench or a lamppost standing in the
+                                        // open cut has the same problem a tree
+                                        // there does, and the same answer: the
+                                        // instance goes, and it goes before the
+                                        // list becomes colliders and prompts.
+                                        if !cell_mouths.is_empty() {
+                                            items.retain(|p| {
+                                                !cartopolis_geo::tunnels::in_a_mouth(
+                                                    &cell_mouths,
+                                                    [p.x, p.z],
+                                                )
+                                            });
+                                        }
                                         // A form this server replaces with a model
                                         // is not meshed at all — it is stood up as
                                         // a glTF scene once the cell lands
@@ -930,9 +994,16 @@ fn spawn_geometry_task(
                                 // The parcels go in as the third keep-out: OSM
                                 // draws farmland as grass, so without the
                                 // register a ploughed field grows a lawn.
-                                let area = cartopolis_geo::turf::GrassArea::build(
+                                let mut area = cartopolis_geo::turf::GrassArea::build(
                                     &tile, tile_m, &parcels,
                                 );
+                                // …and the tunnel openings as the fourth. The
+                                // blades are generated from this cell's grass
+                                // polygons rather than placed on the ground mesh,
+                                // so the hole cut in that mesh does not reach
+                                // them: without this a park whose tile says grass
+                                // across the block grows a lawn over the trench.
+                                area.block_mouths(&cell_mouths);
                                 if !area.is_empty() {
                                     grass = Some(area);
                                 }
@@ -952,7 +1023,19 @@ fn spawn_geometry_task(
                 if let Ok(mut g) = results.lock() {
                     g.push((
                         cell,
-                        (outcome, shore, decks, deck_roads, labels, cell_places, grass),
+                        (
+                            outcome,
+                            shore,
+                            decks,
+                            deck_roads,
+                            labels,
+                            cell_places,
+                            grass,
+                            CellTunnels {
+                                bores: cell_tunnels,
+                                mouths: cell_mouths,
+                            },
+                        ),
                     ));
                 }
             }));
@@ -998,7 +1081,10 @@ impl MapSurfaces {
         materials: &mut Assets<GroundMaterial>,
     ) -> Handle<GroundMaterial> {
         debug_assert!(
-            !matches!(group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)),
+            !matches!(
+                group,
+                SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_) | SurfaceGroup::TunnelDeck(_)
+            ),
             "road materials carry a texture and are created by update_map_surfaces"
         );
         self.materials
@@ -1108,6 +1194,7 @@ pub fn update_map_surfaces(
             stores.decks.clear();
             stores.grass.clear();
             stores.roads.clear();
+            stores.tunnels.clear();
         }
         return;
     }
@@ -1130,6 +1217,7 @@ pub fn update_map_surfaces(
         stores.decks.clear();
         stores.grass.clear();
         stores.roads.clear();
+        stores.tunnels.clear();
         stores.placeholders.clear_queue();
     }
     // So does the ground moving under them. The measured field lands a second or
@@ -1158,6 +1246,7 @@ pub fn update_map_surfaces(
         stores.decks.clear();
         stores.grass.clear();
         stores.roads.clear();
+        stores.tunnels.clear();
         stores.placeholders.clear_queue();
     }
 
@@ -1186,6 +1275,7 @@ pub fn update_map_surfaces(
         stores.decks.clear();
         stores.grass.clear();
         stores.roads.clear();
+        stores.tunnels.clear();
         stores.placeholders.clear_queue();
     }
 
@@ -1223,6 +1313,7 @@ pub fn update_map_surfaces(
         stores.decks.remove_cell(&c);
         stores.grass.remove_cell(&c);
         stores.roads.remove_cell(&c);
+        stores.tunnels.drop_cell(c);
         stores.placeholders.forget_cell(c);
     }
 
@@ -1278,7 +1369,9 @@ pub fn update_map_surfaces(
     }
     let deferred = ready.split_off(take);
     surfaces.stream.defer(deferred);
-    for (c, (outcome, shore, decks, deck_roads, street_names, mut cell_places, grass)) in ready {
+    for (c, (outcome, shore, decks, deck_roads, street_names, mut cell_places, grass, tunnels)) in
+        ready
+    {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.stream.forget(&c);
@@ -1349,6 +1442,8 @@ pub fn update_map_surfaces(
             }
         }
         stores.places.insert_cell(c, wx, wz, cell_places);
+        // Same origin, same lifetime, same retire path again.
+        stores.tunnels.insert_cell(c, Vec2::new(wx, wz), tunnels);
         // Same origin, same lifetime, same retire path — see `CellStores`.
         if let Some(area) = grass {
             stores.grass.insert_cell(c, Vec2::new(wx, wz), tile_m, area);
@@ -1411,7 +1506,7 @@ pub fn update_map_surfaces(
                     .id()
             } else if matches!(
                 sm.group,
-                SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)
+                SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_) | SurfaceGroup::TunnelDeck(_)
             ) {
                 // Roads and casings carry their place in the depth ladder per
                 // vertex (`systems::road_depth`), which is what settles the
@@ -1488,6 +1583,12 @@ pub fn update_map_surfaces(
                     .entity(id)
                     .insert((FurnitureSurface, furniture_lod.visibility()));
             }
+            if matches!(
+                sm.group,
+                SurfaceGroup::TunnelDeck(_) | SurfaceGroup::TunnelShell
+            ) {
+                commands.entity(id).insert(crate::components::TunnelSurface);
+            }
             entities.push(id);
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
@@ -1516,8 +1617,8 @@ pub fn update_map_surfaces(
 ///
 /// The height is `median(DSM over the deck) − median(DTM around it)`. The DTM is
 /// the right ground reference precisely *because* AHN cuts bridges out of it: what
-/// is left in the padded box is the terrain the structure stands over. When the
-/// layer is off, out of coverage, or has given up, the deck settles flat — which is
+/// is left in the padded box is the terrain the structure stands over. Out of
+/// coverage, or where the layer has given up, the deck settles flat — which is
 /// where every road already is, so the fallback is the old picture with the draw
 /// order finally right.
 pub fn resolve_bridge_decks(
@@ -1529,7 +1630,6 @@ pub fn resolve_bridge_decks(
     // plain material, and the carriageway standing on it is a road one.
     mut mats: SurfaceMaterials,
     bigspace: Query<Entity, With<BigSpace>>,
-    dl: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<TerrainField>,
     mut plates: ResMut<DeckPlates>,
 ) {
@@ -1555,7 +1655,7 @@ pub fn resolve_bridge_decks(
         let mut heights = Vec::with_capacity(pending.decks.len());
         let mut settled = true;
         for deck in &pending.decks {
-            match deck_height(&mut height, deck, c, tile_m, dl.height_enabled) {
+            match deck_height(&mut height, deck, c, tile_m) {
                 Some(h) => heights.push(h),
                 None => {
                     settled = false;
@@ -1711,13 +1811,7 @@ pub fn resolve_bridge_decks(
 /// answer for "no data here" as much as for a bridge that really is at street
 /// level — a Dutch canal bridge is exactly that, and telling the two apart would
 /// buy nothing, because both want a flat deck.
-fn deck_height(
-    layer: &mut HeightLayer,
-    deck: &BridgeDeck,
-    cell: Cell,
-    tile_m: f32,
-    enabled: bool,
-) -> Option<f32> {
+fn deck_height(layer: &mut HeightLayer, deck: &BridgeDeck, cell: Cell, tile_m: f32) -> Option<f32> {
     let to_rd = |p: [f32; 2]| -> [f64; 2] {
         let (lat, lng) = tile_frac_to_lat_lng(
             cell.0 as f64 + f64::from(p[0]) / f64::from(tile_m),
@@ -1750,7 +1844,7 @@ fn deck_height(
         cell.0 as f64 + f64::from(deck.min[0] + deck.max[0]) * 0.5 / f64::from(tile_m),
         cell.1 as f64 + f64::from(deck.min[1] + deck.max[1]) * 0.5 / f64::from(tile_m),
     );
-    if !enabled || !HeightLayer::covers(lat, lng) {
+    if !HeightLayer::covers(lat, lng) {
         return Some(0.0);
     }
 
@@ -1896,7 +1990,11 @@ fn build_deck_mesh(decks: &[BridgeDeck], heights: &[f32]) -> SurfaceMesh {
 fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
     if matches!(
         group,
-        SurfaceGroup::Canopy | SurfaceGroup::Trunk | SurfaceGroup::Furniture
+        SurfaceGroup::Canopy
+            | SurfaceGroup::Trunk
+            | SurfaceGroup::Furniture
+            | SurfaceGroup::TunnelDeck(_)
+            | SurfaceGroup::TunnelShell
     ) {
         return GroundDetailExtension {
             params: crate::systems::ground_detail::DETAIL_OPTED_OUT,
@@ -1919,7 +2017,9 @@ fn road_base_material(group: SurfaceGroup, images: &mut Assets<Image>) -> Standa
         // Roads sample their tarmac and markings from a generated surface; a
         // casing is the flat kerb band either side of it.
         base_color_texture: match group {
-            SurfaceGroup::Road(class) => Some(images.add(road_surface_image(class))),
+            SurfaceGroup::Road(class) | SurfaceGroup::TunnelDeck(class) => {
+                Some(images.add(road_surface_image(class)))
+            }
             _ => None,
         },
         // The roughness/metallic half of the same generated surface: polished
@@ -1930,7 +2030,9 @@ fn road_base_material(group: SurfaceGroup, images: &mut Assets<Image>) -> Standa
         // `systems::wet_surfaces` keeps working, because that lowers the same
         // scalar.
         metallic_roughness_texture: match group {
-            SurfaceGroup::Road(class) => Some(images.add(road_material_image(class))),
+            SurfaceGroup::Road(class) | SurfaceGroup::TunnelDeck(class) => {
+                Some(images.add(road_material_image(class)))
+            }
             _ => None,
         },
         perceptual_roughness: group.perceptual_roughness(),
@@ -2090,7 +2192,7 @@ pub fn apply_road_texture(
 ) {
     let want_textured = dl.roads_textured;
     for (group, handle) in &surfaces.road_materials {
-        let SurfaceGroup::Road(class) = *group else {
+        let (SurfaceGroup::Road(class) | SurfaceGroup::TunnelDeck(class)) = *group else {
             continue;
         };
         let has_texture = materials
@@ -2237,7 +2339,7 @@ fn build_mesh(
     // keeps the street.
     if matches!(
         sm.group,
-        SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)
+        SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_) | SurfaceGroup::TunnelDeck(_)
     ) {
         debug_assert_eq!(
             rungs.len(),
@@ -2351,6 +2453,15 @@ fn water_surface(
 /// Ground surfaces get a fresh normal from the field's own slope; the vegetation
 /// groups keep theirs (a tree's normals describe the tree, not the hill).
 #[allow(clippy::too_many_arguments)]
+/// How far to reach for the land *around* a bore when asking how much of its depth
+/// the measurement has already dug.
+///
+/// Wider than the cut and narrower than the block: a dual carriageway in a trench is
+/// about 25 m of road plus its walls, so a shorter reach samples the trench itself
+/// and finds no drop at all, while a much longer one starts finding the next street's
+/// embankment and lifting the bore out of its own hole.
+pub const TUNNEL_DATUM_M: f32 = 30.0;
+
 fn stand_on_terrain(
     group: SurfaceGroup,
     positions: &mut Vec<[f32; 3]>,
@@ -2362,10 +2473,54 @@ fn stand_on_terrain(
     origin: Vec2,
     terrain: &TerrainField,
 ) {
+    // A bore belongs here for the same reason a tree does, in both halves of what
+    // this flag means. Its walls are vertical, so re-deriving their normals from the
+    // ground's slope would light them as though they were the hillside they are cut
+    // into; and refining them against the field would split a wall quad into a grid
+    // to follow ground it is not standing on. Displacing every vertex by the field
+    // is still right, and is what carries the tunnel under a slope with it.
     let volumetric = matches!(
         group,
-        SurfaceGroup::Canopy | SurfaceGroup::Trunk | SurfaceGroup::Furniture
+        SurfaceGroup::Canopy
+            | SurfaceGroup::Trunk
+            | SurfaceGroup::Furniture
+            | SurfaceGroup::TunnelDeck(_)
+            | SurfaceGroup::TunnelShell
     );
+    // **A bore is not dug twice.** Its vertices are metres below the ground sheet,
+    // and over an open cut the measured ground sheet is already the trench floor —
+    // AHN's bare-ground model has no roof to hide the bottom of a cutting, so it
+    // measures it (the Groningen ring falls from +5.5 m to −3.6 m across forty
+    // metres). Displacing an invented seven metres by a measured nine puts the
+    // carriageway sixteen metres under the street, with the wall tops buried with
+    // it.
+    //
+    // So each vertex is lifted back by however much the measurement has *already*
+    // accounted for: `dug`, the drop from the land around the bore to the ground
+    // under it. Four cases and the same arithmetic settles all of them — a fully
+    // measured cut puts the deck exactly on the measured floor and the wall tops
+    // exactly at street level; a covered bore, where the laser sees the roof and
+    // `dug` is zero, keeps the full convention; a partly-measured cut absorbs what
+    // was measured and invents the rest; and outside the Netherlands the field is
+    // flat zero, so this is the old behaviour to the bit.
+    //
+    // The cap is the mesh's own deepest point rather than a constant, because a
+    // footway bore is `PATH_DEPTH_M` and a road bore is `LEVEL_DEPTH_M`. Per mesh,
+    // not per vertex: a merged shell mesh spanning bores of two depths takes the
+    // deeper cap, which over-lifts the shallower one by the difference.
+    if matches!(
+        group,
+        SurfaceGroup::TunnelDeck(_) | SurfaceGroup::TunnelShell
+    ) {
+        let cap = -positions.iter().map(|p| p[1]).fold(0.0_f32, f32::min);
+        for p in positions.iter_mut() {
+            let (x, z) = (origin.x + p[0], origin.y + p[2]);
+            let here = terrain.at(x, z);
+            let dug = (terrain.surrounding(x, z, TUNNEL_DATUM_M) - here).max(0.0);
+            p[1] += here + dug.min(cap);
+        }
+        return;
+    }
     // A viaduct wants *one* height for the whole thing: it is straight, and the
     // ground under it dipping into a valley is precisely what it does not do.
     if matches!(group, SurfaceGroup::BridgeDeck) {

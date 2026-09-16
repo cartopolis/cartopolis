@@ -422,6 +422,12 @@ pub mod palette {
     /// not step when the geometry goes away.
     pub const FOREST_CANOPIED: u32 = 0xB2_C6_A8;
     pub const SAND: u32 = 0xE6_DC_C2;
+    /// A tunnel's walls and roof. Darker than any surface in this palette on
+    /// purpose: it is the one thing here that is never lit by the sun, and a
+    /// concrete the tone of a pavement reads as a white box with a hole at each
+    /// end. The sky's ambient still reaches the open approach, so the mouth
+    /// stays lighter than the bore without anything modelling it.
+    pub const TUNNEL: u32 = 0x6E_6B_66;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
     /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
@@ -595,7 +601,7 @@ fn street_style(feature: &Feature, source_m: f32) -> (f32, u32, u32) {
 
 /// The OSM `layer` value of a feature (Shortbread carries it on `streets`), or 0.
 /// Vertical order for the raster paint: a flyover strokes over what it crosses.
-fn layer_of(feature: &Feature) -> i64 {
+pub(crate) fn layer_of(feature: &Feature) -> i64 {
     match feature.properties.as_ref().and_then(|p| p.get("layer")) {
         Some(Value::Int(v) | Value::SInt(v)) => *v,
         Some(Value::UInt(v)) => *v as i64,
@@ -759,7 +765,7 @@ fn render_mvt_culled(
         let street_order: Option<Vec<&Feature>> = matches!(draw, Draw::Streets { .. }).then(|| {
             let mut v: Vec<&Feature> = features
                 .iter()
-                .filter(|feat| !flag_of(feat, "tunnel"))
+                .filter(|feat| !crate::tunnels::underground(feat))
                 .collect();
             v.sort_by(|a, b| {
                 layer_of(a)
@@ -1173,6 +1179,18 @@ pub enum SurfaceGroup {
     /// keeps its generic green everywhere the register does not reach, which is
     /// every country but this one.
     Crop,
+    /// A tunnel's carriageway, under the ground rather than on it
+    /// ([`crate::tunnels`]). Its own group and not [`Self::Road`], because the
+    /// ground road sheet is a *coplanar* stack settled by
+    /// `systems::road_depth`'s rung ladder and this sheet is seven metres below
+    /// it: putting the two in one mesh would ask that ladder to arbitrate a
+    /// contest that does not exist, and would hand `road_stitch` a ribbon it
+    /// could cut a surface street out of.
+    TunnelDeck(RoadClass),
+    /// A tunnel's walls and roof. One group for both: they are the same concrete
+    /// and the same material, and splitting them would double the draw calls of
+    /// every bore to describe a difference nobody can see.
+    TunnelShell,
 }
 
 impl SurfaceGroup {
@@ -1200,6 +1218,9 @@ impl SurfaceGroup {
             Self::Paving => 0xFF_FF_FF,
             // …and the crop's own tone (`crate::crops::rgb`), same contract.
             Self::Crop => 0xFF_FF_FF,
+            // A tunnel's carriageway is a carriageway: same texture, same white.
+            Self::TunnelDeck(_) => 0xFF_FF_FF,
+            Self::TunnelShell => palette::TUNNEL,
             // Same colours the raster path cases with, so the two pipelines'
             // streets keep matching at the ring edge.
             Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
@@ -1248,6 +1269,15 @@ impl SurfaceGroup {
             // in the middle distance.
             Self::Road(_) | Self::RoadCasing(_) => GroundLayer::Road,
             Self::BridgeDeck => GroundLayer::BridgeDeck,
+            // A tunnel takes the standing rung for the same reason a tree does,
+            // and the reason is what the rung means rather than what it is called:
+            // these are not sheets in the coplanar stack. Every rung below exists
+            // to settle a fight between surfaces lying on one plane, and the one
+            // thing a bore is never coplanar with is the ground over it — it is
+            // metres away, which real depth separates on its own. So it wants no
+            // height offset (`is_sheet` is false above `Road`, so it gets none)
+            // and it is indifferent to the few depth units it inherits.
+            Self::TunnelDeck(_) | Self::TunnelShell => GroundLayer::Standing,
             Self::Canopy | Self::Trunk | Self::Furniture => GroundLayer::Standing,
         }
     }
@@ -2037,7 +2067,7 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 /// assignment is stable across a tile seam (each tile clips its own copy of a
 /// shared street, so no whole-line function can be), but a junction lives inside
 /// one tile far more often than on a seam.
-fn road_rung(class: RoadClass, width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
+pub(crate) fn road_rung(class: RoadClass, width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
     let tie = (tie_seed % ROAD_TIE_LAYERS as u64) as u32;
     if bridge {
         // The bridge block is laid out like a class block: its casing on the foot
@@ -2415,6 +2445,10 @@ pub fn tessellate_roads(
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
     let nodes = street_nodes(&features, scale);
+    // The tunnel-flagged ways that are really arcades through a building: they are
+    // on the ground and are drawn here, while the rest are bores and belong to
+    // `crate::tunnels`, which draws them under it.
+    let passages = crate::tunnels::building_passages(tile, &features);
     // Rungs for the lines that could otherwise land coplanar, decided across the
     // whole tile before any of them is built — see `assign_road_ties`.
     let ties = assign_road_ties(&features, scale);
@@ -2453,7 +2487,14 @@ pub fn tessellate_roads(
         (0..decks.len()).map(|_| Vec::new()).collect();
 
     for (fi, feature) in features.iter().enumerate() {
-        let Some((class, half)) = drawn_street(feature) else {
+        // A tunnel is refused by `drawn_street` because it is not on the ground —
+        // unless it is one of the arcades, which are.
+        let shape = match drawn_street(feature) {
+            Some(shape) => Some(shape),
+            None if passages.contains(&fi) => street_shape(feature),
+            None => None,
+        };
+        let Some((class, half)) = shape else {
             continue;
         };
         // Over a cell whose paving was surveyed, the footways, cycle paths and
@@ -2979,6 +3020,12 @@ pub fn extract_street_labels(tile: &TileData, tile_m: f32) -> Result<Vec<StreetL
         // `street_labels` carries no `bridge` attribute (checked 2026-08-20 on the
         // Groningen fixture), so a name on a viaduct cannot be told from one on the
         // road underneath it. See `docs/notes/grade-separation.md`.
+        // The bare `tunnel` flag here, not `tunnels::underground`: that predicate
+        // also reads `layer`, which Shortbread carries on `streets` and **not**
+        // on `street_labels`, so asking for it would answer "level 0" for every
+        // name in the layer and write every bore's name across the park over it.
+        // The cost is that an arcade's name is still withheld, which is the
+        // behaviour this layer has always had.
         if flag_of(feature, "tunnel") {
             continue;
         }
@@ -3077,9 +3124,22 @@ fn polyline_len(points: &[[f32; 2]]) -> f32 {
 /// refuses `subway` for the same reason; the `tunnel` flag is that rule applied to
 /// the kinds that can be either.
 pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
-    if flag_of(feature, "tunnel") {
+    // A bore leaves the ground sheet because it is not on the ground — it is
+    // drawn under it by `crate::tunnels`. An arcade through a building is
+    // flagged a tunnel too and *is* on the ground, so it stays here; see
+    // `tunnels::underground`.
+    if crate::tunnels::underground(feature) {
         return None;
     }
+    street_shape(feature)
+}
+
+/// A street's class and half-width, with no judgement about whether it is drawn.
+///
+/// The half of [`drawn_street`] that is about the road itself. Split out for the
+/// one caller that has to overrule the tunnel refusal above — `tessellate_roads`,
+/// which has the tile and so can tell an arcade from a bore.
+pub(crate) fn street_shape(feature: &Feature) -> Option<(RoadClass, f32)> {
     let kind = kind_of(feature).unwrap_or("");
     let flags = StreetFlags {
         oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
@@ -4086,7 +4146,7 @@ fn push_triangle_up(positions: &[[f32; 3]], indices: &mut Vec<u32>, a: u32, b: u
 /// stretch of road and the overlap z-fights. Clipping cuts each crossing at the
 /// border, so the two tiles' ribbons abut. A run breaks whenever a segment leaves
 /// and re-enters, which is why the result is a list rather than one line.
-fn clip_polyline(points: &[[f32; 2]], lo: f32, hi: f32) -> Vec<Vec<[f32; 2]>> {
+pub(crate) fn clip_polyline(points: &[[f32; 2]], lo: f32, hi: f32) -> Vec<Vec<[f32; 2]>> {
     let mut runs: Vec<Vec<[f32; 2]>> = Vec::new();
     let mut cur: Vec<[f32; 2]> = Vec::new();
     let flush = |cur: &mut Vec<[f32; 2]>, runs: &mut Vec<Vec<[f32; 2]>>| {
@@ -5641,7 +5701,7 @@ mod tests {
                     .then(|| {
                         let mut v: Vec<&Feature> = features
                             .iter()
-                            .filter(|feat| !flag_of(feat, "tunnel"))
+                            .filter(|feat| !crate::tunnels::underground(feat))
                             .collect();
                         v.sort_by(|a, b| {
                             layer_of(a)

@@ -423,13 +423,41 @@ impl InteriorFloors {
 /// Falling is not, because stepping off a landing is a fall — the avatar's own
 /// `vertical_velocity` cannot express it, since in the sim's flat frame it is
 /// standing on the ground the whole way down, so it is the ground that drops.
+/// The two things that decide how high the ground is, in one parameter.
+///
+/// Both movement systems were at Bevy's 16-parameter ceiling, and the floor is
+/// one question with two answers in it: the storey you are standing on and the
+/// bore you are standing in. Reading them together also makes it impossible to
+/// consult one without the other, which is the bug this would otherwise invite —
+/// a path that knows about upper floors and walks over an open tunnel.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Footing<'w> {
+    pub floors: Res<'w, InteriorFloors>,
+    pub bores: Res<'w, crate::systems::tunnels::TunnelBores>,
+    /// **Here so the floor agrees with the road that is drawn.** A bore's deck is
+    /// metres below the ground sheet, and over an open cut the measured ground
+    /// sheet already *is* the trench floor, so `map_geometry` lifts the drawn bore
+    /// back by what AHN accounts for. Without the same correction here the avatar
+    /// walks that far under the carriageway it can see.
+    pub terrain: Res<'w, crate::systems::terrain::TerrainField>,
+}
+
+impl Footing<'_> {
+    /// Advance the avatar's floor one frame. See [`step_floor_lift`].
+    pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32) -> f32 {
+        step_floor_lift(&self.floors, &self.bores, &self.terrain, avatar, at, dt)
+    }
+}
+
 pub fn step_floor_lift(
     floors: &InteriorFloors,
+    bores: &crate::systems::tunnels::TunnelBores,
+    terrain: &crate::systems::terrain::TerrainField,
     avatar: &mut AvatarState,
     at: Vec2,
     dt: f32,
 ) -> f32 {
-    let target = floors.support(at, avatar.floor_lift);
+    let target = support_level(floors, bores, terrain, at, avatar.floor_lift);
     if target >= avatar.floor_lift {
         avatar.floor_lift = target;
         avatar.floor_drop_speed = 0.0;
@@ -441,6 +469,47 @@ pub fn step_floor_lift(
         }
     }
     avatar.floor_lift
+}
+
+/// The ground level under `at`, given the level the avatar is already standing
+/// at: a building's storey above, a tunnel's carriageway below, or the ground.
+///
+/// **The ground wins wherever there is any.** That is what keeps the pavement over
+/// a bore walkable, and it is not the step rule doing the work — a deck seven
+/// metres down passes "no more than a step above you" trivially, so preferring a
+/// deck whenever one is under the point drops the avatar through the road. What
+/// separates the two cases is the *hole*: the approach at a portal is a stretch
+/// the ground has genuinely been taken away over
+/// (`cartopolis_geo::tunnels::cut_ground`), and only there is the floor whatever
+/// lies at the bottom of the cut. Walking down the ramp works because the ramp is
+/// inside that hole; walking over the covered bore works because it is not.
+///
+/// Going back up is the rule that was already here. From the deck, the ground over
+/// your head is more than [`STEP_UP_M`] above you and is refused exactly as an
+/// upper storey is refused from the floor below it, so the only way out is the
+/// ramp — which rises continuously, as the flight does.
+fn support_level(
+    floors: &InteriorFloors,
+    bores: &crate::systems::tunnels::TunnelBores,
+    terrain: &crate::systems::terrain::TerrainField,
+    at: Vec2,
+    from: f32,
+) -> f32 {
+    let deck = bores.deck_under_measured(at, |p| {
+        terrain.surrounding(p.x, p.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
+            - terrain.at(p.x, p.y)
+    });
+    if !bores.over_opening(at) {
+        let indoors = floors.support(at, from);
+        if indoors <= from + STEP_UP_M {
+            return indoors;
+        }
+    }
+    // Over the opening, or under a roof that cannot be climbed back onto: the
+    // bottom of the cut is the only floor there is. `from` where there is not
+    // even that — the avatar is against a wall it cannot be moved through, and
+    // holding its level beats dropping it through the world.
+    deck.unwrap_or(from)
 }
 
 /// The floor level of storey `k`, metres above the ground plane.
@@ -967,6 +1036,110 @@ impl RoomMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::terrain::TerrainField;
+
+    /// One straight bore 7 m down, 12 m wide, running east from the origin, with
+    /// its last 30 m open to the sky — the shape of a portal approach.
+    fn one_bore() -> crate::systems::tunnels::TunnelBores {
+        use cartopolis_geo::tunnels::Bore;
+        let mut bores = crate::systems::tunnels::TunnelBores::default();
+        let bore = Bore {
+            centre: vec![[0.0, 0.0], [200.0, 0.0]],
+            deck_y: vec![0.0, -7.0],
+            half_w: 6.0,
+            clearance: 4.8,
+        };
+        // The opening: a corridor over the first 30 m, where the rising deck
+        // leaves no room for a roof.
+        let mouth = vec![
+            [0.0, -6.5],
+            [30.0, -6.5],
+            [30.0, 6.5],
+            [0.0, 6.5],
+            [0.0, -6.5],
+        ];
+        bores.insert_cell(
+            (0, 0),
+            Vec2::ZERO,
+            crate::systems::tunnels::CellTunnels {
+                bores: vec![bore],
+                mouths: vec![mouth],
+            },
+        );
+        bores
+    }
+
+    /// The case that matters most, because getting it wrong drops people through
+    /// the road: a bore under your feet is not a reason to leave the pavement.
+    #[test]
+    fn the_ground_over_a_covered_bore_is_still_the_floor() {
+        let floors = InteriorFloors::default();
+        let bores = one_bore();
+        // 100 m along, the deck is 3.5 m down and roofed. Standing on the surface.
+        let level = support_level(
+            &floors,
+            &bores,
+            &TerrainField::default(),
+            Vec2::new(100.0, 0.0),
+            0.0,
+        );
+        assert_eq!(level, 0.0, "the pavement over a tunnel gave way");
+    }
+
+    /// …and the mirror of it, which is what makes the tunnel a place: from the
+    /// deck, the ground overhead is not something you can be lifted onto.
+    #[test]
+    fn the_ground_over_your_head_cannot_pick_you_up() {
+        let floors = InteriorFloors::default();
+        let bores = one_bore();
+        let level = support_level(
+            &floors,
+            &bores,
+            &TerrainField::default(),
+            Vec2::new(100.0, 0.0),
+            -3.5,
+        );
+        assert!(
+            level < -3.0,
+            "standing in the bore, the floor became the road above: {level}"
+        );
+    }
+
+    /// Over the opening the ground is a hole, so the floor is the bottom of the
+    /// cut — which is how the avatar gets down the ramp at all.
+    #[test]
+    fn over_the_opening_the_floor_is_the_deck() {
+        let floors = InteriorFloors::default();
+        let bores = one_bore();
+        let level = support_level(
+            &floors,
+            &bores,
+            &TerrainField::default(),
+            Vec2::new(20.0, 0.0),
+            0.0,
+        );
+        assert!(
+            (level - -0.7).abs() < 0.1,
+            "the ramp should be 0.7 m down 20 m in, got {level}"
+        );
+    }
+
+    /// Beside the carriageway, on ordinary ground, nothing has changed.
+    #[test]
+    fn beside_a_bore_the_floor_is_the_ground() {
+        let floors = InteriorFloors::default();
+        let bores = one_bore();
+        assert_eq!(
+            support_level(
+                &floors,
+                &bores,
+                &TerrainField::default(),
+                Vec2::new(100.0, 40.0),
+                0.0
+            ),
+            0.0
+        );
+    }
 
     fn square(size: f32) -> Vec<Vec2> {
         vec![

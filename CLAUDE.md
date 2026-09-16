@@ -163,6 +163,24 @@ about which platforms have it.
 
 ### Scripted screenshots (`--shot`)
 
+**Take them on the Deck when its slot is free.** The container has no GPU:
+measured over Groningen at 1600×900 on 2026-09-15, one frame costs **4.1 s** on
+Mesa lavapipe and a settled viewpoint costs about six minutes, most of which is
+the harness rendering hundreds of frames while the map streams. `deck-1` is an
+AMD Van Gogh and draws the same scene in milliseconds.
+
+```bash
+slot claim deck && slot sync
+slot run -- bash -lc 'WGPU_BACKEND=vulkan cargo run -p cartopolis -- --shot /tmp/x.png --at …'
+ssh host "ssh -p 2222 deck@10.44.0.2 'cat /tmp/x.png'" > /tmp/x.png   # the VPS is the only hop
+```
+
+Nothing in the agent container can reach the Deck directly; `slot` goes through
+the VPS for you. Fall back to a VPS slot when the Deck is asleep or held — for
+*geometry* that is fine, and for colour, exposure, bloom or lighting it is not
+evidence at all (`docs/notes/headless-shots-software-renderer.md`).
+
+
 Answer "what does it actually look like from there?" without flying the camera by
 hand (`crates/cartopolis/src/systems/dev/shot_harness.rs`):
 

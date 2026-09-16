@@ -1359,9 +1359,23 @@ pub fn send_network_intent(
     // every wall. The offline path (`avatar::handle_avatar_movement`) always
     // subtracted the terrain here, which is what made this one visibly a bug.
     let airborne = avatar_state.position.y > AIRBORNE_EPS;
-    if !avatar_state.is_flying && !airborne && layers.buildings_enabled && !colliders.is_empty() {
+    // Inside a bore the surface footprints are not what is around the avatar, and
+    // the bore's walls are — the same exclusive pair the offline path resolves
+    // (`avatar::handle_avatar_movement`, `systems::tunnels`). Steered rather than
+    // snapped for the reason this whole branch exists: the sim owns the position
+    // online and would overwrite a snap with the next snapshot.
+    let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
+    if !avatar_state.is_flying
+        && !airborne
+        && (in_bore || (layers.buildings_enabled && !colliders.is_empty()))
+    {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
-        let steered = colliders.steer_velocity(pos, Vec2::new(v.x, v.z));
+        let wish = Vec2::new(v.x, v.z);
+        let steered = if in_bore {
+            colliders.steer_in_bore(pos, wish)
+        } else {
+            colliders.steer_velocity(pos, wish)
+        };
         v.x = steered.x;
         v.z = steered.y;
     }

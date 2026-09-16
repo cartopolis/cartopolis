@@ -1,0 +1,138 @@
+# Known places to check that grade separation still works: tunnels under the
+# ground, bridges over it, and the two things that are neither.
+#
+#     cargo shots --manifest docs/grade-shots.toml            # everything
+#     cargo shots --manifest docs/grade-shots.toml --only tunnels
+#     cargo shots --manifest docs/grade-shots.toml --only bridges,crossroads
+#     # …or, with a client that stays up between views:
+#     slot claim deck && slot sync      # a VPS slot when the Deck is held
+#     slot run -- bash /tmp/cap.sh      # --shot-serve, see CLAUDE.md
+#
+# **Gate the subject, not the shot.** `--expect` is manifest-wide by design, and
+# a group is a set of views of one thing — so the assertions that hold for every
+# view in a group go on the command line beside `--only`, and the run exits
+# non-zero with the measured value beside the failure:
+#
+#     cargo shots --manifest docs/grade-shots.toml --only tunnels \
+#         --expect 'settled==true' --expect 'tunnel_bores>0' \
+#         --expect 'basemap_open_tiles>0' --expect 'tunnel_deck_m<=-6.0'
+#
+# The last two are the pair that a picture cannot separate: `tunnel_deck_m` says
+# the carriageway is genuinely down there rather than a stripe painted on the
+# grass, and `basemap_open_tiles` says the *raster* sheet has the hole too — cut
+# only the vector ground and the bore opens onto a painted copy of the same map.
+#
+# **Every camera here was computed, not guessed.** The first version of this file
+# was aimed by hand and half of it missed: one "bridge" view pointed north-west
+# into the city centre with the viaduct behind the camera, and it photographed a
+# perfectly nice piece of Groningen while saying nothing about a bridge. These
+# positions come from the ways themselves — an Overpass query for `tunnel` and
+# `bridge` highways over Groningen (2026-09-16), the bearing measured across the
+# midpoint of each way, and the camera placed back along the direction it is to
+# look in. A tunnel is viewed **along** its bore, which is the only angle that
+# sees into an open cut; a bridge is viewed **across** its deck, which is the
+# angle that shows it standing clear of what it crosses.
+
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1600x900"
+out_dir = "gpu"
+hide_ui = true
+mode = "free"
+# Mid-afternoon rather than noon: a seven-metre trench is most legible when the
+# sun puts one of its walls in shadow, which is exactly what noon does not do.
+time = 15.0
+fog = 0.0
+clouds = 0.0
+rain = 0.0
+settle = 3.0
+wait = 90.0
+
+# ─── Tunnels ────────────────────────────────────────────────────────────────
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-cut"
+description = "Groningen's southern ring beside DUO (Weg der Verenigde Naties, 171 m tagged tunnel), looking west along the bore. Expect a sunken carriageway with its markings in it, a retaining wall along each side, and the ground unbroken over the stretches with a building on top."
+at = [53.205934, 6.577048, 43]
+look = [-18.0, 249.0]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-mid"
+description = "The 242 m stretch of the same road, looking north-east along it — the opposite direction to `tunnel-ring-cut`, so the two together show both walls of one cut lit and shadowed."
+at = [53.205788, 6.577177, 58]
+look = [-20.0, 47.8]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-east"
+description = "The 232 m stretch at the Oosterpoort end. The longest single tagged run here, so this is the one that reaches full depth well clear of both ramps."
+at = [53.207901, 6.58047, 58]
+look = [-20.0, 52.1]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-julianaweg"
+description = "Julianaweg, 127 m: shorter than two 120 m ramps, so it never reaches `LEVEL_DEPTH_M`. Expect a dip that sags and comes back up, not a bore — the honest answer for an underpass and the one case the tiles cannot tell from a bore under a hill."
+at = [53.204316, 6.567396, 37]
+look = [-18.0, 221.9]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-underpass-cycle"
+description = "A 287 m pedestrian tunnel, looking south along it. `PATH_DEPTH_M` and `PATH_GRADE`, not the road's seven metres and 6 %."
+at = [53.211409, 6.564011, 30]
+look = [-16.0, 179.7]
+
+# ─── Bridges ────────────────────────────────────────────────────────────────
+
+[[shot]]
+group = "bridges"
+name = "bridge-emmaviaduct"
+description = "The Emmaviaduct over the rail yard, across the deck: the measured-height case (bridge-heights.md puts it at 6.6 m). Expect a deck standing clear of the tracks with its approaches meeting it, not a slab lying in the ground."
+at = [53.207566, 6.564711, 94]
+look = [-28.0, 251.8]
+
+[[shot]]
+group = "bridges"
+name = "bridge-laan-1940"
+description = "Laan 1940-1945, 569 m — the longest viaduct in the city and the one where a wrong height is most obvious, because the error accumulates along the whole deck."
+at = [53.210177, 6.541063, 114]
+look = [-26.0, 46.7]
+
+[[shot]]
+group = "bridges"
+name = "bridge-beneluxweg"
+description = "Beneluxweg, a 322 m viaduct on the eastern ring. A second long deck in a different part of the city, so a failure that depends on the cell rather than on the road shows up as one of the two."
+at = [53.215113, 6.595273, 101]
+look = [-26.0, 165.9]
+
+[[shot]]
+group = "bridges"
+name = "bridge-petersburgweg"
+description = "Sint-Petersburgweg, a 305 m cycle bridge: the narrow, light case, where a wrongly-lifted deck is most obvious against the path either side."
+at = [53.220085, 6.591845, 92]
+look = [-26.0, 155.1]
+
+# ─── Crossroads ─────────────────────────────────────────────────────────────
+#
+# Not grade separation, but the same machinery decides them: `road_stitch` cuts
+# the ribbons against each other so no two cover the same ground, and
+# `street_nodes` decides which arms are a junction and which merely cross. A
+# junction that goes wrong looks like a flap of tarmac or a seam that flickers.
+# These two are aimed by hand and were checked by eye, which is defensible for a
+# junction: it has no direction to look along.
+
+[[shot]]
+group = "crossroads"
+name = "crossroads-julianaplein"
+description = "Julianaplein, where the ring, the Hereweg and the tunnel approaches all meet — the busiest junction in the city and the one with grade separation on three sides. Verified 2026-09-16: the ribbons cut against each other cleanly."
+at = [53.2049288, 6.572469, 200]
+look = [-55.0, -30.0]
+
+[[shot]]
+group = "crossroads"
+name = "crossroads-europaplein"
+description = "Europaplein: a large signalised junction on flat ground, so anything odd here is the ribbon cut rather than a height."
+at = [53.2095754, 6.5842127, 180]
+look = [-50.0, -60.0]
