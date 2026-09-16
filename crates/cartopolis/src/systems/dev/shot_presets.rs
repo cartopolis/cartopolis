@@ -287,7 +287,6 @@ out = "img/custom.png"
         );
     }
 
-    #[test]
     /// `--only` takes a subject as readily as a name, which is what lets one
     /// manifest hold every place worth checking and a run ask for one subject.
     #[test]

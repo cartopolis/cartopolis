@@ -268,10 +268,6 @@ pub struct LayerPrefs {
     /// Off on a fresh install: the vehicle layer is opt-in.
     #[serde(default)]
     pub vehicles: bool,
-    /// The height layer (`systems::height`). Defaults to *off*, because it is a
-    /// request to a third party's service that only answers over the Netherlands.
-    #[serde(default)]
-    pub height: bool,
     /// The aerial basemap (`systems::aerial`). Off for the same reason, and one
     /// more: it replaces the drawn ground rather than adding to it.
     #[serde(default)]
@@ -1375,7 +1371,6 @@ mod tests {
         assert!(prefs.buildings, "buildings are on for a fresh install");
         assert!(prefs.map);
         assert!(prefs.vehicles, "what the file did say is kept");
-        assert!(!prefs.height, "the height layer is opt-in");
         assert!(!prefs.aerial, "the aerial basemap is opt-in");
         assert_eq!(
             prefs.street_labels,

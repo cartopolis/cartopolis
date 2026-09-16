@@ -54,7 +54,6 @@ use bevy::prelude::*;
 
 use crate::components::FreeCamera;
 use crate::grid::WORLD_CELL_EDGE;
-use crate::systems::data_layers::DataLayers;
 use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
 use crate::systems::map_stream::MapStream;
@@ -580,6 +579,33 @@ impl TerrainSnapshot {
         self.sample_grid(&self.samples, self.grid, wx, wz)
     }
 
+    /// The highest measured ground within `radius_m` of a point — the level of the
+    /// land *around* a hollow rather than in it.
+    ///
+    /// **This is how a tunnel stops being dug twice.** AHN measures the real thing:
+    /// where a Dutch tunnel is an open cut, the bare-ground model *is* the trench
+    /// floor (the Groningen ring falls from +5.5 m to −3.6 m across forty metres,
+    /// measured 2026-09-16). So the ground sheet a bore's depth is expressed
+    /// against is, at exactly those points, already seven metres down — and adding
+    /// an invented seven on top of a measured nine puts the carriageway sixteen
+    /// metres under the street. Subtracting what the measurement already accounts
+    /// for needs a datum that the hollow itself does not drag down, which is this.
+    ///
+    /// A ring of samples rather than a filtered grid: unlike
+    /// [`floor_at`](Self::floor_at), whose lower envelope every clipmap tile in the
+    /// pyramid reads on every rebuild, this is asked only by the bore meshes of the
+    /// cells that have one, so nine lookups at the call site beat a whole
+    /// max-filtered level nobody else wants.
+    #[must_use]
+    pub fn surrounding(&self, wx: f32, wz: f32, radius_m: f32) -> f32 {
+        let mut hi = self.at(wx, wz);
+        for k in 0..8 {
+            let a = std::f32::consts::TAU * k as f32 / 8.0;
+            hi = hi.max(self.at(wx + radius_m * a.cos(), wz + radius_m * a.sin()));
+        }
+        hi
+    }
+
     /// Longest ground edge to leave unsplit before displacement, for *this* field.
     ///
     /// Derived rather than constant because the field's resolution is a budget
@@ -749,13 +775,12 @@ pub fn update_terrain_field(
     mut field: ResMut<TerrainField>,
     mut height: ResMut<HeightLayer>,
     stream: Res<MapStream>,
-    dl: Res<DataLayers>,
     levels: Res<crate::systems::water_levels::WaterLevels>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
     };
-    if !dl.height_enabled || !HeightLayer::covers(anchor.0, anchor.1) {
+    if !HeightLayer::covers(anchor.0, anchor.1) {
         field.clear();
         // The layer can come back on without the anchor moving, so this is not an
         // answer for the current generation — leave `answered_gen` alone and let
@@ -1210,12 +1235,11 @@ pub fn update_fine_terrain(
     mut field: ResMut<TerrainField>,
     mut height: ResMut<HeightLayer>,
     stream: Res<MapStream>,
-    dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
     levels: Res<crate::systems::water_levels::WaterLevels>,
     camera: Query<(&big_space::prelude::GridCell, &Transform), With<FreeCamera>>,
 ) {
-    if !dl.height_enabled || !field.is_ready() {
+    if !field.is_ready() {
         field.clear_fine();
         return;
     }

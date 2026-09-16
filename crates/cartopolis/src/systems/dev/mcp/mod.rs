@@ -773,6 +773,9 @@ fn push_view(
         yaw_deg: req.yaw_deg,
         name: None,
         description: None,
+        // An editor aims with the camera it can see; `--look-at` is for a
+        // scripted run that cannot.
+        look_at: None,
         out: Some(req.out.clone().unwrap_or_else(|| default_out(index))),
         mode: Some(req.mode.clone()),
         hide_ui: req.hide_ui,

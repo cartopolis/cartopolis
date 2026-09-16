@@ -217,20 +217,120 @@ impl TunnelBores {
         self.cells.values().map(|c| c.bores.len()).sum()
     }
 
-    /// The deck level under `p`, metres relative to the ground sheet (so always
-    /// zero or below), or `None` where no bore's carriageway is under it.
+    /// The deck level under `p`, metres relative to the ground sheet, corrected
+    /// for the depth the terrain field has *already* dug. `None` where no bore's
+    /// carriageway is under it.
     ///
     /// The **deepest** answer wins where two bores overlap in plan — a tunnel
     /// under a tunnel is `layer=-2` under `layer=-1`, and the one you can be
     /// standing on is the lower.
+    ///
+    /// **The floor has to move with the road, and the road moves.** A bore's deck
+    /// is metres below the ground sheet, and over an open cut the measured ground
+    /// sheet is the trench floor — so `map_geometry::stand_on_terrain` lifts the
+    /// drawn bore back up by what AHN accounts for. A collision floor that did not
+    /// do the same arithmetic would leave the avatar walking nine metres under the
+    /// carriageway it can see, which is the kind of disagreement that reads as the
+    /// tunnel being broken rather than as two places computing one number.
+    ///
+    /// `dug` answers "how far below the land around it is the measured ground
+    /// here", and is a closure because this crate must not know about
+    /// `TerrainField` — the cap is per bore, so it is applied in here where the
+    /// bore is known rather than by the caller.
     #[must_use]
-    pub fn deck_under(&self, p: Vec2) -> Option<f32> {
+    pub fn deck_under_measured(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<f32> {
         let at = [p.x, p.y];
         self.cells
             .values()
             .flat_map(|c| c.bores.iter())
-            .filter_map(|b| b.deck_under(at))
+            .filter_map(|b| {
+                b.deck_under(at).map(|y| {
+                    let cap = -b.deck_y.iter().copied().fold(0.0_f32, f32::min);
+                    y + dug(p).max(0.0).min(cap)
+                })
+            })
             .min_by(f32::total_cmp)
+    }
+
+    /// The nearest bore to `p`: how far its carriageway is in plan, and how deep
+    /// the deck runs there. `None` when nothing is streamed.
+    ///
+    /// **`deepest_deck` is a global minimum and cannot answer "is *that* road
+    /// down there?"** It reports the deepest carriageway anywhere in the streamed
+    /// cells, so it reads −7.0 over a city with one tunnel in it while the road
+    /// in the frame sits on the ground — which is how a capture came to be
+    /// described as showing a trench when it showed a surface street beside one.
+    /// This answers for a place.
+    #[must_use]
+    pub fn nearest_bore(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<(f32, f32)> {
+        let at = [p.x, p.y];
+        self.cells
+            .values()
+            .flat_map(|c| c.bores.iter())
+            .map(|b| {
+                let (d, y) = b.distance_to(at);
+                // The *drawn* depth, not the tessellator's convention. Reporting
+                // the raw `deck_y` was a metric that disagreed with the picture
+                // beside it — it read −7.00 over a cut the measured ground puts
+                // nine metres down — and a number that contradicts the capture it
+                // is attached to is worse than no number.
+                let cap = -b.deck_y.iter().copied().fold(0.0_f32, f32::min);
+                (d, y + dug(p).max(0.0).min(cap))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    /// The nearest point where a tunnel goes under, and the compass heading the
+    /// road is travelling there. Anchored world XZ, degrees clockwise from north.
+    ///
+    /// **This exists because aiming a camera at a tunnel by hand does not work.**
+    /// Over two days, cameras placed by converting the tessellator's tile-local
+    /// metres into a latitude and longitude landed 28, 42, 56, 62, 64, 103, 111,
+    /// 122, 136, 140 and 178 metres from the nearest tunnel — a park, a rail yard
+    /// and the side of an office block, each costing minutes of software
+    /// rendering to discover. Two hand-written conversions disagreed with each
+    /// other and both disagreed with the client. The client has never been
+    /// confused about where these are: they are in the same frame as the avatar.
+    /// So it answers, and `geo_nav::world_to_lat_lng` — the conversion everything
+    /// else already trusts — turns it into something to type into `--at`.
+    ///
+    /// The entrance is the first vertex deep enough to take a roof, not the middle
+    /// of an opening: an opening is the stretch that has *not* reached depth, so
+    /// its centre is a road at lawn level, which is what four overhead captures
+    /// faithfully photographed.
+    #[must_use]
+    pub fn nearest_entrance(&self, from: Vec2) -> Option<(Vec2, f32)> {
+        let mut best: Option<(f32, Vec2, f32)> = None;
+        for b in self.cells.values().flat_map(|c| c.bores.iter()) {
+            let deepest = b.deck_y.iter().copied().fold(0.0_f32, f32::min);
+            if deepest > -1.0 {
+                continue;
+            }
+            let full = deepest + cartopolis_geo::tunnels::ROOF_AT_DEPTH_M;
+            let Some(k) = b.deck_y.iter().position(|&y| y <= full) else {
+                continue;
+            };
+            if k == 0 || k >= b.centre.len() {
+                continue;
+            }
+            let (a, c) = (b.centre[k - 1], b.centre[k]);
+            let at = Vec2::new(c[0], c[1]);
+            // **The deepest tunnel, not the closest one.** Nearest picked a 41 m
+            // service tunnel in a terraced street and reported it as *the*
+            // entrance, which is true and useless: what a capture wants is the
+            // road tunnel, and depth is what tells a road tunnel from a duct. Ties
+            // go to the nearer of two, so this is still stable and still local.
+            let d = deepest * 1000.0 + at.distance(from);
+            if best.is_none_or(|(bd, _, _)| d < bd) {
+                // +z is south, so north is −dz.
+                let heading = (c[0] - a[0])
+                    .atan2(a[1] - c[1])
+                    .to_degrees()
+                    .rem_euclid(360.0);
+                best = Some((d, at, heading));
+            }
+        }
+        best.map(|(_, at, h)| (at, h))
     }
 
     /// True where the ground has been taken away — the open approach at a portal.

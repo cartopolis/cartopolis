@@ -434,23 +434,30 @@ impl InteriorFloors {
 pub struct Footing<'w> {
     pub floors: Res<'w, InteriorFloors>,
     pub bores: Res<'w, crate::systems::tunnels::TunnelBores>,
+    /// **Here so the floor agrees with the road that is drawn.** A bore's deck is
+    /// metres below the ground sheet, and over an open cut the measured ground
+    /// sheet already *is* the trench floor, so `map_geometry` lifts the drawn bore
+    /// back by what AHN accounts for. Without the same correction here the avatar
+    /// walks that far under the carriageway it can see.
+    pub terrain: Res<'w, crate::systems::terrain::TerrainField>,
 }
 
 impl Footing<'_> {
     /// Advance the avatar's floor one frame. See [`step_floor_lift`].
     pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32) -> f32 {
-        step_floor_lift(&self.floors, &self.bores, avatar, at, dt)
+        step_floor_lift(&self.floors, &self.bores, &self.terrain, avatar, at, dt)
     }
 }
 
 pub fn step_floor_lift(
     floors: &InteriorFloors,
     bores: &crate::systems::tunnels::TunnelBores,
+    terrain: &crate::systems::terrain::TerrainField,
     avatar: &mut AvatarState,
     at: Vec2,
     dt: f32,
 ) -> f32 {
-    let target = support_level(floors, bores, at, avatar.floor_lift);
+    let target = support_level(floors, bores, terrain, at, avatar.floor_lift);
     if target >= avatar.floor_lift {
         avatar.floor_lift = target;
         avatar.floor_drop_speed = 0.0;
@@ -484,10 +491,14 @@ pub fn step_floor_lift(
 fn support_level(
     floors: &InteriorFloors,
     bores: &crate::systems::tunnels::TunnelBores,
+    terrain: &crate::systems::terrain::TerrainField,
     at: Vec2,
     from: f32,
 ) -> f32 {
-    let deck = bores.deck_under(at);
+    let deck = bores.deck_under_measured(at, |p| {
+        terrain.surrounding(p.x, p.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
+            - terrain.at(p.x, p.y)
+    });
     if !bores.over_opening(at) {
         let indoors = floors.support(at, from);
         if indoors <= from + STEP_UP_M {
@@ -1025,6 +1036,7 @@ impl RoomMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::terrain::TerrainField;
 
     /// One straight bore 7 m down, 12 m wide, running east from the origin, with
     /// its last 30 m open to the sky — the shape of a portal approach.
@@ -1064,7 +1076,13 @@ mod tests {
         let floors = InteriorFloors::default();
         let bores = one_bore();
         // 100 m along, the deck is 3.5 m down and roofed. Standing on the surface.
-        let level = support_level(&floors, &bores, Vec2::new(100.0, 0.0), 0.0);
+        let level = support_level(
+            &floors,
+            &bores,
+            &TerrainField::default(),
+            Vec2::new(100.0, 0.0),
+            0.0,
+        );
         assert_eq!(level, 0.0, "the pavement over a tunnel gave way");
     }
 
@@ -1074,7 +1092,13 @@ mod tests {
     fn the_ground_over_your_head_cannot_pick_you_up() {
         let floors = InteriorFloors::default();
         let bores = one_bore();
-        let level = support_level(&floors, &bores, Vec2::new(100.0, 0.0), -3.5);
+        let level = support_level(
+            &floors,
+            &bores,
+            &TerrainField::default(),
+            Vec2::new(100.0, 0.0),
+            -3.5,
+        );
         assert!(
             level < -3.0,
             "standing in the bore, the floor became the road above: {level}"
@@ -1087,7 +1111,13 @@ mod tests {
     fn over_the_opening_the_floor_is_the_deck() {
         let floors = InteriorFloors::default();
         let bores = one_bore();
-        let level = support_level(&floors, &bores, Vec2::new(20.0, 0.0), 0.0);
+        let level = support_level(
+            &floors,
+            &bores,
+            &TerrainField::default(),
+            Vec2::new(20.0, 0.0),
+            0.0,
+        );
         assert!(
             (level - -0.7).abs() < 0.1,
             "the ramp should be 0.7 m down 20 m in, got {level}"
@@ -1100,7 +1130,13 @@ mod tests {
         let floors = InteriorFloors::default();
         let bores = one_bore();
         assert_eq!(
-            support_level(&floors, &bores, Vec2::new(100.0, 40.0), 0.0),
+            support_level(
+                &floors,
+                &bores,
+                &TerrainField::default(),
+                Vec2::new(100.0, 40.0),
+                0.0
+            ),
             0.0
         );
     }

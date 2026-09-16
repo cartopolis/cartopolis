@@ -224,17 +224,11 @@ struct Cli {
     #[arg(long)]
     flicker: bool,
 
-    /// Switch the **height layer** on for this run (`systems::height`): measured
-    /// AHN elevation from PDOK, over the Netherlands only. Off by default because
-    /// it reaches a third party's service; this is how a scripted capture opts in,
-    /// since a headless run has no Layers panel to tick.
-    #[arg(long)]
-    height: bool,
-
     /// Switch the **aerial basemap** on for this run (`systems::aerial`): PDOK's
     /// Luchtfoto RGB under the clipmap instead of the drawn map, over the
-    /// Netherlands only. Same shape and same reason as `--height` — a headless
-    /// run has no Layers panel to tick. `CARTO_AERIAL_LAYER` picks the layer.
+    /// Netherlands only. A headless run has no Layers panel to tick, and unlike
+    /// the measured ground this one *replaces* the drawn map rather than adding
+    /// to it, so it stays opt-in. `CARTO_AERIAL_LAYER` picks the layer.
     #[arg(long)]
     aerial: bool,
 
@@ -2077,12 +2071,11 @@ fn run_client() {
         .init_resource::<systems::water_levels::WaterLevels>()
         .init_resource::<systems::terrain::TerrainField>()
         .insert_resource({
-            // `--height` and `--aerial` are the only way into those two layers in a
-            // scripted run; an interactive session ticks them in the Layers panel
-            // (or restores them from `data/user.json`, which `apply_prefs` does
-            // after this).
+            // `--aerial` is the only way into that layer in a scripted run; an
+            // interactive session ticks it in the Layers panel (or restores it
+            // from `data/user.json`, which `apply_prefs` does after this). The
+            // measured ground needs no such switch any more — it is always on.
             let mut layers = systems::data_layers::DataLayers::default();
-            layers.height_enabled = cli.height;
             layers.aerial_enabled = cli.aerial;
             layers
         })
@@ -2289,6 +2282,16 @@ fn run_client() {
                     systems::shot_harness::hold_scripted_camera_mode
                         .after(systems::free_camera::camera_mode_toggle)
                         .before(avatar::handle_avatar_movement)
+                        .run_if(systems::shot_harness::shot_in_progress),
+                    // `--look-at`: aim at a place rather than at an angle. After
+                    // the teleport has put the camera somewhere and before the
+                    // camera system reads the rotation, and every frame, because
+                    // the terrain under both ends lands a second after the anchor.
+                    // Gated for the reason the mode hold is: an idle camera
+                    // operator's camera belongs to the person at the keyboard.
+                    systems::shot_harness::aim_scripted_camera
+                        .after(systems::geo_nav::apply_teleport)
+                        .before(systems::free_camera::camera_controls)
                         .run_if(systems::shot_harness::shot_in_progress),
                     // Ungated, and it has to be: it owns the advance past the last
                     // viewpoint — which is the edge that parks a live run and the

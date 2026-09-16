@@ -73,6 +73,45 @@ Three things follow:
   cut is held at full depth (so the two halves meet flush at the border), and an
   end another tunnel run also ends on is a tagging split, not a mouth.
 
+## A tunnel is covered, and it took two wrong rules to get there
+
+The roof rule went wrong twice, and both times the symptom was the same picture:
+a long open ditch where a tunnel should be.
+
+**First: roofing only under a building.** The tiles do not say where a lid is, and
+they do say where a building is, so a way under a building was treated as covered
+and everything else as an open cut. Groningen's ring runs under a *park*, so
+nothing was ever covered. The observation that pushed me there — roofing by depth
+"buries the whole ring, with nothing to see" — is not a bug report. It is what a
+tunnel looks like from above. Depth decides now; the buildings layer only tells an
+arcade from a real tunnel.
+
+**Second: a dual carriageway could never surface.** A road only opens where
+`portal_ends` decides it genuinely ends, and that test asked "is there another
+tunnel's end within 25 m pointing the same way?" — meaning a way somebody had split
+in two. The two halves of a dual carriageway end *side by side* at the entrance,
+about eighteen metres apart, pointing the same way. Each saw the other, both were
+called splits, and neither got an entrance: measured over Groningen, **every 7 m
+road tunnel in the streamed map was sealed from edge to edge, with no entrance
+anywhere**. Beside is not beyond, and the test now requires the offset between the
+two ends to lie *along* the road. Same tile after the fix: four entrances on the
+deep roads, 6.0–6.7 m down, in opposite-heading pairs.
+
+## Known wrong: the lid floats over its own ground
+
+The measured ground says that road is in a nine-metre open trench, because it was
+one when AHN flew it. The tag says tunnel, so it now gets a lid at street level.
+The ground beside it follows the measurement down and the lid does not, so the
+covered stretch reads as a raised platform rather than as ground you can walk over.
+
+Two ways to settle it and it is a question about sources, not a bug:
+
+- **Believe the tag** and raise the ground over the covered stretch to the
+  surrounding level, so the lid is flush. The Ring Zuid lid is newer than the
+  elevation survey, which argues for this.
+- **Believe the measurement** and only cover where the ground above is genuinely
+  continuous. Truer to the laser, and gives back the ditch.
+
 ## The roof stops where it would surface, and that is the opening
 
 There is no "how long is the mouth" constant. The ceiling is drawn wherever it
@@ -169,6 +208,33 @@ follow:
   the coarse levels cover the whole city. `TunnelBores::mouth_digest` is quiet
   unless this tile's own hole moved.
 
+## Photographing one is harder than building one
+
+Worth knowing before the next person spends a day on it. Across this work,
+**eleven cameras aimed at a tunnel missed** — by 28, 42, 56, 62, 64, 103, 111,
+122, 136, 140 and 178 metres — landing on a park, a rail yard and the side of an
+office block, each costing minutes of software rendering to discover. Three causes,
+all now removed:
+
+- **Hand-converting the tessellator's tile-local metres** into a latitude and
+  longitude. Two hand-written conversions disagreed with each other and both
+  disagreed with the client. `TunnelBores::nearest_entrance` answers instead, and
+  `tunnel_entrance_lat`/`lng`/`heading` in `--dump-state` is the answer.
+- **Aiming by pitch at a shallow angle.** What lands in frame is
+  `altitude / tan(pitch)` metres ahead, and `altitude` is above the map anchor's
+  ground while the subject stands on the measured ground; with the terrain layer
+  on those differ by metres, and at six degrees three metres of error moves the aim
+  thirty. `--look-at lat,lng` computes the direction from where the camera really
+  is (`shot_harness::aim_scripted_camera`).
+- **Aiming at the middle of an opening**, which is by definition the stretch that
+  has *not* reached depth — a road at lawn level.
+
+`tunnel_ahead_m` is the check: zero means the capture is pointed at a tunnel, and
+anything else means the picture is of something else. And the pictures are barely
+evidence anyway on a software rasteriser at handset quality — the profile printed
+by `tunnels::tests::dump_the_fixture_bores` says more in ten lines than any of
+them did.
+
 ## What is not done
 
 - **Nothing collides with the roof**, so flying up through it works.
@@ -176,8 +242,47 @@ follow:
   `streets` features and never knew about the tunnel flag either way, so a route
   through one is drawn on the surface (`navigation.rs` says why a negative grade
   is not pushed down).
-- **Depth is a constant.** AHN measures the real trench where a Dutch tunnel is an
-  open cut — the Groningen ring reads −7.6 m NAP against +2.3 m either side
-  (2026-09-14) — so the measured field could supply the depth over the
-  Netherlands. It would also double-count wherever the terrain already dug the
-  cut, which is the thing to work out before wiring it.
+- **Depth is a constant, and it need not be.** See below.
+
+## Everything vertical here is invented, and two sources we already stream could replace it
+
+The tiles carry one bit. So the plan position of a bore is exact and *every*
+vertical fact in the picture is a convention: `LEVEL_DEPTH_M` (7 m), `MAX_GRADE`
+(6 %), `CLEARANCE_M`, and "roof it where a building is above". That is a
+plausible tunnel, not that tunnel, and it is why a capture of one is
+unconvincing however the camera is aimed.
+
+Both halves of the real answer were checked on 2026-09-16 and both exist:
+
+**The survey publishes the footprint.** `tunneldeel` is one of the BGT's 49
+collections — the covered section as a *polygon*, with `relatieve_hoogteligging`
+giving the layer ordering the tiles lack. Seven live polygons over the Groningen
+ring box, all at level −1; one is 183 × 103 m centred on 53.20536, 6.57503, which
+is the DUO cut. That replaces `under_a_building` — a heuristic standing in for a
+surveyed fact — with the fact. `overbruggingsdeel` beside it is the same answer
+for [bridge-heights.md](bridge-heights.md). It needs a fetch in cartopy's
+pipeline, i.e. another hand-synced seam
+([where-the-map-data-is-built.md](where-the-map-data-is-built.md)).
+
+**AHN measures the trench, at half a metre.** `dtm_05m` over that same polygon,
+54,291 valid samples in a 120 m box:
+
+```
+min -3.64   median 5.39   max 11.05  (m NAP)      range 14.69 m
+cross-section every 4 m:  5.5  -0.9  -0.4  -0.1  0.9  2.4  2.6  3.4  3.9  4.8  5.3  5.5 …
+```
+
+The ramp is *in the data*: the ground falls from +5.5 m to −0.9 m over about
+forty metres and bottoms at −3.6 m. About nine metres of cut, against the seven
+that is hard-coded.
+
+**Which suggests deleting the constant rather than tuning it.** In an open cut a
+tunnel road is not a special object — it is an ordinary road lying on ground that
+happens to be nine metres down. So the measured terrain should carry it and
+`depth_at` should not run there at all, leaving a convention only under the
+surveyed covered footprint, where the laser sees the roof and no instrument can
+see the floor. That also disposes of the double-counting this bullet used to
+warn about: today the terrain would dig the cut *and* the deck would be sunk into
+it. Two things are missing for it: the `tunneldeel` fetch above, and the fine
+half-metre AHN tier feeding **geometry** rather than only the shading normal it
+feeds today (`systems::ground_detail`).

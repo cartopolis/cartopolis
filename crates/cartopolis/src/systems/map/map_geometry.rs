@@ -994,9 +994,16 @@ fn spawn_geometry_task(
                                 // The parcels go in as the third keep-out: OSM
                                 // draws farmland as grass, so without the
                                 // register a ploughed field grows a lawn.
-                                let area = cartopolis_geo::turf::GrassArea::build(
+                                let mut area = cartopolis_geo::turf::GrassArea::build(
                                     &tile, tile_m, &parcels,
                                 );
+                                // …and the tunnel openings as the fourth. The
+                                // blades are generated from this cell's grass
+                                // polygons rather than placed on the ground mesh,
+                                // so the hole cut in that mesh does not reach
+                                // them: without this a park whose tile says grass
+                                // across the block grows a lawn over the trench.
+                                area.block_mouths(&cell_mouths);
                                 if !area.is_empty() {
                                     grass = Some(area);
                                 }
@@ -1576,6 +1583,12 @@ pub fn update_map_surfaces(
                     .entity(id)
                     .insert((FurnitureSurface, furniture_lod.visibility()));
             }
+            if matches!(
+                sm.group,
+                SurfaceGroup::TunnelDeck(_) | SurfaceGroup::TunnelShell
+            ) {
+                commands.entity(id).insert(crate::components::TunnelSurface);
+            }
             entities.push(id);
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
@@ -1604,8 +1617,8 @@ pub fn update_map_surfaces(
 ///
 /// The height is `median(DSM over the deck) − median(DTM around it)`. The DTM is
 /// the right ground reference precisely *because* AHN cuts bridges out of it: what
-/// is left in the padded box is the terrain the structure stands over. When the
-/// layer is off, out of coverage, or has given up, the deck settles flat — which is
+/// is left in the padded box is the terrain the structure stands over. Out of
+/// coverage, or where the layer has given up, the deck settles flat — which is
 /// where every road already is, so the fallback is the old picture with the draw
 /// order finally right.
 pub fn resolve_bridge_decks(
@@ -1617,7 +1630,6 @@ pub fn resolve_bridge_decks(
     // plain material, and the carriageway standing on it is a road one.
     mut mats: SurfaceMaterials,
     bigspace: Query<Entity, With<BigSpace>>,
-    dl: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<TerrainField>,
     mut plates: ResMut<DeckPlates>,
 ) {
@@ -1643,7 +1655,7 @@ pub fn resolve_bridge_decks(
         let mut heights = Vec::with_capacity(pending.decks.len());
         let mut settled = true;
         for deck in &pending.decks {
-            match deck_height(&mut height, deck, c, tile_m, dl.height_enabled) {
+            match deck_height(&mut height, deck, c, tile_m) {
                 Some(h) => heights.push(h),
                 None => {
                     settled = false;
@@ -1799,13 +1811,7 @@ pub fn resolve_bridge_decks(
 /// answer for "no data here" as much as for a bridge that really is at street
 /// level — a Dutch canal bridge is exactly that, and telling the two apart would
 /// buy nothing, because both want a flat deck.
-fn deck_height(
-    layer: &mut HeightLayer,
-    deck: &BridgeDeck,
-    cell: Cell,
-    tile_m: f32,
-    enabled: bool,
-) -> Option<f32> {
+fn deck_height(layer: &mut HeightLayer, deck: &BridgeDeck, cell: Cell, tile_m: f32) -> Option<f32> {
     let to_rd = |p: [f32; 2]| -> [f64; 2] {
         let (lat, lng) = tile_frac_to_lat_lng(
             cell.0 as f64 + f64::from(p[0]) / f64::from(tile_m),
@@ -1838,7 +1844,7 @@ fn deck_height(
         cell.0 as f64 + f64::from(deck.min[0] + deck.max[0]) * 0.5 / f64::from(tile_m),
         cell.1 as f64 + f64::from(deck.min[1] + deck.max[1]) * 0.5 / f64::from(tile_m),
     );
-    if !enabled || !HeightLayer::covers(lat, lng) {
+    if !HeightLayer::covers(lat, lng) {
         return Some(0.0);
     }
 
@@ -2447,6 +2453,15 @@ fn water_surface(
 /// Ground surfaces get a fresh normal from the field's own slope; the vegetation
 /// groups keep theirs (a tree's normals describe the tree, not the hill).
 #[allow(clippy::too_many_arguments)]
+/// How far to reach for the land *around* a bore when asking how much of its depth
+/// the measurement has already dug.
+///
+/// Wider than the cut and narrower than the block: a dual carriageway in a trench is
+/// about 25 m of road plus its walls, so a shorter reach samples the trench itself
+/// and finds no drop at all, while a much longer one starts finding the next street's
+/// embankment and lifting the bore out of its own hole.
+pub const TUNNEL_DATUM_M: f32 = 30.0;
+
 fn stand_on_terrain(
     group: SurfaceGroup,
     positions: &mut Vec<[f32; 3]>,
@@ -2472,6 +2487,40 @@ fn stand_on_terrain(
             | SurfaceGroup::TunnelDeck(_)
             | SurfaceGroup::TunnelShell
     );
+    // **A bore is not dug twice.** Its vertices are metres below the ground sheet,
+    // and over an open cut the measured ground sheet is already the trench floor —
+    // AHN's bare-ground model has no roof to hide the bottom of a cutting, so it
+    // measures it (the Groningen ring falls from +5.5 m to −3.6 m across forty
+    // metres). Displacing an invented seven metres by a measured nine puts the
+    // carriageway sixteen metres under the street, with the wall tops buried with
+    // it.
+    //
+    // So each vertex is lifted back by however much the measurement has *already*
+    // accounted for: `dug`, the drop from the land around the bore to the ground
+    // under it. Four cases and the same arithmetic settles all of them — a fully
+    // measured cut puts the deck exactly on the measured floor and the wall tops
+    // exactly at street level; a covered bore, where the laser sees the roof and
+    // `dug` is zero, keeps the full convention; a partly-measured cut absorbs what
+    // was measured and invents the rest; and outside the Netherlands the field is
+    // flat zero, so this is the old behaviour to the bit.
+    //
+    // The cap is the mesh's own deepest point rather than a constant, because a
+    // footway bore is `PATH_DEPTH_M` and a road bore is `LEVEL_DEPTH_M`. Per mesh,
+    // not per vertex: a merged shell mesh spanning bores of two depths takes the
+    // deeper cap, which over-lifts the shallower one by the difference.
+    if matches!(
+        group,
+        SurfaceGroup::TunnelDeck(_) | SurfaceGroup::TunnelShell
+    ) {
+        let cap = -positions.iter().map(|p| p[1]).fold(0.0_f32, f32::min);
+        for p in positions.iter_mut() {
+            let (x, z) = (origin.x + p[0], origin.y + p[2]);
+            let here = terrain.at(x, z);
+            let dug = (terrain.surrounding(x, z, TUNNEL_DATUM_M) - here).max(0.0);
+            p[1] += here + dug.min(cap);
+        }
+        return;
+    }
     // A viaduct wants *one* height for the whole thing: it is straight, and the
     // ground under it dipping into a valley is precisely what it does not do.
     if matches!(group, SurfaceGroup::BridgeDeck) {

@@ -227,6 +227,38 @@ impl Bore {
         best.map(|(_, y)| y)
     }
 
+    /// How far `p` is from this bore's carriageway in plan, and the deck level
+    /// there. Zero distance means `p` is over it.
+    ///
+    /// **This is the question a picture of a tunnel cannot answer.** A road seen
+    /// from a low oblique is foreshortened into a band a few pixels deep, and a
+    /// band seven metres down looks very much like a band on the ground —
+    /// especially beside a second, ordinary road running parallel, which is
+    /// exactly what a tunnel approach is. So a capture that seems to show a
+    /// sunken carriageway and one that is pointed fifty metres off it at an
+    /// ordinary street are the same picture. The distance separates them, and
+    /// unlike [`Self::deck_under`] it answers for a point that is *not* over the
+    /// bore, which is the case that needs reporting.
+    #[must_use]
+    pub fn distance_to(&self, p: [f32; 2]) -> (f32, f32) {
+        let mut best = (f32::MAX, 0.0);
+        for i in 0..self.centre.len().saturating_sub(1) {
+            let (a, b) = (self.centre[i], self.centre[i + 1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len_sq = dx * dx + dy * dy;
+            if len_sq <= 1e-9 {
+                continue;
+            }
+            let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+            let d = (p[0] - (a[0] + dx * t)).hypot(p[1] - (a[1] + dy * t));
+            if d < best.0 {
+                let y = self.deck_y[i] + (self.deck_y[i + 1] - self.deck_y[i]) * t;
+                best = ((d - self.half_w).max(0.0), y);
+            }
+        }
+        best
+    }
+
     /// The carriageway's plan outline, closed.
     ///
     /// The same offsets the walls were built on, so the surface the avatar is
@@ -317,10 +349,7 @@ pub fn building_passages(
             let pts: Vec<[f32; 2]> = ls.0.iter().map(|c| [c.x, c.y]).collect();
             for p in sample_points(&pts) {
                 tested += 1;
-                if rings
-                    .iter()
-                    .any(|(b, ring)| point_in_bbox(p, b) && point_in_ring(p, ring))
-                {
+                if under_a_building(&rings, p) {
                     inside += 1;
                 }
             }
@@ -395,7 +424,7 @@ pub fn in_a_mouth(mouths: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
 }
 
 /// Even-odd point in ring.
-fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
+pub(crate) fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
     let mut inside = false;
     let mut j = ring.len() - 1;
     for i in 0..ring.len() {
@@ -509,8 +538,29 @@ fn portal_ends(lines: &[Vec<[f32; 2]>]) -> Vec<PortalEnds> {
                         return false;
                     };
                     other.iter().any(|(q, e)| {
-                        (p[0] - q[0]).hypot(p[1] - q[1]) <= JOIN_RADIUS_M
-                            && (d[0] * e[0] + d[1] * e[1]).abs() >= JOIN_COS
+                        let gap = (q[0] - p[0]).hypot(q[1] - p[1]);
+                        if gap > JOIN_RADIUS_M || (d[0] * e[0] + d[1] * e[1]).abs() < JOIN_COS {
+                            return false;
+                        }
+                        // **Beside is not the same as beyond**, and conflating them
+                        // is what stopped a dual carriageway ever reaching the
+                        // surface. The two halves of one end side by side at the
+                        // entrance, about eighteen metres apart and pointing the
+                        // same way — so each saw the other inside the radius,
+                        // each concluded it was a way somebody had split in two,
+                        // and both stayed at full depth. Measured over Groningen:
+                        // every 7 m road tunnel in the streamed map was covered
+                        // from edge to edge with no entrance anywhere, which reads
+                        // exactly like a tunnel that was never built.
+                        //
+                        // A real split continues the line: the other end lies
+                        // *along* the direction of travel. Two carriageways lie
+                        // across it. Ends that coincide are the ordinary case of a
+                        // shared node, where the offset has no direction to test.
+                        gap <= SAME_POINT_M || {
+                            let (ox, oy) = ((q[0] - p[0]) / gap, (q[1] - p[1]) / gap);
+                            (ox * d[0] + oy * d[1]).abs() >= JOIN_ALONG_COS
+                        }
                     })
                 })
             };
@@ -518,6 +568,18 @@ fn portal_ends(lines: &[Vec<[f32; 2]>]) -> Vec<PortalEnds> {
         })
         .collect()
 }
+
+/// Two ends closer than this are the same point, and the direction between them
+/// means nothing — the ordinary case of two ways sharing a node.
+const SAME_POINT_M: f32 = 1.5;
+
+/// How nearly the offset between two ends must lie *along* the road before they
+/// count as one way split in two rather than two roads side by side.
+///
+/// About 45°, which separates the two cases with room to spare: a split continues
+/// the line (offset parallel to travel, cosine near 1) and a pair of carriageways
+/// sits across it (offset perpendicular, cosine near 0).
+const JOIN_ALONG_COS: f32 = 0.7;
 
 /// A corridor's two offset sides, per segment.
 ///
@@ -612,10 +674,10 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
     // The ways through a building stay on the ground sheet, where
-    // `tessellate_roads` draws them — and the same footprints decide, below,
-    // which stretch of a bore is covered and which is an open cut.
+    // `tessellate_roads` draws them. This is the only thing the buildings layer
+    // decides here: what is covered and what is an open ramp is a question about
+    // depth (see the roof rule below), not about what happens to stand overhead.
     let passages = building_passages(tile, &features);
-    let rings = building_rings(tile);
 
     // Every tunnel line in the tile, in metres, before anything is built: the
     // portal test needs to see all of them at once. Each carries which of its
@@ -708,37 +770,28 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         } else {
             CLEARANCE_M
         };
-        // **A sunken road is open unless something is built over it.**
+        // **A tunnel is covered. The open part is the ramp, and only the ramp.**
         //
-        // Roofing everything that reached depth was the obvious rule and it is
-        // backwards. The thing being modelled — Groningen's southern ring — is an
-        // open trench for most of its length with three short lids on it, and
-        // roofing by depth buried the whole of it: measured on the live tile,
-        // every one of the six ring carriageways came out covered end to end, with
-        // no opening anywhere in the tile and nothing to see or walk into.
+        // This was briefly gated on a building standing over the point, on the
+        // reasoning that the tiles cannot say where a lid is but can say where a
+        // building is. That was wrong, and wrong in a way that took days to see:
+        // Groningen's ring runs under a *park*, so nothing was ever covered, every
+        // bore was drawn as an open canyon, and every capture of a "tunnel" was a
+        // picture of a trench. The observation that pushed me there — roofing by
+        // depth "buried the whole ring, with nothing to see" — is not a bug
+        // report. It is what a tunnel looks like from above.
         //
-        // The tiles do not say where a lid is. They do say where a *building* is,
-        // and that is the one covering this can actually know about: a way under a
-        // building is covered, a way under a park is a cut you can look into. So
-        // the buildings layer decides, the same layer that tells an arcade from a
-        // bore, and everywhere else the bore is open.
-        //
-        // What it costs: a genuine bore under a hill is drawn as a canyon through
-        // it. That is wrong and visible, and it is the trade this makes on
-        // purpose, because the alternative is a feature that is never visible at
-        // all. `docs/notes/tunnels.md` records it.
+        // What keeps a portal visible is [`ROOF_AT_DEPTH_M`], not the buildings
+        // layer: the ramp has not reached depth, so it takes no roof, so the
+        // ground is cut away over it and you can see the road descend and go
+        // under. That is the whole of the shape, and it needs no second source.
         //
         // One answer per vertex, computed once: the ceiling below and the hole cut
         // in the ground both read it, so they cannot disagree about where the
         // opening is — which is what two expressions of one rule eventually do.
         let roofed: Vec<bool> = deck_y
             .iter()
-            .zip(centre.iter())
-            .map(|(&y, &p)| {
-                y <= -(depth - ROOF_AT_DEPTH_M)
-                    && y + clearance <= CEILING_MAX_Y
-                    && under_a_building(&rings, [p[0] / scale, p[1] / scale])
-            })
+            .map(|&y| y <= -(depth - ROOF_AT_DEPTH_M) && y + clearance <= CEILING_MAX_Y)
             .collect();
         let sides = offset_sides(centre, half);
         deck_class.get_or_insert(class);
@@ -1428,6 +1481,51 @@ mod tests {
         assert_eq!(ends[1], [false, true]);
     }
 
+    /// **A dual carriageway must be able to surface.**
+    ///
+    /// Its two halves end side by side at the entrance, pointing the same way, a
+    /// carriageway's width apart. The rule that spots a way somebody has split in
+    /// two saw exactly that and concluded both were splits, so neither got an
+    /// entrance and every road tunnel in Groningen was covered from edge to edge —
+    /// indistinguishable, from outside, from a tunnel that was never built.
+    #[test]
+    fn two_carriageways_side_by_side_both_get_an_entrance() {
+        // Both run east and stop at x = 0; 18 m apart across the direction of
+        // travel, which is an ordinary dual carriageway.
+        let a = vec![[-60.0, 0.0], [0.0, 0.0]];
+        let b = vec![[-60.0, 18.0], [0.0, 18.0]];
+        let ends = portal_ends(&[a, b]);
+        assert_eq!(
+            ends[0],
+            [true, true],
+            "the near carriageway lost its entrance"
+        );
+        assert_eq!(
+            ends[1],
+            [true, true],
+            "the far carriageway lost its entrance"
+        );
+
+        // …while a way split in two along its own line still joins, which is the
+        // case the radius was added for.
+        let c = vec![[0.0, 0.0], [50.0, 0.0]];
+        let d = vec![[50.0, 0.0], [100.0, 0.0]];
+        let split = portal_ends(&[c, d]);
+        assert_eq!(split[0], [true, false]);
+        assert_eq!(split[1], [false, true]);
+
+        // And a run that stops 10 m short of another, in line with it, is still a
+        // split rather than two ends that happen to be near each other.
+        let e = vec![[0.0, 0.0], [50.0, 0.0]];
+        let f = vec![[60.0, 0.0], [110.0, 0.0]];
+        let gap = portal_ends(&[e, f]);
+        assert_eq!(
+            gap[0],
+            [true, false],
+            "a 10 m gap in line is still one road"
+        );
+    }
+
     #[test]
     fn the_deck_is_found_under_the_carriageway_and_not_beside_it() {
         let bore = Bore {
@@ -1524,6 +1622,87 @@ mod tests {
         };
         let out = build_tunnels(&tile, 1471.0, None);
         println!("bores={} mouths={}", out.bores.len(), out.mouths.len());
+        let key: Option<(f64, f64, f64)> = std::env::var("CARTO_TUNNEL_XYZ").ok().and_then(|s| {
+            let v: Vec<f64> = s.split('/').filter_map(|p| p.parse().ok()).collect();
+            (v.len() == 3).then(|| (v[0], v[1], v[2]))
+        });
+        // **Where the road goes under, and which way it is heading.**
+        //
+        // The centre of an opening is not it: an opening is the stretch that has
+        // *not* reached depth, so its middle is a road at lawn level, which is
+        // what four overhead captures dutifully photographed. The entrance is the
+        // first vertex that is deep enough to take a roof, and a camera wants to
+        // stand outside it looking along the road — so the bearing matters as much
+        // as the point.
+        if let Some((z, x, y)) = key {
+            let n = 2f64.powf(z);
+            let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+            let span = 40_075_016.686 * lat0.cos() / n;
+            let to_geo = |p: [f32; 2]| -> (f64, f64) {
+                let (fx, fy) = (x + f64::from(p[0]) / span, y + f64::from(p[1]) / span);
+                (
+                    (std::f64::consts::PI * (1.0 - 2.0 * fy / n))
+                        .sinh()
+                        .atan()
+                        .to_degrees(),
+                    fx / n * 360.0 - 180.0,
+                )
+            };
+            for (i, b) in out.bores.iter().enumerate() {
+                let deepest = b.deck_y.iter().copied().fold(0.0f32, f32::min);
+                if deepest > -1.0 {
+                    continue;
+                }
+                let full = deepest + ROOF_AT_DEPTH_M;
+                let Some(k) = b.deck_y.iter().position(|&y| y <= full) else {
+                    continue;
+                };
+                if k == 0 || k + 1 >= b.centre.len() {
+                    continue;
+                }
+                let (a, c) = (b.centre[k - 1], b.centre[k]);
+                // +z runs south, so north is −dz.
+                let bearing = (f64::from(c[0] - a[0]).atan2(f64::from(a[1] - c[1]))).to_degrees();
+                let (lat, lon) = to_geo(c);
+                println!(
+                    "entrance {i}: at {lat:.6},{lon:.6}  heading {:.0}°  roof starts at {:.1} m down",
+                    (bearing + 360.0) % 360.0,
+                    -b.deck_y[k]
+                );
+            }
+        }
+        // A side view of the deepest road, in text.
+        //
+        // **Because the pictures were not readable.** Six months of this feature's
+        // evidence was software-rendered stills at handset quality, and a person
+        // looking at one could not tell a covered road from a pale strip of
+        // ground — reasonably, because that is what it looks like. A profile is
+        // unambiguous: it says how far down the road goes, over what distance, and
+        // which part of it has a lid.
+        if let Some(b) = out
+            .bores
+            .iter()
+            .min_by(|a, c| {
+                let d = |x: &Bore| x.deck_y.iter().copied().fold(0.0f32, f32::min);
+                d(a).total_cmp(&d(c))
+            })
+            .filter(|b| b.deck_y.iter().copied().fold(0.0f32, f32::min) < -1.0)
+        {
+            let deepest = b.deck_y.iter().copied().fold(0.0f32, f32::min);
+            let full = deepest + ROOF_AT_DEPTH_M;
+            println!("\nprofile of the deepest road (metres along / metres down / lid):");
+            let mut along = 0.0f32;
+            for i in 0..b.deck_y.len() {
+                if i > 0 {
+                    along += (b.centre[i][0] - b.centre[i - 1][0])
+                        .hypot(b.centre[i][1] - b.centre[i - 1][1]);
+                }
+                let y = b.deck_y[i];
+                let lid = if y <= full { "lid" } else { "open sky" };
+                let bar = "#".repeat(((-y) * 2.0).round().max(0.0) as usize);
+                println!("  {along:6.0} m  {y:6.2} m  {lid:8}  {bar}");
+            }
+        }
         for (i, b) in out.bores.iter().enumerate() {
             let deepest = b.deck_y.iter().copied().fold(0.0f32, f32::min);
             let len: f32 = b
@@ -1540,11 +1719,39 @@ mod tests {
                 b.centre.last().map_or(0.0, |p| p[1]),
             );
         }
+        // Where each opening is **on Earth**, not in tile-local metres.
+        //
+        // The metres were what this printed first, and converting them to a
+        // latitude and longitude by hand to aim a camera went wrong in three
+        // separate sessions — the captures landed on a park, a rail yard and the
+        // side of an office block, and each one cost five minutes of software
+        // rendering to find out. `CARTO_TUNNEL_XYZ=z/x/y` names the tile the file
+        // came from and the conversion happens here, once, in code that can be
+        // wrong only once.
         for (i, m) in out.mouths.iter().enumerate() {
             let b = bbox_of_ring(m);
+            let (cx, cz) = ((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5);
+            let here = key.map_or(String::new(), |(z, x, y)| {
+                let n = 2f64.powf(z);
+                // Metres across this tile, at this tile's own latitude.
+                let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+                let span = 40_075_016.686 * lat0.cos() / n;
+                let (fx, fy) = (x + f64::from(cx) / span, y + f64::from(cz) / span);
+                let lon = fx / n * 360.0 - 180.0;
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * fy / n))
+                    .sinh()
+                    .atan()
+                    .to_degrees();
+                format!("  at {lat:.6},{lon:.6}")
+            });
             println!(
-                "mouth {i}: x {:.0}..{:.0} z {:.0}..{:.0}",
-                b[0], b[2], b[1], b[3]
+                "mouth {i}: {:.0}x{:.0} m  x {:.0}..{:.0} z {:.0}..{:.0}{here}",
+                b[2] - b[0],
+                b[3] - b[1],
+                b[0],
+                b[2],
+                b[1],
+                b[3]
             );
         }
     }

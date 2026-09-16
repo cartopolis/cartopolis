@@ -158,6 +158,18 @@ pub struct ShotSpec {
     /// Explicit output path (presets name their own file instead of taking an
     /// index-and-altitude suffix off the base `--shot` path).
     pub out: Option<PathBuf>,
+    /// Aim at this place on Earth instead of at these angles (`--look-at`).
+    ///
+    /// **Because a pitch is not an aim.** Where the camera ends up looking is
+    /// `altitude / tan(pitch)` metres ahead, and `altitude` is above the map
+    /// anchor's ground while the thing being photographed stands on the *measured*
+    /// ground somewhere else — with the terrain layer on, those differ by metres.
+    /// At a steep angle that hardly matters; at the shallow angle a road needs, a
+    /// three-metre error moves the aim thirty metres, and every low capture in
+    /// this feature's history missed by 60 to 120 m for exactly that reason. Given
+    /// a target, the direction is computed from where the camera actually is,
+    /// after the teleport, in the frame the world is drawn in.
+    pub look_at: Option<[f64; 2]>,
     /// Per-shot camera mode, overriding `--shot-mode`.
     pub mode: Option<String>,
     /// Per-shot `--hide-ui`.
@@ -210,6 +222,7 @@ impl ShotSpec {
             // waypoint's mode/UI/world state, but gets the indexed sweep filename
             // (a shared `out` would have every frame overwrite one file).
             name: None,
+            look_at: None,
             description: None,
             out: None,
             mode: a.mode.clone(),
@@ -697,9 +710,55 @@ pub struct ShotMetrics {
     pub tunnel_bores: usize,
     /// How deep the deepest streamed carriageway runs, metres below the ground
     /// sheet. Zero with no tunnel in range; about −7 over a Dutch sunken road.
-    /// See [`tunnels::TunnelBores::deepest_deck`] for why this is a number rather
-    /// than something to photograph.
+    ///
+    /// **A minimum over the whole map, so it says nothing about this view.** It
+    /// reads −7.0 wherever one bore anywhere in the streamed cells reaches full
+    /// depth — including from a camera pointed at an ordinary street — which is
+    /// how a capture came to be reported as showing a trench when it showed a
+    /// surface road beside one. Use [`Self::tunnel_ahead_m`] to say what the
+    /// picture is of; this one only says a tunnel was built somewhere.
     pub tunnel_deck_m: f32,
+    /// The tunnels' own meshes — carriageway, walls and roof — spawned, and how
+    /// many of those the camera can actually see.
+    ///
+    /// **Two numbers for the reason the route line has two.** A tunnel is
+    /// invisible when it works and invisible when it does not: from anywhere but
+    /// a low oblique over an open cut, ground is what you see either way. So
+    /// `tunnel_bores` — which counts the floor-and-collision description, not
+    /// triangles — cannot distinguish "no tunnel here", "built but off screen"
+    /// and "built, on screen, and drawn under something". These can.
+    pub tunnel_meshes: usize,
+    /// See [`Self::tunnel_meshes`].
+    pub tunnel_rendered: usize,
+    /// Where the nearest tunnel goes under, and the compass heading of the road
+    /// there — ready to paste into `--at` and `--look`.
+    ///
+    /// Zero and `-1` when no tunnel is streamed. See
+    /// `TunnelBores::nearest_entrance`: eleven cameras in this feature's history
+    /// were placed by hand-converting the tessellator's own coordinates and every
+    /// one of them missed, by between 28 and 178 metres.
+    pub tunnel_entrance_lat: f64,
+    /// See [`Self::tunnel_entrance_lat`].
+    pub tunnel_entrance_lng: f64,
+    /// See [`Self::tunnel_entrance_lat`]. Degrees clockwise from north; `-1` when
+    /// there is no tunnel.
+    pub tunnel_entrance_heading: f32,
+    /// Metres from the point this capture is aimed at to the nearest bore's
+    /// carriageway, in plan. `0` means the aim point is over one; `-1` means
+    /// nothing is streamed or the camera is not pointed at the ground.
+    ///
+    /// This is the field that makes a tunnel capture self-checking. A road seen
+    /// from a low oblique is a band a few pixels deep whether it is on the ground
+    /// or seven metres under it, and a tunnel approach runs beside ordinary
+    /// streets by construction — so the eye cannot tell a picture *of* a bore
+    /// from a picture pointed fifty metres off one, and twice now it has not.
+    pub tunnel_ahead_m: f32,
+    /// The deck level at that nearest bore, metres below the ground sheet.
+    ///
+    /// Read beside [`Self::tunnel_ahead_m`]: `ahead_m` near 0 with `ahead_deck_m`
+    /// near −7 is a capture looking into a full-depth cut, and is the assertion a
+    /// proof shot of a tunnel should carry.
+    pub tunnel_ahead_deck_m: f32,
     /// Clipmap tiles whose raster sheet has an opening cut out of it
     /// (`map_stream::BasemapHoles`).
     ///
@@ -1088,7 +1147,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_bores,tunnel_deck_m,basemap_open_tiles,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_bores,tunnel_deck_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_deck_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -1167,6 +1226,8 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("globe_texture_mb", 2),
     ("avatar_floor_m", 2),
     ("tunnel_deck_m", 2),
+    ("tunnel_ahead_m", 1),
+    ("tunnel_ahead_deck_m", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
@@ -1425,6 +1486,7 @@ impl ShotHarness {
                     yaw_deg: look[1],
                     name: Some(p.name.clone()),
                     description: p.description.clone(),
+                    look_at: None,
                     out: Some(manifest.out_path(manifest_path, p)),
                     mode: p.mode.clone().or_else(|| manifest.mode.clone()),
                     hide_ui: p.hide_ui.or(manifest.hide_ui),
@@ -2513,41 +2575,6 @@ pub fn place_camera(
     );
 }
 
-
-
-/// `lat,lng,alt pitch,yaw [out]` — the served form of `--at` and `--look`.
-fn parse_request(line: &str) -> Result<ShotSpec, String> {
-    let mut parts = line.split_whitespace();
-    let at = parts.next().ok_or("empty request")?;
-    let look = parts.next().unwrap_or("-90,0");
-    let out = parts.next().map(PathBuf::from);
-    let nums = |s: &str, want: usize| -> Result<Vec<f64>, String> {
-        let v: Vec<f64> = s
-            .split(',')
-            .map(|p| p.trim().parse::<f64>().map_err(|e| format!("{s:?}: {e}")))
-            .collect::<Result<_, _>>()?;
-        (v.len() == want)
-            .then_some(v)
-            .ok_or_else(|| format!("{s:?}: expected {want} numbers"))
-    };
-    let a = nums(at, 3)?;
-    let l = nums(look, 2)?;
-    Ok(ShotSpec {
-        lat: a[0],
-        lng: a[1],
-        alt: a[2],
-        pitch_deg: l[0] as f32,
-        yaw_deg: l[1] as f32,
-        name: None,
-        description: Some("served".into()),
-        out,
-        mode: None,
-        hide_ui: None,
-        ui: None,
-        env: ShotEnv::default(),
-    })
-}
-
 /// Keep a `--shot-mode avatar` run in Follow, which nothing else will.
 ///
 /// **Follow is not on offer offline** (`free_camera::follow_available` wants a
@@ -2562,6 +2589,56 @@ fn parse_request(line: &str) -> Result<ShotSpec, String> {
 /// The harness owns the camera for the length of a scripted run, so it re-asserts
 /// the mode every frame rather than once at the teleport. Ordered after the
 /// toggle that would otherwise undo it.
+/// Point the camera at [`ShotSpec::look_at`], every frame, from where it really is.
+///
+/// **A pitch is a guess about the ground; this is not.** `--look` aims by angle,
+/// so what lands in the middle of the frame is `altitude / tan(pitch)` metres
+/// ahead — and `altitude` is measured from the map anchor's ground while the
+/// subject stands on the measured ground somewhere else. With the terrain layer
+/// on, the two differ by metres, which a steep shot barely notices and a shallow
+/// one cannot survive: at six degrees, three metres of height error moves the aim
+/// thirty metres. Every low capture of a tunnel entrance in this feature's history
+/// missed by between sixty and a hundred and twenty metres, and the angles were
+/// right every time.
+///
+/// Run per frame rather than once at placement because the terrain field lands a
+/// second or two after the anchor it belongs to, so the ground under the camera —
+/// and under the target — moves after the teleport.
+pub fn aim_scripted_camera(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    anchor: Res<MapAnchor>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
+    mut cam_state: ResMut<CameraState>,
+    camera: Query<(&GridCell, &GlobalTransform), With<FreeCamera>>,
+) {
+    if !progress.placed {
+        return;
+    }
+    let Some(target) = harness.shots.get(progress.index).and_then(|s| s.look_at) else {
+        return;
+    };
+    let (Some(geo), Ok((cell, tf))) = (anchor.geo, camera.single()) else {
+        return;
+    };
+    let (tx, tz) = crate::systems::geo_nav::lat_lng_to_world(geo, target[0], target[1]);
+    let (tx, tz) = (tx as f32, tz as f32);
+    let here = tf.translation()
+        + Vec3::new(cell.x as f32, cell.y as f32, cell.z as f32) * crate::grid::WORLD_CELL_EDGE;
+    let to = Vec3::new(tx, terrain.at(tx, tz), tz) - here;
+    if to.length_squared() < 1.0 {
+        return;
+    }
+    // `free_camera_rotation` is (pitch, yaw) in radians, yaw measured the way the
+    // camera's own controls measure it.
+    let yaw = (-to.x).atan2(-to.z);
+    let pitch = to.y.atan2(to.x.hypot(to.z));
+    let want = Vec2::new(pitch, yaw);
+    if cam_state.free_camera_rotation.distance(want) > 1e-4 {
+        cam_state.free_camera_rotation = want;
+    }
+}
+
 pub fn hold_scripted_camera_mode(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
@@ -2791,7 +2868,7 @@ pub struct ShotReadouts<'w, 's> {
     vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
-    relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
+    map_anchor: Res<'w, MapAnchor>,
     basemap_holes: Res<'w, crate::systems::map_stream::BasemapHoles>,
     ground_detail: Res<'w, crate::systems::ground_detail::GroundDetail>,
     water_levels: Res<'w, crate::systems::water_levels::WaterLevels>,
@@ -2872,6 +2949,13 @@ pub struct VisualCounts<'w, 's> {
         's,
         &'static bevy::camera::visibility::ViewVisibility,
         With<crate::components::RouteVisual>,
+    >,
+    /// The tunnels' own geometry. See `ShotMetrics::tunnel_meshes`.
+    tunnels: Query<
+        'w,
+        's,
+        &'static bevy::camera::visibility::ViewVisibility,
+        With<crate::components::TunnelSurface>,
     >,
     /// The glass shells over the selected and occupied buildings
     /// (`systems::building_select`). See `ShotMetrics::building_shell_meshes`.
@@ -3242,6 +3326,49 @@ pub fn drive_capture(
             _ => (0.0, 0.0),
         };
         let shot = &harness.shots[progress.index];
+        // **Where on the ground this capture is actually pointed**, in the
+        // anchored world frame the bores are kept in. The camera is the floating
+        // origin, so its own `GlobalTransform` is near zero and the grid cell is
+        // the whole of its position — the same conversion `building_select` makes
+        // to turn a click into a place.
+        let cam_world = tf.translation
+            + Vec3::new(cell.x as f32, cell.y as f32, cell.z as f32) * crate::grid::WORLD_CELL_EDGE;
+        let fwd = tf.forward();
+        let aim = (fwd.y < -1e-3 && cam_world.y > 0.0).then(|| {
+            let t = cam_world.y / -fwd.y;
+            Vec2::new(cam_world.x + fwd.x * t, cam_world.z + fwd.z * t)
+        });
+        // Where the nearest tunnel actually goes under, as something you can type
+        // into `--at`. See `TunnelBores::nearest_entrance` for why this is a
+        // reported number and not an arithmetic exercise at the call site.
+        let entrance = aim
+            .and_then(|p| readouts.tunnels.nearest_entrance(p))
+            .and_then(|(at, heading)| {
+                readouts.map_anchor.geo.map(|anchor| {
+                    let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+                        anchor,
+                        f64::from(at.x),
+                        f64::from(at.y),
+                    );
+                    (lat, lng, heading)
+                })
+            });
+        if let Some((lat, lng, heading)) = entrance {
+            tracing::info!(
+                lat = format!("{lat:.6}"),
+                lng = format!("{lng:.6}"),
+                heading_deg = format!("{heading:.0}"),
+                "tunnel entrance"
+            );
+        }
+        let nearest_bore = aim.and_then(|p| {
+            readouts.tunnels.nearest_bore(p, |q| {
+                readouts
+                    .terrain
+                    .surrounding(q.x, q.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
+                    - readouts.terrain.at(q.x, q.y)
+            })
+        });
         // Walked once here rather than twice in the struct literal below: the
         // descendant walk is the only metric that costs a traversal.
         let avatar_counts = readouts.avatar.counts();
@@ -3344,6 +3471,13 @@ pub fn drive_capture(
             flood_defences_measured: readouts.dikes.measured(),
             tunnel_bores: readouts.tunnels.bore_count(),
             tunnel_deck_m: readouts.tunnels.deepest_deck(),
+            tunnel_meshes: visuals.tunnels.iter().count(),
+            tunnel_rendered: visuals.tunnels.iter().filter(|vv| vv.get()).count(),
+            tunnel_entrance_lat: entrance.map_or(0.0, |(lat, _, _)| lat),
+            tunnel_entrance_lng: entrance.map_or(0.0, |(_, lng, _)| lng),
+            tunnel_entrance_heading: entrance.map_or(-1.0, |(_, _, h)| h),
+            tunnel_ahead_m: nearest_bore.map_or(-1.0, |(d, _)| d),
+            tunnel_ahead_deck_m: nearest_bore.map_or(0.0, |(_, y)| y),
             basemap_open_tiles: readouts.basemap_holes.0,
             interior_rooms: readouts.interiors.rooms(),
             interior_storeys: readouts.interior_floors.storeys(),
@@ -4025,6 +4159,13 @@ mod tests {
             flood_defences_measured: 0,
             tunnel_bores: 0,
             tunnel_deck_m: 0.0,
+            tunnel_meshes: 0,
+            tunnel_rendered: 0,
+            tunnel_entrance_lat: 0.0,
+            tunnel_entrance_lng: 0.0,
+            tunnel_entrance_heading: -1.0,
+            tunnel_ahead_m: -1.0,
+            tunnel_ahead_deck_m: 0.0,
             basemap_open_tiles: 0,
             interior_rooms: 0,
             interior_storeys: 0,

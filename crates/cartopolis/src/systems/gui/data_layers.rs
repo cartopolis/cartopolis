@@ -549,11 +549,6 @@ pub struct DataLayers {
     /// signals, zebra paint, barriers, piers. Off tears the cells down, the
     /// same contract the Buildings master toggle keeps.
     pub street_detail_enabled: bool,
-    /// Feature toggle: the **height layer** (`systems::height`) — measured ground
-    /// and surface elevation from PDOK's AHN. Its own source rather than a Map
-    /// sub-toggle, like Buildings: it answers only over the Netherlands, and off
-    /// means every consumer falls back to the flat-ground assumption.
-    pub height_enabled: bool,
     /// Feature toggle (under Map): the **aerial basemap** (`systems::aerial`) —
     /// PDOK's Luchtfoto RGB under the clipmap in place of the drawn one. Off by
     /// default for the same reason the height layer is: it reaches a third
@@ -685,7 +680,6 @@ impl DataLayers {
             traffic: self.traffic_enabled,
             people: self.people_enabled,
             street_detail,
-            height: self.height_enabled,
             aerial: self.aerial_enabled,
             vehicles,
             overlays: LAYER_DEFS
@@ -760,7 +754,6 @@ impl DataLayers {
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
         self.street_detail_enabled = p.street_detail;
-        self.height_enabled = p.height;
         self.aerial_enabled = p.aerial;
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
@@ -830,12 +823,10 @@ impl Default for DataLayers {
             // already running, and nothing at all outside the Netherlands.
             flood_defences: true,
             street_detail_enabled: detail,
-            // Off by default: it reaches a third party's service and only
-            // answers over the Netherlands, so opting in is the honest default.
-            height_enabled: false,
-            // Off for the same two reasons, plus one of its own: it *replaces* the
-            // drawn ground rather than adding to it, which is a change to how the
-            // map looks and not only to what it knows.
+            // The aerial basemap stays opt-in, and the measured ground no longer
+            // is (it has no toggle at all). The difference is that this one
+            // *replaces* the drawn ground rather than adding to it, which is a
+            // change to how the map looks and not only to what it knows.
             aerial_enabled: false,
             terrain_revision: 0,
             popup: None,
@@ -2411,21 +2402,6 @@ pub fn render_data_layers_panel(
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
-                crate::systems::theme::checkbox(
-                    ui,
-                    &mut dl.height_enabled,
-                    egui::RichText::new("Height"),
-                );
-                ui.indent("height", |ui| {
-                    // Say where it works, in the panel rather than in a doc comment: a
-                    // toggle that silently does nothing over Berlin is a bug report.
-                    ui.label(
-                        egui::RichText::new("AHN elevation — Netherlands only")
-                            .size(theme::SIZE_SUB),
-                    );
-                });
-                ui.add_space(4.0);
-                ui.separator();
                 // In the flow, not `bottom_up`: a bottom-anchored layout inside a scroll
                 // area asks for the scroll viewport's height and pins the credits to the
                 // wrong end of an unbounded canvas. The short form stays here because it
@@ -2511,7 +2487,6 @@ pub fn render_data_layers_panel(
         dl.traffic_enabled = fresh.traffic_enabled;
         dl.people_enabled = fresh.people_enabled;
         dl.street_detail_enabled = fresh.street_detail_enabled;
-        dl.height_enabled = fresh.height_enabled;
         dl.aerial_enabled = fresh.aerial_enabled;
     }
     if about {

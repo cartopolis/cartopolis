@@ -465,6 +465,7 @@ pub fn build(
                 pitch_deg: look[0],
                 yaw_deg: look[1],
                 name: Some(s.name.clone()),
+                look_at: None,
                 description: s.description.clone(),
                 // Every scenario still writes its PNG — a number nobody can see
                 // the scene behind is how "the avatar isn't rendering" cost a year
@@ -502,8 +503,6 @@ pub fn build(
     let parsed = parse_size(&size).ok_or_else(|| format!("size wants WxH, got {size:?}"))?;
 
     let harness = ShotHarness {
-        // A measurement run never serves: it is a fixed flight.
-        serve: None,
         path: manifest_path.with_extension("png"),
         shots,
         size: parsed,

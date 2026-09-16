@@ -45,7 +45,6 @@ use bevy::tasks::IoTaskPool;
 
 use crate::platform::http;
 use crate::platform::work::Dispatcher;
-use crate::systems::data_layers::DataLayers;
 
 /// PDOK's public service host. Reached direct on native and through the app's own
 /// origin on the web (`/up/ahn/…`, see [`http::upstream_url`]) — PDOK is a third
@@ -298,9 +297,6 @@ pub struct HeightLayer {
     /// RD position the cache was last pruned around, so a stationary anchor costs a
     /// comparison rather than a scan of every patch every frame.
     pruned_at: Option<[f64; 2]>,
-    /// Whether the layer was on last frame, so switching it off is an *edge* that
-    /// tears the cache down once — the same shape as `Lod22Buildings::enabled_was`.
-    enabled_was: bool,
     /// Patches fetched this session, for the HUD/metrics readout.
     pub fetched: usize,
     /// Measured ground level at the map anchor, metres above NAP — `None` outside
@@ -319,7 +315,6 @@ impl Default for HeightLayer {
             requested: HashSet::new(),
             failed: HashMap::new(),
             pruned_at: None,
-            enabled_was: false,
             fetched: 0,
             ground_m: None,
         }
@@ -387,28 +382,6 @@ impl HeightLayer {
 
     /// Drop everything the layer remembers — the patches, the give-up counts and the
     /// record of what is in flight.
-    ///
-    /// The teardown for the layer being switched off, and it is a *complete* one for
-    /// the same reason `lod22`'s is: a layer that is off should cost nothing at all,
-    /// and holding a few megabytes of measurements for a consumer that has been told
-    /// to stop asking is the shape the neighbouring streamers were careful to avoid.
-    ///
-    /// `requested` and the dispatcher's queue are emptied *together*, which is the
-    /// only pairing that stays consistent: forgetting a key while its job is still
-    /// queued would let the next ask dispatch the same box twice. A task already in
-    /// flight is simply orphaned — it pushes its result as usual and
-    /// `poll_height_layer` frees its slot and removes a key that is no longer there.
-    /// Clearing `failed` is deliberate too: switching the layer back on is the user
-    /// asking again, and it is the one moment a box that has spent its attempts
-    /// deserves another.
-    pub fn forget_all(&mut self) {
-        self.patches.clear();
-        self.requested.clear();
-        self.failed.clear();
-        drop(self.dispatch.drain_pending());
-        self.pruned_at = None;
-    }
-
     /// Keep only what is within [`CACHE_KEEP_M`] of `centre` (RD metres), and do
     /// nothing at all while the anchor sits still.
     ///
@@ -449,10 +422,7 @@ impl HeightLayer {
 /// Dispatch queued patch requests and drain the answers. One `IoTaskPool` task per
 /// request: fetch the GeoTIFF, decode it, push the result — the same seam the tile
 /// and 3DBAG streamers use, so it works unchanged in the browser.
-pub fn poll_height_layer(mut layer: ResMut<HeightLayer>, time: Res<Time>, dl: Res<DataLayers>) {
-    if !dl.height_enabled {
-        return;
-    }
+pub fn poll_height_layer(mut layer: ResMut<HeightLayer>, time: Res<Time>) {
     let now = time.elapsed_secs_f64();
     let results = layer.results.clone();
     while let Some(req) = layer.dispatch.next(now) {
@@ -513,25 +483,12 @@ const GROUND_PROBE_GRID: u32 = 16;
 /// runs every frame holding both the anchor and the layer toggle (it is ordered
 /// after `apply_reanchor` and before `poll_height_layer` for the probe's own sake,
 /// which is exactly where an eviction wants to be): the anchor moving prunes what
-/// is now far away, and the layer going off drops the lot.
+/// is now far away, which is also what empties the cache on leaving the Netherlands
+/// — the only way out of coverage now that the layer has no switch.
 pub fn probe_anchor_ground(
     mut layer: ResMut<HeightLayer>,
-    dl: Res<DataLayers>,
     map_anchor: Res<crate::resources::MapAnchor>,
 ) {
-    if !dl.height_enabled {
-        layer.ground_m = None;
-        // Tear down on the *off edge* only, the way `lod22` and the OSM building
-        // streamers do — a layer that is off must not keep megabytes of answers
-        // alive for consumers that have been told to stop asking, and doing it once
-        // rather than every frame keeps it out of the steady state.
-        if layer.enabled_was {
-            layer.enabled_was = false;
-            layer.forget_all();
-        }
-        return;
-    }
-    layer.enabled_was = true;
     let Some((lat, lng, _)) = map_anchor.geo else {
         return;
     };
@@ -867,9 +824,6 @@ mod tests {
         // Standing still is not a reason to re-scan, and must not lose anything.
         layer.prune_around(groningen);
         assert_eq!(layer.patches.len(), 1);
-
-        layer.forget_all();
-        assert!(layer.patches.is_empty() && layer.failed.is_empty());
     }
 
     /// An OGC service reports a refused request as XML with a 200, so the decoder
