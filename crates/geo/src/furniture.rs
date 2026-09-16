@@ -1140,6 +1140,24 @@ pub fn build_furniture_meshes(
 pub struct SurveyedLine {
     pub points: Vec<[f32; 2]>,
     pub kind: LineKind,
+    /// Measured height in metres, where the register has one.
+    ///
+    /// `None` is the ordinary case and means "use the form's nominal height" —
+    /// plain BGT is flat geometry and says nothing about how tall anything is. The
+    /// measurement comes from the Kadaster's 3D basisvoorziening, whose
+    /// `Scheiding_vlak` objects are the same boundaries extruded, joined on the
+    /// identificatie in the extractor.
+    ///
+    /// It matters more than a refinement, because the nominal height is what made
+    /// half of this layer undrawable. [`LineKind::Wall`] is a 2.0 m slab, which is
+    /// a reasonable garden wall and is nothing like the register's actual
+    /// distribution: over one 2 km block of Groningen the median surveyed `muur` is
+    /// **0.23 m** and the median `kademuur` is **1.29 m**. Drawing every quay wall
+    /// and every bank protection as a uniform 2 m of masonry is why they were
+    /// dropped from the extractor in the first place — correctly, for that form.
+    /// With a measured height there is nothing left to object to, so this landing
+    /// is what lets those types be accepted at all.
+    pub height_m: Option<f32>,
 }
 
 /// The three linear forms. Mirrors `LINE_KINDS` in cartopy's `bgt.ts`.
@@ -1171,6 +1189,24 @@ impl LineKind {
     }
 }
 
+/// Shortest measured boundary worth drawing, metres.
+///
+/// Under this a [`SurveyedLine::height_m`] is read as "no measurable height"
+/// rather than as a very low wall: the 3D product's z is a drape over AHN, so a
+/// flat object comes back as a few centimetres of ground noise. It is also the
+/// kerb line — a third of the register's `muur` objects are edging, and edging
+/// drawn as a slab is a ribbon of z-fight down the pavement.
+pub const MIN_MEASURED_LINE_M: f32 = 0.30;
+
+/// Tallest measured boundary this form will draw, metres.
+///
+/// A ceiling on the *form*, not on the data: past about this the object is a
+/// retaining structure holding back a road embankment, and six boxes in a row is
+/// the wrong thing to draw for it. The register's tallest quay wall in the
+/// Groningen block is 4.45 m, so this clamps almost nothing and is here to stop a
+/// bad join putting a building-height slab down a street.
+pub const MAX_MEASURED_LINE_M: f32 = 6.0;
+
 /// Shortest segment worth a box, metres. The survey emits vertices wherever it
 /// found a change of direction, and a few of those are centimetres apart.
 const MIN_SEGMENT_M: f32 = 0.15;
@@ -1196,7 +1232,19 @@ pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Ve
     let mut out = Vec::new();
     let mut buf = MeshBuf::default();
     for line in lines {
-        let (height, half_thick, tone) = line.kind.spec();
+        let (nominal, half_thick, tone) = line.kind.spec();
+        // A measured height wins, clamped to something a survey could mean. The
+        // floor is the important end: 3dfier drapes these objects on AHN, so an
+        // object with no real elevation lands as a few centimetres of ground noise,
+        // and a 4 cm wall is a strip of z-fighting on the pavement rather than a
+        // low wall. Below the floor there is nothing to draw and the line is
+        // skipped — which is the honest answer for the third of surveyed `muur`
+        // that are kerbs and edging rather than walls.
+        let height = match line.height_m {
+            Some(m) if m < MIN_MEASURED_LINE_M => continue,
+            Some(m) => m.min(MAX_MEASURED_LINE_M),
+            None => nominal,
+        };
         let tint = {
             let m = tone.multiplier();
             [m[0], m[1], m[2], 1.0]
@@ -1824,6 +1872,51 @@ mod tests {
             .map(|p| p.at[1] + p.half[1])
             .fold(f32::MIN, f32::max);
         assert!((extent(1) - tall).abs() < 0.01, "y span {}", extent(1));
+    }
+
+    /// A measured height is what the wall is drawn at, and the nominal 2.0 m is
+    /// only the answer when the register has nothing to say. Without this the
+    /// median surveyed `muur` — 0.23 m of garden edging — is a two-metre slab, and
+    /// every quay wall is the same two-metre slab as well.
+    #[test]
+    fn a_measured_boundary_is_drawn_at_its_measured_height() {
+        let line = |height_m: Option<f32>| SurveyedLine {
+            points: vec![[0.0, 0.0], [10.0, 0.0]],
+            kind: LineKind::Wall,
+            height_m,
+        };
+        let top = |l: SurveyedLine| {
+            build_line_meshes(&[l], None)
+                .first()
+                .map(|m| m.positions.iter().fold(f32::MIN, |a, p| a.max(p[1])))
+        };
+        let nominal = top(line(None)).expect("the nominal form draws");
+        assert!(
+            (nominal - 2.0).abs() < 0.01,
+            "an unmeasured wall keeps the form's height, got {nominal}"
+        );
+        let measured = top(line(Some(1.29))).expect("a measured wall draws");
+        assert!(
+            (measured - 1.29).abs() < 0.01,
+            "a measured wall stands at its measurement, got {measured}"
+        );
+    }
+
+    /// Below the floor there is no wall to draw. The 3D product drapes its objects
+    /// on AHN, so a flat one comes back as a few centimetres of ground noise, and
+    /// drawing that is a strip of z-fighting down the pavement rather than a low
+    /// wall.
+    #[test]
+    fn a_boundary_measured_flat_is_not_drawn() {
+        let flat = SurveyedLine {
+            points: vec![[0.0, 0.0], [10.0, 0.0]],
+            kind: LineKind::Wall,
+            height_m: Some(0.08),
+        };
+        assert!(
+            build_line_meshes(&[flat], None).is_empty(),
+            "a boundary with no measurable height is skipped, not drawn flat"
+        );
     }
 
     #[test]

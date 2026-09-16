@@ -1,10 +1,17 @@
 ---
 topic: map
 triggers: [surveyed.rs, bgt_objects.py, bgt.ts, scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
-updated: 2026-08-29
+updated: 2026-09-16
 ---
 
 # Streets that were actually surveyed
+
+> **The boundary half of this note has moved on.** `scheiding_lijn`'s bank
+> protections were excluded here because a fixed 2 m form would stand masonry
+> along every canal, and `scheiding_vlak` was described as a client half waiting
+> for an extractor. Both were resolved on 2026-09-16 by giving a wall the height
+> somebody measured — see
+> [walls-have-a-measured-height.md](walls-have-a-measured-height.md).
 
 Two of this client's layers have always said, in their own module notes, that
 they are inventing something. `scatter.rs`: Shortbread's `land` layer carries

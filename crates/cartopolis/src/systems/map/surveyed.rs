@@ -245,8 +245,9 @@ pub struct SurveyedCell {
     /// Street objects: position and form.
     pub props: Vec<(f64, f64, FurnitureKind)>,
     /// Boundaries — fences, walls, hedges — as the polylines they were surveyed
-    /// as, with their form.
-    pub lines: Vec<(LineKind, Vec<(f64, f64)>)>,
+    /// as, with their form and, where the register measured one, their height in
+    /// metres (see [`cartopolis_geo::furniture::SurveyedLine::height_m`]).
+    pub lines: Vec<(LineKind, Option<f32>, Vec<(f64, f64)>)>,
 }
 
 /// Parse a cell file: `{"trees":[[lat,lng],…],"props":[[lat,lng,kind],…]}`.
@@ -258,8 +259,17 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
         #[serde(default)]
         props: Vec<(f64, f64, usize)>,
         #[serde(default)]
-        lines: Vec<(usize, Vec<(f64, f64)>)>,
+        lines: Vec<WireLine>,
     }
+    /// One boundary on the wire: its form, its points, and — only where the 3D
+    /// product has one — its measured height in metres.
+    ///
+    /// **Trailing**, on exactly the same terms as [`WireSurface`]'s material, and
+    /// for the same two reasons: most boundaries have no measurement (the 3D file
+    /// carries `Scheiding_vlak` and no `Scheiding_lijn` at all, so every surveyed
+    /// *line* is unmeasured), and every cell already cached must keep parsing.
+    #[derive(serde::Deserialize)]
+    struct WireLine(usize, Vec<(f64, f64)>, #[serde(default)] Option<f32>);
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
     // Exact duplicates are ghost *versions* of one object, same as the paving
     // (see `parse_surveyed_paving`): a doubled tree or fence segment is two
@@ -285,8 +295,11 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
             .into_iter()
             // A one-point line is not a line. The extractor does not emit them,
             // and a truncated cache entry can.
-            .filter(|(_, pts)| pts.len() >= 2)
-            .filter(|(k, pts)| {
+            .filter(|WireLine(_, pts, _)| pts.len() >= 2)
+            .filter(|WireLine(k, pts, _)| {
+                // The height is deliberately not in the key: two records of one
+                // boundary that differ only in a measured height are still the same
+                // ghost pair, and keeping both would draw one wall twice.
                 seen_line.insert((
                     *k,
                     pts.iter()
@@ -294,7 +307,14 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
                         .collect::<Vec<_>>(),
                 ))
             })
-            .filter_map(|(k, pts)| LINE_KINDS.get(k).map(|&kind| (kind, pts)))
+            .filter_map(|WireLine(k, pts, h)| {
+                // An unknown form drops the line; a height that is not a finite
+                // positive number drops only the height, leaving the boundary drawn
+                // the way it was drawn before heights existed.
+                let kind = *LINE_KINDS.get(k)?;
+                let height = h.filter(|m| m.is_finite() && *m > 0.0);
+                Some((kind, height, pts))
+            })
             .collect(),
     })
 }
@@ -474,7 +494,7 @@ pub fn surveyed_trees(
 pub fn surveyed_lines(cell: &SurveyedCell, cx: i64, cy: i64, tile_m: f32) -> Vec<SurveyedLine> {
     cell.lines
         .iter()
-        .filter_map(|(kind, pts)| {
+        .filter_map(|(kind, height_m, pts)| {
             let local: Vec<[f32; 2]> = pts
                 .iter()
                 .filter_map(|&(lat, lng)| {
@@ -484,6 +504,7 @@ pub fn surveyed_lines(cell: &SurveyedCell, cx: i64, cy: i64, tile_m: f32) -> Vec
             (local.len() == pts.len() && local.len() >= 2).then_some(SurveyedLine {
                 points: local,
                 kind: *kind,
+                height_m: *height_m,
             })
         })
         .collect()
@@ -541,7 +562,34 @@ mod tests {
         .expect("valid cell");
         assert_eq!(cell.lines[0].0, LineKind::Fence);
         assert_eq!(cell.lines[1].0, LineKind::Hedge);
-        assert_eq!(cell.lines[1].1.len(), 3);
+        assert_eq!(cell.lines[1].2.len(), 3);
+        assert!(
+            cell.lines.iter().all(|l| l.1.is_none()),
+            "a two-element line says nothing about height"
+        );
+    }
+
+    /// The measured height is a **trailing** element, so both shapes have to read:
+    /// every BGT cell already cached was written before heights existed, and the 3D
+    /// product covers only some of the boundaries in the ones written after.
+    #[test]
+    fn a_boundary_may_carry_a_measured_height() {
+        let cell = parse_surveyed_cell(
+            r#"{"lines":[[1,[[53.2194,6.5665],[53.2195,6.5666]],2.06],
+                         [1,[[53.2196,6.5667],[53.2197,6.5668]]],
+                         [1,[[53.2198,6.5669],[53.2199,6.5670]],0.0]]}"#,
+        )
+        .expect("valid cell");
+        assert_eq!(cell.lines[0].1, Some(2.06), "the measurement is carried");
+        assert_eq!(
+            cell.lines[1].1, None,
+            "the old two-element form still reads"
+        );
+        assert_eq!(
+            cell.lines[2].1, None,
+            "a non-positive height drops the height, not the boundary"
+        );
+        assert_eq!(cell.lines.len(), 3, "and never the boundary itself");
     }
 
     /// A line with one point is not a line — the extractor never writes one, and a
@@ -564,8 +612,12 @@ mod tests {
         let inside = ((north + south) / 2.0, (west + east) / 2.0);
         let cell = SurveyedCell {
             lines: vec![
-                (LineKind::Wall, vec![inside, (inside.0 + 1e-5, inside.1)]),
-                (LineKind::Wall, vec![inside, (north + 0.01, inside.1)]),
+                (
+                    LineKind::Wall,
+                    None,
+                    vec![inside, (inside.0 + 1e-5, inside.1)],
+                ),
+                (LineKind::Wall, None, vec![inside, (north + 0.01, inside.1)]),
             ],
             ..SurveyedCell::default()
         };
