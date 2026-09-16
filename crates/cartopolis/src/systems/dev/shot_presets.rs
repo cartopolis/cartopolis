@@ -77,6 +77,14 @@ pub struct Preset {
     /// log line for the shot, so a run reads as a list of intents.
     #[serde(default)]
     pub description: Option<String>,
+    /// What subject this view is *for* — `tunnels`, `bridges`, `crossroads`.
+    ///
+    /// `--only` matches a group as readily as a name, so a manifest can hold every
+    /// place worth checking and a run can ask for one subject: the alternative is
+    /// a file per subject, which splits the shared settle/size/time settings that
+    /// make two runs comparable in the first place.
+    #[serde(default)]
+    pub group: Option<String>,
     /// `[lat, lng, altitude_m]`.
     pub at: [f64; 3],
     /// `[pitch, yaw]` in degrees (−90 = straight down). Defaults to straight down.
@@ -141,24 +149,44 @@ impl Manifest {
     /// The shots named by `only` (all of them when it's empty), in manifest
     /// order. An unknown name is an error listing what *is* available — a typo
     /// would otherwise quietly regenerate nothing.
+    /// The presets `--only` names: by shot name, or by [`Preset::group`].
+    ///
+    /// An unknown selector is an error rather than an empty run, the same rule the
+    /// manifest keys follow — a typo that quietly captures nothing reads as "the
+    /// feature is gone" later.
     pub fn select(&self, only: &[String]) -> Result<Vec<&Preset>, String> {
         if only.is_empty() {
             return Ok(self.shots.iter().collect());
         }
+        let matches = |s: &Preset, want: &String| {
+            &s.name == want || s.group.as_ref().is_some_and(|g| g == want)
+        };
         for want in only {
-            if !self.shots.iter().any(|s| &s.name == want) {
+            if !self.shots.iter().any(|s| matches(s, want)) {
                 let names: Vec<&str> = self.shots.iter().map(|s| s.name.as_str()).collect();
+                let mut groups: Vec<&str> = self
+                    .shots
+                    .iter()
+                    .filter_map(|s| s.group.as_deref())
+                    .collect();
+                groups.sort_unstable();
+                groups.dedup();
                 return Err(format!(
-                    "unknown shot {:?}; manifest has: {}",
+                    "unknown shot or group {:?}; manifest has shots: {} — groups: {}",
                     want,
-                    names.join(", ")
+                    names.join(", "),
+                    if groups.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        groups.join(", ")
+                    }
                 ));
             }
         }
         Ok(self
             .shots
             .iter()
-            .filter(|s| only.contains(&s.name))
+            .filter(|s| only.iter().any(|want| matches(s, want)))
             .collect())
     }
 
@@ -257,6 +285,41 @@ out = "img/custom.png"
             m.out_path(&path, &m.shots[1]),
             PathBuf::from("docs/img/custom.png")
         );
+    }
+
+    #[test]
+    /// `--only` takes a subject as readily as a name, which is what lets one
+    /// manifest hold every place worth checking and a run ask for one subject.
+    #[test]
+    fn select_takes_a_group_as_well_as_a_name() {
+        let m: Manifest = toml::from_str(
+            r#"
+tile_url = "x"
+[[shot]]
+name = "a"
+group = "tunnels"
+at = [1.0, 2.0, 3.0]
+[[shot]]
+name = "b"
+group = "tunnels"
+at = [1.0, 2.0, 3.0]
+[[shot]]
+name = "c"
+group = "bridges"
+at = [1.0, 2.0, 3.0]
+"#,
+        )
+        .unwrap();
+        let picked = m.select(&["tunnels".to_string()]).unwrap();
+        assert_eq!(picked.len(), 2, "a group should take every shot in it");
+        let picked = m.select(&["c".to_string()]).unwrap();
+        assert_eq!(picked.len(), 1, "a name should still work");
+        let picked = m.select(&["bridges".to_string(), "a".to_string()]).unwrap();
+        assert_eq!(picked.len(), 2, "names and groups mix");
+        // An unknown selector is an error, not an empty run: a typo that captures
+        // nothing reads as "the feature is gone" when somebody looks later.
+        let err = m.select(&["tunnel".to_string()]).unwrap_err();
+        assert!(err.contains("groups: bridges, tunnels"), "{err}");
     }
 
     #[test]

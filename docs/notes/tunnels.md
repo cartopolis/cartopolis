@@ -1,7 +1,7 @@
 ---
 topic: roads
-triggers: [tunnels.rs, tunnel, bore, portal, building_passage, underground, drawn_street, street_shape, TunnelDeck, TunnelShell, TunnelBores, cut_ground, mouth, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
-updated: 2026-09-15
+triggers: [tunnels.rs, tunnel, bore, portal, cut_sheet, mouth_digest, clipmap hole, basemap over a tunnel, building_passage, underground, drawn_street, street_shape, TunnelDeck, TunnelShell, TunnelBores, cut_ground, mouth, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
+updated: 2026-09-16
 ---
 
 # Tunnels: what the tiles know, and everything they do not
@@ -129,16 +129,34 @@ report of an avatar on the surface, not of a floor that failed. The instrument i
 there for whoever aims it: `avatar_floor_m` is the tunnel deck's level when the
 avatar is on one.
 
+## The basemap needs the same hole, and every level of it
+
+Cutting the vector ground is not the whole cut. Under those surfaces lies the
+raster clipmap — `y = -0.03` for the finest level and 0.4 m lower per coarser one
+(`map_stream::level_y`) — painted with a picture of the same streets. All of it is
+above a seven-metre carriageway, so a cut that opens only the vector sheet opens
+the bore onto a copy of the map: the 2026-09-15 capture over the merged ring
+trench shows pale ground with the city's own cars drawn across the opening.
+
+So `tunnels::cut_sheet` takes the same rings out of a clipmap tile's own mesh, in
+`terrain::displaced_grid` — the one place a tile's triangles exist. Three things
+follow:
+
+- **Every level is cut, not just the finest.** The pyramid stacks its levels 0.4 m
+  apart and sinks the unrelieved ones to just under the terrain field's lowest
+  point, a few metres in a polder. Cut only the top one and the bore opens onto
+  z10 imagery instead of z17 imagery.
+- **A tile that needs neither relief nor curve now needs a mesh anyway.** It used
+  to share one quad per zoom; a hole cannot be shared, so an overlapped tile gets
+  its own and goes back to the shared quad when the opening leaves.
+- **What a tile rebuilds on is a digest of the rings that reach *it*, not a global
+  revision.** Every vector cell that lands changes the set of openings somewhere,
+  and one counter would re-mesh every cut tile in the pyramid per cell of a fill —
+  the coarse levels cover the whole city. `TunnelBores::mouth_digest` is quiet
+  unless this tile's own hole moved.
+
 ## What is not done
 
-- **Only the vector ground is cut.** The clipmap's raster tile sits at
-  `y = -0.03` under it (`map_stream::level_y`) and is not cut, so on paper it
-  should roof the opening — and in the 2026-09-15 captures it demonstrably does
-  not: the cut is open and the deck is visible from above. Which of the two
-  (occlusion, or the vector sheet being what is drawn there at that range) is
-  doing the work has **not** been established, so this is a hole in the reasoning
-  rather than a known bug. Expect it to matter at some altitude or over ground
-  with no vector surface on it.
 - **Nothing collides with the roof**, so flying up through it works.
 - **The routing graph is unchanged**: `RoadGraph` is built from the same
   `streets` features and never knew about the tunnel flag either way, so a route

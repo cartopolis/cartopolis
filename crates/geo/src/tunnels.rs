@@ -139,7 +139,7 @@ pub const MAX_GRADE: f32 = 0.06;
 /// ordinary path way this cannot see.
 pub const PATH_GRADE: f32 = 0.10;
 
-/// How close to full depth the deck must be before a roof goes over it.
+/// How close to full depth the deck must be before a roof *may* go over it.
 ///
 /// **This is what makes a portal read as a portal.** Without it the roof begins
 /// the moment a soffit fits under the ground — 5.4 m down for a road bore — and
@@ -294,27 +294,11 @@ pub fn building_passages(
     features: &[Feature],
 ) -> std::collections::HashSet<usize> {
     let mut out = std::collections::HashSet::new();
-    let Some(meta) = tile.layer("buildings") else {
-        // No buildings in this tile: nothing here is a passage. Which is the
-        // right answer and not merely the available one — a building passage
-        // with no building drawn around it is a way through nothing.
-        return out;
-    };
-    let rings: Vec<(Bbox, Vec<[f32; 2]>)> = tile
-        .features(meta)
-        .iter()
-        .filter_map(|f| match &f.geometry {
-            Geometry::Polygon(p) => Some(p.exterior().0.iter().map(|c| [c.x, c.y]).collect()),
-            Geometry::MultiPolygon(mp) => {
-                mp.0.first()
-                    .map(|p| p.exterior().0.iter().map(|c| [c.x, c.y]).collect())
-            }
-            _ => None,
-        })
-        .filter(|ring: &Vec<[f32; 2]>| ring.len() >= 4)
-        .map(|ring| (bbox_of_ring(&ring), ring))
-        .collect();
+    let rings = building_rings(tile);
     if rings.is_empty() {
+        // No buildings in this tile: nothing here is a passage, which is the
+        // right answer and not merely the available one — a building passage
+        // with no building around it is a way through nothing.
         return out;
     }
     for (fi, feature) in features.iter().enumerate() {
@@ -346,6 +330,36 @@ pub fn building_passages(
         }
     }
     out
+}
+
+/// Every building footprint in the tile, with its bounding box, in tile units.
+///
+/// Read twice — by [`building_passages`] and by the roof test — so it is one walk
+/// of the layer rather than two.
+fn building_rings(tile: &TileData) -> Vec<(Bbox, Vec<[f32; 2]>)> {
+    let Some(meta) = tile.layer("buildings") else {
+        return Vec::new();
+    };
+    tile.features(meta)
+        .iter()
+        .filter_map(|f| match &f.geometry {
+            Geometry::Polygon(p) => Some(p.exterior().0.iter().map(|c| [c.x, c.y]).collect()),
+            Geometry::MultiPolygon(mp) => {
+                mp.0.first()
+                    .map(|p| p.exterior().0.iter().map(|c| [c.x, c.y]).collect())
+            }
+            _ => None,
+        })
+        .filter(|ring: &Vec<[f32; 2]>| ring.len() >= 4)
+        .map(|ring| (bbox_of_ring(&ring), ring))
+        .collect()
+}
+
+/// True where a building stands over this point.
+fn under_a_building(rings: &[(Bbox, Vec<[f32; 2]>)], p: [f32; 2]) -> bool {
+    rings
+        .iter()
+        .any(|(b, ring)| point_in_bbox(p, b) && point_in_ring(p, ring))
 }
 
 /// A handful of points along a line: both ends and three interior fractions.
@@ -432,33 +446,75 @@ fn depth_at(s: f32, total: f32, depth: f32, grade: f32, portals: PortalEnds) -> 
     d
 }
 
+/// How far apart two tunnel runs' ends may be and still be one bore, in metres.
+///
+/// **This number is the difference between a tunnel and a row of scoops.**
+/// Measured on the live Groningen tile 2026-09-15: the southern ring arrives as
+/// runs of 172–242 m whose ends stand **16 m apart** — they are separate features
+/// with separately generalised geometry, not a shared node. Ramping at every one
+/// of those ends made each run dive to 6 m and climb back to grade, so the ring
+/// read as a series of dishes in a park rather than as one sunken road, which is
+/// what two captures showed before this was measured.
+///
+/// Twenty-five metres takes those in and is still well under the shortest gap
+/// between unrelated portals.
+const JOIN_RADIUS_M: f32 = 25.0;
+
+/// How nearly two runs must point the same way to be joined, as a dot product.
+///
+/// `cos 35°`. Proximity alone is not enough: a cycle underpass ending beside a
+/// road tunnel's portal would suppress a real mouth and leave a carriageway
+/// disappearing into the ground with no ramp down to it. Sign-free, because two
+/// runs meeting head-to-head are as much a continuation as head-to-tail.
+const JOIN_COS: f32 = 0.819;
+
 /// Which ends of each line are genuine portals.
 ///
-/// An end is a portal when the line ends there *and* no other tunnel line ends
-/// on the same spot. Shortbread merges ways by attribute, but a tunnel whose
-/// tagging changes half way — a name, a lane count, a second level — arrives as
-/// two lines meeting end to end, and ramping both of them there would build two
-/// portals facing each other in the middle of a bore.
+/// An end is a portal when the line ends there and **no other tunnel run carries
+/// on from it** — near enough ([`JOIN_RADIUS_M`]) and pointing the same way
+/// ([`JOIN_COS`]). Shortbread merges ways by attribute, so a tunnel whose tagging
+/// changes half way arrives as several lines end to end; ramping at each of those
+/// would build portals facing each other in the middle of a bore.
 fn portal_ends(lines: &[Vec<[f32; 2]>]) -> Vec<PortalEnds> {
-    // Ends are compared on a decimetre lattice: the same node reaches two
-    // features through the same integer tile coordinate, so this only has to
-    // survive the scale to metres.
-    let key = |p: [f32; 2]| -> (i32, i32) { ((p[0] * 10.0) as i32, (p[1] * 10.0) as i32) };
-    let mut counts: std::collections::HashMap<(i32, i32), u32> = std::collections::HashMap::new();
-    for line in lines {
-        if let (Some(&h), Some(&t)) = (line.first(), line.last()) {
-            *counts.entry(key(h)).or_default() += 1;
-            *counts.entry(key(t)).or_default() += 1;
-        }
-    }
-    lines
+    // (point, unit direction along the line at that end), per run per end.
+    let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy).max(1e-6);
+        [dx / len, dy / len]
+    };
+    let ends: Vec<Option<[([f32; 2], [f32; 2]); 2]>> = lines
         .iter()
-        .map(|line| match (line.first(), line.last()) {
-            (Some(&h), Some(&t)) => [
-                counts.get(&key(h)).copied().unwrap_or(0) <= 1,
-                counts.get(&key(t)).copied().unwrap_or(0) <= 1,
-            ],
-            _ => [false, false],
+        .map(|l| {
+            (l.len() >= 2).then(|| {
+                [
+                    (l[0], dir(l[0], l[1])),
+                    (l[l.len() - 1], dir(l[l.len() - 2], l[l.len() - 1])),
+                ]
+            })
+        })
+        .collect();
+    ends.iter()
+        .enumerate()
+        .map(|(i, mine)| {
+            let Some(mine) = mine else {
+                return [false, false];
+            };
+            let joined = |k: usize| -> bool {
+                let (p, d) = mine[k];
+                ends.iter().enumerate().any(|(j, other)| {
+                    if j == i {
+                        return false;
+                    }
+                    let Some(other) = other else {
+                        return false;
+                    };
+                    other.iter().any(|(q, e)| {
+                        (p[0] - q[0]).hypot(p[1] - q[1]) <= JOIN_RADIUS_M
+                            && (d[0] * e[0] + d[1] * e[1]).abs() >= JOIN_COS
+                    })
+                })
+            };
+            [!joined(0), !joined(1)]
         })
         .collect()
 }
@@ -556,8 +612,10 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
     // The ways through a building stay on the ground sheet, where
-    // `tessellate_roads` draws them.
+    // `tessellate_roads` draws them — and the same footprints decide, below,
+    // which stretch of a bore is covered and which is an open cut.
     let passages = building_passages(tile, &features);
+    let rings = building_rings(tile);
 
     // Every tunnel line in the tile, in metres, before anything is built: the
     // portal test needs to see all of them at once. Each carries which of its
@@ -650,13 +708,37 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         } else {
             CLEARANCE_M
         };
-        // Roofed where the deck has reached depth *and* a soffit fits under the
-        // ground. One answer per vertex, computed once: the ceiling below and the
-        // hole cut in the ground both read it, so they cannot disagree about where
-        // the opening is — which is what two expressions of one rule eventually do.
+        // **A sunken road is open unless something is built over it.**
+        //
+        // Roofing everything that reached depth was the obvious rule and it is
+        // backwards. The thing being modelled — Groningen's southern ring — is an
+        // open trench for most of its length with three short lids on it, and
+        // roofing by depth buried the whole of it: measured on the live tile,
+        // every one of the six ring carriageways came out covered end to end, with
+        // no opening anywhere in the tile and nothing to see or walk into.
+        //
+        // The tiles do not say where a lid is. They do say where a *building* is,
+        // and that is the one covering this can actually know about: a way under a
+        // building is covered, a way under a park is a cut you can look into. So
+        // the buildings layer decides, the same layer that tells an arcade from a
+        // bore, and everywhere else the bore is open.
+        //
+        // What it costs: a genuine bore under a hill is drawn as a canyon through
+        // it. That is wrong and visible, and it is the trade this makes on
+        // purpose, because the alternative is a feature that is never visible at
+        // all. `docs/notes/tunnels.md` records it.
+        //
+        // One answer per vertex, computed once: the ceiling below and the hole cut
+        // in the ground both read it, so they cannot disagree about where the
+        // opening is — which is what two expressions of one rule eventually do.
         let roofed: Vec<bool> = deck_y
             .iter()
-            .map(|&y| y <= -(depth - ROOF_AT_DEPTH_M) && y + clearance <= CEILING_MAX_Y)
+            .zip(centre.iter())
+            .map(|(&y, &p)| {
+                y <= -(depth - ROOF_AT_DEPTH_M)
+                    && y + clearance <= CEILING_MAX_Y
+                    && under_a_building(&rings, [p[0] / scale, p[1] / scale])
+            })
             .collect();
         let sides = offset_sides(centre, half);
         deck_class.get_or_insert(class);
@@ -789,8 +871,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         // the ground. Keyed on the roof being missing rather than on the portal
         // flag, so the hole and the absent ceiling are decided by one test and
         // cannot disagree about where the opening is.
-        out.mouths
-            .extend(mouth_rings(centre, &roofed, half));
+        out.mouths.extend(mouth_rings(centre, &roofed, half));
 
         out.bores.push(Bore {
             centre: centre.clone(),
@@ -819,8 +900,104 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     if !shell.is_empty() {
         meshes.push(shell.into_mesh(SurfaceGroup::TunnelShell));
     }
+    // One trench, not two slots with a wall of earth between them.
+    //
+    // A dual carriageway is two ways in OSM and so two bores here, each opening
+    // only its own width — which leaves the median standing as ground, with
+    // surface traffic driving along it, down the middle of what is one box in the
+    // world. Merged by convex hull, which is exactly right for two parallel
+    // corridors; the parallelism test is what guards it, because the hull of two
+    // corridors that diverge is a wedge of ground taken away for nothing.
+    out.mouths = merge_parallel_mouths(std::mem::take(&mut out.mouths));
     out.meshes = meshes;
     out
+}
+
+/// Farthest apart two corridors may be and still be one trench, in metres.
+///
+/// A Dutch dual carriageway's halves are mapped 10–20 m apart. Thirty takes those
+/// and stops well short of the next parallel street.
+const MEDIAN_M: f32 = 30.0;
+
+/// Replace pairs of near, parallel corridors with the corridor containing both.
+fn merge_parallel_mouths(mouths: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
+    let mut out: Vec<Vec<[f32; 2]>> = Vec::with_capacity(mouths.len());
+    let mut merged = vec![false; mouths.len()];
+    for i in 0..mouths.len() {
+        if merged[i] {
+            continue;
+        }
+        let mut ring = mouths[i].clone();
+        for j in (i + 1)..mouths.len() {
+            if merged[j] || !parallel_and_near(&ring, &mouths[j]) {
+                continue;
+            }
+            let mut both = ring.clone();
+            both.extend_from_slice(&mouths[j]);
+            ring = convex_hull(&both);
+            merged[j] = true;
+        }
+        out.push(ring);
+    }
+    out
+}
+
+/// Whether two corridors run alongside each other closely enough, and in the same
+/// direction, to be one trench.
+fn parallel_and_near(a: &[[f32; 2]], b: &[[f32; 2]]) -> bool {
+    let (ba, bb) = (bbox_of_ring(a), bbox_of_ring(b));
+    if ba[0] - MEDIAN_M > bb[2]
+        || bb[0] - MEDIAN_M > ba[2]
+        || ba[1] - MEDIAN_M > bb[3]
+        || bb[1] - MEDIAN_M > ba[3]
+    {
+        return false;
+    }
+    let (da, db) = (principal_axis(a), principal_axis(b));
+    // Sign-free: the two halves of a dual carriageway run opposite ways.
+    (da[0] * db[0] + da[1] * db[1]).abs() >= JOIN_COS
+}
+
+/// The long axis of a ring, as a unit vector: its two most distant points.
+fn principal_axis(ring: &[[f32; 2]]) -> [f32; 2] {
+    let (mut best, mut pair) = (0.0f32, ([0.0f32; 2], [0.0f32; 2]));
+    for (i, p) in ring.iter().enumerate() {
+        for q in &ring[i + 1..] {
+            let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+            if d > best {
+                best = d;
+                pair = (*p, *q);
+            }
+        }
+    }
+    let (dx, dy) = (pair.1[0] - pair.0[0], pair.1[1] - pair.0[1]);
+    let len = dx.hypot(dy).max(1e-6);
+    [dx / len, dy / len]
+}
+
+/// Convex hull (Andrew's monotone chain), closed.
+fn convex_hull(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut p: Vec<[f32; 2]> = pts.to_vec();
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    p.dedup_by(|a, b| a == b);
+    if p.len() < 3 {
+        return pts.to_vec();
+    }
+    let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut hull: Vec<[f32; 2]> = Vec::with_capacity(p.len() * 2);
+    for &q in p.iter().chain(p.iter().rev()) {
+        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], q) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(q);
+    }
+    hull.pop();
+    if let Some(&head) = hull.first() {
+        hull.push(head);
+    }
+    hull
 }
 
 /// Inward normal of a wall segment. `left` picks which side of the direction the
@@ -838,26 +1015,40 @@ fn wall_normal(a: [f32; 2], b: [f32; 2], left: bool) -> [f32; 3] {
 
 /// The plan corridors of every roofless stretch of one run.
 ///
-/// Empty when the run is roofed end to end, which is what a bore whose portals
-/// both lie in neighbouring tiles looks like from here. A run with no roof at all
-/// — an underpass shorter than two ramps — comes back as a single corridor over
-/// its whole length, because the whole of it is open to the sky.
+/// **Every stretch, not the two ends.** This used to take the run before the
+/// first roofed vertex and the run after the last, which is the right shape only
+/// while the roof is a single band in the middle — as it was when a roof went
+/// over whatever had reached depth. Now that the roof follows the *buildings*
+/// over the bore, an open stretch can be anywhere and there can be several, and a
+/// bore whose first and last vertices happen to be built over came back with no
+/// opening at all.
+///
+/// What that failure looked like is worth remembering: the ground was cut, by
+/// tens of thousands of square metres, in 10 m fragments at the ends of bores,
+/// while the 200 m of open trench between them stayed roofed by grass. Every
+/// capture showed an unbroken park with a one-pixel line of tunnel wall standing
+/// 8 mm proud of it (2026-09-15).
 fn mouth_rings(centre: &[[f32; 2]], roofed: &[bool], half: f32) -> Vec<Vec<[f32; 2]>> {
-    // The *same* per-vertex answer the ceiling was drawn from, not a second
-    // expression of the rule that could drift from it.
-    let open = |i: usize| !roofed[i];
-    let last = centre.len().saturating_sub(1);
-    let first_roofed = (0..centre.len()).find(|&i| !open(i));
-    let Some(first_roofed) = first_roofed else {
-        return mouth_ring(centre, half).into_iter().collect();
-    };
-    let last_roofed = (0..centre.len()).rev().find(|&i| !open(i)).unwrap_or(last);
     let mut out = Vec::new();
-    if first_roofed > 0 {
-        out.extend(mouth_ring(&centre[0..=first_roofed], half));
-    }
-    if last_roofed < last {
-        out.extend(mouth_ring(&centre[last_roofed..=last], half));
+    let mut i = 0;
+    while i < centre.len() {
+        if roofed[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < centre.len() && !roofed[i] {
+            i += 1;
+        }
+        // One vertex of overlap into the roofed part at each side, so the hole
+        // meets the ceiling rather than leaving a sliver of ground on the lip of
+        // the opening — the same reason the corridor is cut wider than the
+        // carriageway.
+        let lo = start.saturating_sub(1);
+        let hi = (i).min(centre.len() - 1);
+        if hi > lo {
+            out.extend(mouth_ring(&centre[lo..=hi], half));
+        }
     }
     out
 }
@@ -907,10 +1098,48 @@ fn mouth_ring(run: &[[f32; 2]], half: f32) -> Option<Vec<[f32; 2]>> {
 /// not a smaller tree — a canopy standing in the opening is left standing, which
 /// is wrong in the small and much less wrong than the alternative.
 pub fn cut_ground(meshes: &mut [SurfaceMesh], mouths: &[Vec<[f32; 2]>]) {
-    if mouths.is_empty() {
+    let clips = clips_of(mouths);
+    if clips.is_empty() {
         return;
     }
-    let clips: Vec<(Bbox, Vec<IntPoint<i32>>)> = mouths
+    let mut overlay: Overlay<i32> = Overlay::new(64);
+    for mesh in meshes.iter_mut() {
+        if !is_ground(mesh.group) {
+            continue;
+        }
+        cut_mesh(mesh, &clips, &mut overlay);
+    }
+}
+
+/// Take the same openings out of one sheet that is not a vector surface at all —
+/// a basemap clipmap tile.
+///
+/// **The hole in the vector ground is not the whole hole.** Under those surfaces
+/// lies the raster basemap, three centimetres down and painted with a picture of
+/// the same streets, so cutting only the vector sheet opens the bore onto a copy
+/// of the map rather than onto the trench: measured over the DUO cut, the
+/// carriageway was seven metres below a plausible-looking road surface with the
+/// city's own cars drawn on it. Every clipmap level is above the deck, so every
+/// level that a mouth falls in needs the hole too — which is why this takes one
+/// mesh rather than a slice, and why [`is_ground`] has no say here: the caller
+/// already knows what it is handing over.
+///
+/// Coordinates are the mesh's own local XZ, so the caller translates the mouths
+/// into the tile's frame before calling. Answers whether anything was removed,
+/// which is what lets a tile that no longer overlaps go back to the shared quad.
+pub fn cut_sheet(mesh: &mut SurfaceMesh, mouths: &[Vec<[f32; 2]>]) -> bool {
+    let clips = clips_of(mouths);
+    if clips.is_empty() {
+        return false;
+    }
+    let mut overlay: Overlay<i32> = Overlay::new(64);
+    cut_mesh(mesh, &clips, &mut overlay)
+}
+
+/// The mouths as i_overlay clip contours, each with the bounding box that lets a
+/// triangle skip it.
+fn clips_of(mouths: &[Vec<[f32; 2]>]) -> Vec<(Bbox, Vec<IntPoint<i32>>)> {
+    mouths
         .iter()
         .filter(|ring| ring.len() >= 4)
         .map(|ring| {
@@ -922,17 +1151,7 @@ pub fn cut_ground(meshes: &mut [SurfaceMesh], mouths: &[Vec<[f32; 2]>]) {
             (bbox_of_ring(ring), pts)
         })
         .filter(|(_, pts)| pts.len() >= 3)
-        .collect();
-    if clips.is_empty() {
-        return;
-    }
-    let mut overlay: Overlay<i32> = Overlay::new(64);
-    for mesh in meshes.iter_mut() {
-        if !is_ground(mesh.group) {
-            continue;
-        }
-        cut_mesh(mesh, &clips, &mut overlay);
-    }
+        .collect()
 }
 
 /// Whether a group is a sheet lying on the ground, and so something the opening
@@ -996,7 +1215,7 @@ fn cut_mesh(
     mesh: &mut SurfaceMesh,
     clips: &[(Bbox, Vec<IntPoint<i32>>)],
     overlay: &mut Overlay<i32>,
-) {
+) -> bool {
     let has_uv = !mesh.uvs.is_empty();
     let has_n = !mesh.normals.is_empty();
     let has_c = !mesh.colors.is_empty();
@@ -1155,7 +1374,7 @@ fn cut_mesh(
     }
 
     if !touched {
-        return;
+        return false;
     }
     mesh.positions = positions;
     mesh.indices = indices;
@@ -1163,6 +1382,7 @@ fn cut_mesh(
     mesh.normals = normals;
     mesh.colors = colors;
     mesh.rungs = rungs;
+    true
 }
 
 #[cfg(test)]
@@ -1306,13 +1526,18 @@ mod tests {
         println!("bores={} mouths={}", out.bores.len(), out.mouths.len());
         for (i, b) in out.bores.iter().enumerate() {
             let deepest = b.deck_y.iter().copied().fold(0.0f32, f32::min);
+            let len: f32 = b
+                .centre
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
             println!(
-                "bore {i}: half_w={:.1} pts={} deepest={:.2} head={:?} tail={:?}",
+                "bore {i}: half_w={:.1} len={len:.0}m deepest={deepest:.2} ends=({:.0},{:.0})->({:.0},{:.0})",
                 b.half_w,
-                b.centre.len(),
-                deepest,
-                b.centre.first(),
-                b.centre.last()
+                b.centre.first().map_or(0.0, |p| p[0]),
+                b.centre.first().map_or(0.0, |p| p[1]),
+                b.centre.last().map_or(0.0, |p| p[0]),
+                b.centre.last().map_or(0.0, |p| p[1]),
             );
         }
         for (i, m) in out.mouths.iter().enumerate() {
@@ -1322,6 +1547,148 @@ mod tests {
                 b[0], b[2], b[1], b[3]
             );
         }
+    }
+
+    /// The cut must actually take ground away. It is the one step between a bore
+    /// and a bore you can see, and a no-op here looks exactly like a feature that
+    /// was never built: the geometry is all correct and the ground roofs it.
+    #[test]
+    fn the_cut_removes_the_ground_over_an_opening() {
+        // A 100 m square of ground as two triangles, the way earcut emits a
+        // simple polygon.
+        let mesh = SurfaceMesh {
+            group: SurfaceGroup::Grass,
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [100.0, 0.0, 0.0],
+                [100.0, 0.0, 100.0],
+                [0.0, 0.0, 100.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        let before = mesh_area(&mesh);
+        // A 20 m wide corridor straight through the middle.
+        let mouth = vec![
+            [40.0, -10.0],
+            [60.0, -10.0],
+            [60.0, 110.0],
+            [40.0, 110.0],
+            [40.0, -10.0],
+        ];
+        // **Both ways round.** A mouth's winding follows the direction of the bore
+        // it belongs to, so a rule that only works on one of them works on half a
+        // city — and looks like a tunnel that was never built.
+        for reversed in [false, true] {
+            let mut ring = mouth.clone();
+            if reversed {
+                ring.reverse();
+            }
+            let mut m = mesh.clone();
+            cut_ground(std::slice::from_mut(&mut m), &[ring]);
+            let after = mesh_area(&m);
+            assert!(
+                (before - after - 2000.0).abs() < 200.0,
+                "reversed={reversed}: expected ~2000 m² gone, {:.0} went",
+                before - after
+            );
+        }
+    }
+
+    /// **The basemap takes the same hole, and keeps its texture registered.**
+    ///
+    /// A clipmap tile is one textured quad, and what reveals a cut that went wrong
+    /// there is not a missing triangle but a *slipped* one: the imagery is mapped
+    /// 0..1 across the tile, so a re-triangulated corner whose texture coordinates
+    /// were not carried across draws a smear of the wrong part of the city. The
+    /// area assertion says the hole is there; the corner assertion says the rest of
+    /// the tile still shows what it showed before.
+    #[test]
+    fn the_basemap_sheet_takes_the_hole_with_its_texture_intact() {
+        let mut sheet = SurfaceMesh {
+            group: SurfaceGroup::Built,
+            positions: vec![
+                [-92.0, 0.0, -92.0],
+                [92.0, 0.0, -92.0],
+                [92.0, 0.0, 92.0],
+                [-92.0, 0.0, 92.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        let before = mesh_area(&sheet);
+        // A 20 m corridor across the middle, the shape a portal approach makes.
+        let mouth = vec![
+            [-10.0, -100.0],
+            [10.0, -100.0],
+            [10.0, 100.0],
+            [-10.0, 100.0],
+            [-10.0, -100.0],
+        ];
+        assert!(cut_sheet(&mut sheet, &[mouth]));
+        let gone = before - mesh_area(&sheet);
+        assert!(
+            (gone - 20.0 * 184.0).abs() < 100.0,
+            "expected ~{:.0} m² gone, {gone:.0} went",
+            20.0 * 184.0
+        );
+        // Every surviving vertex still carries the texture coordinate its position
+        // implies — u east, v south, 0..1 across the 184 m tile.
+        for (p, uv) in sheet.positions.iter().zip(sheet.uvs.iter()) {
+            let want = [(p[0] + 92.0) / 184.0, (p[2] + 92.0) / 184.0];
+            assert!(
+                (uv[0] - want[0]).abs() < 1e-3 && (uv[1] - want[1]).abs() < 1e-3,
+                "vertex at {p:?} carries uv {uv:?}, not {want:?}"
+            );
+        }
+        // A tile the opening misses is left exactly as it was: the caller uses this
+        // answer to put the shared quad back, and a false yes there would give every
+        // tile in the pyramid a mesh of its own.
+        let mut elsewhere = SurfaceMesh {
+            group: SurfaceGroup::Built,
+            ..sheet.clone()
+        };
+        elsewhere.positions = vec![
+            [1000.0, 0.0, 1000.0],
+            [1100.0, 0.0, 1000.0],
+            [1100.0, 0.0, 1100.0],
+        ];
+        elsewhere.uvs = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+        elsewhere.normals = vec![[0.0, 1.0, 0.0]; 3];
+        elsewhere.indices = vec![0, 1, 2];
+        let far = vec![
+            [-10.0, -10.0],
+            [10.0, -10.0],
+            [10.0, 10.0],
+            [-10.0, 10.0],
+            [-10.0, -10.0],
+        ];
+        assert!(!cut_sheet(&mut elsewhere, &[far]));
+        assert_eq!(elsewhere.indices, vec![0, 1, 2]);
+    }
+
+    /// Plan area of a mesh's triangles.
+    fn mesh_area(m: &SurfaceMesh) -> f32 {
+        m.indices
+            .chunks_exact(3)
+            .map(|t| {
+                let p = [
+                    m.positions[t[0] as usize],
+                    m.positions[t[1] as usize],
+                    m.positions[t[2] as usize],
+                ];
+                ((p[1][0] - p[0][0]) * (p[2][2] - p[0][2])
+                    - (p[2][0] - p[0][0]) * (p[1][2] - p[0][2]))
+                    .abs()
+                    * 0.5
+            })
+            .sum()
     }
 
     #[test]

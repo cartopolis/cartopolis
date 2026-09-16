@@ -1716,12 +1716,17 @@ pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
 /// surface that is everywhere at or under the measured ground — which is what allows
 /// a distant level to be coarse at all (see [`build_floors`]). At the finest levels
 /// the quad is the sample and the floor is the measurement.
+/// `mouths` are the tunnel openings the sheet has to be missing over, in this
+/// grid's own local XZ. Cutting here rather than at the call site is what lets a
+/// tile that needs no relief and no curve still get a hole in it: it is the only
+/// place a clipmap tile's triangles exist.
 pub fn displaced_grid(
     field: &TerrainField,
     globe: &crate::systems::globe::GlobeState,
     centre: Vec2,
     size: f32,
     divisions: usize,
+    mouths: &[Vec<[f32; 2]>],
 ) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -1773,6 +1778,21 @@ pub fn displaced_grid(
     // same frame it adds this mesh, so the auto-`Aabb` pass still sees the
     // positions; a handle stashed for later reuse could not do this (that is why
     // `street_labels`' shared quad keeps `MAIN_WORLD`).
+    let (positions, normals, uvs, indices) = if mouths.is_empty() {
+        (positions, normals, uvs, indices)
+    } else {
+        let mut sheet = cartopolis_geo::vector_tiles::SurfaceMesh {
+            group: cartopolis_geo::vector_tiles::SurfaceGroup::Built,
+            positions,
+            normals,
+            uvs,
+            indices,
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+        cartopolis_geo::tunnels::cut_sheet(&mut sheet, mouths);
+        (sheet.positions, sheet.normals, sheet.uvs, sheet.indices)
+    };
     Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,

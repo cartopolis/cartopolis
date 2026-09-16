@@ -695,6 +695,20 @@ pub struct ShotMetrics {
     /// counts the *bores* — the floor-and-walls description the avatar walks in —
     /// rather than meshes, because that is the half a picture cannot show.
     pub tunnel_bores: usize,
+    /// How deep the deepest streamed carriageway runs, metres below the ground
+    /// sheet. Zero with no tunnel in range; about −7 over a Dutch sunken road.
+    /// See [`tunnels::TunnelBores::deepest_deck`] for why this is a number rather
+    /// than something to photograph.
+    pub tunnel_deck_m: f32,
+    /// Clipmap tiles whose raster sheet has an opening cut out of it
+    /// (`map_stream::BasemapHoles`).
+    ///
+    /// The vector ground and the basemap are two sheets a few centimetres apart,
+    /// and a capture cannot tell which of them is roofing a bore — which is
+    /// precisely the question that went a day unanswered. Zero here with
+    /// `tunnel_bores` above zero means the trench is being photographed through a
+    /// hole in only one of the two.
+    pub basemap_open_tiles: usize,
     /// Doors drawn on facades from the register's entrance points
     /// (`lod22::DoorCount`).
     pub building_doors: usize,
@@ -1074,7 +1088,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_bores,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_bores,tunnel_deck_m,basemap_open_tiles,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -1152,6 +1166,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("furniture_factor", 4),
     ("globe_texture_mb", 2),
     ("avatar_floor_m", 2),
+    ("tunnel_deck_m", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
@@ -2498,6 +2513,41 @@ pub fn place_camera(
     );
 }
 
+
+
+/// `lat,lng,alt pitch,yaw [out]` — the served form of `--at` and `--look`.
+fn parse_request(line: &str) -> Result<ShotSpec, String> {
+    let mut parts = line.split_whitespace();
+    let at = parts.next().ok_or("empty request")?;
+    let look = parts.next().unwrap_or("-90,0");
+    let out = parts.next().map(PathBuf::from);
+    let nums = |s: &str, want: usize| -> Result<Vec<f64>, String> {
+        let v: Vec<f64> = s
+            .split(',')
+            .map(|p| p.trim().parse::<f64>().map_err(|e| format!("{s:?}: {e}")))
+            .collect::<Result<_, _>>()?;
+        (v.len() == want)
+            .then_some(v)
+            .ok_or_else(|| format!("{s:?}: expected {want} numbers"))
+    };
+    let a = nums(at, 3)?;
+    let l = nums(look, 2)?;
+    Ok(ShotSpec {
+        lat: a[0],
+        lng: a[1],
+        alt: a[2],
+        pitch_deg: l[0] as f32,
+        yaw_deg: l[1] as f32,
+        name: None,
+        description: Some("served".into()),
+        out,
+        mode: None,
+        hide_ui: None,
+        ui: None,
+        env: ShotEnv::default(),
+    })
+}
+
 /// Keep a `--shot-mode avatar` run in Follow, which nothing else will.
 ///
 /// **Follow is not on offer offline** (`free_camera::follow_available` wants a
@@ -2741,6 +2791,8 @@ pub struct ShotReadouts<'w, 's> {
     vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
+    basemap_holes: Res<'w, crate::systems::map_stream::BasemapHoles>,
     ground_detail: Res<'w, crate::systems::ground_detail::GroundDetail>,
     water_levels: Res<'w, crate::systems::water_levels::WaterLevels>,
     furniture: Res<'w, crate::systems::street_furniture::FurnitureLod>,
@@ -3291,6 +3343,8 @@ pub fn drive_capture(
             flood_defences: readouts.dikes.len(),
             flood_defences_measured: readouts.dikes.measured(),
             tunnel_bores: readouts.tunnels.bore_count(),
+            tunnel_deck_m: readouts.tunnels.deepest_deck(),
+            basemap_open_tiles: readouts.basemap_holes.0,
             interior_rooms: readouts.interiors.rooms(),
             interior_storeys: readouts.interior_floors.storeys(),
             building_selected: readouts.building_selection.is_selected(),
@@ -3970,6 +4024,8 @@ mod tests {
             flood_defences: 0,
             flood_defences_measured: 0,
             tunnel_bores: 0,
+            tunnel_deck_m: 0.0,
+            basemap_open_tiles: 0,
             interior_rooms: 0,
             interior_storeys: 0,
             building_selected: false,

@@ -1,0 +1,132 @@
+# Known places to check that grade separation still works: tunnels under the
+# ground, bridges over it, and the two things that are neither.
+#
+#     cargo shots --manifest docs/grade-shots.toml            # everything
+#     cargo shots --manifest docs/grade-shots.toml --only tunnels
+#     cargo shots --manifest docs/grade-shots.toml --only bridges,crossroads
+#
+# **Gate the subject, not the shot.** `--expect` is manifest-wide by design, and
+# a group is a set of views of one thing — so the assertions that hold for every
+# view in a group go on the command line beside `--only`, and the run exits
+# non-zero with the measured value beside the failure:
+#
+#     cargo shots --manifest docs/grade-shots.toml --only tunnels \
+#         --expect 'settled==true' --expect 'tunnel_bores>0' \
+#         --expect 'basemap_open_tiles>0' --expect 'tunnel_deck_m<=-6.0'
+#
+# The last two are the pair that a picture cannot separate: `tunnel_deck_m` says
+# the carriageway is genuinely down there rather than a stripe painted on the
+# grass, and `basemap_open_tiles` says the *raster* sheet has the hole too — cut
+# only the vector ground and the bore opens onto a painted copy of the same map.
+#     # …or, with a real GPU and a client that stays up between views:
+#     slot claim deck && slot sync
+#     slot run -- bash /tmp/cap.sh       # --shot-serve, see CLAUDE.md
+#
+# **Why a fixed list.** Every one of these was found by hand, and finding them
+# again cost most of a day: aiming a camera at a specific bore by converting tile
+# coordinates is error-prone (it put four captures over empty parkland), and a
+# dark shape in a frame is not self-identifying — one of them was reported as a
+# tunnel portal and turned out to be an ordinary road with a kerb. A named
+# viewpoint that somebody has already looked at is the cheapest way not to repeat
+# either mistake.
+#
+# **What to check, per shot, is in its description.** Read `--dump-state` beside
+# the picture: `tunnel_bores` says how many bores are standing and
+# `tunnel_deck_m` how deep the deepest runs — a cut photographs the same whether
+# the road in it is one metre down or seven, so the depth is a number, not
+# something to squint at.
+
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1600x900"
+out_dir = "gpu"
+hide_ui = true
+mode = "free"
+# Mid-afternoon rather than noon: a seven-metre trench is most legible when the
+# sun puts one of its walls in shadow, which is exactly what noon does not do.
+time = 15.0
+fog = 0.0
+clouds = 0.0
+rain = 0.0
+settle = 3.0
+wait = 90.0
+
+# ─── Tunnels ────────────────────────────────────────────────────────────────
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-open"
+description = "Groningen's southern ring beside DUO, where it runs in open cut. Expect: a hole in the park with a sunken carriageway and its markings in it, a retaining wall along each side, and the ground unbroken over the stretches with a building on top."
+at = [53.2054811, 6.5749845, 35]
+look = [-25.0, -67.0]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-down"
+description = "The same cut from straight above — the shape of the opening, and whether the median between the paired carriageways is still ground (it is; each bore opens only its own width)."
+at = [53.2054811, 6.5749845, 140]
+look = [-90.0, 0.0]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-east"
+description = "Weg der Verenigde Naties at the Oosterpoort end, tagged tunnel for its whole length here. Expect bores in `tunnel_bores` whether or not one is in frame."
+at = [53.208783, 6.582361, 120]
+look = [-30.0, -51.0]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-underpass-cycle"
+description = "A cycle underpass — the short, shallow case. `PATH_DEPTH_M`, not the road's seven metres, and short enough that it never reaches full depth. Expect a dip, not a bore."
+at = [53.2069758, 6.5788647, 60]
+look = [-30.0, 0.0]
+
+# ─── Bridges ────────────────────────────────────────────────────────────────
+
+[[shot]]
+group = "bridges"
+name = "bridge-emmaviaduct"
+description = "The Emmaviaduct over the rail yard: the measured-deck case (bridge-heights.md puts it at 6.6 m). Expect a deck standing clear of the tracks with its approaches meeting it, not a slab lying in the ground."
+at = [53.207344, 6.562210, 160]
+look = [-35.0, -20.0]
+
+[[shot]]
+group = "bridges"
+name = "bridge-hereweg"
+description = "Hereweg over the southern ring — a bridge *over* the tunnelled stretch, so this is where the two features meet. Expect the deck above and, where the ring is in open cut, the trench beneath it."
+at = [53.210789, 6.571278, 110]
+look = [-30.0, -45.0]
+
+[[shot]]
+group = "bridges"
+name = "bridge-griffeweg"
+description = "Griffeweg: a canal bridge at street level. Under `MIN_LIFT_M` it is laid flat on purpose — a Dutch canal bridge sits a metre over its quays and lifting it would float a slab over its own approaches."
+at = [53.214825, 6.579046, 90]
+look = [-30.0, -60.0]
+
+[[shot]]
+group = "bridges"
+name = "bridge-cycle"
+description = "A cycle bridge west of the centre: the narrow, light case, where a wrongly-lifted deck is most obvious against the path either side."
+at = [53.207591, 6.548170, 70]
+look = [-30.0, -45.0]
+
+# ─── Crossroads ─────────────────────────────────────────────────────────────
+#
+# Not grade separation, but the same machinery decides them: `road_stitch` cuts
+# the ribbons against each other so no two cover the same ground, and
+# `street_nodes` decides which arms are a junction and which merely cross. A
+# junction that goes wrong looks like a flap of tarmac or a seam that flickers.
+
+[[shot]]
+group = "crossroads"
+name = "crossroads-julianaplein"
+description = "Julianaplein, where the ring, the Hereweg and the tunnel mouths all meet — the busiest junction in the city and the one with grade separation on three sides."
+at = [53.2049288, 6.5724690, 200]
+look = [-55.0, -30.0]
+
+[[shot]]
+group = "crossroads"
+name = "crossroads-europaplein"
+description = "Europaplein: a large signalised junction on flat ground, so anything odd here is the ribbon cut rather than a height."
+at = [53.2095754, 6.5842127, 180]
+look = [-50.0, -60.0]

@@ -502,6 +502,8 @@ pub fn build(
     let parsed = parse_size(&size).ok_or_else(|| format!("size wants WxH, got {size:?}"))?;
 
     let harness = ShotHarness {
+        // A measurement run never serves: it is a fixed flight.
+        serve: None,
         path: manifest_path.with_extension("png"),
         shots,
         size: parsed,

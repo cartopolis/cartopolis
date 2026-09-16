@@ -2103,6 +2103,7 @@ fn run_client() {
         .insert_resource(user_store)
         .init_resource::<systems::map_stream::MapStream>()
         .init_resource::<systems::map_stream::ReliefBacklog>()
+        .init_resource::<systems::map_stream::BasemapHoles>()
         .init_resource::<systems::ground_detail::GroundDetail>()
         .init_resource::<systems::ground_detail::GridCellOrigin>()
         // The Settings ▸ Storage button's request, and what came of it.

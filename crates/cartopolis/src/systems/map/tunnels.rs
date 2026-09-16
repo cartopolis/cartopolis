@@ -52,7 +52,41 @@ pub struct CellTunnels {
 /// One cell's tunnels in the anchored world-XZ frame.
 struct Cell {
     bores: Vec<Bore>,
-    mouths: Vec<Vec<[f32; 2]>>,
+    mouths: Vec<Mouth>,
+}
+
+/// One opening, with the two things every frame asks of it precomputed.
+///
+/// **Both are a per-frame cost otherwise.** `map_stream` tests every clipmap tile
+/// against every opening on every frame — 424 tiles against the openings of a
+/// whole city — so deriving a ring's bounding box by walking its points there
+/// would be millions of comparisons a frame to answer a question whose answer
+/// never changes after the cell lands. The hash is precomputed for the same
+/// reason: a tile's digest is then the sum of the hashes of the openings that
+/// reach it, and reaches nothing else.
+struct Mouth {
+    /// `[min x, min z, max x, max z]`.
+    bbox: [f32; 4],
+    ring: Vec<[f32; 2]>,
+    hash: u64,
+}
+
+impl Mouth {
+    fn new(ring: Vec<[f32; 2]>) -> Self {
+        let mut bbox = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in &ring {
+            bbox[0] = bbox[0].min(p[0]);
+            bbox[1] = bbox[1].min(p[1]);
+            bbox[2] = bbox[2].max(p[0]);
+            bbox[3] = bbox[3].max(p[1]);
+            for v in p {
+                hash ^= u64::from(v.to_bits());
+                hash = hash.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        Self { bbox, ring, hash }
+    }
 }
 
 /// Every bore standing, keyed by the cell that streamed it.
@@ -93,7 +127,7 @@ impl TunnelBores {
                 mouths: tunnels
                     .mouths
                     .into_iter()
-                    .map(|ring| ring.iter().copied().map(shift).collect())
+                    .map(|ring| Mouth::new(ring.iter().copied().map(shift).collect()))
                     .collect(),
             },
         );
@@ -107,6 +141,74 @@ impl TunnelBores {
     /// Drop everything (re-anchor: every stored coordinate is in the old frame).
     pub fn clear(&mut self) {
         self.cells.clear();
+    }
+
+    /// Every opening overlapping the square of `half` metres about `centre`, moved
+    /// into that square's own frame.
+    ///
+    /// The frame change is the point: a clipmap tile's vertices are metres from its
+    /// own centre, and the rings are kept in anchored world metres. A ring is
+    /// returned whole even when only a corner of it reaches the tile — clipping it
+    /// to the square would put an edge down the middle of the opening, and the cut
+    /// itself is happy to be handed geometry that misses.
+    #[must_use]
+    pub fn mouths_near(&self, centre: Vec2, half: f32) -> Vec<Vec<[f32; 2]>> {
+        let mut out = Vec::new();
+        self.each_mouth_near(centre, half, |m| {
+            out.push(
+                m.ring
+                    .iter()
+                    .map(|p| [p[0] - centre.x, p[1] - centre.y])
+                    .collect(),
+            );
+        });
+        out
+    }
+
+    /// What a clipmap tile stores to know its hole is still the right hole.
+    ///
+    /// **Not a global revision, and the difference is a burst.** Every cell that
+    /// lands changes the set of openings, and a single counter would rebuild every
+    /// cut tile in the pyramid each time one arrived — the coarse levels cover the
+    /// whole city, so they would re-mesh on every vector cell of a fill. A digest
+    /// of the rings that reach *this* tile is quiet unless this tile's own hole
+    /// moved, and it costs a bounding-box test per ring with nothing allocated.
+    #[must_use]
+    pub fn mouth_digest(&self, centre: Vec2, half: f32) -> u64 {
+        // Order-independent: the cells are a hash map and iterate in whatever
+        // order they please, so the fold has to commute or the digest changes for
+        // reasons that are not about geometry. Addition of a per-ring hash does.
+        let mut sum: u64 = 0;
+        self.each_mouth_near(centre, half, |m| sum = sum.wrapping_add(m.hash));
+        sum
+    }
+
+    fn each_mouth_near(&self, centre: Vec2, half: f32, mut f: impl FnMut(&Mouth)) {
+        let (lo, hi) = (centre - half, centre + half);
+        for m in self.cells.values().flat_map(|c| c.mouths.iter()) {
+            let b = m.bbox;
+            if b[0] <= hi.x && lo.x <= b[2] && b[1] <= hi.y && lo.y <= b[3] {
+                f(m);
+            }
+        }
+    }
+
+    /// The deepest carriageway among the streamed bores, metres below the ground
+    /// sheet (so zero or negative), for `--dump-state`.
+    ///
+    /// **A picture cannot report this and that is the point.** A cut seen from
+    /// above shows a road through a hole whether the road is one metre down or
+    /// seven; the ramp and the full-depth stretch look identical from anywhere
+    /// except a low oblique. So the depth is a number, and a capture can assert
+    /// it — which is what stops "I cannot see the depth" being answerable only by
+    /// another camera angle.
+    #[must_use]
+    pub fn deepest_deck(&self) -> f32 {
+        self.cells
+            .values()
+            .flat_map(|c| c.bores.iter())
+            .flat_map(|b| b.deck_y.iter().copied())
+            .fold(0.0, f32::min)
     }
 
     /// Bores standing, for `--dump-state`.
@@ -143,7 +245,7 @@ impl TunnelBores {
         self.cells
             .values()
             .flat_map(|c| c.mouths.iter())
-            .any(|ring| point_in_ring(at, ring))
+            .any(|m| point_in_ring(at, &m.ring))
     }
 
     /// Every bore's carriageway outline, for the collider mirror.
@@ -188,4 +290,85 @@ fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
         j = i;
     }
     inside
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cartopolis_geo::tunnels::Bore;
+
+    /// A cell holding one 20 m-wide opening running north from the cell corner.
+    fn one_mouth(bores: &mut TunnelBores, cell: (i64, i64), world: Vec2) {
+        bores.insert_cell(
+            cell,
+            world,
+            CellTunnels {
+                bores: vec![Bore {
+                    centre: vec![[0.0, 0.0], [0.0, 100.0]],
+                    deck_y: vec![0.0, -7.0],
+                    half_w: 10.0,
+                    clearance: 4.8,
+                }],
+                mouths: vec![vec![
+                    [-10.0, 0.0],
+                    [10.0, 0.0],
+                    [10.0, 100.0],
+                    [-10.0, 100.0],
+                    [-10.0, 0.0],
+                ]],
+            },
+        );
+    }
+
+    /// **The digest is what stops a fill re-meshing the whole pyramid.**
+    ///
+    /// Every vector cell that lands changes the set of openings somewhere. A tile
+    /// the change does not reach has to see the same number afterwards, or the
+    /// coarse levels — which cover the whole city — rebuild once per cell of a
+    /// fill, which is the upload burst this codebase keeps measuring.
+    #[test]
+    fn a_tile_the_opening_misses_sees_no_change() {
+        let mut bores = TunnelBores::default();
+        one_mouth(&mut bores, (0, 0), Vec2::new(0.0, 0.0));
+        let near = Vec2::new(0.0, 50.0);
+        let far = Vec2::new(5000.0, 5000.0);
+        let (over, away) = (
+            bores.mouth_digest(near, 92.0),
+            bores.mouth_digest(far, 92.0),
+        );
+        assert_ne!(over, 0, "the tile the opening is in must carry a digest");
+        assert_eq!(away, 0, "a tile a kilometre away must carry none");
+
+        // A second cell arriving elsewhere leaves the first tile's digest alone.
+        one_mouth(&mut bores, (1, 0), Vec2::new(3000.0, 0.0));
+        assert_eq!(bores.mouth_digest(near, 92.0), over);
+        assert_eq!(bores.mouth_digest(far, 92.0), away);
+
+        // …and retiring the cell the tile's opening came from does move it.
+        bores.drop_cell((0, 0));
+        assert_eq!(bores.mouth_digest(near, 92.0), 0);
+    }
+
+    /// The rings come back in the tile's own frame, which is what the cut is given.
+    ///
+    /// Getting this wrong is invisible in a count and total in a picture: a hole
+    /// cut at anchored-world coordinates lands wherever the tile happens to be
+    /// relative to the map anchor, so the opening appears in a field somewhere and
+    /// the tunnel stays roofed.
+    #[test]
+    fn the_openings_arrive_in_the_tiles_own_frame() {
+        let mut bores = TunnelBores::default();
+        one_mouth(&mut bores, (0, 0), Vec2::new(1000.0, 2000.0));
+        let centre = Vec2::new(1000.0, 2050.0);
+        let rings = bores.mouths_near(centre, 92.0);
+        assert_eq!(rings.len(), 1);
+        let ring = &rings[0];
+        // The mouth spans x −10..10 and z 0..100 about the cell corner, so about
+        // the tile centre it spans x −10..10 and z −50..50.
+        let xs: Vec<f32> = ring.iter().map(|p| p[0]).collect();
+        let zs: Vec<f32> = ring.iter().map(|p| p[1]).collect();
+        assert!((xs.iter().copied().fold(f32::MAX, f32::min) + 10.0).abs() < 1e-3);
+        assert!((zs.iter().copied().fold(f32::MAX, f32::min) + 50.0).abs() < 1e-3);
+        assert!((zs.iter().copied().fold(f32::MIN, f32::max) - 50.0).abs() < 1e-3);
+    }
 }
