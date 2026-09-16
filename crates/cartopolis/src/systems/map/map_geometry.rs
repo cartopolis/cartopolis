@@ -1418,7 +1418,10 @@ pub fn update_map_surfaces(
                 .furniture
                 .iter()
                 .chain(cell_places.vehicles.iter())
-                .filter(|f| mask.contains(f.kind))
+                // …and only where the instance will take one. A fountain standing
+                // in open water is a jet in a pond; an uploaded fountain model is
+                // something with a base, meant for a square.
+                .filter(|f| mask.contains(f.kind) && f.takes_placeholder_model())
                 .filter_map(|f| {
                     let p = stores.placeholders.get(f.kind)?;
                     let x = wx + f.x;

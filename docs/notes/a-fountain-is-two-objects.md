@@ -56,6 +56,22 @@ radius 0 and no `Interactable`.
 moored boat is on water by definition: the flag drives the fountain's form and
 the collider pass, and a hull is meant to stop you.
 
+## An operator's model stops at the water's edge
+
+`fountain` is already in `cartopolis_core::placeholders`, so an operator can hang
+an uploaded glTF on it with `PUT /api/admin/library/placeholders/fountain` and no
+code changes at all. `FurnitureInstance::takes_placeholder_model` is what stops
+that putting the basin back in the pond: a model on that slug is a thing with a
+base, placed with a yaw, and whoever uploaded it was picturing a square.
+
+The second half matters as much as the first. A masked kind is left *unmeshed*
+precisely because a model is going to stand where it was — so an instance that
+refuses a model has to keep its own geometry, or setting one fountain model
+deletes every jet in the country.
+
+The cost, stated: there is no way to give the jets a model of their own. That is
+the right way round — a missing feature beats a stone basin floating in a lake.
+
 ## What it still is not
 
 A still column of water. Nothing in the furniture group animates — a cell is one

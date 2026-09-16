@@ -1108,6 +1108,27 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
     }
 }
 
+impl FurnitureInstance {
+    /// Whether an operator's placeholder model may stand in for this instance.
+    ///
+    /// True for everything except a fountain in open water. A model hung on the
+    /// `fountain` slug is a thing that stands on the ground — it has a base, it is
+    /// placed with a yaw, and an operator uploading one is picturing a square.
+    /// Dropping it 40 m out into a pond is the plaza basin at the waterline all
+    /// over again, arriving through the model exchange instead of through
+    /// [`form::FOUNTAIN`].
+    ///
+    /// The cost is stated plainly: there is no way to give the jets a model of
+    /// their own. That is the conservative half of the trade, and it is the right
+    /// way round — an operator who sets a fountain model and finds one lake
+    /// unchanged has a missing feature, while one who finds a stone basin floating
+    /// in a lake has the bug this flag exists to remove.
+    #[must_use]
+    pub fn takes_placeholder_model(&self) -> bool {
+        !(self.over_water && matches!(self.kind, FurnitureKind::Fountain))
+    }
+}
+
 /// The form one *instance* is drawn as.
 ///
 /// [`parts`] answers for a kind; this answers for the object, and the two differ
@@ -1221,9 +1242,12 @@ pub fn build_furniture_meshes_except(
     if skip.is_empty() {
         return build_furniture_meshes(items, max_bytes);
     }
+    // An instance the mask covers is left *unmeshed* because a model will stand
+    // where it was — so one that refuses a model has to keep its geometry, or it
+    // disappears from the map entirely the moment an operator sets a fountain.
     let kept: Vec<FurnitureInstance> = items
         .iter()
-        .filter(|item| !skip.contains(item.kind))
+        .filter(|item| !skip.contains(item.kind) || !item.takes_placeholder_model())
         .copied()
         .collect();
     build_furniture_meshes(&kept, max_bytes)
@@ -2089,6 +2113,35 @@ mod tests {
             ..at(true)
         };
         assert_eq!(parts_for(&bench).len(), form::BENCH.len());
+    }
+
+    /// An operator's model replaces the basin and leaves the jet alone — and the
+    /// jet must still be *meshed*, because the mask's whole meaning is "a model
+    /// will stand here instead". Without the second half a fountain placeholder
+    /// deletes every jet in the country.
+    #[test]
+    fn a_jet_refuses_a_placeholder_model_and_keeps_its_geometry() {
+        let at = |over_water: bool| FurnitureInstance {
+            x: 0.0,
+            z: 0.0,
+            yaw: 0.0,
+            kind: FurnitureKind::Fountain,
+            luma: 1.0,
+            paint: palette::FURNITURE,
+            over_water,
+        };
+        assert!(at(false).takes_placeholder_model(), "a basin takes a model");
+        assert!(!at(true).takes_placeholder_model(), "a jet does not");
+
+        let skip = FurnitureMask::NONE.with(FurnitureKind::Fountain);
+        assert!(
+            build_furniture_meshes_except(&[at(false)], skip, None).is_empty(),
+            "the basin is left to the model"
+        );
+        assert!(
+            !build_furniture_meshes_except(&[at(true)], skip, None).is_empty(),
+            "the jet is still drawn"
+        );
     }
 
     #[test]
