@@ -1,6 +1,6 @@
 ---
 topic: roads
-triggers: [tunnels.rs, tunnel, bore, portal, cut_sheet, mouth_digest, clipmap hole, basemap over a tunnel, building_passage, underground, drawn_street, street_shape, TunnelDeck, TunnelShell, TunnelBores, cut_ground, mouth, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
+triggers: [tunnels.rs, tunnel, tunnel, entrance, cut_sheet, opening_digest, clipmap hole, basemap over a tunnel, building_passage, underground, drawn_street, street_shape, TunnelRoad, TunnelStructure, Tunnels, cut_ground, opening, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
 updated: 2026-09-16
 ---
 
@@ -10,7 +10,7 @@ Until 2026-09-15 a tunnel was a **gap**. `vector_tiles::drawn_street` refused an
 way the tiles flagged, the raster painter skipped it, and `extract_street_labels`
 withheld its name, so the southern ring road at Groningen — `Weg der Verenigde
 Naties`, eight of whose segments are flagged — was simply absent between its
-portals: no carriageway, no markings, no name, nothing to walk into.
+entrances: no carriageway, no markings, no name, nothing to walk into.
 
 That refusal was right about one thing and silent about the rest. Painting a
 tunnel **on the ground** rules a pale band across every junction it passes under,
@@ -26,7 +26,7 @@ by `tunnels::tests::the_tiles_say_which_streets_are_tunnels`:
   oneway_reverse, link, surface` (plus `service`, `bicycle` on some). There is
   **no `layer`** on any feature in the layer.
 
-The second point has two consequences. A bore's depth cannot be read, so
+The second point has two consequences. A tunnel's depth cannot be read, so
 `LEVEL_DEPTH_M` (7 m) is a convention applied to every tunnel equally — the one
 number here a real source could replace. And `vector_tiles::layer_of` answers 0
 for every street on this tileset, which makes the raster's "OSM layer first, so a
@@ -42,20 +42,20 @@ of the flagged ways are those (12 of 44, Overpass, 2026-09-14). With no `layer` 
 separate them, sinking every flagged way seven metres puts a hole under a shopping
 street.
 
-The tile answers it, because a passage runs through a building and a bore does
+The tile answers it, because a passage runs through a building and a tunnel does
 not: `tunnels::building_passages` tests points along each flagged way against the
 tile's own `buildings` polygons and calls it a passage on a majority. Those stay
 on the ground sheet and are drawn as ordinary road — which is *more* than they had
 before, since the old rule dropped them with everything else.
 
-It fails safely. A bore mistaken for a passage is drawn where it always was; a
-passage mistaken for a bore is the visible error, and needs the way to spend most
+It fails safely. A tunnel mistaken for a passage is drawn where it always was; a
+passage mistaken for a tunnel is the visible error, and needs the way to spend most
 of its length inside a building footprint to happen.
 
-## The portal is invented, and it has to be
+## The entrance is invented, and it has to be
 
 OSM tags the tunnel at full depth for its whole length, and the road that descends
-to the portal is an ordinary surface way with nothing on it to say it is a ramp.
+to the entrance is an ordinary surface way with nothing on it to say it is a ramp.
 Drawn literally that is a carriageway seven metres down meeting one at ground
 level with a vertical step between them — a hole in the road.
 
@@ -67,11 +67,11 @@ tagged tunnel at `MAX_GRADE` (6 %), which puts a 7 m descent inside 120 m.
 Three things follow:
 
 - A tunnel shorter than two ramps never reaches full depth. Honest for an
-  underpass, wrong for a bore under a hill, and the tiles cannot tell those apart.
-- The mouth sits *inside* the tagged length rather than at its end.
-- An end is a portal only if the line genuinely ends there: a run the tile border
+  underpass, wrong for a tunnel under a hill, and the tiles cannot tell those apart.
+- The opening sits *inside* the tagged length rather than at its end.
+- An end is a entrance only if the line genuinely ends there: a run the tile border
   cut is held at full depth (so the two halves meet flush at the border), and an
-  end another tunnel run also ends on is a tagging split, not a mouth.
+  end another tunnel run also ends on is a tagging split, not a opening.
 
 ## A tunnel is covered, and it took two wrong rules to get there
 
@@ -87,7 +87,7 @@ tunnel looks like from above. Depth decides now; the buildings layer only tells 
 arcade from a real tunnel.
 
 **Second: a dual carriageway could never surface.** A road only opens where
-`portal_ends` decides it genuinely ends, and that test asked "is there another
+`open_ends` decides it genuinely ends, and that test asked "is there another
 tunnel's end within 25 m pointing the same way?" — meaning a way somebody had split
 in two. The two halves of a dual carriageway end *side by side* at the entrance,
 about eighteen metres apart, pointing the same way. Each saw the other, both were
@@ -114,10 +114,10 @@ Two ways to settle it and it is a question about sources, not a bug:
 
 ## The roof stops where it would surface, and that is the opening
 
-There is no "how long is the mouth" constant. The ceiling is drawn wherever it
+There is no "how long is the opening" constant. The ceiling is drawn wherever it
 fits under the ground (`CEILING_MAX_Y`) and is absent where the rising deck would
 push it through — which is exactly the open approach. The plan corridor of that
-roofless stretch is handed back as a *mouth*, and `cut_ground` subtracts it from
+roofless stretch is handed back as a *opening*, and `cut_ground` subtracts it from
 the cell's ground meshes on the same worker, on `road_stitch`'s integer millimetre
 lattice and for the same reason: a boundary produced by subtracting one shape from
 another is built from that shape's own vertices, so the hole's edge and the wall
@@ -131,10 +131,10 @@ entrance.
 `interiors::InteriorFloors` already answered "how high is the ground here" for a
 building's upper storeys, and both movement paths add the answer
 (`AvatarState::floor_lift`) to the terrain. A deck is that with the sign flipped,
-and needs no new channel — `interiors::support_level` asks the bores first.
+and needs no new channel — `interiors::support_level` asks the tunnels first.
 
 What keeps the two apart is the rule that was already there: a surface more than
-`STEP_UP_M` above you cannot pick you up. From the pavement over a bore the deck
+`STEP_UP_M` above you cannot pick you up. From the pavement over a tunnel the deck
 is unreachable, so you walk over the tunnel; from inside, the ground over your head
 is unreachable, so you walk along it. The only way between them is the ramp, which
 rises continuously out of the deck — exactly as the only way upstairs is the
@@ -142,7 +142,7 @@ flight.
 
 The walls have to be real collision. Without them, walking into one leaves the
 carriageway, finds no deck under the next step, and the floor returns to ground
-level — which reads as being fired seven metres up through the road. So a bore is
+level — which reads as being fired seven metres up through the road. So a tunnel is
 a **hollow** `collision::Footprint` while the avatar is inside it
 (`tunnels::inside`), and no collider at all while it is not: on the surface it must
 not be something to walk into, and underground it must be the only thing that is.
@@ -153,14 +153,14 @@ The two collision worlds are exclusive in both movement paths.
 ![The southern ring in open cut beside DUO](../img/tunnel-cut.png)
 
 Captured over the Groningen ring on 2026-09-15 and again on 2026-09-16 with the
-basemap cut (`--shot`, lavapipe, 53.20548 6.57498 at 35 m, pitch −25): 41 bores
+basemap cut (`--shot`, lavapipe, 53.20548 6.57498 at 35 m, pitch −25): 41 tunnels
 standing in the streamed cells, deepest deck −7.0 m, 68 clipmap tiles carrying a
 hole, and the sunken dual carriageway of `Weg der Verenigde Naties` in the trench
 with its markings and its traffic on it, retaining edges either side, and the
 ground unbroken where a building covers it.
 
-**Aiming a camera at a bore is harder than building one**, and two days of this
-work went on it. A shallow look *along* a bore — the angle that should see
+**Aiming a camera at a tunnel is harder than building one**, and two days of this
+work went on it. A shallow look *along* a tunnel — the angle that should see
 furthest into an open cut — is blocked by the trees standing along the corridor:
 at 18° above the horizon the frame is a wall of canopy. Deriving the camera from
 the way's own geometry (an Overpass query, the bearing across the midpoint, the
@@ -170,9 +170,9 @@ the trees into the cut. `docs/grade-shots.toml` is the list, and its tunnel
 entries are the ones still worth re-aiming.
 
 The floor rule is unit-tested in all four directions it can go wrong
-(`interiors::tests`): the pavement over a covered bore holds, the ground overhead
+(`interiors::tests`): the pavement over a covered tunnel holds, the ground overhead
 cannot lift you off the deck, the opening drops you onto the ramp, and ordinary
-ground beside a bore is unchanged.
+ground beside a tunnel is unchanged.
 
 **Walking through one has not been seen end to end.** Standing the harness's
 avatar on a deck needs it to spawn on a specific 12 m strip of carriageway, and it
@@ -188,7 +188,7 @@ Cutting the vector ground is not the whole cut. Under those surfaces lies the
 raster clipmap — `y = -0.03` for the finest level and 0.4 m lower per coarser one
 (`map_stream::level_y`) — painted with a picture of the same streets. All of it is
 above a seven-metre carriageway, so a cut that opens only the vector sheet opens
-the bore onto a copy of the map: the 2026-09-15 capture over the merged ring
+the tunnel onto a copy of the map: the 2026-09-15 capture over the merged ring
 trench shows pale ground with the city's own cars drawn across the opening.
 
 So `tunnels::cut_sheet` takes the same rings out of a clipmap tile's own mesh, in
@@ -197,7 +197,7 @@ follow:
 
 - **Every level is cut, not just the finest.** The pyramid stacks its levels 0.4 m
   apart and sinks the unrelieved ones to just under the terrain field's lowest
-  point, a few metres in a polder. Cut only the top one and the bore opens onto
+  point, a few metres in a polder. Cut only the top one and the tunnel opens onto
   z10 imagery instead of z17 imagery.
 - **A tile that needs neither relief nor curve now needs a mesh anyway.** It used
   to share one quad per zoom; a hole cannot be shared, so an overlapped tile gets
@@ -205,7 +205,7 @@ follow:
 - **What a tile rebuilds on is a digest of the rings that reach *it*, not a global
   revision.** Every vector cell that lands changes the set of openings somewhere,
   and one counter would re-mesh every cut tile in the pyramid per cell of a fill —
-  the coarse levels cover the whole city. `TunnelBores::mouth_digest` is quiet
+  the coarse levels cover the whole city. `Tunnels::opening_digest` is quiet
   unless this tile's own hole moved.
 
 ## Photographing one is harder than building one
@@ -218,7 +218,7 @@ all now removed:
 
 - **Hand-converting the tessellator's tile-local metres** into a latitude and
   longitude. Two hand-written conversions disagreed with each other and both
-  disagreed with the client. `TunnelBores::nearest_entrance` answers instead, and
+  disagreed with the client. `Tunnels::nearest_entrance` answers instead, and
   `tunnel_entrance_lat`/`lng`/`heading` in `--dump-state` is the answer.
 - **Aiming by pitch at a shallow angle.** What lands in frame is
   `altitude / tan(pitch)` metres ahead, and `altitude` is above the map anchor's
@@ -246,7 +246,7 @@ them did.
 
 ## Everything vertical here is invented, and two sources we already stream could replace it
 
-The tiles carry one bit. So the plan position of a bore is exact and *every*
+The tiles carry one bit. So the plan position of a tunnel is exact and *every*
 vertical fact in the picture is a convention: `LEVEL_DEPTH_M` (7 m), `MAX_GRADE`
 (6 %), `CLEARANCE_M`, and "roof it where a building is above". That is a
 plausible tunnel, not that tunnel, and it is why a capture of one is

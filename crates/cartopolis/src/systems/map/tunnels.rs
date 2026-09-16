@@ -1,9 +1,9 @@
-//! The bores this client streams, and the floor you stand on inside one.
+//! The tunnels this client streams, and the floor you stand on inside one.
 //!
 //! The geometry is [`cartopolis_geo::tunnels`]; this is the half that needs Bevy.
 //! It holds what a cell's tunnels are *as places* rather than as triangles — the
 //! carriageway down there, and the stretch of ground that has to be missing over
-//! the portal — keyed by cell and dropped with it, the same contract
+//! the entrance — keyed by cell and dropped with it, the same contract
 //! `world_places`, `street_labels` and the drive network keep.
 //!
 //! # A tunnel floor is a negative storey
@@ -17,7 +17,7 @@
 //!
 //! What keeps the two apart is the rule that was already there. A surface more
 //! than `interiors::STEP_UP_M` above you cannot pick you up, so from the pavement
-//! over a bore the deck is unreachable and you walk over the tunnel; from inside
+//! over a tunnel the deck is unreachable and you walk over the tunnel; from inside
 //! it, the ground over your head is unreachable for the same reason and you walk
 //! along it. Neither case needs to know the other exists. The only way between
 //! them is the ramp, which rises continuously out of the deck — exactly as the
@@ -27,7 +27,7 @@
 //!
 //! Without them, walking into a tunnel wall leaves the carriageway, finds no deck
 //! under the next step, and the floor returns to ground level — which reads as
-//! being fired seven metres into the air through the road above. So a bore is a
+//! being fired seven metres into the air through the road above. So a tunnel is a
 //! **hollow** collider ([`collision::Footprint`]) while you are inside it, and no
 //! collider at all while you are not: on the surface it is not there to be walked
 //! into, and underground it is the only thing that is.
@@ -35,24 +35,24 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use cartopolis_geo::tunnels::Bore;
+use cartopolis_geo::tunnels::Tunnel;
 
 /// One cell's tunnels, as the worker built them: tile-local metres.
 #[derive(Default)]
 pub struct CellTunnels {
-    pub bores: Vec<Bore>,
+    pub tunnels: Vec<Tunnel>,
     /// The plan corridors the worker took the ground away over
     /// (`cartopolis_geo::tunnels::cut_ground`). Kept on this side as well as cut
     /// there, because a hole is a fact about the *floor* too: over one, the
     /// ground is not something to stand on, which is the whole of how the avatar
     /// gets down the ramp instead of walking over it.
-    pub mouths: Vec<Vec<[f32; 2]>>,
+    pub openings: Vec<Vec<[f32; 2]>>,
 }
 
 /// One cell's tunnels in the anchored world-XZ frame.
 struct Cell {
-    bores: Vec<Bore>,
-    mouths: Vec<Mouth>,
+    tunnels: Vec<Tunnel>,
+    openings: Vec<Mouth>,
 }
 
 /// One opening, with the two things every frame asks of it precomputed.
@@ -89,25 +89,25 @@ impl Mouth {
     }
 }
 
-/// Every bore standing, keyed by the cell that streamed it.
+/// Every tunnel standing, keyed by the cell that streamed it.
 ///
 /// The frame is anchored world-XZ — the same one `collision::BuildingColliders`
 /// and the avatar's own position are in, so a query needs no conversion at the
 /// call site. The tile-local coordinates the tessellator works in are translated
 /// once, here, at insert.
 #[derive(Resource, Default)]
-pub struct TunnelBores {
+pub struct Tunnels {
     cells: HashMap<(i64, i64), Cell>,
 }
 
-impl TunnelBores {
+impl Tunnels {
     /// Install (or replace) one cell's tunnels. `world` is the cell's north-west
     /// corner in world metres, which is what the tile-local coordinates are
     /// relative to.
     pub fn insert_cell(&mut self, cell: (i64, i64), world: Vec2, tunnels: CellTunnels) {
-        if tunnels.bores.is_empty() && tunnels.mouths.is_empty() {
+        if tunnels.tunnels.is_empty() && tunnels.openings.is_empty() {
             // Not merely an optimisation: an empty entry is indistinguishable
-            // from a cell with tunnels when counting, and `bore_count` is what
+            // from a cell with tunnels when counting, and `tunnel_count` is what
             // `--dump-state` reports.
             self.cells.remove(&cell);
             return;
@@ -116,16 +116,16 @@ impl TunnelBores {
         self.cells.insert(
             cell,
             Cell {
-                bores: tunnels
-                    .bores
+                tunnels: tunnels
+                    .tunnels
                     .into_iter()
-                    .map(|b| Bore {
+                    .map(|b| Tunnel {
                         centre: b.centre.iter().copied().map(shift).collect(),
                         ..b
                     })
                     .collect(),
-                mouths: tunnels
-                    .mouths
+                openings: tunnels
+                    .openings
                     .into_iter()
                     .map(|ring| Mouth::new(ring.iter().copied().map(shift).collect()))
                     .collect(),
@@ -152,9 +152,9 @@ impl TunnelBores {
     /// to the square would put an edge down the middle of the opening, and the cut
     /// itself is happy to be handed geometry that misses.
     #[must_use]
-    pub fn mouths_near(&self, centre: Vec2, half: f32) -> Vec<Vec<[f32; 2]>> {
+    pub fn openings_near(&self, centre: Vec2, half: f32) -> Vec<Vec<[f32; 2]>> {
         let mut out = Vec::new();
-        self.each_mouth_near(centre, half, |m| {
+        self.each_opening_near(centre, half, |m| {
             out.push(
                 m.ring
                     .iter()
@@ -174,18 +174,18 @@ impl TunnelBores {
     /// of the rings that reach *this* tile is quiet unless this tile's own hole
     /// moved, and it costs a bounding-box test per ring with nothing allocated.
     #[must_use]
-    pub fn mouth_digest(&self, centre: Vec2, half: f32) -> u64 {
+    pub fn opening_digest(&self, centre: Vec2, half: f32) -> u64 {
         // Order-independent: the cells are a hash map and iterate in whatever
         // order they please, so the fold has to commute or the digest changes for
         // reasons that are not about geometry. Addition of a per-ring hash does.
         let mut sum: u64 = 0;
-        self.each_mouth_near(centre, half, |m| sum = sum.wrapping_add(m.hash));
+        self.each_opening_near(centre, half, |m| sum = sum.wrapping_add(m.hash));
         sum
     }
 
-    fn each_mouth_near(&self, centre: Vec2, half: f32, mut f: impl FnMut(&Mouth)) {
+    fn each_opening_near(&self, centre: Vec2, half: f32, mut f: impl FnMut(&Mouth)) {
         let (lo, hi) = (centre - half, centre + half);
-        for m in self.cells.values().flat_map(|c| c.mouths.iter()) {
+        for m in self.cells.values().flat_map(|c| c.openings.iter()) {
             let b = m.bbox;
             if b[0] <= hi.x && lo.x <= b[2] && b[1] <= hi.y && lo.y <= b[3] {
                 f(m);
@@ -193,7 +193,7 @@ impl TunnelBores {
         }
     }
 
-    /// The deepest carriageway among the streamed bores, metres below the ground
+    /// The deepest carriageway among the streamed tunnels, metres below the ground
     /// sheet (so zero or negative), for `--dump-state`.
     ///
     /// **A picture cannot report this and that is the point.** A cut seen from
@@ -203,78 +203,78 @@ impl TunnelBores {
     /// it — which is what stops "I cannot see the depth" being answerable only by
     /// another camera angle.
     #[must_use]
-    pub fn deepest_deck(&self) -> f32 {
+    pub fn deepest_road(&self) -> f32 {
         self.cells
             .values()
-            .flat_map(|c| c.bores.iter())
-            .flat_map(|b| b.deck_y.iter().copied())
+            .flat_map(|c| c.tunnels.iter())
+            .flat_map(|b| b.road_y.iter().copied())
             .fold(0.0, f32::min)
     }
 
     /// Bores standing, for `--dump-state`.
     #[must_use]
-    pub fn bore_count(&self) -> usize {
-        self.cells.values().map(|c| c.bores.len()).sum()
+    pub fn tunnel_count(&self) -> usize {
+        self.cells.values().map(|c| c.tunnels.len()).sum()
     }
 
     /// The deck level under `p`, metres relative to the ground sheet, corrected
-    /// for the depth the terrain field has *already* dug. `None` where no bore's
+    /// for the depth the terrain field has *already* dug. `None` where no tunnel's
     /// carriageway is under it.
     ///
-    /// The **deepest** answer wins where two bores overlap in plan — a tunnel
+    /// The **deepest** answer wins where two tunnels overlap in plan — a tunnel
     /// under a tunnel is `layer=-2` under `layer=-1`, and the one you can be
     /// standing on is the lower.
     ///
-    /// **The floor has to move with the road, and the road moves.** A bore's deck
+    /// **The floor has to move with the road, and the road moves.** A tunnel's deck
     /// is metres below the ground sheet, and over an open cut the measured ground
     /// sheet is the trench floor — so `map_geometry::stand_on_terrain` lifts the
-    /// drawn bore back up by what AHN accounts for. A collision floor that did not
+    /// drawn tunnel back up by what AHN accounts for. A collision floor that did not
     /// do the same arithmetic would leave the avatar walking nine metres under the
     /// carriageway it can see, which is the kind of disagreement that reads as the
     /// tunnel being broken rather than as two places computing one number.
     ///
     /// `dug` answers "how far below the land around it is the measured ground
     /// here", and is a closure because this crate must not know about
-    /// `TerrainField` — the cap is per bore, so it is applied in here where the
-    /// bore is known rather than by the caller.
+    /// `TerrainField` — the cap is per tunnel, so it is applied in here where the
+    /// tunnel is known rather than by the caller.
     #[must_use]
-    pub fn deck_under_measured(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<f32> {
+    pub fn road_under_measured(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<f32> {
         let at = [p.x, p.y];
         self.cells
             .values()
-            .flat_map(|c| c.bores.iter())
+            .flat_map(|c| c.tunnels.iter())
             .filter_map(|b| {
-                b.deck_under(at).map(|y| {
-                    let cap = -b.deck_y.iter().copied().fold(0.0_f32, f32::min);
+                b.road_under(at).map(|y| {
+                    let cap = -b.road_y.iter().copied().fold(0.0_f32, f32::min);
                     y + dug(p).max(0.0).min(cap)
                 })
             })
             .min_by(f32::total_cmp)
     }
 
-    /// The nearest bore to `p`: how far its carriageway is in plan, and how deep
+    /// The nearest tunnel to `p`: how far its carriageway is in plan, and how deep
     /// the deck runs there. `None` when nothing is streamed.
     ///
-    /// **`deepest_deck` is a global minimum and cannot answer "is *that* road
+    /// **`deepest_road` is a global minimum and cannot answer "is *that* road
     /// down there?"** It reports the deepest carriageway anywhere in the streamed
     /// cells, so it reads −7.0 over a city with one tunnel in it while the road
     /// in the frame sits on the ground — which is how a capture came to be
     /// described as showing a trench when it showed a surface street beside one.
     /// This answers for a place.
     #[must_use]
-    pub fn nearest_bore(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<(f32, f32)> {
+    pub fn nearest_tunnel(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<(f32, f32)> {
         let at = [p.x, p.y];
         self.cells
             .values()
-            .flat_map(|c| c.bores.iter())
+            .flat_map(|c| c.tunnels.iter())
             .map(|b| {
                 let (d, y) = b.distance_to(at);
                 // The *drawn* depth, not the tessellator's convention. Reporting
-                // the raw `deck_y` was a metric that disagreed with the picture
+                // the raw `road_y` was a metric that disagreed with the picture
                 // beside it — it read −7.00 over a cut the measured ground puts
                 // nine metres down — and a number that contradicts the capture it
                 // is attached to is worse than no number.
-                let cap = -b.deck_y.iter().copied().fold(0.0_f32, f32::min);
+                let cap = -b.road_y.iter().copied().fold(0.0_f32, f32::min);
                 (d, y + dug(p).max(0.0).min(cap))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -301,13 +301,13 @@ impl TunnelBores {
     #[must_use]
     pub fn nearest_entrance(&self, from: Vec2) -> Option<(Vec2, f32)> {
         let mut best: Option<(f32, Vec2, f32)> = None;
-        for b in self.cells.values().flat_map(|c| c.bores.iter()) {
-            let deepest = b.deck_y.iter().copied().fold(0.0_f32, f32::min);
+        for b in self.cells.values().flat_map(|c| c.tunnels.iter()) {
+            let deepest = b.road_y.iter().copied().fold(0.0_f32, f32::min);
             if deepest > -1.0 {
                 continue;
             }
             let full = deepest + cartopolis_geo::tunnels::ROOF_AT_DEPTH_M;
-            let Some(k) = b.deck_y.iter().position(|&y| y <= full) else {
+            let Some(k) = b.road_y.iter().position(|&y| y <= full) else {
                 continue;
             };
             if k == 0 || k >= b.centre.len() {
@@ -333,26 +333,26 @@ impl TunnelBores {
         best.map(|(_, at, h)| (at, h))
     }
 
-    /// True where the ground has been taken away — the open approach at a portal.
+    /// True where the ground has been taken away — the open approach at a entrance.
     ///
     /// The one thing that makes a tunnel enterable on foot. Everywhere else the
     /// ground is a floor and the deck under it is unreachable, which is what keeps
-    /// the pavement over a bore walkable; here the ground is a hole, so the floor
+    /// the pavement over a tunnel walkable; here the ground is a hole, so the floor
     /// is whatever is at the bottom of it.
     #[must_use]
     pub fn over_opening(&self, p: Vec2) -> bool {
         let at = [p.x, p.y];
         self.cells
             .values()
-            .flat_map(|c| c.mouths.iter())
+            .flat_map(|c| c.openings.iter())
             .any(|m| point_in_ring(at, &m.ring))
     }
 
-    /// Every bore's carriageway outline, for the collider mirror.
+    /// Every tunnel's carriageway outline, for the collider mirror.
     pub fn corridors(&self) -> impl Iterator<Item = Vec<Vec2>> + '_ {
         self.cells
             .values()
-            .flat_map(|c| c.bores.iter())
+            .flat_map(|c| c.tunnels.iter())
             .map(|b| b.corridor().into_iter().map(Vec2::from).collect())
     }
 }
@@ -361,12 +361,12 @@ impl TunnelBores {
 /// a yes or a no — the collision gate, and the building footprints that stop
 /// applying once you are under them.
 ///
-/// Not zero: the deck *reaches* zero at the portal, and at that moment the avatar
+/// Not zero: the deck *reaches* zero at the entrance, and at that moment the avatar
 /// is standing on the road outside as much as inside. Half a metre down is past
 /// the kerb line and inside the cut.
 pub const INSIDE_M: f32 = -0.5;
 
-/// True when the avatar's floor puts it inside a bore rather than on the surface.
+/// True when the avatar's floor puts it inside a tunnel rather than on the surface.
 #[must_use]
 pub fn inside(floor_lift: f32) -> bool {
     floor_lift <= INSIDE_M
@@ -395,21 +395,21 @@ fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cartopolis_geo::tunnels::Bore;
+    use cartopolis_geo::tunnels::Tunnel;
 
     /// A cell holding one 20 m-wide opening running north from the cell corner.
-    fn one_mouth(bores: &mut TunnelBores, cell: (i64, i64), world: Vec2) {
-        bores.insert_cell(
+    fn one_mouth(tunnels: &mut Tunnels, cell: (i64, i64), world: Vec2) {
+        tunnels.insert_cell(
             cell,
             world,
             CellTunnels {
-                bores: vec![Bore {
+                tunnels: vec![Tunnel {
                     centre: vec![[0.0, 0.0], [0.0, 100.0]],
-                    deck_y: vec![0.0, -7.0],
+                    road_y: vec![0.0, -7.0],
                     half_w: 10.0,
                     clearance: 4.8,
                 }],
-                mouths: vec![vec![
+                openings: vec![vec![
                     [-10.0, 0.0],
                     [10.0, 0.0],
                     [10.0, 100.0],
@@ -428,25 +428,25 @@ mod tests {
     /// fill, which is the upload burst this codebase keeps measuring.
     #[test]
     fn a_tile_the_opening_misses_sees_no_change() {
-        let mut bores = TunnelBores::default();
-        one_mouth(&mut bores, (0, 0), Vec2::new(0.0, 0.0));
+        let mut tunnels = Tunnels::default();
+        one_mouth(&mut tunnels, (0, 0), Vec2::new(0.0, 0.0));
         let near = Vec2::new(0.0, 50.0);
         let far = Vec2::new(5000.0, 5000.0);
         let (over, away) = (
-            bores.mouth_digest(near, 92.0),
-            bores.mouth_digest(far, 92.0),
+            tunnels.opening_digest(near, 92.0),
+            tunnels.opening_digest(far, 92.0),
         );
         assert_ne!(over, 0, "the tile the opening is in must carry a digest");
         assert_eq!(away, 0, "a tile a kilometre away must carry none");
 
         // A second cell arriving elsewhere leaves the first tile's digest alone.
-        one_mouth(&mut bores, (1, 0), Vec2::new(3000.0, 0.0));
-        assert_eq!(bores.mouth_digest(near, 92.0), over);
-        assert_eq!(bores.mouth_digest(far, 92.0), away);
+        one_mouth(&mut tunnels, (1, 0), Vec2::new(3000.0, 0.0));
+        assert_eq!(tunnels.opening_digest(near, 92.0), over);
+        assert_eq!(tunnels.opening_digest(far, 92.0), away);
 
         // …and retiring the cell the tile's opening came from does move it.
-        bores.drop_cell((0, 0));
-        assert_eq!(bores.mouth_digest(near, 92.0), 0);
+        tunnels.drop_cell((0, 0));
+        assert_eq!(tunnels.opening_digest(near, 92.0), 0);
     }
 
     /// The rings come back in the tile's own frame, which is what the cut is given.
@@ -457,13 +457,13 @@ mod tests {
     /// the tunnel stays roofed.
     #[test]
     fn the_openings_arrive_in_the_tiles_own_frame() {
-        let mut bores = TunnelBores::default();
-        one_mouth(&mut bores, (0, 0), Vec2::new(1000.0, 2000.0));
+        let mut tunnels = Tunnels::default();
+        one_mouth(&mut tunnels, (0, 0), Vec2::new(1000.0, 2000.0));
         let centre = Vec2::new(1000.0, 2050.0);
-        let rings = bores.mouths_near(centre, 92.0);
+        let rings = tunnels.openings_near(centre, 92.0);
         assert_eq!(rings.len(), 1);
         let ring = &rings[0];
-        // The mouth spans x −10..10 and z 0..100 about the cell corner, so about
+        // The opening spans x −10..10 and z 0..100 about the cell corner, so about
         // the tile centre it spans x −10..10 and z −50..50.
         let xs: Vec<f32> = ring.iter().map(|p| p[0]).collect();
         let zs: Vec<f32> = ring.iter().map(|p| p[1]).collect();

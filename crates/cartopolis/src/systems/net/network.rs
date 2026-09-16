@@ -1359,8 +1359,8 @@ pub fn send_network_intent(
     // every wall. The offline path (`avatar::handle_avatar_movement`) always
     // subtracted the terrain here, which is what made this one visibly a bug.
     let airborne = avatar_state.position.y > AIRBORNE_EPS;
-    // Inside a bore the surface footprints are not what is around the avatar, and
-    // the bore's walls are — the same exclusive pair the offline path resolves
+    // Inside a tunnel the surface footprints are not what is around the avatar, and
+    // the tunnel's walls are — the same exclusive pair the offline path resolves
     // (`avatar::handle_avatar_movement`, `systems::tunnels`). Steered rather than
     // snapped for the reason this whole branch exists: the sim owns the position
     // online and would overwrite a snap with the next snapshot.

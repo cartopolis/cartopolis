@@ -14,13 +14,13 @@
 # non-zero with the measured value beside the failure:
 #
 #     cargo shots --manifest docs/grade-shots.toml --only tunnels \
-#         --expect 'settled==true' --expect 'tunnel_bores>0' \
-#         --expect 'basemap_open_tiles>0' --expect 'tunnel_deck_m<=-6.0'
+#         --expect 'settled==true' --expect 'tunnel_count>0' \
+#         --expect 'basemap_open_tiles>0' --expect 'tunnel_road_m<=-6.0'
 #
-# The last two are the pair that a picture cannot separate: `tunnel_deck_m` says
+# The last two are the pair that a picture cannot separate: `tunnel_road_m` says
 # the carriageway is genuinely down there rather than a stripe painted on the
 # grass, and `basemap_open_tiles` says the *raster* sheet has the hole too — cut
-# only the vector ground and the bore opens onto a painted copy of the same map.
+# only the vector ground and the tunnel opens onto a painted copy of the same map.
 #
 # **Every camera here was computed, not guessed.** The first version of this file
 # was aimed by hand and half of it missed: one "bridge" view pointed north-west
@@ -29,7 +29,7 @@
 # positions come from the ways themselves — an Overpass query for `tunnel` and
 # `bridge` highways over Groningen (2026-09-16), the bearing measured across the
 # midpoint of each way, and the camera placed back along the direction it is to
-# look in. A tunnel is viewed **along** its bore, which is the only angle that
+# look in. A tunnel is viewed **along** its tunnel, which is the only angle that
 # sees into an open cut; a bridge is viewed **across** its deck, which is the
 # angle that shows it standing clear of what it crosses.
 
@@ -52,7 +52,7 @@ wait = 90.0
 [[shot]]
 group = "tunnels"
 name = "tunnel-ring-cut"
-description = "Groningen's southern ring beside DUO (Weg der Verenigde Naties, 171 m tagged tunnel), looking west along the bore. Expect a sunken carriageway with its markings in it, a retaining wall along each side, and the ground unbroken over the stretches with a building on top."
+description = "Groningen's southern ring beside DUO (Weg der Verenigde Naties, 171 m tagged tunnel), looking west along the tunnel. Expect a sunken carriageway with its markings in it, a retaining wall along each side, and the ground unbroken over the stretches with a building on top."
 at = [53.205934, 6.577048, 43]
 look = [-18.0, 249.0]
 
@@ -73,7 +73,7 @@ look = [-20.0, 52.1]
 [[shot]]
 group = "tunnels"
 name = "tunnel-julianaweg"
-description = "Julianaweg, 127 m: shorter than two 120 m ramps, so it never reaches `LEVEL_DEPTH_M`. Expect a dip that sags and comes back up, not a bore — the honest answer for an underpass and the one case the tiles cannot tell from a bore under a hill."
+description = "Julianaweg, 127 m: shorter than two 120 m ramps, so it never reaches `LEVEL_DEPTH_M`. Expect a dip that sags and comes back up, not a tunnel — the honest answer for an underpass and the one case the tiles cannot tell from a tunnel under a hill."
 at = [53.204316, 6.567396, 37]
 look = [-18.0, 221.9]
 

@@ -425,8 +425,8 @@ pub mod palette {
     /// A tunnel's walls and roof. Darker than any surface in this palette on
     /// purpose: it is the one thing here that is never lit by the sun, and a
     /// concrete the tone of a pavement reads as a white box with a hole at each
-    /// end. The sky's ambient still reaches the open approach, so the mouth
-    /// stays lighter than the bore without anything modelling it.
+    /// end. The sky's ambient still reaches the open approach, so the opening
+    /// stays lighter than the tunnel without anything modelling it.
     pub const TUNNEL: u32 = 0x6E_6B_66;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
@@ -1186,11 +1186,11 @@ pub enum SurfaceGroup {
     /// it: putting the two in one mesh would ask that ladder to arbitrate a
     /// contest that does not exist, and would hand `road_stitch` a ribbon it
     /// could cut a surface street out of.
-    TunnelDeck(RoadClass),
+    TunnelRoad(RoadClass),
     /// A tunnel's walls and roof. One group for both: they are the same concrete
     /// and the same material, and splitting them would double the draw calls of
-    /// every bore to describe a difference nobody can see.
-    TunnelShell,
+    /// every tunnel to describe a difference nobody can see.
+    TunnelStructure,
 }
 
 impl SurfaceGroup {
@@ -1219,8 +1219,8 @@ impl SurfaceGroup {
             // …and the crop's own tone (`crate::crops::rgb`), same contract.
             Self::Crop => 0xFF_FF_FF,
             // A tunnel's carriageway is a carriageway: same texture, same white.
-            Self::TunnelDeck(_) => 0xFF_FF_FF,
-            Self::TunnelShell => palette::TUNNEL,
+            Self::TunnelRoad(_) => 0xFF_FF_FF,
+            Self::TunnelStructure => palette::TUNNEL,
             // Same colours the raster path cases with, so the two pipelines'
             // streets keep matching at the ring edge.
             Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
@@ -1273,11 +1273,11 @@ impl SurfaceGroup {
             // and the reason is what the rung means rather than what it is called:
             // these are not sheets in the coplanar stack. Every rung below exists
             // to settle a fight between surfaces lying on one plane, and the one
-            // thing a bore is never coplanar with is the ground over it — it is
+            // thing a tunnel is never coplanar with is the ground over it — it is
             // metres away, which real depth separates on its own. So it wants no
             // height offset (`is_sheet` is false above `Road`, so it gets none)
             // and it is indifferent to the few depth units it inherits.
-            Self::TunnelDeck(_) | Self::TunnelShell => GroundLayer::Standing,
+            Self::TunnelRoad(_) | Self::TunnelStructure => GroundLayer::Standing,
             Self::Canopy | Self::Trunk | Self::Furniture => GroundLayer::Standing,
         }
     }
@@ -2103,13 +2103,13 @@ fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
 /// `road_stitch::Ribbon::priority`, above the whole class hierarchy.
 ///
 /// **A kerb is the edge between a carriageway and what is not one.** Where
-/// another carriageway abuts, there is no kerb — that is a junction mouth, and
+/// another carriageway abuts, there is no kerb — that is a junction opening, and
 /// it is not optional: every side street in a city has one. The cut used to
 /// settle a kerb band against a carriageway on `road_rung` alone, which puts the
 /// *whole* of a higher class above the whole of a lower one, casing included. So
 /// a residential street tee-ing into a primary road lost the argument to that
 /// road's kerb band: its tarmac stopped at the far side of the kerb and the kerb
-/// line ran on unbroken across the mouth, walling the street off from the road
+/// line ran on unbroken across the opening, walling the street off from the road
 /// it joins. That is what a junction looked like from the pavement everywhere
 /// two classes met — which is most junctions, since Shortbread's classes are
 /// what make a street a side street.
@@ -2446,7 +2446,7 @@ pub fn tessellate_roads(
     let scale = tile_m / extent;
     let nodes = street_nodes(&features, scale);
     // The tunnel-flagged ways that are really arcades through a building: they are
-    // on the ground and are drawn here, while the rest are bores and belong to
+    // on the ground and are drawn here, while the rest are tunnels and belong to
     // `crate::tunnels`, which draws them under it.
     let passages = crate::tunnels::building_passages(tile, &features);
     // Rungs for the lines that could otherwise land coplanar, decided across the
@@ -2684,7 +2684,7 @@ pub fn tessellate_roads(
                     // is cut out of, not a band this has to draw.
                     if cased && on_deck.is_none() {
                         // The kerb wraps the fill's stub ends too, so the band
-                        // runs around the junction mouth instead of stopping
+                        // runs around the junction opening instead of stopping
                         // square at it. A mitred end needs no such treatment —
                         // the neighbour's kerb is mitred to the same bisector and
                         // meets this one exactly.
@@ -3023,7 +3023,7 @@ pub fn extract_street_labels(tile: &TileData, tile_m: f32) -> Result<Vec<StreetL
         // The bare `tunnel` flag here, not `tunnels::underground`: that predicate
         // also reads `layer`, which Shortbread carries on `streets` and **not**
         // on `street_labels`, so asking for it would answer "level 0" for every
-        // name in the layer and write every bore's name across the park over it.
+        // name in the layer and write every tunnel's name across the park over it.
         // The cost is that an arcade's name is still withheld, which is the
         // behaviour this layer has always had.
         if flag_of(feature, "tunnel") {
@@ -3124,7 +3124,7 @@ fn polyline_len(points: &[[f32; 2]]) -> f32 {
 /// refuses `subway` for the same reason; the `tunnel` flag is that rule applied to
 /// the kinds that can be either.
 pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
-    // A bore leaves the ground sheet because it is not on the ground — it is
+    // A tunnel leaves the ground sheet because it is not on the ground — it is
     // drawn under it by `crate::tunnels`. An arcade through a building is
     // flagged a tunnel too and *is* on the ground, so it stays here; see
     // `tunnels::underground`.
@@ -3138,7 +3138,7 @@ pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
 ///
 /// The half of [`drawn_street`] that is about the road itself. Split out for the
 /// one caller that has to overrule the tunnel refusal above — `tessellate_roads`,
-/// which has the tile and so can tell an arcade from a bore.
+/// which has the tile and so can tell an arcade from a tunnel.
 pub(crate) fn street_shape(feature: &Feature) -> Option<(RoadClass, f32)> {
     let kind = kind_of(feature).unwrap_or("");
     let flags = StreetFlags {
@@ -4085,7 +4085,7 @@ fn kerb_band(
             push_triangle_up(positions, indices, i0, o1, i1);
         }
     }
-    // A kerb also wraps the mouth of a junction stub, where the carriageway ends
+    // A kerb also wraps the opening of a junction stub, where the carriageway ends
     // square against the road it joins rather than being mitred into it. Those
     // patches are not side strips, so they are laid whole — as the quads `ribbon`
     // made them — and the general cut takes the carriageway back out of them.
@@ -5241,7 +5241,7 @@ mod tests {
             }
             for ls in lines {
                 // The midpoint of the middle *segment*, never a vertex. A vertex
-                // would routinely be the tunnel's portal, which the surface run of
+                // would routinely be the tunnel's entrance, which the surface run of
                 // the same street shares — and a probe sitting on a shared node
                 // reports a hit of exactly 0.0 m against a label that is correctly
                 // drawn.
@@ -6428,7 +6428,7 @@ mod tests {
         }
     }
 
-    /// **A side street's mouth has to be open.** A kerb is the edge between a
+    /// **A side street's opening has to be open.** A kerb is the edge between a
     /// carriageway and what is not one, so where another carriageway arrives
     /// there is no kerb.
     ///
@@ -6436,7 +6436,7 @@ mod tests {
     /// whole class above a whole class, kerb band included — so a residential
     /// street tee-ing into a primary road lost to that road's *kerb*: its tarmac
     /// stopped at the far side of the band and the kerb line ran on unbroken
-    /// across the mouth. Measured on the fixture over the junctions where two
+    /// across the opening. Measured on the fixture over the junctions where two
     /// kerbed classes meet at a clear angle, the point on the side street's
     /// centre line halfway through the main road's kerb band was drawn as:
     ///
@@ -6445,7 +6445,7 @@ mod tests {
     /// | the side street's carriageway | 0 | 129 |
     /// | the main road's kerb | 129 | 0 |
     ///
-    /// A picture cannot settle this — a kerb crossing a junction mouth is a
+    /// A picture cannot settle this — a kerb crossing a junction opening is a
     /// hairline at any altitude a whole junction fits in — which is why it is a
     /// geometric assertion and not a screenshot.
     #[test]
@@ -6545,7 +6545,7 @@ mod tests {
         }
         println!(
             "cross-class junction ends {ranked}, of those at a usable angle {angled}; \
-             mouths: {open} open, {walled} walled off, {bare} bare"
+             openings: {open} open, {walled} walled off, {bare} bare"
         );
         // The population is small because most of a city centre's streets are
         // one Shortbread class (`Minor` covers tertiary down to service), and it
@@ -6554,7 +6554,7 @@ mod tests {
         assert_eq!(
             walled,
             0,
-            "{walled} of {} mouths are sealed by the kerb of the road they join",
+            "{walled} of {} openings are sealed by the kerb of the road they join",
             open + walled + bare,
         );
     }
@@ -6871,10 +6871,10 @@ mod tests {
         // …and the same window again, coloured by **what** covers each pixel
         // rather than by how many things do. The overlap image cannot answer the
         // question a junction actually raises — *is the kerb running across the
-        // mouth of the street that joins here?* — because a kerb crossing a
+        // opening of the street that joins here?* — because a kerb crossing a
         // carriageway is a partition either way and shows up as one clean pixel
         // in both. This one draws the carriageways pale and the kerb bands dark,
-        // so a mouth is either open tarmac or a bar across it.
+        // so a opening is either open tarmac or a bar across it.
         let mut kind = vec![0u8; PX * PX];
         for m in &meshes {
             // A footway is drawn apart from a carriageway, because it is not one

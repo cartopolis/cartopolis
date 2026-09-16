@@ -201,14 +201,14 @@ pub struct GroundSkirt;
 pub struct MapSurface;
 
 /// Marker for a tunnel's own geometry — the carriageway down there, its walls
-/// and its roof (`SurfaceGroup::TunnelDeck` / `TunnelShell`).
+/// and its roof (`SurfaceGroup::TunnelRoad` / `TunnelStructure`).
 ///
 /// **Only so a capture can say whether the thing is on screen.** A tunnel is the
 /// one feature here that is invisible when it is working *and* invisible when it
 /// is broken: from anywhere but a low oblique over an open cut you see ground
-/// either way. `TunnelBores::bore_count` counts the floor-and-collision
+/// either way. `Tunnels::tunnel_count` counts the floor-and-collision
 /// description rather than triangles, so five captures in a row came back with
-/// "41 bores" and nothing in frame, which is exactly the gap
+/// "41 tunnels" and nothing in frame, which is exactly the gap
 /// `RouteVisual`'s pair of numbers exists to close for the route line.
 #[derive(Component)]
 pub struct TunnelSurface;

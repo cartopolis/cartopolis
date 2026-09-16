@@ -2095,7 +2095,7 @@ pub fn handle_avatar_movement(
                 + AIRBORNE_EPS;
         // Underground, the surface world is not what is around you: the
         // building over a tunnel is seven metres up and its footprint is not a
-        // wall down here, while the bore's own wall is the only thing that is
+        // wall down here, while the tunnel's own wall is the only thing that is
         // (`systems::tunnels`). So the two collision worlds are exclusive, and
         // which one applies is decided by the floor the avatar is standing on.
         let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
