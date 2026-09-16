@@ -1,7 +1,7 @@
 ---
 topic: client-build-cost
 triggers: [slow build, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld]
-updated: 2026-08-24
+updated: 2026-09-16
 ---
 
 # Where the client's build time actually goes
@@ -254,6 +254,73 @@ cargo rustc -p cartopolis --bin cartopolis -- --print link-args -C save-temps > 
 deletes the `.rcgu.o` files after a successful link, and without it the replay
 fails on missing objects. Then run that command line with `-fuse-ld=lld` swapped
 for `--ld-path=/path/to/mold`, redirecting `-o` somewhere harmless.
+
+## Sharing generic code across crates is SLOWER here (measured 2026-09-16)
+
+The monomorphisation analysis above ends with "Bevy exports no shareable
+instantiations, and every `Query`, `Res`, `SystemParam` … our code names is
+monomorphised and LLVM'd inside `cartopolis`", because `opt-level = 3` on
+dependencies turns cross-crate generic sharing off. There is a flag that turns it
+back on without touching the optimisation level — `-Zshare-generics=y` — and the
+note has invited somebody to try it for a month. It loses.
+
+Measured in a build slot (8 shared cores), all 559 dependencies rebuilt with
+`RUSTFLAGS="… -Zshare-generics=y"` (32 min 12 s for that build), then the same
+one-line edit to the crate root timed in both configurations, alternating:
+
+| | round 1 | round 2 |
+|---|---|---|
+| as shipped | 222 s | 198 s |
+| `-Zshare-generics=y` | 230 s | 251 s |
+
+So it is worse, on the same edit, in the same slot, within minutes of itself. It
+also requires a nightly compiler (or `RUSTC_BOOTSTRAP`) for the whole graph, and
+one `RUSTFLAGS` value forks every artifact in the build directory. Do not spend
+another hour on it; the mechanism in the section above is real but the flag that
+addresses it does not pay.
+
+**rustc's parallel front end is real and too small to adopt.** `-Zthreads=8` on
+the client library's full compile, replayed outside cargo so nothing thrashed:
+160 s against 171 s, about 6 %. Type-checking is only about a quarter of that
+unit and the rest is codegen, which the flag does not touch. It needs nightly for
+the same reason, for 6 %.
+
+**How to time one unit without rebuilding the world.** Changing `RUSTFLAGS`
+re-fingerprints every unit, so an A/B through cargo rebuilds hundreds of crates
+each way. Capture the compiler's own command line and replay it instead — the
+same trick the linker section above uses for `--print link-args`:
+
+```bash
+touch crates/cartopolis/src/lib.rs
+cargo build -p cartopolis -v 2>&1 | grep 'crate-name cartopolis ' > /tmp/cmd.txt
+# then strip the `Running \`…\``, drop the sccache prefix and `-C incremental=…`,
+# point --out-dir at a scratch directory, and run it with and without the flag
+```
+
+**And the replay needs cargo's environment or it silently measures nothing.**
+Run bare, the derive macros panic — `proc-macro-crate` reads `CARGO_MANIFEST_DIR`
+to find the manifest — and the compile ends in 5,941 errors after type-checking,
+*before codegen*. It takes about as long as a real compile (173 s vs 184 s), so
+the timing looks plausible and is measuring a different thing. Set at least
+`CARGO_MANIFEST_DIR`, `CARGO_PKG_*`, `CARGO_CRATE_NAME` and `OUT_DIR`, and check
+the run produced an `.rlib` before believing its clock.
+
+## What the edit loop actually costs in a build slot (2026-09-16)
+
+Same box, a settled slot, one line changed in `systems/map/water.rs`, load 4-5:
+
+| after one leaf edit | |
+|---|---|
+| `cargo check --workspace --exclude cartopolis_android --all-targets` | 16 s |
+| `cargo build -p cartopolis` | 17-30 s |
+| `cargo test --workspace --exclude cartopolis_android --no-run` | 34 s |
+
+That is roughly 5× the workstation figures at the top of this note, which is what
+the hardware difference predicts. **Nothing here is pathological**, which is worth
+recording because "the build is slow" is usually about something else: the same
+client-library compile measured **171 s at load 10 and 352 s at load 29**, so what
+moves build time on this machine is how many builds share the eight cores, not
+any flag in this file.
 
 ## Not measured
 
