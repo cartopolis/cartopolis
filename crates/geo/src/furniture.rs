@@ -1340,7 +1340,30 @@ impl LineKind {
     const fn spec(self) -> (f32, f32, Tone) {
         match self {
             Self::Fence => (1.2, 0.03, Tone::Wood),
-            Self::Wall => (2.0, 0.09, Tone::Stone),
+            // **The nominal wall is low on purpose, and 2.0 m was doing real
+            // damage.** This height is only used where the register has no
+            // measurement (`SurveyedLine::height_m`), which is most of the linear
+            // boundaries — the 3D product publishes polygons only, so every
+            // boundary surveyed as a *line* falls back to this number. Over one
+            // Groningen cell that is 3,698 m of the 6,264 m drawn.
+            //
+            // At 2.0 m that is an opaque slab you cannot see over, and along a
+            // canal or a pond it walls the water off completely — the thing the
+            // extractor's old exclusion of the bank protections was trying to
+            // avoid, arriving through the ordinary `muur` instead. The register's
+            // own measured distribution says so plainly: median 0.23 m, p90
+            // 1.46 m. A real one at the study pond is about sitting height and
+            // you look straight over it at the water.
+            //
+            // 0.9 m sits between that median and its p90. Being too low costs a
+            // wall that reads as edging; being too high costs the view, and only
+            // one of those is recoverable by looking somewhere else.
+            //
+            // The honest fix is a measurement per line, and the second-best is a
+            // form of its own for the noise barriers, which genuinely are 2–4 m
+            // and are 3 features in a city here. Both are follow-ups; neither is a
+            // reason to keep walling off every canal in the country.
+            Self::Wall => (0.9, 0.09, Tone::Stone),
             Self::Hedge => (1.1, 0.35, Tone::Foliage),
         }
     }
@@ -2050,8 +2073,13 @@ mod tests {
         };
         let nominal = top(line(None)).expect("the nominal form draws");
         assert!(
-            (nominal - 2.0).abs() < 0.01,
+            (nominal - 0.9).abs() < 0.01,
             "an unmeasured wall keeps the form's height, got {nominal}"
+        );
+        assert!(
+            nominal < 1.2,
+            "the nominal wall must stay low enough to see over: at 2 m it walls off \
+             every canal in the country, which is what it used to do"
         );
         let measured = top(line(Some(1.29))).expect("a measured wall draws");
         assert!(
