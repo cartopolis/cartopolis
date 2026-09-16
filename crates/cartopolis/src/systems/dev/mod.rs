@@ -5,6 +5,8 @@ pub mod desktop_integration;
 pub mod dev_panel;
 pub mod diagnostics;
 pub mod frame_pacing;
+#[cfg(mcp)]
+pub mod mcp;
 pub mod perf;
 pub mod pipeline_health;
 pub mod render_census;

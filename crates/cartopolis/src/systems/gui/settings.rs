@@ -200,6 +200,10 @@ pub fn render_settings_panel(
     // emptying a store is a directory walk on another thread, which is not
     // something an egui pass can wait for.
     mut cache: ResMut<CacheReset>,
+    // Where an editor attaches and what it must present — see
+    // `editor_access_section`. One parameter rather than three, because this
+    // system was already at thirteen of Bevy's sixteen.
+    #[cfg(mcp)] mut mcp: crate::systems::mcp::EditorAccess,
 ) {
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
@@ -213,6 +217,16 @@ pub fn render_settings_panel(
     let mut play_tone = false;
     let mut delete_account = false;
     let mut reset_cache = false;
+    let mut editor = EditorRow::default();
+    #[cfg(mcp)]
+    {
+        editor.serving = mcp.serving().map(|s| match s {
+            crate::systems::mcp::Serving::At(addr) => EditorServing::At(addr),
+            crate::systems::mcp::Serving::Off => EditorServing::Off,
+            crate::systems::mcp::Serving::Failed(why) => EditorServing::Failed(why),
+        });
+        editor.token = mcp.token().unwrap_or_default();
+    }
 
     // Edited as plain values and written back only on a real change. All three of
     // these resources are read by `is_changed()` gates — `DevPanelState`'s re-runs
@@ -250,7 +264,7 @@ pub fn render_settings_panel(
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.tab {
                     SettingsTab::General => {
-                        reset_cache = general_tab(ui, &mut edited, &cache);
+                        reset_cache = general_tab(ui, &mut edited, &cache, &mut editor);
                     }
                     SettingsTab::World => {
                         world_tab(ui, &mut world, &mut weather_live, observed);
@@ -288,6 +302,11 @@ pub fn render_settings_panel(
 
     if reset_cache {
         cache.requested = true;
+    }
+
+    #[cfg(mcp)]
+    if editor.regenerate {
+        mcp.regenerate();
     }
 
     if delete_account {
@@ -577,7 +596,12 @@ fn account_tab(
 ///
 /// Returns `true` when the Storage section's confirm was pressed, for
 /// `systems::cache_reset::apply_cache_reset` to act on.
-fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, cache: &CacheReset) -> bool {
+fn general_tab(
+    ui: &mut egui::Ui,
+    prefs: &mut AppPrefs,
+    cache: &CacheReset,
+    editor: &mut EditorRow,
+) -> bool {
     section(ui, "Units");
     ui.horizontal_wrapped(|ui| {
         for units in Units::ALL {
@@ -641,7 +665,159 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, cache: &CacheReset) -> b
 
     ui.add_space(8.0);
     ui.separator();
-    storage_section(ui, cache)
+    let reset = storage_section(ui, cache);
+    editor_access_section(ui, prefs, editor);
+    reset
+}
+
+/// What the Editor access section shows, and the one thing it can ask for.
+///
+/// A plain value rather than the resources themselves, because the section is
+/// drawn inside a closure that already holds the panel's `Ui`.
+///
+/// The **type** exists on every target so the one call site needs no `cfg`; its
+/// **fields** do not, because a target with no listener has nothing to put in
+/// them and this crate denies dead code. Off the desktop it is an empty struct
+/// handed to a section that draws nothing.
+#[derive(Default)]
+struct EditorRow {
+    /// `None` on a build with no listener at all — a phone, a browser, a
+    /// scripted capture — where the whole section is skipped.
+    #[cfg(mcp)]
+    serving: Option<EditorServing>,
+    #[cfg(mcp)]
+    token: String,
+    /// Set by the button; acted on after the panel closes its borrow.
+    #[cfg(mcp)]
+    regenerate: bool,
+}
+
+/// The mirror of `mcp::Serving`, so this file does not need that module's types
+/// in its signatures.
+#[cfg(mcp)]
+enum EditorServing {
+    At(std::net::SocketAddr),
+    Off,
+    Failed(String),
+}
+
+/// The token an editor presents to drive this client, and the address it
+/// presents it to (`systems::mcp`).
+///
+/// **Shown, not hidden.** It is a secret in the sense that somebody else's
+/// process must not have it, and not in the sense that its owner should never
+/// see it: the person reading this panel is configuring an editor on this
+/// machine, and what they need is to copy the string. A token written to a file
+/// beside the app data would be a secret nobody can find.
+///
+/// Nothing to draw on a target that has no listener — see the desktop arm below
+/// for what this would be.
+#[cfg(not(mcp))]
+fn editor_access_section(_ui: &mut egui::Ui, _prefs: &mut AppPrefs, _editor: &mut EditorRow) {}
+
+/// **Drawn wherever there could be a listener**, which is every desktop run —
+/// the switch is the point, and a switch you cannot find is not one. It is
+/// skipped entirely on a phone, in a browser and under a scripted capture, where
+/// there is no listener to explain and a row about one would be a setting that
+/// does nothing.
+///
+/// The address and token are shown only while it is actually serving: they are
+/// what you copy into an editor, and copying them off a client that is switched
+/// off is a configuration that silently will not work.
+#[cfg(mcp)]
+fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut EditorRow) {
+    let Some(serving) = &editor.serving else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.separator();
+    section(ui, "Editor access");
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(
+                "An editor on this machine can drive this client — fly the camera, \
+                 photograph what it sees, read what the map is doing. It listens on \
+                 this computer only, and refuses anything that does not present the \
+                 token below.",
+            )
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+        )
+        .wrap(),
+    );
+    theme::checkbox(
+        ui,
+        &mut prefs.mcp_enabled,
+        "Let an editor drive this client",
+    );
+
+    let listen = match serving {
+        EditorServing::At(addr) => *addr,
+        EditorServing::Off => {
+            theme::note(
+                ui,
+                "Switched off. Nothing is listening, and an editor cannot attach.",
+            );
+            return;
+        }
+        // Almost always a second client already holding the port. Said plainly,
+        // because the reader's next move — close the other one, or switch this
+        // off and on again — depends on knowing which it was.
+        EditorServing::Failed(why) => {
+            ui.colored_label(theme::WARN, format!("Not listening: {why}"));
+            theme::note(
+                ui,
+                "Another client on this machine is probably using the port. Switch this \
+                 off and on again to try once more.",
+            );
+            return;
+        }
+    };
+
+    ui.add_space(4.0);
+    for (label, value) in [
+        ("Address", format!("http://{listen}/mcp")),
+        ("Token", editor.token.clone()),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .size(theme::SIZE_CHIP)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&value)
+                        .size(theme::SIZE_MONO)
+                        .monospace()
+                        .color(theme::CREAM),
+                )
+                .truncate(),
+            );
+            if ui
+                .add(egui::Button::new(format!("{}  Copy", icons::COPY)))
+                .clicked()
+            {
+                crate::utils::clipboard::set_text(&value);
+            }
+        });
+    }
+    ui.add_space(4.0);
+    // Behind a confirm because it is the revoke: whatever an editor is holding
+    // stops working the moment this is pressed, including the session that may be
+    // driving the client right now.
+    if theme::confirm_button(
+        ui,
+        egui::Id::new("mcp_token_regen"),
+        "Regenerate the token",
+        "Regenerate it",
+    ) {
+        editor.regenerate = true;
+    }
+    theme::note(
+        ui,
+        "Regenerating stops any editor that is already connected.",
+    );
 }
 
 /// The map this device has downloaded, and the button that throws it away.

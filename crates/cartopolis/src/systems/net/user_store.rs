@@ -126,6 +126,22 @@ pub struct UserData {
     /// weather is live. `None` on files from before the field existed.
     #[serde(default)]
     pub sky: Option<SkyPrefs>,
+    /// The bearer token an editor presents to this client's MCP server
+    /// (`--mcp-listen`, `systems::mcp`).
+    ///
+    /// **Here rather than in a file of its own, and that is the point.** A token
+    /// written somewhere beside the app data would be a secret nobody can find:
+    /// the person who needs it is configuring an editor on the same machine, and
+    /// what they need is to *see* it and copy it. It is in `user.json` because it
+    /// belongs to this installation, and it is shown in Settings ▸ General
+    /// because that is where somebody would look for it.
+    ///
+    /// `None` until the first run that serves MCP, which mints one. Regenerating
+    /// it from Settings invalidates whatever an editor was holding, which is the
+    /// whole of "revoke". `CARTO_MCP_TOKEN` overrides it for a run that has no
+    /// screen to read it off.
+    #[serde(default)]
+    pub mcp_token: Option<String>,
 }
 
 /// Snapshot of the sky switchers in the HUD — the sun's Auto/☀/🌙 (plus the dev

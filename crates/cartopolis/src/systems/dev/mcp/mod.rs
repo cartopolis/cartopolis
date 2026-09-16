@@ -1,0 +1,974 @@
+//! **The client as something a model can drive.**
+//!
+//! A [Model Context Protocol](https://modelcontextprotocol.io) server hosted by
+//! this client, so an editor's agent can move the camera, photograph what it
+//! sees, and read the scene's numbers — over loopback HTTP, with a bearer token.
+//!
+//! **On by default on the desktop, switched in Settings ▸ General ▸ Editor
+//! access.** The thing it enables is an editor attaching to a client that is
+//! *already running*, and a launch flag cannot serve that: the moment somebody
+//! wants it is the moment something is on screen and they want to ask about it.
+//! So the listener is started and stopped while the app runs
+//! ([`reconcile_listener`]), and the flags only decide *where* — or take a run
+//! out of it entirely (`--no-mcp`, a scripted capture).
+//!
+//! # Why this and not the panel it replaces
+//!
+//! There used to be an AI panel in here: a chat box, an API key in `.env`, and
+//! four tools that made one prim per call. It had the model in the wrong process
+//! (the editor could not reach it), it shipped a credential, and its tool surface
+//! was a prim at a time — the granularity nobody can show working. Agents that
+//! build well elsewhere apply a *batch* and then render, inspect and revise.
+//!
+//! The half that was missing here is the second one. Until now every look at the
+//! world cost a whole process: `--shot` starts the binary, loads the assets,
+//! compiles the shaders and then fills the tiles — a settled ground-level fill is
+//! ~25 s on its own (`docs/notes/tile-raster-cost.md`), and on a software
+//! rasteriser the frames alone are seconds each. A client that is *already up*
+//! pays none of that twice, and re-photographing a view it has already streamed
+//! costs about a frame.
+//!
+//! # The three seams
+//!
+//! **Thread.** [`server`] runs a tokio runtime on a thread of its own, the same
+//! arrangement `systems::network` uses for the sim transport. Nothing there
+//! touches the `World`.
+//!
+//! **Frame.** A tool call becomes a [`Job`] on a channel with a oneshot reply.
+//! [`pump`] drains the queue in `Update` and answers from the ECS. Calls that
+//! take time do not block anything: they become a viewpoint for the camera
+//! operator below and are answered when it lands.
+//!
+//! **Capture.** There is no second screenshot path. `view` pushes a
+//! [`ShotSpec`](crate::systems::shot_harness::ShotSpec) onto the *shot harness*,
+//! which already owns the only cycle that knows how to do this properly — place
+//! the camera, wait for every streamer to go quiet, quiesce the CPU pool so the
+//! GPU readback is not queued behind a rasterise backlog, fire the shutter, and
+//! measure the world it photographed. A live harness differs from `--shot` in one
+//! respect: running off the end of its list parks the camera operator instead of
+//! quitting (`ShotHarness::live`).
+
+pub mod overlay;
+pub mod server;
+
+use bevy::prelude::*;
+use big_space::prelude::GridCell;
+use futures_channel::mpsc::UnboundedReceiver;
+use futures_channel::oneshot;
+use std::collections::VecDeque;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+
+use crate::components::FreeCamera;
+use crate::resources::{CameraState, FrameStats, MapAnchor};
+use crate::systems::globe::GlobeState;
+use crate::systems::shot_harness::{ShotEnv, ShotHarness, ShotProgress, ShotSpec, StreamWatch};
+
+/// Where a bare `--mcp-listen` binds.
+///
+/// Loopback, and a port nothing else here uses (the sim is 4747, its HTTP
+/// surface 4748). Reaching a client on another machine is an `ssh -L` away,
+/// which is both how everything else already reaches the Steam Deck and a
+/// meaningfully better answer than binding a LAN address: the tunnel is
+/// authenticated and encrypted, and this is not.
+pub const DEFAULT_LISTEN: &str = "127.0.0.1:4750";
+
+/// How long a `view` may sit unanswered before the caller is told something is
+/// wrong.
+///
+/// Generously above the harness's own budgets — `--wait` caps the settle and
+/// `CAPTURE_GRACE_S` caps the readback — because this is not a deadline anything
+/// is expected to approach. It is the backstop for the one case those cannot
+/// cover: a harness that never advances at all, which would otherwise leave the
+/// editor's request hanging until the process ends.
+const JOB_TIMEOUT_S: f64 = 300.0;
+
+/// The longest edge of a returned image, unless the call asks for another.
+///
+/// A picture is the expensive part of an answer — a 1920×1080 PNG is a large
+/// fraction of a context window — and the questions this is for (is the building
+/// there, is the ground flat, did that change anything) are all legible at this
+/// size. Ask for more when the question is about pixels.
+pub const DEFAULT_MAX_EDGE: u32 = 1024;
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+/// Where this run would serve, and how, if it serves at all.
+///
+/// A `Resource`, because whether it *is* serving is decided while the app runs
+/// (`AppPrefs::mcp_enabled`, the Settings switch) and [`reconcile_listener`]
+/// needs to know where to bind when it is switched back on.
+#[derive(Resource, Clone, Debug)]
+pub struct Config {
+    pub listen: SocketAddr,
+    /// No window: render offscreen at [`Config::size`] and stay up serving calls.
+    pub headless: bool,
+    /// The offscreen surface, when there is no window to be the surface.
+    pub size: UVec2,
+    /// **Serve regardless of the preference.** `--mcp-headless` has no Settings
+    /// panel to switch anything from, so the flag is the whole decision; a
+    /// `user.json` carried from a desktop with the switch off would otherwise
+    /// leave a capture server answering nothing, with no way to say so.
+    pub forced: bool,
+}
+
+impl Config {
+    /// Resolve the flags, or `Ok(None)` when this run has no business serving.
+    ///
+    /// `excluded` is a run that is out of it entirely — a scripted capture, or
+    /// `--no-mcp`. **A scripted capture is the interesting one**: `--shot` /
+    /// `--shots` / `--perf` run a list and quit, so binding a port would collide
+    /// with whatever client is already up on this machine, for a run no editor
+    /// could attach to in the seconds it exists. Every other desktop run resolves
+    /// to a config, and then the *preference* decides whether it is listening.
+    ///
+    /// `--mcp-headless` implies a listener: a windowless client that serves
+    /// nothing would render to nobody and answer to nobody.
+    pub fn resolve(
+        listen: Option<&str>,
+        headless: bool,
+        size: Option<&str>,
+        excluded: bool,
+    ) -> Result<Option<Self>, String> {
+        if excluded {
+            // Reachable only for a scripted capture: clap already refuses
+            // `--no-mcp` beside either of these.
+            if listen.is_some() || headless {
+                return Err(
+                    "--mcp-listen and a scripted capture are alternatives: a `--shot` \
+                            run photographs its list and quits, so there is nothing for an \
+                            editor to drive."
+                        .into(),
+                );
+            }
+            return Ok(None);
+        }
+        let addr = listen.unwrap_or(DEFAULT_LISTEN);
+        let parsed: SocketAddr = addr
+            .parse()
+            .map_err(|e| format!("--mcp-listen wants host:port, got {addr:?}: {e}"))?;
+        let size = match size {
+            Some(s) => crate::systems::shot_harness::parse_size(s)
+                .ok_or_else(|| format!("--mcp-size wants WxH, got {s:?}"))?,
+            None => {
+                crate::systems::shot_harness::parse_size(crate::systems::shot_harness::DEFAULT_SIZE)
+                    .expect("the default size parses")
+            }
+        };
+        Ok(Some(Self {
+            listen: parsed,
+            headless,
+            size,
+            // A flag is an instruction for this launch and outranks the
+            // remembered preference — the same rule the sky flags follow
+            // (`user_store::SkyCliOverrides`).
+            forced: headless || listen.is_some(),
+        }))
+    }
+}
+
+/// The token the server checks, shared with the thread that checks it.
+///
+/// A lock rather than a copy because Settings can regenerate it while the server
+/// is running, and a regenerated token that only took effect on the next launch
+/// would not be a revocation.
+#[derive(Resource, Clone)]
+pub struct McpAuth(pub Arc<RwLock<String>>);
+
+impl McpAuth {
+    pub fn set(&self, token: &str) {
+        if let Ok(mut g) = self.0.write() {
+            token.clone_into(&mut g);
+        }
+    }
+
+    /// Constant-time-ish comparison against the presented bearer.
+    ///
+    /// Equal length first, then a byte fold that does not stop early. This is a
+    /// loopback service and the realistic threat is another process on the same
+    /// machine rather than a remote timing attack, but the cost of not leaking
+    /// the prefix is four lines.
+    pub fn accepts(&self, presented: &str) -> bool {
+        let Ok(want) = self.0.read() else {
+            return false;
+        };
+        if want.is_empty() || want.len() != presented.len() {
+            return false;
+        }
+        want.bytes()
+            .zip(presented.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+    }
+}
+
+/// Mint a token. 128 bits of v4 UUID, hex, no dashes — long enough that it is
+/// not guessable and short enough to copy off a screen.
+///
+/// `uuid` is already in this crate's graph, and this is desktop-only code, so the
+/// wasm trap in that crate's note (v4 needs its `js` feature) cannot apply here.
+pub fn mint_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Why the client is not serving, when it is not.
+///
+/// Kept so Settings can say *which* — "you switched it off" and "the port was
+/// already taken" want different things from the reader, and a row that only
+/// said "not serving" would send somebody looking for a setting they had not
+/// touched.
+#[derive(Resource, Default)]
+pub struct McpTrouble(pub Option<String>);
+
+/// Start or stop the listener to match [`AppPrefs::mcp_enabled`].
+///
+/// **The switch is the whole interface.** An editor attaches to a client that is
+/// already running, so the decision to allow that is one somebody makes *while*
+/// it runs — which a launch flag cannot serve. This system is what makes the
+/// checkbox mean something: tick it and a socket opens, untick it and the
+/// listener is dropped, which cancels its token and ends its thread.
+///
+/// It is change-detected on the preference rather than run every frame, and it
+/// does not retry a failed bind: a port in use is a state a person resolves (by
+/// closing the other client), and a system that kept trying would fill the log
+/// and hide the reason. Untick and re-tick to try again.
+pub fn reconcile_listener(
+    mut commands: Commands,
+    config: Res<Config>,
+    prefs: Res<crate::resources::AppPrefs>,
+    auth: Res<McpAuth>,
+    sender: Res<JobSender>,
+    running: Option<Res<server::Running>>,
+    mut trouble: ResMut<McpTrouble>,
+    mut exit: MessageWriter<AppExit>,
+    mut was: Local<Option<bool>>,
+) {
+    let want = config.forced || prefs.mcp_enabled;
+    if *was == Some(want) && running.is_some() == want {
+        return;
+    }
+    *was = Some(want);
+    match (want, running.is_some()) {
+        (true, false) => match server::spawn(&config, auth.clone(), sender.0.clone()) {
+            Ok(handle) => {
+                tracing::info!(listen = %config.listen, "mcp: serving");
+                trouble.0 = None;
+                commands.insert_resource(handle);
+            }
+            // **Fatal only when serving is the whole job.** A windowed client
+            // that cannot open the socket is still a perfectly good client and
+            // says so in Settings; `--mcp-headless` with no socket is a process
+            // rendering for nobody, and the usual cause — another client already
+            // on the port — is one a person fixes rather than waits out.
+            Err(e) if config.headless => {
+                tracing::error!(listen = %config.listen, error = %e, "mcp: headless run cannot serve");
+                exit.write(AppExit::error());
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "mcp: not serving");
+                trouble.0 = Some(e);
+            }
+        },
+        (false, true) => {
+            tracing::info!("mcp: stopped — switched off in Settings");
+            trouble.0 = None;
+            commands.remove_resource::<server::Running>();
+        }
+        _ => {}
+    }
+}
+
+/// The end of the job channel the server thread writes into.
+///
+/// A resource of its own because the *receiver* lives in [`McpBridge`] for the
+/// life of the process while the sender is cloned into each listener — the
+/// queue outlives any particular server, so switching the listener off and on
+/// again does not lose a call that was already in flight.
+#[derive(Resource)]
+pub struct JobSender(pub futures_channel::mpsc::UnboundedSender<Job>);
+
+// ---------------------------------------------------------------------------
+// The job protocol
+// ---------------------------------------------------------------------------
+
+/// A tool call, on its way from the server thread to the schedule.
+pub struct Job {
+    pub request: Request,
+    pub reply: oneshot::Sender<Reply>,
+}
+
+#[derive(Debug)]
+pub enum Request {
+    /// Everything about the world that can be answered without drawing it.
+    State,
+    /// Place the camera, wait for the world, photograph it.
+    View(Box<ViewRequest>),
+}
+
+/// One `view` / `view_here` call.
+#[derive(Debug, Clone)]
+pub struct ViewRequest {
+    pub lat: f64,
+    pub lng: f64,
+    pub alt: f64,
+    pub pitch_deg: f32,
+    pub yaw_deg: f32,
+    /// `free` (exact placement), `earth` (the orbit camera) or `avatar` (the
+    /// follow camera, framing the body).
+    pub mode: String,
+    /// Photograph from where the camera already is; see [`ShotSpec::in_place`].
+    pub in_place: bool,
+    pub settle: Option<f32>,
+    pub wait: Option<f32>,
+    pub hide_ui: Option<bool>,
+    pub env: ShotEnv,
+    /// Where the PNG is written. The reply carries the path either way, because
+    /// a file that outlives the answer is worth having: it can be opened, kept,
+    /// or diffed against the next one.
+    pub out: Option<PathBuf>,
+    pub format: ImageFormat,
+    pub max_edge: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+    /// The default. The map is photographic — imagery, terrain, thousands of
+    /// small surfaces — and PNG holds that badly.
+    Jpeg,
+    /// For a question about exact pixels, where the codec must not have an
+    /// opinion.
+    Png,
+}
+
+impl ImageFormat {
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+        }
+    }
+}
+
+pub enum Reply {
+    State(Box<WorldState>),
+    View(Box<ViewReply>),
+    /// The call could not be carried out. The string is written to be shown to
+    /// whoever asked, because it is.
+    Error(String),
+}
+
+/// What the world is doing right now, with nothing drawn.
+///
+/// The cheapest verification there is, and often the whole answer: "is the world
+/// finished, and where am I looking?" needs no picture at all.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorldState {
+    pub lat: f64,
+    pub lng: f64,
+    pub altitude_m: f64,
+    pub pitch_deg: f32,
+    pub yaw_deg: f32,
+    pub camera_mode: String,
+    /// The map's anchor, which is the origin every world coordinate here is
+    /// measured from.
+    pub anchor: Option<[f64; 2]>,
+    /// Which map layers are still working; empty means every streamer has gone
+    /// quiet — see
+    /// [`StreamWatch::busy`](crate::systems::shot_harness::StreamWatch::busy).
+    ///
+    /// **`busy`, the same name `--dump-state` gives it**, and deliberately not a
+    /// clearer one. An agent reading `busy` from a capture's metrics and
+    /// `streaming` from this would reasonably assume they were different
+    /// measurements of different things.
+    pub busy: Vec<&'static str>,
+    pub settled: bool,
+    pub in_space: bool,
+    pub space_factor: f32,
+    pub fps: u32,
+    pub frame_ms: f32,
+    pub worst_frame_ms: f32,
+    /// How many viewpoints this client has photographed since it started.
+    pub captures: usize,
+}
+
+/// The answer to a `view`: the picture, where it was taken from, and every
+/// number the harness measured about the world in it.
+pub struct ViewReply {
+    /// The encoded image, ready to be handed over as an MCP image block. `None`
+    /// when the capture itself failed — the metrics are still worth having, and
+    /// saying which half is missing beats an error with nothing in it.
+    pub image: Option<(ImageFormat, Vec<u8>)>,
+    pub width: u32,
+    pub height: u32,
+    pub path: PathBuf,
+    /// The full `ShotMetrics` row, as `--dump-state` would write it.
+    pub metrics: Option<serde_json::Value>,
+    /// Seconds from the call arriving to the picture existing.
+    pub took_s: f64,
+    pub note: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// The bridge
+// ---------------------------------------------------------------------------
+
+/// One entry of the activity readout — see [`overlay`].
+#[derive(Clone)]
+pub struct Entry {
+    pub label: String,
+    pub detail: String,
+    pub outcome: Outcome,
+    /// `Time<Real>` seconds when this was last written, for the fade.
+    pub at: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Working,
+    Done,
+    Failed,
+}
+
+/// The queue of calls waiting on the schedule, and the log the overlay draws.
+#[derive(Resource)]
+pub struct McpBridge {
+    jobs: UnboundedReceiver<Job>,
+    waiting: Vec<Waiting>,
+    /// Newest last. Bounded — this is a readout, not a record.
+    pub log: VecDeque<Entry>,
+    pub listen: SocketAddr,
+    /// Calls answered since the process started, for the overlay's heading.
+    pub served: u64,
+}
+
+/// A `view` that has been handed to the camera operator and not yet landed.
+struct Waiting {
+    shot_index: usize,
+    started: f64,
+    out: PathBuf,
+    format: ImageFormat,
+    max_edge: u32,
+    reply: oneshot::Sender<Reply>,
+    /// Index into [`McpBridge::log`]'s backing entry, by label, so the overlay
+    /// can be updated when this lands.
+    log_label: String,
+}
+
+impl McpBridge {
+    pub fn new(jobs: UnboundedReceiver<Job>, listen: SocketAddr) -> Self {
+        Self {
+            jobs,
+            waiting: Vec::new(),
+            log: VecDeque::new(),
+            listen,
+            served: 0,
+        }
+    }
+
+    /// Is the camera operator working for somebody right now?
+    pub fn busy(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
+    fn note(&mut self, label: String, detail: String, outcome: Outcome, at: f64) {
+        const KEPT: usize = 8;
+        if let Some(existing) = self.log.iter_mut().find(|e| e.label == label) {
+            existing.detail = detail;
+            existing.outcome = outcome;
+            existing.at = at;
+            return;
+        }
+        self.log.push_back(Entry {
+            label,
+            detail,
+            outcome,
+            at,
+        });
+        while self.log.len() > KEPT {
+            self.log.pop_front();
+        }
+    }
+}
+
+/// Everything the Settings panel's Editor access row needs, as one parameter.
+///
+/// **One rather than three, because Bevy caps a system at sixteen** and
+/// `render_settings_panel` was already at thirteen — the same cap
+/// `free_camera::camera_controls` and `picking::prim_picking` each hit and
+/// answered the same way. Every field is optional: the two resources exist only
+/// on a build that was asked to serve, and the store is absent in a scripted run.
+///
+/// The user store is in here, rather than beside it, because the token *is* store
+/// data: showing it and regenerating it are one row's worth of work and there is
+/// no version of this row that reads one without the other.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct EditorAccess<'w> {
+    pub config: Option<Res<'w, Config>>,
+    pub auth: Option<Res<'w, McpAuth>>,
+    pub running: Option<Res<'w, server::Running>>,
+    pub trouble: Option<Res<'w, McpTrouble>>,
+    pub store: Option<ResMut<'w, crate::systems::user_store::UserStore>>,
+}
+
+/// What the Editor access row has to say about the listener right now.
+pub enum Serving {
+    /// Open, at this address.
+    At(SocketAddr),
+    /// Switched off here.
+    Off,
+    /// Wanted, and could not. The string is the reason, written for a reader —
+    /// almost always another client already holding the port.
+    Failed(String),
+}
+
+impl EditorAccess<'_> {
+    /// The token an editor must present, or `None` when this build has no
+    /// listener at all (a phone, a browser, a scripted capture).
+    pub fn token(&self) -> Option<String> {
+        self.config.as_deref()?;
+        self.store.as_deref()?.data.mcp_token.clone()
+    }
+
+    /// Where it is serving, or why it is not.
+    pub fn serving(&self) -> Option<Serving> {
+        self.config.as_deref()?;
+        Some(match (&self.running, &self.trouble) {
+            (Some(running), _) => Serving::At(running.listen),
+            (None, Some(trouble)) => match &trouble.0 {
+                Some(why) => Serving::Failed(why.clone()),
+                None => Serving::Off,
+            },
+            (None, None) => Serving::Off,
+        })
+    }
+
+    /// Mint a new token, into the store *and* the lock the listener reads — so
+    /// whatever an editor is holding stops working now rather than next launch.
+    pub fn regenerate(&mut self) {
+        let (Some(store), Some(auth)) = (self.store.as_deref_mut(), self.auth.as_deref()) else {
+            return;
+        };
+        let minted = mint_token();
+        auth.set(&minted);
+        store.data.mcp_token = Some(minted);
+        store.dirty = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The pump
+// ---------------------------------------------------------------------------
+
+/// Drain the call queue and answer it from the ECS.
+///
+/// The only system in this module that touches the world. Everything it cannot
+/// answer at once becomes a viewpoint on the harness and is answered by
+/// [`land_captures`] when the shutter lands.
+#[allow(clippy::too_many_arguments)]
+pub fn pump(
+    mut bridge: ResMut<McpBridge>,
+    mut harness: ResMut<ShotHarness>,
+    progress: Res<ShotProgress>,
+    watch: StreamWatch,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    cam_state: Res<CameraState>,
+    anchor: Res<MapAnchor>,
+    globe: Res<GlobeState>,
+    frames: Res<FrameStats>,
+    real: Res<Time<Real>>,
+) {
+    let now = real.elapsed_secs_f64();
+    loop {
+        // `Err` is both "nothing queued" and "the sender is gone"; neither has
+        // anything more to give this frame.
+        let Ok(job) = bridge.jobs.try_recv() else {
+            break;
+        };
+        bridge.served += 1;
+        match job.request {
+            Request::State => {
+                let state = measure_state(
+                    &watch, &camera, &cam_state, &anchor, &globe, &frames, &progress,
+                );
+                let detail = if state.busy.is_empty() {
+                    format!("settled at {:.5}, {:.5}", state.lat, state.lng)
+                } else {
+                    format!("streaming {}", state.busy.join(", "))
+                };
+                bridge.note("state".into(), detail, Outcome::Done, now);
+                let _ = job.reply.send(Reply::State(Box::new(state)));
+            }
+            Request::View(req) => {
+                let label = format!("view #{}", bridge.served);
+                match push_view(&mut harness, &req, &camera, &cam_state, &anchor, &globe) {
+                    Ok(spec_index) => {
+                        let out = harness.shots[spec_index]
+                            .out
+                            .clone()
+                            .unwrap_or_else(|| default_out(spec_index));
+                        bridge.note(
+                            label.clone(),
+                            if req.in_place {
+                                "capturing in place…".to_string()
+                            } else {
+                                format!(
+                                    "flying to {:.5}, {:.5} at {:.0} m…",
+                                    req.lat, req.lng, req.alt
+                                )
+                            },
+                            Outcome::Working,
+                            now,
+                        );
+                        bridge.waiting.push(Waiting {
+                            shot_index: spec_index,
+                            started: now,
+                            out,
+                            format: req.format,
+                            max_edge: req.max_edge,
+                            reply: job.reply,
+                            log_label: label,
+                        });
+                    }
+                    Err(why) => {
+                        bridge.note(label, why.clone(), Outcome::Failed, now);
+                        let _ = job.reply.send(Reply::Error(why));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Answer every `view` whose capture has landed.
+///
+/// Separate from [`pump`] so it can run *after* `drive_capture` in the same
+/// frame: the shot it is waiting on can then be answered on the frame it
+/// completes rather than on the next one.
+pub fn land_captures(
+    mut bridge: ResMut<McpBridge>,
+    progress: Res<ShotProgress>,
+    real: Res<Time<Real>>,
+) {
+    if bridge.waiting.is_empty() {
+        return;
+    }
+    let now = real.elapsed_secs_f64();
+    // The harness advances its index past a viewpoint once that viewpoint is
+    // finished with — saved, or given up on. Either way there is an answer to
+    // give, and the metrics row distinguishes them.
+    let landed: Vec<Waiting> = {
+        let (done, still): (Vec<_>, Vec<_>) = std::mem::take(&mut bridge.waiting)
+            .into_iter()
+            .partition(|w| progress.shot_index() > w.shot_index || now - w.started > JOB_TIMEOUT_S);
+        bridge.waiting = still;
+        done
+    };
+    for w in landed {
+        let timed_out = progress.shot_index() <= w.shot_index;
+        let metrics = progress
+            .metrics()
+            .iter()
+            .find(|m| m.shot == w.shot_index + 1)
+            .and_then(|m| serde_json::to_value(m).ok());
+        let took = now - w.started;
+        let (reply, detail, outcome) = if timed_out {
+            (
+                Reply::Error(format!(
+                    "the capture did not finish within {JOB_TIMEOUT_S:.0} s"
+                )),
+                "timed out".to_string(),
+                Outcome::Failed,
+            )
+        } else {
+            match encode_capture(&w.out, w.format, w.max_edge) {
+                Ok((bytes, width, height)) => {
+                    // **`busy`, not `settled`.** `settled` answers "was the quiet
+                    // requirement met", which a call that asked for no patience —
+                    // `view_here`'s default — meets trivially while the map is
+                    // still arriving. What the caller needs to know is whether
+                    // anything was still working, and that is this list.
+                    let busy = metrics
+                        .as_ref()
+                        .and_then(|m| m.get("busy"))
+                        .and_then(serde_json::Value::as_array)
+                        .map(|layers| {
+                            layers
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .filter(|s| !s.is_empty());
+                    (
+                        Reply::View(Box::new(ViewReply {
+                            image: Some((w.format, bytes)),
+                            width,
+                            height,
+                            path: w.out.clone(),
+                            metrics: metrics.clone(),
+                            took_s: took,
+                            note: busy.as_ref().map(|layers| {
+                                format!(
+                                    "the world had not finished loading when this was taken: \
+                                     {layers} still working"
+                                )
+                            }),
+                        })),
+                        match &busy {
+                            Some(layers) => {
+                                format!("{width}×{height} in {took:.1} s, still loading {layers}")
+                            }
+                            None => format!("{width}×{height} in {took:.1} s"),
+                        },
+                        Outcome::Done,
+                    )
+                }
+                // The metrics row is pushed at the shutter, so a capture that
+                // never read back still has its numbers and lacks only its
+                // pixels. Hand those over rather than an error with nothing in
+                // it — they are what explains the failure.
+                Err(why) => (
+                    Reply::View(Box::new(ViewReply {
+                        image: None,
+                        width: 0,
+                        height: 0,
+                        path: w.out.clone(),
+                        metrics: metrics.clone(),
+                        took_s: took,
+                        note: Some(format!("no image: {why}")),
+                    })),
+                    format!("no image: {why}"),
+                    Outcome::Failed,
+                ),
+            }
+        };
+        bridge.note(w.log_label, detail, outcome, now);
+        let _ = w.reply.send(reply);
+    }
+}
+
+/// Where a capture goes when the caller did not say.
+fn default_out(index: usize) -> PathBuf {
+    std::env::temp_dir().join(format!("cartopolis-view-{index:04}.png"))
+}
+
+/// Turn a `ViewRequest` into a viewpoint on the harness, returning its index.
+fn push_view(
+    harness: &mut ShotHarness,
+    req: &ViewRequest,
+    camera: &Query<(&GridCell, &Transform), With<FreeCamera>>,
+    cam_state: &CameraState,
+    anchor: &MapAnchor,
+    globe: &GlobeState,
+) -> Result<usize, String> {
+    let index = harness.shots.len();
+    let mut spec = ShotSpec {
+        lat: req.lat,
+        lng: req.lng,
+        alt: req.alt,
+        pitch_deg: req.pitch_deg,
+        yaw_deg: req.yaw_deg,
+        name: None,
+        description: None,
+        out: Some(req.out.clone().unwrap_or_else(|| default_out(index))),
+        mode: Some(req.mode.clone()),
+        hide_ui: req.hide_ui,
+        ui: None,
+        in_place: req.in_place,
+        settle: req.settle,
+        wait: req.wait,
+        env: req.env.clone(),
+    };
+    if req.in_place {
+        // Record where "here" actually is, so the reply and the metrics row say
+        // what was photographed rather than repeating the zeros the call sent.
+        let (lat, lng, alt) = where_now(camera, anchor, globe)
+            .ok_or_else(|| "the world is not anchored yet; there is no `here`".to_string())?;
+        spec.lat = lat;
+        spec.lng = lng;
+        spec.alt = alt;
+        let (pitch, yaw) = cam_state.free_camera_rotation.into();
+        spec.pitch_deg = pitch.to_degrees();
+        spec.yaw_deg = yaw.to_degrees();
+    } else if !(-90.0..=90.0).contains(&req.lat) || !(-180.0..=180.0).contains(&req.lng) {
+        return Err(format!(
+            "lat/lng out of range: {:.5}, {:.5}",
+            req.lat, req.lng
+        ));
+    }
+    harness.shots.push(spec);
+    Ok(index)
+}
+
+/// The camera's position on Earth, and how high it is over the ground there.
+fn where_now(
+    camera: &Query<(&GridCell, &Transform), With<FreeCamera>>,
+    anchor: &MapAnchor,
+    globe: &GlobeState,
+) -> Option<(f64, f64, f64)> {
+    let geo = anchor.geo?;
+    let (cell, tf) = camera.single().ok()?;
+    let (lat, lng) = crate::systems::geo_nav::camera_geo(geo, globe, cell, tf);
+    Some((lat, lng, globe.altitude_m(cell, tf)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure_state(
+    watch: &StreamWatch,
+    camera: &Query<(&GridCell, &Transform), With<FreeCamera>>,
+    cam_state: &CameraState,
+    anchor: &MapAnchor,
+    globe: &GlobeState,
+    frames: &FrameStats,
+    progress: &ShotProgress,
+) -> WorldState {
+    let busy = watch.busy();
+    let (lat, lng, altitude_m) = where_now(camera, anchor, globe).unwrap_or((0.0, 0.0, 0.0));
+    let (pitch, yaw) = cam_state.free_camera_rotation.into();
+    let (in_space, space_factor) = camera
+        .single()
+        .ok()
+        .map(|(cell, tf)| (globe.in_space(cell, tf), globe.space_factor(cell, tf)))
+        .unwrap_or((false, 0.0));
+    WorldState {
+        lat,
+        lng,
+        altitude_m,
+        pitch_deg: pitch.to_degrees(),
+        yaw_deg: yaw.to_degrees(),
+        camera_mode: crate::systems::geo_nav::mode_name(cam_state.mode).to_string(),
+        anchor: anchor.geo.map(|(lat, lng, _)| [lat, lng]),
+        settled: busy.is_empty(),
+        busy,
+        in_space,
+        space_factor,
+        fps: frames.fps,
+        frame_ms: frames.mean_ms,
+        worst_frame_ms: frames.worst_ms,
+        captures: progress.shot_index(),
+    }
+}
+
+/// Read back the PNG the harness wrote, shrink it to the caller's budget and
+/// encode it.
+///
+/// The file is the harness's output and stays on disk; this is a copy for the
+/// wire. Downscaling here rather than rendering smaller is deliberate: the
+/// capture should be the picture the client actually draws, and what a context
+/// window can afford is a separate question from what the renderer is doing.
+fn encode_capture(
+    path: &std::path::Path,
+    format: ImageFormat,
+    max_edge: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (w, h) = (img.width(), img.height());
+    let img = if max_edge > 0 && w.max(h) > max_edge {
+        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+    let (w, h) = (img.width(), img.height());
+    let mut bytes = Vec::new();
+    match format {
+        ImageFormat::Jpeg => {
+            let rgb = img.to_rgb8();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85)
+                .encode_image(&rgb)
+                .map_err(|e| e.to_string())?;
+        }
+        ImageFormat::Png => {
+            img.write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok((bytes, w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An ordinary desktop run resolves to a loopback config it did not ask for
+    /// — that is what "on by default" means — and leaves the decision to the
+    /// preference rather than forcing it.
+    #[test]
+    fn an_ordinary_run_can_serve_without_being_asked() {
+        let cfg = Config::resolve(None, false, None, false).unwrap().unwrap();
+        assert!(cfg.listen.ip().is_loopback());
+        assert_eq!(cfg.listen.port(), 4750);
+        assert!(!cfg.headless);
+        assert!(
+            !cfg.forced,
+            "nothing on the command line said so, so Settings decides"
+        );
+    }
+
+    /// A flag is an instruction for this launch and outranks what Settings
+    /// remembers — the rule the sky flags already follow.
+    #[test]
+    fn naming_an_address_forces_it_on() {
+        let cfg = Config::resolve(Some("127.0.0.1:4790"), false, None, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.listen.port(), 4790);
+        assert!(cfg.forced);
+    }
+
+    /// A scripted capture binds nothing: it would collide with a client already
+    /// running here, for a process no editor can attach to before it exits.
+    #[test]
+    fn a_scripted_capture_never_serves() {
+        assert!(Config::resolve(None, false, None, true).unwrap().is_none());
+        assert!(
+            Config::resolve(Some(DEFAULT_LISTEN), false, None, true).is_err(),
+            "and asking for both is a startup error rather than a silent winner"
+        );
+    }
+
+    #[test]
+    fn headless_implies_a_forced_listener() {
+        let cfg = Config::resolve(None, true, None, false).unwrap().unwrap();
+        assert!(cfg.headless);
+        assert!(
+            cfg.forced,
+            "there is no Settings panel to switch it on from"
+        );
+        assert_eq!(cfg.listen.to_string(), DEFAULT_LISTEN);
+    }
+
+    #[test]
+    fn a_bad_address_is_a_startup_error() {
+        assert!(Config::resolve(Some("not-an-address"), false, None, false).is_err());
+        assert!(Config::resolve(Some(DEFAULT_LISTEN), false, Some("big"), false).is_err());
+    }
+
+    /// The comparison must not accept a prefix, a suffix, or the empty token —
+    /// the last one being the case that matters, since an unset token would
+    /// otherwise let every caller in.
+    #[test]
+    fn the_token_is_compared_whole() {
+        let auth = McpAuth(Arc::new(RwLock::new(String::new())));
+        assert!(!auth.accepts(""), "an unset token accepts nothing");
+        auth.set("0123456789abcdef");
+        assert!(auth.accepts("0123456789abcdef"));
+        assert!(!auth.accepts("0123456789abcde"));
+        assert!(!auth.accepts("0123456789abcdef0"));
+        assert!(!auth.accepts("0123456789abcdee"));
+        assert!(!auth.accepts(""));
+    }
+
+    #[test]
+    fn a_minted_token_is_long_and_hex() {
+        let t = mint_token();
+        assert_eq!(t.len(), 32);
+        assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(t, mint_token());
+    }
+}

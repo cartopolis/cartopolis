@@ -325,15 +325,6 @@ pub async fn fetch_string(req: Request) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
-/// The shared native connection pool, for the rare caller that needs raw `ureq`
-/// rather than [`fetch`] — e.g. one that destructures `ureq::Error::Status`, a
-/// status code this module's `Result<_, String>` flattens away. Reaching for it
-/// instead of `ureq::post` is what keeps such a caller on the one pool.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn native_agent() -> &'static ureq::Agent {
-    imp::agent()
-}
-
 /// Non-blocking poll of a spawned fetch task. Returns `Some(result)` on the frame
 /// the task completes, `None` while it is still running. Call from a system that
 /// holds the `Task`; it never blocks the schedule.
@@ -375,11 +366,6 @@ mod imp {
             .timeout_connect(CONNECT_TIMEOUT)
             .build()
     });
-
-    /// Hand out the shared agent — see [`super::native_agent`].
-    pub(super) fn agent() -> &'static ureq::Agent {
-        &AGENT
-    }
 
     /// Native: a blocking `ureq` call. `fetch` is `async` for a uniform signature,
     /// but has no internal await points — it is expected to run on an `IoTaskPool`

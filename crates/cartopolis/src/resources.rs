@@ -566,6 +566,25 @@ pub struct AppPrefs {
     /// [`DebugSwitches`] for why they are persisted at all.
     #[serde(default)]
     pub debug_switches: DebugSwitches,
+    /// Serve the Model Context Protocol on loopback, so an editor on this
+    /// machine can drive the client (`systems::mcp`).
+    ///
+    /// **On by default, and switchable here rather than only at launch.** The
+    /// thing it enables is an editor attaching to a client that is *already
+    /// running* — a flag that had to be passed beforehand asks the person to
+    /// have decided before they knew they wanted it, which for the common case
+    /// (something is on screen, and now you want to ask an agent about it) is
+    /// exactly the wrong moment. So the listener is started and stopped by this
+    /// field while the app runs, not by a command line.
+    ///
+    /// What it costs when on is a loopback socket that refuses everything
+    /// without the bearer token in Settings. Read on the desktop and nowhere
+    /// else — but not `cfg`-gated, for the reason
+    /// [`Self::background_connection`] gives: a preference that exists only on
+    /// some builds is a `user.json` that loses a setting when it is carried
+    /// between them.
+    #[serde(default = "yes")]
+    pub mcp_enabled: bool,
 }
 
 /// Widest a volume or gain preference may be set to.
@@ -607,6 +626,7 @@ impl Default for AppPrefs {
             sky_lighting: None,
             background_connection: false,
             debug_switches: DebugSwitches::default(),
+            mcp_enabled: yes(),
         }
     }
 }
@@ -1864,6 +1884,11 @@ mod tests {
                 ground_raymarch: true,
                 ..DebugSwitches::default()
             },
+            // `false`, and this one defaults to *true*: a round trip that left it
+            // true would pass with the field missing from the document, which is
+            // exactly the case that would silently re-enable a listener somebody
+            // switched off.
+            mcp_enabled: false,
         };
         let text = serde_json::to_string(&prefs).expect("serialises");
         assert_eq!(serde_json::from_str::<AppPrefs>(&text).unwrap(), prefs);

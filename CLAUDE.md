@@ -126,6 +126,41 @@ panel's **📋 Copy as preset** button — it puts a pasteable `[[shot]]` block 
 clipboard. The dev panel's numbered capture slots remain, but they are scratch
 files now; the README links to the preset outputs.
 
+### Driving a running client from an editor (`--mcp-listen`)
+
+The client hosts a **Model Context Protocol** server, so an agent in an editor
+can fly its camera and photograph what it sees — `state` (where it is looking and
+whether the map has finished streaming, no picture), `view` (fly and capture) and
+`view_here` (re-capture without moving, for a before/after). `systems::dev::mcp`,
+and `docs/notes/driving-the-client-from-an-ide.md` for the trade-offs.
+
+**On by default on the desktop**, loopback only, switched in Settings ▸ General ▸
+Editor access — the switch opens and closes the socket while the app runs, because
+the moment somebody wants an editor attached is the moment something is already on
+screen. A scripted capture never serves (it would collide with the client that is
+already up, for a process no editor can reach before it exits), and `--no-mcp`
+takes any run out of it.
+
+```bash
+cargo run -p cartopolis                        # already serving on 127.0.0.1:4750
+cargo run -p cartopolis -- --no-mcp            # not this run
+cargo run -p cartopolis -- --mcp-headless      # no window; the shape for a VPS
+bun tools/mcp.ts state                         # the same surface from a shell
+```
+
+**It is not a second screenshot path.** `view` pushes a `ShotSpec` onto the shot
+harness below, which owns the only cycle that places a camera, waits for every
+streamer, quiesces the worker pool and then fires — a live harness differs from
+`--shot` only in that running off the end of its list parks instead of quitting.
+So a windowed client captures its *window* (`--mcp-size` does nothing there), and
+the holds that keep a camera mode for the duration of a capture run only while
+one is in progress, or an idle camera operator would take the camera away from
+whoever is using the client. The token lives in `user.json` and is shown in
+Settings ▸ General ▸ Editor access; `CARTO_MCP_TOKEN` overrides it for a headless
+run. Desktop only — `build.rs` sets the `mcp` cfg on the same target predicate
+`Cargo.toml` gates `rmcp` on, so the code and the dependency cannot disagree
+about which platforms have it.
+
 ### Scripted screenshots (`--shot`)
 
 Answer "what does it actually look like from there?" without flying the camera by

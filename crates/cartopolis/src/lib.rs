@@ -52,9 +52,9 @@ pub(crate) const ASSET_ROOT: &str = "assets";
 use big_space::prelude::{BigSpace, GridCell};
 use components::Avatar;
 use resources::{
-    AuthIdentity, AvatarChooserState, AvatarState, CameraState,
-    ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState,
-    OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
+    AuthIdentity, AvatarChooserState, AvatarState, CameraState, ContextMenuState, DevPanelState,
+    EditDialogState, GameState, LocalAvatarSimId, MarqueeState, OsmTileUrlTemplate,
+    PrimTextureCache, TextureLibrary,
 };
 use systems::egui_manager::EguiPlugin;
 use systems::*;
@@ -237,6 +237,47 @@ struct Cli {
     /// run has no Layers panel to tick. `CARTO_AERIAL_LAYER` picks the layer.
     #[arg(long)]
     aerial: bool,
+
+    /// Serve the Model Context Protocol somewhere other than the default
+    /// `127.0.0.1:4750`, so an editor can drive this client: move the camera,
+    /// photograph what it sees, read the scene's numbers (`systems::mcp`).
+    ///
+    /// **Serving is on by default on the desktop** and switched in Settings ▸
+    /// General ▸ Editor access; this flag only changes *where*, and forces it on
+    /// for the run regardless of that switch, as a flag should. A bearer token is
+    /// always required — `CARTO_MCP_TOKEN`, else the one in `user.json` that
+    /// Settings shows.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = systems::mcp::DEFAULT_LISTEN)]
+    mcp_listen: Option<String>,
+
+    /// Serve MCP with no window at all: the same offscreen rendering `--shot`
+    /// uses, but staying up to answer calls instead of running a list and
+    /// quitting.
+    ///
+    /// This is the shape for a machine nobody is sitting at. The cost a scripted
+    /// capture pays is almost entirely *start-up* — the binary, the assets, the
+    /// shader compiles, then a tile fill — and a process that stays up pays it
+    /// once instead of once per viewpoint. Implies `--offline` and `--mcp-listen`.
+    #[cfg(mcp)]
+    #[arg(long)]
+    mcp_headless: bool,
+
+    /// Offscreen surface size for `--mcp-headless`, `WxH`. Ignored when there is
+    /// a window, where the window *is* the surface.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "WxH")]
+    mcp_size: Option<String>,
+
+    /// Don't serve MCP this run, whatever Settings remembers.
+    ///
+    /// For running a second client beside one that already holds the port, and
+    /// for anyone who would rather decide per launch. It does not change the
+    /// stored preference — a flag is an instruction for this launch, never
+    /// written back, the same rule the sky flags follow.
+    #[cfg(mcp)]
+    #[arg(long, conflicts_with_all = ["mcp_listen", "mcp_headless"])]
+    no_mcp: bool,
 }
 
 /// Resolve the scripted capture the CLI asked for, if any.
@@ -1403,18 +1444,66 @@ fn run_client() {
     // manifest can set the render size, and a windowless run needs that size to
     // stand a `HeadlessSurface` in for the missing `Window`. A bad manifest or
     // `--at` therefore fails here with a message, not as a black run.
-    let (harness, perf_run) = match build_shot_harness(&cli) {
+    //
+    // Mutable only where there is an MCP server to replace it with a live
+    // harness; off the desktop nothing reassigns it and the `mut` is dead.
+    #[cfg_attr(not(mcp), allow(unused_mut))]
+    let (mut harness, perf_run) = match build_shot_harness(&cli) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
         }
     };
-    // A scripted run is windowless (see `HeadlessSurface`): it renders into an
-    // offscreen image, so the shot size is the whole surface — there is nothing
-    // for egui to lay out against but this.
-    let shot_size = harness.as_ref().map(|h| h.size);
-    let scripted = harness.is_some();
+    // Same rule, same reason: `--mcp-headless` also decides whether there is a
+    // window, so a bad address or size has to fail here rather than at the first
+    // call an editor makes. A scripted capture resolves to `None` — see
+    // `Config::resolve`, which is also where the two are refused together.
+    #[cfg(mcp)]
+    let mcp_config = match systems::mcp::Config::resolve(
+        cli.mcp_listen.as_deref(),
+        cli.mcp_headless,
+        cli.mcp_size.as_deref(),
+        // `--no-mcp` takes this run out of it entirely, exactly as a scripted
+        // capture is: no config, no listener, no Settings row, nothing to switch.
+        harness.is_some() || cli.no_mcp,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    // **A live harness for the MCP camera operator.** `view` photographs by
+    // pushing a viewpoint onto the shot harness, which owns the only cycle that
+    // knows how to place a camera, wait for the world and quiesce the workers
+    // before the shutter (`systems::mcp`'s module note). So a run that *could*
+    // serve MCP gets an *empty* harness that parks until it is handed a
+    // viewpoint, rather than a second copy of that cycle.
+    //
+    // Built whether or not the listener is currently on, because the switch that
+    // turns it on is in Settings: a harness that only existed when the app
+    // started with serving enabled would make the switch a restart.
+    #[cfg(mcp)]
+    if let Some(cfg) = &mcp_config {
+        harness = Some(systems::shot_harness::ShotHarness::live_harness(
+            cfg.size,
+            !cfg.headless,
+        ));
+    }
+    // A run with no window renders into an offscreen image, so the shot size is
+    // the whole surface — there is nothing for egui to lay out against but this
+    // (see `HeadlessSurface`). Two ways to get there: a scripted capture, and
+    // `--mcp-headless`. A *windowed* MCP run is an ordinary session that happens
+    // to be drivable, and takes none of it.
+    let windowless = harness.as_ref().is_some_and(|h| !h.windowed);
+    let shot_size = windowless
+        .then(|| harness.as_ref().map(|h| h.size))
+        .flatten();
+    // "A script owns this run": no user store, no frame limiter, no live weather,
+    // no load controller. A windowed MCP session is somebody's session and keeps
+    // all of it.
+    let scripted = windowless;
     // Self-install the Linux desktop file + themed icon before the window exists,
     // so Wayland compositors (where set_window_icon is a no-op) can resolve the
     // app icon on first map. Idempotent, best-effort, no-op off Linux and for
@@ -1734,9 +1823,26 @@ fn run_client() {
     // to render into an image, so the whole run happens off the desktop: nothing
     // pops up, nothing can occlude (and blacken) a capture, and it works over SSH
     // or in CI with no compositor at all.
+    //
+    // **How hard it spins depends on whether the run ends.** A scripted capture
+    // has a list and an `AppExit` at the end of it, so it takes every frame it
+    // can get — that is the whole cost of the run and it is over in a minute. A
+    // headless MCP server has no end: it sits waiting for a call, and a zero
+    // interval there is one core burned continuously, on a machine that is
+    // usually shared, for a world nobody is looking at. `MCP_IDLE_HZ` is fast
+    // enough that the streamers make progress during a settle and slow enough
+    // that an idle server costs almost nothing. It is a *minimum* frame time, so
+    // on a renderer already slower than that (this container draws a city in ~4 s)
+    // it changes nothing at all.
+    const MCP_IDLE_HZ: f64 = 30.0;
+    let live_server = harness.as_ref().is_some_and(|h| h.live);
     let default_plugins = match shot_size {
         Some(_) => default_plugins.disable::<bevy::winit::WinitPlugin>().add(
-            bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO),
+            bevy::app::ScheduleRunnerPlugin::run_loop(if live_server {
+                std::time::Duration::from_secs_f64(1.0 / MCP_IDLE_HZ)
+            } else {
+                std::time::Duration::ZERO
+            }),
         ),
         None => default_plugins,
     };
@@ -2129,81 +2235,118 @@ fn run_client() {
     }
     app.insert_resource(screen);
 
-    // Scripted capture mode (`--shot` / `--shots`): the harness owns the camera
-    // and ends the run, and the user store stays out of it (no restore, no
-    // autosave). It was already built and validated above.
+    // **The camera operator.** One state machine places a camera, waits for every
+    // streamer to go quiet, quiesces the CPU pool so the GPU readback is not
+    // queued behind a rasterise backlog, fires the shutter and measures what it
+    // photographed. Three things drive it and none of them owns a copy: `--shot`
+    // and `--shots` hand it a list and quit at the end, `--perf` measures a
+    // window after each shutter, and `--mcp-listen` hands it one viewpoint at a
+    // time while the app runs.
     if let Some(harness) = harness {
-        app.insert_resource(resources::HeadlessSurface {
-            size: harness.size,
-            scale: 1.0,
-        })
-        .insert_resource(harness)
-        .init_resource::<systems::shot_harness::ShotProgress>()
-        .add_systems(
-            Startup,
-            systems::shot_harness::setup_offscreen_target.after(systems::free_camera::setup_camera),
-        )
-        .add_systems(
-            Update,
-            (
-                // Anywhere in Update is early enough: it only has to beat
-                // PostUpdate's `end_egui_frame`, which is what would otherwise
-                // reuse an older frame's tessellation for the capture.
-                systems::shot_harness::keep_egui_fresh,
-                systems::shot_harness::open_scripted_ui,
-                // After the camera is placed, so the demo speaker `--ui chat`
-                // spawns stands where this shot's camera is actually looking.
-                systems::shot_harness::hold_scripted_chat
-                    .after(systems::shot_harness::open_scripted_ui),
-                // After the camera is placed, for the same reason the chat demo
-                // is: the seeded prims stand where this shot is actually looking.
-                systems::shot_harness::hold_scripted_fire
-                    .after(systems::shot_harness::open_scripted_ui),
-                systems::shot_harness::place_camera.before(systems::geo_nav::apply_teleport),
-                systems::shot_harness::place_space_orbit
-                    .after(systems::geo_nav::apply_teleport)
-                    .before(systems::free_camera::camera_controls),
-                // Hold the scripted camera mode against the toggle that would
-                // drop an offline Follow to Fly, and before the movement system
-                // that reads the mode.
-                systems::shot_harness::hold_scripted_camera_mode
-                    .after(systems::free_camera::camera_mode_toggle)
-                    .before(avatar::handle_avatar_movement),
-                // After the teleport for the reason its doc gives — the teleport
-                // clears the seat — and before the camera, so the shift it applies
-                // is framed on the same frame it is written.
-                systems::shot_harness::seat_scripted_avatar
-                    .after(systems::geo_nav::apply_teleport)
-                    .after(systems::shot_harness::hold_scripted_camera_mode)
-                    .before(systems::free_camera::camera_controls),
-                // `--ui building`: select the building nearest the avatar, since a
-                // headless run has no cursor to click one with. After the teleport,
-                // which is what decides where "nearest" is measured from; the glass
-                // it asks for is built by `update_building_shells` on the next
-                // frame, which a settling capture has hundreds of.
-                systems::shot_harness::select_scripted_building
-                    .after(systems::geo_nav::apply_teleport),
-                // `--ui locate`: a fix with no provider, so the device arrow can
-                // be photographed at all.
-                //
-                // **After** the tracking system, not before. That system reads
-                // the live watches every frame and writes what it finds — which
-                // in a scripted run is nothing, since no provider exists — so a
-                // seed seen first is a seed wiped before the overlay reads it.
-                // Running last is the whole reason `--ui locate` produces a
-                // picture rather than an empty map.
-                systems::shot_harness::track_scripted_device
-                    .after(systems::geo_nav::apply_teleport)
-                    .after(systems::locate::track_device_pose)
-                    .before(systems::locate::render_locate_arrow),
-                // After drive_screenshots so the `hide_ui` it clears
-                // each frame isn't cleared again before PostUpdate's
-                // egui suppression reads it.
-                systems::shot_harness::drive_capture
-                    .after(systems::free_camera::camera_controls)
-                    .after(systems::ui::drive_screenshots),
-            ),
-        );
+        // Fed at runtime: no `--ui` list to apply, and the holds must let go of
+        // the camera between calls.
+        let live = harness.live;
+        let windowless = !harness.windowed;
+        // No window at all: the camera renders into an offscreen image and
+        // `HeadlessSurface` stands in for the `Window` egui lays out against.
+        // A windowed MCP session has a real one and takes neither.
+        if windowless {
+            app.insert_resource(resources::HeadlessSurface {
+                size: harness.size,
+                scale: 1.0,
+            })
+            .add_systems(
+                Startup,
+                systems::shot_harness::setup_offscreen_target
+                    .after(systems::free_camera::setup_camera),
+            );
+        }
+        app.insert_resource(harness)
+            .init_resource::<systems::shot_harness::ShotProgress>()
+            .add_systems(
+                Update,
+                (
+                    // Anywhere in Update is early enough: it only has to beat
+                    // PostUpdate's `end_egui_frame`, which is what would otherwise
+                    // reuse an older frame's tessellation for the capture.
+                    //
+                    // Gated, because in a live run this is a cost paid every frame
+                    // for a capture that may be minutes away — and between calls
+                    // the ordinary skip is what the client wants.
+                    systems::shot_harness::keep_egui_fresh
+                        .run_if(systems::shot_harness::shot_in_progress),
+                    systems::shot_harness::place_camera.before(systems::geo_nav::apply_teleport),
+                    systems::shot_harness::place_space_orbit
+                        .after(systems::geo_nav::apply_teleport)
+                        .before(systems::free_camera::camera_controls),
+                    // Hold the scripted camera mode against the toggle that would
+                    // drop an offline Follow to Fly, and before the movement system
+                    // that reads the mode. **Gated**: a mode held every frame by an
+                    // idle camera operator is a mode the person at the keyboard
+                    // cannot change.
+                    systems::shot_harness::hold_scripted_camera_mode
+                        .after(systems::free_camera::camera_mode_toggle)
+                        .before(avatar::handle_avatar_movement)
+                        .run_if(systems::shot_harness::shot_in_progress),
+                    // Ungated, and it has to be: it owns the advance past the last
+                    // viewpoint — which is the edge that parks a live run and the
+                    // one that ends a scripted one.
+                    //
+                    // After drive_screenshots so the `hide_ui` it clears each frame
+                    // isn't cleared again before PostUpdate's egui suppression
+                    // reads it.
+                    systems::shot_harness::drive_capture
+                        .after(systems::free_camera::camera_controls)
+                        .after(systems::ui::drive_screenshots),
+                ),
+            );
+        // The `--ui` family, which only a *scripted* run has: a live harness is
+        // handed viewpoints, not presets, and `open_scripted_ui` keyed on the
+        // shot index would close every panel the user had open each time an
+        // editor took a picture.
+        if !live {
+            app.add_systems(
+                Update,
+                (
+                    systems::shot_harness::open_scripted_ui,
+                    // After the camera is placed, so the demo speaker `--ui chat`
+                    // spawns stands where this shot's camera is actually looking.
+                    systems::shot_harness::hold_scripted_chat
+                        .after(systems::shot_harness::open_scripted_ui),
+                    // After the camera is placed, for the same reason the chat demo
+                    // is: the seeded prims stand where this shot is actually looking.
+                    systems::shot_harness::hold_scripted_fire
+                        .after(systems::shot_harness::open_scripted_ui),
+                    // After the teleport for the reason its doc gives — the teleport
+                    // clears the seat — and before the camera, so the shift it applies
+                    // is framed on the same frame it is written.
+                    systems::shot_harness::seat_scripted_avatar
+                        .after(systems::geo_nav::apply_teleport)
+                        .after(systems::shot_harness::hold_scripted_camera_mode)
+                        .before(systems::free_camera::camera_controls),
+                    // `--ui building`: select the building nearest the avatar, since a
+                    // headless run has no cursor to click one with. After the teleport,
+                    // which is what decides where "nearest" is measured from; the glass
+                    // it asks for is built by `update_building_shells` on the next
+                    // frame, which a settling capture has hundreds of.
+                    systems::shot_harness::select_scripted_building
+                        .after(systems::geo_nav::apply_teleport),
+                    // `--ui locate`: a fix with no provider, so the device arrow can
+                    // be photographed at all.
+                    //
+                    // **After** the tracking system, not before. That system reads
+                    // the live watches every frame and writes what it finds — which
+                    // in a scripted run is nothing, since no provider exists — so a
+                    // seed seen first is a seed wiped before the overlay reads it.
+                    // Running last is the whole reason `--ui locate` produces a
+                    // picture rather than an empty map.
+                    systems::shot_harness::track_scripted_device
+                        .after(systems::geo_nav::apply_teleport)
+                        .after(systems::locate::track_device_pose)
+                        .before(systems::locate::render_locate_arrow),
+                ),
+            );
+        }
     }
 
     // The performance suite rides the harness above: same teleport, same settle
@@ -2233,6 +2376,92 @@ fn run_client() {
                     .chain()
                     .before(systems::shot_harness::drive_capture),
             );
+    }
+
+    // **The editor's way in** (`systems::mcp`), on by default on the desktop and
+    // switched from Settings ▸ General ▸ Editor access.
+    //
+    // Everything is registered here; whether a socket is actually open is
+    // `mcp::reconcile_listener`'s, once a frame's worth of change detection. The
+    // thing this enables is an editor attaching to a client that is *already
+    // running*, and a launch flag cannot serve that: the moment somebody wants it
+    // is the moment something is on screen.
+    #[cfg(mcp)]
+    if let Some(cfg) = mcp_config {
+        // The token: the environment wins (a headless run has no screen to read
+        // one off), then whatever this installation last minted, then a fresh
+        // one. The fresh one is written back so Settings has something to show
+        // and an editor's configuration keeps working across launches.
+        //
+        // **Written back only when something will save it.** A windowless run
+        // takes `harness_active`'s exemption from the user store — no restore, no
+        // autosave — so marking the store dirty there would be a promise nothing
+        // keeps, and the next launch would mint a different token having appeared
+        // to remember one. It logs the token instead.
+        let token = match std::env::var("CARTO_MCP_TOKEN") {
+            Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+            _ => {
+                let store = app.world().resource::<systems::user_store::UserStore>();
+                match store.data.mcp_token.clone() {
+                    Some(t) if !t.trim().is_empty() => t,
+                    _ => {
+                        let minted = systems::mcp::mint_token();
+                        if !cfg.headless {
+                            let mut store = app
+                                .world_mut()
+                                .resource_mut::<systems::user_store::UserStore>();
+                            store.data.mcp_token = Some(minted.clone());
+                            store.dirty = true;
+                        }
+                        minted
+                    }
+                }
+            }
+        };
+        // A windowless run has no Settings panel to read the token off, so it is
+        // logged — once, at startup, beside where it *will* serve.
+        //
+        // "will", and the wording matters: the socket is opened a frame later by
+        // `reconcile_listener`, which is the only thing that knows whether the
+        // port was free. A line here saying "serving" is a claim this code cannot
+        // make, and the run that proves it is the second client on one port,
+        // which logged "serving" and then "cannot serve" three lines apart.
+        if cfg.headless {
+            tracing::info!(listen = %cfg.listen, token = %token, "mcp: headless, will serve");
+        }
+        let auth = systems::mcp::McpAuth(std::sync::Arc::new(std::sync::RwLock::new(token)));
+        let (tx, rx) = futures_channel::mpsc::unbounded();
+        let headless = cfg.headless;
+        app.insert_resource(cfg.clone())
+            .insert_resource(auth)
+            .insert_resource(systems::mcp::JobSender(tx))
+            .init_resource::<systems::mcp::McpTrouble>()
+            .insert_resource(systems::mcp::McpBridge::new(rx, cfg.listen))
+            .add_systems(
+                Update,
+                (
+                    // Opens or closes the socket to match the switch. Before the
+                    // pump, so a listener enabled this frame can be answered from
+                    // this frame.
+                    systems::mcp::reconcile_listener,
+                    // Before the camera operator, so a viewpoint that arrives
+                    // this frame is placed this frame rather than waiting one.
+                    systems::mcp::pump.before(systems::shot_harness::place_camera),
+                    // After it, so a capture that lands this frame is answered
+                    // this frame. The two halves are ordered around
+                    // `drive_capture` for the same reason and in opposite
+                    // directions.
+                    systems::mcp::land_captures.after(systems::shot_harness::drive_capture),
+                )
+                    .chain(),
+            );
+        if !headless {
+            app.add_systems(
+                Update,
+                systems::mcp::overlay::render_mcp_activity
+                    .after(systems::place_pins::render_place_pins),
+            );
+        }
     }
 
     // Per-window OS icon via winit (Windows + Linux/X11; a no-op on Wayland and

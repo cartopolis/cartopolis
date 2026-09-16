@@ -477,6 +477,14 @@ pub fn build(
                 // measure a client nobody runs.
                 hide_ui: s.hide_ui.or(Some(false)),
                 ui: s.ui.clone(),
+                // The suite's patience is manifest-wide: every scenario is the
+                // same kind of measurement, and one that settled differently
+                // would not be comparable with the rest.
+                settle: None,
+                wait: None,
+                // Every scenario is flown to; the suite measures what a teleport
+                // costs, so capturing in place would measure nothing.
+                in_place: false,
                 env: ShotEnv {
                     time: s.time,
                     fog: s.fog,
@@ -507,6 +515,8 @@ pub fn build(
         dump_state: None,
         expect: Vec::new(),
         flicker: false,
+        live: false,
+        windowed: false,
     };
     let run = PerfRun {
         names: selected.iter().map(|s| s.name.clone()).collect(),

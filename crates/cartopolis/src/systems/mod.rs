@@ -36,6 +36,11 @@ pub use dev::{
     adaptive_quality, desktop_integration, dev_panel, diagnostics, frame_pacing, perf,
     pipeline_health, render_census, shot_harness, shot_presets, upload_meter, window_icon,
 };
+// Desktop only — a phone has no editor pointed at it and a browser tab cannot
+// listen on a socket (`build.rs` sets the cfg, `Cargo.toml` gates the
+// dependency on the same predicate).
+#[cfg(mcp)]
+pub use dev::mcp;
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.

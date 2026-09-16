@@ -231,6 +231,42 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # call through `ClipboardManager`, which is its own seam and not wired yet
 # (`utils::clipboard` has a no-op arm for it).
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+# The Model Context Protocol server this client hosts (`systems::mcp`,
+# `--mcp-listen`), so an IDE can drive it: move the camera, photograph what it
+# sees, read the scene's metrics.
+#
+# **Desktop-only, and that is the same judgement arboard and rfd make below.** A
+# phone has no IDE pointed at it and a browser tab cannot listen on a socket at
+# all, so neither target gains anything from an HTTP server — while both would
+# pay for hyper, tower and a second JSON-RPC stack in a binary whose size is a
+# shipping constraint. `build.rs` sets the `mcp` cfg on exactly this predicate,
+# so the code and the dependency cannot disagree about which targets have it.
+#
+# Not a cargo feature: Android and the web build `--no-default-features`, so a
+# default feature would be dropped there by accident rather than by decision —
+# the trap `audio` documents at the top of this file.
+#
+# The SDK rather than a hand-rolled JSON-RPC handler, and the reason is the 2026
+# specification rather than convenience: sessions, SSE and *long-running tasks*
+# are in it, and a settle that takes twenty seconds is precisely a long-running
+# task. `default-features = false` drops the client half and the OAuth stack; it
+# keeps the server, the macros and the streamable-HTTP transport, whose axum,
+# hyper, tower and tokio are all already in this workspace's lock for the
+# simulator, so this is new edges rather than a new subtree.
+rmcp = { version = "3.4", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+] }
+# The router the MCP service is mounted in, and the one middleware in front of
+# it: the bearer check. rmcp's transport *is* a `tower` service, so this is the
+# thing that holds it plus the four lines that answer 401 — and axum is already
+# compiled in this workspace for the simulator's HTTP surface.
+axum.workspace = true
+# MCP carries an image as base64 in a JSON message, so a capture has to be
+# encoded before it can be handed over. Already in the lock under the simulator.
+base64 = "0.22"
 arboard.workspace = true
 # The file dialog behind `platform::photo` on the desktop — the arm that answers
 # "attach a photo to this place" where there is no camera to point at one.

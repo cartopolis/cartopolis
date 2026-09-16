@@ -2173,9 +2173,9 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
 /// `hint` is **not optional**, and that is the whole design: "No places yet" on
 /// its own is a dead end, and the Places panel's existing empty state — which
 /// names the two buttons and says what each does — is the model this generalises.
-/// Four lists in the client currently draw literally nothing when empty (an empty
-/// chat channel, a fresh AI conversation, an empty folder, the texture library),
-/// which is indistinguishable from a panel that failed to load.
+/// Three lists in the client currently draw literally nothing when empty (an
+/// empty chat channel, an empty folder, the texture library), which is
+/// indistinguishable from a panel that failed to load.
 pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
     ui.add_space(12.0);
     ui.vertical_centered(|ui| {

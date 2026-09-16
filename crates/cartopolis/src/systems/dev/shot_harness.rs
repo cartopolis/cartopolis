@@ -164,6 +164,24 @@ pub struct ShotSpec {
     pub hide_ui: Option<bool>,
     /// Per-shot `--ui` panel list.
     pub ui: Option<Vec<String>>,
+    /// **Photograph from wherever the camera already is**, placing nothing.
+    ///
+    /// `lat`/`lng`/`alt`/the look angles are then a record of where that was
+    /// rather than a request. This is the before-and-after half of a live run:
+    /// change one thing and re-photograph the identical viewpoint. A teleport
+    /// would not do — it re-anchors the map, retires the tiles and re-streams the
+    /// city, which is a great deal of work to arrive back where you started, and
+    /// it would move the ground under the comparison.
+    pub in_place: bool,
+    /// Per-shot settle and wait, overriding the harness-wide `--settle`/`--wait`.
+    ///
+    /// Harness-wide is right for a sweep, where every frame is the same kind of
+    /// picture. It is not right for a live run (see [`ShotHarness::live`]), where
+    /// one request is "re-photograph what you are already looking at" — already
+    /// settled, so it wants no patience at all — and the next is a first visit to
+    /// a city, which wants all of it.
+    pub settle: Option<f32>,
+    pub wait: Option<f32>,
     /// Time of day and weather for this shot.
     pub env: ShotEnv,
 }
@@ -197,6 +215,9 @@ impl ShotSpec {
             mode: a.mode.clone(),
             hide_ui: a.hide_ui,
             ui: a.ui.clone(),
+            in_place: false,
+            settle: a.settle,
+            wait: a.wait,
             env: a.env.clone(),
         }
     }
@@ -278,6 +299,27 @@ pub struct ShotHarness {
     /// centimetre nudge, honest geometry moves sub-pixel while a depth coin flip
     /// decorrelates completely; the difference *is* the flicker, measured.
     pub flicker: bool,
+    /// **Viewpoints arrive while the app runs**, instead of being a list fixed on
+    /// the command line — the MCP server pushing a [`ShotSpec`] per `view` call
+    /// (`systems::mcp`).
+    ///
+    /// It changes exactly one thing about the cycle: running off the end of the
+    /// list *parks* the camera operator instead of writing the metrics and
+    /// quitting. Everything else — the teleport, the settle test, the worker
+    /// quiesce, the shutter, the readback budget, the metrics — is the same code
+    /// driving the same state machine, which is the point. A second copy of this
+    /// cycle would be a second thing to keep in step with it, and the perf suite
+    /// already declined to grow one (see [`ShotProgress::perf_hold`]).
+    pub live: bool,
+    /// **There is a window, and a person in front of it.**
+    ///
+    /// True only for a live harness riding along in an ordinary session. It is
+    /// what [`harness_active`] answers, so every "a script owns this run"
+    /// exemption — the user store, the frame limiter, the load controller — stays
+    /// *off* for a client somebody is also using by hand, and stays on for the
+    /// windowless runs (`--shot`, `--shots`, `--perf`, `--mcp-headless`) where
+    /// nobody is.
+    pub windowed: bool,
 }
 
 /// How far `--flicker` moves the camera between the two captures of a pair:
@@ -1281,7 +1323,41 @@ impl ShotHarness {
             dump_state,
             expect,
             flicker,
+            live: false,
+            windowed: false,
         })
+    }
+
+    /// A harness that is handed its viewpoints while the app runs, rather than
+    /// running a list and quitting — see [`ShotHarness::live`] (the field).
+    ///
+    /// `windowed` is whether this client has a window and a user: `--mcp-listen`
+    /// on an ordinary session does, `--mcp-headless` does not.
+    ///
+    /// `cfg(mcp)` because the only thing that builds one is the MCP camera
+    /// operator, which is desktop-only — and this crate denies dead code, so an
+    /// Android build reports it rather than ignoring it.
+    #[cfg(mcp)]
+    pub fn live_harness(size: UVec2, windowed: bool) -> Self {
+        Self {
+            // Never used: every live shot carries its own `out`. Kept honest
+            // anyway, since `path_for` falls back to it.
+            path: PathBuf::from("mcp-view.png"),
+            shots: Vec::new(),
+            size,
+            settle: DEFAULT_SETTLE,
+            wait: DEFAULT_WAIT,
+            hide_ui: false,
+            ui: Vec::new(),
+            mode: "free".to_string(),
+            tile_url: None,
+            csv: None,
+            dump_state: None,
+            expect: Vec::new(),
+            flicker: false,
+            live: true,
+            windowed,
+        }
     }
 
     /// Build from a preset manifest (`--shots`): every remembered camera
@@ -1321,6 +1397,10 @@ impl ShotHarness {
                     mode: p.mode.clone().or_else(|| manifest.mode.clone()),
                     hide_ui: p.hide_ui.or(manifest.hide_ui),
                     ui: p.ui.clone(),
+                    // Manifest-wide patience, and every preset is flown to.
+                    settle: None,
+                    wait: None,
+                    in_place: false,
                     env: ShotEnv {
                         time: p.time,
                         fog: p.fog,
@@ -1369,7 +1449,28 @@ impl ShotHarness {
             // doubling each into a nudged twin would overwrite half the set.
             // The flicker instrument is the plain `--shot` path's.
             flicker: false,
+            live: false,
+            windowed: false,
         })
+    }
+
+    /// Whether a script owns this run rather than riding along in somebody's
+    /// session — see [`ShotHarness::windowed`] and [`harness_active`].
+    pub fn owns_run(&self) -> bool {
+        !self.windowed
+    }
+
+    /// Settle seconds for shot `i` — the shot's own, else the run-wide one.
+    pub fn settle_for(&self, i: usize) -> f32 {
+        self.shots
+            .get(i)
+            .and_then(|s| s.settle)
+            .unwrap_or(self.settle)
+    }
+
+    /// Wait cap for shot `i` — the shot's own, else the run-wide one.
+    pub fn wait_for(&self, i: usize) -> f32 {
+        self.shots.get(i).and_then(|s| s.wait).unwrap_or(self.wait)
     }
 
     /// Camera mode for shot `i` — the preset's own, else the run-wide one.
@@ -1637,12 +1738,56 @@ impl ShotProgress {
     pub(crate) fn perf_captured(&self) -> bool {
         self.perf_captured
     }
+
+    /// The rows captured so far, newest last. The live harness's answer to
+    /// "what did that `view` measure?" — matched on [`ShotMetrics::shot`], which
+    /// is the shot index plus one and keeps counting across a trim.
+    ///
+    /// `cfg(mcp)` for the same reason [`ShotHarness::live_harness`] is: nothing
+    /// off the desktop reads these rows, and this crate denies dead code.
+    #[cfg(mcp)]
+    pub fn metrics(&self) -> &[ShotMetrics] {
+        &self.metrics
+    }
+
+    /// Bound the history a live run accumulates.
+    ///
+    /// A scripted run's metrics are its *output* — the CSV and the JSON dump are
+    /// written from this vector, so nothing may be dropped. A live run's are a
+    /// log: an agent reads the row belonging to the call it just made, and a
+    /// session that captures for an hour must not grow one row at a time until
+    /// it is the largest thing in the process.
+    fn trim_metrics(&mut self) {
+        const LIVE_METRICS_KEPT: usize = 64;
+        if self.metrics.len() > LIVE_METRICS_KEPT {
+            let drop = self.metrics.len() - LIVE_METRICS_KEPT;
+            self.metrics.drain(..drop);
+        }
+    }
 }
 
-/// True while a scripted capture is configured — the run condition the user
-/// store uses to keep out of the way.
+/// True while **a script owns the run** — the condition the user store, the frame
+/// limiter and the load controller use to keep out of the way.
+///
+/// Not simply "a harness exists" any more. A live harness (`--mcp-listen`) rides
+/// along in an ordinary windowed session, where all three of those should behave
+/// exactly as they do without it: the session is somebody's, their saved location
+/// and layers are theirs, and a client being driven by an agent is still a client
+/// a person is watching. See [`ShotHarness::windowed`].
 pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
-    harness.is_some()
+    harness.is_some_and(|h| h.owns_run())
+}
+
+/// True while the harness has a viewpoint to work on.
+///
+/// The run condition for every system that *holds* something for the duration of
+/// a capture — the camera mode, the egui refresh, the panels a `--ui` list opens.
+/// Under `--shot` it is true for the whole run, so nothing about a scripted
+/// capture changes. Under a live harness it is false between calls, which is what
+/// hands the client back to whoever is sitting in front of it: a camera mode held
+/// every frame by an idle camera operator is a camera the user cannot change.
+pub fn shot_in_progress(harness: Option<Res<ShotHarness>>, progress: Res<ShotProgress>) -> bool {
+    harness.is_some_and(|h| progress.index < h.shots.len())
 }
 
 /// Keep egui's geometry in step with the world for the whole of a scripted run.
@@ -2277,6 +2422,18 @@ pub fn place_camera(
         }
     }
 
+    // `in_place`: the camera is already where this shot wants it, so issue no
+    // teleport. Everything above still runs — the clocks are reset and the
+    // streaming baselines are taken, which is what makes the capture's own
+    // numbers about this capture.
+    if shot.in_place {
+        tracing::info!(
+            shot = progress.index + 1,
+            "shot harness: capturing in place"
+        );
+        return;
+    }
+
     let mode = harness.mode_for(progress.index);
     let avatar_follow = mode == "avatar";
     let (azimuth, pitch, distance) = if avatar_follow {
@@ -2567,12 +2724,9 @@ pub struct ShotReadouts<'w, 's> {
     vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
-    relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
     ground_detail: Res<'w, crate::systems::ground_detail::GroundDetail>,
     water_levels: Res<'w, crate::systems::water_levels::WaterLevels>,
     furniture: Res<'w, crate::systems::street_furniture::FurnitureLod>,
-    surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
-    osm_buildings: Res<'w, crate::systems::osm_buildings::OsmBuildings>,
     lod22: Res<'w, crate::systems::lod22::Lod22Buildings>,
     adapter: Res<'w, bevy::render::renderer::RenderAdapterInfo>,
     /// The resolved graphics preferences, for the columns that report what a
@@ -2675,6 +2829,79 @@ pub struct VisualCounts<'w, 's> {
         Query<'w, 's, &'static GlobalTransform, With<crate::systems::light_shafts::ShaftVolume>>,
 }
 
+/// Every streamer the settle test watches, as one `SystemParam`.
+///
+/// **"Every" is load-bearing and was learned the hard way.** The test used to
+/// watch only the two tile streams — and `MapStream::streaming_busy` was stuck
+/// true for the life of the process (a fetch was never dropped from `requested`),
+/// so every ground shot silently ran to the `--wait` cap instead. Fixing that bug
+/// turned each README capture into a half-built city: the imagery goes quiet in
+/// ~4 s, while the vector surfaces, the OSM detail patch and the 3DBAG cells are
+/// still arriving. The accidental 45 s sleep had been doing the waiting, so the
+/// test has to name the streamers it was covering for.
+///
+/// It is a parameter of its own rather than a block inside [`drive_capture`]
+/// because it has a second caller: `systems::mcp`'s `state` tool answers "is the
+/// world finished, and if not, what is it still doing" **without taking a
+/// picture** — the cheapest way there is to check a world view. A second list of
+/// streamers maintained beside this one would answer it differently within a
+/// month.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct StreamWatch<'w> {
+    globe: Res<'w, GlobeState>,
+    tiles: Res<'w, MapStream>,
+    surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
+    osm_buildings: Res<'w, crate::systems::osm_buildings::OsmBuildings>,
+    lod22: Res<'w, crate::systems::lod22::Lod22Buildings>,
+    terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
+    grass: Res<'w, crate::systems::grass::GrassPatches>,
+    street_detail: Res<'w, crate::systems::street_detail::StreetDetail>,
+    tall_structures: Res<'w, crate::systems::tall_structures::TallStructures>,
+    /// A `--weather-live` run holds until the first met.no sample lands, so the
+    /// capture shows real conditions rather than the default clear sky.
+    weather: Res<'w, WeatherState>,
+    /// A `--ui route` run holds until the solve lands — otherwise the shot
+    /// documents an empty planner and a map with no line on it (ADR-037).
+    route: Res<'w, crate::systems::navigation::RouteState>,
+}
+
+impl StreamWatch<'_> {
+    /// Which streamers are still working, by name.
+    ///
+    /// **Names, not a single `||` chain.** When a capture gives up at `--wait`,
+    /// *which* streamer was still going is the entire diagnosis, and a bare "not
+    /// settled" sends you back to re-run with a longer cap just to learn it.
+    pub fn busy(&self) -> Vec<&'static str> {
+        let routing = matches!(
+            self.route.status,
+            crate::systems::navigation::SolveStatus::Fetching(..)
+                | crate::systems::navigation::SolveStatus::Solving
+        );
+        [
+            ("globe", self.globe.streaming_busy()),
+            ("map_tiles", self.tiles.streaming_busy()),
+            ("surfaces", self.surfaces.streaming_busy()),
+            ("osm_buildings", self.osm_buildings.streaming_busy()),
+            ("lod22", self.lod22.streaming_busy()),
+            ("terrain", self.terrain.streaming_busy()),
+            // Not the same question as `terrain`: that one is "has the field
+            // arrived", this one is "is the ground drawn with it yet". They are
+            // ~83 frames apart over a city and only the second decides what the
+            // picture shows.
+            ("relief", self.relief_backlog.0 > 0),
+            ("grass", self.grass.streaming_busy()),
+            ("street_detail", self.street_detail.streaming_busy()),
+            ("tall_structures", self.tall_structures.streaming_busy()),
+            ("routing", routing),
+            ("weather", self.weather.live && !self.weather.ready()),
+        ]
+        .into_iter()
+        .filter_map(|(name, busy)| busy.then_some(name))
+        .collect()
+    }
+}
+
 pub fn drive_capture(
     mut commands: Commands,
     time: Res<Time>,
@@ -2685,8 +2912,11 @@ pub fn drive_capture(
     mut exit: MessageWriter<AppExit>,
     globe: Res<GlobeState>,
     stream: Res<MapStream>,
-    weather: Res<WeatherState>,
-    route: Res<crate::systems::navigation::RouteState>,
+    // The settle test's inputs, as one parameter — see `StreamWatch`. It holds
+    // its own handles on the globe and the tile stream; those two stay named
+    // above because the metrics read altitude, tier and tile counts off them,
+    // which is a different question from "is it still working".
+    watch: StreamWatch,
     cam_state: Res<CameraState>,
     readouts: ShotReadouts,
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
@@ -2747,16 +2977,25 @@ pub fn drive_capture(
         progress.perf_release = false;
         crate::platform::workers::set_paused(false);
         progress.index += 1;
+        // Reset unconditionally, including when the list has run out: a live
+        // harness is handed its next viewpoint later, and it must not arrive to
+        // find the previous one's `placed`/`fired`/`verdict` still set.
+        progress.placed = false;
+        progress.fired = false;
+        progress.retried = false;
+        progress.verdict = None;
+        progress.perf_captured = false;
         if progress.index >= harness.shots.len() {
+            if harness.live {
+                // Park. `shot_in_progress` is false from here, so the holds let
+                // go of the camera and the client is the user's again until the
+                // next `view` call pushes a viewpoint.
+                progress.trim_metrics();
+                return;
+            }
             // Every viewpoint captured — flush the metrics before draining to exit.
             harness.write_metrics(&progress.metrics);
             progress.exit_in = Some(2);
-        } else {
-            progress.placed = false;
-            progress.fired = false;
-            progress.retried = false;
-            progress.verdict = None;
-            progress.perf_captured = false;
         }
         return;
     }
@@ -2819,6 +3058,19 @@ pub fn drive_capture(
             // Leaving the pool paused would strand every job parked behind this
             // capture; the run is ending, but `AppExit` is not immediate.
             crate::platform::workers::set_paused(false);
+            // A live harness outlives its failures. The caller still gets an
+            // answer — the metrics row is pushed at the shutter, so a capture
+            // that never read back has its numbers and only lacks its pixels —
+            // and the next `view` call is not asked to pay for this one.
+            if harness.live {
+                progress.index += 1;
+                progress.placed = false;
+                progress.fired = false;
+                progress.retried = false;
+                progress.verdict = None;
+                progress.trim_metrics();
+                return;
+            }
             // Hand back whatever the run *did* measure, including this shot's own
             // row — the metrics are pushed at the shutter, so a capture that never
             // read back still has its numbers. Only the completion path used to
@@ -2839,63 +3091,26 @@ pub fn drive_capture(
     }
 
     // Settle: capture once *every* streamer has been quiet for `--settle`
-    // seconds, or when `--wait` runs out (whichever comes first).
-    //
-    // "Every" is load-bearing and was learned the hard way. This used to watch
-    // only the two tile streams — and `MapStream::streaming_busy` was stuck true
-    // for the life of the process (a fetch was never dropped from `requested`),
-    // so every ground shot silently ran to the `--wait` cap instead. Fixing that
-    // bug turned each README capture into a half-built city: the imagery goes
-    // quiet in ~4 s, while the vector surfaces, the OSM detail patch and the
-    // 3DBAG cells are still arriving. The accidental 45 s sleep was doing the
-    // waiting, so the settle test has to name the streamers it was covering for.
-    //
-    // A `--weather-live` run also holds until the first met.no sample lands, so the
-    // capture shows real conditions rather than the default clear sky, and a
-    // `--ui route` run holds until the solve lands — otherwise the shot documents
-    // an empty planner and a map with no line on it (ADR-037).
-    let routing = matches!(
-        route.status,
-        crate::systems::navigation::SolveStatus::Fetching(..)
-            | crate::systems::navigation::SolveStatus::Solving
-    );
-    let (surfaces, osm, lod22) = (&readouts.surfaces, &readouts.osm_buildings, &readouts.lod22);
-    // Named, not a single `||` chain: when a capture gives up at `--wait`, *which*
-    // streamer was still going is the entire diagnosis, and a bare "not settled"
-    // sends you back to re-run with a longer cap just to learn it.
-    let busy: Vec<&'static str> = [
-        ("globe", globe.streaming_busy()),
-        ("map_tiles", stream.streaming_busy()),
-        ("surfaces", surfaces.streaming_busy()),
-        ("osm_buildings", osm.streaming_busy()),
-        ("lod22", lod22.streaming_busy()),
-        ("terrain", readouts.terrain.streaming_busy()),
-        // Not the same question as `terrain`: that one is "has the field arrived",
-        // this one is "is the ground drawn with it yet". They are ~83 frames apart
-        // over a city and only the second decides what the picture shows.
-        ("relief", readouts.relief_backlog.0 > 0),
-        ("grass", readouts.grass.streaming_busy()),
-        ("street_detail", readouts.street_detail.streaming_busy()),
-        ("tall_structures", readouts.tall_structures.streaming_busy()),
-        ("routing", routing),
-        ("weather", weather.live && !weather.ready()),
-    ]
-    .into_iter()
-    .filter_map(|(name, busy)| busy.then_some(name))
-    .collect();
+    // seconds, or when `--wait` runs out (whichever comes first). Which streamers
+    // that is, and why the list has to be exhaustive, is `StreamWatch`.
+    let busy = watch.busy();
     if busy.is_empty() {
         progress.quiet += time.delta_secs();
     } else {
         progress.quiet = 0.0;
     }
     if progress.verdict.is_none() {
-        if progress.quiet < harness.settle && progress.elapsed < harness.wait {
+        let (settle, wait) = (
+            harness.settle_for(progress.index),
+            harness.wait_for(progress.index),
+        );
+        if progress.quiet < settle && progress.elapsed < wait {
             return;
         }
         // Which arm of the test above let us through. Everything measured below
         // describes a partially streamed world when this is false.
         progress.verdict = Some(SettleVerdict {
-            settled: progress.quiet >= harness.settle,
+            settled: progress.quiet >= settle,
             busy: busy.clone(),
             at: progress.elapsed,
         });
@@ -3559,6 +3774,65 @@ mod tests {
             Err(e) => assert!(e.contains("--frames"), "got {e:?}"),
             Ok(_) => panic!("expected --frames with one waypoint to error"),
         }
+    }
+
+    /// A live harness starts with nothing to do, and each viewpoint it is handed
+    /// brings its own patience — which is the difference between "re-photograph
+    /// what you are already looking at" and "fly to a city you have never been
+    /// to".
+    #[test]
+    fn a_live_harness_starts_empty_and_takes_patience_per_shot() {
+        let mut h = ShotHarness::live_harness(UVec2::new(1280, 720), true);
+        assert!(h.live);
+        assert!(h.windowed);
+        assert!(
+            h.shots.is_empty(),
+            "nothing to photograph until it is asked"
+        );
+        // Falls back to the run-wide values while nothing says otherwise.
+        assert_eq!(h.settle_for(0), DEFAULT_SETTLE);
+        assert_eq!(h.wait_for(0), DEFAULT_WAIT);
+
+        h.shots.push(ShotSpec {
+            settle: Some(0.0),
+            in_place: true,
+            out: Some(PathBuf::from("/tmp/here.png")),
+            ..default()
+        });
+        assert_eq!(h.settle_for(0), 0.0, "the shot's own settle wins");
+        assert_eq!(h.wait_for(0), DEFAULT_WAIT, "and the rest still falls back");
+        assert_eq!(
+            h.path_for(0),
+            PathBuf::from("/tmp/here.png"),
+            "a live shot names its own file, as a preset does"
+        );
+    }
+
+    /// `harness_active` means "a script owns this run", and a windowed live
+    /// harness does not: the user store, the frame limiter and the load
+    /// controller all belong to the person whose session it is.
+    #[test]
+    fn a_windowed_live_harness_does_not_own_the_run() {
+        let size = UVec2::new(640, 360);
+        assert!(
+            !ShotHarness::live_harness(size, true).owns_run(),
+            "a client somebody is watching keeps its user store, its frame limiter \
+             and its load controller"
+        );
+        assert!(
+            ShotHarness::live_harness(size, false).owns_run(),
+            "a windowless one is nobody's session"
+        );
+        assert!(
+            ShotHarness::from_cli(ShotArgs {
+                path: "/tmp/s.png".into(),
+                at: &["0,0,1000".into()],
+                ..default()
+            })
+            .unwrap()
+            .owns_run(),
+            "and a scripted run always has"
+        );
     }
 
     #[test]
