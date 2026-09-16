@@ -191,6 +191,16 @@ pub struct Tunnel {
     /// [`CLEARANCE_M`] so a consumer asking "am I inside this tunnel" gets the
     /// answer for *this* tunnel.
     pub clearance: f32,
+    /// Whether each centre vertex has a lid over it, as against being the open
+    /// ramp at either end.
+    ///
+    /// Carried because the *ground* needs it. Where a tunnel has a lid, the land
+    /// above it is continuous — you walk over the top — and the measured height
+    /// data does not always agree: Groningen's ring was flown as an open trench
+    /// and has since been rebuilt with a lid, so the survey digs nine metres out
+    /// of ground that is now whole. [`covered_weight`](Self::covered_weight) is
+    /// how a ground mesh asks whether to believe the survey here.
+    pub covered: Vec<bool>,
 }
 
 impl Tunnel {
@@ -254,6 +264,54 @@ impl Tunnel {
             if d < best.0 {
                 let y = self.road_y[i] + (self.road_y[i + 1] - self.road_y[i]) * t;
                 best = ((d - self.half_w).max(0.0), y);
+            }
+        }
+        best
+    }
+
+    /// How much the land at `p` should be treated as continuous ground over a
+    /// lid: 1 directly over a covered stretch, falling to 0 `taper_m` beyond it.
+    ///
+    /// **This exists because two sources disagree and one of them is stale.** The
+    /// height survey measures what it flew over, and where a road has since been
+    /// rebuilt with a lid, the survey still shows the open trench — so the ground
+    /// beside a covered tunnel sinks nine metres while the lid stays at street
+    /// level, and the tunnel reads as a raised platform. The map's own tag is the
+    /// newer fact, so over a covered stretch the ground is lifted back to the
+    /// level of the land around it.
+    ///
+    /// The taper is generous on purpose: a trench is wider than the road in it —
+    /// two carriageways, their walls and their verges — so filling only the
+    /// carriageway's own width would leave a ditch either side of a flush lid,
+    /// which is the same fault in a narrower shape.
+    #[must_use]
+    pub fn covered_weight(&self, p: [f32; 2], taper_m: f32) -> f32 {
+        let mut best = 0.0f32;
+        for i in 0..self.centre.len().saturating_sub(1) {
+            if !(self.covered[i] && self.covered[i + 1]) {
+                continue;
+            }
+            let (a, b) = (self.centre[i], self.centre[i + 1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len_sq = dx * dx + dy * dy;
+            if len_sq <= 1e-9 {
+                continue;
+            }
+            let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+            let d = (p[0] - (a[0] + dx * t)).hypot(p[1] - (a[1] + dy * t)) - self.half_w;
+            let w = if d <= 0.0 {
+                1.0
+            } else if d >= taper_m {
+                0.0
+            } else {
+                // Smooth rather than linear: a straight ramp leaves a visible
+                // crease along the line where the fill stops.
+                let x = 1.0 - d / taper_m;
+                x * x * (3.0 - 2.0 * x)
+            };
+            best = best.max(w);
+            if best >= 1.0 {
+                break;
             }
         }
         best
@@ -931,6 +989,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             road_y,
             half_w: half,
             clearance,
+            covered: roofed.clone(),
         });
 
         // Cut the meshes loose as they fill, the same contract every other
@@ -1533,6 +1592,7 @@ mod tests {
             road_y: vec![-7.0, -7.0],
             half_w: 6.0,
             clearance: CLEARANCE_M,
+            covered: vec![true; 2],
         };
         assert_eq!(tunnel.road_under([50.0, 0.0]), Some(-7.0));
         assert_eq!(tunnel.road_under([50.0, 5.9]), Some(-7.0));
@@ -1886,6 +1946,52 @@ mod tests {
         ];
         assert!(!cut_sheet(&mut elsewhere, &[far]));
         assert_eq!(elsewhere.indices, vec![0, 1, 2]);
+    }
+
+    /// **Ground over a lid is whole; ground over the open ramp is not.**
+    ///
+    /// The weight is what lets a ground mesh overrule a stale height survey, so
+    /// it has to be confined to the covered part. If it leaked onto the ramp it
+    /// would fill in the very hole you drive through.
+    #[test]
+    fn the_fill_covers_the_lid_and_stops_at_the_ramp() {
+        // 100 m of tunnel: the first half open, the second half covered.
+        let tunnel = Tunnel {
+            centre: vec![[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]],
+            road_y: vec![0.0, -7.0, -7.0],
+            half_w: 6.0,
+            clearance: CLEARANCE_M,
+            covered: vec![false, true, true],
+        };
+        let taper = 30.0;
+        assert_eq!(
+            tunnel.covered_weight([75.0, 0.0], taper),
+            1.0,
+            "ground directly over the lid must be filled"
+        );
+        assert_eq!(
+            tunnel.covered_weight([75.0, 5.0], taper),
+            1.0,
+            "…and so must ground within the carriageway's own width"
+        );
+        assert_eq!(
+            tunnel.covered_weight([10.0, 0.0], taper),
+            0.0,
+            "the open ramp must not be filled in — it is the way in"
+        );
+        assert_eq!(
+            tunnel.covered_weight([75.0, 400.0], taper),
+            0.0,
+            "ground nowhere near a tunnel is left to the survey"
+        );
+        // Between the two, a smooth ramp rather than a step: a hard edge to the
+        // fill is a crease running the length of the road.
+        let near = tunnel.covered_weight([75.0, 12.0], taper);
+        let far = tunnel.covered_weight([75.0, 30.0], taper);
+        assert!(
+            (0.0..1.0).contains(&near) && near > far,
+            "the fill must fade out with distance: {near} then {far}"
+        );
     }
 
     /// Plan area of a mesh's triangles.
