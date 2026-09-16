@@ -2115,6 +2115,77 @@ mod tests {
         assert_eq!(parts_for(&bench).len(), form::BENCH.len());
     }
 
+    /// The water test against a real recorded tile, because the part that can be
+    /// silently wrong is the frame: MVT declares an extent **per layer**, so a
+    /// point arriving in the `pois` layer's coordinates has to be carried into the
+    /// water layer's. Shortbread emits 4096 everywhere, which is exactly what makes
+    /// the mistake invisible — the `WayField` trap in this module's own history is
+    /// the same assumption, and it put benches at angles taken from streets that
+    /// were nowhere near them.
+    #[test]
+    fn water_is_found_inside_a_real_canal() {
+        use crate::testdata;
+        let tile = testdata::groningen();
+
+        // A point that is provably inside some water polygon in this tile: walk the
+        // water layers, and for each exterior ring try its own vertices' mean. A
+        // canal is convex enough that this lands inside for at least one of them.
+        let mut inside: Option<(f32, f32)> = None;
+        for meta in tile.layers() {
+            if !WATER_LAYERS.contains(&meta.name.as_str()) {
+                continue;
+            }
+            let extent = TileData::extent(meta);
+            for feature in tile.features(meta) {
+                let rings: Vec<&geo_types::Polygon<f32>> = match &feature.geometry {
+                    geo_types::Geometry::Polygon(p) => vec![p],
+                    geo_types::Geometry::MultiPolygon(mp) => mp.iter().collect(),
+                    _ => continue,
+                };
+                for poly in rings {
+                    let pts: Vec<(f32, f32)> =
+                        poly.exterior().coords().map(|c| (c.x, c.y)).collect();
+                    if pts.len() < 3 {
+                        continue;
+                    }
+                    let n = pts.len() as f32;
+                    let cx = pts.iter().map(|p| p.0).sum::<f32>() / n;
+                    let cy = pts.iter().map(|p| p.1).sum::<f32>() / n;
+                    let (u, v) = (cx / extent, cy / extent);
+                    if (0.0..1.0).contains(&u)
+                        && (0.0..1.0).contains(&v)
+                        && water_under(&tile, u, v)
+                    {
+                        inside = Some((u, v));
+                        break;
+                    }
+                }
+                if inside.is_some() {
+                    break;
+                }
+            }
+            if inside.is_some() {
+                break;
+            }
+        }
+        let (u, v) = inside.expect("Groningen z14 has canals in it");
+        assert!(water_under(&tile, u, v), "the point we just found is wet");
+
+        // And the tile is not simply answering yes: most of a city is not water.
+        let mut wet = 0;
+        let mut total = 0;
+        for i in 1..12 {
+            for j in 1..12 {
+                total += 1;
+                wet += usize::from(water_under(&tile, i as f32 / 12.0, j as f32 / 12.0));
+            }
+        }
+        assert!(
+            wet < total / 2,
+            "{wet} of {total} sample points wet — the frame is probably wrong"
+        );
+    }
+
     /// An operator's model replaces the basin and leaves the jet alone — and the
     /// jet must still be *meshed*, because the mask's whole meaning is "a model
     /// will stand here instead". Without the second half a fountain placeholder
