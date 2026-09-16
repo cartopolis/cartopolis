@@ -322,6 +322,31 @@ client-library compile measured **171 s at load 10 and 352 s at load 29**, so wh
 moves build time on this machine is how many builds share the eight cores, not
 any flag in this file.
 
+### A narrow `-p` is warm only if somebody warmed it — and that costs 245 s
+
+A build slot is warmed with three shapes: `check --workspace --all-targets`,
+`test --workspace --no-run`, and `build -p cartopolis`. Resolver v2 unifies
+features over the packages an invocation *selects*, so a narrower selection is a
+different feature resolution and keeps its own artifacts. Measured on a freshly
+claimed slot, same commit it was warmed at, clean tree, nothing edited:
+
+| first run of … | | rebuilt |
+|---|---|---|
+| `cargo check -p cartopolis_core` | 41 s | 15 packages |
+| `cargo check -p cartopolis_simulator` | 85 s | ~90 packages |
+| `cargo check -p cartopolis` | **245 s** | the whole Bevy stack |
+| `cargo check --workspace --all-targets` | 12 s | nothing |
+| `cargo test --workspace --no-run` | warm | nothing |
+
+**It is a one-off per scope, not a thrash.** Once both sets exist, alternating
+between them is free — measured at 1-4 s and zero units either way, which
+confirms the "`-p` and `--workspace` keep artifact sets that coexist" rule in
+`test-suite-build-cost.md` rather than contradicting it. But the first one is
+245 s against 12 s for the same question asked workspace-wide, which is the real
+reason this repo's build commands say to prefer the workspace-scoped form. Use
+`-p` when you mean to *narrow the work*; do not use it expecting a faster answer
+from a warm slot, because for the client it is twenty times slower.
+
 ## Not measured
 
 Whether a cold full build is dominated by Bevy itself — it certainly is, and no
