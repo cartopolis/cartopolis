@@ -705,26 +705,26 @@ pub struct ShotMetrics {
     /// The one number that separates the three ways a capture over a tunnel comes
     /// back looking empty: no tunnel in the tile at all, a tunnel that was built
     /// but is roofed over from this viewpoint, and a tunnel whose mesh failed. It
-    /// counts the *bores* — the floor-and-walls description the avatar walks in —
+    /// counts the *tunnels* — the floor-and-walls description the avatar walks in —
     /// rather than meshes, because that is the half a picture cannot show.
-    pub tunnel_bores: usize,
+    pub tunnel_count: usize,
     /// How deep the deepest streamed carriageway runs, metres below the ground
     /// sheet. Zero with no tunnel in range; about −7 over a Dutch sunken road.
     ///
     /// **A minimum over the whole map, so it says nothing about this view.** It
-    /// reads −7.0 wherever one bore anywhere in the streamed cells reaches full
+    /// reads −7.0 wherever one tunnel anywhere in the streamed cells reaches full
     /// depth — including from a camera pointed at an ordinary street — which is
     /// how a capture came to be reported as showing a trench when it showed a
     /// surface road beside one. Use [`Self::tunnel_ahead_m`] to say what the
     /// picture is of; this one only says a tunnel was built somewhere.
-    pub tunnel_deck_m: f32,
+    pub tunnel_road_m: f32,
     /// The tunnels' own meshes — carriageway, walls and roof — spawned, and how
     /// many of those the camera can actually see.
     ///
     /// **Two numbers for the reason the route line has two.** A tunnel is
     /// invisible when it works and invisible when it does not: from anywhere but
     /// a low oblique over an open cut, ground is what you see either way. So
-    /// `tunnel_bores` — which counts the floor-and-collision description, not
+    /// `tunnel_count` — which counts the floor-and-collision description, not
     /// triangles — cannot distinguish "no tunnel here", "built but off screen"
     /// and "built, on screen, and drawn under something". These can.
     pub tunnel_meshes: usize,
@@ -734,7 +734,7 @@ pub struct ShotMetrics {
     /// there — ready to paste into `--at` and `--look`.
     ///
     /// Zero and `-1` when no tunnel is streamed. See
-    /// `TunnelBores::nearest_entrance`: eleven cameras in this feature's history
+    /// `Tunnels::nearest_entrance`: eleven cameras in this feature's history
     /// were placed by hand-converting the tessellator's own coordinates and every
     /// one of them missed, by between 28 and 178 metres.
     pub tunnel_entrance_lat: f64,
@@ -743,29 +743,29 @@ pub struct ShotMetrics {
     /// See [`Self::tunnel_entrance_lat`]. Degrees clockwise from north; `-1` when
     /// there is no tunnel.
     pub tunnel_entrance_heading: f32,
-    /// Metres from the point this capture is aimed at to the nearest bore's
+    /// Metres from the point this capture is aimed at to the nearest tunnel's
     /// carriageway, in plan. `0` means the aim point is over one; `-1` means
     /// nothing is streamed or the camera is not pointed at the ground.
     ///
     /// This is the field that makes a tunnel capture self-checking. A road seen
     /// from a low oblique is a band a few pixels deep whether it is on the ground
     /// or seven metres under it, and a tunnel approach runs beside ordinary
-    /// streets by construction — so the eye cannot tell a picture *of* a bore
+    /// streets by construction — so the eye cannot tell a picture *of* a tunnel
     /// from a picture pointed fifty metres off one, and twice now it has not.
     pub tunnel_ahead_m: f32,
-    /// The deck level at that nearest bore, metres below the ground sheet.
+    /// The deck level at that nearest tunnel, metres below the ground sheet.
     ///
     /// Read beside [`Self::tunnel_ahead_m`]: `ahead_m` near 0 with `ahead_deck_m`
     /// near −7 is a capture looking into a full-depth cut, and is the assertion a
     /// proof shot of a tunnel should carry.
-    pub tunnel_ahead_deck_m: f32,
+    pub tunnel_ahead_road_m: f32,
     /// Clipmap tiles whose raster sheet has an opening cut out of it
     /// (`map_stream::BasemapHoles`).
     ///
     /// The vector ground and the basemap are two sheets a few centimetres apart,
-    /// and a capture cannot tell which of them is roofing a bore — which is
+    /// and a capture cannot tell which of them is roofing a tunnel — which is
     /// precisely the question that went a day unanswered. Zero here with
-    /// `tunnel_bores` above zero means the trench is being photographed through a
+    /// `tunnel_count` above zero means the trench is being photographed through a
     /// hole in only one of the two.
     pub basemap_open_tiles: usize,
     /// Doors drawn on facades from the register's entrance points
@@ -956,7 +956,7 @@ pub struct ShotMetrics {
     ///
     /// This is the only way a headless run can say the avatar is *in* the tunnel
     /// rather than over it. A picture cannot: from the deck and from the pavement
-    /// seven metres up, the same bore fills the frame with the same asphalt.
+    /// seven metres up, the same tunnel fills the frame with the same asphalt.
     pub avatar_floor_m: f32,
     /// Measured ground level at the map anchor, metres above NAP, and how many
     /// patches the height layer has fetched (`systems::height`). `NaN` and 0 mean
@@ -1147,7 +1147,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_bores,tunnel_deck_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_deck_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -1225,9 +1225,9 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("furniture_factor", 4),
     ("globe_texture_mb", 2),
     ("avatar_floor_m", 2),
-    ("tunnel_deck_m", 2),
+    ("tunnel_road_m", 2),
     ("tunnel_ahead_m", 1),
-    ("tunnel_ahead_deck_m", 2),
+    ("tunnel_ahead_road_m", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
@@ -2912,7 +2912,7 @@ pub struct ShotReadouts<'w, 's> {
     places: Res<'w, crate::systems::world_places::WorldPlaces>,
     /// The near-camera interior layer, for its room count alone.
     interiors: Res<'w, crate::systems::interiors::Interiors>,
-    tunnels: Res<'w, crate::systems::tunnels::TunnelBores>,
+    tunnels: Res<'w, crate::systems::tunnels::Tunnels>,
     /// The same layer's support field, for its storey tally.
     interior_floors: Res<'w, crate::systems::interiors::InteriorFloors>,
     /// What is selected and what the avatar is standing in — see
@@ -3327,7 +3327,7 @@ pub fn drive_capture(
         };
         let shot = &harness.shots[progress.index];
         // **Where on the ground this capture is actually pointed**, in the
-        // anchored world frame the bores are kept in. The camera is the floating
+        // anchored world frame the tunnels are kept in. The camera is the floating
         // origin, so its own `GlobalTransform` is near zero and the grid cell is
         // the whole of its position — the same conversion `building_select` makes
         // to turn a click into a place.
@@ -3339,7 +3339,7 @@ pub fn drive_capture(
             Vec2::new(cam_world.x + fwd.x * t, cam_world.z + fwd.z * t)
         });
         // Where the nearest tunnel actually goes under, as something you can type
-        // into `--at`. See `TunnelBores::nearest_entrance` for why this is a
+        // into `--at`. See `Tunnels::nearest_entrance` for why this is a
         // reported number and not an arithmetic exercise at the call site.
         let entrance = aim
             .and_then(|p| readouts.tunnels.nearest_entrance(p))
@@ -3361,8 +3361,8 @@ pub fn drive_capture(
                 "tunnel entrance"
             );
         }
-        let nearest_bore = aim.and_then(|p| {
-            readouts.tunnels.nearest_bore(p, |q| {
+        let nearest_tunnel = aim.and_then(|p| {
+            readouts.tunnels.nearest_tunnel(p, |q| {
                 readouts
                     .terrain
                     .surrounding(q.x, q.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
@@ -3469,15 +3469,15 @@ pub fn drive_capture(
             prop_colliders: readouts.places.props().count(),
             flood_defences: readouts.dikes.len(),
             flood_defences_measured: readouts.dikes.measured(),
-            tunnel_bores: readouts.tunnels.bore_count(),
-            tunnel_deck_m: readouts.tunnels.deepest_deck(),
+            tunnel_count: readouts.tunnels.tunnel_count(),
+            tunnel_road_m: readouts.tunnels.deepest_road(),
             tunnel_meshes: visuals.tunnels.iter().count(),
             tunnel_rendered: visuals.tunnels.iter().filter(|vv| vv.get()).count(),
             tunnel_entrance_lat: entrance.map_or(0.0, |(lat, _, _)| lat),
             tunnel_entrance_lng: entrance.map_or(0.0, |(_, lng, _)| lng),
             tunnel_entrance_heading: entrance.map_or(-1.0, |(_, _, h)| h),
-            tunnel_ahead_m: nearest_bore.map_or(-1.0, |(d, _)| d),
-            tunnel_ahead_deck_m: nearest_bore.map_or(0.0, |(_, y)| y),
+            tunnel_ahead_m: nearest_tunnel.map_or(-1.0, |(d, _)| d),
+            tunnel_ahead_road_m: nearest_tunnel.map_or(0.0, |(_, y)| y),
             basemap_open_tiles: readouts.basemap_holes.0,
             interior_rooms: readouts.interiors.rooms(),
             interior_storeys: readouts.interior_floors.storeys(),
@@ -4157,15 +4157,15 @@ mod tests {
             prop_colliders: 0,
             flood_defences: 0,
             flood_defences_measured: 0,
-            tunnel_bores: 0,
-            tunnel_deck_m: 0.0,
+            tunnel_count: 0,
+            tunnel_road_m: 0.0,
             tunnel_meshes: 0,
             tunnel_rendered: 0,
             tunnel_entrance_lat: 0.0,
             tunnel_entrance_lng: 0.0,
             tunnel_entrance_heading: -1.0,
             tunnel_ahead_m: -1.0,
-            tunnel_ahead_deck_m: 0.0,
+            tunnel_ahead_road_m: 0.0,
             basemap_open_tiles: 0,
             interior_rooms: 0,
             interior_storeys: 0,

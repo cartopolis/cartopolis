@@ -585,7 +585,7 @@ impl TerrainSnapshot {
     /// **This is how a tunnel stops being dug twice.** AHN measures the real thing:
     /// where a Dutch tunnel is an open cut, the bare-ground model *is* the trench
     /// floor (the Groningen ring falls from +5.5 m to −3.6 m across forty metres,
-    /// measured 2026-09-16). So the ground sheet a bore's depth is expressed
+    /// measured 2026-09-16). So the ground sheet a tunnel's depth is expressed
     /// against is, at exactly those points, already seven metres down — and adding
     /// an invented seven on top of a measured nine puts the carriageway sixteen
     /// metres under the street. Subtracting what the measurement already accounts
@@ -593,7 +593,7 @@ impl TerrainSnapshot {
     ///
     /// A ring of samples rather than a filtered grid: unlike
     /// [`floor_at`](Self::floor_at), whose lower envelope every clipmap tile in the
-    /// pyramid reads on every rebuild, this is asked only by the bore meshes of the
+    /// pyramid reads on every rebuild, this is asked only by the tunnel meshes of the
     /// cells that have one, so nine lookups at the call site beat a whole
     /// max-filtered level nobody else wants.
     #[must_use]
@@ -1740,7 +1740,7 @@ pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
 /// surface that is everywhere at or under the measured ground — which is what allows
 /// a distant level to be coarse at all (see [`build_floors`]). At the finest levels
 /// the quad is the sample and the floor is the measurement.
-/// `mouths` are the tunnel openings the sheet has to be missing over, in this
+/// `openings` are the tunnel openings the sheet has to be missing over, in this
 /// grid's own local XZ. Cutting here rather than at the call site is what lets a
 /// tile that needs no relief and no curve still get a hole in it: it is the only
 /// place a clipmap tile's triangles exist.
@@ -1750,7 +1750,7 @@ pub fn displaced_grid(
     centre: Vec2,
     size: f32,
     divisions: usize,
-    mouths: &[Vec<[f32; 2]>],
+    openings: &[Vec<[f32; 2]>],
 ) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -1802,7 +1802,7 @@ pub fn displaced_grid(
     // same frame it adds this mesh, so the auto-`Aabb` pass still sees the
     // positions; a handle stashed for later reuse could not do this (that is why
     // `street_labels`' shared quad keeps `MAIN_WORLD`).
-    let (positions, normals, uvs, indices) = if mouths.is_empty() {
+    let (positions, normals, uvs, indices) = if openings.is_empty() {
         (positions, normals, uvs, indices)
     } else {
         let mut sheet = cartopolis_geo::vector_tiles::SurfaceMesh {
@@ -1814,7 +1814,7 @@ pub fn displaced_grid(
             colors: Vec::new(),
             rungs: Vec::new(),
         };
-        cartopolis_geo::tunnels::cut_sheet(&mut sheet, mouths);
+        cartopolis_geo::tunnels::cut_sheet(&mut sheet, openings);
         (sheet.positions, sheet.normals, sheet.uvs, sheet.indices)
     };
     Mesh::new(

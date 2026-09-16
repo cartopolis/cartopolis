@@ -427,16 +427,16 @@ impl InteriorFloors {
 ///
 /// Both movement systems were at Bevy's 16-parameter ceiling, and the floor is
 /// one question with two answers in it: the storey you are standing on and the
-/// bore you are standing in. Reading them together also makes it impossible to
+/// tunnel you are standing in. Reading them together also makes it impossible to
 /// consult one without the other, which is the bug this would otherwise invite —
 /// a path that knows about upper floors and walks over an open tunnel.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Footing<'w> {
     pub floors: Res<'w, InteriorFloors>,
-    pub bores: Res<'w, crate::systems::tunnels::TunnelBores>,
-    /// **Here so the floor agrees with the road that is drawn.** A bore's deck is
+    pub tunnels: Res<'w, crate::systems::tunnels::Tunnels>,
+    /// **Here so the floor agrees with the road that is drawn.** A tunnel's deck is
     /// metres below the ground sheet, and over an open cut the measured ground
-    /// sheet already *is* the trench floor, so `map_geometry` lifts the drawn bore
+    /// sheet already *is* the trench floor, so `map_geometry` lifts the drawn tunnel
     /// back by what AHN accounts for. Without the same correction here the avatar
     /// walks that far under the carriageway it can see.
     pub terrain: Res<'w, crate::systems::terrain::TerrainField>,
@@ -445,19 +445,19 @@ pub struct Footing<'w> {
 impl Footing<'_> {
     /// Advance the avatar's floor one frame. See [`step_floor_lift`].
     pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32) -> f32 {
-        step_floor_lift(&self.floors, &self.bores, &self.terrain, avatar, at, dt)
+        step_floor_lift(&self.floors, &self.tunnels, &self.terrain, avatar, at, dt)
     }
 }
 
 pub fn step_floor_lift(
     floors: &InteriorFloors,
-    bores: &crate::systems::tunnels::TunnelBores,
+    tunnels: &crate::systems::tunnels::Tunnels,
     terrain: &crate::systems::terrain::TerrainField,
     avatar: &mut AvatarState,
     at: Vec2,
     dt: f32,
 ) -> f32 {
-    let target = support_level(floors, bores, terrain, at, avatar.floor_lift);
+    let target = support_level(floors, tunnels, terrain, at, avatar.floor_lift);
     if target >= avatar.floor_lift {
         avatar.floor_lift = target;
         avatar.floor_drop_speed = 0.0;
@@ -475,14 +475,14 @@ pub fn step_floor_lift(
 /// at: a building's storey above, a tunnel's carriageway below, or the ground.
 ///
 /// **The ground wins wherever there is any.** That is what keeps the pavement over
-/// a bore walkable, and it is not the step rule doing the work — a deck seven
+/// a tunnel walkable, and it is not the step rule doing the work — a deck seven
 /// metres down passes "no more than a step above you" trivially, so preferring a
 /// deck whenever one is under the point drops the avatar through the road. What
-/// separates the two cases is the *hole*: the approach at a portal is a stretch
+/// separates the two cases is the *hole*: the approach at a entrance is a stretch
 /// the ground has genuinely been taken away over
 /// (`cartopolis_geo::tunnels::cut_ground`), and only there is the floor whatever
 /// lies at the bottom of the cut. Walking down the ramp works because the ramp is
-/// inside that hole; walking over the covered bore works because it is not.
+/// inside that hole; walking over the covered tunnel works because it is not.
 ///
 /// Going back up is the rule that was already here. From the deck, the ground over
 /// your head is more than [`STEP_UP_M`] above you and is refused exactly as an
@@ -490,16 +490,16 @@ pub fn step_floor_lift(
 /// ramp — which rises continuously, as the flight does.
 fn support_level(
     floors: &InteriorFloors,
-    bores: &crate::systems::tunnels::TunnelBores,
+    tunnels: &crate::systems::tunnels::Tunnels,
     terrain: &crate::systems::terrain::TerrainField,
     at: Vec2,
     from: f32,
 ) -> f32 {
-    let deck = bores.deck_under_measured(at, |p| {
+    let deck = tunnels.road_under_measured(at, |p| {
         terrain.surrounding(p.x, p.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
             - terrain.at(p.x, p.y)
     });
-    if !bores.over_opening(at) {
+    if !tunnels.over_opening(at) {
         let indoors = floors.support(at, from);
         if indoors <= from + STEP_UP_M {
             return indoors;
@@ -928,7 +928,7 @@ impl RoomMesh {
 
     /// One flight of stairs, rising `STOREY_M` from `bottom`.
     ///
-    /// Treads and risers, plus a closed soffit and one open side. Both of those
+    /// Treads and risers, plus a closed ceiling and one open side. Both of those
     /// are load-bearing rather than decoration: nothing in this layer is
     /// double-sided, so a flight of bare treads is invisible from underneath and
     /// the storey above is visible straight through it — and standing under the
@@ -959,7 +959,7 @@ impl RoomMesh {
                 FLOOR_COLOR,
             );
         }
-        // The soffit: one sloped quad under the whole flight, facing down.
+        // The ceiling: one sloped quad under the whole flight, facing down.
         //
         // Its normal is **perpendicular to the ramp and pointing away from the
         // treads**, which is not the same as "roughly downward" and is easy to
@@ -1038,47 +1038,47 @@ mod tests {
     use super::*;
     use crate::systems::terrain::TerrainField;
 
-    /// One straight bore 7 m down, 12 m wide, running east from the origin, with
-    /// its last 30 m open to the sky — the shape of a portal approach.
-    fn one_bore() -> crate::systems::tunnels::TunnelBores {
-        use cartopolis_geo::tunnels::Bore;
-        let mut bores = crate::systems::tunnels::TunnelBores::default();
-        let bore = Bore {
+    /// One straight tunnel 7 m down, 12 m wide, running east from the origin, with
+    /// its last 30 m open to the sky — the shape of a entrance approach.
+    fn one_bore() -> crate::systems::tunnels::Tunnels {
+        use cartopolis_geo::tunnels::Tunnel;
+        let mut tunnels = crate::systems::tunnels::Tunnels::default();
+        let tunnel = Tunnel {
             centre: vec![[0.0, 0.0], [200.0, 0.0]],
-            deck_y: vec![0.0, -7.0],
+            road_y: vec![0.0, -7.0],
             half_w: 6.0,
             clearance: 4.8,
         };
         // The opening: a corridor over the first 30 m, where the rising deck
         // leaves no room for a roof.
-        let mouth = vec![
+        let opening = vec![
             [0.0, -6.5],
             [30.0, -6.5],
             [30.0, 6.5],
             [0.0, 6.5],
             [0.0, -6.5],
         ];
-        bores.insert_cell(
+        tunnels.insert_cell(
             (0, 0),
             Vec2::ZERO,
             crate::systems::tunnels::CellTunnels {
-                bores: vec![bore],
-                mouths: vec![mouth],
+                tunnels: vec![tunnel],
+                openings: vec![opening],
             },
         );
-        bores
+        tunnels
     }
 
     /// The case that matters most, because getting it wrong drops people through
-    /// the road: a bore under your feet is not a reason to leave the pavement.
+    /// the road: a tunnel under your feet is not a reason to leave the pavement.
     #[test]
     fn the_ground_over_a_covered_bore_is_still_the_floor() {
         let floors = InteriorFloors::default();
-        let bores = one_bore();
+        let tunnels = one_bore();
         // 100 m along, the deck is 3.5 m down and roofed. Standing on the surface.
         let level = support_level(
             &floors,
-            &bores,
+            &tunnels,
             &TerrainField::default(),
             Vec2::new(100.0, 0.0),
             0.0,
@@ -1091,17 +1091,17 @@ mod tests {
     #[test]
     fn the_ground_over_your_head_cannot_pick_you_up() {
         let floors = InteriorFloors::default();
-        let bores = one_bore();
+        let tunnels = one_bore();
         let level = support_level(
             &floors,
-            &bores,
+            &tunnels,
             &TerrainField::default(),
             Vec2::new(100.0, 0.0),
             -3.5,
         );
         assert!(
             level < -3.0,
-            "standing in the bore, the floor became the road above: {level}"
+            "standing in the tunnel, the floor became the road above: {level}"
         );
     }
 
@@ -1110,10 +1110,10 @@ mod tests {
     #[test]
     fn over_the_opening_the_floor_is_the_deck() {
         let floors = InteriorFloors::default();
-        let bores = one_bore();
+        let tunnels = one_bore();
         let level = support_level(
             &floors,
-            &bores,
+            &tunnels,
             &TerrainField::default(),
             Vec2::new(20.0, 0.0),
             0.0,
@@ -1128,11 +1128,11 @@ mod tests {
     #[test]
     fn beside_a_bore_the_floor_is_the_ground() {
         let floors = InteriorFloors::default();
-        let bores = one_bore();
+        let tunnels = one_bore();
         assert_eq!(
             support_level(
                 &floors,
-                &bores,
+                &tunnels,
                 &TerrainField::default(),
                 Vec2::new(100.0, 40.0),
                 0.0
@@ -1401,7 +1401,7 @@ mod tests {
         );
     }
 
-    /// The soffit closes the flight from underneath, and "roughly downward" is
+    /// The ceiling closes the flight from underneath, and "roughly downward" is
     /// not the same as perpendicular to it. Written the obvious way the normal
     /// came out 0.998 *along* the ramp and pointing up, which faces the surface
     /// the wrong way — so the underside is open, and since nothing here is
@@ -1416,17 +1416,17 @@ mod tests {
         // The ramp's own direction: along the flight and up.
         let along =
             Vec3::new(stair.dir.x * stair.run, STOREY_M, stair.dir.y * stair.run).normalize();
-        let soffit = buf
+        let ceiling = buf
             .normals
             .iter()
             .map(|n| Vec3::new(n[0], n[1], n[2]))
             .find(|n| n.y < -0.1 && n.y > -0.99)
             .expect("no downward-and-sloped face under the flight");
         assert!(
-            along.dot(soffit).abs() < 1e-3,
-            "the soffit normal {soffit:?} is not perpendicular to the ramp"
+            along.dot(ceiling).abs() < 1e-3,
+            "the ceiling normal {ceiling:?} is not perpendicular to the ramp"
         );
-        assert!(soffit.y < 0.0, "the soffit faces up: {soffit:?}");
+        assert!(ceiling.y < 0.0, "the ceiling faces up: {ceiling:?}");
     }
 
     /// Nothing a room is built from may land outside the building holding it, on

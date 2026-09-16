@@ -714,7 +714,7 @@ pub struct ReliefBacklog(pub usize);
 
 /// Clipmap tiles whose sheet has a tunnel opening taken out of it.
 ///
-/// **The number is what makes the hole assertable.** A capture over a portal comes
+/// **The number is what makes the hole assertable.** A capture over a entrance comes
 /// back the same whether the basemap was cut or merely happens to be hidden by a
 /// vector surface at that range and that angle — which is exactly the ambiguity
 /// that left "does the raster roof the opening?" unresolved for a day. This counts
@@ -724,14 +724,14 @@ pub struct BasemapHoles(pub usize);
 
 /// Marker on a tile whose flat quad has been replaced by a mesh of its own —
 /// ground lifted onto the terrain field, bent by the globe's curve, or opened over
-/// a tunnel mouth — carrying what it was built for.
+/// a tunnel opening — carrying what it was built for.
 #[derive(Component)]
 pub struct TileRelief {
     revision: u32,
     /// The openings this tile's sheet was cut against
-    /// ([`TunnelBores::mouth_digest`](crate::systems::tunnels::TunnelBores::mouth_digest)),
+    /// ([`Tunnels::opening_digest`](crate::systems::tunnels::Tunnels::opening_digest)),
     /// kept apart from `revision` because it is the one input that is per tile.
-    mouths: u64,
+    openings: u64,
 }
 
 /// Subdivisions per side for a relief tile of `tile_m` metres: a constant count,
@@ -834,7 +834,7 @@ pub fn apply_terrain_to_tiles(
     stream: Res<MapStream>,
     field: Res<crate::systems::terrain::TerrainField>,
     globe: Res<crate::systems::globe::GlobeState>,
-    bores: Res<crate::systems::tunnels::TunnelBores>,
+    tunnels: Res<crate::systems::tunnels::Tunnels>,
     mut tiles: Query<(Entity, &StreamTile, &mut Transform, Option<&TileRelief>)>,
     mut backlog: ResMut<ReliefBacklog>,
     mut holes: ResMut<BasemapHoles>,
@@ -903,10 +903,10 @@ pub fn apply_terrain_to_tiles(
         // **Every level needs the hole, not just the one you are looking at.** The
         // pyramid stacks its levels 0.4 m apart and sinks the coarse ones by the
         // field's depth — a few metres in a polder — so all of them are still well
-        // above a seven-metre carriageway. Cut only the finest and the bore opens
+        // above a seven-metre carriageway. Cut only the finest and the tunnel opens
         // onto z10 imagery instead of onto z17 imagery.
-        let mouths = bores.mouth_digest(centre, gs * 0.5);
-        let shaped = relieved || divisions > 1 || mouths != 0;
+        let openings = tunnels.opening_digest(centre, gs * 0.5);
+        let shaped = relieved || divisions > 1 || openings != 0;
 
         if !shaped {
             if relief.is_some() {
@@ -926,10 +926,10 @@ pub fn apply_terrain_to_tiles(
         // What is *drawn* with a hole, not what is owed one: the component is the
         // mesh that exists, and counting the wish would report an open basemap for
         // the frames between a cell landing and its tiles being rebuilt.
-        if relief.is_some_and(|r| r.mouths != 0) {
+        if relief.is_some_and(|r| r.openings != 0) {
             holes.0 += 1;
         }
-        if relief.is_some_and(|r| r.revision == revision && r.mouths == mouths) {
+        if relief.is_some_and(|r| r.revision == revision && r.openings == openings) {
             continue;
         }
         // Counted before the per-frame cap turns it away, because this is the number
@@ -952,17 +952,17 @@ pub fn apply_terrain_to_tiles(
             continue;
         }
         *cost += 1;
-        let rings = if mouths == 0 {
+        let rings = if openings == 0 {
             Vec::new()
         } else {
-            bores.mouths_near(centre, gs * 0.5)
+            tunnels.openings_near(centre, gs * 0.5)
         };
         let mesh =
             crate::systems::terrain::displaced_grid(&field, &globe, centre, gs, divisions, &rings);
         commands
             .entity(entity)
             .insert(Mesh3d(meshes.add(mesh)))
-            .insert(TileRelief { revision, mouths });
+            .insert(TileRelief { revision, openings });
         // No `NotShadowCaster` here any more — every `StreamTile` carries it from
         // spawn (see the comment at the spawn site). The reasoning this comment
         // used to hold is still the reasoning, and is worth keeping: four clipmap

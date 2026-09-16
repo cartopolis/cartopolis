@@ -106,9 +106,9 @@ pub struct GrassArea {
     /// straight over an open cut. Seen in the 2026-09-16 capture over the
     /// Groningen ring: a lawn lying across the trench with the carriageway under
     /// it. The trees were already dropped this way (`map_geometry`,
-    /// `tunnels::in_a_mouth`); this is the same rule for the layer that has no
+    /// `tunnels::in_an_opening`); this is the same rule for the layer that has no
     /// instances to drop.
-    mouths: Vec<([f32; 4], Vec<[f32; 2]>)>,
+    openings: Vec<([f32; 4], Vec<[f32; 2]>)>,
 }
 
 /// Where the crop register says the ground is worked rather than grazed.
@@ -193,7 +193,7 @@ impl GrassArea {
                 water: WaterMask::empty(tile_m),
                 roads: RoadMask::empty(tile_m),
                 arable: ArableMask::default(),
-                mouths: Vec::new(),
+                openings: Vec::new(),
             };
         };
         let extent = TileData::extent(meta);
@@ -204,7 +204,7 @@ impl GrassArea {
             water: WaterMask::build(tile, scale, extent, tile_m),
             roads: RoadMask::build(tile, tile_m),
             arable: ArableMask::build(crops, tile_m),
-            mouths: Vec::new(),
+            openings: Vec::new(),
         };
 
         let mut positions = Vec::new();
@@ -294,7 +294,7 @@ impl GrassArea {
             && !self.arable.blocks(x, z)
             // No clearance here either: the opening's edge and the retaining wall
             // standing in it are the same line by construction
-            // (`tunnels::cut_ground` subtracts the mouth from the ground on the
+            // (`tunnels::cut_ground` subtracts the opening from the ground on the
             // same lattice), so a margin would leave a bald strip along the kerb
             // rather than protecting anything.
             && !self.over_a_mouth(x, z)
@@ -303,11 +303,11 @@ impl GrassArea {
     /// Record the tunnel openings this cell's ground was cut against.
     ///
     /// Set after construction rather than taken by [`Self::build`] because the
-    /// mouths are a product of [`crate::tunnels::build_tunnels`], which runs on
+    /// openings are a product of [`crate::tunnels::build_tunnels`], which runs on
     /// the same worker and needs the same tile — threading them through the
     /// constructor would order two independent pieces of work for no reason.
-    pub fn block_mouths(&mut self, mouths: &[Vec<[f32; 2]>]) {
-        self.mouths = mouths
+    pub fn block_mouths(&mut self, openings: &[Vec<[f32; 2]>]) {
+        self.openings = openings
             .iter()
             .filter(|ring| ring.len() >= 4)
             .map(|ring| {
@@ -324,7 +324,7 @@ impl GrassArea {
     }
 
     fn over_a_mouth(&self, x: f32, z: f32) -> bool {
-        self.mouths.iter().any(|(b, ring)| {
+        self.openings.iter().any(|(b, ring)| {
             x >= b[0]
                 && x <= b[2]
                 && z >= b[1]
@@ -557,10 +557,10 @@ mod tests {
     /// **A lawn must not grow over an open cut.**
     ///
     /// The blades come from this cell's grass polygons, not from the ground mesh,
-    /// so `tunnels::cut_ground` taking the ground away over a portal does nothing
+    /// so `tunnels::cut_ground` taking the ground away over a entrance does nothing
     /// to them on its own — which is how the 2026-09-16 capture over the Groningen
     /// ring came back with grass lying across the trench and the carriageway
-    /// underneath it. The trees had been handled (`tunnels::in_a_mouth`); this
+    /// underneath it. The trees had been handled (`tunnels::in_an_opening`); this
     /// layer has no instances to drop, so it keeps out by mask.
     #[test]
     fn grass_keeps_out_of_a_tunnel_mouth() {
@@ -582,7 +582,7 @@ mod tests {
         }
         let (x, z) = on_grass.expect("the fixture plants somewhere");
 
-        // A mouth over exactly that point, and the same point elsewhere untouched.
+        // A opening over exactly that point, and the same point elsewhere untouched.
         let ring = vec![
             [x - 15.0, z - 15.0],
             [x + 15.0, z - 15.0],
@@ -598,7 +598,7 @@ mod tests {
         assert!(
             area.plantable(x + 40.0, z)
                 || !GrassArea::build(&tile, tile_m, &[]).plantable(x + 40.0, z),
-            "the keep-out must be the mouth and not the whole cell"
+            "the keep-out must be the opening and not the whole cell"
         );
     }
 

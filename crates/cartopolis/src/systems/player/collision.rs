@@ -261,22 +261,22 @@ pub struct BuildingColliders {
     /// is the wall, and only while it is down there.
     ///
     /// Kept apart from every other list and never mixed into `iter`, because a
-    /// bore is a collider *or* it is nothing depending on which side of the
+    /// tunnel is a collider *or* it is nothing depending on which side of the
     /// ground the avatar is: from the pavement over a tunnel there must be no
     /// wall at all, and from inside it there must be nothing else. Mirrored from
-    /// `tunnels::TunnelBores` rather than published by the streamer, the same way
+    /// `tunnels::Tunnels` rather than published by the streamer, the same way
     /// the props are mirrored from `WorldPlaces`, so the wall you are stopped by
-    /// and the floor you are standing on come from one description of one bore.
-    bores: Vec<Footprint>,
+    /// and the floor you are standing on come from one description of one tunnel.
+    tunnels: Vec<Footprint>,
 }
 
 impl BuildingColliders {
     /// Replace the tunnel corridors.
-    pub fn set_bores(&mut self, bores: Vec<Footprint>) {
-        self.bores = bores;
+    pub fn set_bores(&mut self, tunnels: Vec<Footprint>) {
+        self.tunnels = tunnels;
     }
 
-    /// Resolve a walk that is happening **inside** a bore.
+    /// Resolve a walk that is happening **inside** a tunnel.
     ///
     /// The surface world is not consulted at all: seven metres up there is a
     /// building over this tunnel and its footprint is not a wall down here. The
@@ -286,7 +286,7 @@ impl BuildingColliders {
     /// fired through the road.
     #[must_use]
     pub fn slide_in_bore(&self, from: Vec2, to: Vec2) -> Vec2 {
-        let crosses = |a: Vec2, b: Vec2| self.bores.iter().any(|f| f.crosses_wall(a, b));
+        let crosses = |a: Vec2, b: Vec2| self.tunnels.iter().any(|f| f.crosses_wall(a, b));
         if !crosses(from, to) {
             return to;
         }
@@ -543,7 +543,7 @@ impl BuildingColliders {
         }
     }
 
-    /// [`Self::steer_velocity`] for an avatar that is inside a bore: the same
+    /// [`Self::steer_velocity`] for an avatar that is inside a tunnel: the same
     /// probe-and-slide, against the tunnel walls instead of the surface world.
     ///
     /// No eject arm. Ejecting means "you are inside something solid, come out",
@@ -592,24 +592,24 @@ pub fn sync_prop_colliders(
     });
 }
 
-/// Mirror the streamed bores into the collider index, on exactly the terms
+/// Mirror the streamed tunnels into the collider index, on exactly the terms
 /// [`sync_prop_colliders`] mirrors the street furniture: one description of a
 /// tunnel, read by the floor the avatar stands on and the wall it is stopped by.
 ///
 /// No layer gate. The furniture one exists because a hidden bench must not be an
 /// invisible wall, and the same argument says the opposite here: these walls are
-/// only ever consulted while the avatar is *inside* the bore, where taking them
+/// only ever consulted while the avatar is *inside* the tunnel, where taking them
 /// away does not remove an obstacle, it removes the only thing keeping the avatar
 /// out of solid ground.
 pub fn sync_bore_colliders(
-    bores: Res<crate::systems::tunnels::TunnelBores>,
+    tunnels: Res<crate::systems::tunnels::Tunnels>,
     mut colliders: ResMut<BuildingColliders>,
 ) {
-    if !bores.is_changed() {
+    if !tunnels.is_changed() {
         return;
     }
     colliders.set_bores(
-        bores
+        tunnels
             .corridors()
             .filter_map(|ring| Footprint::with_doors(ring, &[], true))
             .collect(),
