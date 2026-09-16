@@ -971,7 +971,8 @@ fn bake(
     // a canal the water sheet has just dropped into. At 25 m a city canal is about one
     // sample wide, so what this buys is a shallow dip rather than a trench — the tier
     // that can express the banks is the fine one.
-    let carved = carve_water(&mut raw, n, half, Vec2::ZERO, water);
+    // Coarse: resampled, so a finite sample inside a ring is not evidence.
+    let carved = carve_water(&mut raw, n, half, Vec2::ZERO, water, false);
     fill_holes(
         &mut raw,
         n,
@@ -1094,7 +1095,8 @@ fn bake_fine(
     if !any {
         return None;
     }
-    let carved = carve_water(&mut raw, n, FINE_HALF_M, centre, water);
+    // Fine: half-metre returns, so measured ground above the water is kept.
+    let carved = carve_water(&mut raw, n, FINE_HALF_M, centre, water, true);
     // Unbounded: the tier is 512 m across, so "as far as it takes" is bounded by the
     // box itself, and a half-metre grid has no hole a capped reach could helpfully
     // leave open.
@@ -1370,6 +1372,7 @@ fn carve_water(
     half_m: f32,
     centre: Vec2,
     water: &crate::systems::water_levels::WaterLevelField,
+    keep_measured_above: bool,
 ) -> usize {
     if water.is_empty() {
         return 0;
@@ -1388,7 +1391,34 @@ fn carve_water(
             let bed_m = level - bed;
             let before = grid[i];
             grid[i] = if before.is_finite() {
-                before.min(bed_m)
+                if keep_measured_above && before > level {
+                    // A real measurement standing **above** the water surface is
+                    // not a bed, and carving it drowns a structure that is really
+                    // there: a quay path, a jetty, a lock chamber, a bridge
+                    // abutment. The laser does not come back off water at all, so
+                    // inside a water ring a return is a return off something solid
+                    // — and this runs before `fill_holes`, which is what makes
+                    // "finite" mean "measured" rather than "invented".
+                    //
+                    // Measured at the native half metre over the study quay block
+                    // 2026-09-16, sampling inside the registered water polygons:
+                    // 78.3 % no-data, **21.6 % measured above the surface**
+                    // (5,052 m², all of it carved away before this), 0.1 % measured
+                    // at or below it. That last group is the specular return off the
+                    // water itself and is the only thing the `min` below is for.
+                    //
+                    // **Only the fine tier may do this**, which is what
+                    // `keep_measured_above` is. The coarse field is resampled at
+                    // 3.125 m by a service that area-averages, so a sample inside a
+                    // canal is the banks averaged in rather than a reading off
+                    // anything — keeping those is what left the basemap flat across
+                    // a canal for a day, and
+                    // `the_carve_overwrites_resampled_ground_but_keeps_a_deeper_reading`
+                    // pins it.
+                    before
+                } else {
+                    before.min(bed_m)
+                }
             } else {
                 bed_m
             };
@@ -2357,7 +2387,7 @@ mod tests {
         let mut grid = vec![5.0f32; n * n];
         grid[0] = f32::NAN; // a genuine hole
         grid[1] = -9.0; // a dredged channel: deeper than the surface
-        let carved = carve_water(&mut grid, n, half, Vec2::ZERO, &field);
+        let carved = carve_water(&mut grid, n, half, Vec2::ZERO, &field, false);
 
         assert!(carved > 0, "nothing was carved at all");
         assert!(
@@ -2374,6 +2404,64 @@ mod tests {
         );
     }
 
+    /// The half-metre tier keeps what it measured standing above the water.
+    ///
+    /// The mirror of the test above, and the two together are the whole rule: at
+    /// 3.125 m a value inside a canal is the banks averaged in by a resampling
+    /// service and must be cut through; at 0.5 m it is a laser return off something
+    /// solid, because the beam does not come back off water at all.
+    ///
+    /// What it saves is not hypothetical. Sampling inside the registered water
+    /// polygons over the study quay block at the native half metre: 78.3 % no-data,
+    /// 21.6 % measured above the surface — 5,052 m² of quay path, jetty and lock —
+    /// and 0.1 % measured at or below it.
+    #[test]
+    fn the_fine_carve_keeps_a_structure_standing_above_the_water() {
+        let n = 8;
+        let half = 100.0f32;
+        let field = crate::systems::water_levels::WaterLevelField::build_for_test(
+            0.0,
+            &[
+                [-half * 2.0, -half * 2.0],
+                [half * 2.0, -half * 2.0],
+                [half * 2.0, half * 2.0],
+                [-half * 2.0, half * 2.0],
+            ],
+        );
+        let bed = crate::systems::water_levels::bed_below_surface_m();
+
+        let mut grid = vec![f32::NAN; n * n];
+        grid[1] = 0.10; // a quay path: a real return, 10 cm above the surface
+        grid[2] = -9.0; // a dredged channel: a real return, below the surface
+        let carved = carve_water(&mut grid, n, half, Vec2::ZERO, &field, true);
+
+        assert!(carved > 0, "the open water still has to be carved");
+        assert!(
+            (grid[0] - (0.0 - bed)).abs() < 1e-5,
+            "no-data is open water and still takes the bed"
+        );
+        assert!(
+            (grid[1] - 0.10).abs() < 1e-5,
+            "a measured surface above the water must survive, got {}",
+            grid[1]
+        );
+        assert!(
+            (grid[2] - -9.0).abs() < 1e-5,
+            "a deeper measurement must still survive"
+        );
+
+        // …and the coarse tier must not do this, or a resampled bank keeps the
+        // basemap flat across the canal.
+        let mut coarse = vec![f32::NAN; n * n];
+        coarse[1] = 0.10;
+        carve_water(&mut coarse, n, half, Vec2::ZERO, &field, false);
+        assert!(
+            (coarse[1] - (0.0 - bed)).abs() < 1e-5,
+            "the coarse tier must still cut through a resampled value, got {}",
+            coarse[1]
+        );
+    }
+
     /// Nothing registered must leave the field byte-identical.
     #[test]
     fn an_empty_water_field_changes_no_sample() {
@@ -2386,6 +2474,7 @@ mod tests {
             100.0,
             Vec2::ZERO,
             &crate::systems::water_levels::WaterLevelField::default(),
+            true,
         );
         assert_eq!(carved, 0);
         assert_eq!(grid, before);
