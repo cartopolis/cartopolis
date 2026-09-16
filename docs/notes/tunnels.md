@@ -111,10 +111,24 @@ The two collision worlds are exclusive in both movement paths.
 
 ## Verified, and not
 
-Captured over the Groningen ring on 2026-09-15 (`--shot`, lavapipe): 41 bores
-standing in the streamed cells, the ground cut away over both approaches, and the
-sunken dual carriageway of `Weg der Verenigde Naties` visible in the cut from
-directly above with its markings and its traffic on it.
+![The southern ring in open cut beside DUO](../img/tunnel-cut.png)
+
+Captured over the Groningen ring on 2026-09-15 and again on 2026-09-16 with the
+basemap cut (`--shot`, lavapipe, 53.20548 6.57498 at 35 m, pitch −25): 41 bores
+standing in the streamed cells, deepest deck −7.0 m, 68 clipmap tiles carrying a
+hole, and the sunken dual carriageway of `Weg der Verenigde Naties` in the trench
+with its markings and its traffic on it, retaining edges either side, and the
+ground unbroken where a building covers it.
+
+**Aiming a camera at a bore is harder than building one**, and two days of this
+work went on it. A shallow look *along* a bore — the angle that should see
+furthest into an open cut — is blocked by the trees standing along the corridor:
+at 18° above the horizon the frame is a wall of canopy. Deriving the camera from
+the way's own geometry (an Overpass query, the bearing across the midpoint, the
+camera placed back along the view direction) fixes the *direction* and does not
+fix this. What works is the picture above: close, and steep enough to look over
+the trees into the cut. `docs/grade-shots.toml` is the list, and its tunnel
+entries are the ones still worth re-aiming.
 
 The floor rule is unit-tested in all four directions it can go wrong
 (`interiors::tests`): the pavement over a covered bore holds, the ground overhead
