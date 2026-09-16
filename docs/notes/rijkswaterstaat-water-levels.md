@@ -4,10 +4,26 @@ triggers: [Rijkswaterstaat, waterwebservices, ddapi20, WATHTE, Waterhoogte, NAP,
   "water level", "canal level", "river level", peilgebied, "water at its real height",
   OphalenCatalogus, OphalenWaarnemingen, WaterBody, "3d basisvoorziening", CityJSON,
   vastpeil, zomerpeil, winterpeil, IMWA, "canal depth", quay, fill_holes, water_levels.rs]
-updated: 2026-09-13
+updated: 2026-09-16
 ---
 
 # Water levels: where they are, and what still stops the canals
+
+> **The extractor exists now, 2026-09-16.** Everything below described a client
+> that streamed `/water/{z}/{x}/{y}.json` and a data source that could fill it —
+> and nothing ever did. The route answered **404 on the deployed host**, so the
+> layer shipped with no rings at all and every canal stayed at quay height for
+> three days while the notes said the problem was solved. cartopy's
+> `server/pipeline/water.ts` writes the tree now, out of the same 2 km blocks the
+> wall heights come from ([walls-have-a-measured-height.md](walls-have-a-measured-height.md)).
+> Measured over the study pond in Groningen: **−0.95 m NAP** from the 3D
+> product against **−0.85 m** read independently off the AHN surface, and the
+> client reports `water_rings=247`, 112,525 samples carved and `water_drop_m=2.33`
+> where it reported zero for all three.
+>
+> The lesson is the one worth keeping: **a client layer with no extractor behind it
+> looks exactly like a client layer that does not work**, and `water_rings=0` in
+> `--dump-state` was saying so the whole time.
 
 > **Superseded in part, 2026-09-13.** Two of this note's conclusions were wrong; the
 > corrections are at the bottom under *What 2026-09-13 changed*. A measured,
