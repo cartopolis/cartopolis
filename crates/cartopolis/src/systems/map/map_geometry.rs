@@ -1484,7 +1484,7 @@ pub fn update_map_surfaces(
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
-            let mesh = meshes.add(build_mesh(&sm, wx, wz, &terrain, None));
+            let mesh = meshes.add(build_mesh(&sm, wx, wz, &terrain, &stores.tunnels, None));
             let world = Vec3::new(wx, sm.group.y_offset(), wz);
             let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                 .translation_to_grid(world.as_dvec3());
@@ -1631,6 +1631,7 @@ pub fn resolve_bridge_decks(
     mut mats: SurfaceMaterials,
     bigspace: Query<Entity, With<BigSpace>>,
     terrain: Res<TerrainField>,
+    tunnels: Res<crate::systems::tunnels::Tunnels>,
     mut plates: ResMut<DeckPlates>,
 ) {
     if surfaces.pending_decks.is_empty() {
@@ -1749,6 +1750,7 @@ pub fn resolve_bridge_decks(
                             cell_world.x,
                             cell_world.y,
                             &terrain,
+                            &tunnels,
                             None,
                         ))),
                         MeshMaterial3d(material),
@@ -1783,6 +1785,7 @@ pub fn resolve_bridge_decks(
                             cell_world.x,
                             cell_world.y,
                             &terrain,
+                            &tunnels,
                             Some(deck_level + h),
                         ))),
                         MeshMaterial3d(material),
@@ -2240,6 +2243,7 @@ fn build_mesh(
     wx: f32,
     wz: f32,
     terrain: &TerrainField,
+    tunnels: &crate::systems::tunnels::Tunnels,
     // A ready-made height for the whole mesh, in place of the terrain. This is how
     // a carriageway riding a bridge deck follows the *deck* — the deck's own
     // single level, plus its measured lift — instead of asking the field again
@@ -2294,6 +2298,7 @@ fn build_mesh(
             &mut rungs,
             Vec2::new(wx, wz),
             terrain,
+            tunnels,
         );
     }
 
@@ -2472,6 +2477,7 @@ fn stand_on_terrain(
     rungs: &mut Vec<f32>,
     origin: Vec2,
     terrain: &TerrainField,
+    tunnels: &crate::systems::tunnels::Tunnels,
 ) {
     // A tunnel belongs here for the same reason a tree does, in both halves of what
     // this flag means. Its walls are vertical, so re-deriving their normals from the
@@ -2537,6 +2543,27 @@ fn stand_on_terrain(
         );
         return;
     }
+    // **Where a road has a lid, the ground over it is whole.** The height survey
+    // measures what it flew over, and Groningen's ring was an open trench when it
+    // was flown and has a lid on it now — so the survey digs nine metres out of
+    // ground that is continuous, the lid stays at street level, and a covered road
+    // reads as a raised platform with a ditch either side. The map's tag is the
+    // newer fact, so the ground is lifted back to the level of the land around it
+    // wherever a covered stretch is under it, tapering out over `TUNNEL_DATUM_M`
+    // so the fill has no crease at its edge.
+    //
+    // Nothing happens where there is no tunnel (the weight is 0 and this is one
+    // comparison), and nothing happens over an *open* stretch — which is right,
+    // because there the survey and the map agree that the ground is missing.
+    let fill = |p: &mut [f32; 3]| {
+        let (x, z) = (origin.x + p[0], origin.y + p[2]);
+        let w = tunnels.covered_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
+        if w > 0.0 {
+            let here = terrain.at(x, z);
+            p[1] += w * (terrain.surrounding(x, z, TUNNEL_DATUM_M) - here);
+        }
+    };
+
     if !volumetric {
         crate::systems::terrain::refine_for_terrain(
             positions,
@@ -2550,14 +2577,19 @@ fn stand_on_terrain(
     }
     for p in positions.iter_mut() {
         p[1] += terrain.at(origin.x + p[0], origin.y + p[2]);
+        fill(p);
     }
     if !volumetric {
+        // Normals from the field, then flattened where the fill has raised the
+        // ground: a surface lifted out of a trench is level, and shading it with
+        // the trench's own slope would light a flat lid as though it still dipped.
         *normals = positions
             .iter()
             .map(|p| {
-                terrain
-                    .normal_at(origin.x + p[0], origin.y + p[2])
-                    .to_array()
+                let (x, z) = (origin.x + p[0], origin.y + p[2]);
+                let w = tunnels.covered_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
+                let n = terrain.normal_at(x, z);
+                n.lerp(Vec3::Y, w).normalize_or(Vec3::Y).to_array()
             })
             .collect();
     }

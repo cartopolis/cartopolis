@@ -339,6 +339,22 @@ impl Tunnels {
     /// ground is a floor and the deck under it is unreachable, which is what keeps
     /// the pavement over a tunnel walkable; here the ground is a hole, so the floor
     /// is whatever is at the bottom of it.
+    /// How much the land at `p` is ground over a lid rather than the open trench
+    /// the height survey measured — 1 over a covered stretch, 0 well away from
+    /// one. See [`cartopolis_geo::tunnels::Tunnel::covered_weight`].
+    #[must_use]
+    pub fn covered_weight(&self, p: Vec2, taper_m: f32) -> f32 {
+        let at = [p.x, p.y];
+        let mut best = 0.0f32;
+        for t in self.cells.values().flat_map(|c| c.tunnels.iter()) {
+            best = best.max(t.covered_weight(at, taper_m));
+            if best >= 1.0 {
+                break;
+            }
+        }
+        best
+    }
+
     #[must_use]
     pub fn over_opening(&self, p: Vec2) -> bool {
         let at = [p.x, p.y];
@@ -408,6 +424,7 @@ mod tests {
                     road_y: vec![0.0, -7.0],
                     half_w: 10.0,
                     clearance: 4.8,
+                    covered: vec![true; 2],
                 }],
                 openings: vec![vec![
                     [-10.0, 0.0],

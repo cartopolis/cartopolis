@@ -97,7 +97,31 @@ anywhere**. Beside is not beyond, and the test now requires the offset between t
 two ends to lie *along* the road. Same tile after the fix: four entrances on the
 deep roads, 6.0–6.7 m down, in opposite-heading pairs.
 
-## Known wrong: the lid floats over its own ground
+## The ground over a lid is filled back in
+
+**Settled 2026-09-16: where the two sources disagree, the map's tag wins.** The
+height survey measures what it flew over, and Groningen's ring was an open trench
+when it was flown — it has a lid on it now. So the survey digs nine metres out of
+ground that is continuous, the lid stays at street level, and a covered road reads
+as a raised platform with a ditch either side.
+
+`Tunnel::covered_weight` answers "how much is the land here ground over a lid",
+and `map_geometry::stand_on_terrain` lifts the ground back to the level of the
+land around it by that weight. Four properties, and the test pins all of them:
+full over the covered stretch and its own width, **zero over the open ramp** (the
+fill must never close the hole you drive through), zero away from any tunnel, and
+a smooth fade over `TUNNEL_DATUM_M` rather than a step, because a hard edge is a
+crease running the length of the road. The shading is flattened with it — a
+surface lifted out of a trench is level, and lighting it with the trench's slope
+would shade a flat lid as though it still dipped.
+
+What it costs: where the survey is *right* and a road is genuinely in an open cut
+with a lid only over part of it, the open part keeps its measured trench and the
+covered part is filled — which is the correct picture, but it means the ground
+beside a covered stretch is no longer what AHN measured. That is the trade, taken
+deliberately: the tag is the newer fact.
+
+## Superseded: the lid floated over its own ground
 
 The measured ground says that road is in a nine-metre open trench, because it was
 one when AHN flew it. The tag says tunnel, so it now gets a lid at street level.
