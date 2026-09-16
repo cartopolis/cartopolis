@@ -4,6 +4,8 @@ triggers:
   - "why is the terrain flat here" / "why doesn't the relief go further out"
   - considering a different height source, resolution, or extent
   - adding a new thing that stands on the map (a marker, a vehicle, a mesh)
+  - "why is this embankment a ramp" / a wall, a kerb or a dyke crest that reads flat
+  - refine_for_terrain, CREASE_SAG_M, MAX_GROUND_EDGE_M, height_enabled
 ---
 
 # Terrain relief: what AHN actually holds, and the shape the field takes from it
@@ -322,6 +324,58 @@ the Height layer off the old constant still cut every ground polygon in the city
 `MAX_REFINE_PASSES` is still 5, so one enormous polygon stops at 1500/32 ≈ 46 m rather
 than tessellating the frame away — a big park is still coarse, and that is the other
 bound to raise if it ever matters.
+
+## A wall inside one quad: the crease rule (added 2026-09-16)
+
+12.5 m is what a *whole cell* can afford, and over the flat nine tenths of a Dutch cell
+it is more than the ground needs. The tenth that matters is where the field holds a
+step — a quay wall, the lip of an embankment, a dyke crest, a road cut through a bank —
+and there a 12.5 m chord can only average across it. Measured at the study pond quay
+wall in Groningen (53.2226 N, 6.5820 E), through all three stages:
+
+| | face height | steepest facet |
+|---|---|---|
+| AHN, 0.5 m native | 1.86 m | 74.8° |
+| the coarse field, 3.125 m | 1.66 m | 27.4° |
+| **what was drawn, 12.5 m edges** | **0.65 m** | **5.9°** |
+
+The field keeps about 90 % of the height; the mesh threw away two thirds of it. Across
+that 610 × 700 m block, 34.6 % of 12.5 m ground quads held more than half a metre of
+relief they had no vertex to express.
+
+So `refine_for_terrain` has a second rule, and the two compose — an edge splits if
+either asks. `max_edge` is uniform and priced against the cell; `Crease` splits where
+the **mesh disagrees with the field**: the ground under an edge's midpoint departing
+from the chord between its ends by more than `CREASE_SAG_M` (0.15 m). Stated that way it
+is the refinement error itself, so it goes to zero on flat ground by construction, and
+— this is the part worth knowing — it goes to zero on an *even slope* too. A chord
+across a plane is the plane. It is "where the ground is not straight", never "where the
+ground is not flat".
+
+Measured on one 12.5 m quad straddling that wall: the drawn surface went from **0.567 m
+off the measured ground to 0.027 m**, for 4 → 16 triangles on that quad and none
+anywhere flat.
+
+Three bounds, and none is optional:
+
+* **`MIN_GROUND_EDGE_M`** = half the coarse spacing. Below it there is no measurement
+  left to resolve and a finer mesh would interpolate its own bilinear filter at 4× the
+  triangles.
+* **`CREASE_VERTEX_BUDGET`** (48,000 vertices, ~2.5 MB of attributes). The rule is
+  driven by the ground rather than by the mesh, so nothing in the geometry stops it: a
+  cell that is crease all the way across — a dune field, a terraced hillside, the
+  Veluwe — would take every edge to the floor and hand the driver a 64× mesh in one
+  asset, i.e. exactly the 37 MB burst above. This is the "bound the burst, not only the
+  item count" rule applied to a rule that has no item count.
+* **Determinism.** Edges are visited in triangle order, so a cell that runs out of
+  budget refines the same triangles every time it is rebuilt. A budget spent in a
+  different order would make the ground twitch on every retear.
+
+It does **not** reach the real 74.8°, and it cannot: the coarse field does not hold it,
+and sampling the half-metre tier from a mesh is forbidden for its own reason (that tier
+re-centres as the camera walks, so the mesh would change shape underneath you). A true
+vertical face is a job for *geometry that knows it is a wall* — which is what
+[walls-have-a-measured-height.md](walls-have-a-measured-height.md) is about.
 
 ## A capture can photograph flat ground and call itself settled (fixed 2026-09-13)
 

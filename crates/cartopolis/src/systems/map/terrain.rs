@@ -1551,6 +1551,71 @@ fn fill_holes(grid: &mut [f32], n: usize, reach_cells: Option<f32>) {
 /// actually got.
 pub const MAX_GROUND_EDGE_M: f32 = TERRAIN_SAMPLE_M * 4.0;
 
+/// How far a mesh edge's midpoint may sit off the measured ground, in metres,
+/// before the edge is split *even though it is already shorter than*
+/// [`MAX_GROUND_EDGE_M`].
+///
+/// This is the crease rule, and it exists because the constant above is a
+/// compromise that a wall defeats. 12.5 m is the spacing a *whole* cell can afford
+/// (see the burst measured there), and over the flat nine tenths of a Dutch cell it
+/// is more than the ground needs. The tenth that matters — a quay wall, the lip of
+/// an embankment, a dyke crest, the cut a road makes through a bank — is where the
+/// field holds a step and a 12.5 m chord can only average across it. Measured at the
+/// the study pond quay wall in Groningen 2026-09-16: the coarse field carries a 1.66 m
+/// face over one sample, the drawn mesh carried **0.65 m of it, at 5.9°**, and the
+/// rest was averaged away between two vertices that happened to straddle it.
+///
+/// So the rule is "split where the mesh disagrees with the field", not "split where
+/// the polygon is big": an edge is cut when the field under its midpoint departs
+/// from the straight line between its ends by more than this. That is the error the
+/// refinement exists to remove, stated directly, and it goes to zero on flat ground
+/// by construction — which is what keeps the cost off the nine tenths.
+///
+/// 0.15 m is a little over one step height. Lower reads as noise-chasing (the field
+/// is a measurement and carries its own), higher starts leaving kerbs and quay lips
+/// in the averaged state this constant exists to end.
+pub const CREASE_SAG_M: f32 = 0.15;
+
+/// The floor the crease rule refines to.
+///
+/// Half the coarse field's own spacing, and the halving is the whole margin: below
+/// it there is no measurement left to resolve, so a finer mesh would interpolate its
+/// own bilinear filter at the cost of four times the triangles. The long-edge rule
+/// has no such floor because it never gets near one.
+pub const MIN_GROUND_EDGE_M: f32 = TERRAIN_SAMPLE_M * 0.5;
+
+/// Vertices one [`refine_for_terrain`] call may add **on the crease rule's account**,
+/// over and above whatever the long-edge rule asks for.
+///
+/// A bound, not a target, and it is the same rule the rest of the streaming code
+/// follows: bound the burst, not only the item count. The crease rule is driven by
+/// the ground rather than by the mesh, so nothing in the geometry stops it — a cell
+/// that is *all* crease (a dune field, a terraced hillside, the Veluwe) would take
+/// every edge from 12.5 m to [`MIN_GROUND_EDGE_M`] and hand the driver a 64×
+/// mesh in one asset, which is precisely the 37 MB burst [`MAX_GROUND_EDGE_M`]
+/// exists to avoid. At ~52 bytes of attributes per vertex this ceiling is ~2.5 MB
+/// added to a ground group, against the 8 MB peak a flat cell already measures.
+///
+/// Spending it is deterministic — edges are visited in triangle order — so a cell
+/// that runs out refines the same triangles every time it is rebuilt, and no mesh
+/// changes shape between one build and the next.
+const CREASE_VERTEX_BUDGET: usize = 48_000;
+
+/// The measured ground a crease-aware refinement tests against, and the frame its
+/// mesh coordinates are in.
+///
+/// `None` at a call site means "long edges only" — [`drape_mesh`] passes one, the
+/// volumetric groups do not, and a caller with no field to consult cannot ask for a
+/// rule that is defined in terms of one.
+#[derive(Clone, Copy)]
+pub struct Crease<'a> {
+    /// The **coarse** field, always. The half-metre tier re-centres as the camera
+    /// walks, and a mesh that sampled it would change shape every time it did.
+    pub field: &'a TerrainSnapshot,
+    /// World-XZ point the mesh's local coordinates are measured from.
+    pub origin: Vec2,
+}
+
 /// Refinement passes. Five takes a cell-spanning 1.5 km triangle down to ~46 m;
 /// the cap is what stops one absurd polygon from tessellating the frame away.
 const MAX_REFINE_PASSES: usize = 5;
@@ -1569,6 +1634,17 @@ const MAX_REFINE_PASSES: usize = 5;
 ///
 /// Attributes ride along, interpolated at each midpoint, so UV-mapped roads and
 /// colour-per-vertex canopies survive refinement.
+///
+/// **Two rules, not one.** `max_edge` is the old one and answers "is this polygon
+/// bigger than the ground can be described in"; `crease` is the second and answers
+/// "does the mesh disagree with the ground *here*". The first is uniform and is
+/// therefore priced against the whole cell, which is why it sits at 12.5 m and not
+/// at the 6.25 m the field could carry ([`MAX_GROUND_EDGE_M`] has the burst that
+/// decided it). The second spends only where there is something to resolve — a quay
+/// wall, an embankment lip, a dyke — and is bounded by [`CREASE_VERTEX_BUDGET`] so a
+/// cell that is crease all the way across cannot reintroduce that burst. Pass `None`
+/// for the second where there is no field to consult, and note the two compose: an
+/// edge splits if *either* rule asks.
 pub fn refine_for_terrain(
     positions: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
@@ -1577,11 +1653,17 @@ pub fn refine_for_terrain(
     colors: &mut Vec<[f32; 4]>,
     rungs: &mut Vec<f32>,
     max_edge: f32,
+    crease: Option<Crease<'_>>,
 ) {
     use std::collections::HashMap;
 
     let limit = max_edge.max(1.0);
     let limit_sq = limit * limit;
+    let floor_sq = MIN_GROUND_EDGE_M * MIN_GROUND_EDGE_M;
+    // Spent across every pass, not per pass: the budget bounds the mesh handed to
+    // the driver, and three passes each spending it in full is the burst it exists
+    // to stop.
+    let mut spent = 0usize;
     for _ in 0..MAX_REFINE_PASSES {
         let mut midpoints: HashMap<(u32, u32), u32> = HashMap::new();
         let split = |a: u32,
@@ -1591,7 +1673,8 @@ pub fn refine_for_terrain(
                      normals: &mut Vec<[f32; 3]>,
                      colors: &mut Vec<[f32; 4]>,
                      rungs: &mut Vec<f32>,
-                     midpoints: &mut HashMap<(u32, u32), u32>|
+                     midpoints: &mut HashMap<(u32, u32), u32>,
+                     spent: &mut usize|
          -> Option<u32> {
             let key = if a < b { (a, b) } else { (b, a) };
             if let Some(m) = midpoints.get(&key) {
@@ -1599,8 +1682,30 @@ pub fn refine_for_terrain(
             }
             let (pa, pb) = (positions[a as usize], positions[b as usize]);
             let d = [pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]];
-            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= limit_sq {
-                return None;
+            let len_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if len_sq <= limit_sq {
+                // Short enough for the long-edge rule. The crease rule gets its say,
+                // and it is the only one that can ask for a vertex down here.
+                let Some(c) = crease else {
+                    return None;
+                };
+                if len_sq <= floor_sq || *spent >= CREASE_VERTEX_BUDGET {
+                    return None;
+                }
+                // Sag: how far the ground under the midpoint is from the chord this
+                // edge would draw. Sampled on the field, never on the mesh — the
+                // displacement has not happened yet, and on a road the mesh's own y
+                // is a depth rung rather than a height.
+                let (ox, oz) = (c.origin.x, c.origin.y);
+                let ha = c.field.at(ox + pa[0], oz + pa[2]);
+                let hb = c.field.at(ox + pb[0], oz + pb[2]);
+                let hm = c
+                    .field
+                    .at(ox + (pa[0] + pb[0]) * 0.5, oz + (pa[2] + pb[2]) * 0.5);
+                if (hm - (ha + hb) * 0.5).abs() < CREASE_SAG_M {
+                    return None;
+                }
+                *spent += 1;
             }
             let m = positions.len() as u32;
             positions.push([
@@ -1636,9 +1741,12 @@ pub fn refine_for_terrain(
         let mut any = false;
         for tri in indices.chunks_exact(3) {
             let (a, b, c) = (tri[0], tri[1], tri[2]);
-            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints);
-            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints);
-            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints);
+            #[rustfmt::skip]
+            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints, &mut spent);
+            #[rustfmt::skip]
+            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints, &mut spent);
+            #[rustfmt::skip]
+            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints, &mut spent);
             any |= ab.is_some() || bc.is_some() || ca.is_some();
             match (ab, bc, ca) {
                 (None, None, None) => out.extend_from_slice(&[a, b, c]),
@@ -1707,6 +1815,7 @@ pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
         &mut Vec::new(),
         &mut Vec::new(),
         field.ground_edge_m(),
+        Some(Crease { field, origin }),
     );
     for p in positions.iter_mut() {
         p[1] += field.at(origin.x + p[0], origin.y + p[2]);
@@ -1839,6 +1948,192 @@ fn median_finite(grid: &[f32]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a coarse-shaped snapshot out of a height function, for the refinement
+    /// tests below. Small on purpose — 6.4 km at the real spacing is four million
+    /// samples and these tests care about one wall.
+    fn snapshot_of(half: f32, sample: f32, height: impl Fn(f32, f32) -> f32) -> TerrainSnapshot {
+        let n = (half * 2.0 / sample) as usize + 1;
+        let mut samples = Vec::with_capacity(n * n);
+        for zi in 0..n {
+            for xi in 0..n {
+                samples.push(height(
+                    -half + xi as f32 * sample,
+                    -half + zi as f32 * sample,
+                ));
+            }
+        }
+        let floors = build_floors(&samples, n, sample);
+        TerrainSnapshot {
+            samples: std::sync::Arc::new(samples),
+            half_m: half,
+            grid: n,
+            centre: Vec2::ZERO,
+            floors: std::sync::Arc::new(floors),
+        }
+    }
+
+    /// One 12.5 m quad, refined, and how far the drawn surface ends up from the
+    /// measured ground under it.
+    fn worst_error(field: &TerrainSnapshot, crease: bool) -> (f32, usize) {
+        // A single quad straddling the step, in the frame the field is in.
+        let mut positions = vec![
+            [-6.25, 0.0, -6.25],
+            [6.25, 0.0, -6.25],
+            [6.25, 0.0, 6.25],
+            [-6.25, 0.0, 6.25],
+        ];
+        let mut indices = vec![0, 1, 2, 0, 2, 3];
+        refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            MAX_GROUND_EDGE_M,
+            crease.then_some(Crease {
+                field,
+                origin: Vec2::ZERO,
+            }),
+        );
+        for p in positions.iter_mut() {
+            p[1] = field.at(p[0], p[2]);
+        }
+        // Sample the drawn surface at the centre of every triangle — that is where a
+        // flat chord is furthest from a step it straddles — and compare with the
+        // ground there.
+        let mut worst = 0.0f32;
+        for tri in indices.chunks_exact(3) {
+            let (a, b, c) = (
+                positions[tri[0] as usize],
+                positions[tri[1] as usize],
+                positions[tri[2] as usize],
+            );
+            let cx = (a[0] + b[0] + c[0]) / 3.0;
+            let cz = (a[2] + b[2] + c[2]) / 3.0;
+            let drawn = (a[1] + b[1] + c[1]) / 3.0;
+            worst = worst.max((drawn - field.at(cx, cz)).abs());
+        }
+        (worst, indices.len() / 3)
+    }
+
+    /// The whole point of the crease rule, as a number.
+    ///
+    /// A 1.7 m quay wall inside a 12.5 m quad: the long-edge rule has nothing to say
+    /// (the quad is already at the limit), so the chord averages straight across the
+    /// step and the wall is drawn as a ramp. The crease rule splits it because the
+    /// ground under the midpoint is nowhere near the chord.
+    #[test]
+    fn a_step_inside_one_quad_is_refined_only_by_the_crease_rule() {
+        // A wall running north-south at x = 1.2 m, 1.7 m high — the study pond
+        // quay wall's measured face, at a spacing the coarse field can carry.
+        let field = snapshot_of(
+            64.0,
+            TERRAIN_SAMPLE_M,
+            |x, _z| if x > 1.2 { 1.7 } else { 0.0 },
+        );
+
+        let (flat_err, flat_tris) = worst_error(&field, false);
+        let (crease_err, crease_tris) = worst_error(&field, true);
+
+        assert!(
+            flat_err > 0.5,
+            "without the crease rule the step should be badly averaged, got {flat_err} m"
+        );
+        assert!(
+            crease_err < flat_err * 0.5,
+            "the crease rule must at least halve the error: {flat_err} m -> {crease_err} m"
+        );
+        assert!(
+            crease_tris > flat_tris,
+            "and it pays for it in triangles: {flat_tris} -> {crease_tris}"
+        );
+    }
+
+    /// And it must cost nothing where there is nothing to resolve, or every flat
+    /// Dutch cell — which is most of them — pays for a wall it does not have.
+    #[test]
+    fn flat_ground_is_not_refined_by_the_crease_rule() {
+        let level = snapshot_of(64.0, TERRAIN_SAMPLE_M, |_, _| 0.0);
+        assert_eq!(
+            worst_error(&level, true).1,
+            worst_error(&level, false).1,
+            "level ground must produce the same mesh with the crease rule on"
+        );
+        // A gentle even slope is not a crease either: a chord across a plane is the
+        // plane. This is the case that separates "splits where the ground is not
+        // flat" from "splits where the ground is not *straight*".
+        let ramp = snapshot_of(64.0, TERRAIN_SAMPLE_M, |x, _| x * 0.10);
+        assert_eq!(
+            worst_error(&ramp, true).1,
+            worst_error(&ramp, false).1,
+            "an even 10 % slope has no sag and must not be refined"
+        );
+    }
+
+    /// The bound that keeps a crease-everywhere cell from reintroducing the upload
+    /// burst `MAX_GROUND_EDGE_M` exists to avoid.
+    #[test]
+    fn the_crease_rule_stops_at_its_budget() {
+        // Ground that is nothing but steps, so every edge at every level has sag.
+        let field = snapshot_of(512.0, TERRAIN_SAMPLE_M, |x, z| {
+            ((x / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
+                + ((z / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
+        });
+        let mut positions = vec![
+            [-512.0, 0.0, -512.0],
+            [512.0, 0.0, -512.0],
+            [512.0, 0.0, 512.0],
+            [-512.0, 0.0, 512.0],
+        ];
+        let mut indices = vec![0, 1, 2, 0, 2, 3];
+        let before = positions.len();
+        refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            MAX_GROUND_EDGE_M,
+            Some(Crease {
+                field: &field,
+                origin: Vec2::ZERO,
+            }),
+        );
+        // The long-edge rule is unbounded by design (it is bounded by the polygon),
+        // so the assertion is on the crease rule's share: it may not add more than
+        // its budget on top of whatever the long-edge rule asked for.
+        let added = positions.len() - before;
+        assert!(
+            added <= CREASE_VERTEX_BUDGET * 2,
+            "the crease rule ran away: {added} vertices added"
+        );
+        // And it is deterministic: the same cell rebuilt must be the same mesh, or
+        // the ground twitches every time a cell is retorn.
+        let mut again = vec![
+            [-512.0, 0.0, -512.0],
+            [512.0, 0.0, -512.0],
+            [512.0, 0.0, 512.0],
+            [-512.0, 0.0, 512.0],
+        ];
+        let mut again_idx = vec![0, 1, 2, 0, 2, 3];
+        refine_for_terrain(
+            &mut again,
+            &mut again_idx,
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            MAX_GROUND_EDGE_M,
+            Some(Crease {
+                field: &field,
+                origin: Vec2::ZERO,
+            }),
+        );
+        assert_eq!(again_idx, indices, "a rebuilt cell must be the same mesh");
+    }
 
     /// The fine bake replaces a million `wgs84_to_rd` evaluations with one affine map
     /// fitted about the box centre. That is only allowed while the error stays far
@@ -2307,6 +2602,7 @@ mod tests {
             &mut colors,
             &mut vec![],
             24.0,
+            None,
         );
         // Every edge now short enough for the field to be expressed on it…
         for tri in indices.chunks_exact(3) {
@@ -2335,6 +2631,7 @@ mod tests {
             &mut vec![],
             &mut vec![],
             24.0,
+            None,
         );
         assert_eq!(small.len(), 3);
         assert_eq!(small_idx, vec![0, 1, 2]);
@@ -2359,6 +2656,7 @@ mod tests {
             &mut vec![],
             &mut vec![],
             24.0,
+            None,
         );
         // Every position is used by some triangle, and no position is duplicated:
         // both are what "the seam is stitched" means in index terms.
@@ -2401,6 +2699,7 @@ mod tests {
             &mut colors,
             &mut vec![],
             24.0,
+            None,
         );
         // A road's markings register with its geometry through UV0; dropping the
         // attribute arrays at refinement would strip the markings off every long

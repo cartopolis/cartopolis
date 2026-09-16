@@ -2435,6 +2435,10 @@ fn water_surface(
         colors,
         rungs,
         terrain.ground_edge_m(),
+        Some(crate::systems::terrain::Crease {
+            field: terrain,
+            origin,
+        }),
     );
     for p in positions.iter_mut() {
         let (wx, wz) = (origin.x + p[0], origin.y + p[2]);
@@ -2573,6 +2577,10 @@ fn stand_on_terrain(
             colors,
             rungs,
             terrain.ground_edge_m(),
+            Some(crate::systems::terrain::Crease {
+                field: terrain,
+                origin,
+            }),
         );
     }
     for p in positions.iter_mut() {
