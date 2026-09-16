@@ -205,6 +205,10 @@ fn moor_along_ring(
                 luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
                 paint: BOAT_PAINTS[((rand01(h, 2) * BOAT_PAINTS.len() as f32) as usize)
                     .min(BOAT_PAINTS.len() - 1)],
+                // A moored boat is on water by definition, and saying so here would
+                // be true and unread: the flag drives the fountain's form and the
+                // client's collider pass, and a hull is meant to stop you.
+                over_water: false,
             });
             if out.len() >= MAX_BOATS_PER_CELL {
                 *truncated = true;

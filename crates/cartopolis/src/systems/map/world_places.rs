@@ -350,11 +350,18 @@ impl WorldPlaces {
 
         for f in &places.furniture {
             let pos = origin + Vec2::new(f.x, f.z);
-            let radius = prop_radius(f.kind);
+            // A fountain standing in open water is a jet in a pond, not a basin on
+            // a square (`furniture::FurnitureInstance::over_water`). Neither half of
+            // the prop treatment survives the move: a collider out there is an
+            // invisible wall in the middle of the water, and a prompt offers to walk
+            // up to something nobody can reach. The bank is what stops you, and the
+            // bank is drawn.
+            let afloat = f.over_water && matches!(f.kind, FurnitureKind::Fountain);
+            let radius = if afloat { 0.0 } else { prop_radius(f.kind) };
             if radius > 0.0 {
                 props.push((pos, radius));
             }
-            if !prop_interactable(f.kind) {
+            if afloat || !prop_interactable(f.kind) {
                 continue;
             }
             interactables.push(Interactable {
@@ -514,6 +521,7 @@ mod tests {
             kind,
             luma: 1.0,
             paint: crate::systems::vector_tiles::palette::FURNITURE,
+            over_water: false,
         }
     }
 

@@ -275,6 +275,7 @@ pub fn extract_parking(
                         kind: lot.kind,
                         luma: 1.0 + (rand01(h, 1) - 0.5) * 0.08,
                         paint: paints_pick(paints, h),
+                        over_water: false,
                     });
                     if out.len() >= MAX_VEHICLES_PER_CELL {
                         truncated = true;

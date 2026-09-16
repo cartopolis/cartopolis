@@ -49,6 +49,7 @@ use crate::pois::{single_point, tag_str};
 use crate::scatter::{bucket_range, hash3, rand01, srgb_to_linear_rgb};
 use crate::vector_tiles::{
     palette, SurfaceGroup, SurfaceMesh, TileData, INDEX_BYTES, TILE_BUFFER_FRAC, VERTEX_BYTES,
+    WATER_LAYERS,
 };
 
 /// Altitude at which furniture starts merging into the paving.
@@ -99,6 +100,22 @@ pub struct FurnitureInstance {
     /// fill, and one colour per instance is the cheapest cure that keeps the
     /// group's single shared material (`crate::parking`).
     pub paint: u32,
+    /// This instance stands in open water.
+    ///
+    /// Set by [`extract_furniture`] from the tile's own water polygons, and read by
+    /// [`parts_for`] and by the client's collider pass. It exists for one surveyed
+    /// thing that is routinely two different objects: `amenity=fountain` is a
+    /// plaza basin on a square and a jet in the middle of a pond, and the register
+    /// does not distinguish them because from above they are the same point.
+    ///
+    /// Drawing the basin for both is what put a 3 m ring of masonry at the
+    /// waterline of the study pond in Groningen, with a solid collider and an
+    /// offer to walk up to it, 40 m out into the pond. A flag rather than a second
+    /// [`FurnitureKind`] on purpose: the vocabulary is closed, hand-synced with
+    /// cartopy and reachable by an operator's placeholder model through
+    /// [`FurnitureKind::slug`], and a jet and a basin should still both be "the
+    /// fountain" to all three of those.
+    pub over_water: bool,
 }
 
 /// The vocabulary of things this module can stand on a street.
@@ -369,6 +386,81 @@ pub fn furniture_kind(feature: &Feature) -> Option<FurnitureKind> {
 /// Takes the cell's already-parsed [`TileData`] rather than the tile body: every
 /// consumer on this worker reads a different layer out of the same bytes, and
 /// `Reader::new` is a whole-tile decode (see `vector_tiles::TileData`).
+/// Does this tile put water under a tile-local point?
+///
+/// An exact even-odd test against the tile's own water polygons, walked on demand
+/// rather than rasterised: [`crate::vector_tiles::water_shore_field`] answers a
+/// richer question (how far to the bank) at 1056² and is built once per *cell*,
+/// which is the right shape for shading a canal and the wrong shape for asking
+/// about the two or three points in a cell that are fountains.
+///
+/// Holes count as land — a pond with an island in it has ground on the island — so
+/// interior rings flip the answer exactly as the exterior does.
+fn water_under(tile: &TileData, tx: f32, ty: f32) -> bool {
+    use geo_types::Geometry;
+
+    fn in_ring(ring: impl Iterator<Item = (f64, f64)>, px: f64, py: f64) -> bool {
+        let pts: Vec<(f64, f64)> = ring.collect();
+        let mut inside = false;
+        let mut j = pts.len().wrapping_sub(1);
+        for i in 0..pts.len() {
+            let (xi, yi) = pts[i];
+            let (xj, yj) = pts[j];
+            if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    let (px, py) = (f64::from(tx), f64::from(ty));
+    for meta in tile.layers() {
+        if !WATER_LAYERS.contains(&meta.name.as_str()) {
+            continue;
+        }
+        // Each layer declares its own extent, so a point in the `pois` frame has to
+        // be carried into this one. Shortbread emits 4096 everywhere and this is a
+        // no-op there; the `WayField` trap in this module is what it costs to
+        // assume that.
+        let extent = f64::from(TileData::extent(meta));
+        let (qx, qy) = (px * extent, py * extent);
+        for feature in tile.features(meta) {
+            let hit = |poly: &geo_types::Polygon<f32>| {
+                let mut inside = in_ring(
+                    poly.exterior()
+                        .coords()
+                        .map(|c| (f64::from(c.x), f64::from(c.y))),
+                    qx,
+                    qy,
+                );
+                if inside {
+                    for hole in poly.interiors() {
+                        if in_ring(
+                            hole.coords().map(|c| (f64::from(c.x), f64::from(c.y))),
+                            qx,
+                            qy,
+                        ) {
+                            inside = false;
+                            break;
+                        }
+                    }
+                }
+                inside
+            };
+            let wet = match &feature.geometry {
+                Geometry::Polygon(p) => hit(p),
+                Geometry::MultiPolygon(mp) => mp.iter().any(|p| hit(p)),
+                _ => false,
+            };
+            if wet {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn extract_furniture(
     tile: &TileData,
     tile_m: f32,
@@ -416,6 +508,13 @@ pub fn extract_furniture(
             // squared to Mercator north.
             .unwrap_or_else(|| rand01(h, 0) * std::f32::consts::TAU);
 
+        // Asked only of the kind it changes, and that is not thrift for its own
+        // sake: the test walks every water ring in the tile, a cell holds two or
+        // three fountains and several hundred benches, and a bench's form does not
+        // depend on the answer.
+        let over_water =
+            matches!(kind, FurnitureKind::Fountain) && water_under(tile, tx / extent, ty / extent);
+
         out.push(FurnitureInstance {
             x,
             z,
@@ -423,6 +522,7 @@ pub fn extract_furniture(
             kind,
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
             paint: default_paint(kind),
+            over_water,
         });
         if out.len() >= MAX_FURNITURE_PER_CELL {
             truncated = true;
@@ -881,6 +981,19 @@ mod form {
         part([0.50, 0.50, 0.0], [0.04, 0.50, 0.04], Metal),
         part([0.0, 1.45, 0.0], [0.60, 0.45, 0.04], Roof),
     ];
+    /// A jet in open water: no rim, no basin, no kerb — the pond is the basin.
+    ///
+    /// A short submerged plinth for the nozzle to stand on and a column of water
+    /// tapering upward. It is a still column because the whole furniture group is
+    /// one merged mesh with one shared material and nothing in it animates (see
+    /// the module note); a plume that does move is `systems::particles`, and a
+    /// fountain is a fine thing to hang one on later.
+    pub const FOUNTAIN_JET: [Part; 4] = [
+        part([0.0, 0.10, 0.0], [0.45, 0.10, 0.45], Stone),
+        part([0.0, 0.55, 0.0], [0.22, 0.45, 0.22], Water),
+        part([0.0, 1.50, 0.0], [0.13, 0.55, 0.13], Water),
+        part([0.0, 2.35, 0.0], [0.07, 0.35, 0.07], Water),
+    ];
     pub const FOUNTAIN: [Part; 6] = [
         part([0.0, 0.20, -1.50], [1.60, 0.20, 0.10], Stone),
         part([0.0, 0.20, 1.50], [1.60, 0.20, 0.10], Stone),
@@ -995,6 +1108,20 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
     }
 }
 
+/// The form one *instance* is drawn as.
+///
+/// [`parts`] answers for a kind; this answers for the object, and the two differ
+/// only where the same surveyed kind is genuinely two things on the ground. Use
+/// this at every mesh site — a caller that reaches for `parts` directly gets the
+/// plaza basin in the middle of a pond.
+#[must_use]
+pub fn parts_for(item: &FurnitureInstance) -> &'static [Part] {
+    if item.over_water && matches!(item.kind, FurnitureKind::Fountain) {
+        return &form::FOUNTAIN_JET;
+    }
+    parts(item.kind)
+}
+
 /// Turn **surveyed** points into oriented furniture instances.
 ///
 /// The companion to [`extract_furniture`], for objects that come from a source
@@ -1027,6 +1154,11 @@ pub fn place_surveyed(
             .then(|| ways.facing(x, z, ORIENT_RADIUS_M))
             .flatten()
             .unwrap_or_else(|| rand01(h, 0) * std::f32::consts::TAU);
+        // Same question as in `extract_furniture`, and it has to be asked here too:
+        // the municipal register is where "Fontein <square>" comes from, and
+        // that one stands in a pond.
+        let over_water =
+            matches!(kind, FurnitureKind::Fountain) && water_under(tile, x / tile_m, z / tile_m);
         out.push(FurnitureInstance {
             x,
             z,
@@ -1034,6 +1166,7 @@ pub fn place_surveyed(
             kind,
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
             paint: paint.unwrap_or_else(|| default_paint(kind)),
+            over_water,
         });
     }
     out
@@ -1111,13 +1244,13 @@ pub fn build_furniture_meshes(
         // hold at least one object or a cap under one form's cost would emit
         // empty meshes forever.
         if let Some(max) = max_bytes {
-            let step = parts(item.kind).len() * BOX_BYTES;
+            let step = parts_for(item).len() * BOX_BYTES;
             if buf.bytes() + step > max && !buf.positions.is_empty() {
                 out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
             }
         }
         let (sn, cs) = item.yaw.sin_cos();
-        for p in parts(item.kind) {
+        for p in parts_for(item) {
             let m = match p.tone {
                 Tone::Paint => paint_multiplier(item.paint),
                 tone => tone.multiplier(),
@@ -1848,6 +1981,7 @@ mod tests {
             kind: FurnitureKind::Bin,
             luma: 1.0,
             paint: palette::FURNITURE,
+            over_water: false,
         }];
         let m = &build_furniture_meshes(&one, None)[0];
         let extent = |axis: usize| {
@@ -1919,6 +2053,44 @@ mod tests {
         );
     }
 
+    /// The jet and the basin are the same surveyed kind, and the water is what
+    /// tells them apart. A basin at the waterline of a pond is what this replaced.
+    #[test]
+    fn a_fountain_in_water_is_drawn_as_a_jet() {
+        let at = |over_water: bool| FurnitureInstance {
+            x: 0.0,
+            z: 0.0,
+            yaw: 0.0,
+            kind: FurnitureKind::Fountain,
+            luma: 1.0,
+            paint: palette::FURNITURE,
+            over_water,
+        };
+        assert_eq!(
+            parts_for(&at(false)).len(),
+            form::FOUNTAIN.len(),
+            "on a square it is still the basin"
+        );
+        assert_eq!(
+            parts_for(&at(true)).len(),
+            form::FOUNTAIN_JET.len(),
+            "in a pond it is a jet"
+        );
+        // The basin is a ring 3 m across; the jet is not. Its widest part must stay
+        // under a metre or it reads as a basin that has lost its rim.
+        let widest = form::FOUNTAIN_JET
+            .iter()
+            .fold(0.0f32, |a, p| a.max(p.half[0].max(p.half[2])));
+        assert!(widest < 0.5, "the jet is narrow, got half-extent {widest}");
+        // And the flag is only ever read for a fountain: a bench does not become a
+        // different bench by standing near water.
+        let bench = FurnitureInstance {
+            kind: FurnitureKind::Bench,
+            ..at(true)
+        };
+        assert_eq!(parts_for(&bench).len(), form::BENCH.len());
+    }
+
     #[test]
     fn normals_stay_unit_length_through_the_rotation() {
         let one = [FurnitureInstance {
@@ -1928,6 +2100,7 @@ mod tests {
             kind: FurnitureKind::Shelter,
             luma: 1.0,
             paint: palette::FURNITURE,
+            over_water: false,
         }];
         let m = &build_furniture_meshes(&one, None)[0];
         for n in &m.normals {
