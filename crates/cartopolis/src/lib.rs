@@ -2345,10 +2345,23 @@ fn run_client() {
                     // seed seen first is a seed wiped before the overlay reads it.
                     // Running last is the whole reason `--ui locate` produces a
                     // picture rather than an empty map.
+                    //
+                    // …and **before the camera**, which is the other half of the
+                    // same argument: with `--ui firstperson` the seeded attitude
+                    // is what aims the view, and a rotation written after
+                    // `camera_controls` has read it is one frame of lag on a
+                    // capture that only ever takes one frame.
                     systems::shot_harness::track_scripted_device
                         .after(systems::geo_nav::apply_teleport)
                         .after(systems::locate::track_device_pose)
+                        .before(systems::free_camera::camera_controls)
                         .before(systems::locate::render_locate_arrow),
+                    // `--ui firstperson`: zoom the follow camera into the avatar's
+                    // head. Before the device seeding above, which asks whether it
+                    // is on, and before the camera that acts on both.
+                    systems::shot_harness::zoom_scripted_first_person
+                        .before(systems::shot_harness::track_scripted_device)
+                        .before(systems::free_camera::camera_controls),
                 ),
             );
         }
@@ -3385,6 +3398,15 @@ fn run_client() {
                 systems::driver::update_driver_arrow
                     .after(systems::driver::drive_driver_mode)
                     .after(systems::free_camera::camera_controls),
+                // The first-person twin of the line above: take the avatar's model
+                // out of shot while the camera is inside its head. After the camera,
+                // which is what decides that, and after the driver arrow, which owns
+                // the avatar's visibility whenever it is drawing over it — the two
+                // never both want it, and ordering them makes that visible rather
+                // than merely true.
+                systems::free_camera::update_first_person_avatar
+                    .after(systems::free_camera::camera_controls)
+                    .after(systems::driver::update_driver_arrow),
                 // What lies ahead on the route (the rail's markers, the speed limit).
                 // After the drive tick, which is what turns driver mode on, and before
                 // the chrome that reads it.

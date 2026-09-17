@@ -1540,6 +1540,33 @@ pub struct CameraState {
     /// the compass into it would fight the movement systems for the same field and
     /// leave the view turning after the phone had stopped.
     pub follow_heading: Option<f32>,
+    /// Follow mode, zoomed all the way in: the camera sits *at* the avatar's eyes
+    /// instead of on a boom behind them, and the avatar's own model is hidden.
+    ///
+    /// A sub-state of Avatar mode rather than a fourth [`CameraMode`], because
+    /// that is what it is — the far end of the same zoom — and because a variant
+    /// would have to be handled by the mode disc, the mode cycle, both saved-pose
+    /// paths and every exhaustive `match` in the client for a view that shares all
+    /// of its state with the one beside it. It is reached by zooming past
+    /// `free_camera::AVATAR_CAM_MIN` and left by any zoom back out; [`Self::distance`]
+    /// keeps the third-person distance to return to, so it is not lost.
+    pub first_person: bool,
+    /// The device is aiming the view: the whole camera rotation, in world space,
+    /// as measured by the phone's own sensors.
+    ///
+    /// Written by [`crate::systems::locate`] while the locate button is lit *and*
+    /// [`Self::first_person`] is set, and `None` at every other moment — which is
+    /// the identity, so nothing has to branch on whether a phone is aiming the
+    /// camera. It is a rotation and not a pair of angles for two reasons: a
+    /// quaternion has no gimbal pole to jump through when the phone is pointed
+    /// straight up or down, and it carries the roll, which is what keeps a tilted
+    /// phone's horizon tilted the same way on screen.
+    ///
+    /// Distinct from [`Self::follow_heading`], which is the same sensor reduced to
+    /// a bearing for the third-person chase rig. Both exist because the two views
+    /// ask different questions of it: a map turns under a level phone, and a
+    /// first-person view is aimed by one held up.
+    pub device_rotation: Option<Quat>,
     /// Driver mode holds the chase rig itself (`systems::driver`): while this is
     /// set, the Follow camera ignores the wheel and the rotate-drag, and takes its
     /// distance, tilt and azimuth from the map orientation instead. A navigation
@@ -1604,6 +1631,8 @@ impl Default for CameraState {
             orbit_north_lock: false,
             follow_rotate: false,
             follow_heading: None,
+            first_person: false,
+            device_rotation: None,
             drive_locked: false,
             drive_lookahead: Vec2::ZERO,
         }

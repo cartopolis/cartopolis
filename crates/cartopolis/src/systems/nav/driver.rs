@@ -584,6 +584,14 @@ struct CameraSave {
     pitch: f32,
     azimuth: f32,
     follow_rotate: bool,
+    /// Whether the camera was inside the avatar's head
+    /// ([`CameraState::first_person`]). Driver mode clears it on the way in —
+    /// it draws its own marker in place of the avatar and there is no first
+    /// person inside that — so without this line a drive would quietly cost the
+    /// user a view they had zoomed into, exactly as it used to cost them Earth
+    /// mode. Same argument as [`DriverState::pose_before_drive`], one field
+    /// along.
+    first_person: bool,
 }
 
 /// The rig offsets a user's own camera input has accumulated, and when it last
@@ -1666,6 +1674,7 @@ pub fn steady_driver_camera(
             camera_state.pitch = save.pitch;
             camera_state.azimuth = save.azimuth;
             camera_state.follow_rotate = save.follow_rotate;
+            camera_state.first_person = save.first_person;
             crate::systems::free_camera::enter_mode(&mut camera_state, save.mode);
         }
         return;
@@ -1683,6 +1692,7 @@ pub fn steady_driver_camera(
             pitch: camera_state.pitch,
             azimuth: camera_state.azimuth,
             follow_rotate: camera_state.follow_rotate,
+            first_person: camera_state.first_person,
         });
         crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Avatar);
         camera_state.mode = CameraMode::Avatar;

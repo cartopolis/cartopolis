@@ -287,7 +287,15 @@ fn mode_disc(
         CameraMode::Orbit => (icons::CAM_EARTH, "Earth"),
     };
     let next = next_camera_mode(camera_state.mode, follow_available(session, has_avatar));
-    let (icon, name) = badge(camera_state.mode);
+    let (icon, mut name) = badge(camera_state.mode);
+    // First person is a sub-state of Follow rather than a mode of its own
+    // (`CameraState::first_person`), and it shares Follow's glyph — but it is a
+    // completely different view, and a disc that still reads "Follow" while the
+    // avatar has vanished from in front of it is the one place that distinction
+    // has to be visible.
+    if camera_state.mode == CameraMode::Avatar && camera_state.first_person {
+        name = "First person";
+    }
     let (_, next_name) = badge(next);
     if theme::round_button(
         ui,

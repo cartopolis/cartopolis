@@ -1,7 +1,7 @@
 ---
 topic: device-orientation
-triggers: [orientation.rs, locate.rs, "compass", "magnetometer", "heading", "bearing", "deviceorientation", "webkitCompassHeading", "ASensorManager", "rotation vector", "screen.orientation", "locate button", "track my position", "gps"]
-updated: 2026-08-23
+triggers: [orientation.rs, locate.rs, "compass", "magnetometer", "heading", "bearing", "deviceorientation", "webkitCompassHeading", "ASensorManager", "rotation vector", "screen.orientation", "locate button", "track my position", "gps", "6dof", "first person", "point the phone at"]
+updated: 2026-09-17
 ---
 
 # The compass: which way the *screen* is pointing
@@ -11,6 +11,12 @@ and its heading (magnetometer). The position half already existed for driver mod
 (`platform::location`); this note is about the heading half
 (`platform::orientation`) and the two things about it that are easy to get wrong
 in a way that looks plausible on a desk and is wrong in the hand.
+
+**Since 2026-09-17 the seam carries a whole rotation, not a bearing** — see §5,
+which is where "point the phone at a building and see that building" lives. The
+bearing is still there and is still what the map arrow and the chase rig read;
+it is derived from the rotation now (`DeviceAttitude::bearing_deg`) rather than
+reported beside it.
 
 ## 1. Every provider reports the *device*; the user turns a *picture*
 
@@ -108,6 +114,13 @@ and that is the right answer whenever there is a walk input (the on-screen stick
 is on the same phone the compass is). Overwriting it every frame would leave the
 avatar walking sideways with the run clip playing.
 
+In first person that yaw comes from where the camera is *looking*
+(`locate::facing_from_view`) rather than from the bearing of screen-up, for §5's
+reason: the two agree for a phone held level and only one of them means anything
+for a phone held upright. They are pinned against each other by a test, because
+two writers of one field that disagree by a tilt would turn the avatar as the
+phone was raised, and no picture of either view alone would show it.
+
 **While a compass is reporting, `follow_rotate` is held rather than set.**
 `free_camera` clears that flag on a rotate-drag, and a compass mode that switched
 itself off the first time a thumb brushed the screen would read as broken. The
@@ -149,6 +162,55 @@ nothing on screen to say why.
 pair of watches; `locate::track_device_pose` stands down whenever
 `DriverState::active`, so exactly one system writes the position at any moment.
 
+## 5. Aiming the camera with the phone (first person)
+
+Turning a map under a level phone and *pointing* a phone at a building are two
+different requests of the same sensors, and the second one needed three things the
+first did not.
+
+**The seam carries the screen's whole attitude.** A bearing is one number and the
+view needs the tilt as well — and, worse, the old number is degenerate in exactly
+the pose the new question is asked in: held upright, screen-up *is* the vertical,
+and the compass bearing of a vertical vector is noise. `DeviceAttitude` is
+therefore the rotation from the screen frame into the sensors' East/North/Up, and
+`bearing_deg` is derived from it. Both device arms already had the whole thing and
+were throwing it away: Android's rotation vector is a quaternion, and the web's
+`alpha`/`beta`/`gamma` are a full ZXY Euler triple of which only `alpha` was read.
+
+**The screen frame is Bevy's camera frame**, which is why
+`DeviceAttitude::camera_rotation` is one change of world basis and nothing else. A
+camera looks down `−z` with `+y` up; a phone's back camera looks down `−z` with
+`+y` up the screen. So the only thing that can be wrong is the ENU → world
+quarter-turn, and one test pins it on all three axes. Deriving Euler angles and
+re-composing them was the alternative and is worse twice over: it has a gimbal
+pole a phone reaches by being pointed at the sky, and it drops the roll.
+
+**It is gated to first person, and to the locate button.** Three conditions
+(`locate::device_aims_the_view` plus the button, which is that function's caller):
+
+| Condition | Why it is not optional |
+|---|---|
+| First person | In third person there is a boom between the eye and the avatar. Tipping the phone up swings that boom *under the pavement* to look up past the model — the view moves, but not to what the phone is aimed at. There is no third-person answer to this request. |
+| Follow (Avatar) mode | The boom is the Follow camera's rig; Fly and Earth hold views the user placed by hand, and a sensor is not entitled to take one. |
+| The locate button lit | Aiming a view by the magnetometer while the app has no idea where the user is standing puts the right *direction* at the wrong *place*. Position and attitude are separate sensors here (§ the module note) and the pairing is what makes a building on screen the building in front of them. |
+
+**Getting in is the zoom, and there is one threshold.** `first_person_after_zoom`
+turns a gesture that asked to come closer than `AVATAR_CAM_MIN` into the step
+inside, and any outward gesture into the step back out. The distance stays parked
+at the minimum throughout, so both comparisons are against that one number —
+a separate exit threshold would be a second constant to keep in step with the
+first, and they would disagree the first time either moved. Crossing it must not
+swing the view, which is a real constraint and not a nicety: the first-person
+rotation is built from the same `azimuth`/`pitch` the boom was, and
+`stepping_inside_keeps_looking_the_same_way` pins that they produce the same
+direction.
+
+**A drag cannot fight this one.** Everywhere else a rotate-drag is allowed to
+overrule the compass and be eased back (§4). Here the view *is* the phone's
+attitude, so a drag could only push the picture off the thing the phone is pointed
+at and be dragged back the same frame. Zooming out is how the camera is taken
+back.
+
 ## Verification status
 
 **Neither device arm has run on hardware from this container.** The maths is unit
@@ -162,7 +224,19 @@ confirm:
   panel;
 - that a device with only `GEOMAGNETIC_ROTATION_VECTOR` reaches the fallback
   rather than the "no compass" error;
-- on iOS, that the permission prompt appears from the button tap.
+- on iOS, that the permission prompt appears from the button tap;
+- **the whole of §5 on a real phone**: zoom into first person with the locate
+  button lit, hold the phone up, point it at a building and check that the
+  building is on screen — then turn on the spot and check it stays put. Both
+  device arms feed it and neither has been in a hand.
+
+On iOS specifically, §5's yaw is *reconstructed*: Safari has no absolute `alpha`,
+so the arm turns `webkitCompassHeading` back into the `alpha` that would have
+produced it and builds the rotation from that plus the (absolute, gravity-derived)
+`beta`/`gamma`. That is exactly what this seam already assumed of every Safari
+reading when it carried only a bearing, so it is not a new risk — but it is the
+one platform where the attitude is not a fused quaternion out of the sensor stack,
+and an upright phone is the pose in which that substitution is least well founded.
 
 The headless Android emulator on the VPS (see the container's own notes) can run
 the APK but reports no magnetometer, so it can confirm the *error* path and the

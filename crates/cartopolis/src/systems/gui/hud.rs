@@ -412,7 +412,7 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
             s.push_str(" — ");
             s.push_str(&match tracking.heading {
                 Some(h) => {
-                    let mut line = format!("heading {}°", h.bearing_deg.round());
+                    let mut line = format!("heading {}°", h.bearing_deg().round());
                     // Only iOS reports one, and only once the magnetometer has
                     // settled. A wide figure here is the explanation for a map
                     // that is pointing *nearly* the right way.
@@ -963,7 +963,7 @@ mod tests {
     /// but nothing is turning the map and here is why".
     #[test]
     fn the_locate_caption_says_which_of_the_four_it_is() {
-        use crate::platform::orientation::{DeviceHeading, OrientationWatch};
+        use crate::platform::orientation::{DeviceAttitude, OrientationWatch};
         use crate::systems::locate::LocateTracking;
 
         let mut t = LocateTracking::default();
@@ -971,10 +971,12 @@ mod tests {
         assert!(off.contains("compass") || off.contains("heading"), "{off}");
 
         // Tracking with a heading: the bearing is in the text, and the accuracy
-        // beside it when the platform stated one.
-        t.heading = Some(DeviceHeading {
-            bearing_deg: 123.4,
+        // beside it when the platform stated one. Tipped well off vertical, so
+        // screen-up has a horizontal part and the bearing is a fair question —
+        // see `DeviceAttitude::bearing_deg`.
+        t.heading = Some(DeviceAttitude {
             accuracy_deg: Some(15.0),
+            ..DeviceAttitude::pointing(123.4, -60.0, 0.0)
         });
         let with = locate_hover(LocateState::Tracking, &t);
         assert!(with.contains("123°"), "{with}");

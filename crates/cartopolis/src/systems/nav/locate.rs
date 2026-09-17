@@ -80,7 +80,7 @@ use big_space::prelude::{Grid, GridCell};
 use crate::components::{Avatar, FreeCamera};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::location::{GpsFix, LocationWatch};
-use crate::platform::orientation::{DeviceHeading, OrientationWatch};
+use crate::platform::orientation::{DeviceAttitude, OrientationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
 use crate::systems::driver::{DriverState, FixGlide};
 use crate::systems::free_camera::cell_origin;
@@ -100,6 +100,49 @@ use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, T
 #[must_use]
 pub fn yaw_from_bearing(bearing_rad: f32) -> f32 {
     (std::f32::consts::PI - bearing_rad).rem_euclid(std::f32::consts::TAU)
+}
+
+/// How fast the first-person view eases onto the device's attitude, per second
+/// (exponential).
+///
+/// Faster than [`crate::systems::free_camera`]'s compass rate, which is itself
+/// twice the avatar-chase rate, and for the next step of the same argument: the
+/// chase rig is following a smoothed consequence of the keys held, the compass is
+/// following the user's hand at arm's length through a map, and this *is* the
+/// user's hand — the picture is a window, and a window that lags is a fault in the
+/// glass. Still an ease rather than an assignment, because magnetometer noise
+/// about a held attitude would otherwise shimmer the whole view.
+const DEVICE_VIEW_RATE: f32 = 24.0;
+
+/// Whether the device's own attitude is what aims the camera this frame.
+///
+/// The "6DoF" gate in one place, so the live path and the scripted capture seed
+/// cannot come to disagree about when it is on: **first person**, because in third
+/// person there is a boom between the eye and the avatar and tilting the phone
+/// swings it rather than aiming it, and **Follow**, because that boom is the
+/// Follow camera's rig and Fly and Earth have views the user placed by hand. The
+/// third condition — the locate button lit, i.e. the position half running too —
+/// is the caller's, since only [`track_device_pose`] is inside that switch.
+#[must_use]
+pub fn device_aims_the_view(camera_state: &CameraState) -> bool {
+    camera_state.first_person && camera_state.mode == CameraMode::Avatar
+}
+
+/// The avatar facing that matches a camera looking along `forward` (world XZ),
+/// or `None` when the view is too close to vertical for the question to have an
+/// answer.
+///
+/// The same convention and the same number as [`yaw_from_bearing`] for a level
+/// phone — pinned by a test, because the two are the only writers of
+/// `AvatarState::facing_yaw` on this path and a disagreement between them would
+/// turn the avatar a different way depending on how far the phone was tipped.
+#[must_use]
+fn facing_from_view(forward: Vec3) -> Option<f32> {
+    let flat = Vec2::new(forward.x, forward.z);
+    if flat.length_squared() < 1e-6 {
+        return None;
+    }
+    Some(((-flat.x).atan2(-flat.y) + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU))
 }
 
 /// The device-tracking switch, and the two subscriptions it owns.
@@ -122,7 +165,7 @@ pub struct LocateTracking {
     /// The device heading driving the view this frame. Also what the button's
     /// hover text reports, so a phone that is tracking but has no compass says so
     /// instead of looking identical to one that has.
-    pub heading: Option<DeviceHeading>,
+    pub heading: Option<DeviceAttitude>,
     /// Provider trouble worth telling the user about — a denied permission, a
     /// device with no magnetometer. Shown in the button's hover text.
     pub error: Option<String>,
@@ -235,7 +278,7 @@ impl LocateTracking {
     /// otherwise ship having been reasoned about and never once looked at. What
     /// it writes is exactly what the provider writes and nothing more — the
     /// watches stay unopened, so this cannot be mistaken for the radio being on.
-    pub fn seed_for_capture(&mut self, fix: GpsFix, heading: Option<DeviceHeading>) {
+    pub fn seed_for_capture(&mut self, fix: GpsFix, heading: Option<DeviceAttitude>) {
         self.active = true;
         self.gps_fix = true;
         self.last_fix = Some(fix);
@@ -550,7 +593,7 @@ pub fn render_locate_arrow(
     // magnetometer, and it is the better answer while actually travelling.
     let bearing = tracking
         .heading
-        .map(|h| h.bearing_deg)
+        .map(|h| h.bearing_deg())
         .or(fix.heading_deg)
         .filter(|b| b.is_finite());
     let facing = bearing.and_then(|b| {
@@ -825,6 +868,13 @@ pub fn track_device_pose(
         if camera_state.follow_heading.is_some() {
             camera_state.follow_heading = None;
         }
+        // The same identity for the first-person view, and the same guard. This is
+        // the "only when GPS is on" half of the gate: switching the button off
+        // hands the camera straight back to the drag and the chase rig, from
+        // wherever the phone had last pointed it.
+        if camera_state.device_rotation.is_some() {
+            camera_state.device_rotation = None;
+        }
         return;
     }
 
@@ -959,15 +1009,61 @@ pub fn track_device_pose(
         if camera_state.follow_heading.is_some() {
             camera_state.follow_heading = None;
         }
+        if camera_state.device_rotation.is_some() {
+            camera_state.device_rotation = None;
+        }
         return;
     }
 
     match heading {
         Some(h) => {
+            // ── The device aims the camera, but only from inside the head ──
+            //
+            // Three conditions, and each is load-bearing. **First person**,
+            // because in third person the camera orbits the avatar from behind and
+            // pitching the phone up would swing that boom under the pavement to
+            // look up past the model — the view would move, but not to what the
+            // phone is pointed at. **The locate button lit**, which is this whole
+            // function's gate and is what the user reads as "GPS on": aiming a
+            // view by the magnetometer while the app has no idea where it is
+            // places the user's own body somewhere arbitrary, and it is the pairing
+            // of the two that makes a building on screen the building in front of
+            // them. And **a live report**, which is the `Some` arm itself.
+            //
+            // Written as an eased rotation rather than an assignment, for the
+            // reason `COMPASS_ROTATE_RATE` gives about its own target: sensor noise
+            // about a held attitude is a shimmer across the whole picture. Slerped
+            // rather than eased per angle, because the thing being smoothed is a
+            // rotation — three independently-wrapped angles would take the long way
+            // round the pole on the frame a phone is tipped past vertical.
+            if device_aims_the_view(&camera_state) {
+                let want = h.camera_rotation();
+                let a = 1.0 - (-DEVICE_VIEW_RATE * time.delta_secs()).exp();
+                // The hand-over swings rather than cuts. On the first frame there
+                // is no previous device rotation to ease from, so it starts from
+                // the rig's own angles — which is exactly where the camera is
+                // looking right now, `free_camera` having just built the view from
+                // them. Snapping instead would cut to wherever the phone happened
+                // to be aimed, and the two can easily be half a turn apart: the
+                // gesture that gets you here is a zoom, which says nothing about
+                // which way you are holding the phone.
+                let have = camera_state.device_rotation.unwrap_or_else(|| {
+                    Quat::from_euler(
+                        EulerRot::YXZ,
+                        camera_state.azimuth,
+                        -camera_state.pitch,
+                        0.0,
+                    )
+                });
+                camera_state.device_rotation = Some(have.slerp(want, a));
+            } else if camera_state.device_rotation.is_some() {
+                camera_state.device_rotation = None;
+            }
+
             // Held, not set — see the module note on why a drag must not end this.
             camera_state.follow_rotate = true;
             #[allow(clippy::cast_possible_truncation)]
-            let bearing = (h.bearing_deg as f32).to_radians();
+            let bearing = (h.bearing_deg() as f32).to_radians();
             let yaw = yaw_from_bearing(bearing);
             camera_state.follow_heading = Some(yaw);
             // The avatar turns with the phone too, and it has to: the camera is
@@ -982,13 +1078,28 @@ pub fn track_device_pose(
             // reachable on the same phone this compass is on — and overwriting it
             // every frame would leave the avatar walking sideways with the run
             // clip playing.
+            //
+            // From inside the head the *view* direction is the facing, not the
+            // bearing of screen-up: they are the same number for a phone held
+            // level and reading the map, and the bearing is meaningless for one
+            // held upright and pointed at a building, which is the pose first
+            // person is used in. `facing_from_view` answers `None` for a phone
+            // aimed at the sky or the pavement — there is no facing in a vertical
+            // line — and the avatar keeps the one it had.
             if !avatar_state.is_walking {
-                avatar_state.facing_yaw = yaw;
+                let face = camera_state
+                    .device_rotation
+                    .and_then(|r| facing_from_view(r * Vec3::NEG_Z))
+                    .unwrap_or(yaw);
+                avatar_state.facing_yaw = face;
             }
         }
         None => {
             if camera_state.follow_heading.is_some() {
                 camera_state.follow_heading = None;
+            }
+            if camera_state.device_rotation.is_some() {
+                camera_state.device_rotation = None;
             }
             // No compass on this platform at all: the button is the old
             // follow-and-rotate, so give it the old escape hatch — a rotate-drag
@@ -1024,6 +1135,61 @@ mod tests {
             assert!(
                 (looks - expected).length() < 1e-5,
                 "bearing {bearing_deg}° should look {expected:?}, looks {looks:?}"
+            );
+        }
+    }
+
+    /// The two writers of the avatar's facing on this path must agree.
+    ///
+    /// Third person derives it from the compass bearing of screen-up; first
+    /// person derives it from where the camera is looking, because a phone held
+    /// upright has no meaningful screen-up bearing. For a phone held *level* the
+    /// two describe the same thing, so they have to produce the same number — a
+    /// disagreement would turn the avatar as the phone was tipped, which no
+    /// picture of either view on its own would reveal.
+    #[test]
+    fn both_ways_of_facing_the_avatar_agree_for_a_level_phone() {
+        for deg in [0.0_f64, 45.0, 137.0, 270.0, 359.0] {
+            let attitude = crate::platform::orientation::DeviceAttitude::pointing(deg, 0.0, 0.0);
+            let from_view = facing_from_view(attitude.camera_rotation() * Vec3::NEG_Z)
+                .expect("a level phone has a facing");
+            #[allow(clippy::cast_possible_truncation)]
+            let from_bearing = yaw_from_bearing((deg as f32).to_radians());
+            let off = (from_view - from_bearing).rem_euclid(std::f32::consts::TAU);
+            assert!(
+                off < 1e-4 || off > std::f32::consts::TAU - 1e-4,
+                "{deg}°: the view says {from_view}, the bearing says {from_bearing}"
+            );
+        }
+    }
+
+    /// A phone aimed at the sky or at its own feet is pointed along the one
+    /// direction with no facing in it. Answering anything there would spin the
+    /// avatar on sensor noise.
+    #[test]
+    fn a_vertical_view_has_no_facing() {
+        assert!(facing_from_view(Vec3::Y).is_none());
+        assert!(facing_from_view(Vec3::NEG_Y).is_none());
+        assert!(facing_from_view(Vec3::NEG_Z).is_some());
+    }
+
+    /// The gate the user asked for, as a truth table: the device aims the view
+    /// only from inside the head, and only in the mode that has a head.
+    #[test]
+    fn only_first_person_follow_is_aimed_by_the_device() {
+        let mut c = CameraState::default();
+        for (mode, first, want) in [
+            (CameraMode::Avatar, true, true),
+            (CameraMode::Avatar, false, false),
+            (CameraMode::Free, true, false),
+            (CameraMode::Orbit, true, false),
+        ] {
+            c.mode = mode;
+            c.first_person = first;
+            assert_eq!(
+                device_aims_the_view(&c),
+                want,
+                "{mode:?} first_person={first}"
             );
         }
     }

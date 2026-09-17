@@ -1595,7 +1595,7 @@ impl ShotHarness {
                 || self.ui_for(i).iter().any(|u| {
                     matches!(
                         u.as_str(),
-                        "all" | "avatar" | "appearance" | "sit" | "driver"
+                        "all" | "avatar" | "appearance" | "sit" | "driver" | "firstperson"
                     )
                 })
         })
@@ -1988,6 +1988,7 @@ const UI_ELEMENTS: &[&str] = &[
     "sit",
     "building",
     "locate",
+    "firstperson",
     "fire",
     "all",
 ];
@@ -2652,6 +2653,29 @@ pub fn hold_scripted_camera_mode(
     }
 }
 
+/// `--ui firstperson` zooms the follow camera all the way into the avatar's head.
+///
+/// The state itself is one boolean, so this seeds it rather than driving the zoom
+/// gesture that normally sets it — a scripted run has no wheel, no pinch and no
+/// on-screen buttons, and reproducing the gesture would be testing the input
+/// plumbing rather than the view.
+///
+/// Pair it with `--ui locate` for the half a phone does: with both, the *device*
+/// aims the camera (`track_scripted_device` seeds an attitude), which is the only
+/// way to see that path at all outside a hand holding a phone. Held every frame,
+/// like the seat and for the same reason: a teleport re-enters Follow.
+pub fn zoom_scripted_first_person(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut cam_state: ResMut<CameraState>,
+) {
+    let panels = harness.ui_for(progress.index);
+    let want = panels.iter().any(|u| u == "all" || u == "firstperson");
+    if cam_state.first_person != want {
+        cam_state.first_person = want;
+    }
+}
+
 /// `--ui sit` seats the avatar, and it has to invent the bench to do it.
 ///
 /// The real prompt only appears with a real bench inside
@@ -2773,12 +2797,16 @@ pub fn track_scripted_device(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
     mut tracking: ResMut<crate::systems::locate::LocateTracking>,
+    mut cam_state: ResMut<CameraState>,
 ) {
     let panels = harness.ui_for(progress.index);
     let all = panels.iter().any(|u| u == "all");
     if !(all || panels.iter().any(|u| u == "locate")) {
         if tracking.active {
             tracking.exit();
+        }
+        if cam_state.device_rotation.is_some() {
+            cam_state.device_rotation = None;
         }
         return;
     }
@@ -2797,6 +2825,26 @@ pub fn track_scripted_device(
     } else {
         (shot.lat, shot.lng)
     };
+    // Aiming the camera is the consumer's job (`locate::track_device_pose`) and
+    // in a scripted run that system finds no provider and clears it — so with
+    // `--ui firstperson,locate` the seed has to make the same write, or the one
+    // path a phone exists for is the one a capture cannot photograph. Snapped
+    // rather than eased: a capture is a settled frame, and there is nothing to
+    // ease from.
+    let attitude = crate::platform::orientation::DeviceAttitude {
+        accuracy_deg: Some(10.0),
+        // Held up and aimed along the shot's own yaw, tipped a little above the
+        // horizon — the pose a person points a phone at a building in, and the one
+        // `--ui firstperson` needs to photograph anything but the pavement. The
+        // elevation is *not* the shot's pitch: a scripted `--at` is usually
+        // looking down at the map, and a phone is not.
+        ..crate::platform::orientation::DeviceAttitude::pointing(f64::from(shot.yaw_deg), 5.0, 0.0)
+    };
+    let aimed = crate::systems::locate::device_aims_the_view(&cam_state)
+        .then(|| attitude.camera_rotation());
+    if cam_state.device_rotation != aimed {
+        cam_state.device_rotation = aimed;
+    }
     tracking.seed_for_capture(
         crate::platform::location::GpsFix {
             lat,
@@ -2805,10 +2853,7 @@ pub fn track_scripted_device(
             speed_ms: Some(1.4),
             heading_deg: Some(45.0),
         },
-        Some(crate::platform::orientation::DeviceHeading {
-            bearing_deg: 45.0,
-            accuracy_deg: Some(10.0),
-        }),
+        Some(attitude),
     );
 }
 

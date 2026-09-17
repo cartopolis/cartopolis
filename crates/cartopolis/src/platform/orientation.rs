@@ -8,12 +8,24 @@
 //! magnetometer. [`crate::systems::locate`] happens to start both, which is not a
 //! reason to fuse them here.
 //!
-//! **The number this hands out is the bearing of the top of the *screen*, not of
-//! the device.** Every provider reports the device's own frame, and the user
-//! turns a *picture*: on a phone held in landscape the two differ by 90°, and a
-//! compass that ignores it points sideways in exactly the orientation people
-//! navigate in. The correction is [`screen_up_bearing`], and it is applied inside
-//! each provider so the value crossing this seam needs no further interpretation.
+//! **What this hands out is the attitude of the *screen*, not of the device.**
+//! Every provider reports the device's own frame, and the user turns a *picture*:
+//! on a phone held in landscape the two differ by 90°, and a compass that ignores
+//! it points sideways in exactly the orientation people navigate in. The
+//! correction is [`screen_frame`], and it is applied inside each provider so the
+//! value crossing this seam needs no further interpretation.
+//!
+//! **It is a whole rotation and not a bearing, and that is a 2026-09-17 change.**
+//! It used to be one number — the compass bearing of screen-up — because the one
+//! consumer was a map that turns under a level phone. That is not enough to point
+//! a phone *at* something: the first-person view ([`crate::systems::free_camera`])
+//! has to answer "which building is the back of this phone aimed at", which needs
+//! the tilt as well, and the old number is degenerate in exactly the pose that
+//! question is asked in — screen-up points at the sky when the phone is held
+//! upright, so its compass bearing is the azimuth of a vertical vector. The
+//! bearing is still available ([`DeviceAttitude::bearing_deg`]) and is still what
+//! the map arrow reads; it is derived from the rotation now rather than beside it,
+//! so the two cannot disagree.
 //!
 //! Three arms, the same three as `location`:
 //!
@@ -36,23 +48,93 @@
 //! **None of the two device arms has run on hardware from this container** — see
 //! `docs/notes/device-orientation.md` for what a phone still has to confirm.
 
+use bevy::math::{DQuat, DVec3, Quat};
 use std::sync::{Arc, Mutex};
 
-/// One heading report, normalised across providers: the compass bearing of the
-/// top of the screen, degrees clockwise from north.
+/// One attitude report, normalised across providers.
+///
+/// The payload is the rotation taking **screen** coordinates into the sensors'
+/// world frame, which is East/North/Up on every platform here. The screen frame
+/// is the ordinary one: `+x` right along the screen, `+y` up it, `+z` out of the
+/// glass toward the viewer — so `−z` is where the back of the phone, and its
+/// camera, is aimed.
+///
+/// Those axes are *exactly* Bevy's camera axes, which is why
+/// [`Self::camera_rotation`] is a change of world basis and nothing more.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DeviceHeading {
-    /// Bearing of screen-up, in `[0, 360)`, clockwise from north.
-    pub bearing_deg: f64,
+pub struct DeviceAttitude {
+    /// Screen → world (East/North/Up). Unit.
+    pub screen_to_world: DQuat,
     /// Reported accuracy in degrees, when the platform states one. `None` is the
     /// ordinary case on the web, where no provider reports it.
     pub accuracy_deg: Option<f64>,
 }
 
+impl DeviceAttitude {
+    /// An attitude built from where the phone is *aimed*: the compass bearing and
+    /// the elevation of the view out of its back, plus the rotation of the
+    /// picture about that axis.
+    ///
+    /// The inverse of the three readings in [`Self::camera_rotation`]'s frame, and
+    /// the constructor every test and the scripted capture seed use — describing a
+    /// pose as "north-east, 5° above the horizon, upright" is checkable by hand in
+    /// a way a quaternion literal is not.
+    #[must_use]
+    pub fn pointing(bearing_deg: f64, elevation_deg: f64, roll_deg: f64) -> Self {
+        // The camera rotation this must produce, then undo the basis change.
+        let camera = DQuat::from_euler(
+            bevy::math::EulerRot::YXZ,
+            -bearing_deg.to_radians(),
+            elevation_deg.to_radians(),
+            roll_deg.to_radians(),
+        );
+        Self {
+            screen_to_world: world_from_enu().inverse() * camera,
+            accuracy_deg: None,
+        }
+    }
+
+    /// Compass bearing of the top of the screen, in `[0, 360)` clockwise from
+    /// north — what the map arrow and the follow camera's chase rig read.
+    ///
+    /// Ill-conditioned by construction when the phone is held upright, because
+    /// then screen-up *is* the vertical and a vertical vector has no bearing. That
+    /// is a property of the question, not of this code: it is why the first-person
+    /// view asks [`Self::camera_rotation`] instead.
+    #[must_use]
+    pub fn bearing_deg(&self) -> f64 {
+        let up = self.screen_to_world * DVec3::Y;
+        up.x.atan2(up.y).to_degrees().rem_euclid(360.0)
+    }
+
+    /// The rotation to give a camera so it sees what the back of the phone is
+    /// pointed at, in the app's world frame (`+x` east, `+y` up, `−z` north).
+    ///
+    /// One change of basis, because the screen frame and Bevy's camera frame are
+    /// the same axes — a camera looks down `−z` with `+y` up, which is a phone's
+    /// back camera with the top of the picture up the screen. Everything that
+    /// could be got wrong here is therefore in [`world_from_enu`], which one test
+    /// pins against all three axes.
+    #[must_use]
+    pub fn camera_rotation(&self) -> Quat {
+        (world_from_enu() * self.screen_to_world).as_quat()
+    }
+}
+
+/// The rotation taking the sensors' East/North/Up frame into the app's world
+/// frame, where `+x` is east, `+y` is up and **north is `−z`**.
+///
+/// A quarter turn about east, and the sign is the whole content: north must land
+/// on `−z` and up on `+y`. Get it backwards and a phone pointed north shows the
+/// view to the south, which reads as a compass fault rather than as a frame one.
+fn world_from_enu() -> DQuat {
+    DQuat::from_rotation_x(-std::f64::consts::FRAC_PI_2)
+}
+
 /// The slot a provider writes into. Same shape and same reason as
 /// [`crate::platform::location::Slot`]: an `Err` is how a denied permission or a
 /// missing sensor reaches the UI instead of an eternal "waiting".
-pub(crate) type Slot = Arc<Mutex<Option<Result<DeviceHeading, String>>>>;
+pub(crate) type Slot = Arc<Mutex<Option<Result<DeviceAttitude, String>>>>;
 
 /// A live subscription to the device's heading. Drop it to unsubscribe.
 pub struct OrientationWatch {
@@ -97,7 +179,7 @@ impl OrientationWatch {
     /// The most recent heading, or `None` while nothing has arrived (or the
     /// provider reported an error — see [`Self::error`]).
     #[must_use]
-    pub fn latest(&self) -> Option<DeviceHeading> {
+    pub fn latest(&self) -> Option<DeviceAttitude> {
         self.slot.lock().ok()?.as_ref()?.as_ref().ok().copied()
     }
 
@@ -125,58 +207,60 @@ impl Drop for OrientationWatch {
 
 // ─── The two pieces of maths, shared by both providers ───────────────────────
 
-/// Compass bearing of the device's own **top edge**, from an Android rotation
-/// vector (a unit quaternion taking device coordinates into the world frame
-/// East/North/Up).
-///
-/// This is `SensorManager.getOrientation`'s azimuth written out: that function
-/// builds the rotation matrix and returns `atan2(R01, R11)`, which is the angle
-/// between the device's `+y` axis (its top edge) and north. Only those two matrix
-/// entries are needed, so the matrix is not built.
-///
-/// The web arm does not use this — the browser has already reduced the same
-/// fusion to a single `alpha`.
-// `allow`: `platform` is a private module, so a function only the Android arm
-// calls is dead code on every other target. It stays compiled and tested
-// everywhere on purpose — this is the piece of the compass that can be wrong in a
-// way a phone would not obviously show, and a desktop `cargo test` is the only
-// place it gets checked.
-#[allow(dead_code)]
-#[must_use]
-pub fn bearing_from_rotation_vector(x: f64, y: f64, z: f64, w: f64) -> f64 {
-    // R01 and R11 of the standard quaternion-to-matrix expansion.
-    let r01 = 2.0 * z.mul_add(-w, x * y);
-    let r11 = 1.0 - 2.0 * z.mul_add(z, x * x);
-    r01.atan2(r11).to_degrees().rem_euclid(360.0)
-}
-
-/// Turn the bearing of the device's top edge into the bearing of the top of the
-/// *screen*, given the display's rotation.
+/// Turn a **device** attitude into a **screen** one, given the display's
+/// rotation.
 ///
 /// `screen_angle_deg` is the angle the content is rotated **clockwise** within
 /// the device frame to stay upright — `screen.orientation.angle` on the web and
-/// `Display.getRotation() × 90` on Android, which are the same quantity.
+/// `Display.getRotation() × 90` on Android, which are the same quantity. The
+/// screen's axes are therefore the device's turned *anticlockwise* by it, which
+/// is the negative rotation about the device's own `+z` composed on the right.
 ///
 /// The sign is the thing worth checking, so here is the case that pins it. Hold a
 /// phone in portrait with its top pointing north (device bearing 0). Rotate the
 /// phone 90° anticlockwise: its top now points west (bearing 270), and the system
 /// rotates the content 90° clockwise to keep it upright, so `screen.orientation.
 /// angle` reads 90. The picture the user is looking at has not moved — screen-up
-/// is still north. `270 + 90 = 360 ≡ 0`. Adding is right; subtracting would have
-/// read 180, i.e. exactly backwards, and only in landscape.
-// `allow`: see `bearing_from_rotation_vector` — both device arms call this and
-// no desktop one does.
+/// is still north. Getting the sign backwards reads 180° out, and only in
+/// landscape, which is a bug report that sounds like "the compass is unreliable".
+// `allow`: `platform` is a private module, so a function only the two device arms
+// call is dead code on every other target. It stays compiled and tested
+// everywhere on purpose — this is the piece of the compass that can be wrong in a
+// way a phone would not obviously show, and a desktop `cargo test` is the only
+// place it gets checked.
 #[allow(dead_code)]
 #[must_use]
-pub fn screen_up_bearing(device_top_bearing_deg: f64, screen_angle_deg: f64) -> f64 {
-    (device_top_bearing_deg + screen_angle_deg).rem_euclid(360.0)
+pub fn screen_frame(device_to_world: DQuat, screen_angle_deg: f64) -> DQuat {
+    device_to_world * DQuat::from_rotation_z(-screen_angle_deg.to_radians())
+}
+
+/// The device → world (East/North/Up) rotation the web's `deviceorientation`
+/// angles describe.
+///
+/// The spec defines them as intrinsic rotations applied in the order Z (`alpha`),
+/// X (`beta`), Y (`gamma`) to a device that starts aligned with the Earth frame,
+/// so this is that product and nothing else. `alpha` runs **anticlockwise** from
+/// north, which is why every bearing on this seam is `360 − alpha` rather than
+/// `alpha`.
+///
+/// Android does not use this: its rotation vector already *is* the quaternion.
+// `allow`: see `screen_frame` — only the web arm calls it.
+#[allow(dead_code)]
+#[must_use]
+pub fn device_to_world_from_euler(alpha_deg: f64, beta_deg: f64, gamma_deg: f64) -> DQuat {
+    DQuat::from_euler(
+        bevy::math::EulerRot::ZXY,
+        alpha_deg.to_radians(),
+        beta_deg.to_radians(),
+        gamma_deg.to_radians(),
+    )
 }
 
 // ─── Web ─────────────────────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use super::{screen_up_bearing, DeviceHeading, Slot};
+    use super::{device_to_world_from_euler, screen_frame, DeviceAttitude, Slot};
     use std::cell::RefCell;
     use wasm_bindgen::prelude::Closure;
     use wasm_bindgen::{JsCast, JsValue};
@@ -234,23 +318,31 @@ mod wasm {
             .map_or(0.0, |o| (-o).rem_euclid(360.0))
     }
 
-    /// Reduce one event to a screen-up bearing, or `None` if it carries no
-    /// absolute heading.
+    /// Reduce one event to a screen attitude, or `None` if it carries no absolute
+    /// heading.
     ///
-    /// Two sources, in preference order. `webkitCompassHeading` is Safari's, and
-    /// it is *already* a compass bearing of the device top (and already corrected
-    /// to true north), so it needs no `360 −`. `alpha` is the standard's, and it
-    /// is measured anticlockwise from north, hence the subtraction. A plain
+    /// Two sources for the yaw, in preference order. `webkitCompassHeading` is
+    /// Safari's, and it is *already* a compass bearing of the device top (and
+    /// already corrected to true north), so it is turned back into the `alpha`
+    /// that would have produced it. `alpha` is the standard's, and it is measured
+    /// anticlockwise from north, hence the `360 −` in both directions. A plain
     /// `deviceorientation` event with neither is **relative** — Chrome's alpha
     /// there starts wherever the page was loaded — and reporting it as a compass
     /// would silently point the map at an arbitrary bearing, so it is dropped.
-    fn heading_of(event: &web_sys::DeviceOrientationEvent) -> Option<DeviceHeading> {
+    ///
+    /// `beta` and `gamma` are the tilt, and they are absolute on every browser
+    /// because they are measured against gravity rather than against the magnetic
+    /// field — which is what lets Safari's reconstruction work at all: only the
+    /// yaw is missing there, and only the yaw is substituted. A device that
+    /// reports neither is treated as lying flat, which is what this seam assumed
+    /// of every device before it carried tilt at all.
+    fn attitude_of(event: &web_sys::DeviceOrientationEvent) -> Option<DeviceAttitude> {
         let webkit = js_sys::Reflect::get(event, &JsValue::from_str("webkitCompassHeading"))
             .ok()
             .and_then(|v| v.as_f64())
             .filter(|v| v.is_finite());
-        let device_top = match webkit {
-            Some(h) => h,
+        let alpha = match webkit {
+            Some(heading) => 360.0 - heading,
             None => {
                 if !event.absolute() {
                     return None;
@@ -259,16 +351,18 @@ mod wasm {
                 if !alpha.is_finite() {
                     return None;
                 }
-                360.0 - alpha
+                alpha
             }
         };
+        let tilt = |v: Option<f64>| v.filter(|v| v.is_finite()).unwrap_or(0.0);
         let accuracy_deg = js_sys::Reflect::get(event, &JsValue::from_str("webkitCompassAccuracy"))
             .ok()
             .and_then(|v| v.as_f64())
             // Safari reports −1 for "no fix yet", which is not an accuracy.
             .filter(|v| v.is_finite() && *v >= 0.0);
-        Some(DeviceHeading {
-            bearing_deg: screen_up_bearing(device_top, screen_angle()),
+        let device = device_to_world_from_euler(alpha, tilt(event.beta()), tilt(event.gamma()));
+        Some(DeviceAttitude {
+            screen_to_world: screen_frame(device, screen_angle()),
             accuracy_deg,
         })
     }
@@ -289,9 +383,9 @@ mod wasm {
         let make = |sink: Slot| {
             Closure::<dyn FnMut(web_sys::DeviceOrientationEvent)>::new(
                 move |e: web_sys::DeviceOrientationEvent| {
-                    if let Some(h) = heading_of(&e) {
+                    if let Some(a) = attitude_of(&e) {
                         if let Ok(mut g) = sink.lock() {
-                            *g = Some(Ok(h));
+                            *g = Some(Ok(a));
                         }
                     }
                 },
@@ -357,7 +451,7 @@ mod wasm {
         });
     }
 
-    fn report(slot: &Slot, value: Result<DeviceHeading, String>) {
+    fn report(slot: &Slot, value: Result<DeviceAttitude, String>) {
         if let Ok(mut g) = slot.lock() {
             *g = Some(value);
         }
@@ -392,7 +486,8 @@ mod wasm {
 
 #[cfg(target_os = "android")]
 mod android {
-    use super::{bearing_from_rotation_vector, screen_up_bearing, DeviceHeading, Slot};
+    use super::{screen_frame, DeviceAttitude, Slot};
+    use bevy::math::DQuat;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -464,7 +559,7 @@ mod android {
         }
     }
 
-    fn report(slot: &Slot, value: Result<DeviceHeading, String>) {
+    fn report(slot: &Slot, value: Result<DeviceAttitude, String>) {
         if let Ok(mut g) = slot.lock() {
             *g = Some(value);
         }
@@ -598,12 +693,15 @@ mod android {
                     } else {
                         (1.0 - (x * x + y * y + z * z)).max(0.0).sqrt()
                     };
-                    let bearing =
-                        screen_up_bearing(bearing_from_rotation_vector(x, y, z, w), screen_angle);
+                    // The rotation vector *is* the device → East/North/Up
+                    // quaternion — it is what `getRotationMatrixFromVector`
+                    // expands — so nothing is derived here beyond the display's
+                    // own turn.
+                    let device = DQuat::from_xyzw(x, y, z, w);
                     report(
                         slot,
-                        Ok(DeviceHeading {
-                            bearing_deg: bearing,
+                        Ok(DeviceAttitude {
+                            screen_to_world: screen_frame(device, screen_angle),
                             // `ASensorEvent` carries the sensor's accuracy class
                             // (0..3), not an angle. Reporting a class as degrees
                             // would be a made-up number, so nothing is reported.
@@ -624,10 +722,21 @@ mod android {
 mod tests {
     use super::*;
 
+    /// A flat device with its top pointing north, as a rotation vector.
+    fn flat_facing(bearing_deg: f64) -> DQuat {
+        // Turning the device clockwise seen from above is a *negative* rotation
+        // about the ENU up axis.
+        DQuat::from_rotation_z(-bearing_deg.to_radians())
+    }
+
     /// The identity quaternion is a device lying flat with its top pointing north.
     #[test]
     fn a_level_device_pointing_north_reads_zero() {
-        let b = bearing_from_rotation_vector(0.0, 0.0, 0.0, 1.0);
+        let b = DeviceAttitude {
+            screen_to_world: DQuat::IDENTITY,
+            accuracy_deg: None,
+        }
+        .bearing_deg();
         assert!(b < 1e-6 || b > 360.0 - 1e-6, "expected ~0°, got {b}");
     }
 
@@ -636,27 +745,252 @@ mod tests {
     /// backwards, which reads as "the map lags" rather than as an inversion.
     #[test]
     fn turning_clockwise_increases_the_bearing() {
-        // A rotation of the device by −90° about the world up axis: the device's
-        // top swings from north to east. The quaternion taking device coordinates
-        // into the world frame is then a −45°/2 rotation about z.
-        let (s, c) = (-45.0_f64).to_radians().sin_cos();
-        let b = bearing_from_rotation_vector(0.0, 0.0, s, c);
-        assert!((b - 90.0).abs() < 1e-6, "expected 90° (east), got {b}");
+        for want in [0.0, 90.0, 180.0, 270.0] {
+            let b = DeviceAttitude {
+                screen_to_world: flat_facing(want),
+                accuracy_deg: None,
+            }
+            .bearing_deg();
+            let off = (b - want).rem_euclid(360.0);
+            assert!(
+                off < 1e-6 || off > 360.0 - 1e-6,
+                "a device facing {want}° read {b}°"
+            );
+        }
     }
 
-    /// The case the doc comment argues from: portrait pointing north, phone turned
+    /// The case the module doc argues from: portrait pointing north, phone turned
     /// 90° anticlockwise, content turned 90° clockwise to compensate. The picture
     /// has not moved, so the answer must still be north.
     #[test]
     fn landscape_does_not_move_the_picture() {
-        assert!((screen_up_bearing(270.0, 90.0) - 0.0).abs() < 1e-9);
+        let device = flat_facing(270.0);
+        let b = DeviceAttitude {
+            screen_to_world: screen_frame(device, 90.0),
+            accuracy_deg: None,
+        }
+        .bearing_deg();
+        assert!(
+            b < 1e-6 || b > 360.0 - 1e-6,
+            "expected ~0° (north), got {b}"
+        );
     }
 
     #[test]
     fn the_bearing_stays_in_one_turn() {
         for (device, screen) in [(350.0, 90.0), (10.0, 270.0), (-30.0, 0.0), (0.0, 180.0)] {
-            let b = screen_up_bearing(device, screen);
+            let b = DeviceAttitude {
+                screen_to_world: screen_frame(flat_facing(device), screen),
+                accuracy_deg: None,
+            }
+            .bearing_deg();
             assert!((0.0..360.0).contains(&b), "{device}/{screen} gave {b}");
         }
+    }
+
+    // ── The attitude half ───────────────────────────────────────────────────
+
+    /// Where the camera looks, as a unit vector in the app's world frame.
+    fn look(a: DeviceAttitude) -> bevy::math::Vec3 {
+        a.camera_rotation() * bevy::math::Vec3::NEG_Z
+    }
+
+    /// The whole feature in one assertion: point the back of the phone at a
+    /// compass bearing and the camera looks along it, with north on `−z` and east
+    /// on `+x`. A frame slip here aims the view at a different building, which is
+    /// the one failure the user would report and the one this container cannot
+    /// see.
+    #[test]
+    fn the_camera_looks_where_the_phone_is_aimed() {
+        for (bearing, expected) in [
+            (0.0_f64, bevy::math::Vec3::new(0.0, 0.0, -1.0)), // north
+            (90.0, bevy::math::Vec3::new(1.0, 0.0, 0.0)),     // east
+            (180.0, bevy::math::Vec3::new(0.0, 0.0, 1.0)),    // south
+            (270.0, bevy::math::Vec3::new(-1.0, 0.0, 0.0)),   // west
+        ] {
+            let l = look(DeviceAttitude::pointing(bearing, 0.0, 0.0));
+            assert!(
+                (l - expected).length() < 1e-5,
+                "aimed at {bearing}° the camera looks {l:?}, wanted {expected:?}"
+            );
+        }
+    }
+
+    /// Tilting the phone up must look up. Sky is `+y`.
+    #[test]
+    fn raising_the_phone_raises_the_view() {
+        let up = look(DeviceAttitude::pointing(0.0, 30.0, 0.0));
+        assert!((up.y - 0.5).abs() < 1e-5, "30° up gave y={}", up.y);
+        let down = look(DeviceAttitude::pointing(0.0, -30.0, 0.0));
+        assert!((down.y + 0.5).abs() < 1e-5, "30° down gave y={}", down.y);
+    }
+
+    /// A phone lying flat on a table is aimed at the table — its back camera
+    /// points at the floor. This is the pose the *bearing* is well-conditioned in
+    /// and the *view* is degenerate in, which is the exact opposite of the upright
+    /// pose below, and the reason both are carried.
+    #[test]
+    fn a_flat_phone_looks_straight_down() {
+        let a = DeviceAttitude {
+            screen_to_world: DQuat::IDENTITY,
+            accuracy_deg: None,
+        };
+        let l = look(a);
+        assert!(
+            (l.y + 1.0).abs() < 1e-5,
+            "expected straight down, got {l:?}"
+        );
+    }
+
+    /// …and an upright phone has a well-defined view and a meaningless bearing.
+    /// Held upright facing north, screen-up is the vertical, so `bearing_deg` is
+    /// the azimuth of a vector with no horizontal part — while the camera still
+    /// looks squarely north. Pinned because it is the pose the first-person view
+    /// is used in, and the reason it may not read the bearing.
+    #[test]
+    fn an_upright_phone_still_aims_north() {
+        let a = DeviceAttitude::pointing(0.0, 0.0, 0.0);
+        let l = look(a);
+        assert!(
+            (l - bevy::math::Vec3::NEG_Z).length() < 1e-5,
+            "upright and facing north, the camera looks {l:?}"
+        );
+        let up = a.screen_to_world * DVec3::Y;
+        assert!(
+            up.x.hypot(up.y) < 1e-9,
+            "screen-up should be vertical here, giving the bearing nothing to \
+             measure; it was {up:?}"
+        );
+    }
+
+    /// Rolling the phone rolls the picture and leaves the aim alone — which is
+    /// what makes roll safe to pass through to the camera.
+    #[test]
+    fn roll_turns_the_picture_without_moving_the_aim() {
+        let a = DeviceAttitude::pointing(90.0, 10.0, 25.0);
+        let b = DeviceAttitude::pointing(90.0, 10.0, 0.0);
+        assert!(
+            (look(a) - look(b)).length() < 1e-5,
+            "roll moved the aim: {:?} vs {:?}",
+            look(a),
+            look(b)
+        );
+    }
+
+    /// Turning an upright phone into landscape, with the system re-laying the
+    /// content out to follow it, must show **the same view** — the camera
+    /// equivalent of `landscape_does_not_move_the_picture`, which pins the same
+    /// property for the bearing alone.
+    ///
+    /// This is the test that justifies passing the roll through to the camera
+    /// rather than levelling the horizon. The layout turn and the hand's turn are
+    /// the same rotation here, so what the system adds is exactly what
+    /// [`screen_frame`] takes away. Level the horizon instead and only the
+    /// discrete half of that pair survives, which is a 90° jolt in the picture
+    /// every time the phone is rotated — the fault §1 of the note exists to
+    /// prevent, reintroduced one layer up.
+    ///
+    /// Note what is *not* claimed: that the view is continuous across the instant
+    /// the system switches. It is not, and should not be. Tilt a phone 89° with
+    /// the layout still in portrait and the world is genuinely drawn 89° round on
+    /// the glass — which is upright to the eyes of the person holding it tilted.
+    /// When the layout flips, the picture on the glass turns with it. The thing
+    /// that stays still through all of it is the view as *seen*, and that is what
+    /// this asserts at the four places the two turns agree.
+    #[test]
+    fn rotating_the_phone_with_the_layout_shows_the_same_view() {
+        // Held upright and aimed east, then turned about the axis it is aimed
+        // along — the gesture that changes screen orientation.
+        let turned = |deg: f64| {
+            DeviceAttitude::pointing(90.0, 0.0, 0.0).screen_to_world
+                * DQuat::from_rotation_z(deg.to_radians())
+        };
+        let seen = |deg: f64, screen_angle: f64| {
+            DeviceAttitude {
+                screen_to_world: screen_frame(turned(deg), screen_angle),
+                accuracy_deg: None,
+            }
+            .camera_rotation()
+        };
+        // Compared as the two vectors that *are* the view — where it aims and
+        // which way is up in it — rather than through `Quat::angle_between`.
+        // That function is `acos` of the dot product, which near identity grows
+        // as the square root of the error: one f32 ulp between two rotations
+        // that agree to the last bit comes out as ~0.04°, so a tolerance tight
+        // enough to catch a real fault cannot be met by arithmetic that is
+        // already exact. These two are linear in the error and say the same
+        // thing.
+        let upright = seen(0.0, 0.0);
+        let aim = |q: bevy::math::Quat| (q * bevy::math::Vec3::NEG_Z, q * bevy::math::Vec3::Y);
+        let (want_fwd, want_up) = aim(upright);
+        for quarter in [90.0, 180.0, 270.0] {
+            let (fwd, up) = aim(seen(quarter, quarter));
+            assert!(
+                (fwd - want_fwd).length() < 1e-5,
+                "turning the phone {quarter}° with the layout moved the aim from \
+                 {want_fwd:?} to {fwd:?}"
+            );
+            assert!(
+                (up - want_up).length() < 1e-5,
+                "turning the phone {quarter}° with the layout rolled the picture \
+                 from {want_up:?} to {up:?}"
+            );
+        }
+    }
+
+    /// The web's three angles, against the frame the spec defines them in: with
+    /// `beta` and `gamma` zero the device lies flat and `alpha` runs
+    /// **anticlockwise** from north, so `alpha = 90` is a device facing west.
+    ///
+    /// This is the assertion that fails if glam's Euler convention ever moves
+    /// under us — `EulerRot::ZXY` has to stay the intrinsic product the spec
+    /// describes, and nothing else in this crate would notice if it did not.
+    #[test]
+    fn the_web_angles_match_the_spec_frame() {
+        for (alpha, bearing) in [(0.0, 0.0), (90.0, 270.0), (180.0, 180.0), (270.0, 90.0)] {
+            let a = DeviceAttitude {
+                screen_to_world: device_to_world_from_euler(alpha, 0.0, 0.0),
+                accuracy_deg: None,
+            };
+            let off = (a.bearing_deg() - bearing).rem_euclid(360.0);
+            assert!(
+                off < 1e-6 || off > 360.0 - 1e-6,
+                "alpha {alpha}° should read {bearing}°, read {}°",
+                a.bearing_deg()
+            );
+        }
+    }
+
+    /// `beta` is a tip about the device's own `+x`: standing a flat phone up on
+    /// its bottom edge is `beta = 90`, and that aims the back camera at the
+    /// horizon rather than at the floor.
+    #[test]
+    fn standing_the_phone_up_aims_it_at_the_horizon() {
+        let a = DeviceAttitude {
+            screen_to_world: device_to_world_from_euler(0.0, 90.0, 0.0),
+            accuracy_deg: None,
+        };
+        let l = look(a);
+        assert!(l.y.abs() < 1e-5, "expected a level view, got {l:?}");
+        assert!(
+            (l - bevy::math::Vec3::NEG_Z).length() < 1e-5,
+            "expected to look north, got {l:?}"
+        );
+    }
+
+    /// `pointing` and the angles it names are inverses — the constructor the
+    /// tests and the capture seed are written in cannot drift from the reading
+    /// the camera takes.
+    #[test]
+    fn pointing_round_trips_through_the_bearing() {
+        // Tilted well off vertical, so screen-up has a horizontal part and the
+        // bearing is a fair question.
+        let a = DeviceAttitude::pointing(123.0, -70.0, 0.0);
+        let off = (a.bearing_deg() - 123.0).rem_euclid(360.0);
+        assert!(
+            off < 1e-6 || off > 360.0 - 1e-6,
+            "round trip gave {}",
+            a.bearing_deg()
+        );
     }
 }

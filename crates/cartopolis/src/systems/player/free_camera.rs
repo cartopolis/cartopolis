@@ -223,6 +223,11 @@ fn osd_zoom_factor(wish: f32, delta_time: f32) -> f32 {
 const ORBIT_MIN_DISTANCE: f64 = 15.0;
 /// Third-person follow-camera zoom range (metres from the ~1.8 m avatar). Min lets
 /// you get close; max keeps the avatar readable rather than a distant speck.
+///
+/// The minimum is also the **threshold into first person**: asking to come closer
+/// than this is what [`CameraState::first_person`] is set by, and `distance`
+/// itself stays here while that lasts, so a zoom back out resumes the closest
+/// third-person view rather than one the gesture happened to end on.
 const AVATAR_CAM_MIN: f32 = 1.5;
 const AVATAR_CAM_MAX: f32 = 25.0;
 
@@ -230,6 +235,43 @@ const AVATAR_CAM_MAX: f32 = 25.0;
 /// roughly the chest of a 1.8 m model. One constant for both, because they are the
 /// same point — the boom pivots about it and the look target is it.
 const FOLLOW_EYE_HEIGHT: f32 = 1.5;
+
+/// …and where it sits in first person: the eyes of the same model, which is a
+/// little higher than its chest. Deliberately not shared with
+/// [`FOLLOW_EYE_HEIGHT`] even though the two are close — the third-person number
+/// is the point a boom *pivots about* and can be tuned for framing, and this one
+/// is a measurement of where a 1.8 m person's eyes are.
+const FIRST_PERSON_EYE_HEIGHT: f32 = 1.62;
+
+/// Whether the follow camera should be inside the avatar's head after a zoom
+/// gesture that asked for `wish` metres while sitting at `distance`.
+///
+/// The whole of the threshold, in one place and with no hysteresis constant of
+/// its own — which is the point. `distance` is clamped to
+/// [`AVATAR_CAM_MIN`]..[`AVATAR_CAM_MAX`] and stays parked at the minimum for as
+/// long as first person lasts, so "the gesture asked to come closer than the
+/// closest third-person framing" and "the gesture asked to back out at all" are
+/// both comparisons against that one number. A second threshold to leave by would
+/// be a second number to keep in step with this one, and the pair would disagree
+/// the first time either moved.
+#[must_use]
+fn first_person_after_zoom(current: bool, distance: f32, wish: f32) -> bool {
+    if current {
+        // Parked at the minimum, so any outward wish is strictly greater.
+        wish <= distance
+    } else {
+        wish < AVATAR_CAM_MIN
+    }
+}
+
+/// How far first person may look up and down, in radians from level.
+///
+/// Wider than the third-person tilt clamp, which stops well short of the vertical
+/// because a boom swung overhead puts the camera under the pavement. Standing in
+/// your own head there is no boom, so the only reason to stop short of straight up
+/// is that the look direction is still decomposed into a bearing for the avatar's
+/// facing, and exactly vertical has none.
+const FIRST_PERSON_PITCH_MAX: f32 = 1.48; // ~85°
 
 // ── Boom collision ───────────────────────────────────────────────────────────
 /// Camera height (m) above which the boom stops being tested against building
@@ -1461,32 +1503,89 @@ pub fn camera_controls(
             // the clamp tops out at 25 m, a quarter of the chase distance a
             // navigation view needs, and would drag it back in every frame.
             let locked = camera_state.drive_locked;
-            if !locked {
+            if locked {
+                // Driver mode owns the rig and draws its own marker in place of
+                // the avatar; there is no first person inside it, and leaving the
+                // flag set would hide the avatar behind the arrow for the rest of
+                // the drive.
+                camera_state.first_person = false;
+            } else {
                 // Proportional wheel zoom by notch *sign* — robust to line- vs
                 // pixel-delta scrolling (raw `event.y` is ±1 on some backends, ±120 on
                 // others; scaling it directly made one notch jump tens of metres). Sane
                 // range for a ~1.8 m avatar; scroll in/out from the default.
+                //
+                // Accumulated as a *wish* rather than written straight to
+                // `distance`, because the interesting part of this gesture is what
+                // it asks for past the end of the range: the clamp used to absorb
+                // that silently, and it is now the signal that the user wants to
+                // come closer than third person can.
+                let mut wish = camera_state.distance;
                 for event in mouse_wheel_events.read() {
                     if event.y != 0.0 {
                         let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
-                        camera_state.distance *= factor;
+                        wish *= factor;
                     }
                 }
                 // Pinch is the wheel's continuous twin: spreading the fingers
                 // pulls the avatar closer, exactly as scrolling in does.
                 if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
-                    camera_state.distance /= touch.pinch;
+                    wish /= touch.pinch;
                 }
                 // …and the on-screen pair is the wheel's *held* twin, for the
                 // hand that only has one thumb free (`systems::map_osd`).
-                camera_state.distance *= osd_zoom_factor(osd.zoom, delta_time);
-                camera_state.distance = camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
+                wish *= osd_zoom_factor(osd.zoom, delta_time);
+
+                // Asking to get closer than the closest third-person framing is
+                // the gesture: step inside the avatar rather than absorb the last
+                // part of it into the clamp. One notch back out leaves again.
+                let was_first_person = camera_state.first_person;
+                camera_state.first_person =
+                    first_person_after_zoom(camera_state.first_person, camera_state.distance, wish);
+                if was_first_person && !camera_state.first_person {
+                    // First person looks much further up and down than a boom can
+                    // be swung (`FIRST_PERSON_PITCH_MAX`), so a tilt carried out
+                    // of it unchanged would leave the third-person camera parked
+                    // outside its own range — hanging almost directly overhead —
+                    // until the next drag happened to clamp it. Bring it back on
+                    // the frame the boom returns.
+                    camera_state.pitch = camera_state
+                        .pitch
+                        .clamp(-std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.5);
+                }
+                camera_state.distance = wish.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
             }
+            let first_person = camera_state.first_person;
+            // The phone aims the view only from inside the head, and only while
+            // the locate button is lit — `locate::track_device_pose` decides that
+            // and writes the rotation; this is its consumer.
+            let device_rotation = if first_person {
+                camera_state.device_rotation
+            } else {
+                None
+            };
+
+            // How far the view may tilt. First person looks nearly all the way up
+            // and down; the third-person clamp stops short of both because the
+            // boom would swing under the pavement or overhead.
+            let (pitch_min, pitch_max) = if first_person {
+                (-FIRST_PERSON_PITCH_MAX, FIRST_PERSON_PITCH_MAX)
+            } else {
+                (-std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.5)
+            };
 
             // Handle mouse drag for rotation (suppressed while egui, gizmo, or Ctrl has the pointer).
+            //
+            // …and suppressed while the device is aiming the camera. Everywhere
+            // else a drag is allowed to fight the compass and be eased back (the
+            // rotate-follow rig's documented behaviour), but here the view *is*
+            // the phone's own attitude: a drag could only push the picture off the
+            // thing the phone is pointed at, and the sensor would drag it back the
+            // same frame. Zooming out is the way to take the camera back.
             let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
                 || keyboard_input.pressed(KeyCode::ControlRight);
             if locked
+                || device_rotation.is_some()
                 || gizmo_state.active_axis.is_some()
                 || egui_manager.ctx.egui_wants_pointer_input()
                 || ctrl
@@ -1505,10 +1604,7 @@ pub fn camera_controls(
                         }
                         camera_state.azimuth -= delta.x * 0.005;
                         camera_state.pitch -= delta.y * 0.005;
-                        camera_state.pitch = camera_state
-                            .pitch
-                            .max(-std::f32::consts::PI / 3.0)
-                            .min(std::f32::consts::PI / 2.5);
+                        camera_state.pitch = camera_state.pitch.clamp(pitch_min, pitch_max);
                     }
                     camera_state.pan_offset = Some(event.position);
                 }
@@ -1525,15 +1621,15 @@ pub fn camera_controls(
             // view, and while it is held egui wants the pointer for as long as
             // the thumb rests there (`systems::touch`).
             if !locked
+                && device_rotation.is_none()
                 && gizmo_state.active_axis.is_none()
                 && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
             {
                 if touch.drag != Vec2::ZERO {
                     camera_state.follow_rotate = false;
                     camera_state.azimuth -= touch.drag.x * 0.005;
-                    camera_state.pitch = (camera_state.pitch - touch.drag.y * 0.005)
-                        .max(-std::f32::consts::PI / 3.0)
-                        .min(std::f32::consts::PI / 2.5);
+                    camera_state.pitch =
+                        (camera_state.pitch - touch.drag.y * 0.005).clamp(pitch_min, pitch_max);
                 }
                 if touch.twist != 0.0 {
                     camera_state.follow_rotate = false;
@@ -1548,11 +1644,16 @@ pub fn camera_controls(
             // the avatar transform rather than the mode-specific yaw fields. The camera
             // sits directly behind when `azimuth ≡ face + π` (its look direction then
             // equals the avatar's facing). Ease along the shortest arc so a turn glides.
-            if camera_state.follow_rotate {
+            if camera_state.follow_rotate && device_rotation.is_none() {
                 // The compass wins when there is one (`systems::locate` writes it
                 // while the phone is being tracked); otherwise the avatar's own
                 // facing, as before. Same convention, so this is a choice of
                 // source and not a second code path.
+                //
+                // Skipped outright while the device is aiming the camera: there
+                // the phone's whole attitude is the answer, and easing the azimuth
+                // toward a bearing derived from the same sensor would be two rigs
+                // turning one view.
                 let heading = camera_state.follow_heading;
                 if let Ok((_, avatar_tf)) = avatar_cells.single() {
                     let face =
@@ -1578,6 +1679,27 @@ pub fn camera_controls(
                 }
             }
 
+            // The device aims the camera: read the rig's own angles back out of
+            // its rotation, so everything downstream of them — the avatar's
+            // facing, and the third-person view a zoom-out returns to — stays in
+            // step with where the phone is pointed. The rotation itself is what
+            // the camera is given below; these are derived from it and never the
+            // other way round.
+            if let Some(rot) = device_rotation {
+                let forward = rot * Vec3::NEG_Z;
+                let flat = Vec2::new(forward.x, forward.z);
+                // A phone pointed at the sky or at its own feet is looking along
+                // the one direction that has no bearing. Hold the last one rather
+                // than let the azimuth spin through the pole — the picture is
+                // taken from the rotation and is unaffected either way, so this
+                // only decides which way the avatar is left facing.
+                if flat.length_squared() > 1e-6 {
+                    camera_state.azimuth = (-flat.x).atan2(-flat.y);
+                }
+                camera_state.pitch =
+                    (-forward.y.clamp(-1.0, 1.0).asin()).clamp(pitch_min, pitch_max);
+            }
+
             // Calculate camera position. The eye height is held out of the boom:
             // the boom is what shortens when a wall gets between the camera and
             // the avatar, and scaling the eye offset with it would sink the view
@@ -1599,6 +1721,7 @@ pub fn camera_controls(
             // avatar walked past a block.
             let mut boom_scale = 1.0_f32;
             if !locked
+                && !first_person
                 && rig.layers.buildings_enabled
                 && !rig.colliders.is_empty()
                 && (eye + boom).y < CAMERA_COLLIDE_MAX_Y
@@ -1645,7 +1768,14 @@ pub fn camera_controls(
                 rig.smoothing.dip = 0.0;
             }
 
-            let camera_offset = eye + boom * rig.smoothing.boom - Vec3::Y * rig.smoothing.dip;
+            // First person has no boom at all: the eye *is* the avatar's, so the
+            // offset is the head height and the landing dip, which is the one part
+            // of the rig that still means something from inside.
+            let camera_offset = if first_person {
+                Vec3::Y * (FIRST_PERSON_EYE_HEIGHT - rig.smoothing.dip)
+            } else {
+                eye + boom * rig.smoothing.boom - Vec3::Y * rig.smoothing.dip
+            };
 
             // Lead the rig by exactly the lag its own ease will introduce
             // (`FOLLOW_LEAD_MAX`), so the avatar sits where the boom puts it at a
@@ -1657,7 +1787,11 @@ pub fn camera_controls(
             // ahead of the vehicle by a deliberate amount
             // (`CameraState::drive_lookahead`). Leading it as well would compose
             // two framings nobody chose together.
-            let lead = if locked {
+            // First person is exempt for a third reason: the lead exists to cancel
+            // the follow ease's lag, and there is no ease to cancel when the eye
+            // is glued to the head. Leading it would put the camera in front of
+            // the avatar and look back through it.
+            let lead = if locked || first_person {
                 Vec3::ZERO
             } else {
                 (avatar_state.velocity / FOLLOW_RATE).clamp_length_max(FOLLOW_LEAD_MAX)
@@ -1683,7 +1817,17 @@ pub fn camera_controls(
             let avatar_origin = cell_origin(&avatar_cell);
             let target_world = avatar_origin + target_position.as_dvec3();
             let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
-            let new_world = if camera_state.avatar_initialized {
+            let new_world = if first_person {
+                // No ease from inside the head. The follow lerp exists to keep a
+                // boom from snapping about as its subject moves; applied to the
+                // eye itself it is the view sliding behind your own steps, which
+                // reads as motion sickness rather than as smoothing. The avatar's
+                // `display_position` is already smoothed on its own account
+                // (online interpolation, the terrain lift), so what this tracks is
+                // not jittery to begin with.
+                camera_state.avatar_initialized = true;
+                target_world
+            } else if camera_state.avatar_initialized {
                 // Framerate-independent follow smoothing, in world space.
                 let cam_alpha = 1.0 - (-FOLLOW_RATE * delta_time).exp();
                 let w = cam_world.lerp(target_world, cam_alpha as f64);
@@ -1706,19 +1850,43 @@ pub fn camera_controls(
             let (new_cell, local) = grid.translation_to_grid(new_world);
             camera_cell = new_cell;
             camera_transform.translation = local;
-            // Driver mode aims down the road rather than at the vehicle, which is
-            // what puts the arrow in the lower third of the frame instead of dead
-            // centre (`CameraState::drive_lookahead`). The camera itself stays where
-            // the rig put it — only the look target moves. Taken as a world-XZ
-            // vector rather than a distance along this camera's forward: in a
-            // north-up drive those two point in different directions, and the
-            // forward one aims north while you drive south. Zero outside driver
-            // mode, so no branch on the mode is needed.
-            let aim = camera_state.drive_lookahead;
-            let ahead = Vec3::new(aim.x, 0.0, aim.y);
-            let look_world =
-                avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
-            camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
+            if first_person {
+                // `look_at` cannot express this view: the eye and the subject are
+                // the same point, so there is no target to aim at — the direction
+                // is the state, not a consequence of it.
+                //
+                // The device's rotation is used whole when there is one, roll
+                // included. That is the difference between a view that turns with
+                // the phone and one that *is* the phone: tip it and the horizon
+                // tips with it, which is what makes a building stay put on screen
+                // while the hand holding it moves. Without a device it is the same
+                // two angles the boom was built from, so crossing the threshold
+                // keeps looking exactly where it was looking.
+                camera_transform.rotation = device_rotation.unwrap_or_else(|| {
+                    Quat::from_euler(
+                        EulerRot::YXZ,
+                        camera_state.azimuth,
+                        -camera_state.pitch,
+                        0.0,
+                    )
+                });
+            } else {
+                // Driver mode aims down the road rather than at the vehicle, which
+                // is what puts the arrow in the lower third of the frame instead of
+                // dead centre (`CameraState::drive_lookahead`). The camera itself
+                // stays where the rig put it — only the look target moves. Taken as
+                // a world-XZ vector rather than a distance along this camera's
+                // forward: in a north-up drive those two point in different
+                // directions, and the forward one aims north while you drive south.
+                // Zero outside driver mode, so no branch on the mode is needed —
+                // and driver mode never reaches the arm above, having cleared
+                // `first_person` as it took the rig.
+                let aim = camera_state.drive_lookahead;
+                let ahead = Vec3::new(aim.x, 0.0, aim.y);
+                let look_world =
+                    avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
+                camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
+            }
 
             // Widen the lens with speed. Driver mode is exempt: its rig is written
             // from the map orientation every frame and a breathing FOV under a
@@ -2459,6 +2627,58 @@ pub fn camera_controls(
     }
 }
 
+/// Take the avatar's own model out of shot while the camera is inside its head,
+/// and put it back on the way out.
+///
+/// The same two-level write `driver::update_driver_arrow` does and for the same
+/// reason, which its doc comment gives in full: the avatar entity carries no
+/// `Visibility` of its own, so each model holder under it is its own propagation
+/// root and hiding the parent alone changes nothing. Reconciled every frame rather
+/// than on the edge, because the holders are spawned asynchronously and an
+/// appearance change respawns them — and only the *direct* children, because
+/// deeper glTF nodes carry a permanent `Hidden` from the slot mask and restoring
+/// those to `Inherited` would un-mask a mixed avatar.
+///
+/// It stands down entirely while driver mode is on rather than co-operating with
+/// it: two systems writing one entity's visibility from two conditions is a fight
+/// nobody can read off a screen. Driver mode also clears
+/// [`CameraState::first_person`] as it takes the rig, so by the time it hands the
+/// avatar back there is nothing here left wanting it hidden.
+pub fn update_first_person_avatar(
+    mut commands: Commands,
+    camera_state: Res<CameraState>,
+    driver: Res<crate::systems::driver::DriverState>,
+    avatars: Query<Entity, With<crate::components::Avatar>>,
+    children: Query<&Children>,
+    visibility: Query<&Visibility>,
+    mut hidden: Local<bool>,
+) {
+    if driver.active {
+        return;
+    }
+    let want = camera_state.first_person && camera_state.mode == CameraMode::Avatar;
+    if !want && !*hidden {
+        return;
+    }
+    *hidden = want;
+    let v = if want {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for avatar in avatars.iter() {
+        let mut write = |e: Entity| {
+            if visibility.get(e) != Ok(&v) {
+                commands.entity(e).try_insert(v);
+            }
+        };
+        write(avatar);
+        for holder in children.get(avatar).into_iter().flatten() {
+            write(*holder);
+        }
+    }
+}
+
 /// How far (m) the Fly camera must be lifted to clear `min_height`, for a camera
 /// sitting at `local_y` inside big_space cell index `cell_y`. Zero when it's
 /// already above.
@@ -2473,6 +2693,110 @@ pub fn camera_controls(
 fn ground_lift(cell_y: f64, local_y: f32, min_height: f32) -> f32 {
     let absolute = cell_y * WORLD_CELL_EDGE as f64 + local_y as f64;
     (min_height as f64 - absolute).max(0.0) as f32
+}
+
+#[cfg(test)]
+mod first_person_tests {
+    use super::*;
+
+    /// One notch in from the closest third-person framing steps inside the
+    /// avatar, and one notch back out steps straight back. The wheel's own factor
+    /// is used rather than an invented one, so the test fails if a notch ever
+    /// becomes too small to cross the threshold in a single turn.
+    #[test]
+    fn a_notch_past_the_closest_view_enters_and_a_notch_out_leaves() {
+        let inward = AVATAR_CAM_MIN / 1.15;
+        assert!(
+            first_person_after_zoom(false, AVATAR_CAM_MIN, inward),
+            "zooming in at the minimum should enter first person"
+        );
+        let outward = AVATAR_CAM_MIN * 1.15;
+        assert!(
+            !first_person_after_zoom(true, AVATAR_CAM_MIN, outward),
+            "zooming out should leave first person"
+        );
+    }
+
+    /// A gesture that changes nothing must not change the state — which is the
+    /// case every frame of a still camera, and the one that would make the view
+    /// flicker between the two if the comparison were the wrong way round.
+    #[test]
+    fn standing_still_stays_where_it_is() {
+        for d in [AVATAR_CAM_MIN, 6.0, AVATAR_CAM_MAX] {
+            assert!(
+                !first_person_after_zoom(false, d, d),
+                "{d} entered by itself"
+            );
+        }
+        assert!(
+            first_person_after_zoom(true, AVATAR_CAM_MIN, AVATAR_CAM_MIN),
+            "first person left by itself"
+        );
+    }
+
+    /// Zooming out from the far end of the range must not enter first person on
+    /// the way past, and zooming in from it must not either until it reaches the
+    /// bottom — the threshold is about the *end* of the range, not about the
+    /// direction of the gesture.
+    #[test]
+    fn the_middle_of_the_range_is_third_person() {
+        assert!(!first_person_after_zoom(false, AVATAR_CAM_MAX, 4.0));
+        assert!(!first_person_after_zoom(false, 4.0, 2.0));
+    }
+
+    /// The continuity claim the threshold rests on: crossing it must not swing
+    /// the view. In third person the camera sits on a boom and looks back down
+    /// it, and in first person it looks along the angles that boom was built
+    /// from — so the two look directions have to be the same vector for the same
+    /// `azimuth` and `pitch`, at every tilt.
+    ///
+    /// Without this the step inside would also be a jump to somewhere else, and
+    /// the only place that would show is a phone in somebody's hand.
+    #[test]
+    fn stepping_inside_keeps_looking_the_same_way() {
+        for azimuth in [0.0_f32, 1.0, 2.5, -2.0] {
+            for pitch in [-0.5_f32, 0.0, 0.3, 1.2] {
+                // Third person: the eye is out along the boom and aims back at
+                // the avatar, so its look direction is the boom negated.
+                let boom = Vec3::new(
+                    azimuth.sin() * pitch.cos(),
+                    pitch.sin(),
+                    azimuth.cos() * pitch.cos(),
+                );
+                let third = -boom.normalize();
+                // First person: the rotation `camera_controls` builds with no
+                // device attached.
+                let first = Quat::from_euler(EulerRot::YXZ, azimuth, -pitch, 0.0) * Vec3::NEG_Z;
+                assert!(
+                    (first - third).length() < 1e-5,
+                    "az {azimuth} pitch {pitch}: inside looks {first:?}, outside {third:?}"
+                );
+            }
+        }
+    }
+
+    /// …and the same continuity from the other side: the angles the device path
+    /// reads back out of its rotation rebuild that rotation's own look direction.
+    /// This is what keeps a zoom-out from a phone-aimed view landing on the
+    /// third-person shot of the same street.
+    #[test]
+    fn the_angles_read_back_from_a_device_rotation_aim_the_same_way() {
+        for (bearing, elevation) in [(0.0, 0.0), (45.0, 20.0), (200.0, -35.0), (310.0, 70.0)] {
+            let rot =
+                crate::platform::orientation::DeviceAttitude::pointing(bearing, elevation, 0.0)
+                    .camera_rotation();
+            let forward = rot * Vec3::NEG_Z;
+            // The read-back in `camera_controls`.
+            let flat = Vec2::new(forward.x, forward.z);
+            let azimuth = (-flat.x).atan2(-flat.y);
+            let pitch = -forward.y.clamp(-1.0, 1.0).asin();
+            let rebuilt = Quat::from_euler(EulerRot::YXZ, azimuth, -pitch, 0.0) * Vec3::NEG_Z;
+            assert!(
+                (rebuilt - forward).length() < 1e-5,
+                "{bearing}°/{elevation}°: rebuilt {rebuilt:?} from {forward:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
