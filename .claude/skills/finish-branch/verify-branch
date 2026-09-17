@@ -229,6 +229,13 @@ if want wasm; then
     # `unused = "deny"` turns into nine errors in files you did not touch.
     # Keep in step with ci.yml's targets lane and index.html's data-cargo-features.
     run wasm "cargo check for wasm32 (the web client's cfg dimension)" <<'CMD'
+# Probe the toolchain the check below actually uses. This asked *stable* whether
+# it had wasm32 and then built with nightly, which is invisible wherever both
+# happen to carry the target and fatal where only nightly does: in this container
+# stable has neither the target nor a writable RUSTUP_HOME to add it to, so the
+# step died in `rustup target add` — "component download failed" — with the
+# nightly toolchain that could have run it sitting right there.
+export RUSTUP_TOOLCHAIN=nightly
 rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown \
     || rustup target add wasm32-unknown-unknown
 RUSTUP_TOOLCHAIN=nightly \
