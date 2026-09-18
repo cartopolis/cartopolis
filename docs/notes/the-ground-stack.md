@@ -144,6 +144,15 @@ and the 2026-08-29 ghost pavements are what happens when one stops promising it,
 which is why `parse_surveyed_paving` carries an exact-repeat drop. The ladder
 orders them against everything else as before.
 
+**Paving is cut against the roads, though, in a second pass of the same
+machinery** (`paving::cut_paving_under_roads`, called from `map_geometry` once
+`tessellate_roads` has answered). The paragraph above is about a layer overlapping
+*itself*, which is still the extractor's promise; this is about it overlapping a
+different source, which was the one deliberate overlap left in the stack and is
+what tore on measured ground — see the relief section below. The roads go in as
+blockers and come back untouched. `Crop` is not cut, because a parcel and a
+carriageway do not share ground the way a verge and one do.
+
 ## What the cut does *not* retire
 
 **The ladder is a backstop now, not the mechanism, and it is not optional.**
@@ -158,7 +167,7 @@ orders them against everything else as before.
   water or landuse groups today. One that did would have to exclude its group from
   the cut.
 
-## The one hole neither half closes: relief
+## The hole relief opens, and how much of it is closed
 
 With the Height layer on, `refine_for_terrain` splits each mesh's *own* triangles
 to `TerrainField::ground_edge_m()` and displaces the vertices. Two sheets over the
@@ -167,12 +176,78 @@ the field's curvature across an edge — which on flat ground is nothing and on 
 dike or a canal bank is decimetres, orders of magnitude past the millimetre window
 and past any depth bias.
 
-It has not been reported, because the Height layer is off by default and because
-the Netherlands is mostly flat enough that the error is under the window. It is
-written down here so the next report is diagnosed in a minute rather than
-rediscovered: **if surfaces bleed only with Height on, it is the refinement, not
-the ladder.** The fix would be refining the ground sheets against a shared world
-lattice so any two of them land on the same vertices, not another millimetre.
+**It was reported on 2026-09-17**, from an Android build over Groningen's ring
+road: the surveyed paving, the carriageways and the ground fills tearing through
+each other in jagged polygons that follow triangle edges. The diagnosis above was
+right, and the rule it states still holds — *if surfaces bleed only with Height
+on, it is the refinement, not the ladder*. Three things were found underneath it.
+
+**A handset is about four times worse than a desktop, and that is why this came
+from a phone.** `quality::handset_guarded` forces `terrain_grid` to 513 on every
+rung, so the field is sampled every 12.5 m rather than 3.125, and `ground_edge_m`
+returns `sample_m × 3.9` = **48.75 m** rather than 12.5. Chord error goes as the
+square of the edge, so against the ring trench's own measured gradient (it falls
+from +5.5 m to −3.6 m across forty metres, ≈0.23) one sheet errs by 0.09 m fully
+refined, 0.71 m at the desktop limit and **2.8 m at the phone's**. Two sheets
+disagree by the sum.
+
+**The crease rule made it worse before it made it better.** `09c0dc2` gave each
+mesh a second, sag-driven splitting rule, so one sheet can now resolve a step
+almost exactly while its neighbour, whose triangles fall elsewhere, still averages
+across it. Its own commit body measures that recovery as 0.567 m → 0.027 m on one
+quad — and that 0.54 m is exactly what two neighbouring sheets can now differ by.
+
+**Two of the three torn layers emit unshared vertices.** `flat_fill` gives the
+paving and the crop parcels three fresh vertices per triangle and `road_stitch`
+re-emits every ribbon its junction cut touched, so an interior edge was two index
+pairs over one piece of ground: tested twice, charged to `CREASE_VERTEX_BUDGET`
+twice, and answerable *differently* for its two owners once the budget ran out
+between them — a T-junction, reintroduced by the vertex layout. A dense cell's
+paving is one mesh with one budget while the roads are a dozen meshes each with
+their own, so about a quarter of it got no crease refinement at all, in triangle
+order rather than any spatial order. That is the patchiness.
+
+Closed on 2026-09-18, in three pieces:
+
+* `refine_for_terrain` decides on the **quantised endpoints**, not the index pair.
+  One geometric edge is one decision, charged once, and the answer is a pure
+  function of the two endpoints and the field — so two different meshes sharing a
+  boundary edge reach it independently and agree. Measured on the old key, one
+  square of creased ground drawn twice came out **2.4759 m** apart depending only
+  on whether its vertices were shared; `terrain.rs`'s
+  `a_sheet_draws_the_same_ground_whether_or_not_its_vertices_are_shared` pins it.
+* `MIN_GROUND_EDGE_M` follows the snapshot through `min_ground_edge_m`, as
+  `ground_edge_m` already did. It was a constant cut for the desktop's field, so a
+  handset refined to 1.5625 m against ground measured every 12.5 — eight times
+  finer than any measurement, ~1000 vertices to take one quad to the floor.
+* **Paving joined the partition** (`paving::cut_paving_under_roads`). It was the
+  one pair the "remove the overlap" rule had been left off, and it is the pair in
+  the captures.
+
+What is **not** closed, and is the next thing to do if this is reported again: two
+sheets that do not share an edge still approximate the same field on different
+triangulations, so the disagreement is bounded by `CREASE_SAG_M` (0.15 m) per
+sheet and not by anything smaller. Removing the overlap means the remaining
+disagreement is usually invisible — nothing is drawn on top of anything — but a
+fill and a road still meet along a cut boundary, and only the shared-edge case is
+provably exact. The fix remains the one named here before: refine every ground
+sheet against a **shared world lattice** aligned to the field's own sample grid,
+with the subdivision level a function of the ground rather than of the mesh. What
+it costs is the reason `MAX_GROUND_EDGE_M` is 12.5 m (peak single-asset upload
+8 MB → 37 MB at 6.25 m), so it needs the ground meshes split by byte budget the
+way `lod22::MAX_CELL_MESH_BYTES` does — that is the prerequisite, not the fix.
+
+Two smaller ones also still stand. `ground_edge_m` takes the *larger* of 12.5 m
+and 3.9 × the sample spacing, which is right for cost and wrong for agreement —
+holding a handset at 12.5 m edges would cut its sag about fourfold, at the price
+of the triangles the `.max` exists to save. And the finest relieved basemap level
+takes no lower envelope (`floor_for` returns `None` at `quad_m ≤ sample_m × 2`) on
+the stated grounds that it has nothing over it — in a city it has the entire
+vector sheet stack over it. Giving it the envelope unconditionally would make it
+provably under every sheet, and would cost the measured median 0.30 m / p95 1.95 m
+the 6.25 m rung sits below the ground in a canal city, everywhere no sheet covers
+it. Neither was changed, because neither can be judged on this container's
+software rasteriser.
 
 Water is a deliberate exception in the same area: a lake takes one level for the
 whole polygon, so at a bank it interpenetrates the land by the bank's height. That

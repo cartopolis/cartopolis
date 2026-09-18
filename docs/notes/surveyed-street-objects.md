@@ -156,11 +156,19 @@ no ground is drawn twice. `surveyed_paths_drop_the_path_ribbons_and_nothing_else
 pins both halves: the paths go, everything else stays.
 
 Paving takes its own depth rung, above the ground fills and below the road band.
-That ordering is what makes the mixture safe rather than a z-fight: a surveyed
-pavement and a nominal-width OSM carriageway do not agree to the centimetre about
-where the kerb is, so they overlap here and there — and with the road above, the
-overlap reads as tarmac meeting the kerb, which is what it looks like from the
-pavement.
+A surveyed pavement and a nominal-width OSM carriageway do not agree to the
+centimetre about where the kerb is, so they lap over each other here and there.
+
+**The rung was what held that apart, and it stopped being enough on measured
+ground.** It is 1.0 mm of height, and once the Height layer bends each sheet onto
+the survey against its own triangles the two disagree about where the ground *is*
+by decimetres — so on 2026-09-17 the pavement was photographed standing through
+the middle of the carriageway on Weg der Verenigde Naties. Since 2026-09-18 the
+carriageways are **cut out of the paving** (`paving::cut_paving_under_roads`),
+which removes the overlap instead of ordering it, and the rung is the backstop it
+is everywhere else in `the-ground-stack.md`. Every road wins, because the ribbon
+is the piece carrying the lane markings, the kerb casing and the depth rung and a
+hole cut in it has nowhere to get those back from.
 
 **Simplification is not optional.** The BGT is a 20 cm survey and its rings are
 correspondingly dense: one page of `ondersteunendwegdeel` over Groningen is 77,202

@@ -136,6 +136,39 @@ Two ways to settle it and it is a question about sources, not a bug:
 - **Believe the measurement** and only cover where the ground above is genuinely
   continuous. Truer to the laser, and gives back the ditch.
 
+## Superseded: the deck stood four metres above the ground beside it
+
+Reported 2026-09-17 from a phone over the ring, as a carriageway drawn on top of
+raised terrain instead of under it. Two unrelated faults with the same symptom.
+
+**The deck asked the depth buffer for an enormous bias.** `geo::tunnels` filled
+its per-vertex rung attribute from `road_rung`, which has not been the depth
+ladder since `89125ef` collapsed it to two rungs on 2026-08-26 — it survives as
+the order the road *cut* runs in and still returns 0..399. Tunnels were written
+three weeks later against a doc comment that still claimed the value reaches the
+graphics card. With `bridge: true` that is rung 391–398, about **25,900 depth
+units** against a surface road's 512, and the shader spends it as a fraction of
+the fragment's own depth: 0.3 m nearer at 100 m, 3.1 m at a kilometre, and past
+about 2.3 km more than the whole `LEVEL_DEPTH_M` the tunnel is buried by. The
+walls and roof carried 0 throughout, which is why only the carriageway was wrong
+and why nothing photographed from close up ever showed it. Two tests now walk the
+tessellated meshes; both fail on the old value, reporting rung 391.
+
+**And the lift really did put it above ground.** `stand_on_terrain` raises a
+tunnel by what the survey has already dug, capped so it cannot rise past its own
+depth — but the cap was the deepest vertex of whichever *merged mesh* was being
+displaced, i.e. a whole tile's tunnels, so everything shallower rose too far.
+Almost all of a tunnel is shallower: `depth_at` spends about 117 m ramping at each
+end and the ring's runs arrive 172–242 m long. Forty metres in, where the
+tessellator wants 2.4 m and the survey has dug 6.4, the deck was lifted the full
+7 m and drawn **four metres above the land beside it**. The cap is now the
+convention depth under the vertex's own plan position (`Tunnels::convention_depth`)
+— asked by position rather than by the vertex's own height, so a wall top is
+lifted with the deck under it instead of being capped at zero and left behind.
+The drawn mesh, the walkable floor and the nearest-tunnel metric now share one
+`lift_for`; they had three versions of it, and the first two disagreeing is the
+avatar walking through the road.
+
 ## The roof stops where it would surface, and that is the opening
 
 There is no "how long is the opening" constant. The ceiling is drawn wherever it
@@ -267,6 +300,15 @@ them did.
   through one is drawn on the surface (`navigation.rs` says why a negative grade
   is not pushed down).
 - **Depth is a constant, and it need not be.** See below.
+- **A cell built before its neighbour's tunnel streams in keeps its trench.** The
+  cell rebuild triggers are the terrain revision, the surveyed-data revision and
+  the detail toggles; there is no tunnel revision, so the covered-road fill never
+  reaches a cell that was already built. It shows as a ditch inside the 30 m
+  taper, and it is permanent until that cell is retorn for some other reason.
+- **The raster basemap under a lid is not filled.** `terrain::displaced_grid`
+  reads `floor_at` and nothing else, so over a covered stretch the vector ground
+  rises to street level and the photograph of the map underneath stays down there.
+  Anywhere the vector sheet is absent or cut, the ditch is still visible.
 
 ## Everything vertical here is invented, and two sources we already stream could replace it
 
