@@ -42,6 +42,7 @@
 //! tarmac wins, which is also what it looks like from the pavement.
 
 use crate::flat_fill::{build_flat_fills, FlatFill};
+use crate::road_stitch::{stitch, Ribbon};
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh};
 
 /// A surveyed paved surface, in tile-local metres.
@@ -241,6 +242,107 @@ pub fn build_paving_meshes(areas: &[PavedArea], max_bytes: Option<usize>) -> Vec
     build_flat_fills(&fills, SurfaceGroup::Paving, max_bytes)
 }
 
+/// Take the carriageways out of the paving, so no ground is covered twice.
+///
+/// **This is the one deliberate overlap the ground stack kept, and relief is what
+/// made it untenable.** A surveyed pavement and a nominal-width OpenStreetMap
+/// ribbon do not agree to the centimetre about where the kerb is, so they lap over
+/// each other here and there, and `GroundLayer::Paving` sits exactly **1.0 mm**
+/// under `GroundLayer::Road` to make that overlap read as tarmac meeting a kerb.
+/// On flat ground it does. Once the ground is the measured one, each sheet is bent
+/// onto it against its own triangles and the two disagree about where the ground
+/// *is* by decimetres — orders of magnitude past a millimetre and past any depth
+/// bias — so the overlap stopped being a hairline at a kerb and became paving
+/// standing through the middle of the carriageway. That is the white polygons over
+/// the lane markings in the phone captures of Weg der Verenigde Naties.
+///
+/// A millimetre is not the thing to increase. This codebase has settled the same
+/// shape of problem three times by ordering it and once by removing it, and only
+/// the fourth held: `road_stitch` cuts the ribbons into a partition, and
+/// `tessellate_surfaces` now cuts the ground fills the same way. Paving was in
+/// neither pass — it is built after `tessellate_surfaces` has finished cutting and
+/// appended untouched — so this puts it in one.
+///
+/// Every road wins over every pavement, which is not a judgement about which is
+/// more important but about which one can be moved: an OSM ribbon's width is a
+/// nominal number attached to a centre line, and the survey's polygon is a
+/// measurement, but the ribbon is the piece carrying the lane markings, the kerb
+/// casing and the depth rung, and a hole cut in it has nowhere to get those back
+/// from. The pavement loses the strip it was never really entitled to.
+///
+/// The roads are passed in as blockers and **handed back untouched** — they are
+/// already a partition among themselves, and re-running their own cut here would
+/// re-decide the bevel self-overlap the module note deliberately leaves alone.
+///
+/// `surveyed_paving_supersedes` already suppresses the ribbon entirely for the
+/// footways, cycle paths and pedestrian streets, so those never reach this. What
+/// this removes is the vehicle carriageway laid over a surveyed verge, traffic
+/// island, parking bay or junction apron — which on a dual carriageway is tens of
+/// metres of it.
+pub fn cut_paving_under_roads(paving: &mut Vec<SurfaceMesh>, roads: &[SurfaceMesh]) {
+    if paving.is_empty() || roads.is_empty() {
+        return;
+    }
+    let mut ribbons: Vec<Ribbon> = Vec::with_capacity(paving.len() + roads.len());
+    // Paving first and lowest, so `stitch` only ever cuts these. `priority` is
+    // strictly ordered by construction here: the index in the list breaks every
+    // tie, and a tie that is not broken cuts *both* sides out and opens a hole.
+    for (i, m) in paving.iter().enumerate() {
+        ribbons.push(Ribbon {
+            group: m.group,
+            rung: 0.0,
+            priority: (0, 0, i, 0, 0),
+            bridge: false,
+            positions: m.positions.clone(),
+            uvs: m.uvs.clone(),
+            colors: m.colors.clone(),
+            indices: m.indices.clone(),
+        });
+    }
+    for (i, m) in roads.iter().enumerate() {
+        ribbons.push(Ribbon {
+            group: m.group,
+            rung: 0.0,
+            priority: (1, 0, i, 0, 0),
+            bridge: false,
+            positions: m.positions.clone(),
+            uvs: m.uvs.clone(),
+            colors: m.colors.clone(),
+            indices: m.indices.clone(),
+        });
+    }
+    stitch(&mut ribbons);
+    for (m, r) in paving.iter_mut().zip(ribbons.into_iter()) {
+        // `stitch` carries only the two optional attribute sets a `Ribbon` has, so
+        // anything else the mesh held per vertex no longer lines up with the
+        // positions it came back with. A flat fill's normals are every one of them
+        // straight up (`flat_fill::Buf::push`), so restating them at the new length
+        // is exact rather than an approximation — and the assertion is what makes
+        // that a checked claim instead of an assumption about another module.
+        debug_assert!(
+            m.normals.iter().all(|n| *n == [0.0, 1.0, 0.0]),
+            "paving grew a normal the cut cannot restate"
+        );
+        debug_assert!(
+            m.rungs.is_empty(),
+            "paving grew a depth rung the cut does not carry"
+        );
+        let had_normals = !m.normals.is_empty();
+        m.positions = r.positions;
+        m.uvs = r.uvs;
+        m.colors = r.colors;
+        m.indices = r.indices;
+        m.normals.clear();
+        if had_normals {
+            m.normals.resize(m.positions.len(), [0.0, 1.0, 0.0]);
+        }
+    }
+    // A pavement wholly under a carriageway leaves nothing behind. An empty mesh is
+    // a material, an entity and a draw call for no triangles, so it is dropped here
+    // rather than travelling to the client to be skipped there.
+    paving.retain(|m| !m.indices.is_empty());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +513,127 @@ mod tests {
                 "{m:?} overrode the cycle path"
             );
         }
+    }
+
+    /// A road-shaped mesh to cut against: one quad, `w` metres wide, running the
+    /// length of the square the test paves.
+    fn road_quad(w: f32, len: f32) -> SurfaceMesh {
+        SurfaceMesh {
+            group: SurfaceGroup::Road(crate::road_texture::RoadClass::Minor),
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [w, 0.0, 0.0],
+                [w, 0.0, len],
+                [0.0, 0.0, len],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        }
+    }
+
+    /// How many of an `n × n` grid over `[0, size]²` a mesh covers, sampled at
+    /// texel centres.
+    fn covered(meshes: &[SurfaceMesh], size: f32, n: usize) -> Vec<bool> {
+        let mut grid = vec![false; n * n];
+        for m in meshes {
+            for t in m.indices.chunks_exact(3) {
+                let p: Vec<[f32; 2]> = t
+                    .iter()
+                    .map(|&i| {
+                        let v = m.positions[i as usize];
+                        [v[0] / size * n as f32, v[2] / size * n as f32]
+                    })
+                    .collect();
+                let (a, b, c) = (p[0], p[1], p[2]);
+                let side = |u: [f32; 2], v: [f32; 2], q: [f32; 2]| {
+                    (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])
+                };
+                let lo = |f: fn(&[f32; 2]) -> f32| {
+                    (f(&a).min(f(&b)).min(f(&c)).floor().max(0.0) as usize).min(n - 1)
+                };
+                let hi = |f: fn(&[f32; 2]) -> f32| {
+                    (f(&a).max(f(&b)).max(f(&c)).ceil().max(0.0) as usize).min(n - 1)
+                };
+                for y in lo(|q| q[1])..=hi(|q| q[1]) {
+                    for x in lo(|q| q[0])..=hi(|q| q[0]) {
+                        let q = [x as f32 + 0.5, y as f32 + 0.5];
+                        let (s0, s1, s2) = (side(a, b, q), side(b, c, q), side(c, a, q));
+                        if (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0)
+                            || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0)
+                        {
+                            grid[y * n + x] = true;
+                        }
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    /// **No ground is paved and surfaced at once.**
+    ///
+    /// The surveyed pavement and the nominal-width carriageway overlapped on
+    /// purpose, held apart by the 1.0 mm between `GroundLayer::Paving` and
+    /// `GroundLayer::Road`. That is a millimetre against the decimetres two sheets
+    /// disagree by once each is bent onto the measured ground, so the overlap has
+    /// to go rather than be ordered more carefully.
+    #[test]
+    fn a_carriageway_is_taken_out_of_the_paving_under_it() {
+        const SIZE: f32 = 40.0;
+        const N: usize = 256;
+        let roads = vec![road_quad(12.0, SIZE)];
+        let mut paving = build_paving_meshes(&[square(PavingKind::Footway, SIZE)], None);
+        assert!(!paving.is_empty(), "the fixture paved nothing");
+
+        let before = covered(&paving, SIZE, N);
+        let road = covered(&roads, SIZE, N);
+        let shared_before = before.iter().zip(&road).filter(|(p, r)| **p && **r).count();
+        assert!(
+            shared_before > 10_000,
+            "the fixture does not overlap, so it asserts nothing: {shared_before} texels"
+        );
+
+        cut_paving_under_roads(&mut paving, &roads);
+        let after = covered(&paving, SIZE, N);
+        let shared_after = after.iter().zip(&road).filter(|(p, r)| **p && **r).count();
+
+        // Not zero: the cut runs on a millimetre lattice and this samples texel
+        // centres, so a sliver survives along the seam. Well under a percent is the
+        // same residual `no_two_groups_share_ground` allows, and is the difference
+        // between a seam and a layer.
+        let pct = 100.0 * shared_after as f32 / shared_before as f32;
+        assert!(
+            pct < 1.0,
+            "{shared_after} of {shared_before} shared texels survived the cut ({pct:.1} %)"
+        );
+
+        // And the pavement that was never under the road is untouched — a cut that
+        // took the whole sheet would also pass the assertion above.
+        let kept = after.iter().zip(&road).filter(|(p, r)| **p && !**r).count();
+        let kept_before = before
+            .iter()
+            .zip(&road)
+            .filter(|(p, r)| **p && !**r)
+            .count();
+        assert!(
+            kept as f32 > kept_before as f32 * 0.99,
+            "the cut took pavement the road never covered: {kept_before} -> {kept}"
+        );
+    }
+
+    /// The roads are blockers, not subjects. They are already a partition among
+    /// themselves and `road_stitch` deliberately leaves a ribbon's own bevel
+    /// self-overlap alone, so re-deciding it here would be a second answer to a
+    /// settled question.
+    #[test]
+    fn cutting_the_paving_leaves_the_roads_exactly_as_they_were() {
+        let roads = vec![road_quad(12.0, 40.0)];
+        let mut paving = build_paving_meshes(&[square(PavingKind::Footway, 40.0)], None);
+        let before = roads[0].positions.clone();
+        cut_paving_under_roads(&mut paving, &roads);
+        assert_eq!(roads[0].positions, before);
     }
 }

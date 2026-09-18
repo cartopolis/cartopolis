@@ -605,9 +605,11 @@ fn spawn_geometry_task(
                             );
                             let surveyed_paving = !paved.is_empty();
                             cell_places.surveyed.3 = paved.len();
-                            meshes.extend(crate::systems::paving::build_paving_meshes(
-                                &paved, mesh_bytes,
-                            ));
+                            // Held back rather than appended here: the carriageways
+                            // have to come out of it, and they do not exist yet.
+                            // See `paving::cut_paving_under_roads` below.
+                            let mut paving_meshes =
+                                crate::systems::paving::build_paving_meshes(&paved, mesh_bytes);
                             // The registered crops go down over the generic green
                             // and under everything else on the ground stack
                             // (`SurfaceGroup::Crop`), so a field takes its own
@@ -629,6 +631,20 @@ fn spawn_geometry_task(
                                 surveyed_paving,
                             ) {
                                 Ok(roads) => {
+                                    // **The carriageways come out of the paving
+                                    // before either is drawn.** The two sources
+                                    // disagree by centimetres about where a kerb
+                                    // is, and the ground stack held that overlap
+                                    // apart with 1.0 mm of height — which works
+                                    // until the ground is the measured one and
+                                    // each sheet is bent onto it against its own
+                                    // triangles. Removing the overlap is the only
+                                    // thing that has ever held here.
+                                    crate::systems::paving::cut_paving_under_roads(
+                                        &mut paving_meshes,
+                                        &roads.ground,
+                                    );
+                                    meshes.extend(std::mem::take(&mut paving_meshes));
                                     meshes.extend(roads.ground);
                                     // The stretches on a deck cannot be placed
                                     // yet — they are at y = 0 and the deck's
@@ -641,6 +657,11 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
                                 }
                             }
+                            // A cell whose roads failed still has its pavements,
+                            // uncut because there is nothing to cut them against.
+                            // `take` above makes this the empty vector on the
+                            // ordinary path rather than a second copy.
+                            meshes.extend(std::mem::take(&mut paving_meshes));
                             // The roads that are *not* on the road sheet, because
                             // they run under it (`cartopolis_geo::tunnels`). Built
                             // here rather than inside `tessellate_roads` for the
