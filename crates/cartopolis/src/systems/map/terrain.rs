@@ -627,6 +627,20 @@ impl TerrainSnapshot {
         MAX_GROUND_EDGE_M.max(self.sample_m() * 3.9)
     }
 
+    /// The floor the crease rule refines to, for *this* field — half its own sample
+    /// spacing, never finer than [`MIN_GROUND_EDGE_M`] is for the full one.
+    ///
+    /// Derived for the same reason [`Self::ground_edge_m`] is, and it was the half
+    /// of that pair that got left behind: the long-edge limit followed the snapshot
+    /// while the floor stayed a constant cut for the desktop's 3.125 m field. On a
+    /// handset's 12.5 m field that put eleven halvings between the two, so one quad
+    /// could eat a thousand vertices of [`CREASE_VERTEX_BUDGET`] resolving a
+    /// bilinear filter, and the cell ran out with most of itself unrefined.
+    #[must_use]
+    pub fn min_ground_edge_m(&self) -> f32 {
+        MIN_GROUND_EDGE_M.max(self.sample_m() * 0.5)
+    }
+
     /// Metres between adjacent samples. `0.0` on an empty snapshot.
     #[must_use]
     pub fn sample_m(&self) -> f32 {
@@ -1606,12 +1620,23 @@ pub const MAX_GROUND_EDGE_M: f32 = TERRAIN_SAMPLE_M * 4.0;
 /// in the averaged state this constant exists to end.
 pub const CREASE_SAG_M: f32 = 0.15;
 
-/// The floor the crease rule refines to.
+/// The floor the crease rule refines to, **on a machine that got the full field**.
 ///
 /// Half the coarse field's own spacing, and the halving is the whole margin: below
 /// it there is no measurement left to resolve, so a finer mesh would interpolate its
 /// own bilinear filter at the cost of four times the triangles. The long-edge rule
 /// has no such floor because it never gets near one.
+///
+/// A floor for the *desktop's* field, not the number itself — read it through
+/// [`TerrainSnapshot::min_ground_edge_m`], which scales it the way
+/// [`TerrainSnapshot::ground_edge_m`] scales [`MAX_GROUND_EDGE_M`]. Until
+/// 2026-09-18 this constant was read directly, so on a handset — where
+/// `quality::handset_guarded` forces the field to 513 samples over the 6.4 km box,
+/// i.e. 12.5 m rather than 3.125 — the crease rule refined to 1.5625 m against
+/// ground measured every 12.5 m. That is eight times finer than any measurement,
+/// which is exactly what this halving exists to prevent: it spent about a thousand
+/// vertices taking one quad to the floor, so [`CREASE_VERTEX_BUDGET`] ran out after
+/// a few dozen of them and the rest of the cell got no crease refinement at all.
 pub const MIN_GROUND_EDGE_M: f32 = TERRAIN_SAMPLE_M * 0.5;
 
 /// Vertices one [`refine_for_terrain`] call may add **on the crease rule's account**,
@@ -1689,13 +1714,42 @@ pub fn refine_for_terrain(
 
     let limit = max_edge.max(1.0);
     let limit_sq = limit * limit;
-    let floor_sq = MIN_GROUND_EDGE_M * MIN_GROUND_EDGE_M;
+    let floor = crease.map_or(MIN_GROUND_EDGE_M, |c| c.field.min_ground_edge_m());
+    let floor_sq = floor * floor;
     // Spent across every pass, not per pass: the budget bounds the mesh handed to
     // the driver, and three passes each spending it in full is the burst it exists
     // to stop.
     let mut spent = 0usize;
     for _ in 0..MAX_REFINE_PASSES {
         let mut midpoints: HashMap<(u32, u32), u32> = HashMap::new();
+        // **Whether an edge splits is a property of where it is, not of which
+        // vertices happen to name it.**
+        //
+        // `midpoints` is keyed on the index pair, which is the right key for the
+        // *vertex* — reusing it welds two triangles that genuinely share a corner.
+        // It is the wrong key for the *decision*, and two of the three layers that
+        // tear emit each triangle's corners unshared: `flat_fill` does it for the
+        // surveyed paving and the crop parcels, and `road_stitch` re-emits every
+        // ribbon its junction cut touched the same way. An interior edge of those
+        // meshes is therefore two index pairs over one piece of ground, so it was
+        // tested twice, charged to the budget twice, and — this is the part that
+        // shows — could be answered *differently* for its two owners when the
+        // budget ran out between them. That is a T-junction, which is the crack the
+        // per-edge design exists to prevent, reintroduced by the vertex layout.
+        //
+        // Deciding on the quantised endpoints instead makes one geometric edge one
+        // decision. Two consequences beyond the crack: the budget now buys twice as
+        // much ground, and the answer is a pure function of the two endpoints and
+        // the field — so two *different meshes* sharing a boundary edge reach it
+        // independently and agree, which is what stops a seam opening between the
+        // paving and the fill it is cut out of.
+        //
+        // Millimetres, and all three axes. The coordinates come from one source
+        // vertex so they are bit-identical and any quantisation would do; the
+        // rounding is against a future source that computes them twice. `y` is in
+        // the key because a surveyed wall has two vertices over one plan position
+        // and they are not one edge.
+        let mut decided: HashMap<[i32; 6], bool> = HashMap::new();
         let split = |a: u32,
                      b: u32,
                      positions: &mut Vec<[f32; 3]>,
@@ -1704,6 +1758,7 @@ pub fn refine_for_terrain(
                      colors: &mut Vec<[f32; 4]>,
                      rungs: &mut Vec<f32>,
                      midpoints: &mut HashMap<(u32, u32), u32>,
+                     decided: &mut HashMap<[i32; 6], bool>,
                      spent: &mut usize|
          -> Option<u32> {
             let key = if a < b { (a, b) } else { (b, a) };
@@ -1711,6 +1766,13 @@ pub fn refine_for_terrain(
                 return Some(*m);
             }
             let (pa, pb) = (positions[a as usize], positions[b as usize]);
+            let q = |v: f32| (v * 1000.0).round() as i32;
+            let (ka, kb) = (
+                [q(pa[0]), q(pa[1]), q(pa[2])],
+                [q(pb[0]), q(pb[1]), q(pb[2])],
+            );
+            let (lo, hi) = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            let edge = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
             let d = [pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]];
             let len_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             if len_sq <= limit_sq {
@@ -1719,23 +1781,36 @@ pub fn refine_for_terrain(
                 let Some(c) = crease else {
                     return None;
                 };
-                if len_sq <= floor_sq || *spent >= CREASE_VERTEX_BUDGET {
-                    return None;
+                match decided.get(&edge) {
+                    // Already answered for this piece of ground. Note the budget is
+                    // *not* consulted again: a second owner of an edge the first
+                    // already paid for must get the same answer, or the two of them
+                    // disagree about the shape of their shared boundary.
+                    Some(false) => return None,
+                    Some(true) => {}
+                    None => {
+                        if len_sq <= floor_sq || *spent >= CREASE_VERTEX_BUDGET {
+                            decided.insert(edge, false);
+                            return None;
+                        }
+                        // Sag: how far the ground under the midpoint is from the
+                        // chord this edge would draw. Sampled on the field, never on
+                        // the mesh — the displacement has not happened yet, and on a
+                        // road the mesh's own y is a depth rung rather than a height.
+                        let (ox, oz) = (c.origin.x, c.origin.y);
+                        let ha = c.field.at(ox + pa[0], oz + pa[2]);
+                        let hb = c.field.at(ox + pb[0], oz + pb[2]);
+                        let hm = c
+                            .field
+                            .at(ox + (pa[0] + pb[0]) * 0.5, oz + (pa[2] + pb[2]) * 0.5);
+                        if (hm - (ha + hb) * 0.5).abs() < CREASE_SAG_M {
+                            decided.insert(edge, false);
+                            return None;
+                        }
+                        decided.insert(edge, true);
+                        *spent += 1;
+                    }
                 }
-                // Sag: how far the ground under the midpoint is from the chord this
-                // edge would draw. Sampled on the field, never on the mesh — the
-                // displacement has not happened yet, and on a road the mesh's own y
-                // is a depth rung rather than a height.
-                let (ox, oz) = (c.origin.x, c.origin.y);
-                let ha = c.field.at(ox + pa[0], oz + pa[2]);
-                let hb = c.field.at(ox + pb[0], oz + pb[2]);
-                let hm = c
-                    .field
-                    .at(ox + (pa[0] + pb[0]) * 0.5, oz + (pa[2] + pb[2]) * 0.5);
-                if (hm - (ha + hb) * 0.5).abs() < CREASE_SAG_M {
-                    return None;
-                }
-                *spent += 1;
             }
             let m = positions.len() as u32;
             positions.push([
@@ -1772,11 +1847,11 @@ pub fn refine_for_terrain(
         for tri in indices.chunks_exact(3) {
             let (a, b, c) = (tri[0], tri[1], tri[2]);
             #[rustfmt::skip]
-            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints, &mut spent);
+            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
             #[rustfmt::skip]
-            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints, &mut spent);
+            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
             #[rustfmt::skip]
-            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints, &mut spent);
+            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
             any |= ab.is_some() || bc.is_some() || ca.is_some();
             match (ab, bc, ca) {
                 (None, None, None) => out.extend_from_slice(&[a, b, c]),
@@ -2046,6 +2121,185 @@ mod tests {
             worst = worst.max((drawn - field.at(cx, cz)).abs());
         }
         (worst, indices.len() / 3)
+    }
+
+    /// A square of ground as an `n`×`n` grid of quads, refined and lifted onto the
+    /// field. `unshared` is the layout `flat_fill` and `road_stitch` emit: three
+    /// fresh vertices per triangle, no sharing anywhere.
+    ///
+    /// A grid rather than one quad because the thing under test is what happens to
+    /// an **interior** edge — the edge two triangles own between them — and a single
+    /// quad has exactly one of those.
+    fn drawn_grid(
+        field: &TerrainSnapshot,
+        half: f32,
+        n: usize,
+        unshared: bool,
+    ) -> (Vec<[f32; 3]>, Vec<u32>) {
+        let step = half * 2.0 / n as f32;
+        let corner = |i: usize, j: usize| [-half + i as f32 * step, 0.0, -half + j as f32 * step];
+        let (mut positions, mut indices) = (Vec::new(), Vec::new());
+        if unshared {
+            for j in 0..n {
+                for i in 0..n {
+                    let (a, b, c, d) = (
+                        corner(i, j),
+                        corner(i + 1, j),
+                        corner(i + 1, j + 1),
+                        corner(i, j + 1),
+                    );
+                    let base = positions.len() as u32;
+                    positions.extend_from_slice(&[a, b, c, a, c, d]);
+                    indices.extend((0..6).map(|k| base + k));
+                }
+            }
+        } else {
+            for j in 0..=n {
+                for i in 0..=n {
+                    positions.push(corner(i, j));
+                }
+            }
+            let at = |i: usize, j: usize| (j * (n + 1) + i) as u32;
+            for j in 0..n {
+                for i in 0..n {
+                    indices.extend_from_slice(&[at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                    indices.extend_from_slice(&[at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+                }
+            }
+        }
+        refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            &mut vec![],
+            MAX_GROUND_EDGE_M,
+            Some(Crease {
+                field,
+                origin: Vec2::ZERO,
+            }),
+        );
+        for p in positions.iter_mut() {
+            p[1] = field.at(p[0], p[2]);
+        }
+        (positions, indices)
+    }
+
+    /// The height of a triangulated surface at one plan position, or `None` off it.
+    fn surface_at(positions: &[[f32; 3]], indices: &[u32], x: f32, z: f32) -> Option<f32> {
+        for tri in indices.chunks_exact(3) {
+            let (a, b, c) = (
+                positions[tri[0] as usize],
+                positions[tri[1] as usize],
+                positions[tri[2] as usize],
+            );
+            let det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+            if det.abs() < 1e-12 {
+                continue;
+            }
+            let l0 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det;
+            let l1 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det;
+            let l2 = 1.0 - l0 - l1;
+            if l0 >= -1e-4 && l1 >= -1e-4 && l2 >= -1e-4 {
+                return Some(l0 * a[1] + l1 * b[1] + l2 * c[1]);
+            }
+        }
+        None
+    }
+
+    /// **A vertex layout may not change the shape of the ground.**
+    ///
+    /// `flat_fill` gives the surveyed paving and the crop parcels three fresh
+    /// vertices per triangle, and `road_stitch` re-emits every ribbon its junction
+    /// cut touched the same way. Before 2026-09-18 the refinement keyed its split
+    /// decision on the vertex index pair, so an interior edge of one of those meshes
+    /// was two separate edges: tested twice, charged to `CREASE_VERTEX_BUDGET`
+    /// twice, and answerable differently for its two owners. A sheet drawn with
+    /// unshared vertices therefore came out a different shape from the identical
+    /// sheet drawn with shared ones — which is half of why the paving and the
+    /// carriageway tore through each other on a slope, and it is invisible to every
+    /// test that refines one mesh and measures it against the field.
+    ///
+    /// **The budget is what makes this visible, so the test has to spend it.** With
+    /// room to spare, both owners of a doubly-charged edge reach the same answer and
+    /// the two layouts agree; the divergence is the moment `CREASE_VERTEX_BUDGET`
+    /// runs out *between* them, after which one owner has a midpoint and the other
+    /// does not. An unshared sheet also burns the budget at twice the rate, so it
+    /// stops refining sooner and over different ground — the measured "about a
+    /// quarter of a dense cell's paving gets no crease refinement, in an arbitrary
+    /// spatial order".
+    #[test]
+    fn a_sheet_draws_the_same_ground_whether_or_not_its_vertices_are_shared() {
+        // Ground that creases at every sample, so every edge has sag and the budget
+        // is the only thing that can stop the refinement.
+        let field = snapshot_of(512.0, TERRAIN_SAMPLE_M, |x, z| {
+            ((x / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
+                + ((z / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
+        });
+        let (half, n) = (256.0f32, 96);
+        let (sp, si) = drawn_grid(&field, half, n, false);
+        let (up, ui) = drawn_grid(&field, half, n, true);
+
+        let mut worst = 0.0f32;
+        let mut compared = 0;
+        for i in 0..=120 {
+            for j in 0..=120 {
+                let x = -half + 0.5 + i as f32 * (half * 2.0 - 1.0) / 120.0;
+                let z = -half + 0.5 + j as f32 * (half * 2.0 - 1.0) / 120.0;
+                if let (Some(a), Some(b)) = (surface_at(&sp, &si, x, z), surface_at(&up, &ui, x, z))
+                {
+                    compared += 1;
+                    worst = worst.max((a - b).abs());
+                }
+            }
+        }
+        assert!(compared > 10_000, "sampled too little of the square");
+        assert!(
+            worst < 1e-4,
+            "the same ground came out {worst} m apart depending on whether the \
+             vertices were shared, over {compared} sampled points"
+        );
+    }
+
+    /// And the refined mesh may not contain a T-junction, whatever the layout.
+    ///
+    /// A vertex lying in the middle of another triangle's edge is a crack you can
+    /// see the sky through once the ground tilts. The per-edge design prevents it by
+    /// construction; keying the decision on the index pair quietly reintroduced it
+    /// for the unshared meshes, because the two owners of one geometric edge could
+    /// be answered differently.
+    #[test]
+    fn refining_unshared_vertices_leaves_no_t_junction() {
+        let field = snapshot_of(512.0, TERRAIN_SAMPLE_M, |x, z| {
+            ((x / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
+                + ((z / TERRAIN_SAMPLE_M) as i32 % 2) as f32 * 1.5
+        });
+        let (positions, indices) = drawn_grid(&field, 48.0, 16, true);
+        for tri in indices.chunks_exact(3) {
+            for k in 0..3 {
+                let (a, b) = (
+                    positions[tri[k] as usize],
+                    positions[tri[(k + 1) % 3] as usize],
+                );
+                for p in &positions {
+                    let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
+                    let len_sq = dx * dx + dz * dz;
+                    if len_sq < 1e-9 {
+                        continue;
+                    }
+                    let t = ((p[0] - a[0]) * dx + (p[2] - a[2]) * dz) / len_sq;
+                    if !(0.02..=0.98).contains(&t) {
+                        continue;
+                    }
+                    let off = (p[0] - (a[0] + dx * t)).hypot(p[2] - (a[2] + dz * t));
+                    assert!(
+                        off > 1e-3,
+                        "vertex {p:?} sits inside the edge {a:?}–{b:?}: a T-junction"
+                    );
+                }
+            }
+        }
     }
 
     /// The whole point of the crease rule, as a number.
