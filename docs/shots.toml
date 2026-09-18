@@ -1,18 +1,25 @@
-# Remembered camera positions for the documentation screenshots.
+# Remembered camera positions: the documentation screenshots, and the subjects
+# worth going back and looking at.
 #
-# Regenerate every image (one app launch, headless, no window):
-#
-#     cargo shots                     # → docs/img/<name>.png
-#     cargo shots --only globe,route  # just these
+#     cargo shots                        # the documentation set → docs/img/<name>.png
+#     cargo shots --only globe,route     # just these two
+#     cargo shots --only tunnels         # a subject → docs/img/tunnels/<name>.png
+#     cargo shots --only all             # everything
 #
 # `cargo shots` is an alias for
 # `cargo run -p cartopolis -- --shots`, so it takes the rest of
 # the harness's flags too (`--csv /tmp/shots.csv`, `--size 2560x1440`, …).
 #
-# To add or move a view: fly there in the app, then Dev panel ▸ README
-# screenshots ▸ "📋 Copy as preset" and paste the block it puts on the clipboard.
+# To add or move a view: fly there in the app, then Dev panel ▸ View ▸ Shot
+# presets ▸ "📋 Copy as preset" and paste the block it puts on the clipboard.
 # That is the whole point of this file — a viewpoint that was found by hand once
 # stays reproducible, instead of being re-flown and re-eyeballed every release.
+#
+# **A shot with no `group` is a documentation image**: `cargo shots` regenerates
+# it and the README links the file. A shot *with* one is a subject — tunnels,
+# bridges, doors — reached by `--only <group>`, written into its own directory,
+# and left alone by a bare run. Type the group into the dev panel before copying
+# and the block arrives with the line already in it. See the section below.
 
 # Applies to every [[shot]] below unless it says otherwise.
 #
@@ -177,5 +184,70 @@ description = "Grass banks falling ~1.8 m over 13 m, the most ordinary relief a 
 at = [53.223300, 6.581800, 25.0]
 look = [-18.0, 135.0]
 time = 12.0
+clouds = 0.0
+rain = 0.0
+
+# ---------------------------------------------------------------------------
+# Grouped shots: subjects, not documentation.
+#
+# Everything above is ungrouped and is the published set — `cargo shots`
+# regenerates exactly those into `docs/img/`, and the README links every file.
+# Everything below names a `group`, which does three things: `cargo shots --only
+# <group>` captures just that subject, the images land in `docs/img/<group>/`
+# rather than beside the published ones, and a bare `cargo shots` leaves them
+# alone. `cargo shots --only all` is everything.
+#
+# A group is a subject worth going back and looking at while working on it — the
+# mouth of a tunnel, a bridge deck, a door you can walk through. The value is the
+# same as the documentation set's: a viewpoint that frames its subject was found
+# by hand once, and is not re-flown and re-eyeballed by the next person.
+#
+# Add one with the dev panel's View tab: type the group, fly there, "📋 Copy as
+# preset", paste. Every position below was captured and looked at before it was
+# checked in — an unverified viewpoint is worse than none, because a run that
+# photographs a car park reads as "the feature is broken".
+# ---------------------------------------------------------------------------
+
+[[shot]]
+name = "tunnel-approach"
+group = "tunnels"
+description = "Ring Zuid from 180 m outside the mouth, looking along the carriageway as it goes under. The view that shows a tunnelled road drawn over the ground it runs under: the depth error grows with distance, so a close shot of the same mouth looks right either way"
+at = [53.205830, 6.577222, 25.0]
+look = [-5.9, 48.0]
+time = 12.0
+fog = 0.0
+clouds = 0.0
+rain = 0.0
+
+[[shot]]
+name = "tunnel-overhead"
+group = "tunnels"
+description = "Straight down onto the covered stretch: the lid filled back in over the survey's trench, the pavement beside the carriageway, and whether the two tear through each other on measured ground"
+at = [53.206906, 6.579238, 80.0]
+look = [-50.0, 48.0]
+time = 12.0
+fog = 0.0
+clouds = 0.0
+rain = 0.0
+
+[[shot]]
+name = "tunnel-far"
+group = "tunnels"
+description = "The same mouth from 2.2 km. Deliberately distant: a per-vertex depth bias is spent as a fraction of the fragment's own depth, so a rung that is invisible up close pulls the deck metres toward the camera from here"
+at = [53.193760, 6.554599, 260.0]
+look = [-5.1, 48.0]
+time = 12.0
+fog = 0.0
+clouds = 0.0
+rain = 0.0
+
+[[shot]]
+name = "ring-relief"
+group = "tunnels"
+description = "The ring road in its cutting from 320 m, where the measured ground falls ~9 m and every flat sheet over it has to agree about where it is"
+at = [53.211761, 6.584378, 320.0]
+look = [-12.0, 233.0]
+time = 12.0
+fog = 0.0
 clouds = 0.0
 rain = 0.0

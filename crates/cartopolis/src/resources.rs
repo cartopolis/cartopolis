@@ -927,6 +927,14 @@ pub struct ScreenshotState {
     /// A capture was requested this frame; the driver spawns the `Screenshot` and
     /// clears this on its next run (while `hide_ui` is still active).
     pub capture_requested: bool,
+    /// Group the dev panel's "Copy as preset" writes into the block it copies —
+    /// the subject a remembered viewpoint is *for* (`tunnels`, `bridges`,
+    /// `doors`). Empty means the published documentation set.
+    ///
+    /// Session-only, and deliberately not in `AppPrefs`: it is scratch state for
+    /// whoever is collecting viewpoints this afternoon, and a remembered value
+    /// would quietly file next month's README shot under last month's subject.
+    pub preset_group: String,
 }
 
 /// The last completed one-second window of frame timing, for the shareable

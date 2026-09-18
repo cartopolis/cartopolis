@@ -428,12 +428,32 @@ fn view_tab(
     stat(ui, "address", address.unwrap_or("nothing near"));
 
     ui.add_space(5.0);
-    theme::section(ui, "README screenshots");
-    // The documentation set is generated from the remembered camera positions in
-    // `docs/shots.toml` (`cargo shots`), not from this button — but a *new*
-    // position has to be found by flying to it, so this copies the current camera
-    // out as a pasteable `[[shot]]` block. That is the whole handoff from "looks
-    // good here" to reproducible.
+    theme::section(ui, "Shot presets");
+    // Every remembered camera position lives in `docs/shots.toml` and is captured
+    // by `cargo shots`, not by this button — but a *new* position has to be found
+    // by flying to it, so this copies the current camera out as a pasteable
+    // `[[shot]]` block. That is the whole handoff from "looks good here" to
+    // reproducible.
+    //
+    // **The group is the field worth filling in.** Left empty the preset joins the
+    // documentation set, which is published: `cargo shots` regenerates it and the
+    // README links every file. Named — `tunnels`, `bridges`, `doors` — it becomes a
+    // subject to go and look at, captured by `cargo shots --only <group>` into its
+    // own directory, and it stays out of the published set. A viewpoint that
+    // clearly shows a tunnel mouth is worth keeping and is not a README image.
+    ui.horizontal(|ui| {
+        ui.label("group");
+        ui.add(
+            egui::TextEdit::singleline(&mut shot.preset_group)
+                .hint_text("blank = README set")
+                .desired_width(120.0),
+        )
+        .on_hover_text(
+            "Subject this viewpoint is for — tunnels, bridges, doors. \
+             Captured by `cargo shots --only <group>`, into docs/img/<group>/. \
+             Leave blank to add it to the published documentation set.",
+        );
+    });
     ui.horizontal(|ui| {
         let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
         if ui
@@ -447,6 +467,7 @@ fn view_tab(
             if let Some(v) = fix {
                 crate::utils::clipboard::set_text(&crate::systems::shot_presets::preset_toml(
                     "new-view",
+                    &shot.preset_group,
                     v.lat,
                     v.lng,
                     v.alt,

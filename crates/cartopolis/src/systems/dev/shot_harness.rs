@@ -4128,6 +4128,24 @@ mod tests {
             // The docs images live beside the manifest, not in the CWD.
             assert!(out.starts_with(path.parent().unwrap()), "{}", out.display());
         }
+        // A bare run is the published set, so nothing it writes may sit in a
+        // group's directory. The subject shots are reached by `--only <group>`.
+        let m = crate::systems::shot_presets::Manifest::load(&path).unwrap();
+        for g in m.groups() {
+            for i in 0..h.shots.len() {
+                let out = h.path_for(i);
+                assert!(
+                    !out.to_string_lossy().contains(&format!("/{g}/")),
+                    "a bare `cargo shots` wrote into the {g} group: {}",
+                    out.display()
+                );
+            }
+        }
+        assert!(
+            !m.groups().is_empty(),
+            "the manifest should carry at least one subject group, or the \
+             grouping machinery has no content and nothing exercises it"
+        );
         // `--only` narrows the same set without changing anything else.
         let first = h.shots[0].name.clone().unwrap();
         let one =
