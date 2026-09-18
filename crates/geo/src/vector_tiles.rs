@@ -2010,9 +2010,19 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 
 /// Which rung of the road ladder a line draws on — **the** road ordering, whole.
 ///
-/// The rung reaches the GPU as a per-vertex attribute and is applied by
-/// `systems::road_depth` as a depth offset of [`ROAD_RUNG_ULP`] ULPs each. It is
-/// not a height and must never become one again; see the two failures below.
+/// **This does not reach the GPU.** It is the order the *cut* runs in: which of
+/// two overlapping ribbons keeps its ground when `road_stitch` partitions them.
+/// The per-vertex attribute `systems::road_depth` spends as a depth offset comes
+/// from [`road_depth_rung`], which has [`ROAD_DEPTH_RUNGS`] = 2 values — this one
+/// has 399 and would be read as an enormous bias by anything that confused them.
+/// Until 2026-09-18 this comment said the opposite, describing the arrangement
+/// from before the ladder was collapsed on 2026-08-26, and `geo::tunnels` was
+/// written against it three weeks later: a tunnel deck asked for rung 391–398,
+/// i.e. ~25,900 depth units, and drew over the ground it runs under from a
+/// kilometre away. A stale doc comment is a load-bearing part of an interface.
+///
+/// It is not a height either, and must never become one again; see the two
+/// failures below.
 ///
 /// Two rules, in order:
 ///

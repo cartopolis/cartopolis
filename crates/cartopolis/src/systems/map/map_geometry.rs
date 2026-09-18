@@ -2517,20 +2517,37 @@ fn stand_on_terrain(
     // was measured and invents the rest; and outside the Netherlands the field is
     // flat zero, so this is the old behaviour to the bit.
     //
-    // The cap is the mesh's own deepest point rather than a constant, because a
-    // footway tunnel is `PATH_DEPTH_M` and a road tunnel is `LEVEL_DEPTH_M`. Per mesh,
-    // not per vertex: a merged shell mesh spanning tunnels of two depths takes the
-    // deeper cap, which over-lifts the shallower one by the difference.
+    // **The cap is the depth under this vertex, not the deepest point of the mesh
+    // it happens to be in.** It was the latter until 2026-09-18, and a merged mesh
+    // is the whole tile's tunnels: every vertex in it was lifted by the deepest
+    // one's convention, so everything shallower rose too far. Almost all of a
+    // tunnel is shallower — `depth_at` spends about 117 m ramping at each end, and
+    // Groningen's runs arrive 172–242 m long — so forty metres in, where the
+    // tessellator wants 2.4 m of depth and the survey has already dug 6.4, the deck
+    // was lifted by the full 7 m and drawn four metres above the land beside it.
+    // That is the carriageway standing proud of the ground in the phone captures.
+    //
+    // `convention_depth` answers for the place rather than for the vertex's own
+    // height, which is what keeps a wall from shearing: the top of a wall quad sits
+    // at `WALL_TOP_Y` and would otherwise be capped at zero and left behind while
+    // the deck below it rose. Asking by position gives the whole section of tunnel
+    // at that (x, z) one lift, so its height is preserved and the clearance with
+    // it. A vertex outside every corridor — the notch triangles on the outside of a
+    // bend reach a hair past `half_w` — keeps the old mesh-wide cap, which for
+    // those is the right answer anyway.
     if matches!(
         group,
         SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
     ) {
-        let cap = -positions.iter().map(|p| p[1]).fold(0.0_f32, f32::min);
+        let mesh_cap = -positions.iter().map(|p| p[1]).fold(0.0_f32, f32::min);
         for p in positions.iter_mut() {
             let (x, z) = (origin.x + p[0], origin.y + p[2]);
             let here = terrain.at(x, z);
-            let dug = (terrain.surrounding(x, z, TUNNEL_DATUM_M) - here).max(0.0);
-            p[1] += here + dug.min(cap);
+            let dug = terrain.surrounding(x, z, TUNNEL_DATUM_M) - here;
+            let depth = tunnels
+                .convention_depth(Vec2::new(x, z))
+                .unwrap_or(mesh_cap);
+            p[1] += here + crate::systems::tunnels::lift_for(depth, dug);
         }
         return;
     }

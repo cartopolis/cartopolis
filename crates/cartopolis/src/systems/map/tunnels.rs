@@ -37,6 +37,33 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use cartopolis_geo::tunnels::Tunnel;
 
+/// How far back up a tunnel is lifted at one place: whatever the height survey
+/// has already dug there, but never more than the depth the tessellator put the
+/// carriageway at.
+///
+/// **A tunnel must not be dug twice, and it must not be filled in either.** The
+/// survey's bare-ground model has no roof to hide the bottom of a cutting, so over
+/// an open cut it measures the trench — and sinking an invented seven metres into
+/// a measured nine puts the carriageway sixteen metres under the street. Lifting
+/// by `dug` cancels exactly the part the measurement already accounts for.
+///
+/// The cap is what stops the other error. Clamped to `depth`, the lift can raise
+/// the deck to the measured ground at that place and no further, so a fully
+/// measured cut lands the deck on the trench floor with its wall tops at street
+/// level; a covered tunnel, where the laser saw the lid and `dug` is zero, keeps
+/// the whole convention; a partly measured cut absorbs what was measured and
+/// invents the rest; and outside the Netherlands the field is flat zero and this
+/// is the old behaviour to the bit.
+///
+/// One function because four places computed it — the drawn mesh, the walkable
+/// floor, the nearest-tunnel metric and the shot harness — and three of them had
+/// their own idea of the cap. The drawn deck and the floor under it disagreeing is
+/// not a cosmetic difference; it is the avatar walking through the road.
+#[must_use]
+pub fn lift_for(depth: f32, dug: f32) -> f32 {
+    dug.max(0.0).min(depth.max(0.0))
+}
+
 /// One cell's tunnels, as the worker built them: tile-local metres.
 #[derive(Default)]
 pub struct CellTunnels {
@@ -235,21 +262,45 @@ impl Tunnels {
     ///
     /// `dug` answers "how far below the land around it is the measured ground
     /// here", and is a closure because this crate must not know about
-    /// `TerrainField` — the cap is per tunnel, so it is applied in here where the
-    /// tunnel is known rather than by the caller.
+    /// `TerrainField` — the cap is a property of the tunnel, so it is applied in
+    /// here where the tunnel is known rather than by the caller.
     #[must_use]
     pub fn road_under_measured(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<f32> {
         let at = [p.x, p.y];
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            .filter_map(|b| {
-                b.road_under(at).map(|y| {
-                    let cap = -b.road_y.iter().copied().fold(0.0_f32, f32::min);
-                    y + dug(p).max(0.0).min(cap)
-                })
-            })
+            .filter_map(|b| b.road_under(at).map(|y| y + lift_for(-y, dug(p))))
             .min_by(f32::total_cmp)
+    }
+
+    /// How deep the tessellator put a carriageway under `p`, as a positive number
+    /// of metres, before the height survey is allowed to account for any of it.
+    /// `None` where no tunnel's corridor covers `p`.
+    ///
+    /// **The cap on the terrain lift is a property of the place, not of the mesh.**
+    /// `stand_on_terrain` used to take it from the deepest vertex in whichever
+    /// merged mesh it happened to be displacing and apply that one number to every
+    /// vertex in it, which over-lifts everything shallower — and almost all of a
+    /// tunnel is shallower, because [`depth_at`](cartopolis_geo::tunnels) spends
+    /// `LEVEL_DEPTH_M / MAX_GRADE` ≈ 117 m ramping at each end. Forty metres into
+    /// Groningen's ring, where the tessellator wants −2.4 m and the survey has
+    /// already dug 6.4, the deck was lifted by the full 7 and drawn four metres
+    /// *above* the land beside it. The runs there arrive 172–242 m long, so nearly
+    /// all of one is ramp.
+    ///
+    /// The deepest answer wins where two tunnels overlap in plan, matching
+    /// [`road_under_measured`](Self::road_under_measured): the one you could be
+    /// standing on is the lower.
+    #[must_use]
+    pub fn convention_depth(&self, p: Vec2) -> Option<f32> {
+        let at = [p.x, p.y];
+        self.cells
+            .values()
+            .flat_map(|c| c.tunnels.iter())
+            .filter_map(|b| b.road_under(at))
+            .min_by(f32::total_cmp)
+            .map(|y| -y)
     }
 
     /// The nearest tunnel to `p`: how far its carriageway is in plan, and how deep
@@ -274,8 +325,7 @@ impl Tunnels {
                 // beside it — it read −7.00 over a cut the measured ground puts
                 // nine metres down — and a number that contradicts the capture it
                 // is attached to is worse than no number.
-                let cap = -b.road_y.iter().copied().fold(0.0_f32, f32::min);
-                (d, y + dug(p).max(0.0).min(cap))
+                (d, y + lift_for(-y, dug(p)))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }

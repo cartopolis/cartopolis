@@ -82,7 +82,8 @@
 
 use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
 use crate::vector_tiles::{
-    clip_polyline, flag_of, kind_of, road_rung, SurfaceGroup, SurfaceMesh, TileData, VERTEX_BYTES,
+    clip_polyline, flag_of, kind_of, road_depth_rung, SurfaceGroup, SurfaceMesh, TileData,
+    VERTEX_BYTES,
 };
 use geo_types::Geometry;
 use i_overlay::core::fill_rule::FillRule;
@@ -854,7 +855,27 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         let sides = offset_sides(centre, half);
         road_class_of_tunnel.get_or_insert(class);
         let tex = class.texture_length_m().max(1.0);
-        let rung = road_rung(class, half * 2.0, true, idx as u64) as f32;
+        // **A carriageway metres underground asks the depth buffer for nothing.**
+        //
+        // This read `road_rung(class, half * 2.0, true, idx)` until 2026-09-18, and
+        // that is not the depth ladder — it stopped being one on 2026-08-26, when
+        // the ladder was collapsed to `ROAD_DEPTH_RUNGS` = 2 and `road_rung`
+        // survived only as the order the *cut* runs in. It still returns 0..399, and
+        // with `bridge: true` it returns the top of that range. The deck therefore
+        // asked to be drawn ~25,900 depth units in front of itself against a surface
+        // road's 512, which the shader spends as a fraction of the fragment's own
+        // depth: 0.3 m nearer at 100 m away, 3.1 m at a kilometre, and past about
+        // 2.3 km more than the whole `LEVEL_DEPTH_M` the tunnel is buried by — so
+        // the tunnelled road drew *over* the ground it runs under, worse the further
+        // away you looked. The walls and the roof carried 0 throughout, which is why
+        // the artefact was the carriageway alone.
+        //
+        // Zero is not a smaller correction of the old number, it is the right
+        // answer: a tunnel is held under the ground by metres of real geometry, so
+        // there is no coplanar fight here for a bias to settle. `road_depth_rung`
+        // rather than a bare literal, so this reads as a rung and moves with the
+        // band if the band ever grows.
+        let rung = road_depth_rung(false);
 
         for i in 0..sides.left.len() {
             let (l0, l1) = (sides.left[i][0], sides.left[i][1]);
@@ -2016,5 +2037,61 @@ mod tests {
     fn a_bore_roofed_end_to_end_opens_no_hole() {
         let centre = vec![[0.0, 0.0], [100.0, 0.0]];
         assert!(opening_rings(&centre, &[true, true], 6.0).is_empty());
+    }
+
+    /// **Nothing a tunnel emits may ask the depth buffer for more than the road
+    /// band holds.**
+    ///
+    /// The rung is a per-vertex depth offset of `ROAD_RUNG_ULP` units each, and
+    /// `ground_stack` reserves exactly `ROAD_DEPTH_RUNGS` of them above the road
+    /// sheet's own bias. A value from outside that band is not a slightly wrong
+    /// ordering, it is a surface pulled toward the camera by a fraction of its own
+    /// distance — which is what `road_rung`'s 391 did here until 2026-09-18, and
+    /// what no capture caught, because the error grows with range and a tunnel
+    /// photographed from close up looks right.
+    ///
+    /// `ground_stack`'s `the_road_band_holds_every_road_vertex` pins the same
+    /// property for the surface roads. This is the tunnels' half of it: the band
+    /// is only a band if everything that writes the attribute stays inside it.
+    #[test]
+    fn a_tunnel_asks_for_no_more_depth_bias_than_the_road_band_holds() {
+        let out = build_tunnels(&crate::testdata::groningen(), 1471.0, None);
+        assert!(
+            !out.meshes.is_empty(),
+            "fixture grew no tunnels, so this asserts nothing"
+        );
+        let ceiling = crate::vector_tiles::ROAD_DEPTH_RUNGS as f32;
+        for m in &out.meshes {
+            for &r in &m.rungs {
+                assert!(
+                    (0.0..ceiling).contains(&r),
+                    "{:?} emitted rung {r}, outside the {ceiling}-rung road band \
+                     — see `road_rung`, which is the cut order and not this",
+                    m.group
+                );
+            }
+        }
+    }
+
+    /// The deck is the only thing in a tunnel with a road texture on it, and it is
+    /// held off the ground by metres of geometry — so it wants no bias at all, not
+    /// merely a small one. Pinned separately from the band test above because
+    /// "inside the band" would still be satisfied by the bridge rung, which would
+    /// put a tunnel over a flyover.
+    #[test]
+    fn a_tunnel_deck_draws_on_the_ground_rung() {
+        let out = build_tunnels(&crate::testdata::groningen(), 1471.0, None);
+        let decks: Vec<_> = out
+            .meshes
+            .iter()
+            .filter(|m| matches!(m.group, SurfaceGroup::TunnelRoad(_)))
+            .collect();
+        assert!(!decks.is_empty(), "fixture grew no tunnel decks");
+        for m in decks {
+            assert!(
+                m.rungs.iter().all(|&r| r == road_depth_rung(false)),
+                "a tunnel deck asked for a rung above the ground one"
+            );
+        }
     }
 }
