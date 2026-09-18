@@ -206,6 +206,21 @@ rain = 0.0
 # preset", paste. Every position below was captured and looked at before it was
 # checked in — an unverified viewpoint is worse than none, because a run that
 # photographs a car park reads as "the feature is broken".
+#
+# `bridges` and `doors` are the obvious next two and are deliberately absent.
+# Two headless attempts at a door (2026-09-18, Folkingestraat and Oosterstraat at
+# eye height, then aimed at the facade bases) came back settled, with interiors
+# streaming — 50 rooms, 142 storeys — and **no door legible in the frame**: the
+# ground fills the lower two-thirds and the facades show windows only. Aiming
+# these by hand is the same problem the tunnels had, where eleven cameras missed
+# by up to 178 m (`docs/notes/tunnels.md`).
+#
+# What would make it tractable: there is no metric that says *a door is in this
+# frame*. `building_doors` is a count of doors drawn across every streamed cell —
+# 80,579 over the city centre — so it is true everywhere and vouches for nothing.
+# `interior_rooms` has the same shape. A framing metric, the way `tunnel_ahead_m`
+# answers for a place rather than for the world, is the thing to add first; then
+# a door shot can assert it rather than being eyeballed.
 # ---------------------------------------------------------------------------
 
 [[shot]]
