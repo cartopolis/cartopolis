@@ -74,7 +74,12 @@ pub mod presets;
 // Cutting the road ribbons against each other so that no two of them cover the
 // same ground — which is what stops a junction deciding, per pixel and per frame,
 // which of two coplanar surfaces is on top.
-mod road_stitch;
+//
+// Public for one item, `cut_under_roads`: the same machinery run over a *finished*
+// sheet, which is how the surveyed pavements and the landuse fills are taken out
+// from under the carriageways. Everything else in it stays crate-private — a
+// `Ribbon` is a stage in a cut, not a thing a caller holds.
+pub mod road_stitch;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;

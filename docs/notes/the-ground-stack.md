@@ -145,13 +145,34 @@ which is why `parse_surveyed_paving` carries an exact-repeat drop. The ladder
 orders them against everything else as before.
 
 **Paving is cut against the roads, though, in a second pass of the same
-machinery** (`paving::cut_paving_under_roads`, called from `map_geometry` once
+machinery** (`road_stitch::cut_under_roads`, called from `map_geometry` once
 `tessellate_roads` has answered). The paragraph above is about a layer overlapping
 *itself*, which is still the extractor's promise; this is about it overlapping a
-different source, which was the one deliberate overlap left in the stack and is
-what tore on measured ground — see the relief section below. The roads go in as
+different source — see the relief section below. The roads go in as
 blockers and come back untouched. `Crop` is not cut, because a parcel and a
 carriageway do not share ground the way a verge and one do.
+
+**And so are the ground fills, through the same call.** That pair was described
+here as settled and was not: `tessellate_surfaces` cuts the fills against each
+other and against each other's groups, and the roads are built by a *later* pass
+that needs the bridge decks first, so a landuse polygon and a carriageway had
+never met. A residential block covers the street through it — that is what the
+polygon means — so the overlap is not an accident of the data at all, it is the
+data. Measured on `groningen_z14.mvt`, 2026-09-19:
+
+| | shared with the road sheet | |
+|---|---|---|
+| Built under road | 207,098 | **67.1 % of the road's area** |
+| Grass under road | 22,245 | 7.2 % |
+| Forest under road | 5,219 | 1.7 % |
+| Water under road | 46 | 0.0 % |
+
+**About three quarters of every carriageway in the city had a second opaque
+coplanar surface underneath it**, held apart by half a millimetre of `clearance()`
+— which is the entire budget the land layers are packed into. It was the largest
+overlap left anywhere in the stack, it was invisible for as long as the ground was
+flat, and it is the one in the 2026-09-19 phone captures. `no_ground_fill_lies_
+under_a_road` pins it, and it fails on the old code reporting the table above.
 
 ## What the cut does *not* retire
 

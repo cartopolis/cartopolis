@@ -620,9 +620,14 @@ fn spawn_geometry_task(
                                 &crop_cell, cell.0, cell.1, tile_m,
                             );
                             cell_places.surveyed.4 = parcels.len();
-                            meshes.extend(cartopolis_geo::crops::build_crop_meshes(
+                            // Held back past the cut below for the reason
+                            // `the-ground-stack.md` gives: a parcel and a
+                            // carriageway do not share ground the way a verge and
+                            // one do, so `Crop` is the one ground layer the road
+                            // cut leaves alone. Appended after it, untouched.
+                            let crop_meshes = cartopolis_geo::crops::build_crop_meshes(
                                 &parcels, mesh_bytes,
-                            ));
+                            );
                             match vector_tiles::tessellate_roads(
                                 &tile,
                                 tile_m,
@@ -644,6 +649,24 @@ fn spawn_geometry_task(
                                         &mut paving_meshes,
                                         &roads.ground,
                                     );
+                                    // **And the landuse fills come out from under
+                                    // them too.** Measured on the Groningen z14
+                                    // fixture: 67 % of the road sheet's area has
+                                    // built land drawn under it, 7 % grass and 2 %
+                                    // woodland — three quarters of every
+                                    // carriageway in the city was a second opaque
+                                    // coplanar surface, held apart by half a
+                                    // millimetre of `GroundLayer` clearance. That
+                                    // is the largest overlap left anywhere in the
+                                    // stack and it is the one in the phone
+                                    // captures: the pale wedges standing through
+                                    // the tarmac are `Built`, bent onto the
+                                    // measured ground against its own triangles
+                                    // rather than the road's.
+                                    cartopolis_geo::road_stitch::cut_under_roads(
+                                        &mut meshes,
+                                        &roads.ground,
+                                    );
                                     meshes.extend(std::mem::take(&mut paving_meshes));
                                     meshes.extend(roads.ground);
                                     // The stretches on a deck cannot be placed
@@ -662,6 +685,13 @@ fn spawn_geometry_task(
                             // `take` above makes this the empty vector on the
                             // ordinary path rather than a second copy.
                             meshes.extend(std::mem::take(&mut paving_meshes));
+                            // And the crop parcels rejoin here, on both paths and
+                            // uncut either way — they are held back only so the
+                            // road cut above does not see them, never to be
+                            // dropped. Position in this vector means nothing: a
+                            // sheet's place in the ground stack is its group's
+                            // rung, not its order here.
+                            meshes.extend(crop_meshes);
                             // The roads that are *not* on the road sheet, because
                             // they run under it (`cartopolis_geo::tunnels`). Built
                             // here rather than inside `tessellate_roads` for the

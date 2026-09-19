@@ -42,7 +42,6 @@
 //! tarmac wins, which is also what it looks like from the pavement.
 
 use crate::flat_fill::{build_flat_fills, FlatFill};
-use crate::road_stitch::{stitch, Ribbon};
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh};
 
 /// A surveyed paved surface, in tile-local metres.
@@ -279,68 +278,11 @@ pub fn build_paving_meshes(areas: &[PavedArea], max_bytes: Option<usize>) -> Vec
 /// this removes is the vehicle carriageway laid over a surveyed verge, traffic
 /// island, parking bay or junction apron — which on a dual carriageway is tens of
 /// metres of it.
+/// The pavements are one caller of [`crate::road_stitch::cut_under_roads`] and the
+/// ground fills are the other; a pavement wholly under a carriageway leaves
+/// nothing behind and is dropped there.
 pub fn cut_paving_under_roads(paving: &mut Vec<SurfaceMesh>, roads: &[SurfaceMesh]) {
-    if paving.is_empty() || roads.is_empty() {
-        return;
-    }
-    let mut ribbons: Vec<Ribbon> = Vec::with_capacity(paving.len() + roads.len());
-    // Paving first and lowest, so `stitch` only ever cuts these. `priority` is
-    // strictly ordered by construction here: the index in the list breaks every
-    // tie, and a tie that is not broken cuts *both* sides out and opens a hole.
-    for (i, m) in paving.iter().enumerate() {
-        ribbons.push(Ribbon {
-            group: m.group,
-            rung: 0.0,
-            priority: (0, 0, i, 0, 0),
-            bridge: false,
-            positions: m.positions.clone(),
-            uvs: m.uvs.clone(),
-            colors: m.colors.clone(),
-            indices: m.indices.clone(),
-        });
-    }
-    for (i, m) in roads.iter().enumerate() {
-        ribbons.push(Ribbon {
-            group: m.group,
-            rung: 0.0,
-            priority: (1, 0, i, 0, 0),
-            bridge: false,
-            positions: m.positions.clone(),
-            uvs: m.uvs.clone(),
-            colors: m.colors.clone(),
-            indices: m.indices.clone(),
-        });
-    }
-    stitch(&mut ribbons);
-    for (m, r) in paving.iter_mut().zip(ribbons.into_iter()) {
-        // `stitch` carries only the two optional attribute sets a `Ribbon` has, so
-        // anything else the mesh held per vertex no longer lines up with the
-        // positions it came back with. A flat fill's normals are every one of them
-        // straight up (`flat_fill::Buf::push`), so restating them at the new length
-        // is exact rather than an approximation — and the assertion is what makes
-        // that a checked claim instead of an assumption about another module.
-        debug_assert!(
-            m.normals.iter().all(|n| *n == [0.0, 1.0, 0.0]),
-            "paving grew a normal the cut cannot restate"
-        );
-        debug_assert!(
-            m.rungs.is_empty(),
-            "paving grew a depth rung the cut does not carry"
-        );
-        let had_normals = !m.normals.is_empty();
-        m.positions = r.positions;
-        m.uvs = r.uvs;
-        m.colors = r.colors;
-        m.indices = r.indices;
-        m.normals.clear();
-        if had_normals {
-            m.normals.resize(m.positions.len(), [0.0, 1.0, 0.0]);
-        }
-    }
-    // A pavement wholly under a carriageway leaves nothing behind. An empty mesh is
-    // a material, an entity and a draw call for no triangles, so it is dropped here
-    // rather than travelling to the client to be skipped there.
-    paving.retain(|m| !m.indices.is_empty());
+    crate::road_stitch::cut_under_roads(paving, roads);
 }
 
 #[cfg(test)]

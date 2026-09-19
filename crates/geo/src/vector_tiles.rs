@@ -7590,6 +7590,71 @@ mod tests {
         masks
     }
 
+    /// **And no ground fill may lie under a carriageway either.** This was the
+    /// largest overlap left anywhere in the ground stack and the last one to be
+    /// removed.
+    ///
+    /// It is a different pair from the two above: those are fills against fills,
+    /// settled inside [`tessellate_surfaces`]. The roads are built by a separate
+    /// pass that needs the bridge decks first, so a fill and a ribbon had never
+    /// met — and a landuse polygon covers the street through it, because that is
+    /// what a residential block *is*. Measured on this fixture before
+    /// [`crate::road_stitch::cut_under_roads`] was given the fills, 2026-09-19:
+    ///
+    /// | | of the road sheet's area |
+    /// |---|---|
+    /// | built land under road | **67.1 %** |
+    /// | grass under road | 7.2 % |
+    /// | woodland under road | 1.7 % |
+    ///
+    /// Three quarters of every carriageway in the city had a second opaque
+    /// coplanar surface beneath it, held apart by half a millimetre of
+    /// `GroundLayer` clearance. That works while the ground is flat and stops the
+    /// moment it has a gradient: each sheet is bent onto the measured ground
+    /// against its own triangles, so the two disagree by the field's curvature
+    /// across an edge — decimetres on a bank, up to 2.8 m on a handset — and the
+    /// lower one stands through the upper one in jagged polygons that follow
+    /// triangle edges. That is the phone report of 2026-09-19.
+    ///
+    /// The ceiling is the same sub-one-percent residual the two tests above allow,
+    /// and for the same reason: the cut runs on a millimetre lattice and this
+    /// samples texel centres, so a sliver survives along every kerb.
+    #[test]
+    fn no_ground_fill_lies_under_a_road() {
+        const N: usize = 1024;
+        const CEILING: f32 = 1.0;
+        let roads = bytes::tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).unwrap();
+        let mut road = vec![false; N * N];
+        for m in &roads {
+            rasterise(m, N, |cell| *cell = true, &mut road);
+        }
+
+        let mut fills = bytes::tessellate_surfaces(GRONINGEN_Z14, 1000.0).unwrap();
+        let before = shared_with(&fills, &road, N);
+        assert!(
+            before > 0,
+            "the fixture no longer has a fill under a road — this test is measuring nothing"
+        );
+
+        crate::road_stitch::cut_under_roads(&mut fills, &roads);
+        let after = shared_with(&fills, &road, N);
+        let pct = 100.0 * after as f32 / before as f32;
+        assert!(
+            pct <= CEILING,
+            "{after} of {before} texels under a carriageway still carry a ground fill \
+             ({pct:.1} %) — no depth rung can order two sheets on measured ground"
+        );
+    }
+
+    /// Texels covered both by one of `meshes` and by the road mask.
+    fn shared_with(meshes: &[SurfaceMesh], road: &[bool], n: usize) -> usize {
+        let mut mask = vec![false; n * n];
+        for m in meshes {
+            rasterise(m, n, |cell| *cell = true, &mut mask);
+        }
+        mask.iter().zip(road).filter(|(a, b)| **a && **b).count()
+    }
+
     /// Scan-convert a surface mesh onto an `N × N` grid over the tile, calling
     /// `mark` on each covered cell. Centre sampling and no anti-aliasing: this
     /// measures *coverage*, and a half-covered texel counted as covered by both of
@@ -7604,9 +7669,12 @@ mod tests {
                 })
                 .collect();
             let (a, b, c) = (p[0], p[1], p[2]);
-            let minx = a[0].min(b[0]).min(c[0]).floor().max(0.0) as usize;
+            // Both ends clamped, not just the far one: a tile carries a buffer, so a
+            // ribbon can start past the grid's far edge entirely and a `min` that only
+            // bounded the maximum left the loop indexing off the end.
+            let minx = (a[0].min(b[0]).min(c[0]).floor().max(0.0) as usize).min(n - 1);
             let maxx = ((a[0].max(b[0]).max(c[0]).ceil()).max(0.0) as usize).min(n - 1);
-            let miny = a[1].min(b[1]).min(c[1]).floor().max(0.0) as usize;
+            let miny = (a[1].min(b[1]).min(c[1]).floor().max(0.0) as usize).min(n - 1);
             let maxy = ((a[1].max(b[1]).max(c[1]).ceil()).max(0.0) as usize).min(n - 1);
             let side = |u: [f32; 2], v: [f32; 2], q: [f32; 2]| {
                 (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])

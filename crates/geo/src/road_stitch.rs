@@ -83,7 +83,7 @@
 //! 534 ms to about 300 ms, for the same output. `docs/notes/the-ground-stack.md`
 //! carries both halves.
 
-use crate::vector_tiles::SurfaceGroup;
+use crate::vector_tiles::{SurfaceGroup, SurfaceMesh};
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::{Overlay, ShapeType};
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -435,6 +435,88 @@ fn barycentric(tri: [[f32; 2]; 3], p: [f32; 2]) -> [f32; 3] {
     let w1 = (v2[0] * v1[1] - v1[0] * v2[1]) / den;
     let w2 = (v0[0] * v2[1] - v2[0] * v0[1]) / den;
     [1.0 - w1 - w2, w1, w2]
+}
+
+/// Cut a set of flat ground sheets down to the ground the **road ribbons** have
+/// not claimed, and hand the roads back untouched.
+///
+/// This is the general form of the one rule that has ever held in this area:
+/// where two sheets are drawn over one piece of ground, remove the overlap rather
+/// than ordering it. The ten-millimetre ladder in [`crate::ground_stack`] orders
+/// what genuinely must overlap, and it works only while the two sheets agree
+/// about where the ground *is*. Once the ground is the measured one, each sheet is
+/// refined against its own triangles and two of them differ by the field's
+/// curvature across an edge — decimetres on a bank, metres on a handset, which is
+/// hundreds of times the whole window the ladder has to spend.
+///
+/// Both callers pass the *ground* road sheet only. A stretch riding a bridge deck
+/// is a second real surface over the ground, not an accident of the data, so it
+/// is never a blocker here.
+///
+/// `sheets` may carry per-vertex colour and normals; anything else it held per
+/// vertex no longer lines up with the positions that come back, so the two that
+/// exist are asserted rather than assumed. A sheet left with no triangles at all
+/// is dropped — an empty mesh is a material, an entity and a draw call for
+/// nothing.
+pub fn cut_under_roads(sheets: &mut Vec<SurfaceMesh>, roads: &[SurfaceMesh]) {
+    if sheets.is_empty() || roads.is_empty() {
+        return;
+    }
+    let mut ribbons: Vec<Ribbon> = Vec::with_capacity(sheets.len() + roads.len());
+    // Sheets first and lowest, so `stitch` only ever cuts these. `priority` is
+    // strictly ordered by construction: the index in the list breaks every tie,
+    // and a tie that is not broken cuts *both* sides out and opens a hole.
+    for (i, m) in sheets.iter().enumerate() {
+        ribbons.push(Ribbon {
+            group: m.group,
+            rung: 0.0,
+            priority: (0, 0, i, 0, 0),
+            bridge: false,
+            positions: m.positions.clone(),
+            uvs: m.uvs.clone(),
+            colors: m.colors.clone(),
+            indices: m.indices.clone(),
+        });
+    }
+    for (i, m) in roads.iter().enumerate() {
+        ribbons.push(Ribbon {
+            group: m.group,
+            rung: 0.0,
+            priority: (1, 0, i, 0, 0),
+            bridge: false,
+            positions: m.positions.clone(),
+            uvs: m.uvs.clone(),
+            colors: m.colors.clone(),
+            indices: m.indices.clone(),
+        });
+    }
+    stitch(&mut ribbons);
+    for (m, r) in sheets.iter_mut().zip(ribbons.into_iter()) {
+        // A flat ground sheet's normals are every one of them straight up, so
+        // restating them at the new length is exact rather than an approximation —
+        // and the assertion is what makes that a checked claim instead of an
+        // assumption about another module.
+        debug_assert!(
+            m.normals.iter().all(|n| *n == [0.0, 1.0, 0.0]),
+            "{:?} grew a normal the cut cannot restate",
+            m.group
+        );
+        debug_assert!(
+            m.rungs.is_empty(),
+            "{:?} grew a depth rung the cut does not carry",
+            m.group
+        );
+        let had_normals = !m.normals.is_empty();
+        m.positions = r.positions;
+        m.uvs = r.uvs;
+        m.colors = r.colors;
+        m.indices = r.indices;
+        m.normals.clear();
+        if had_normals {
+            m.normals.resize(m.positions.len(), [0.0, 1.0, 0.0]);
+        }
+    }
+    sheets.retain(|m| !m.indices.is_empty());
 }
 
 /// Cut every ribbon down to the ground no higher-priority ribbon has claimed.
