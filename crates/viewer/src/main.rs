@@ -911,6 +911,7 @@ fn spawn_scene(
     cli: Res<Cli>,
     mut drawn: ResMut<Drawn>,
     ground: Res<Ground>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let field = ground.0.as_ref();
     for cell in &loaded.cells {
@@ -935,8 +936,30 @@ fn spawn_scene(
             };
             drawn.meshes += 1;
             drawn.triangles += m.indices.len() / 3;
+            // **The real road surface, not a stand-in tone.**
+            //
+            // `road_texture` is the client's own, in `cartopolis_geo` — lane
+            // dashes, centre and edge lines, the kerb band, rail head and
+            // sleepers. Without it every road is one flat colour, and a flat
+            // colour cannot show a joint: whether two ribbons meet at a junction,
+            // whether the markings stay registered round a curve, and whether a
+            // slip road's texture runs the way the road does are all *marking*
+            // questions before they are geometry questions.
+            //
+            // `--plain` still overrides it, that being the mode for reading shape
+            // rather than surface.
+            let texture = if cli.plain {
+                None
+            } else {
+                road_surface_texture(m.group, &mut images)
+            };
             let base = if cli.plain {
                 Color::srgb(0.72, 0.72, 0.70)
+            } else if texture.is_some() {
+                // White, so the texture arrives unmodulated — the client's roads
+                // are textured for exactly this reason and `base_color` answers
+                // white for them.
+                Color::WHITE
             } else {
                 harness_tone(m.group)
             };
@@ -944,6 +967,7 @@ fn spawn_scene(
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: base,
+                    base_color_texture: texture,
                     perceptual_roughness: 0.95,
                     cull_mode: if cli.double_sided {
                         None
@@ -1652,4 +1676,40 @@ fn eroded_difference(a: &[u8], b: &[u8], w: u32, h: u32) -> u32 {
         }
     }
     count
+}
+
+/// The client's own road surface for a group, as a repeating texture.
+///
+/// `cartopolis_geo::road_texture` is what the client paints its carriageways
+/// with, so this is not a second rendering of the roads — it is the same one,
+/// minus the mip chain and the anisotropic sampler the client builds around it.
+///
+/// Both of those omissions are visible and are the point at which a capture stops
+/// being evidence: without mips a road at range aliases into a shimmer, which is
+/// what a texture-registration fault also looks like. Judge markings **near**, and
+/// read a distant road's markings as noise.
+fn road_surface_texture(group: SurfaceGroup, images: &mut Assets<Image>) -> Option<Handle<Image>> {
+    let class = match group {
+        SurfaceGroup::Road(c) | SurfaceGroup::TunnelRoad(c) => c,
+        _ => return None,
+    };
+    let t = cartopolis_geo::road_texture::road_texture(class);
+    let mut image = Image::new(
+        Extent3d {
+            width: t.width,
+            height: t.height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        t.rgba,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        address_mode_w: bevy::image::ImageAddressMode::Repeat,
+        ..bevy::image::ImageSamplerDescriptor::linear()
+    });
+    Some(images.add(image))
 }
