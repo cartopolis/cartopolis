@@ -1486,7 +1486,12 @@ pub(crate) fn clipped_rings(
 /// metres**: origin at the tile's north-west corner, +x east, +z south — which is
 /// the same convention `map_stream` places its ground quads in, so the caller only
 /// has to position the tile's corner.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` compares the vertex data bit for bit, `NaN` included — which is
+/// what a round trip through [`crate::ground_file`] has to prove, and is the only
+/// thing it is used for. It is not a claim that two meshes drawing the same ground
+/// are equal.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMesh {
     pub group: SurfaceGroup,
     // (see `VERTEX_BYTES` below for what one of these costs on the GPU)

@@ -29,6 +29,12 @@ pub mod furniture;
 // recurring z-fight in this tree was two statements of that order disagreeing, so
 // there is now only one.
 pub mod ground_stack;
+// The prepared-ground file: a cell's finished surfaces as bytes, written by
+// `carto-pipeline` and read by the client instead of being derived on the device.
+// Here rather than in either of them precisely so there is one definition — the
+// writer and the reader are the same code, which is the whole reason the pipeline
+// is in this repository.
+pub mod ground_file;
 pub mod ground_texture;
 pub mod mip;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split
