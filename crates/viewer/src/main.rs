@@ -39,6 +39,7 @@ use clap::Parser;
 
 use cartopolis_geo::road_grade;
 use cartopolis_geo::road_texture::RoadClass;
+use cartopolis_geo::terrain_refine;
 use cartopolis_geo::vector_tiles::{self, SurfaceGroup, SurfaceMesh, TileData};
 
 #[derive(Parser, Resource, Clone)]
@@ -59,16 +60,47 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     shot: Option<std::path::PathBuf>,
 
-    /// Camera pitch and yaw in degrees. Note the `=`: clap reads a leading `-35`
-    /// as a flag otherwise.
-    #[arg(long, value_name = "PITCH,YAW", default_value = "-35,45", value_parser = parse_look)]
-    look: (f32, f32),
+    /// Capture the same viewpoint twice, five centimetres apart, and report the
+    /// pixels that changed. A depth fight between two coplanar surfaces is decided
+    /// by rounding and re-decided by any camera move, so it is invisible in a
+    /// single still and obvious across a pair — this is the instrument that says
+    /// whether a road is fighting the ground, rather than a person squinting.
+    #[arg(long)]
+    flicker: bool,
 
-    /// Stand the camera at `lat,lng,altitude` and look along `--look`. The same
-    /// convention `docs/shots.toml` uses, so a viewpoint found once works in
-    /// either instrument.
+    /// Camera pitch and yaw in degrees, **paired with `--at` by position** the way
+    /// the client's shot harness pairs them. Note the `=`: clap reads a leading
+    /// `-35` as a flag otherwise.
+    ///
+    /// Fewer `--look` than `--at` is fine — the last one given carries on, so a
+    /// sweep down one street needs the angle stated once.
+    #[arg(long, value_name = "PITCH,YAW", value_parser = parse_look)]
+    look: Vec<(f32, f32)>,
+
+    /// Stand the camera at `lat,lng,altitude`. The same convention
+    /// `docs/shots.toml` uses, so a viewpoint found once works in either
+    /// instrument.
+    ///
+    /// **Repeatable, and that is most of what this harness is for.** Starting the
+    /// engine costs about three seconds and drawing a viewpoint costs under one,
+    /// so eight viewpoints in one launch is a few seconds while eight launches is
+    /// most of a minute. Each capture is written beside `--shot` tagged with its
+    /// index and altitude (`street_02_45m.png`), so a set of them sorts in the
+    /// order it was asked for rather than arriving as anonymous files.
     #[arg(long, value_name = "LAT,LNG,ALT", value_parser = parse_at)]
-    at: Option<(f64, f64, f32)>,
+    at: Vec<(f64, f64, f32)>,
+
+    /// Read `--at`'s altitude as metres **above the ground** rather than above
+    /// sea level.
+    ///
+    /// **What makes a `--relief` A/B comparable at all.** With an absolute
+    /// altitude the terrain rises under a fixed camera, so the relief picture and
+    /// the flat one are taken from different heights and frame different amounts
+    /// of ground — and every difference between them then reads as a change in
+    /// the geometry. That cost an hour on 2026-09-19, chasing a hole that was two
+    /// cameras looking at two places.
+    #[arg(long)]
+    agl: bool,
 
     /// Metres back from the middle of what was loaded, when `--at` is not given.
     #[arg(long, value_name = "METRES")]
@@ -139,6 +171,23 @@ struct Cli {
     /// the lower sheet stands through the upper one.
     #[arg(long)]
     no_cut: bool,
+
+    /// Write every measurement as JSON here — the check numbers, and `flicker_px`
+    /// for each viewpoint of a `--flicker` run. A bare object for one viewpoint, an
+    /// array for several, matching `--dump-state` in the client.
+    #[arg(long, value_name = "PATH")]
+    dump_state: Option<std::path::PathBuf>,
+
+    /// Assert a measurement, repeatably: `--expect 'flicker_px<=8'`. Quote it — `>`
+    /// is a shell redirect.
+    ///
+    /// Two deliberate choices, both the client's. An **unknown key is a hard error
+    /// at startup**, because an assertion that quietly holds is worse than none: a
+    /// green run then claims something nobody checked. And a failure does **not**
+    /// abort the run, so the remaining viewpoints are still captured and the
+    /// pictures that explain the failure come back with it.
+    #[arg(long, value_name = "KEY OP VALUE")]
+    expect: Vec<String>,
 
     /// Measure what was built and print it, instead of drawing.
     ///
@@ -252,6 +301,12 @@ struct ShotTarget(Handle<Image>);
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Before the tiles are even read: an assertion that cannot hold should say so
+    // in the time it takes to mistype it, not after a scene has been built.
+    let tour = Tour {
+        expectations: parse_expectations(&cli.expect).map_err(anyhow::Error::msg)?,
+        ..Tour::default()
+    };
     let loaded = load(&cli).context("reading tiles")?;
     anyhow::ensure!(!loaded.cells.is_empty(), "no cells could be read");
 
@@ -261,6 +316,8 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+
+    let ground = Ground(build_field(&loaded, &cli));
 
     let mut app = App::new();
     if cli.window {
@@ -293,12 +350,14 @@ fn main() -> Result<()> {
     app.insert_resource(cli)
         .insert_resource(loaded)
         .init_resource::<Drawn>()
+        .insert_resource(tour)
+        .insert_resource(ground)
         .insert_resource(ClearColor(Color::srgb(0.53, 0.68, 0.82)))
         .add_systems(
             Startup,
             (spawn_scene, spawn_camera, spawn_sun, spawn_checker),
         )
-        .add_systems(Update, capture_when_ready);
+        .add_systems(Update, run_tour);
     app.run();
     Ok(())
 }
@@ -382,7 +441,7 @@ fn tessellate(tile: &TileData, tile_m: f32, cut: bool) -> Result<Vec<SurfaceMesh
 /// Samples per side the coverage and overlap measurements use. 512 over a
 /// ~1.5 km cell is ~2.9 m — fine enough to tell a missing block from the sliver a
 /// kerb leaves, coarse enough to cost nothing beside the tessellation.
-const CHECK_SAMPLES: usize = 512;
+const CHECK_SAMPLES: usize = 1024;
 
 /// What one cell's tessellation produced, and what is wrong with it.
 ///
@@ -555,7 +614,6 @@ fn count(mask: &[bool]) -> usize {
     mask.iter().filter(|m| **m).count()
 }
 
-
 /// Samples per side of the synthetic height field over the loaded area.
 ///
 /// Matches what the client works at — its field is ~3.1 m on a desktop and 12.5 m
@@ -580,10 +638,45 @@ const ROUGHNESS_M: f32 = 0.4;
 /// band becomes the cutting or embankment a built road actually has.
 const ROAD_MARGIN_SAMPLES: usize = 6;
 
+/// The longest ground edge left unsplit before draping, in metres.
+///
+/// The client's `MAX_GROUND_EDGE_M` — four times its 3.125 m field spacing. Stated
+/// here rather than imported because it lives in the client crate this harness
+/// deliberately does not depend on; the refinement it is handed to is shared.
+const MAX_GROUND_EDGE_M: f32 = 3.125 * 4.0;
+
+/// The ground the surfaces stand on, as a resource so the camera can stand on it
+/// too. Built once in `main` rather than inside `spawn_scene`, which is what lets
+/// `--agl` read the same heights the meshes were bent onto.
+#[derive(Resource)]
+struct Ground(Option<Field>);
+
+impl Ground {
+    /// The lowest point of the ground, or zero when it is flat. What the
+    /// checkered underlay is hung beneath.
+    fn floor(&self) -> f32 {
+        self.0.as_ref().map_or(0.0, |f| {
+            f.samples.iter().copied().fold(f32::INFINITY, f32::min)
+        })
+    }
+}
+
 /// The ground the surfaces stand on.
 struct Field {
     samples: Vec<f32>,
     step_m: f32,
+}
+
+impl terrain_refine::GroundField for Field {
+    fn min_ground_edge_m(&self) -> f32 {
+        // Half the field's own spacing, the client's rule: below it there is no
+        // measurement left to resolve.
+        self.step_m * 0.5
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        Field::at(self, x, z)
+    }
 }
 
 impl Field {
@@ -737,8 +830,9 @@ fn spawn_scene(
     loaded: Res<Loaded>,
     cli: Res<Cli>,
     mut drawn: ResMut<Drawn>,
+    ground: Res<Ground>,
 ) {
-    let field = build_field(&loaded, &cli);
+    let field = ground.0.as_ref();
     for cell in &loaded.cells {
         // Tile x runs east; tile y runs south, which is +z here.
         #[allow(clippy::cast_precision_loss)]
@@ -756,7 +850,7 @@ fn spawn_scene(
                     continue;
                 }
             }
-            let Some(mesh) = to_bevy_mesh(m, field.as_ref(), cell_origin) else {
+            let Some(mesh) = to_bevy_mesh(m, field, cell_origin) else {
                 continue;
             };
             drawn.meshes += 1;
@@ -802,28 +896,60 @@ fn to_bevy_mesh(m: &SurfaceMesh, field: Option<&Field>, cell_origin: Vec3) -> Op
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
-    // **Each surface is displaced on its own vertices and nothing else**, which is
-    // not a shortcut: it is what a renderer does. A surface is a flat plane between
-    // its own corners, so where the ground curves between one surface's corners and
-    // another's, the two disagree. Refining here would hide the fault this exists
-    // to show.
-    let positions: Vec<[f32; 3]> = match field {
-        None => m.positions.clone(),
-        Some(f) => m
-            .positions
-            .iter()
-            .map(|p| {
-                let y = f.at(cell_origin.x + p[0], cell_origin.z + p[2]);
-                [p[0], p[1] + y, p[2]]
-            })
-            .collect(),
+    // **Refine before bending, exactly as the client does.**
+    //
+    // This comment used to say the opposite — that refining here "would hide the
+    // fault this exists to show" — and that was backwards. Earcut answers a land
+    // parcel with two triangles, so an unrefined 100 m edge draws a straight chord
+    // across whatever the ground does between its ends. The road beside it, which
+    // has a vertex every few metres, follows. The two then gap by metres, and the
+    // harness drew cracks down every corridor that the client, which refines at
+    // ~12.5 m before draping, never draws.
+    //
+    // Measured 2026-09-19: the gaps scaled linearly with `--relief` — invisible at
+    // 2 m, wide open at 25 m — which is what a chord does and what a real fault
+    // does not. The refinement is `cartopolis_geo::terrain_refine`, moved out of
+    // the client for this, so there is one implementation rather than two that
+    // would drift.
+    let mut positions = m.positions.clone();
+    let mut indices = m.indices.clone();
+    let mut uvs = if m.uvs.len() == m.positions.len() {
+        m.uvs.clone()
+    } else {
+        Vec::new()
     };
+    let mut normals = Vec::new();
+    let mut colors = if m.colors.len() == m.positions.len() {
+        m.colors.clone()
+    } else {
+        Vec::new()
+    };
+    let mut rungs = Vec::new();
+    if let Some(f) = field {
+        terrain_refine::refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut uvs,
+            &mut normals,
+            &mut colors,
+            &mut rungs,
+            MAX_GROUND_EDGE_M,
+            Some(terrain_refine::Crease {
+                field: f,
+                origin: [cell_origin.x, cell_origin.z],
+            }),
+        );
+        for p in &mut positions {
+            p[1] += f.at(cell_origin.x + p[0], cell_origin.z + p[2]);
+        }
+    }
+    let vertex_count = positions.len();
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    if m.uvs.len() == m.positions.len() {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone());
+    if uvs.len() == vertex_count {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     }
     // Indices before the normals: computing them walks the triangles.
-    mesh.insert_indices(bevy::render::mesh::Indices::U32(m.indices.clone()));
+    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
     // Normals off the geometry actually drawn — a displaced surface lit by flat
     // normals shades as though it were still level.
     if field.is_some() {
@@ -843,30 +969,12 @@ fn spawn_camera(
     mut commands: Commands,
     loaded: Res<Loaded>,
     cli: Res<Cli>,
+    ground: Res<Ground>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let tile_m = loaded.cells.first().map_or(1465.0, |c| c.tile_m);
     let span = loaded.extent();
+    let (eye, dir) = viewpoint(&cli, &loaded, &ground, 0);
     let distance = cli.distance.unwrap_or(span * 0.9).max(1.0);
-    let (pitch, yaw) = (cli.look.0.to_radians(), cli.look.1.to_radians());
-    let dir = Vec3::new(
-        yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        -yaw.cos() * pitch.cos(),
-    );
-    let eye = match cli.at {
-        Some((lat, lng, alt)) => {
-            let z = loaded.cells.first().map_or(14, |c| c.z);
-            let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, z);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-            Vec3::new(
-                ((fx - loaded.origin.0 as f64) * f64::from(tile_m)) as f32,
-                alt,
-                ((fy - loaded.origin.1 as f64) * f64::from(tile_m)) as f32,
-            )
-        }
-        None => -dir * distance,
-    };
 
     let mut camera = commands.spawn((
         Camera3d::default(),
@@ -926,6 +1034,7 @@ fn spawn_checker(
     mut images: ResMut<Assets<Image>>,
     loaded: Res<Loaded>,
     cli: Res<Cli>,
+    ground: Res<Ground>,
 ) {
     const DARK: [u8; 4] = [132, 132, 134, 255];
     const LIGHT: [u8; 4] = [196, 196, 198, 255];
@@ -978,7 +1087,15 @@ fn spawn_checker(
             unlit: true,
             ..default()
         })),
-        Transform::from_xyz(0.0, -cli.under, 0.0),
+        // Below the **lowest ground**, not below zero.
+        //
+        // It used to be a flat plane at `-under`, which is correct only while the
+        // ground is flat: `--relief 25` puts the field's floor at about −34 m, so
+        // a plane at −30 m stood *through* the ground and showed a checkerboard in
+        // the middle of intact surfaces. That is the worst thing a reference can
+        // do — it reads exactly like a hole, and on 2026-09-19 it sent this
+        // session hunting three separate faults that were all the instrument.
+        Transform::from_xyz(0.0, ground.floor() - cli.under, 0.0),
     ));
 }
 
@@ -1010,43 +1127,449 @@ fn spawn_sun(mut commands: Commands) {
 /// comes back empty, because that is what an empty one means.
 const FRAMES_BEFORE_CAPTURE: u32 = 4;
 
-/// Capture once the scene has been drawn, then leave.
+/// How many viewpoints a run visits — the number of `--at`, or one when none was
+/// given and the camera is framing what was loaded.
+fn viewpoint_count(cli: &Cli) -> usize {
+    cli.at.len().max(1)
+}
+
+/// Where the camera stands for viewpoint `i`, and which way it points.
 ///
-/// **Not on the first frame.** The render pipelines are built and the target image
-/// allocated during the frames after `Startup`, so a capture fired immediately
-/// reads back a texture nothing has drawn into — a black image and an exit status
-/// of zero, which is the most misleading result a harness can produce.
-fn capture_when_ready(
+/// `--look` is paired with `--at` **by position**, and the last one given carries
+/// on past the end of the list — a sweep down one street states its angle once.
+fn viewpoint(cli: &Cli, loaded: &Loaded, ground: &Ground, i: usize) -> (Vec3, Vec3) {
+    let (pitch_d, yaw_d) = cli
+        .look
+        .get(i)
+        .or_else(|| cli.look.last())
+        .copied()
+        .unwrap_or((-35.0, 45.0));
+    let (pitch, yaw) = (pitch_d.to_radians(), yaw_d.to_radians());
+    let dir = Vec3::new(
+        yaw.sin() * pitch.cos(),
+        pitch.sin(),
+        -yaw.cos() * pitch.cos(),
+    );
+    let tile_m = loaded.cells.first().map_or(1465.0, |c| c.tile_m);
+    let eye = match cli.at.get(i) {
+        Some(&(lat, lng, alt)) => {
+            let z = loaded.cells.first().map_or(14, |c| c.z);
+            let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, z);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            let (wx, wz) = (
+                ((fx - loaded.origin.0 as f64) * f64::from(tile_m)) as f32,
+                ((fy - loaded.origin.1 as f64) * f64::from(tile_m)) as f32,
+            );
+            let base = if cli.agl {
+                ground.0.as_ref().map_or(0.0, |f| f.at(wx, wz))
+            } else {
+                0.0
+            };
+            Vec3::new(wx, base + alt, wz)
+        }
+        None => -dir * cli.distance.unwrap_or(loaded.extent() * 0.9).max(1.0),
+    };
+    (eye, dir)
+}
+
+/// Where viewpoint `i`'s capture is written.
+///
+/// Index- **and** altitude-tagged, the client's rule: a filmstrip then sorts in
+/// flight order and each frame says from how high it was taken, instead of a
+/// directory of files whose only difference is a number nobody can read back.
+fn shot_path(cli: &Cli, i: usize) -> Option<std::path::PathBuf> {
+    let base = cli.shot.as_ref()?;
+    if viewpoint_count(cli) <= 1 {
+        return Some(base.clone());
+    }
+    let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = base.extension().unwrap_or_default().to_string_lossy();
+    #[allow(clippy::cast_possible_truncation)]
+    let alt = cli.at.get(i).map_or(0, |a| a.2 as i64);
+    Some(base.with_file_name(format!("{stem}_{i:02}_{alt}m.{ext}")))
+}
+
+/// How far the camera is nudged between the two captures of a `--flicker` pair.
+///
+/// Five centimetres is chosen to be *small* rather than representative: honest
+/// geometry moves a fraction of a pixel under it, so anything that changes by a
+/// whole pixel changed because the depth comparison it depends on came out the
+/// other way, not because the view did.
+const FLICKER_NUDGE_M: f32 = 0.05;
+
+/// How far apart two channels must be before a pixel counts as changed.
+///
+/// Not zero. The tonemapper and the rasteriser both carry a last-bit wobble that a
+/// sub-pixel camera move re-rolls. Measured on flat ground here the eroded count
+/// is exactly **0**, so this harness has no flicker floor at all — unlike the
+/// client's, where traffic and pedestrians animate between the pair and the
+/// threshold has to sit above them.
+const FLICKER_CHANNEL_EPS: i16 = 6;
+
+/// Frames to let pass after the camera moves before the shutter.
+///
+/// The camera's transform is read during extract, which runs after `Update`, so a
+/// capture fired in the same frame as the move photographs the *previous*
+/// viewpoint. That is the worst failure a sweep can have: every picture is of the
+/// wrong place and every one of them looks fine.
+const FRAMES_AFTER_MOVE: u32 = 2;
+
+/// What one viewpoint measured.
+#[derive(Clone, Default)]
+struct Measurement {
+    index: usize,
+    at: Option<(f64, f64, f32)>,
+    look: (f32, f32),
+    meshes: usize,
+    triangles: usize,
+    flicker_px: Option<u32>,
+}
+
+impl Measurement {
+    fn json(&self) -> String {
+        let mut f = vec![
+            format!("\"index\":{}", self.index),
+            format!("\"meshes\":{}", self.meshes),
+            format!("\"triangles\":{}", self.triangles),
+            format!("\"pitch\":{},\"yaw\":{}", self.look.0, self.look.1),
+        ];
+        if let Some((lat, lng, alt)) = self.at {
+            f.push(format!("\"lat\":{lat},\"lng\":{lng},\"alt\":{alt}"));
+        }
+        if let Some(px) = self.flicker_px {
+            f.push(format!("\"flicker_px\":{px}"));
+        }
+        format!("{{{}}}", f.join(","))
+    }
+
+    /// The keys `--expect` may name. An unknown one is refused at startup rather
+    /// than silently holding, so this list and the assertion parser cannot drift.
+    fn field(&self, key: &str) -> Option<f64> {
+        #[allow(clippy::cast_precision_loss)]
+        match key {
+            "meshes" => Some(self.meshes as f64),
+            "triangles" => Some(self.triangles as f64),
+            "flicker_px" => self.flicker_px.map(f64::from),
+            _ => None,
+        }
+    }
+
+    const KEYS: &'static [&'static str] = &["meshes", "triangles", "flicker_px"];
+}
+
+/// One `--expect`, parsed.
+#[derive(Clone)]
+struct Expectation {
+    raw: String,
+    key: String,
+    op: String,
+    value: f64,
+}
+
+/// Parse the assertions, refusing an unknown key.
+///
+/// At **startup**, before anything is drawn: an assertion naming a field that does
+/// not exist would otherwise pass every run and the green result would claim
+/// something nobody checked.
+fn parse_expectations(raw: &[String]) -> Result<Vec<Expectation>, String> {
+    let mut out = Vec::new();
+    for r in raw {
+        // Longest operators first, or `>=` parses as `>` with a stray `=`.
+        let (key, op, value) = ["<=", ">=", "==", "!=", "<", ">"]
+            .iter()
+            .find_map(|op| r.split_once(op).map(|(k, v)| (k, *op, v)))
+            .ok_or_else(|| format!("`{r}` has no operator — try `flicker_px<=8`"))?;
+        let key = key.trim().to_string();
+        if !Measurement::KEYS.contains(&key.as_str()) {
+            return Err(format!(
+                "`{r}` names `{key}`, which is not measured. Known: {}",
+                Measurement::KEYS.join(", ")
+            ));
+        }
+        let value = match value.trim() {
+            "true" => 1.0,
+            "false" => 0.0,
+            v => v
+                .parse()
+                .map_err(|_| format!("`{r}` — `{v}` is not a number"))?,
+        };
+        out.push(Expectation {
+            raw: r.clone(),
+            key,
+            op: op.to_string(),
+            value,
+        });
+    }
+    Ok(out)
+}
+
+impl Expectation {
+    /// Whether the measurement holds. A key the run did not measure — `flicker_px`
+    /// without `--flicker` — fails rather than passing vacuously.
+    fn holds(&self, m: &Measurement) -> (bool, Option<f64>) {
+        let Some(got) = m.field(&self.key) else {
+            return (false, None);
+        };
+        let ok = match self.op.as_str() {
+            "<=" => got <= self.value,
+            ">=" => got >= self.value,
+            "==" => (got - self.value).abs() < f64::EPSILON,
+            "!=" => (got - self.value).abs() >= f64::EPSILON,
+            "<" => got < self.value,
+            ">" => got > self.value,
+            _ => false,
+        };
+        (ok, Some(got))
+    }
+}
+
+/// Where the tour has got to.
+#[derive(Resource, Default)]
+struct Tour {
+    index: usize,
+    stage: u32,
+    frames: u32,
+    /// Filled by the screenshot observer, which runs when the readback lands
+    /// rather than on a frame we choose — so the stage below waits on the value,
+    /// not on a count.
+    first: std::sync::Arc<std::sync::Mutex<Option<(u32, u32, Vec<u8>)>>>,
+    flicker_px: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
+    results: Vec<Measurement>,
+    expectations: Vec<Expectation>,
+}
+
+/// Walk the viewpoints: place the camera, capture, optionally capture again five
+/// centimetres over, record, move on.
+///
+/// One launch for the whole list. Starting the engine costs about three seconds
+/// and each further viewpoint under one, so a sweep is the difference between a
+/// few seconds and most of a minute — which is the whole reason this harness
+/// exists.
+#[allow(clippy::needless_pass_by_value)]
+fn run_tour(
     mut commands: Commands,
     cli: Res<Cli>,
+    loaded: Res<Loaded>,
+    ground: Res<Ground>,
     target: Option<Res<ShotTarget>>,
     drawn: Res<Drawn>,
-    mut frames: Local<u32>,
-    mut fired: Local<bool>,
+    mut tour: ResMut<Tour>,
+    mut cameras: Query<&mut Transform, With<Camera3d>>,
+    mut writer: MessageWriter<AppExit>,
 ) {
-    let Some(path) = cli.shot.clone() else { return };
-    *frames += 1;
-    if *fired || *frames < FRAMES_BEFORE_CAPTURE {
+    if cli.shot.is_none() && !cli.flicker {
         return;
     }
-    *fired = true;
-    let shot = match target.as_ref() {
+    tour.frames += 1;
+    let count = viewpoint_count(&cli);
+    match tour.stage {
+        // Let the pipelines build and the target image allocate. A capture fired
+        // before that reads back a texture nothing has drawn into — a black image
+        // and an exit status of zero, the most misleading result a harness can give.
+        0 if tour.frames >= FRAMES_BEFORE_CAPTURE => {
+            tour.stage = 2;
+            tour.frames = 0;
+        }
+        // Place the camera for this viewpoint.
+        1 => {
+            let (eye, dir) = viewpoint(&cli, &loaded, &ground, tour.index);
+            for mut t in &mut cameras {
+                *t = Transform::from_translation(eye).looking_at(eye + dir * 1000.0, Vec3::Y);
+            }
+            tour.stage = 2;
+            tour.frames = 0;
+        }
+        2 if tour.frames >= FRAMES_AFTER_MOVE => {
+            let slot = std::sync::Arc::clone(&tour.first);
+            let keep = (!cli.flicker)
+                .then(|| shot_path(&cli, tour.index))
+                .flatten();
+            commands.spawn(shot_of(target.as_deref())).observe(
+                move |captured: On<ScreenshotCaptured>| {
+                    let Ok(img) = captured.image.clone().try_into_dynamic() else {
+                        tracing::error!("could not convert the capture");
+                        return;
+                    };
+                    if let Some(p) = keep.as_ref() {
+                        if let Err(e) = img.save(p) {
+                            tracing::error!(error = %e, "could not write the image");
+                        } else {
+                            tracing::info!(path = %p.display(), "wrote");
+                        }
+                    }
+                    let rgba = img.to_rgba8();
+                    let (w, h) = (rgba.width(), rgba.height());
+                    *slot.lock().expect("capture slot") = Some((w, h, rgba.into_raw()));
+                },
+            );
+            tour.stage = 3;
+            tour.frames = 0;
+        }
+        // Wait for the readback. Without `--flicker` that is the whole viewpoint.
+        3 if tour.first.lock().expect("capture slot").is_some() => {
+            if cli.flicker {
+                for mut t in &mut cameras {
+                    let right = t.right() * FLICKER_NUDGE_M;
+                    t.translation += right;
+                }
+                tour.stage = 4;
+                tour.frames = 0;
+            } else {
+                tour.first.lock().expect("capture slot").take();
+                finish_viewpoint(&mut tour, &cli, &drawn, None);
+                advance(&mut tour, count, &cli, &mut writer);
+            }
+        }
+        4 if tour.frames >= FRAMES_AFTER_MOVE => {
+            let slot = std::sync::Arc::clone(&tour.first);
+            let out = std::sync::Arc::clone(&tour.flicker_px);
+            let keep = shot_path(&cli, tour.index);
+            commands.spawn(shot_of(target.as_deref())).observe(
+                move |captured: On<ScreenshotCaptured>| {
+                    let Ok(img) = captured.image.clone().try_into_dynamic() else {
+                        tracing::error!("could not convert the second capture");
+                        return;
+                    };
+                    let second = img.to_rgba8();
+                    let Some((w, h, first)) = slot.lock().expect("capture slot").take() else {
+                        tracing::error!("the first capture never landed");
+                        return;
+                    };
+                    if (w, h) != (second.width(), second.height()) {
+                        tracing::error!("the pair came back at two different sizes");
+                        return;
+                    }
+                    if let Some(p) = keep.as_ref() {
+                        if let Err(e) = img.save(p) {
+                            tracing::error!(error = %e, "could not write the image");
+                        } else {
+                            tracing::info!(path = %p.display(), "wrote");
+                        }
+                    }
+                    *out.lock().expect("flicker slot") =
+                        Some(eroded_difference(&first, second.as_raw(), w, h));
+                },
+            );
+            tour.stage = 5;
+            tour.frames = 0;
+        }
+        5 => {
+            let px = *tour.flicker_px.lock().expect("flicker slot");
+            if let Some(px) = px {
+                tour.flicker_px.lock().expect("flicker slot").take();
+                finish_viewpoint(&mut tour, &cli, &drawn, Some(px));
+                advance(&mut tour, count, &cli, &mut writer);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn finish_viewpoint(tour: &mut Tour, cli: &Cli, drawn: &Drawn, flicker_px: Option<u32>) {
+    let i = tour.index;
+    let m = Measurement {
+        index: i,
+        at: cli.at.get(i).copied(),
+        look: cli
+            .look
+            .get(i)
+            .or_else(|| cli.look.last())
+            .copied()
+            .unwrap_or((-35.0, 45.0)),
+        meshes: drawn.meshes,
+        triangles: drawn.triangles,
+        flicker_px,
+    };
+    if let Some(px) = flicker_px {
+        #[allow(clippy::cast_precision_loss)]
+        let share = px as f32 / (cli.size.0 * cli.size.1) as f32 * 100.0;
+        tracing::info!(viewpoint = i, flicker_px = px, share_pct = share, "flicker");
+    }
+    tour.results.push(m);
+}
+
+/// Move to the next viewpoint, or finish: write the dump, judge the assertions,
+/// and leave with a status that says whether they held.
+fn advance(tour: &mut Tour, count: usize, cli: &Cli, writer: &mut MessageWriter<AppExit>) {
+    tour.index += 1;
+    if tour.index < count {
+        tour.stage = 1;
+        tour.frames = 0;
+        return;
+    }
+    if let Some(path) = cli.dump_state.as_ref() {
+        let body = if tour.results.len() == 1 {
+            tour.results[0].json()
+        } else {
+            format!(
+                "[{}]",
+                tour.results
+                    .iter()
+                    .map(Measurement::json)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        if let Err(e) = std::fs::write(path, body) {
+            tracing::error!(error = %e, "could not write the state dump");
+        }
+    }
+    // A failure does not abort the run — every viewpoint has already been
+    // captured, so a red result hands back the pictures that explain it.
+    let mut failed = false;
+    for e in &tour.expectations {
+        for m in &tour.results {
+            let (ok, got) = e.holds(m);
+            if !ok {
+                failed = true;
+                match got {
+                    Some(g) => tracing::error!(
+                        expect = %e.raw, viewpoint = m.index, measured = g, "expect failed"
+                    ),
+                    None => tracing::error!(
+                        expect = %e.raw, viewpoint = m.index,
+                        "expect failed — the run did not measure it"
+                    ),
+                }
+            }
+        }
+    }
+    writer.write(if failed {
+        AppExit::error()
+    } else {
+        AppExit::Success
+    });
+}
+
+fn shot_of(target: Option<&ShotTarget>) -> Screenshot {
+    match target {
         Some(t) => Screenshot::image(t.0.clone()),
         None => Screenshot::primary_window(),
-    };
-    let (meshes, triangles) = (drawn.meshes, drawn.triangles);
-    commands.spawn(shot).observe(
-        move |captured: On<ScreenshotCaptured>, mut writer: MessageWriter<AppExit>| {
-            match captured.image.clone().try_into_dynamic() {
-                Ok(image) => match image.save(&path) {
-                    Ok(()) => {
-                        tracing::info!(path = %path.display(), meshes, triangles, "wrote");
-                    }
-                    Err(e) => tracing::error!(error = %e, "could not write the image"),
-                },
-                Err(e) => tracing::error!(error = %e, "could not convert the capture"),
+    }
+}
+
+/// Pixels that differ in both captures *and* whose whole 3×3 neighbourhood does.
+///
+/// The erosion is what separates a depth coin flip from silhouette crawl. An edge
+/// between two surfaces moves by a fraction of a pixel under the nudge and
+/// re-resolves one pixel wide, so an un-eroded count is dominated by every
+/// silhouette on screen. A patch whose depth comparison flipped changes over its
+/// whole area at once and survives the erosion nearly intact.
+fn eroded_difference(a: &[u8], b: &[u8], w: u32, h: u32) -> u32 {
+    let (w, h) = (w as usize, h as usize);
+    let mut raw = vec![false; w * h];
+    for (i, cell) in raw.iter_mut().enumerate() {
+        *cell = (0..3).any(|c| {
+            (i16::from(a[i * 4 + c]) - i16::from(b[i * 4 + c])).abs() > FLICKER_CHANNEL_EPS
+        });
+    }
+    let mut count = 0u32;
+    for y in 1..h.saturating_sub(1) {
+        for x in 1..w.saturating_sub(1) {
+            if (y - 1..=y + 1).all(|yy| (x - 1..=x + 1).all(|xx| raw[yy * w + xx])) {
+                count += 1;
             }
-            writer.write(AppExit::Success);
-        },
-    );
+        }
+    }
+    count
 }

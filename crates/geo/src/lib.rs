@@ -101,6 +101,11 @@ pub mod traffic;
 // Roads that run under the ground. Split from `vector_tiles` rather than folded
 // into `tessellate_roads` because a bore is not on the road sheet: it has its own
 // depth, its own walls and roof, and a hole it needs cut in the ground.
+// Giving a flat mesh vertices to be bent onto terrain by. Here rather than in the
+// client so the harness refines exactly as the client does — it cannot depend on
+// `cartopolis`, and bending unrefined triangles drew cracks that were the
+// instrument, not the map.
+pub mod terrain_refine;
 pub mod tunnels;
 pub mod turf;
 pub mod vector_tiles;

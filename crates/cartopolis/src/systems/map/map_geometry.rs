@@ -2490,8 +2490,11 @@ fn water_surface(
         rungs,
         terrain.ground_edge_m(),
         Some(crate::systems::terrain::Crease {
-            field: terrain,
-            origin,
+            // Through the deref: `TerrainField` is the live resource and
+            // `TerrainSnapshot` is the immutable field it hands out, which is what
+            // the refinement is defined against.
+            field: &**terrain,
+            origin: origin.to_array(),
         }),
     );
     for p in positions.iter_mut() {
@@ -2649,8 +2652,8 @@ fn stand_on_terrain(
             rungs,
             terrain.ground_edge_m(),
             Some(crate::systems::terrain::Crease {
-                field: terrain,
-                origin,
+                field: &**terrain,
+                origin: origin.to_array(),
             }),
         );
     }
