@@ -275,7 +275,7 @@ pub fn road_width_m(kind: &str, flags: StreetFlags) -> f32 {
         "cycleway" => 2.2,
         "steps" | "footway" => 1.8,
         "path" => 1.5,
-        "rail" | "light_rail" | "tram" => 3.2,
+        "rail" | "light_rail" | "tram" => RAIL_BED_M,
         _ => 6.0,
     }
 }
@@ -393,6 +393,36 @@ const KANTSTREEP_U_12: f32 = 3.0 / 12.0;
 /// the 15 cm of a lane division, and it is the line that carries at a distance.
 const EDGE_HALF_U: f32 = 0.009;
 
+/// Standard gauge, between the inner faces of the rails.
+///
+/// 1435 mm in the Netherlands as in most of the world
+/// (`nl.wikipedia.org/wiki/Normaalspoor`). Until 2026-09-19 the two rails were
+/// drawn at `u` 0.30 and 0.70 of a 3.2 m bed, which is a **1.28 m** gauge — 11 %
+/// narrow, and narrow in the one direction a person can check against a
+/// photograph without a tape measure, because the sleeper ends stick out past the
+/// rails by a fixed amount and the proportion is what the eye reads.
+const RAIL_GAUGE_M: f32 = 1.435;
+
+/// Width of a rail head, near enough. What separates rail *centres* from the
+/// gauge, which is measured between their inner faces.
+const RAIL_HEAD_M: f32 = 0.07;
+
+/// The ballast bed a single track sits on, and the width the ribbon is drawn at.
+///
+/// A concrete sleeper is 2.5 m and the ballast shoulder runs about 0.55 m past
+/// each end. The old 3.2 m was close enough to this that the *bed* never looked
+/// wrong — only the gauge inside it did.
+const RAIL_BED_M: f32 = 3.6;
+
+/// Half the rail-centre separation, as a fraction of the bed. Derived, so the
+/// gauge cannot drift from the bed width the ribbon is actually drawn at —
+/// `the_track_is_standard_gauge` is what checks the arithmetic.
+const RAIL_HALF_U: f32 = (RAIL_GAUGE_M + RAIL_HEAD_M) / (2.0 * RAIL_BED_M);
+
+/// Half-width of the drawn rail head in `u`. Wider than the steel itself: at this
+/// scale the band stands for the rail, its fastenings and the shadow under it.
+const RAIL_HEAD_HALF_U: f32 = 0.030;
+
 const DASH_ON_M: f32 = 3.0;
 const DASH_PERIOD_M: f32 = 12.0;
 
@@ -478,12 +508,14 @@ fn markings_of(class: RoadClass) -> ([u8; 3], f32, Vec<Marking>) {
             ],
         ),
         RoadClass::Path => (GRIT, 0.16, Vec::new()),
+        // The two rails at **standard gauge**, positioned from the real
+        // dimensions rather than from a pair of round numbers that looked right.
         RoadClass::Rail => (
             BALLAST,
             0.20,
             vec![
-                Marking::solid(0.30, 0.030, STEEL),
-                Marking::solid(0.70, 0.030, STEEL),
+                Marking::solid(0.5 - RAIL_HALF_U, RAIL_HEAD_HALF_U, STEEL),
+                Marking::solid(0.5 + RAIL_HALF_U, RAIL_HEAD_HALF_U, STEEL),
             ],
         ),
     }
@@ -696,6 +728,30 @@ fn hash2(x: u32, y: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// **The track is standard gauge.**
+    ///
+    /// 1435 mm between the inner faces of the rails, which is the one railway
+    /// dimension everybody can check against a photograph: the sleeper ends stick
+    /// out past the rails by a fixed amount, so the *proportion* is what the eye
+    /// reads, and a narrow gauge on a wide bed looks like a model railway.
+    ///
+    /// It was 1.28 m until 2026-09-19 — two round `u` values on a 3.2 m bed,
+    /// which is how a number that is nobody's measurement survives: it is not
+    /// wrong in a way that shows up as an error, only as a picture that is
+    /// slightly off and that nobody has a reason to measure.
+    #[test]
+    fn the_track_is_standard_gauge() {
+        let bed = road_width_m("rail", StreetFlags::default());
+        let (_, _, markings) = markings_of(RoadClass::Rail);
+        assert_eq!(markings.len(), 2, "a track has two rails");
+        let centres_m = (markings[1].u - markings[0].u) * bed;
+        let gauge_m = centres_m - RAIL_HEAD_M;
+        assert!(
+            (gauge_m - 1.435).abs() < 0.02,
+            "gauge is {gauge_m} m on a {bed} m bed, not 1.435 m"
+        );
+    }
+
     /// **The hard shoulder is three metres wide on both fast classes.**
     ///
     /// A texture is built per class and has no width to divide by, so the
