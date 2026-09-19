@@ -28,6 +28,21 @@ license.workspace = true
 name = "carto-view"
 path = "src/main.rs"
 
+[features]
+# **Dynamic linking, for the edit-and-look loop.** Statically linking Bevy copies
+# ~150 MB of object code into the executable on *every* rebuild, which is most of
+# what a change to the mesh code costs here. With this the link resolves symbols
+# against a shared library instead.
+#
+# Off by default and never for anything shipped — it needs the library beside the
+# binary. `cargo run -p cartopolis_viewer --features fast-dev` is the loop; a plain
+# build is what CI and everything else gets.
+#
+# Note it does fork the engine's feature set, so the first build with it compiles
+# Bevy again and keeps a second set of artifacts. That is the price of the fast
+# loop and it is paid once.
+fast-dev = ["bevy/dynamic_linking"]
+
 [dependencies]
 anyhow.workspace = true
 bevy.workspace = true

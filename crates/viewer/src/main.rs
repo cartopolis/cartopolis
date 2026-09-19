@@ -111,6 +111,16 @@ struct Cli {
     /// see rather than the map's colours.
     #[arg(long)]
     plain: bool,
+
+    /// Measure what was built and print it, instead of drawing.
+    ///
+    /// **The half of this harness a picture cannot be.** Both faults chased on
+    /// 2026-09-19 were ones a camera answers badly: two surfaces covering one
+    /// piece of ground is invisible until the ground has a gradient, and a tunnel
+    /// three cells away looks exactly like a tunnel that was never built. Numbers
+    /// answer both in the time it takes to read them.
+    #[arg(long)]
+    check: bool,
 }
 
 fn parse_cell(s: &str) -> Result<(u32, i64, i64), String> {
@@ -213,6 +223,13 @@ fn main() -> Result<()> {
     let loaded = load(&cli).context("reading tiles")?;
     anyhow::ensure!(!loaded.cells.is_empty(), "no cells could be read");
 
+    if cli.check {
+        for cell in &loaded.cells {
+            report(cell);
+        }
+        return Ok(());
+    }
+
     let mut app = App::new();
     if cli.window {
         app.add_plugins(DefaultPlugins);
@@ -223,6 +240,14 @@ fn main() -> Result<()> {
             DefaultPlugins
                 .build()
                 .disable::<bevy::winit::WinitPlugin>()
+                // **Compile the shader pipelines synchronously, and this is not
+                // a preference.** With them compiling in the background the
+                // capture fires before anything can be drawn into the target and
+                // writes an empty sky — while reporting the triangle count it
+                // *would* have drawn and exiting zero. Measured 2026-09-19:
+                // turning this off saved 0.8 s a run and produced a blank image
+                // that claimed 74,149 triangles. A harness that lies is worse than
+                // a slow one.
                 .set(bevy::render::RenderPlugin {
                     synchronous_pipeline_compilation: true,
                     ..default()
@@ -317,6 +342,149 @@ fn tessellate(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>> {
     }
     meshes.extend(tunnels.meshes);
     Ok(meshes)
+}
+
+/// Samples per side the coverage and overlap measurements use. 512 over a
+/// ~1.5 km cell is ~2.9 m — fine enough to tell a missing block from the sliver a
+/// kerb leaves, coarse enough to cost nothing beside the tessellation.
+const CHECK_SAMPLES: usize = 512;
+
+/// What one cell's tessellation produced, and what is wrong with it.
+///
+/// Printed rather than drawn, because the two faults this harness exists for are
+/// both ones a picture answers badly. **Two surfaces covering one piece of ground**
+/// is invisible until the ground has a gradient — it was 67 % of the road sheet
+/// here and nobody had seen it — and **a tunnel** three cells away is
+/// indistinguishable from one that was never built.
+fn report(cell: &Cell) {
+    println!(
+        "{}/{}/{}  {:.0} m across",
+        cell.z, cell.x, cell.y, cell.tile_m
+    );
+
+    // Per group: how much was built, and how much of the cell it covers.
+    let mut groups: Vec<(String, bool, usize, Vec<bool>)> = Vec::new();
+    for m in &cell.meshes {
+        let name = format!("{:?}", m.group);
+        let slot = match groups.iter().position(|(g, _, _, _)| *g == name) {
+            Some(i) => i,
+            None => {
+                groups.push((
+                    name,
+                    m.group.layer().is_sheet(),
+                    0,
+                    vec![false; CHECK_SAMPLES * CHECK_SAMPLES],
+                ));
+                groups.len() - 1
+            }
+        };
+        groups[slot].2 += m.indices.len() / 3;
+        rasterise(m, cell.tile_m, &mut groups[slot].3);
+    }
+    groups.sort_by(|a, b| b.2.cmp(&a.2));
+
+    let mut any = vec![false; CHECK_SAMPLES * CHECK_SAMPLES];
+    for (_, _, _, mask) in &groups {
+        for (a, m) in any.iter_mut().zip(mask) {
+            *a |= *m;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let pct = |n: usize| 100.0 * n as f32 / (CHECK_SAMPLES * CHECK_SAMPLES) as f32;
+    println!("  covered {:.1} % of the cell", pct(count(&any)));
+
+    for (name, sheet, tris, mask) in &groups {
+        let standing = if *sheet { "" } else { "   (stands)" };
+        println!(
+            "  {name:<26} {tris:>7} triangles  {:>5.1} %{standing}",
+            pct(count(mask))
+        );
+    }
+
+    // **Pairs that cover the same ground.** The depth ladder orders what genuinely
+    // overlaps, and it can only do that while every sheet agrees where the ground
+    // is — which stops being true the moment the ground has a gradient. So an
+    // overlap here is a fault waiting for terrain to reveal it.
+    let mut printed = false;
+    for (i, (a_name, a_sheet, _, a)) in groups.iter().enumerate() {
+        for (b_name, b_sheet, _, b) in groups.iter().skip(i + 1) {
+            // **Only sheets are compared.** A tunnel roof sits directly above its
+            // own deck and a tree stands on the ground beneath it; both overlap
+            // completely in plan and neither is a fault, because real height
+            // separates them. The ladder makes exactly this distinction
+            // (`GroundLayer::is_sheet`), so the check uses it rather than
+            // inventing a second rule — without it every tunnel reads as a 100 %
+            // overlap and the measurement is noise.
+            if !(*a_sheet && *b_sheet) {
+                continue;
+            }
+            let both = a.iter().zip(b).filter(|(x, y)| **x && **y).count();
+            let own = count(a).max(1);
+            #[allow(clippy::cast_precision_loss)]
+            let share = 100.0 * both as f32 / own as f32;
+            if share >= 1.0 {
+                if !printed {
+                    println!("  sharing ground:");
+                    printed = true;
+                }
+                println!("    {a_name} and {b_name}: {share:.1} % of {a_name}");
+            }
+        }
+    }
+    if !printed {
+        println!("  no two sheets share ground");
+    }
+}
+
+/// Mark the samples a mesh's triangles cover. Centre sampling and no
+/// anti-aliasing: this measures *coverage*, and a half-covered sample counted by
+/// both of two neighbours would read as an overlap that is not there.
+fn rasterise(m: &SurfaceMesh, tile_m: f32, hit: &mut [bool]) {
+    let n = CHECK_SAMPLES;
+    #[allow(clippy::cast_precision_loss)]
+    let scale = n as f32 / tile_m.max(1.0);
+    for t in m.indices.chunks_exact(3) {
+        let p: Vec<[f32; 2]> = t
+            .iter()
+            .map(|&i| {
+                let v = m.positions[i as usize];
+                [v[0] * scale, v[2] * scale]
+            })
+            .collect();
+        let (a, b, c) = (p[0], p[1], p[2]);
+        // Both ends clamped: a tile carries a buffer, so a ribbon can lie entirely
+        // past the grid and a bound on the maximum alone walks off the row.
+        let clamp = |v: f32| -> usize {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let i = v.max(0.0) as usize;
+            i.min(n - 1)
+        };
+        let (minx, maxx) = (
+            clamp(a[0].min(b[0]).min(c[0]).floor()),
+            clamp(a[0].max(b[0]).max(c[0]).ceil()),
+        );
+        let (miny, maxy) = (
+            clamp(a[1].min(b[1]).min(c[1]).floor()),
+            clamp(a[1].max(b[1]).max(c[1]).ceil()),
+        );
+        let side = |u: [f32; 2], v: [f32; 2], q: [f32; 2]| {
+            (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])
+        };
+        for y in miny..=maxy {
+            for x in minx..=maxx {
+                #[allow(clippy::cast_precision_loss)]
+                let q = [x as f32 + 0.5, y as f32 + 0.5];
+                let (s0, s1, s2) = (side(a, b, q), side(b, c, q), side(c, a, q));
+                if (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0) {
+                    hit[y * n + x] = true;
+                }
+            }
+        }
+    }
+}
+
+fn count(mask: &[bool]) -> usize {
+    mask.iter().filter(|m| **m).count()
 }
 
 /// The tone this draws a surface in.
@@ -596,6 +764,16 @@ fn spawn_sun(mut commands: Commands) {
     ));
 }
 
+/// Frames to let pass before the shutter.
+///
+/// **Not one.** The render pipelines are built and the target image allocated
+/// during the frames after `Startup`, so a capture fired immediately reads back a
+/// texture nothing has drawn into — a black image and an exit status of zero,
+/// which is the most misleading result a harness can produce. Four is what it
+/// takes here with shaders compiling in the background; raise it if a capture ever
+/// comes back empty, because that is what an empty one means.
+const FRAMES_BEFORE_CAPTURE: u32 = 4;
+
 /// Capture once the scene has been drawn, then leave.
 ///
 /// **Not on the first frame.** The render pipelines are built and the target image
@@ -612,7 +790,7 @@ fn capture_when_ready(
 ) {
     let Some(path) = cli.shot.clone() else { return };
     *frames += 1;
-    if *fired || *frames < 8 {
+    if *fired || *frames < FRAMES_BEFORE_CAPTURE {
         return;
     }
     *fired = true;
