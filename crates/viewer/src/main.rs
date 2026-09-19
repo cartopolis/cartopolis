@@ -276,6 +276,35 @@ struct Loaded {
 }
 
 impl Loaded {
+    /// The middle of the loaded cells, in world metres.
+    ///
+    /// The checkered underlay is hung from here rather than from the origin. The
+    /// origin is the *first* cell's north-west corner, so a plane centred there
+    /// covered only one quadrant of a single-cell load — and a reference that is
+    /// absent over half the picture makes "no checkerboard" mean either "ground
+    /// here" or "no reference here", which is the one thing a reference may not do.
+    fn center(&self) -> Vec3 {
+        let tile_m = self.cells.first().map_or(1465.0, |c| c.tile_m);
+        let xs = self.cells.iter().map(|c| c.x);
+        let ys = self.cells.iter().map(|c| c.y);
+        #[allow(clippy::cast_precision_loss)]
+        let mid =
+            |lo: i64, hi: i64, origin: i64| ((lo + hi + 1) as f32 * 0.5 - origin as f32) * tile_m;
+        Vec3::new(
+            mid(
+                xs.clone().min().unwrap_or(0),
+                xs.max().unwrap_or(0),
+                self.origin.0,
+            ),
+            0.0,
+            mid(
+                ys.clone().min().unwrap_or(0),
+                ys.max().unwrap_or(0),
+                self.origin.1,
+            ),
+        )
+    }
+
     /// Ground metres across the loaded cells, corner to corner.
     fn extent(&self) -> f32 {
         let tile_m = self.cells.first().map_or(1465.0, |c| c.tile_m);
@@ -457,29 +486,42 @@ fn report(cell: &Cell) {
     );
 
     // Per group: how much was built, and how much of the cell it covers.
-    let mut groups: Vec<(String, bool, usize, Vec<bool>)> = Vec::new();
+    struct Surveyed {
+        name: String,
+        /// A sheet lies *in* the ground plane; anything else stands on it, and the
+        /// two cannot be compared for overlap.
+        sheet: bool,
+        /// Which rung of the depth ladder it draws on — what decides whether an
+        /// overlap with another group is settled or unarbitrable.
+        layer: cartopolis_geo::ground_stack::GroundLayer,
+        triangles: usize,
+        mask: Vec<bool>,
+    }
+
+    let mut groups: Vec<Surveyed> = Vec::new();
     for m in &cell.meshes {
         let name = format!("{:?}", m.group);
-        let slot = match groups.iter().position(|(g, _, _, _)| *g == name) {
+        let slot = match groups.iter().position(|g| g.name == name) {
             Some(i) => i,
             None => {
-                groups.push((
+                groups.push(Surveyed {
                     name,
-                    m.group.layer().is_sheet(),
-                    0,
-                    vec![false; CHECK_SAMPLES * CHECK_SAMPLES],
-                ));
+                    sheet: m.group.layer().is_sheet(),
+                    layer: m.group.layer(),
+                    triangles: 0,
+                    mask: vec![false; CHECK_SAMPLES * CHECK_SAMPLES],
+                });
                 groups.len() - 1
             }
         };
-        groups[slot].2 += m.indices.len() / 3;
-        rasterise(m, cell.tile_m, &mut groups[slot].3);
+        groups[slot].triangles += m.indices.len() / 3;
+        rasterise(m, cell.tile_m, &mut groups[slot].mask);
     }
-    groups.sort_by(|a, b| b.2.cmp(&a.2));
+    groups.sort_by(|a, b| b.triangles.cmp(&a.triangles));
 
     let mut any = vec![false; CHECK_SAMPLES * CHECK_SAMPLES];
-    for (_, _, _, mask) in &groups {
-        for (a, m) in any.iter_mut().zip(mask) {
+    for g in &groups {
+        for (a, m) in any.iter_mut().zip(&g.mask) {
             *a |= *m;
         }
     }
@@ -487,11 +529,13 @@ fn report(cell: &Cell) {
     let pct = |n: usize| 100.0 * n as f32 / (CHECK_SAMPLES * CHECK_SAMPLES) as f32;
     println!("  covered {:.1} % of the cell", pct(count(&any)));
 
-    for (name, sheet, tris, mask) in &groups {
-        let standing = if *sheet { "" } else { "   (stands)" };
+    for g in &groups {
+        let standing = if g.sheet { "" } else { "   (stands)" };
         println!(
-            "  {name:<26} {tris:>7} triangles  {:>5.1} %{standing}",
-            pct(count(mask))
+            "  {:<26} {:>7} triangles  {:>5.1} %{standing}",
+            g.name,
+            g.triangles,
+            pct(count(&g.mask))
         );
     }
 
@@ -500,8 +544,8 @@ fn report(cell: &Cell) {
     // is — which stops being true the moment the ground has a gradient. So an
     // overlap here is a fault waiting for terrain to reveal it.
     let mut printed = false;
-    for (i, (a_name, a_sheet, _, a)) in groups.iter().enumerate() {
-        for (b_name, b_sheet, _, b) in groups.iter().skip(i + 1) {
+    for (i, a) in groups.iter().enumerate() {
+        for b in groups.iter().skip(i + 1) {
             // **Only sheets are compared.** A tunnel roof sits directly above its
             // own deck and a tree stands on the ground beneath it; both overlap
             // completely in plan and neither is a fault, because real height
@@ -509,11 +553,16 @@ fn report(cell: &Cell) {
             // (`GroundLayer::is_sheet`), so the check uses it rather than
             // inventing a second rule — without it every tunnel reads as a 100 %
             // overlap and the measurement is noise.
-            if !(*a_sheet && *b_sheet) {
+            if !(a.sheet && b.sheet) {
                 continue;
             }
-            let both = a.iter().zip(b).filter(|(x, y)| **x && **y).count();
-            let own = count(a).max(1);
+            let both = a
+                .mask
+                .iter()
+                .zip(&b.mask)
+                .filter(|(x, y)| **x && **y)
+                .count();
+            let own = count(&a.mask).max(1);
             #[allow(clippy::cast_precision_loss)]
             let share = 100.0 * both as f32 / own as f32;
             if share >= 1.0 {
@@ -521,7 +570,38 @@ fn report(cell: &Cell) {
                     println!("  sharing ground:");
                     printed = true;
                 }
-                println!("    {a_name} and {b_name}: {share:.1} % of {a_name}");
+                // **What, if anything, can order this pair — and note that being
+                // ordered is not the same as being safe.**
+                //
+                // The ladder separates sheets by *millimetres* (`SHEET_UNIT_M`).
+                // Two sheets over one piece of ground disagree about where that
+                // ground is by the terrain's curvature between their own
+                // vertices, which is decimetres on any gradient. Millimetres
+                // lose. So an overlap across two rungs is settled on flat ground
+                // and tears on a slope — which is precisely the 78 % of the road
+                // sheet that had built land beneath it, and which is what the
+                // fills-under-roads cut removes.
+                //
+                // The one genuinely settled case is inside the road band, where a
+                // kerb and its own tarmac are separated by a per-vertex rung
+                // (`vector_tiles::road_rung`) rather than by height — a depth
+                // bias does not decay with the ground's shape. This harness
+                // cannot *draw* that ordering, having none of the client's
+                // depth-bias rendering, so the verdict says so rather than
+                // letting a capture be read as evidence either way.
+                let verdict = if a.layer == b.layer {
+                    if a.layer == cartopolis_geo::ground_stack::GroundLayer::Road {
+                        "ordered per vertex inside the road band — not drawable here"
+                    } else {
+                        "SAME RUNG — nothing orders this, even flat"
+                    }
+                } else {
+                    "different rungs — settled flat, tears on a gradient"
+                };
+                println!(
+                    "    {} and {}: {share:.1} % of {}  ({verdict})",
+                    a.name, b.name, a.name
+                );
             }
         }
     }
@@ -1095,7 +1175,7 @@ fn spawn_checker(
         // the middle of intact surfaces. That is the worst thing a reference can
         // do — it reads exactly like a hole, and on 2026-09-19 it sent this
         // session hunting three separate faults that were all the instrument.
-        Transform::from_xyz(0.0, ground.floor() - cli.under, 0.0),
+        Transform::from_translation(loaded.center().with_y(ground.floor() - cli.under)),
     ));
 }
 
