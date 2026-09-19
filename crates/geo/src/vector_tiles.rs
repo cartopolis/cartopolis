@@ -593,6 +593,7 @@ fn street_style(feature: &Feature, source_m: f32) -> (f32, u32, u32) {
     };
     let flags = StreetFlags {
         oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+        oneway_reverse: flag_of(feature, "oneway_reverse"),
         link: flag_of(feature, "link"),
     };
     let real_px = road_width_m(kind, flags) * TILE_PX as f32 / source_m.max(1.0);
@@ -2672,6 +2673,10 @@ pub fn tessellate_roads(
             continue;
         }
         let bridge = flag_of(feature, "bridge");
+        // Traffic runs against the way's own direction, so the across-road axis
+        // has to be mirrored before the (asymmetric) carriageway texture lands on
+        // it. See the flip at the ribbon below.
+        let reversed = flag_of(feature, "oneway_reverse");
         // Kerbed classes get a casing ribbon under the fill; paths and rails
         // have no kerb to draw.
         let cased = !matches!(class, RoadClass::Path | RoadClass::Rail);
@@ -2833,6 +2838,25 @@ pub fn tessellate_roads(
                         &mut u,
                         &mut i,
                     );
+                    // **Put the across-road axis the way the traffic faces.**
+                    //
+                    // `ribbon` runs `u` from the way's left to its right, which is
+                    // the traffic's left-to-right only while the two agree. On an
+                    // `oneway_reverse` feature they are opposite, and the
+                    // carriageway texture is no longer symmetric: it carries a hard
+                    // shoulder on the right. Unflipped, that shoulder lands against
+                    // the median on about half the features, which reads as a
+                    // texture bug rather than as a direction one.
+                    //
+                    // Mirroring `u` rather than reversing the geometry keeps every
+                    // vertex, index, join and kerb zip exactly where it was — the
+                    // texture is symmetric in `v` and the markings are bands, so
+                    // there is nothing else across the road for this to disturb.
+                    if reversed {
+                        for uv in &mut u {
+                            uv[0] = 1.0 - uv[0];
+                        }
+                    }
                     lay(
                         &mut *sink,
                         SurfaceGroup::Road(class),
@@ -3307,6 +3331,7 @@ pub(crate) fn street_shape(feature: &Feature) -> Option<(RoadClass, f32)> {
     let kind = kind_of(feature).unwrap_or("");
     let flags = StreetFlags {
         oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+        oneway_reverse: flag_of(feature, "oneway_reverse"),
         link: flag_of(feature, "link"),
     };
     Some((road_class(kind, flags)?, road_width_m(kind, flags) * 0.5))

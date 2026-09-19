@@ -797,6 +797,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         let feature = &features[*fi];
         let flags = StreetFlags {
             oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+            oneway_reverse: flag_of(feature, "oneway_reverse"),
             link: flag_of(feature, "link"),
         };
         let kind = kind_of(feature).unwrap_or("");

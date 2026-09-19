@@ -59,6 +59,11 @@ bevy.workspace = true
 # alternative in both build time and confidence.
 bevy_image.workspace = true
 clap.workspace = true
+# For `--texture`, which writes a road class's generated surface straight out as
+# a PNG. Bevy reaches `image` internally (a screenshot converts through it) but
+# re-exports nothing nameable, and the workspace already builds this exact
+# version for `cartopolis_geo`, so this is one dependency edge and no new crate.
+image.workspace = true
 tracing.workspace = true
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }

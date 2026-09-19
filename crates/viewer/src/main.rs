@@ -189,6 +189,17 @@ struct Cli {
     #[arg(long, value_name = "KEY OP VALUE")]
     expect: Vec<String>,
 
+    /// Write a road class's generated surface straight out as a PNG and exit —
+    /// `--texture carriageway`.
+    ///
+    /// **The direct instrument for the markings.** Judging a lane line off a
+    /// capture means finding a road of the right class, framing it near enough
+    /// that the texture is not aliasing, and then reading a pattern that
+    /// perspective is foreshortening. This is the pixels themselves, one texel
+    /// per pixel, against a ruler: `u` across, metres along.
+    #[arg(long, value_name = "CLASS")]
+    texture: Option<String>,
+
     /// Measure what was built and print it, instead of drawing.
     ///
     /// **The half of this harness a picture cannot be.** Both faults chased on
@@ -338,6 +349,10 @@ fn main() -> Result<()> {
     };
     let loaded = load(&cli).context("reading tiles")?;
     anyhow::ensure!(!loaded.cells.is_empty(), "no cells could be read");
+
+    if let Some(want) = cli.texture.as_ref() {
+        return dump_texture(want, cli.shot.as_deref());
+    }
 
     if cli.check {
         for cell in &loaded.cells {
@@ -1712,4 +1727,65 @@ fn road_surface_texture(group: SurfaceGroup, images: &mut Assets<Image>) -> Opti
         ..bevy::image::ImageSamplerDescriptor::linear()
     });
     Some(images.add(image))
+}
+
+/// Write one road class's generated surface as a PNG, with a metre scale.
+///
+/// The image is the texture's own texels — 64 across the carriageway, 256 along
+/// `texture_length_m` metres of it — scaled up by whole numbers so nothing is
+/// resampled and a 15 cm line stays exactly as wide as it was generated.
+fn dump_texture(want: &str, path: Option<&std::path::Path>) -> Result<()> {
+    let class = match want.to_lowercase().as_str() {
+        "motorway" => RoadClass::Motorway,
+        "carriageway" => RoadClass::Carriageway,
+        "major" => RoadClass::Major,
+        "minor" => RoadClass::Minor,
+        "path" => RoadClass::Path,
+        "rail" => RoadClass::Rail,
+        other => anyhow::bail!(
+            "unknown class `{other}` — motorway, carriageway, major, minor, path, rail"
+        ),
+    };
+    let t = cartopolis_geo::road_texture::road_texture(class);
+    let path = path.unwrap_or_else(|| std::path::Path::new("/tmp/road_texture.png"));
+
+    // Whole-number magnification only: resampling a 15 cm line is how a marking
+    // check comes to be measuring the filter rather than the marking.
+    const ZOOM: u32 = 6;
+    let (w, h) = (t.width * ZOOM, t.height * ZOOM);
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let src = ((y / ZOOM) * t.width + (x / ZOOM)) as usize * 4;
+            let dst = (y * w + x) as usize * 4;
+            out[dst..dst + 4].copy_from_slice(&t.rgba[src..src + 4]);
+        }
+    }
+    image::RgbaImage::from_raw(w, h, out)
+        .context("texture did not fit its own dimensions")?
+        .save(path)
+        .with_context(|| format!("writing {}", path.display()))?;
+
+    let width_m = cartopolis_geo::road_texture::road_width_m(
+        match class {
+            RoadClass::Motorway => "motorway",
+            RoadClass::Carriageway => "motorway",
+            RoadClass::Major => "primary",
+            RoadClass::Minor => "residential",
+            RoadClass::Path => "footway",
+            RoadClass::Rail => "rail",
+        },
+        cartopolis_geo::road_texture::StreetFlags {
+            oneway: class == RoadClass::Carriageway,
+            ..Default::default()
+        },
+    );
+    tracing::info!(
+        path = %path.display(),
+        class = ?class,
+        across_m = width_m,
+        along_m = class.texture_length_m(),
+        "wrote texture"
+    );
+    Ok(())
 }

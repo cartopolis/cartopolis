@@ -2295,6 +2295,7 @@ dependencies = [
  "cartopolis_core",
  "cartopolis_geo",
  "clap",
+ "image",
  "tracing",
 ]
 

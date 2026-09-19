@@ -63,7 +63,7 @@ impl RoadClass {
         match self {
             Self::Motorway => 24.0,
             Self::Carriageway => 24.0,
-            Self::Major => 16.0,
+            Self::Major => 24.0,
             Self::Minor => 12.0,
             Self::Path => 4.0,
             Self::Rail => 4.8,
@@ -104,11 +104,13 @@ impl RoadClass {
     /// them uniform.
     fn wheel_paths(self) -> &'static [f32] {
         match self {
-            // Three lanes each way, so six lanes across the full width; only the
-            // inner four are used enough to show.
-            Self::Motorway => &[0.22, 0.30, 0.38, 0.62, 0.70, 0.78],
-            // One direction, three lanes across the whole texture.
-            Self::Carriageway => &[0.20, 0.30, 0.50, 0.60, 0.72, 0.82],
+            // Two lanes each way between the shoulder and the median, matching
+            // the marking layout above — a polished track outside its own lane
+            // line is a track in the hard shoulder, where no traffic runs.
+            Self::Motorway => &[0.185, 0.245, 0.345, 0.405, 0.595, 0.655, 0.755, 0.815],
+            // One direction, two lanes: shoulder to the right of the `kantstreep`
+            // at u = 0.75, so both tracks sit inboard of it.
+            Self::Carriageway => &[0.10, 0.22, 0.42, 0.54],
             // One lane each way.
             Self::Major => &[0.18, 0.34, 0.66, 0.82],
             Self::Minor => &[0.24, 0.40, 0.60, 0.76],
@@ -146,6 +148,16 @@ pub struct StreetFlags {
     /// carriageway"; on a residential street it means nothing about the width, so
     /// only the fast classes read it.
     pub oneway: bool,
+    /// Traffic runs one way **against** the way's own direction.
+    ///
+    /// Folded into `oneway` until 2026-09-19 and thrown away, which was fine
+    /// while nothing across the carriageway was asymmetric. A hard shoulder is:
+    /// it is on the right of the *traffic*, and the ribbon's `u` axis runs left
+    /// to right of the *geometry*. Those are opposite on a reversed way, so
+    /// without this a motorway's shoulder lands in the fast lane on roughly half
+    /// the features — worse than having no shoulder at all, and in a way that
+    /// looks like a texture bug rather than a data one.
+    pub oneway_reverse: bool,
     /// A slip road or ramp (OSM's `*_link`).
     pub link: bool,
 }
@@ -348,6 +360,42 @@ impl Marking {
     }
 }
 
+/// The painted part of a lane-division dash, and its repeat, in metres.
+///
+/// **The Dutch standard is 3 m of paint and a 9 m gap** outside the built-up area
+/// and on motorways (`nl.wikipedia.org/wiki/Wegmarkering`; the dash is 15 cm
+/// wide). Until 2026-09-19 the fast classes painted 4 m on the same 12 m repeat —
+/// the right rhythm with a third too much paint — and `Major` painted 3 m on an
+/// 8 m repeat, which is no standard at all: 3-and-5 is neither the rural 3-and-9
+/// nor the urban 1-and-3.
+///
+/// One constant for all three because they are one rule. The inside-the-town
+/// pattern (1 m and 3 m) is not reachable from here: a texture is per
+/// [`RoadClass`] and the class does not know whether it is in a town.
+///
+/// **The period must divide [`RoadClass::texture_length_m`] exactly**, or the
+/// pattern jumps at every texture wrap — a stutter down the road at a fixed
+/// interval, which reads as a tiling artifact rather than as a marking fault.
+/// `dash_period_tiles_the_texture` pins it, and moving `Major` to this period is
+/// why its repeat went from 16 m to 24 m.
+/// Where the `kantstreep` — the solid line between the running lanes and the hard
+/// shoulder — sits, as a fraction in from the *outer* edge of the tarmac.
+///
+/// A Dutch hard shoulder is 3 m. These are that 3 m over the two modelled widths
+/// [`road_width_m`] gives the fast classes: 22 m for a bidirectional motorway and
+/// 12 m for one carriageway of a dual one. Stated as the two ratios rather than
+/// computed, because a texture is built per class and has no width to divide by —
+/// `carriageway_shoulder_is_three_metres` is what keeps the two in step.
+const KANTSTREEP_U_22: f32 = 3.0 / 22.0;
+const KANTSTREEP_U_12: f32 = 3.0 / 12.0;
+
+/// Half-width of an edge line in `u`. A Dutch `kantstreep` is 20 cm, wider than
+/// the 15 cm of a lane division, and it is the line that carries at a distance.
+const EDGE_HALF_U: f32 = 0.009;
+
+const DASH_ON_M: f32 = 3.0;
+const DASH_PERIOD_M: f32 = 12.0;
+
 /// Traffic paint, and the two surface tones the classes are built from. Dimmer
 /// than real-world paint on purpose: this sits under the same sun as everything
 /// else, and a 0xFF white line blooms into a stripe of glare at midday.
@@ -359,41 +407,55 @@ const BALLAST: [u8; 3] = [0x77, 0x71, 0x69];
 const SLEEPER: [u8; 3] = [0x4C, 0x40, 0x36];
 const STEEL: [u8; 3] = [0x8E, 0x8C, 0x8A];
 
-/// Build the mip-0 surface for one class.
+/// What each class is painted with: base tarmac, grain strength, and the bands
+/// running along it.
 ///
-/// Pixel centres are sampled analytically against each band, so an edge line
-/// narrower than a texel still lands as a soft grey line instead of aliasing in
-/// and out of existence along the road.
-#[must_use]
-pub fn road_texture(class: RoadClass) -> RoadTexture {
-    let (base, grain, markings) = match class {
-        // Six lanes plus hard shoulders: solid shoulder lines, a solid pair for
-        // the median, dashed lane divisions each side.
+/// Split out of [`road_texture`] so the table can be *inspected* rather than only
+/// rasterised — `dash_period_tiles_the_texture` reads the dash periods straight
+/// off it. A rule stated in a doc comment and checked by nothing is how `Major`
+/// came to be measured against no standard at all.
+fn markings_of(class: RoadClass) -> ([u8; 3], f32, Vec<Marking>) {
+    match class {
+        // **Two lanes each way with a hard shoulder outside them**, laid out on
+        // the real 22 m: 3 m shoulder, 2x3.5 m lanes, a 2 m median, and the mirror
+        // of that. Both carriageways in one ribbon, so it is symmetric and needs
+        // no travel direction.
+        //
+        // It used to be three lanes each way and *no shoulder* — the outermost
+        // line sat at the very edge of the tarmac, so the width a shoulder should
+        // occupy was painted as a running lane. A hard shoulder is the most
+        // recognisable thing about a motorway from any angle: a wide unmarked
+        // strip outside a bright continuous line (the `kantstreep`). Compared
+        // against a photograph of the A7 on the Afsluitdijk, 2026-09-19.
         RoadClass::Motorway => (
             TARMAC_DARK,
             0.055,
             vec![
-                Marking::solid(0.030, 0.007, PAINT_WHITE),
-                Marking::solid(0.970, 0.007, PAINT_WHITE),
-                Marking::solid(0.480, 0.006, PAINT_WHITE),
-                Marking::solid(0.520, 0.006, PAINT_WHITE),
-                Marking::dashed(0.180, 0.005, PAINT_WHITE, 4.0, 12.0),
-                Marking::dashed(0.330, 0.005, PAINT_WHITE, 4.0, 12.0),
-                Marking::dashed(0.670, 0.005, PAINT_WHITE, 4.0, 12.0),
-                Marking::dashed(0.820, 0.005, PAINT_WHITE, 4.0, 12.0),
+                Marking::solid(KANTSTREEP_U_22, EDGE_HALF_U, PAINT_WHITE),
+                Marking::solid(1.0 - KANTSTREEP_U_22, EDGE_HALF_U, PAINT_WHITE),
+                Marking::solid(0.455, 0.006, PAINT_WHITE),
+                Marking::solid(0.545, 0.006, PAINT_WHITE),
+                Marking::dashed(0.295, 0.005, PAINT_WHITE, DASH_ON_M, DASH_PERIOD_M),
+                Marking::dashed(0.705, 0.005, PAINT_WHITE, DASH_ON_M, DASH_PERIOD_M),
             ],
         ),
-        // One direction of a dual carriageway (or a ramp): shoulder lines and
-        // lane dashes, and *no* median — the median is the daylight between this
-        // feature and the one carrying the other direction.
+        // One direction of a dual carriageway (or a ramp), on the real 12 m: a
+        // narrow strip against the median, two 3.5 m lanes, the `kantstreep`, and
+        // a 3 m hard shoulder. No median of its own — that is the daylight
+        // between this feature and the one carrying the other direction.
+        //
+        // **This one is asymmetric, and that is why `oneway_reverse` is now
+        // carried.** The shoulder is on the right of the *traffic*; `u` runs left
+        // to right of the *geometry*; on a reversed way those are opposite, and
+        // `tessellate_roads` flips `u` so the shoulder stays where a driver would
+        // find it.
         RoadClass::Carriageway => (
             TARMAC_DARK,
             0.055,
             vec![
-                Marking::solid(0.040, 0.007, PAINT_WHITE),
-                Marking::solid(0.960, 0.007, PAINT_WHITE),
-                Marking::dashed(0.340, 0.006, PAINT_WHITE, 4.0, 12.0),
-                Marking::dashed(0.670, 0.006, PAINT_WHITE, 4.0, 12.0),
+                Marking::solid(0.025, 0.006, PAINT_WHITE),
+                Marking::solid(1.0 - KANTSTREEP_U_12, EDGE_HALF_U, PAINT_WHITE),
+                Marking::dashed(0.317, 0.006, PAINT_WHITE, DASH_ON_M, DASH_PERIOD_M),
             ],
         ),
         RoadClass::Major => (
@@ -402,7 +464,7 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
             vec![
                 Marking::solid(0.045, 0.009, PAINT_WHITE),
                 Marking::solid(0.955, 0.009, PAINT_WHITE),
-                Marking::dashed(0.500, 0.008, PAINT_WHITE, 3.0, 8.0),
+                Marking::dashed(0.500, 0.008, PAINT_WHITE, DASH_ON_M, DASH_PERIOD_M),
             ],
         ),
         // Unmarked, but not featureless: two darker polished wheel tracks are
@@ -424,7 +486,17 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
                 Marking::solid(0.70, 0.030, STEEL),
             ],
         ),
-    };
+    }
+}
+
+/// Build the mip-0 surface for one class.
+///
+/// Pixel centres are sampled analytically against each band, so an edge line
+/// narrower than a texel still lands as a soft grey line instead of aliasing in
+/// and out of existence along the road.
+#[must_use]
+pub fn road_texture(class: RoadClass) -> RoadTexture {
+    let (base, grain, markings) = markings_of(class);
 
     let len_m = class.texture_length_m();
     let wheels = class.wheel_paths();
@@ -624,6 +696,119 @@ fn hash2(x: u32, y: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// **The hard shoulder is three metres wide on both fast classes.**
+    ///
+    /// A texture is built per class and has no width to divide by, so the
+    /// `kantstreep` positions are ratios — and a ratio is only right for the
+    /// width `road_width_m` actually hands out. This ties the two together: move
+    /// the modelled width of a motorway and this fails rather than quietly
+    /// painting a two-metre shoulder.
+    ///
+    /// Three metres is the Dutch standard (`vluchtstrook`), and it is what makes
+    /// a motorway read as a motorway: a wide unmarked strip outside a continuous
+    /// line. Until 2026-09-19 both classes had none at all — the outermost line
+    /// sat at the edge of the tarmac, so the shoulder's width was painted as a
+    /// running lane.
+    #[test]
+    fn the_hard_shoulder_is_three_metres() {
+        let two_way = road_width_m("motorway", StreetFlags::default());
+        let one_way = road_width_m(
+            "motorway",
+            StreetFlags {
+                oneway: true,
+                ..StreetFlags::default()
+            },
+        );
+        assert!(
+            (KANTSTREEP_U_22 * two_way - 3.0).abs() < 0.05,
+            "{two_way} m"
+        );
+        assert!(
+            (KANTSTREEP_U_12 * one_way - 3.0).abs() < 0.05,
+            "{one_way} m"
+        );
+    }
+
+    /// Nothing is painted in the hard shoulder, and no wheel runs there.
+    ///
+    /// The shoulder is the band outside the `kantstreep`. A lane dash out there
+    /// would be inventing a lane nobody may drive in, and a polished wheel track
+    /// would say traffic runs where it does not — both undo the thing the
+    /// shoulder is *for*, which is reading as empty.
+    #[test]
+    fn the_shoulder_carries_no_lane_markings_or_wheel_tracks() {
+        for (class, kantstreep) in [
+            (RoadClass::Motorway, KANTSTREEP_U_22),
+            (RoadClass::Carriageway, KANTSTREEP_U_12),
+        ] {
+            let outer = 1.0 - kantstreep;
+            let (_, _, markings) = markings_of(class);
+            for m in &markings {
+                if m.dash.is_none() {
+                    continue;
+                }
+                assert!(
+                    m.u < outer && (class != RoadClass::Motorway || m.u > kantstreep),
+                    "{class:?}: a lane dash at u={} lies in the hard shoulder",
+                    m.u
+                );
+            }
+            for w in class.wheel_paths() {
+                assert!(
+                    *w < outer && (class != RoadClass::Motorway || *w > kantstreep),
+                    "{class:?}: a wheel track at u={w} runs in the hard shoulder"
+                );
+            }
+        }
+    }
+
+    /// **A dash period that does not divide the texture's repeat stutters.**
+    ///
+    /// The texture is `texture_length_m` long and tiles along the road, so a dash
+    /// pattern whose period does not fit a whole number of times is cut mid-dash
+    /// at every wrap — a rhythm break at a fixed interval down the whole street.
+    /// It is a tiling artifact that reads as a marking fault, and the only way to
+    /// see it is to drive a long enough straight.
+    ///
+    /// The rule was written in `Marking::dash`'s doc and enforced by nothing,
+    /// which is how `Major` came to be measured for the wrong standard: it tiled
+    /// correctly at 3-and-5 over 16 m, so nothing objected.
+    #[test]
+    fn dash_period_tiles_the_texture() {
+        for class in [
+            RoadClass::Motorway,
+            RoadClass::Carriageway,
+            RoadClass::Major,
+            RoadClass::Minor,
+            RoadClass::Path,
+            RoadClass::Rail,
+        ] {
+            let len = class.texture_length_m();
+            let (_, _, markings) = markings_of(class);
+            for m in &markings {
+                let Some((on, period)) = m.dash else { continue };
+                assert!(on < period, "{class:?}: a dash longer than its period");
+                let repeats = len / period;
+                assert!(
+                    (repeats - repeats.round()).abs() < 1e-4,
+                    "{class:?}: {period} m dash period does not divide a {len} m \
+                     texture ({repeats} repeats) — the pattern jumps at every wrap"
+                );
+            }
+        }
+    }
+
+    /// The lane dash is the Dutch standard: 3 m painted, 9 m gap.
+    ///
+    /// Pinned as a number rather than left to the constant's doc, because this is
+    /// a fact about roads in the world and not a choice this code gets to make.
+    /// `nl.wikipedia.org/wiki/Wegmarkering`.
+    #[test]
+    fn lane_dashes_are_three_metres_on_nine_off() {
+        assert!((DASH_ON_M - 3.0).abs() < f32::EPSILON);
+        assert!((DASH_PERIOD_M - DASH_ON_M - 9.0).abs() < f32::EPSILON);
+    }
+
     use super::*;
 
     const CLASSES: [RoadClass; 6] = [
@@ -775,7 +960,7 @@ mod tests {
     fn a_one_way_fast_road_is_half_a_carriageway() {
         let oneway = StreetFlags {
             oneway: true,
-            link: false,
+            ..StreetFlags::default()
         };
         let both = StreetFlags::default();
         for kind in ["motorway", "trunk", "primary", "secondary"] {
@@ -801,6 +986,7 @@ mod tests {
         let link = StreetFlags {
             oneway: true,
             link: true,
+            ..StreetFlags::default()
         };
         for kind in ["motorway", "trunk", "primary"] {
             assert!(
