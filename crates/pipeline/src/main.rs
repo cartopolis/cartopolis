@@ -36,6 +36,7 @@
 //! `docs/guides/pipeline.md` is how to run it.
 
 mod ground;
+mod terrain;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -80,6 +81,27 @@ pub enum Progress {
         x: u32,
         y: u32,
         error: String,
+    },
+    /// One map cell's ground heights, built and written.
+    Terrain {
+        z: u32,
+        x: u32,
+        y: u32,
+        grid: u32,
+        /// Metres between the cell's lowest and highest measured ground.
+        relief_m: f32,
+        /// Samples inside a road corridor, margin included.
+        road_samples: usize,
+        /// Samples the flattening actually moved. Reported beside `road_samples`
+        /// because "there were roads" and "the grading did something" are
+        /// different claims, and a stage that silently did nothing looks exactly
+        /// like a stage with nothing to do.
+        flattened: usize,
+        /// Samples the survey has no reading for — over water it has none at all,
+        /// so a canal city is expected to carry a few per cent.
+        no_data: usize,
+        bytes: usize,
+        millis: u128,
     },
     /// The stage finished.
     Done {
@@ -163,6 +185,63 @@ enum Stage {
     /// apart by ordering them, and ordering stops working the moment the ground
     /// has a gradient (`docs/notes/the-ground-stack.md`).
     Ground(GroundArgs),
+
+    /// Build the ground heights: the national height survey, resampled onto each
+    /// cell and flattened along its roads.
+    ///
+    /// The flattening is the point. Every surface the map draws is bent onto this
+    /// ground against its own triangles, so where the ground curves between one
+    /// surface's corners and another's they disagree about where it is — by up to
+    /// 2.8 m on a handset, against the ten millimetres the depth order has to work
+    /// in. Removing the curvature under a road removes the disagreement, including
+    /// for the pairs no cut can reach.
+    Terrain(TerrainArgs),
+}
+
+#[derive(clap::Args)]
+struct TerrainArgs {
+    /// The area to build, as `west,south,east,north` in degrees.
+    #[arg(long, value_name = "W,S,E,N", value_parser = parse_bbox)]
+    bbox: [f64; 4],
+
+    /// Which zoom's cells to build. Must match the `ground` stage's, or the
+    /// heights and the surfaces describe different pieces of ground.
+    #[arg(long, default_value_t = 14)]
+    zoom: u32,
+
+    /// Samples per side of each written cell. The default is ~2.9 m ground at
+    /// zoom 14, a little finer than the client's own field.
+    #[arg(long, default_value_t = terrain::DEFAULT_GRID)]
+    grid: u32,
+
+    /// Vector tile source, for the road shapes the flattening follows.
+    #[arg(
+        long,
+        value_name = "TEMPLATE",
+        conflicts_with = "tile_dir",
+        required_unless_present = "tile_dir"
+    )]
+    tile_url: Option<String>,
+
+    /// Vector tiles already on disk, as `{z}/{x}/{y}.mvt` under this directory.
+    #[arg(long, value_name = "DIR")]
+    tile_dir: Option<std::path::PathBuf>,
+
+    /// Where the prepared heights go: `{z}/{x}/{y}.ctrn` under here.
+    #[arg(long, value_name = "DIR")]
+    out: std::path::PathBuf,
+
+    /// How many cells to build at once.
+    ///
+    /// **Lower than the ground stage's default on purpose**: every cell is a
+    /// request to a shared public service, and being a good guest on it is worth
+    /// more than finishing a city a few minutes sooner.
+    #[arg(long, default_value_t = 3)]
+    jobs: usize,
+
+    /// Rebuild cells that are already present and readable.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(clap::Args)]
@@ -247,7 +326,60 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.stage {
         Stage::Ground(args) => run_ground(&args),
+        Stage::Terrain(args) => run_terrain(&args),
     }
+}
+
+/// Where a stage gets its vector tiles, from the flags both stages share.
+fn tiles_from(tile_url: Option<&String>, tile_dir: Option<&std::path::PathBuf>) -> Result<Tiles> {
+    match (tile_url, tile_dir) {
+        (Some(template), _) => Ok(Tiles::Url {
+            template: template.clone(),
+            agent: ureq::AgentBuilder::new()
+                // A stage is a batch job and a hung socket would stall a whole city
+                // behind one cell.
+                .timeout_connect(std::time::Duration::from_secs(10))
+                .timeout_read(std::time::Duration::from_secs(60))
+                .build(),
+        }),
+        (None, Some(dir)) => Ok(Tiles::Dir(dir.clone())),
+        (None, None) => anyhow::bail!("give either --tile-url or --tile-dir"),
+    }
+}
+
+fn run_terrain(args: &TerrainArgs) -> Result<()> {
+    let cells = ground::cells_in(args.bbox, args.zoom);
+    anyhow::ensure!(
+        !cells.is_empty(),
+        "that box contains no cells at zoom {}",
+        args.zoom
+    );
+    anyhow::ensure!(
+        (2..=cartopolis_geo::terrain_file::MAX_GRID).contains(&args.grid),
+        "--grid must be between 2 and {}",
+        cartopolis_geo::terrain_file::MAX_GRID
+    );
+    let tiles = tiles_from(args.tile_url.as_ref(), args.tile_dir.as_ref())?;
+
+    let started = std::time::Instant::now();
+    Progress::Start {
+        stage: "terrain",
+        cells: cells.len(),
+        jobs: args.jobs,
+    }
+    .emit();
+
+    let (done, failed) = terrain::run(&cells, &tiles, &args.out, args.grid, args.jobs, args.force)?;
+
+    Progress::Done {
+        stage: "terrain",
+        cells: done,
+        failed,
+        millis: started.elapsed().as_millis(),
+    }
+    .emit();
+    anyhow::ensure!(failed == 0, "{failed} of {} cells failed", cells.len());
+    Ok(())
 }
 
 fn run_ground(args: &GroundArgs) -> Result<()> {
@@ -262,19 +394,7 @@ fn run_ground(args: &GroundArgs) -> Result<()> {
         std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get)
     });
 
-    let tiles = match (&args.tile_url, &args.tile_dir) {
-        (Some(template), _) => Tiles::Url {
-            template: template.clone(),
-            agent: ureq::AgentBuilder::new()
-                // A stage is a batch job and a hung socket would stall a whole
-                // city behind one cell.
-                .timeout_connect(std::time::Duration::from_secs(10))
-                .timeout_read(std::time::Duration::from_secs(60))
-                .build(),
-        },
-        (None, Some(dir)) => Tiles::Dir(dir.clone()),
-        (None, None) => anyhow::bail!("give either --tile-url or --tile-dir"),
-    };
+    let tiles = tiles_from(args.tile_url.as_ref(), args.tile_dir.as_ref())?;
 
     let started = std::time::Instant::now();
     Progress::Start {
