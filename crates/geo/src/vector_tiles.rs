@@ -1341,18 +1341,35 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
         // at is a line nothing exercises. `brownfield` is deliberately left out —
         // derelict land is scrubby rather than green, and the raster default
         // already paints it grass, so it stays consistent either way.
+        //
+        // `wet_meadow`, `marsh`, `greenfield` and `golf_course` were added on
+        // 2026-09-19 from the same kind of evidence, gathered the new way: a
+        // `carto-view --check` sweep of the 48 z14 cells around Groningen reports
+        // every kind the table does not name, so "what are real tiles asking for?"
+        // is now a command rather than a thing somebody has to notice. Counts over
+        // that sweep: 19, 2, 1 and 1 features.
+        //
+        // There is no wetland group to put the first two in and inventing one would
+        // be a rung, a palette entry and a texture for two features; a wet meadow is
+        // a meadow, and the ground it stands on is the thing that was missing.
         "grass" | "meadow" | "park" | "garden" | "farmland" | "orchard" | "scrub" | "heath"
         | "allotments" | "village_green" | "recreation_ground" | "grassland" | "cemetery"
-        | "playground" | "plant_nursery" => SurfaceGroup::Grass,
+        | "playground" | "plant_nursery" | "wet_meadow" | "marsh" | "greenfield"
+        | "golf_course" => SurfaceGroup::Grass,
         "sand" | "beach" | "bare_rock" | "scree" => SurfaceGroup::Sand,
         // `railway` is here for the opposite reason to the four above, and it is
         // the one the repaint made urgent: land the table does not name falls
         // through to the raster's `GRASS` default, which at the old saturation
         // was a pale sage nobody queried and is now a vivid green. A railway yard
         // is ballast, not a meadow.
-        "residential" | "industrial" | "commercial" | "retail" | "quarry" | "railway" => {
-            SurfaceGroup::Built
-        }
+        // `farmyard` (8 features over the Groningen sweep) is here for exactly the
+        // reason `railway` is, and is the only kind in that sweep the map was
+        // actively drawing *wrong* rather than merely leaving as a hole: it is the
+        // hard-surfaced yard a farm's buildings stand around — concrete, gravel,
+        // silage clamps — and an unnamed kind falls through to the raster's `GRASS`
+        // default, so every farm in the countryside had a meadow for a yard.
+        "residential" | "industrial" | "commercial" | "retail" | "quarry" | "railway"
+        | "farmyard" => SurfaceGroup::Built,
         _ => return None,
     })
 }
