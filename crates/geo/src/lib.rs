@@ -86,6 +86,11 @@ pub mod presets;
 // from under the carriageways. Everything else in it stays crate-private — a
 // `Ribbon` is a stage in a cut, not a thing a caller holds.
 pub mod road_stitch;
+// Flattening the height survey along the roads, so a carriageway is graded rather
+// than draped over every bump. The other half of the ground-tearing story: the cut
+// above removes the overlaps it can reach, and this removes the curvature that made
+// an overlap visible at all.
+pub mod road_grade;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;
