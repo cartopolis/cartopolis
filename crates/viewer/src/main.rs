@@ -206,6 +206,16 @@ struct Cli {
     #[arg(long)]
     census: bool,
 
+    /// Metres to lift a bridge deck and the roads it carries.
+    ///
+    /// **Not a measurement and cannot be one**: a deck's height is not in the
+    /// tile. The client measures it from AHN per deck, some frames after the
+    /// geometry lands. A flat lift answers what this harness is for — is the road
+    /// continuous, where are the joins, what does the deck cut out of the ground
+    /// — and says nothing about how high any real bridge is.
+    #[arg(long, value_name = "METRES", default_value_t = 5.0)]
+    deck_height: f32,
+
     /// Measure what was built and print it, instead of drawing.
     ///
     /// **The half of this harness a picture cannot be.** Both faults chased on
@@ -281,6 +291,10 @@ struct Cell {
     /// the readiest explanation for ground nothing covers, and nothing else in the
     /// picture can point at them.
     unhandled: Vec<(String, usize)>,
+    /// `(bridge decks, road meshes riding on one)`. Reported by `--check` rather
+    /// than logged, because `tessellate` runs during `load` — before Bevy installs
+    /// a log subscriber — so anything it logs goes nowhere at all.
+    bridges: (usize, usize),
     /// Every layer, its feature count and its kinds — see `--census`.
     census: Vec<(String, usize, Vec<(String, usize)>)>,
 }
@@ -454,13 +468,14 @@ fn load(cli: &Cli) -> Result<Loaded> {
             let (lat, _) = cartopolis_core::world::tile_to_lat_lng(x, y, z);
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
-        match tessellate(&tile, tile_m, !cli.no_cut) {
-            Ok(meshes) => cells.push(Cell {
+        match tessellate(&tile, tile_m, !cli.no_cut, cli.deck_height) {
+            Ok((meshes, bridges)) => cells.push(Cell {
                 z,
                 x,
                 y,
                 tile_m,
                 meshes,
+                bridges,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
                 census: vector_tiles::layer_census(&tile),
             }),
@@ -477,7 +492,12 @@ fn load(cli: &Cli) -> Result<Loaded> {
 /// before the roads because a bridge-flagged street cuts itself out of the deck it
 /// rides, and the fills come out from under the carriageways because otherwise
 /// three quarters of every street has a second surface beneath it.
-fn tessellate(tile: &TileData, tile_m: f32, cut: bool) -> Result<Vec<SurfaceMesh>> {
+fn tessellate(
+    tile: &TileData,
+    tile_m: f32,
+    cut: bool,
+    deck_m: f32,
+) -> Result<(Vec<SurfaceMesh>, (usize, usize))> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
         .context("ground fills")?;
@@ -492,6 +512,49 @@ fn tessellate(tile: &TileData, tile_m: f32, cut: bool) -> Result<Vec<SurfaceMesh
     }
     meshes.extend(roads.ground);
 
+    // **The bridges, which this harness used to throw away.**
+    //
+    // `tessellate_roads` hands back a deck's carriageways separately, tagged with
+    // the deck they belong to and still at `y = 0`, because their height is not in
+    // the tile: the client measures it from AHN per deck, some frames later. This
+    // read `roads.ground` and dropped `on_deck` on the floor, so **every
+    // bridge-carried road was missing from every picture** — and the hole it left
+    // is a clean square-ended gap in an otherwise continuous road, which is
+    // exactly what a real tessellation fault looks like. I spent a while today
+    // measuring one of those over the Groningen railway before noticing it was
+    // the instrument.
+    //
+    // There is no AHN here, so the lift is a flat `--deck-height` rather than a
+    // measurement. That is honest for what this harness answers — whether the
+    // geometry is continuous, where the joins are, what the deck cuts out of the
+    // ground — and it is not evidence about a deck's real height, which nothing
+    // in a tile could be.
+    for deck in &decks {
+        if deck.indices.is_empty() {
+            continue;
+        }
+        meshes.push(SurfaceMesh {
+            group: SurfaceGroup::BridgeDeck,
+            positions: deck
+                .positions
+                .iter()
+                .map(|p| [p[0], p[1] + deck_m, p[2]])
+                .collect(),
+            normals: vec![[0.0, 1.0, 0.0]; deck.positions.len()],
+            uvs: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+            indices: deck.indices.clone(),
+        });
+    }
+    let bridges = (decks.len(), roads.on_deck.len());
+    for (_, mut m) in roads.on_deck {
+        for p in &mut m.positions {
+            p[1] += deck_m;
+        }
+        meshes.push(m);
+    }
+
     // The roads that run under the ground, and the holes their open approaches
     // need cut in it — without which an entrance is roofed by the ground sheet.
     let tunnels = cartopolis_geo::tunnels::build_tunnels(tile, tile_m, None);
@@ -499,7 +562,7 @@ fn tessellate(tile: &TileData, tile_m: f32, cut: bool) -> Result<Vec<SurfaceMesh
         cartopolis_geo::tunnels::cut_ground(&mut meshes, &tunnels.openings);
     }
     meshes.extend(tunnels.meshes);
-    Ok(meshes)
+    Ok((meshes, bridges))
 }
 
 /// Samples per side the coverage and overlap measurements use. 512 over a
@@ -563,6 +626,12 @@ fn report(cell: &Cell) {
     #[allow(clippy::cast_precision_loss)]
     let pct = |n: usize| 100.0 * n as f32 / (CHECK_SAMPLES * CHECK_SAMPLES) as f32;
     println!("  covered {:.1} % of the cell", pct(count(&any)));
+    if cell.bridges.0 > 0 || cell.bridges.1 > 0 {
+        println!(
+            "  {} bridge deck(s), {} road mesh(es) riding on one",
+            cell.bridges.0, cell.bridges.1
+        );
+    }
 
     for g in &groups {
         let standing = if g.sheet { "" } else { "   (stands)" };
