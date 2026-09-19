@@ -790,7 +790,6 @@ pub fn update_terrain_field(
     mut height: ResMut<HeightLayer>,
     stream: Res<MapStream>,
     levels: Res<crate::systems::water_levels::WaterLevels>,
-    mut prepared: ResMut<crate::systems::prepared_terrain::PreparedTerrain>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -825,80 +824,6 @@ pub fn update_terrain_field(
         .terrain_grid
         .clamp(65, TERRAIN_GRID);
 
-    // **Ground the pipeline already worked out wins over measuring it again.**
-    // `carto-pipeline terrain` has closed the survey's holes and graded it along
-    // the roads; a client baking its own survey gets the ground the laser saw,
-    // bumps and all, and the grading exists nowhere on this side.
-    //
-    // It is an override: no source, a cell the pipeline never covered, or a file
-    // this build cannot read all fall through to the survey below. Most of the
-    // world will never have prepared cells.
-    if prepared.is_enabled() {
-        // `None` while cells are still on their way. The field simply stays as it
-        // was for those frames, exactly as it does waiting for a survey patch.
-        if let Some(cells) =
-            crate::systems::prepared_terrain::cells_for(&mut prepared, anchor, TERRAIN_HALF_M)
-        {
-            let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
-            let sink = field.coarse_sink.clone();
-            let gen = stream.anchor_generation;
-            field.coarse_job = Some(gen);
-            // Once per anchor, and worth a line: "the ground you are standing on
-            // was prepared" is otherwise unanswerable from outside, and it is the
-            // first thing to check when a city looks like the survey again. The
-            // pair matters — cells *answered* against cells that actually had a
-            // file — because a source pointed at an empty directory and no source
-            // at all produce the same picture.
-            let (answered, with_file) = prepared.counts();
-            tracing::info!(
-                cells = cells.len(),
-                answered,
-                with_file,
-                "terrain from prepared ground"
-            );
-            crate::platform::workers::submit(
-                "terrain_field",
-                Box::new(move || {
-                    // Assembled, not baked: the carve and the hole fill the survey
-                    // path runs next have already happened on the server, and doing
-                    // them twice would smooth ground that is already right.
-                    let baked = crate::systems::prepared_terrain::assemble(
-                        &cells,
-                        anchor,
-                        TERRAIN_HALF_M,
-                        grid,
-                    )
-                    .map(|(mut samples, datum, _missing)| {
-                        // The one thing the bake does that still applies: fade to
-                        // flat at the box's own edge, or the prepared ground meets
-                        // the world beyond it at a cliff that moves with the camera.
-                        for z in 0..grid {
-                            for x in 0..grid {
-                                let i = z * grid + x;
-                                if samples[i].is_finite() {
-                                    samples[i] *= edge_taper(x, z, grid);
-                                } else {
-                                    samples[i] = 0.0;
-                                }
-                            }
-                        }
-                        (samples, datum, 0)
-                    });
-                    if let Ok(mut g) = sink.lock() {
-                        *g = Some(CoarseBake {
-                            gen,
-                            grid,
-                            water_rev,
-                            water,
-                            baked,
-                        });
-                    }
-                }),
-            );
-            return;
-        }
-        return;
-    }
     let req = field_request(anchor, TERRAIN_HALF_M, grid);
     // `patch` queues the fetch on the first ask and answers `None` until it lands;
     // the field simply stays flat for those few frames.

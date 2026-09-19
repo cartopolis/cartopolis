@@ -1,44 +1,23 @@
-# `carto-view` — the harness the pipeline is checked against.
+# `carto-view` — a quick look at a vector tile's ground.
 #
-# # The split this exists to hold
+# Reads the same tiles the client reads and runs the same tessellation
+# (`cartopolis_geo`), then draws it. Nothing new on the wire and no new format:
+# what it shows is what the client would build from the same bytes.
 #
-# The **pipeline** is responsible for the structure of the world: where the ground
-# is, where the roads are, what sits on what, which surface covers which. The
-# **viewer** is assumed correct. So a wrong picture here means the pipeline is
-# wrong, and fixing world layout means fixing the pipeline and looking again.
+# **Why not the client itself.** Looking at a change to the ground meant launching
+# it — sign-in, tile streamer, egui, and a capture waiting for all of it to go
+# quiet, six minutes a viewpoint on a software renderer. This is seconds, and the
+# same input gives the same picture.
 #
-# That assumption is only worth anything if this stays small and still. It draws
-# with stock Bevy materials and carries none of the client's rendering — no custom
-# materials, no depth-bias shader, no ground-detail normal extension, no
-# floating-origin transform propagation. Not because those are wrong, but because
-# a harness that shared them could not answer the only question it is for: when the
-# picture is wrong, which side did it?
-#
-# # Why it does not depend on `cartopolis`
-#
-# Two reasons, and the second is the one that matters.
-#
-# It would rebuild whenever the client changed — and the client is 121.8 MB of link
-# and the thing under active development, so the instrument would be as slow and as
-# unstable as the thing it is meant to give a fixed reading of.
-#
+# It does **not** depend on `cartopolis`: it would rebuild whenever the client
+# changed — 121.8 MB of link, and the thing under active development — so the
+# instrument would be as unstable as what it is meant to give a fixed reading of.
 # And a fault in shared rendering code would appear identically in both, which is
-# exactly the case a harness must be able to tell apart. Two independent renderers
-# disagreeing is information; one renderer agreeing with itself is not.
+# the one case a harness has to be able to tell apart.
 #
-# # What it does share, and why that is not the same thing
-#
-# `cartopolis_geo` — the prepared-ground reader, the surface list, the depth
-# ladder. That is what the bytes *mean*, not how they are drawn, and the two sides
-# must agree on it or nothing they show is comparable. Sharing a definition of the
-# data is what makes the comparison possible; sharing the drawing is what would
-# make it meaningless.
-#
-# `bevy.workspace = true` for the same reason in the other direction: the engine is
-# a third-party dependency both happen to use, and naming a different feature set
-# here would fork the whole stack into two compiled copies — which has already
-# happened in this tree once, from one dependency's default feature. Identical
-# features means the engine is built once and this costs a link, not a second Bevy.
+# `bevy.workspace = true` takes the client's exact feature set, so the engine is
+# compiled once for the workspace and this costs one more link rather than a
+# second Bevy.
 [package]
 name = "cartopolis_viewer"
 version.workspace = true

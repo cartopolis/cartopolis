@@ -24,25 +24,12 @@ mod flat_fill;
 pub mod furniture;
 // The tiling roughness map the flat ground groups sample, so paving and built
 // land stop being one perfectly uniform sheet beside a textured road.
-// The prepared-ground file: a cell's finished surfaces as bytes, written by
-// `carto-pipeline` and read by the client instead of being derived on the device.
-// Here rather than in either of them precisely so there is one definition — the
-// writer and the reader are the same code, which is the whole reason the pipeline
-// is in this repository.
-pub mod ground_file;
 // **The** order of everything drawn flat on the ground: one ordered list, from
 // which both the depth bias and the millimetre height are derived. Every
 // recurring z-fight in this tree was two statements of that order disagreeing, so
 // there is now only one.
 pub mod ground_stack;
 pub mod ground_texture;
-// The Dutch height survey, as far as it is arithmetic: the request, the national
-// grid conversion, the decoder. Shared because the client and the pipeline have to
-// agree about where the ground is to the centimetre — two implementations of that
-// sum disagree by metres over a canal bank, and every surface drawn on that ground
-// then tears through every other one. The *fetching* stays with each caller, which
-// the module note argues is a genuinely different problem on each side.
-pub mod height_survey;
 pub mod mip;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split
 // from `furniture` rather than folded into it because the claim is different: a
@@ -114,11 +101,6 @@ pub mod traffic;
 // Roads that run under the ground. Split from `vector_tiles` rather than folded
 // into `tessellate_roads` because a bore is not on the road sheet: it has its own
 // depth, its own walls and roof, and a hole it needs cut in the ground.
-// The prepared-terrain file: a cell's ground heights, flattened along its roads.
-// Beside `ground_file` rather than inside it because the two change for different
-// reasons — a city's roads move weekly with the map, its ground moves when the
-// survey is re-flown, years apart.
-pub mod terrain_file;
 pub mod tunnels;
 pub mod turf;
 pub mod vector_tiles;

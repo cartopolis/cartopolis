@@ -1,22 +1,31 @@
-//! `carto-view` — draw what the pipeline built, and nothing else.
+//! `carto-view` — look at a vector tile's ground, fast.
 //!
-//! The pipeline owns the structure of the world; this is assumed correct. So a
-//! wrong picture here is a statement about the pipeline, which is the whole reason
-//! it carries none of the client's rendering — see the manifest.
-//!
-//! It reads the prepared cells `carto-pipeline ground` writes
-//! (`cartopolis_geo::ground_file`) and draws them with stock materials. No tile
-//! streamer, no height survey, no simulation, no sign-in, no user interface: what
-//! it shows is a function of the files on disk and the camera, and of nothing that
-//! happened to finish arriving.
+//! Reads the **same tiles the client reads** and runs the **same tessellation the
+//! client runs** (`cartopolis_geo`), then draws the result with stock materials. No
+//! streaming, no height survey, no simulation, no sign-in, no user interface: what
+//! it shows is a function of the tiles and the camera, and of nothing that happened
+//! to finish arriving.
 //!
 //! ```bash
-//! carto-view --cells /data/map/ground --shot /tmp/ground.png --look=-35,45
+//! carto-view --tile-dir /tmp/tiles --cells 14/8489/5321 --shot /tmp/ground.png
 //! ```
 //!
-//! Headless by default, because the machines this has to run on are servers and
-//! containers with no display at all. `--window` asks for one where there is
-//! something to put it on.
+//! # Why it is not the client
+//!
+//! Looking at a change to the ground meant launching the whole client: a sign-in
+//! path, a tile streamer, an egui stack, and a capture that waits for all of it to
+//! go quiet — six minutes a viewpoint on a software renderer, and a picture that
+//! depended on what had arrived. This is seconds, and the same input gives the
+//! same picture every time.
+//!
+//! It deliberately carries **none of the client's rendering** — no custom
+//! materials, no depth-bias pass, no atmosphere, and shadows off, because a dark
+//! band across a surface is what a ground fault looks like too. What it shares is
+//! `cartopolis_geo`: the tessellation, the surface list and the depth ladder. That
+//! is what the tiles *mean*, not how they are drawn.
+//!
+//! Headless by default — the machines this runs on have no display. `--window`
+//! asks for one where there is something to put it on.
 
 use anyhow::{Context, Result};
 use bevy::asset::RenderAssetUsages;
@@ -28,47 +37,39 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use clap::Parser;
 
-use cartopolis_geo::ground_file::{self, GroundFile};
-use cartopolis_geo::terrain_file::{self, TerrainFile};
-use cartopolis_geo::vector_tiles::SurfaceGroup;
+use cartopolis_geo::road_texture::RoadClass;
+use cartopolis_geo::vector_tiles::{self, SurfaceGroup, SurfaceMesh, TileData};
 
 #[derive(Parser, Resource, Clone)]
 #[command(
     name = "carto-view",
-    about = "Draw prepared map cells, to confirm what the pipeline built."
+    about = "Draw a vector tile's ground, without launching the client."
 )]
 struct Cli {
-    /// Directory of prepared cells, `{z}/{x}/{y}.cgnd` — what `carto-pipeline
-    /// ground --out` wrote.
+    /// Tiles on disk, as `{z}/{x}/{y}.mvt` under this directory.
     #[arg(long, value_name = "DIR")]
-    cells: std::path::PathBuf,
+    tile_dir: std::path::PathBuf,
 
-    /// Directory of prepared ground heights, `{z}/{x}/{y}.ctrn` — what
-    /// `carto-pipeline terrain --out` wrote. Without it the ground is drawn flat,
-    /// which is what the surfaces alone describe.
-    #[arg(long, value_name = "DIR")]
-    terrain: Option<std::path::PathBuf>,
+    /// Which cells to draw, as `z/x/y`. Repeatable.
+    #[arg(long, value_name = "Z/X/Y", required = true, value_parser = parse_cell)]
+    cells: Vec<(u32, i64, i64)>,
 
     /// Write one frame here and exit.
     #[arg(long, value_name = "PATH")]
     shot: Option<std::path::PathBuf>,
-
-    /// Stand the camera at `lat,lng,altitude` and look along `--look`.
-    ///
-    /// **The same convention `docs/shots.toml` uses**, deliberately: a viewpoint
-    /// found once should be typeable into either instrument and land in the same
-    /// place. Without it the camera can only be framed from the middle of whatever
-    /// happens to be loaded, which moves when the box does.
-    #[arg(long, value_name = "LAT,LNG,ALT", value_parser = parse_at)]
-    at: Option<(f64, f64, f32)>,
 
     /// Camera pitch and yaw in degrees. Note the `=`: clap reads a leading `-35`
     /// as a flag otherwise.
     #[arg(long, value_name = "PITCH,YAW", default_value = "-35,45", value_parser = parse_look)]
     look: (f32, f32),
 
-    /// Metres back from the middle of what was loaded. The default frames all of
-    /// it, which is what you want once and never again.
+    /// Stand the camera at `lat,lng,altitude` and look along `--look`. The same
+    /// convention `docs/shots.toml` uses, so a viewpoint found once works in
+    /// either instrument.
+    #[arg(long, value_name = "LAT,LNG,ALT", value_parser = parse_at)]
+    at: Option<(f64, f64, f32)>,
+
+    /// Metres back from the middle of what was loaded, when `--at` is not given.
     #[arg(long, value_name = "METRES")]
     distance: Option<f32>,
 
@@ -80,49 +81,48 @@ struct Cli {
     #[arg(long)]
     window: bool,
 
-    /// Camera exposure, as a photographic EV100.
-    ///
-    /// Adjustable because it is the one setting that decides whether ground *shape*
+    /// Camera exposure as a photographic EV100. It decides whether ground *shape*
     /// is visible at all: over-expose and every surface clips to white, taking the
-    /// shading with it, and relief becomes invisible in a picture taken to look at
-    /// relief. 15 is daylight and pairs with the physical sunlight below; lower is
-    /// brighter.
+    /// shading with it. 15 is daylight and pairs with the physical sunlight below.
     #[arg(long, value_name = "EV100", default_value_t = 15.0)]
     exposure: f32,
 
-    /// Metres below the ground to lay the checkered underlay. Raise it if a deep
-    /// cutting reaches through.
+    /// Metres below the ground to lay the checkered underlay.
     #[arg(long, value_name = "METRES", default_value_t = 30.0)]
     under: f32,
 
     /// Draw only the surface groups whose name contains this, case-insensitively —
-    /// `--only tunnel`, `--only road`, `--only water`.
+    /// `--only road`, `--only water`.
     ///
     /// **The diagnostic for "is it there at all".** Reading presence off a picture
     /// of everything is how a surface gets called missing when it is merely behind
     /// something, or called present when the thing you are looking at is its
-    /// neighbour. Drawing one group alone answers it and cannot be misread.
+    /// neighbour.
     #[arg(long, value_name = "SUBSTRING")]
     only: Option<String>,
 
-    /// Draw every surface from both sides.
-    ///
-    /// **The diagnostic for "missing or facing away".** A ground surface wound the
-    /// wrong way round is invisible from above and identical to one that was never
-    /// built; with this on it appears. That distinction is otherwise very hard to
-    /// make from a picture, and this tree has shipped a downward-wound route line
-    /// before for exactly that reason.
+    /// Draw every surface from both sides — the diagnostic for "missing or facing
+    /// away". A ground surface wound the wrong way round is invisible from above
+    /// and identical to one that was never built.
     #[arg(long)]
     double_sided: bool,
 
-    /// Draw every surface in one tone instead of its own, so the *shape* of the
-    /// ground is what you see.
-    ///
-    /// The fault this was built to look at is two surfaces fighting over one piece
-    /// of ground, and in the map's own palette both of them are usually pale —
-    /// which is a large part of why it stayed invisible in a day of captures.
+    /// Draw every surface in one tone, so the *shape* of the ground is what you
+    /// see rather than the map's colours.
     #[arg(long)]
     plain: bool,
+}
+
+fn parse_cell(s: &str) -> Result<(u32, i64, i64), String> {
+    let p: Vec<&str> = s.split('/').collect();
+    if p.len() != 3 {
+        return Err("expected Z/X/Y".into());
+    }
+    Ok((
+        p[0].trim().parse().map_err(|_| "zoom is not a number")?,
+        p[1].trim().parse().map_err(|_| "x is not a number")?,
+        p[2].trim().parse().map_err(|_| "y is not a number")?,
+    ))
 }
 
 fn parse_look(s: &str) -> Result<(f32, f32), String> {
@@ -153,9 +153,6 @@ fn parse_at(s: &str) -> Result<(f64, f64, f32), String> {
     if !(-85.05..=85.05).contains(&lat) {
         return Err("latitude is outside Web Mercator's -85.05..85.05".into());
     }
-    if !(-180.0..=180.0).contains(&lng) {
-        return Err("longitude is outside -180..180".into());
-    }
     Ok((lat, lng, alt))
 }
 
@@ -169,24 +166,39 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-/// Everything loaded off disk, and where it sits.
-#[derive(Resource)]
-struct Loaded {
-    cells: Vec<GroundFile>,
-    /// Ground heights per cell, by `(x, y)`. Empty when none were given, which
-    /// draws everything flat.
-    heights: std::collections::HashMap<(u32, u32), TerrainFile>,
-    /// Ground metres across one cell. A tile's width is a function of latitude and
-    /// the file carries only its tile coordinate — which *is* a latitude.
-    tile_m: f64,
-    /// The cell everything is placed relative to, so vertex positions stay near the
-    /// origin: a tile index is five digits and a cell is ~1.5 km, so absolute tile
-    /// metres would put a city hundreds of kilometres out and spend the whole of
-    /// `f32`'s precision getting there.
-    origin: (u32, u32),
+/// One cell's tessellated ground, and where it sits.
+struct Cell {
+    z: u32,
+    x: i64,
+    y: i64,
+    tile_m: f32,
+    meshes: Vec<SurfaceMesh>,
 }
 
-/// What was drawn, for a run whose picture nobody is watching.
+#[derive(Resource)]
+struct Loaded {
+    cells: Vec<Cell>,
+    /// The cell everything is placed relative to, so vertex positions stay near
+    /// the origin: a tile index is five digits and a cell is ~1.5 km, so absolute
+    /// tile metres would spend the whole of `f32`'s precision getting there.
+    origin: (i64, i64),
+}
+
+impl Loaded {
+    /// Ground metres across the loaded cells, corner to corner.
+    fn extent(&self) -> f32 {
+        let tile_m = self.cells.first().map_or(1465.0, |c| c.tile_m);
+        let xs = self.cells.iter().map(|c| c.x);
+        let ys = self.cells.iter().map(|c| c.y);
+        let wide = xs.clone().max().unwrap_or(0) - xs.min().unwrap_or(0) + 1;
+        let tall = ys.clone().max().unwrap_or(0) - ys.min().unwrap_or(0) + 1;
+        #[allow(clippy::cast_precision_loss)]
+        {
+            wide.max(tall) as f32 * tile_m
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 struct Drawn {
     meshes: usize,
@@ -198,20 +210,15 @@ struct ShotTarget(Handle<Image>);
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let loaded = load(&cli.cells, cli.terrain.as_deref()).context("loading prepared cells")?;
-    anyhow::ensure!(
-        !loaded.cells.is_empty(),
-        "no prepared cells under {} — has `carto-pipeline ground --out` run?",
-        cli.cells.display()
-    );
+    let loaded = load(&cli).context("reading tiles")?;
+    anyhow::ensure!(!loaded.cells.is_empty(), "no cells could be read");
 
     let mut app = App::new();
     if cli.window {
         app.add_plugins(DefaultPlugins);
     } else {
         // No window is created at all: `WinitPlugin` is never added and the runner
-        // drives the frames instead. There is no display on the machines this is
-        // for, so this is the ordinary path rather than a fallback.
+        // drives the frames instead.
         app.add_plugins(
             DefaultPlugins
                 .build()
@@ -239,82 +246,110 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Every `.cgnd` under `root`.
+/// Read each cell's tile and tessellate it, through the client's own functions and
+/// in the client's own order.
 ///
-/// A file that cannot be read is reported and skipped rather than stopping the
-/// run: the reason for looking is usually that something is wrong, and refusing to
-/// start over one damaged cell of two hundred hides the other hundred and
-/// ninety-nine.
-fn load(root: &std::path::Path, terrain_root: Option<&std::path::Path>) -> Result<Loaded> {
+/// A cell that cannot be read is reported and skipped: the reason for looking is
+/// usually that something is wrong, and refusing to start over one bad tile hides
+/// every other one.
+fn load(cli: &Cli) -> Result<Loaded> {
     let mut cells = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries =
-            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "cgnd") {
-                match std::fs::read(&path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|b| ground_file::decode(&b).map_err(|e| e.to_string()))
-                {
-                    Ok(cell) => cells.push(cell),
-                    Err(e) => tracing::warn!(path = %path.display(), error = %e, "skipped"),
-                }
+    for &(z, x, y) in &cli.cells {
+        let path = cli.tile_dir.join(format!("{z}/{x}/{y}.mvt"));
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "skipped");
+                continue;
             }
+        };
+        let tile = match TileData::parse(&bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "unreadable tile");
+                continue;
+            }
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let tile_m = {
+            let (lat, _) = cartopolis_core::world::tile_to_lat_lng(x, y, z);
+            cartopolis_core::world::tile_to_meters(z, lat) as f32
+        };
+        match tessellate(&tile, tile_m) {
+            Ok(meshes) => cells.push(Cell {
+                z,
+                x,
+                y,
+                tile_m,
+                meshes,
+            }),
+            Err(e) => tracing::warn!(path = %path.display(), error = %format!("{e:#}"), "failed"),
         }
     }
-    cells.sort_by_key(|c| (c.z, c.x, c.y));
-
-    let z = cells.first().map_or(14, |c| c.z);
-    let origin = (
-        middle(cells.iter().map(|c| c.x)),
-        middle(cells.iter().map(|c| c.y)),
-    );
-    let lat = cartopolis_core::world::tile_to_lat_lng(0, i64::from(origin.1), z).0;
-    let tile_m = cartopolis_core::world::tile_to_meters(z, lat);
-
-    // Heights only for cells that actually arrived: a terrain run and a ground run
-    // cover the same box but need not have finished the same cells, and half a
-    // relieved city beside half a flat one is a more useful picture than a refusal.
-    let mut heights = std::collections::HashMap::new();
-    if let Some(root) = terrain_root {
-        for cell in &cells {
-            let path = root.join(format!("{}/{}/{}.ctrn", cell.z, cell.x, cell.y));
-            match std::fs::read(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|b| terrain_file::decode(&b).map_err(|e| e.to_string()))
-            {
-                Ok(t) => {
-                    heights.insert((cell.x, cell.y), t);
-                }
-                Err(e) => tracing::warn!(path = %path.display(), error = %e, "no heights"),
-            }
-        }
-    }
-    Ok(Loaded {
-        cells,
-        heights,
-        tile_m,
-        origin,
-    })
+    let origin = cells.first().map_or((0, 0), |c| (c.x, c.y));
+    Ok(Loaded { cells, origin })
 }
 
-fn middle(values: impl Iterator<Item = u32>) -> u32 {
-    let mut v: Vec<u32> = values.collect();
-    v.sort_unstable();
-    v.get(v.len() / 2).copied().unwrap_or(0)
-}
-
-/// One Bevy mesh per prepared mesh, placed by its cell.
+/// The ground, in the same order `systems::map_geometry` builds it.
 ///
-/// The depth ladder is applied from `cartopolis_geo::ground_stack`, the same list
-/// the pipeline and the client both read. That is a statement about the *data* —
-/// which surface belongs over which — so the harness has to honour it or it would
-/// report a fault in ordering that is really a fault in the harness. How it is then
-/// drawn is this binary's own business and deliberately nothing like the client's.
+/// Deliberately the client's sequence rather than a convenient one: the decks come
+/// before the roads because a bridge-flagged street cuts itself out of the deck it
+/// rides, and the fills come out from under the carriageways because otherwise
+/// three quarters of every street has a second surface beneath it.
+fn tessellate(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>> {
+    let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
+        .map_err(anyhow::Error::msg)
+        .context("ground fills")?;
+    let mut decks = vector_tiles::tessellate_bridges(tile, tile_m)
+        .map_err(anyhow::Error::msg)
+        .context("bridge decks")?;
+    let roads = vector_tiles::tessellate_roads(tile, tile_m, &mut decks, None, false)
+        .map_err(anyhow::Error::msg)
+        .context("road ribbons")?;
+    cartopolis_geo::road_stitch::cut_under_roads(&mut meshes, &roads.ground);
+    meshes.extend(roads.ground);
+
+    // The roads that run under the ground, and the holes their open approaches
+    // need cut in it — without which an entrance is roofed by the ground sheet.
+    let tunnels = cartopolis_geo::tunnels::build_tunnels(tile, tile_m, None);
+    if !tunnels.openings.is_empty() {
+        cartopolis_geo::tunnels::cut_ground(&mut meshes, &tunnels.openings);
+    }
+    meshes.extend(tunnels.meshes);
+    Ok(meshes)
+}
+
+/// The tone this draws a surface in.
+///
+/// **Mostly the map's own palette, and deliberately not for the road sheet.**
+/// `SurfaceGroup::base_color` answers pure white for roads, paving, crops and
+/// tunnel carriageways, because in the client those carry their surface in a
+/// texture and a tint would fight it. This draws no textures, so taking that
+/// answer literally paints every road white on pale ground — which is how a city's
+/// whole street network came to be invisible in the first shots aimed at it.
+fn harness_tone(group: SurfaceGroup) -> Color {
+    match group {
+        SurfaceGroup::Road(RoadClass::Motorway | RoadClass::Carriageway) => {
+            Color::srgb(0.26, 0.26, 0.28)
+        }
+        SurfaceGroup::Road(RoadClass::Major) => Color::srgb(0.34, 0.33, 0.34),
+        SurfaceGroup::Road(RoadClass::Minor) => Color::srgb(0.42, 0.41, 0.41),
+        SurfaceGroup::Road(RoadClass::Path) => Color::srgb(0.58, 0.52, 0.44),
+        SurfaceGroup::Road(RoadClass::Rail) => Color::srgb(0.40, 0.36, 0.34),
+        SurfaceGroup::Paving => Color::srgb(0.70, 0.69, 0.67),
+        SurfaceGroup::Crop => Color::srgb(0.76, 0.70, 0.48),
+        // A tunnel in colours nothing on the surface uses, and nothing the
+        // underlay uses either: a diagnostic colour has to differ from every other
+        // diagnostic colour, which took two goes to get right.
+        SurfaceGroup::TunnelRoad(_) => Color::srgb(0.95, 0.55, 0.10),
+        SurfaceGroup::TunnelStructure => Color::srgb(0.85, 0.72, 0.55),
+        other => {
+            let [r, g, b] = other.base_color();
+            Color::srgb(r, g, b)
+        }
+    }
+}
+
 fn spawn_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -324,16 +359,13 @@ fn spawn_scene(
     mut drawn: ResMut<Drawn>,
 ) {
     for cell in &loaded.cells {
-        // Tile x runs east; tile y runs south, which is +z here. Both are a plain
-        // difference from the origin cell.
-        #[allow(clippy::cast_possible_truncation)]
+        // Tile x runs east; tile y runs south, which is +z here.
+        #[allow(clippy::cast_precision_loss)]
         let cell_origin = Vec3::new(
-            ((f64::from(cell.x) - f64::from(loaded.origin.0)) * loaded.tile_m) as f32,
+            (cell.x - loaded.origin.0) as f32 * cell.tile_m,
             0.0,
-            ((f64::from(cell.y) - f64::from(loaded.origin.1)) * loaded.tile_m) as f32,
+            (cell.y - loaded.origin.1) as f32 * cell.tile_m,
         );
-
-        let heights = loaded.heights.get(&(cell.x, cell.y));
         for m in &cell.meshes {
             if let Some(want) = &cli.only {
                 if !format!("{:?}", m.group)
@@ -343,8 +375,7 @@ fn spawn_scene(
                     continue;
                 }
             }
-            #[allow(clippy::cast_possible_truncation)]
-            let Some(mesh) = to_bevy_mesh(m, heights, loaded.tile_m as f32) else {
+            let Some(mesh) = to_bevy_mesh(m) else {
                 continue;
             };
             drawn.meshes += 1;
@@ -367,6 +398,10 @@ fn spawn_scene(
                     double_sided: cli.double_sided,
                     ..default()
                 })),
+                // The depth ladder from `cartopolis_geo::ground_stack`, the same
+                // list the client reads. It is a statement about the *data* —
+                // which surface belongs over which — so ignoring it here would
+                // report an ordering fault of this binary's own making.
                 Transform::from_translation(cell_origin + Vec3::Y * m.group.layer().y_offset()),
             ));
         }
@@ -374,66 +409,11 @@ fn spawn_scene(
     tracing::info!(
         meshes = drawn.meshes,
         triangles = drawn.triangles,
-        "spawned prepared ground"
+        "tessellated"
     );
 }
 
-/// The tone the harness draws a surface in.
-///
-/// **Mostly the map's own palette, and deliberately not for the road sheet.**
-/// `SurfaceGroup::base_color` answers pure white for roads, paving, crops and
-/// tunnel carriageways, because in the client those carry their surface in a
-/// texture and a tint would fight it. This harness draws no textures, so taking
-/// that answer literally painted every road white on pale ground — which is why a
-/// city's whole street network was invisible in the first shots aimed at it.
-///
-/// So the textured groups get a flat tone of their own here. It is not an attempt
-/// to look like the client, which is not this binary's job: it is so that a road
-/// can be seen to be present, in the right place, at the right width.
-fn harness_tone(group: SurfaceGroup) -> Color {
-    use cartopolis_geo::road_texture::RoadClass;
-    match group {
-        // Tarmac, darkening with the class, so a motorway and a footpath are
-        // distinguishable without a legend.
-        SurfaceGroup::Road(RoadClass::Motorway | RoadClass::Carriageway) => {
-            Color::srgb(0.26, 0.26, 0.28)
-        }
-        SurfaceGroup::Road(RoadClass::Major) => Color::srgb(0.34, 0.33, 0.34),
-        SurfaceGroup::Road(RoadClass::Minor) => Color::srgb(0.42, 0.41, 0.41),
-        SurfaceGroup::Road(RoadClass::Path) => Color::srgb(0.58, 0.52, 0.44),
-        SurfaceGroup::Road(RoadClass::Rail) => Color::srgb(0.40, 0.36, 0.34),
-        SurfaceGroup::Paving => Color::srgb(0.70, 0.69, 0.67),
-        SurfaceGroup::Crop => Color::srgb(0.76, 0.70, 0.48),
-        // A tunnel's carriageway in a colour nothing on the surface uses: the
-        // question it answers is "is there a tunnel here at all", and it should not
-        // have to be told apart from the road above it.
-        //
-        // Orange rather than the magenta this first was — that clashed with the
-        // checkered underlay, so a hole where a tunnel should be and a tunnel
-        // looked the same, which is the one distinction these two features exist to
-        // make. A diagnostic colour has to be unlike every other diagnostic colour.
-        SurfaceGroup::TunnelRoad(_) => Color::srgb(0.95, 0.55, 0.10),
-        // And its walls and roof in a light warm grey, *not* the map's own dark
-        // tunnel tone. That tone is near-black, the checkered underlay's dark
-        // squares are near-black, and a tunnel roof over a dark square is
-        // invisible — which had me report 126 m of tunnel as "a few hairlines".
-        // Second time in one session: a diagnostic colour must differ from every
-        // other diagnostic colour, the underlay included.
-        SurfaceGroup::TunnelStructure => Color::srgb(0.85, 0.72, 0.55),
-        other => {
-            let [r, g, b] = other.base_color();
-            Color::srgb(r, g, b)
-        }
-    }
-}
-
-/// A prepared mesh as Bevy's. Normals are supplied where the file has none, which
-/// is exact rather than an approximation: a ground sheet is flat and faces up.
-fn to_bevy_mesh(
-    m: &cartopolis_geo::vector_tiles::SurfaceMesh,
-    heights: Option<&TerrainFile>,
-    tile_m: f32,
-) -> Option<Mesh> {
+fn to_bevy_mesh(m: &SurfaceMesh) -> Option<Mesh> {
     if m.positions.is_empty() || m.indices.is_empty() {
         return None;
     }
@@ -441,90 +421,28 @@ fn to_bevy_mesh(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
-
-    // **Each surface is displaced on its own vertices and nothing else**, which is
-    // not a shortcut — it is the honest reproduction of what a renderer does. A
-    // surface is a flat plane between its own corners, so where the ground curves
-    // between one surface's corners and another's, the two disagree about where it
-    // is. Refining here would hide exactly the fault the harness exists to show.
-    //
-    // A sample the survey has no reading for leaves the vertex at the cell's datum
-    // rather than guessing. That is visible as flat ground in the middle of relief,
-    // which is the truth: over water and under a bridge deck there is no
-    // measurement at all.
-    // **Water takes one level for the whole body**, which is not a special case so
-    // much as what water is. Displaced per vertex it follows the ground under it,
-    // and the ground under a canal is the *banks* — the survey has no return off
-    // water, so those samples are filled in from either side. A canal draped on
-    // that runs uphill and downhill along its own length.
-    //
-    // The level is the lowest of what the polygon covers: the filled ground rises
-    // to meet the quays at the edges, so the minimum is the nearest thing to the
-    // water itself that this data holds.
-    let level = if matches!(m.group, SurfaceGroup::Water) {
-        heights.filter(|_| tile_m > 0.0).map(|t| {
-            m.positions
-                .iter()
-                .filter_map(|p| t.at_fraction(p[0] / tile_m, p[2] / tile_m))
-                .fold(f32::INFINITY, f32::min)
-        })
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
+    let normals = if m.normals.len() == m.positions.len() {
+        m.normals.clone()
     } else {
-        None
+        vec![[0.0, 1.0, 0.0]; m.positions.len()]
     };
-    let positions: Vec<[f32; 3]> = match heights.filter(|_| tile_m > 0.0) {
-        None => m.positions.clone(),
-        Some(t) => m
-            .positions
-            .iter()
-            .map(|p| {
-                let y = match level {
-                    Some(l) if l.is_finite() => l,
-                    _ => t.at_fraction(p[0] / tile_m, p[2] / tile_m).unwrap_or(0.0),
-                };
-                [p[0], p[1] + y, p[2]]
-            })
-            .collect(),
-    };
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     if m.uvs.len() == m.positions.len() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone());
     }
-    // Indices before the normals: computing them walks the triangles, so a mesh
-    // with none yet has nothing to compute from.
     mesh.insert_indices(bevy::render::mesh::Indices::U32(m.indices.clone()));
-
-    // Normals off the geometry actually drawn. A displaced surface lit by the flat
-    // normals it arrived with would shade as though it were still level, and a
-    // slope that does not shade is a slope nobody can see.
-    if heights.is_some() {
-        mesh.compute_normals();
-    } else {
-        let normals = if m.normals.len() == m.positions.len() {
-            m.normals.clone()
-        } else {
-            vec![[0.0, 1.0, 0.0]; m.positions.len()]
-        };
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    }
     Some(mesh)
 }
 
-/// Frame what was loaded, from `--look`, at `--distance` or far enough to see all
-/// of it.
 fn spawn_camera(
     mut commands: Commands,
     loaded: Res<Loaded>,
     cli: Res<Cli>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    #[allow(clippy::cast_precision_loss)]
-    let span = {
-        let xs: Vec<u32> = loaded.cells.iter().map(|c| c.x).collect();
-        let ys: Vec<u32> = loaded.cells.iter().map(|c| c.y).collect();
-        let wide = xs.iter().max().unwrap_or(&0) - xs.iter().min().unwrap_or(&0) + 1;
-        let tall = ys.iter().max().unwrap_or(&0) - ys.iter().min().unwrap_or(&0) + 1;
-        (f64::from(wide.max(tall)) * loaded.tile_m) as f32
-    };
+    let tile_m = loaded.cells.first().map_or(1465.0, |c| c.tile_m);
+    let span = loaded.extent();
     let distance = cli.distance.unwrap_or(span * 0.9).max(1.0);
     let (pitch, yaw) = (cli.look.0.to_radians(), cli.look.1.to_radians());
     let dir = Vec3::new(
@@ -532,28 +450,23 @@ fn spawn_camera(
         pitch.sin(),
         -yaw.cos() * pitch.cos(),
     );
-
-    // With `--at` the camera *stands* there and looks along `--look`, which is the
-    // manifest's convention. Without it, it backs off the middle of what was loaded
-    // far enough to frame all of it.
     let eye = match cli.at {
         Some((lat, lng, alt)) => {
             let z = loaded.cells.first().map_or(14, |c| c.z);
             let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, z);
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
             Vec3::new(
-                ((fx - f64::from(loaded.origin.0)) * loaded.tile_m) as f32,
+                ((fx - loaded.origin.0 as f64) * f64::from(tile_m)) as f32,
                 alt,
-                ((fy - f64::from(loaded.origin.1)) * loaded.tile_m) as f32,
+                ((fy - loaded.origin.1 as f64) * f64::from(tile_m)) as f32,
             )
         }
         None => -dir * distance,
     };
-    let target = eye + dir * distance.max(100.0);
 
     let mut camera = commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(eye).looking_at(target, Vec3::Y),
+        Transform::from_translation(eye).looking_at(eye + dir * distance.max(100.0), Vec3::Y),
         Projection::Perspective(PerspectiveProjection {
             far: span * 8.0 + 10_000.0,
             near: (distance * 0.001).max(0.1),
@@ -561,16 +474,10 @@ fn spawn_camera(
         }),
         // Physically paired with the sun below. Bevy's default is an indoor
         // exposure, and against real sunlight that is several stops over — which
-        // is what flattened every surface in this harness to white.
+        // flattens every surface to white and takes the shading with it.
         bevy::camera::Exposure {
             ev100: cli.exposure,
         },
-        // Per-camera in Bevy 0.19, not a resource. Enough fill that a surface
-        // facing away from the sun is still legible — the fault being looked for
-        // is often on the shaded side of a bank.
-        // Sky fill, in the same physical units as the sun. Generous enough that a
-        // north-facing bank is still legible — a fault hiding in shadow is a fault
-        // this cannot report — and far short of washing the shading out.
         AmbientLight {
             color: Color::srgb(0.7, 0.8, 1.0),
             brightness: 12_000.0,
@@ -579,10 +486,6 @@ fn spawn_camera(
     ));
 
     if !cli.window {
-        // The camera draws into an image and the capture reads that back.
-        // `RENDER_ATTACHMENT` is what makes drawing into it legal and `COPY_SRC`
-        // what makes the readback legal; without either, wgpu refuses the whole
-        // frame rather than the one operation.
         let mut image = Image::new_fill(
             Extent3d {
                 width: cli.size.0,
@@ -594,6 +497,8 @@ fn spawn_camera(
             TextureFormat::Rgba8UnormSrgb,
             RenderAssetUsages::RENDER_WORLD,
         );
+        // `RENDER_ATTACHMENT` to draw into it, `COPY_SRC` so the capture can read
+        // it back; without either, wgpu refuses the whole frame.
         image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
             | TextureUsages::COPY_SRC
             | TextureUsages::RENDER_ATTACHMENT;
@@ -603,24 +508,13 @@ fn spawn_camera(
     }
 }
 
-/// One sun, no shadows.
-///
-/// Shadows are off deliberately rather than for speed: a shadow is the client's
-/// judgement about how the world should *look*, and a dark band across a surface
-/// is exactly what a ground fault also looks like. The harness answers "is this
-/// surface where it should be", so it lights the scene plainly and leaves the
-/// atmosphere, the bloom, the tone mapping and the shadow cascades to the client.
 /// A checkered sheet under everything, so a hole in the ground is unmistakable.
 ///
-/// **A hole and a surface are otherwise hard to tell apart**, which cost a good
-/// while today: bare background showed through the prepared ground along every
-/// canal, and against a flat sky colour it read as water. It took counting pixels
-/// to establish it was not. Against a checkerboard it is obvious at a glance, and
-/// the squares carry a scale with them — a hole a few metres across and one a
-/// hundred metres across are different faults.
-///
-/// Unlit on purpose: this is a measuring instrument, not scenery, and a shaded
-/// underlay would change tone with the sun and start looking like ground.
+/// **Greyscale, and neither end near black or white.** Two coloured attempts each
+/// collided with a feature — a magenta underlay hid magenta tunnel carriageways,
+/// near-black squares hid tunnel roofs. Colour is what the *features* need to be
+/// told apart by, so the underlay gives it up and keeps the one property that
+/// identifies it: nothing in a map is checkered.
 fn spawn_checker(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -629,16 +523,6 @@ fn spawn_checker(
     loaded: Res<Loaded>,
     cli: Res<Cli>,
 ) {
-    // Two texels by two, repeated — the whole pattern is the sampler's job.
-    // **Greyscale, and neither end near black or white.** Two earlier attempts
-    // were coloured, and both collided with a feature: a magenta underlay hid the
-    // magenta tunnel carriageways, and a near-black square hid the tunnel roofs
-    // that use the map's own dark tunnel tone. Colour is what the *features* need
-    // to be told apart by, so the underlay gives it up and keeps the one property
-    // that actually identifies it — nothing in a map is checkered.
-    //
-    // Mid greys rather than black and white so a dark surface still reads against
-    // the light square and a pale one still reads against the dark.
     const DARK: [u8; 4] = [132, 132, 134, 255];
     const LIGHT: [u8; 4] = [196, 196, 198, 255];
     let mut texels = Vec::with_capacity(16);
@@ -667,31 +551,26 @@ fn spawn_checker(
         ..default()
     });
 
-    #[allow(clippy::cast_precision_loss)]
-    let span = {
-        let xs: Vec<u32> = loaded.cells.iter().map(|c| c.x).collect();
-        let ys: Vec<u32> = loaded.cells.iter().map(|c| c.y).collect();
-        let wide = xs.iter().max().unwrap_or(&0) - xs.iter().min().unwrap_or(&0) + 1;
-        let tall = ys.iter().max().unwrap_or(&0) - ys.iter().min().unwrap_or(&0) + 1;
-        (f64::from(wide.max(tall)) * loaded.tile_m) as f32 * 3.0
-    };
-    // One square per 25 m, so a square is a legible size at street level and the
-    // pattern still reads from a kilometre up.
-    let repeats = span / 50.0;
+    // Sized from the cells' own extent, not their *count* — four cells in a square
+    // are two tiles across, and scaling by the count made the underlay twelve tiles
+    // wide and the dominant thing in every frame.
+    let span = loaded.extent() * 1.5;
     let mut sheet = Mesh::from(Plane3d::default().mesh().size(span, span));
     if let Some(bevy::render::mesh::VertexAttributeValues::Float32x2(uvs)) =
         sheet.attribute_mut(Mesh::ATTRIBUTE_UV_0)
     {
         for uv in uvs.iter_mut() {
-            uv[0] *= repeats;
-            uv[1] *= repeats;
+            uv[0] *= span / 50.0;
+            uv[1] *= span / 50.0;
         }
     }
-
     commands.spawn((
         Mesh3d(meshes.add(sheet)),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color_texture: Some(images.add(image)),
+            // Unlit on purpose: this is a measuring instrument, and a shaded
+            // underlay would change tone with the sun and start looking like
+            // ground.
             unlit: true,
             ..default()
         })),
@@ -699,12 +578,14 @@ fn spawn_checker(
     ));
 }
 
+/// One sun, no shadows.
+///
+/// Off deliberately rather than for speed: a shadow is a judgement about how the
+/// world should *look*, and a dark band across a surface is exactly what a ground
+/// fault looks like too.
 fn spawn_sun(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
-            // Real sunlight, paired with the camera's physical exposure. The two
-            // are a pair: changing one without the other is what over-exposes a
-            // scene, and the numbers only mean anything together.
             illuminance: bevy::light::light_consts::lux::RAW_SUNLIGHT,
             shadow_maps_enabled: false,
             ..default()
@@ -715,7 +596,7 @@ fn spawn_sun(mut commands: Commands) {
     ));
 }
 
-/// Capture once the scene has actually been drawn, then leave.
+/// Capture once the scene has been drawn, then leave.
 ///
 /// **Not on the first frame.** The render pipelines are built and the target image
 /// allocated during the frames after `Startup`, so a capture fired immediately
@@ -731,13 +612,10 @@ fn capture_when_ready(
 ) {
     let Some(path) = cli.shot.clone() else { return };
     *frames += 1;
-    // A handful of frames, and no settling beyond that: nothing in this viewer
-    // arrives late, which is the property that makes it fast and repeatable.
     if *fired || *frames < 8 {
         return;
     }
     *fired = true;
-
     let shot = match target.as_ref() {
         Some(t) => Screenshot::image(t.0.clone()),
         None => Screenshot::primary_window(),

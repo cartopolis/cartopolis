@@ -41,10 +41,6 @@ pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
-// Ground heights the pipeline already worked out: the other end of
-// `carto-pipeline terrain`, and the only path by which the road grading reaches a
-// client at all.
-pub mod prepared_terrain;
 pub mod render_features;
 pub mod render_scale;
 pub mod rendering;

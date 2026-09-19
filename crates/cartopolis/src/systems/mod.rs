@@ -54,10 +54,10 @@ pub use map::{
     cell_bundle, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather, grass,
     ground_detail, height, interiors, light_shafts, load_control, lod22, lod3, map_geometry,
     map_stream, model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
-    prepared_terrain, render_features, render_scale, rendering, road_depth, sky, sky_dome,
-    stream_ledger, street_detail, street_furniture, street_labels, surveyed, tall_structures,
-    terrain, tile_loader, tile_source, tunnels, vegetation, water, water_levels, weather,
-    wet_surfaces, world_places,
+    render_features, render_scale, rendering, road_depth, sky, sky_dome, stream_ledger,
+    street_detail, street_furniture, street_labels, surveyed, tall_structures, terrain,
+    tile_loader, tile_source, tunnels, vegetation, water, water_levels, weather, wet_surfaces,
+    world_places,
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
