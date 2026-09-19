@@ -1352,11 +1352,26 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
         // There is no wetland group to put the first two in and inventing one would
         // be a rung, a palette entry and a texture for two features; a wet meadow is
         // a meadow, and the ground it stands on is the thing that was missing.
+        //
+        // `vineyard`, `miniature_golf`, `grave_yard` and `swamp` came from widening
+        // the same sweep past one city — 71 cells over Amsterdam, Utrecht,
+        // Rotterdam, Berlin, London, Paris, Barcelona and Oslo. That is the point of
+        // the sweep being a command: one city's tiles only ever ask for one city's
+        // land.
+        //
+        // `grave_yard` is the one worth naming. `cemetery` was already here and
+        // these are the same ground under two OSM tags — a municipal cemetery and a
+        // churchyard — so the map had been drawing one and not the other since the
+        // day `cemetery` was added, which no amount of looking at Groningen would
+        // have shown.
         "grass" | "meadow" | "park" | "garden" | "farmland" | "orchard" | "scrub" | "heath"
         | "allotments" | "village_green" | "recreation_ground" | "grassland" | "cemetery"
         | "playground" | "plant_nursery" | "wet_meadow" | "marsh" | "greenfield"
-        | "golf_course" => SurfaceGroup::Grass,
-        "sand" | "beach" | "bare_rock" | "scree" => SurfaceGroup::Sand,
+        | "golf_course" | "vineyard" | "miniature_golf" | "grave_yard" | "swamp" => {
+            SurfaceGroup::Grass
+        }
+        // `shingle` is a pebble beach, which is what this group already is.
+        "sand" | "beach" | "bare_rock" | "scree" | "shingle" => SurfaceGroup::Sand,
         // `railway` is here for the opposite reason to the four above, and it is
         // the one the repaint made urgent: land the table does not name falls
         // through to the raster's `GRASS` default, which at the old saturation
@@ -1368,8 +1383,21 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
         // hard-surfaced yard a farm's buildings stand around — concrete, gravel,
         // silage clamps — and an unnamed kind falls through to the raster's `GRASS`
         // default, so every farm in the countryside had a meadow for a yard.
-        "residential" | "industrial" | "commercial" | "retail" | "quarry" | "railway"
-        | "farmyard" => SurfaceGroup::Built,
+        //
+        // `greenhouse_horticulture` and `garages` join it from the eight-city sweep,
+        // and both are the same mistake as `farmyard`: ground that is roofed or
+        // hard-surfaced, falling through to a grass default. The first is the
+        // Westland's glasshouse country, which is one of the least green places in
+        // the Netherlands and was being drawn as meadow.
+        "residential"
+        | "industrial"
+        | "commercial"
+        | "retail"
+        | "quarry"
+        | "railway"
+        | "farmyard"
+        | "greenhouse_horticulture"
+        | "garages" => SurfaceGroup::Built,
         _ => return None,
     })
 }
