@@ -30,6 +30,7 @@ use clap::Parser;
 
 use cartopolis_geo::ground_file::{self, GroundFile};
 use cartopolis_geo::terrain_file::{self, TerrainFile};
+use cartopolis_geo::vector_tiles::SurfaceGroup;
 
 #[derive(Parser, Resource, Clone)]
 #[command(
@@ -52,6 +53,15 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     shot: Option<std::path::PathBuf>,
 
+    /// Stand the camera at `lat,lng,altitude` and look along `--look`.
+    ///
+    /// **The same convention `docs/shots.toml` uses**, deliberately: a viewpoint
+    /// found once should be typeable into either instrument and land in the same
+    /// place. Without it the camera can only be framed from the middle of whatever
+    /// happens to be loaded, which moves when the box does.
+    #[arg(long, value_name = "LAT,LNG,ALT", value_parser = parse_at)]
+    at: Option<(f64, f64, f32)>,
+
     /// Camera pitch and yaw in degrees. Note the `=`: clap reads a leading `-35`
     /// as a flag otherwise.
     #[arg(long, value_name = "PITCH,YAW", default_value = "-35,45", value_parser = parse_look)]
@@ -70,10 +80,30 @@ struct Cli {
     #[arg(long)]
     window: bool,
 
+    /// Camera exposure, as a photographic EV100.
+    ///
+    /// Adjustable because it is the one setting that decides whether ground *shape*
+    /// is visible at all: over-expose and every surface clips to white, taking the
+    /// shading with it, and relief becomes invisible in a picture taken to look at
+    /// relief. 15 is daylight and pairs with the physical sunlight below; lower is
+    /// brighter.
+    #[arg(long, value_name = "EV100", default_value_t = 15.0)]
+    exposure: f32,
+
     /// Metres below the ground to lay the checkered underlay. Raise it if a deep
     /// cutting reaches through.
     #[arg(long, value_name = "METRES", default_value_t = 30.0)]
     under: f32,
+
+    /// Draw only the surface groups whose name contains this, case-insensitively —
+    /// `--only tunnel`, `--only road`, `--only water`.
+    ///
+    /// **The diagnostic for "is it there at all".** Reading presence off a picture
+    /// of everything is how a surface gets called missing when it is merely behind
+    /// something, or called present when the thing you are looking at is its
+    /// neighbour. Drawing one group alone answers it and cannot be misread.
+    #[arg(long, value_name = "SUBSTRING")]
+    only: Option<String>,
 
     /// Draw every surface from both sides.
     ///
@@ -101,6 +131,32 @@ fn parse_look(s: &str) -> Result<(f32, f32), String> {
         p.trim().parse().map_err(|_| "pitch is not a number")?,
         y.trim().parse().map_err(|_| "yaw is not a number")?,
     ))
+}
+
+fn parse_at(s: &str) -> Result<(f64, f64, f32), String> {
+    let p: Vec<&str> = s.split(',').collect();
+    if p.len() != 3 {
+        return Err("expected LAT,LNG,ALT".into());
+    }
+    let lat: f64 = p[0]
+        .trim()
+        .parse()
+        .map_err(|_| "latitude is not a number")?;
+    let lng: f64 = p[1]
+        .trim()
+        .parse()
+        .map_err(|_| "longitude is not a number")?;
+    let alt: f32 = p[2]
+        .trim()
+        .parse()
+        .map_err(|_| "altitude is not a number")?;
+    if !(-85.05..=85.05).contains(&lat) {
+        return Err("latitude is outside Web Mercator's -85.05..85.05".into());
+    }
+    if !(-180.0..=180.0).contains(&lng) {
+        return Err("longitude is outside -180..180".into());
+    }
+    Ok((lat, lng, alt))
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32), String> {
@@ -279,6 +335,14 @@ fn spawn_scene(
 
         let heights = loaded.heights.get(&(cell.x, cell.y));
         for m in &cell.meshes {
+            if let Some(want) = &cli.only {
+                if !format!("{:?}", m.group)
+                    .to_lowercase()
+                    .contains(&want.to_lowercase())
+                {
+                    continue;
+                }
+            }
             #[allow(clippy::cast_possible_truncation)]
             let Some(mesh) = to_bevy_mesh(m, heights, loaded.tile_m as f32) else {
                 continue;
@@ -288,8 +352,7 @@ fn spawn_scene(
             let base = if cli.plain {
                 Color::srgb(0.72, 0.72, 0.70)
             } else {
-                let [r, g, b] = m.group.base_color();
-                Color::srgb(r, g, b)
+                harness_tone(m.group)
             };
             commands.spawn((
                 Mesh3d(meshes.add(mesh)),
@@ -313,6 +376,55 @@ fn spawn_scene(
         triangles = drawn.triangles,
         "spawned prepared ground"
     );
+}
+
+/// The tone the harness draws a surface in.
+///
+/// **Mostly the map's own palette, and deliberately not for the road sheet.**
+/// `SurfaceGroup::base_color` answers pure white for roads, paving, crops and
+/// tunnel carriageways, because in the client those carry their surface in a
+/// texture and a tint would fight it. This harness draws no textures, so taking
+/// that answer literally painted every road white on pale ground — which is why a
+/// city's whole street network was invisible in the first shots aimed at it.
+///
+/// So the textured groups get a flat tone of their own here. It is not an attempt
+/// to look like the client, which is not this binary's job: it is so that a road
+/// can be seen to be present, in the right place, at the right width.
+fn harness_tone(group: SurfaceGroup) -> Color {
+    use cartopolis_geo::road_texture::RoadClass;
+    match group {
+        // Tarmac, darkening with the class, so a motorway and a footpath are
+        // distinguishable without a legend.
+        SurfaceGroup::Road(RoadClass::Motorway | RoadClass::Carriageway) => {
+            Color::srgb(0.26, 0.26, 0.28)
+        }
+        SurfaceGroup::Road(RoadClass::Major) => Color::srgb(0.34, 0.33, 0.34),
+        SurfaceGroup::Road(RoadClass::Minor) => Color::srgb(0.42, 0.41, 0.41),
+        SurfaceGroup::Road(RoadClass::Path) => Color::srgb(0.58, 0.52, 0.44),
+        SurfaceGroup::Road(RoadClass::Rail) => Color::srgb(0.40, 0.36, 0.34),
+        SurfaceGroup::Paving => Color::srgb(0.70, 0.69, 0.67),
+        SurfaceGroup::Crop => Color::srgb(0.76, 0.70, 0.48),
+        // A tunnel's carriageway in a colour nothing on the surface uses: the
+        // question it answers is "is there a tunnel here at all", and it should not
+        // have to be told apart from the road above it.
+        //
+        // Orange rather than the magenta this first was — that clashed with the
+        // checkered underlay, so a hole where a tunnel should be and a tunnel
+        // looked the same, which is the one distinction these two features exist to
+        // make. A diagnostic colour has to be unlike every other diagnostic colour.
+        SurfaceGroup::TunnelRoad(_) => Color::srgb(0.95, 0.55, 0.10),
+        // And its walls and roof in a light warm grey, *not* the map's own dark
+        // tunnel tone. That tone is near-black, the checkered underlay's dark
+        // squares are near-black, and a tunnel roof over a dark square is
+        // invisible — which had me report 126 m of tunnel as "a few hairlines".
+        // Second time in one session: a diagnostic colour must differ from every
+        // other diagnostic colour, the underlay included.
+        SurfaceGroup::TunnelStructure => Color::srgb(0.85, 0.72, 0.55),
+        other => {
+            let [r, g, b] = other.base_color();
+            Color::srgb(r, g, b)
+        }
+    }
 }
 
 /// A prepared mesh as Bevy's. Normals are supplied where the file has none, which
@@ -340,13 +452,35 @@ fn to_bevy_mesh(
     // rather than guessing. That is visible as flat ground in the middle of relief,
     // which is the truth: over water and under a bridge deck there is no
     // measurement at all.
+    // **Water takes one level for the whole body**, which is not a special case so
+    // much as what water is. Displaced per vertex it follows the ground under it,
+    // and the ground under a canal is the *banks* — the survey has no return off
+    // water, so those samples are filled in from either side. A canal draped on
+    // that runs uphill and downhill along its own length.
+    //
+    // The level is the lowest of what the polygon covers: the filled ground rises
+    // to meet the quays at the edges, so the minimum is the nearest thing to the
+    // water itself that this data holds.
+    let level = if matches!(m.group, SurfaceGroup::Water) {
+        heights.filter(|_| tile_m > 0.0).map(|t| {
+            m.positions
+                .iter()
+                .filter_map(|p| t.at_fraction(p[0] / tile_m, p[2] / tile_m))
+                .fold(f32::INFINITY, f32::min)
+        })
+    } else {
+        None
+    };
     let positions: Vec<[f32; 3]> = match heights.filter(|_| tile_m > 0.0) {
         None => m.positions.clone(),
         Some(t) => m
             .positions
             .iter()
             .map(|p| {
-                let y = t.at_fraction(p[0] / tile_m, p[2] / tile_m).unwrap_or(0.0);
+                let y = match level {
+                    Some(l) if l.is_finite() => l,
+                    _ => t.at_fraction(p[0] / tile_m, p[2] / tile_m).unwrap_or(0.0),
+                };
                 [p[0], p[1] + y, p[2]]
             })
             .collect(),
@@ -399,20 +533,47 @@ fn spawn_camera(
         -yaw.cos() * pitch.cos(),
     );
 
+    // With `--at` the camera *stands* there and looks along `--look`, which is the
+    // manifest's convention. Without it, it backs off the middle of what was loaded
+    // far enough to frame all of it.
+    let eye = match cli.at {
+        Some((lat, lng, alt)) => {
+            let z = loaded.cells.first().map_or(14, |c| c.z);
+            let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, z);
+            #[allow(clippy::cast_possible_truncation)]
+            Vec3::new(
+                ((fx - f64::from(loaded.origin.0)) * loaded.tile_m) as f32,
+                alt,
+                ((fy - f64::from(loaded.origin.1)) * loaded.tile_m) as f32,
+            )
+        }
+        None => -dir * distance,
+    };
+    let target = eye + dir * distance.max(100.0);
+
     let mut camera = commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(-dir * distance).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(eye).looking_at(target, Vec3::Y),
         Projection::Perspective(PerspectiveProjection {
             far: span * 8.0 + 10_000.0,
             near: (distance * 0.001).max(0.1),
             ..default()
         }),
+        // Physically paired with the sun below. Bevy's default is an indoor
+        // exposure, and against real sunlight that is several stops over — which
+        // is what flattened every surface in this harness to white.
+        bevy::camera::Exposure {
+            ev100: cli.exposure,
+        },
         // Per-camera in Bevy 0.19, not a resource. Enough fill that a surface
         // facing away from the sun is still legible — the fault being looked for
         // is often on the shaded side of a bank.
+        // Sky fill, in the same physical units as the sun. Generous enough that a
+        // north-facing bank is still legible — a fault hiding in shadow is a fault
+        // this cannot report — and far short of washing the shading out.
         AmbientLight {
             color: Color::srgb(0.7, 0.8, 1.0),
-            brightness: 400.0,
+            brightness: 12_000.0,
             ..default()
         },
     ));
@@ -469,8 +630,17 @@ fn spawn_checker(
     cli: Res<Cli>,
 ) {
     // Two texels by two, repeated — the whole pattern is the sampler's job.
-    const DARK: [u8; 4] = [40, 44, 52, 255];
-    const LIGHT: [u8; 4] = [220, 90, 140, 255];
+    // **Greyscale, and neither end near black or white.** Two earlier attempts
+    // were coloured, and both collided with a feature: a magenta underlay hid the
+    // magenta tunnel carriageways, and a near-black square hid the tunnel roofs
+    // that use the map's own dark tunnel tone. Colour is what the *features* need
+    // to be told apart by, so the underlay gives it up and keeps the one property
+    // that actually identifies it — nothing in a map is checkered.
+    //
+    // Mid greys rather than black and white so a dark surface still reads against
+    // the light square and a pale one still reads against the dark.
+    const DARK: [u8; 4] = [132, 132, 134, 255];
+    const LIGHT: [u8; 4] = [196, 196, 198, 255];
     let mut texels = Vec::with_capacity(16);
     for (a, b) in [(DARK, LIGHT), (LIGHT, DARK)] {
         texels.extend_from_slice(&a);
@@ -532,7 +702,10 @@ fn spawn_checker(
 fn spawn_sun(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
-            illuminance: 12_000.0,
+            // Real sunlight, paired with the camera's physical exposure. The two
+            // are a pair: changing one without the other is what over-exposes a
+            // scene, and the numbers only mean anything together.
+            illuminance: bevy::light::light_consts::lux::RAW_SUNLIGHT,
             shadow_maps_enabled: false,
             ..default()
         },

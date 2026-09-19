@@ -20,6 +20,11 @@ use cartopolis_geo::vector_tiles::{self, TileData};
 
 use crate::{Progress, Tiles};
 
+/// Grid the cell's coverage is sampled on. 512 over a ~1.5 km cell is ~2.9 m, fine
+/// enough to distinguish a missing block from the sliver a kerb leaves and coarse
+/// enough to cost nothing beside the tessellation it follows.
+const COVERAGE_SAMPLES: usize = 512;
+
 /// One cell's worth of work: where to get it and where to put it.
 pub struct Cell {
     pub z: u32,
@@ -119,6 +124,8 @@ pub fn run(
                             groups: report.groups,
                             triangles: report.triangles,
                             bytes: report.bytes,
+                            covered: report.covered,
+                            tunnels: report.tunnels,
                             millis: at.elapsed().as_millis(),
                         }
                         .emit();
@@ -157,10 +164,36 @@ fn is_current(path: &std::path::Path) -> bool {
     ground_file::decode(&bytes).is_ok()
 }
 
+/// Tile-local metres back to degrees, for a point inside `cell`.
+///
+/// **A framing coordinate, and the reason it exists is today.** A count of tunnels
+/// says a cell has one somewhere in 1.5 km of ground and vouches for nothing you
+/// can point a camera at; `docs/shots.toml`'s tunnel section says the same thing
+/// about doors, and calls a framing metric the first thing to add. Twenty minutes
+/// went on flying around looking for a tunnel that was three cells away.
+fn cell_point_to_lat_lng(cell: &Cell, p: [f32; 2]) -> (f64, f64) {
+    let n = f64::from(1u32 << cell.z);
+    let fx = f64::from(cell.x) + f64::from(p[0]) / f64::from(cell.tile_m);
+    let fy = f64::from(cell.y) + f64::from(p[1]) / f64::from(cell.tile_m);
+    let lng = fx / n * 360.0 - 180.0;
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * fy / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    (lat, lng)
+}
+
 struct Report {
     groups: Vec<(String, usize)>,
     triangles: usize,
     bytes: usize,
+    /// What fraction of the cell the surfaces cover. Never quite 1.0 — see
+    /// `vector_tiles::surface_coverage` — but a *block* of missing ground shows up
+    /// here as a number rather than as something somebody has to notice.
+    covered: f32,
+    /// Where each tunnel in this cell actually is, so a viewpoint can be aimed at
+    /// one instead of hunted for.
+    tunnels: Vec<(f64, f64)>,
 }
 
 /// One cell, from tile bytes to a file on disk.
@@ -172,7 +205,10 @@ fn build_cell(cell: &Cell, tiles: &Tiles, dest: &std::path::Path) -> Result<Repo
     let key = TileKey::new(i64::from(cell.x), i64::from(cell.y), cell.z);
     let bytes = tiles.fetch(&key)?;
     let tile = TileData::parse(&bytes).map_err(anyhow::Error::msg)?;
-    let meshes = build_meshes(&tile, cell.tile_m)?;
+    let GroundBuild {
+        meshes,
+        tunnels: tunnel_places,
+    } = build_meshes(&tile, cell.tile_m)?;
 
     let encoded = ground_file::encode(cell.z, cell.x, cell.y, &meshes);
     if let Some(dir) = dest.parent() {
@@ -200,15 +236,28 @@ fn build_cell(cell: &Cell, tiles: &Tiles, dest: &std::path::Path) -> Result<Repo
         groups,
         triangles,
         bytes: encoded.len(),
+        covered: vector_tiles::surface_coverage(&meshes, cell.tile_m, COVERAGE_SAMPLES),
+        tunnels: tunnel_places
+            .iter()
+            .map(|p| cell_point_to_lat_lng(cell, *p))
+            .collect(),
     })
 }
 
 /// The ground, through the client's own tessellation — the same functions
 /// `systems::map_geometry` calls, in the same order and for the same reasons.
-pub fn build_meshes(
-    tile: &TileData,
-    tile_m: f32,
-) -> Result<Vec<cartopolis_geo::vector_tiles::SurfaceMesh>> {
+/// A cell's ground, and where its tunnels are.
+///
+/// The two travel together because only the pass that *builds* the tunnels knows
+/// where they ended up, and a caller that wants to photograph one needs the
+/// second half as much as the first.
+pub struct GroundBuild {
+    pub meshes: Vec<cartopolis_geo::vector_tiles::SurfaceMesh>,
+    /// Tile-local metres, at the deepest point of each bore.
+    pub tunnels: Vec<[f32; 2]>,
+}
+
+pub fn build_meshes(tile: &TileData, tile_m: f32) -> Result<GroundBuild> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
         .context("ground fills")?;
@@ -234,5 +283,71 @@ pub fn build_meshes(
     // order can only hide while the ground is flat.
     cartopolis_geo::road_stitch::cut_under_roads(&mut meshes, &roads.ground);
     meshes.extend(roads.ground);
-    Ok(meshes)
+
+    // **The roads that are not on the road sheet, because they run under it.** A
+    // tunnel is a deck, two walls and a roof at its own depth, so it is built apart
+    // from the coplanar ground stack rather than given a rung in it.
+    //
+    // The openings are not optional and not cosmetic: an approach ramp that is
+    // still roofed by the ground sheet is a tunnel nothing can drive into, so the
+    // ground has to be cut away over every open stretch. `build_tunnels` hands them
+    // back precisely because only the caller can do that.
+    let tunnels = cartopolis_geo::tunnels::build_tunnels(tile, tile_m, None);
+    // Length along the centre line, per tunnel. **A count is not enough**: 41
+    // tunnels that are each one segment long is a builder that ran and produced
+    // nothing usable, and it looks identical to 41 working tunnels in any
+    // summary that only counts them.
+    for t in &tunnels.tunnels {
+        let len: f32 = t
+            .centre
+            .windows(2)
+            .map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt())
+            .sum();
+        tracing::debug!(
+            vertices = t.centre.len(),
+            length_m = len,
+            half_w = t.half_w,
+            "tunnel"
+        );
+    }
+    let tunnel_places: Vec<[f32; 2]> = tunnels
+        .tunnels
+        .iter()
+        .filter_map(|t| {
+            // The deepest point of the centre line, which is the middle of the bore
+            // rather than either ramp — the place worth photographing.
+            let (i, _) = t
+                .road_y
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.total_cmp(b.1))?;
+            t.centre.get(i).copied()
+        })
+        .collect();
+    if !tunnels.openings.is_empty() {
+        cartopolis_geo::tunnels::cut_ground(&mut meshes, &tunnels.openings);
+    }
+    for m in &tunnels.meshes {
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in &m.positions {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        tracing::debug!(
+            group = ?m.group,
+            verts = m.positions.len(),
+            tris = m.indices.len() / 3,
+            extent_x_m = hi[0] - lo[0],
+            extent_y_m = hi[1] - lo[1],
+            extent_z_m = hi[2] - lo[2],
+            "tunnel mesh"
+        );
+    }
+    meshes.extend(tunnels.meshes);
+    Ok(GroundBuild {
+        meshes,
+        tunnels: tunnel_places,
+    })
 }

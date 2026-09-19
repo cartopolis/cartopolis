@@ -39,6 +39,8 @@ i_overlay.workspace = true
 image.workspace = true
 mvt-reader.workspace = true
 tiny-skia.workspace = true
+# The height survey answers in single-band float GeoTIFF.
+tiff.workspace = true
 tracing.workspace = true
 cartopolis_core = { path = "../core" }
 

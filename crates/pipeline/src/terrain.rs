@@ -47,6 +47,21 @@ pub const DEFAULT_GRID: u32 = 513;
 /// that band becomes the cutting or the embankment a built road actually has.
 const ROAD_MARGIN_SAMPLES: usize = 8;
 
+/// How far below the land the water surface is set, in metres.
+///
+/// **An approximation, and a deliberately shallow one.** The survey gets no return
+/// off water, so after [`height_survey::fill_holes`] a canal sits at the level of
+/// its own quays — two to five metres too high in a canal city, and with the water
+/// drawn level it left the land standing above it with nothing between, which is
+/// the open gap along every bank.
+///
+/// The true levels are a national dataset the client already reads
+/// (`systems::water_levels`) and this stage does not yet. Until it does, dropping
+/// the water a metre below the land it meets is wrong by less than leaving it at
+/// quay height, and — the point — it is *continuous*: the ground descends into the
+/// water across the mask edge, which is a bank.
+const WATER_FREEBOARD_M: f32 = 1.0;
+
 pub fn run(
     cells: &[Cell],
     tiles: &Tiles,
@@ -190,10 +205,25 @@ fn build_cell(
     // is marked as the shape it actually is.
     let tile_bytes = tiles.fetch(&TileKey::new(i64::from(cell.x), i64::from(cell.y), cell.z))?;
     let tile = TileData::parse(&tile_bytes).map_err(anyhow::Error::msg)?;
-    let meshes = ground::build_meshes(&tile, cell.tile_m)?;
+    let meshes = ground::build_meshes(&tile, cell.tile_m)?.meshes;
 
     let n = patch.w;
     let mut samples: Vec<f32> = patch.samples.clone();
+
+    // **Close the survey's holes before anything reads it.** The laser gets no
+    // return off water at all, so every canal arrives as a hole, and a hole is not
+    // a height: the grading would relax the road down into it, and every surface
+    // drawn over it would have nothing to stand on. `fill_holes` closes each one
+    // with its own banks and smooths the crease that leaves.
+    //
+    // What water then sits at is the **quay level**, two to five metres above the
+    // real surface in a canal city. That is a known approximation rather than an
+    // oversight — the true levels are a separate national dataset the client
+    // already reads (`systems::water_levels`) and this stage does not yet — and it
+    // is the right failure while it lasts: too high and continuous beats absent.
+    let before_fill = samples.iter().filter(|v| !v.is_finite()).count();
+    cartopolis_geo::height_survey::fill_holes(&mut samples, n, None);
+    let after_fill = samples.iter().filter(|v| !v.is_finite()).count();
     let mut road = vec![false; n * n];
 
     // The road triangles are in cell-local metres with +z running south; the grid
@@ -224,6 +254,49 @@ fn build_cell(
             ]);
         }
     }
+    // **The water goes in before the roads are graded**, so a road running beside a
+    // canal grades against the water's own level rather than against the quay it
+    // has not been dropped from yet.
+    let mut water = vec![false; n * n];
+    let mut water_tris: Vec<[[f32; 2]; 3]> = Vec::new();
+    for m in &meshes {
+        if m.group != SurfaceGroup::Water {
+            continue;
+        }
+        for t in m.indices.chunks_exact(3) {
+            water_tris.push([
+                tri_to_grid(m.positions[t[0] as usize]),
+                tri_to_grid(m.positions[t[1] as usize]),
+                tri_to_grid(m.positions[t[2] as usize]),
+            ]);
+        }
+    }
+    let mut water_samples = 0usize;
+    if !water_tris.is_empty() {
+        road_grade::mark_roads(&mut water, n, (0.0, 0.0), step_m, &water_tris, 0);
+        // One level for all the water in the cell. Crude — a city can hold canals
+        // at several levels, and this cannot tell them apart — but consistent,
+        // which is what stops a gap: the water surface and the ground beneath it
+        // are the same number, so the land descends into it rather than ending
+        // above it.
+        let mut around: Vec<f32> = water
+            .iter()
+            .zip(&samples)
+            .filter(|(w, v)| **w && v.is_finite())
+            .map(|(_, v)| *v)
+            .collect();
+        if !around.is_empty() {
+            around.sort_by(f32::total_cmp);
+            let level = around[around.len() / 2] - WATER_FREEBOARD_M;
+            for (i, w) in water.iter().enumerate() {
+                if *w {
+                    samples[i] = level;
+                    water_samples += 1;
+                }
+            }
+        }
+    }
+
     road_grade::mark_roads(
         &mut road,
         n,
@@ -241,6 +314,13 @@ fn build_cell(
     let datum = median_finite(&cropped).unwrap_or(0.0);
     let relative: Vec<f32> = cropped.iter().map(|v| v - datum).collect();
     let no_data = relative.iter().filter(|v| !v.is_finite()).count();
+    tracing::debug!(
+        cell = ?(cell.x, cell.y),
+        before_fill,
+        after_fill,
+        water_samples,
+        "closed the survey's holes and set the water"
+    );
     #[allow(clippy::cast_precision_loss)]
     let relief_m = {
         let finite: Vec<f32> = relative.iter().copied().filter(|v| v.is_finite()).collect();

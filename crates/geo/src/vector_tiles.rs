@@ -1728,6 +1728,76 @@ pub fn tessellate_surfaces(
     Ok(out)
 }
 
+/// What fraction of a cell the given surfaces actually cover, sampled on an
+/// `n × n` grid.
+///
+/// **A hole in the ground is otherwise only found by pointing a camera at it**,
+/// and that is not a test — twice on 2026-09-19 a hole was measured from a
+/// viewpoint that happened to include, or happened to miss, the block it was in.
+/// This is per cell, deterministic, and free of any opinion about where to look.
+///
+/// It will never reach 100 %: the cut runs on a millimetre lattice and this samples
+/// texel centres, so a sliver survives along every kerb. What it is for is the
+/// difference between that residual and a *block* of missing ground.
+///
+/// Sampling rather than area: exact polygon area would have to resolve the overlaps
+/// the cut is supposed to have removed, and would report 103 % if it had not.
+#[must_use]
+pub fn surface_coverage(meshes: &[SurfaceMesh], tile_m: f32, n: usize) -> f32 {
+    if n == 0 || tile_m <= 0.0 {
+        return 0.0;
+    }
+    let mut hit = vec![false; n * n];
+    #[allow(clippy::cast_precision_loss)]
+    let scale = n as f32 / tile_m;
+    for m in meshes {
+        for t in m.indices.chunks_exact(3) {
+            let p: Vec<[f32; 2]> = t
+                .iter()
+                .map(|&i| {
+                    let v = m.positions[i as usize];
+                    [v[0] * scale, v[2] * scale]
+                })
+                .collect();
+            let (a, b, c) = (p[0], p[1], p[2]);
+            // Both ends clamped: a tile carries a buffer, so a ribbon can lie
+            // entirely past the grid and a `min` on the maximum alone walks off the
+            // end of the row.
+            let lo = |v: f32| -> usize {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let i = v.floor().max(0.0) as usize;
+                i.min(n - 1)
+            };
+            let hi = |v: f32| -> usize {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let i = v.ceil().max(0.0) as usize;
+                i.min(n - 1)
+            };
+            let (minx, maxx) = (lo(a[0].min(b[0]).min(c[0])), hi(a[0].max(b[0]).max(c[0])));
+            let (miny, maxy) = (lo(a[1].min(b[1]).min(c[1])), hi(a[1].max(b[1]).max(c[1])));
+            let side = |u: [f32; 2], v: [f32; 2], q: [f32; 2]| {
+                (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0])
+            };
+            for y in miny..=maxy {
+                for x in minx..=maxx {
+                    #[allow(clippy::cast_precision_loss)]
+                    let q = [x as f32 + 0.5, y as f32 + 0.5];
+                    let (s0, s1, s2) = (side(a, b, q), side(b, c, q), side(c, a, q));
+                    if (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0)
+                        || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0)
+                    {
+                        hit[y * n + x] = true;
+                    }
+                }
+            }
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        hit.iter().filter(|h| **h).count() as f32 / (n * n) as f32
+    }
+}
+
 /// A feature's rank by size, **descending** — bigger area, smaller number — so it
 /// can go straight into `road_stitch`'s "larger priority wins" ordering and mean
 /// "the smaller polygon draws on top".

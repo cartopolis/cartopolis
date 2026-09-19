@@ -75,6 +75,69 @@ From a shell:
 carto-pipeline ground … | jq -r 'select(.event=="failed") | "\(.z)/\(.x)/\(.y) \(.error)"'
 ```
 
+## The `terrain` stage
+
+Fetches the national height survey for every cell in a box, closes the holes it has
+over water, sets the water level, **flattens the ground along the roads**, and writes
+one file per cell.
+
+```bash
+carto-pipeline terrain \
+    --bbox 6.50,53.19,6.62,53.25 \
+    --tile-url 'https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}' \
+    --out /data/map/terrain
+```
+
+The vector tiles are needed here too — not for their surfaces, but because the
+flattening follows the **drawn road ribbons** rather than centre lines widened by a
+nominal number, which is what makes a junction the shape it actually is.
+
+| flag | |
+|---|---|
+| `--bbox`, `--zoom` | as above. **The zoom must match the `ground` stage's**, or the heights and the surfaces describe different pieces of ground. |
+| `--grid` | samples per side of each cell. Default 513, about 2.9 m at zoom 14. |
+| `--out` | `{z}/{x}/{y}.ctrn` under here. |
+| `--jobs` | default **3**, deliberately lower than the ground stage's. Every cell is a request to a shared public national service, and being a good guest on it is worth more than finishing a city a few minutes sooner. |
+| `--force` | rebuild cells already present. |
+
+Each cell reports the relief it found, how many samples fell inside a road corridor
+and how many the flattening actually moved. **Those last two are reported
+separately on purpose**: "there were roads here" and "the grading did something" are
+different claims, and a stage that silently did nothing otherwise looks exactly like
+a stage with nothing to do.
+
+### Flying through it
+
+Point the client at the prepared heights and it assembles its ground from them
+instead of fetching the survey itself:
+
+```bash
+CARTO_TERRAIN_URL='https://host/terrain/{z}/{x}/{y}.ctrn' cargo run -p cartopolis
+```
+
+It logs `terrain from prepared ground` once per map anchor, with the number of cells
+answered and how many of those carried a file. The pair matters: **a source pointed
+at an empty directory and no source at all produce the same picture**, and only both
+numbers together tell them apart.
+
+Where a cell is missing, damaged, or written by a format the client cannot read, it
+falls back to the survey exactly as before — so a half-built city degrades to the old
+behaviour rather than to a hole.
+
+### What it approximates, and what that costs
+
+* **The water sits one metre below the land it meets.** The survey gets no return
+  off water at all, so after the holes are closed a canal is at the level of its own
+  quays — two to five metres too high in a canal city. Dropping it a metre is wrong
+  by less than leaving it there, and it is *continuous*, which is what gives the
+  ground a bank to descend. The true levels are a national dataset the client already
+  reads and this stage does not yet.
+* **The road corridor is wider than the road.** An eight-sample margin makes a 9 m
+  street a ~55 m corridor, and in a city those corridors merge: measured over
+  Groningen, **46–68 % of each cell** ends up inside one. On flat ground that is
+  nearly harmless; on a hill town it would smooth real terrain. The margin wants to
+  scale with the road's own width and does not yet.
+
 ## What it writes
 
 `{z}/{x}/{y}.cgnd` — one map cell's finished surfaces. The format is
@@ -100,12 +163,14 @@ Serve the directory as static files. It needs no application in front of it.
 
 The ground stage is the first and the largest. Still to move off the client:
 
-* **The height survey, with the roads flattened into it.** The reason the stage
-  order starts here rather than there is measured above, but the height work is
-  what closes the surface tearing on sloped ground — see
-  `docs/notes/the-ground-stack.md`.
-* The surveyed pavements, the 3D buildings, the building records and the crop
-  parcels, which are TypeScript in cartopy today.
+* The surveyed pavements, the building records and the crop parcels, which are
+  TypeScript in cartopy today.
+* **Buildings**, which are deliberately *not* here yet: the Dutch 3D building data
+  is already per-cell and already on our own host, so it fits, but a merged mesh
+  cannot be clicked and the client needs per-building identity for selection, facade
+  era and window lighting. Baking it also needs the format's positions quantised
+  first, or buildings — roughly three quarters of a city's geometry — make the file
+  size unmanageable.
 
 **The output is an override, never a requirement.** Where a prepared cell exists
 the client uses it; where one does not, the client builds the ground exactly as it

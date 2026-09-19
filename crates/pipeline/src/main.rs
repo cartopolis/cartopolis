@@ -68,6 +68,14 @@ pub enum Progress {
         groups: Vec<(String, usize)>,
         triangles: usize,
         bytes: usize,
+        /// Fraction of the cell its own surfaces cover. A run whose cities are
+        /// whole sits a little under 1.0; a dip means a block of ground nothing
+        /// drew, which is otherwise only ever found by pointing a camera at it.
+        covered: f32,
+        /// `(latitude, longitude)` of the deepest point of each tunnel in the cell.
+        /// A count says a cell has one somewhere in 1.5 km of ground; this says
+        /// where to stand.
+        tunnels: Vec<(f64, f64)>,
         millis: u128,
     },
     /// A cell already built by this format version, left alone. `--force` rebuilds

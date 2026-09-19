@@ -269,6 +269,124 @@ fn decode_float_tiff(bytes: &[u8], grid: usize) -> Result<Vec<f32>, String> {
     Ok(v)
 }
 
+/// Passes of relaxation over the invented ground. Four takes the crease out of a
+/// canal-width hole without moving anything measured.
+const FILL_SMOOTH_PASSES: usize = 4;
+
+/// Close no-data holes out to `reach_cells` from the nearest measurement, in two
+/// sweeps plus a short relaxation. `None` reaches as far as it takes.
+///
+/// A chamfer distance transform carrying the nearest measured value (two sweeps,
+/// O(n)), then a few Jacobi passes restricted to the cells that were filled. The
+/// transform alone leaves a ridge along the Voronoi boundary down the middle of
+/// anything wide, and the relaxation is what turns that crease into a smooth
+/// interpolation. Measurements are never written, only holes.
+///
+/// **The reach is in cells and every caller derives it from metres**, because this
+/// replaced a fixed count of one-cell dilations that was documented as "~150 m" and
+/// was only ever 150 m at the one sampling it was written against. A fill whose reach
+/// is a unit mistake away from the resolution is how a change to the grid size
+/// leaves every building footprint an unfilled pit — and the pass-count form could
+/// not be scaled to the fine tier at all, which would have wanted ~300 passes over a
+/// million samples.
+pub fn fill_holes(grid: &mut [f32], n: usize, reach_cells: Option<f32>) {
+    if grid.iter().all(|v| v.is_finite()) {
+        return;
+    }
+    // `best` is the squared chamfer distance to the nearest measurement; `FAR` is "no
+    // source seen yet" and must be finite, because it is compared and added to.
+    const FAR: i32 = i32::MAX / 4;
+    const ORTHO: i32 = 3;
+    const DIAG: i32 = 4;
+    let mut best = vec![FAR; grid.len()];
+    let mut val = vec![0.0f32; grid.len()];
+    let filled: Vec<bool> = grid.iter().map(|v| !v.is_finite()).collect();
+    for i in 0..grid.len() {
+        if grid[i].is_finite() {
+            best[i] = 0;
+            val[i] = grid[i];
+        }
+    }
+    let relax =
+        |x: usize, z: usize, nx: i32, nz: i32, w: i32, best: &mut [i32], val: &mut [f32]| {
+            if nx < 0 || nz < 0 || nx >= n as i32 || nz >= n as i32 {
+                return;
+            }
+            let from = nz as usize * n + nx as usize;
+            let to = z * n + x;
+            let cand = best[from].saturating_add(w);
+            if cand < best[to] {
+                best[to] = cand;
+                val[to] = val[from];
+            }
+        };
+    for z in 0..n {
+        for x in 0..n {
+            let (xi, zi) = (x as i32, z as i32);
+            relax(x, z, xi - 1, zi, ORTHO, &mut best, &mut val);
+            relax(x, z, xi, zi - 1, ORTHO, &mut best, &mut val);
+            relax(x, z, xi - 1, zi - 1, DIAG, &mut best, &mut val);
+            relax(x, z, xi + 1, zi - 1, DIAG, &mut best, &mut val);
+        }
+    }
+    for z in (0..n).rev() {
+        for x in (0..n).rev() {
+            let (xi, zi) = (x as i32, z as i32);
+            relax(x, z, xi + 1, zi, ORTHO, &mut best, &mut val);
+            relax(x, z, xi, zi + 1, ORTHO, &mut best, &mut val);
+            relax(x, z, xi + 1, zi + 1, DIAG, &mut best, &mut val);
+            relax(x, z, xi - 1, zi + 1, DIAG, &mut best, &mut val);
+        }
+    }
+    // `ORTHO` is one cell, so the transform's units are thirds of a cell.
+    let limit = reach_cells.map_or(FAR, |r| ((r * ORTHO as f32).round() as i32).max(0));
+    let mut filled = filled;
+    for (i, v) in grid.iter_mut().enumerate() {
+        if v.is_finite() {
+            continue;
+        }
+        if best[i] <= limit {
+            *v = val[i];
+        } else {
+            // Out of reach: unknown ground, which the bake reads as the anchor's own
+            // level. Un-marking it keeps the relaxation off cells that are still NaN,
+            // where averaging a neighbourhood of NaNs poisons the ones beside it.
+            filled[i] = false;
+        }
+    }
+    // Smooth the invented ground only. Four passes takes the Voronoi crease out of a
+    // canal-width hole without moving anything measured.
+    let mut prev = vec![0.0f32; grid.len()];
+    for _ in 0..FILL_SMOOTH_PASSES {
+        prev.copy_from_slice(grid);
+        for z in 0..n {
+            for x in 0..n {
+                let i = z * n + x;
+                if !filled[i] {
+                    continue;
+                }
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+                    if nx < 0 || nz < 0 || nx >= n as i32 || nz >= n as i32 {
+                        continue;
+                    }
+                    let v = prev[nz as usize * n + nx as usize];
+                    if !v.is_finite() {
+                        continue;
+                    }
+                    sum += v;
+                    count += 1.0;
+                }
+                if count > 0.0 {
+                    grid[i] = sum / count;
+                }
+            }
+        }
+    }
+}
+
 /// Degrees → the Dutch national grid, in metres.
 ///
 /// The published polynomial approximation about the Amersfoort datum point, good

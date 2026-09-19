@@ -2070,6 +2070,7 @@ fn run_client() {
         .init_resource::<systems::height::HeightLayer>()
         .init_resource::<systems::water_levels::WaterLevels>()
         .init_resource::<systems::terrain::TerrainField>()
+        .init_resource::<systems::prepared_terrain::PreparedTerrain>()
         .insert_resource({
             // `--aerial` is the only way into that layer in a scripted run; an
             // interactive session ticks it in the Layers panel (or restores it
@@ -2518,6 +2519,12 @@ fn run_client() {
     app.add_systems(
         Startup,
         (
+            // Where prepared ground heights are, if anywhere. A startup read for
+            // the reason every `CARTO_*` switch is one: it is an instruction for
+            // this launch and is never written back.
+            |mut prepared: ResMut<systems::prepared_terrain::PreparedTerrain>| {
+                prepared.set_source(env_value("CARTO_TERRAIN_URL"));
+            },
             // Which rung this run took, said where a phone can read it —
             // `quality::init` answers the question before `LogPlugin` exists, so
             // its own line has never reached logcat. See `quality::report_budget`.
@@ -2702,6 +2709,10 @@ fn run_client() {
                 // and the anchor ground probe that both proves the path works and
                 // gives `--dump-state` a measured number to show.
                 systems::height::poll_height_layer,
+                // Prepared ground heights, if a source was given: the queue that
+                // brings the cells in. Before the field asks for them, so a cell
+                // that lands is used on the frame it arrives.
+                systems::prepared_terrain::poll_prepared_terrain,
                 systems::height::probe_anchor_ground
                     .after(systems::map_stream::apply_reanchor)
                     .before(systems::height::poll_height_layer),
