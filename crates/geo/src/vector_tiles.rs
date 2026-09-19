@@ -1357,6 +1357,40 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
     })
 }
 
+/// Land features this build draws nothing for, by kind and count.
+///
+/// **An unhandled kind is a hole in the ground**, and a silent one: [`land_group`]
+/// answers `None` and the feature is skipped, so the only evidence is ground that
+/// nothing covers. The table above is deliberately built from kinds seen in real
+/// tiles rather than read off the schema — which makes "what is this tile asking
+/// for that we do not draw?" the question that keeps it honest, and this is how it
+/// is asked.
+///
+/// Counts features, not area: one dropped industrial estate matters more than
+/// forty dropped kiosks, but the count is what says *which* kind to go and look
+/// at, and the coverage measurement already says how much ground is missing.
+#[must_use]
+pub fn unhandled_land_kinds(tile: &TileData) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    let Some(meta) = tile.layer("land") else {
+        return out;
+    };
+    for feature in tile.features(meta) {
+        let Some(kind) = kind_of(feature) else {
+            continue;
+        };
+        if land_group(kind).is_some() {
+            continue;
+        }
+        match out.iter_mut().find(|(k, _)| k == kind) {
+            Some((_, n)) => *n += 1,
+            None => out.push((kind.to_string(), 1)),
+        }
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
 /// Clip one ring to the square `[0, extent]²` (Sutherland–Hodgman), returning it
 /// **open** — no repeated last point — with consecutive duplicates dropped.
 ///

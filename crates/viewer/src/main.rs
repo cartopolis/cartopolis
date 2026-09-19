@@ -211,6 +211,10 @@ struct Cell {
     y: i64,
     tile_m: f32,
     meshes: Vec<SurfaceMesh>,
+    /// Land features the tessellation drew nothing for. Carried because they are
+    /// the readiest explanation for ground nothing covers, and nothing else in the
+    /// picture can point at them.
+    unhandled: Vec<(String, usize)>,
 }
 
 #[derive(Resource)]
@@ -335,6 +339,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                 y,
                 tile_m,
                 meshes,
+                unhandled: vector_tiles::unhandled_land_kinds(&tile),
             }),
             Err(e) => tracing::warn!(path = %path.display(), error = %format!("{e:#}"), "failed"),
         }
@@ -464,6 +469,15 @@ fn report(cell: &Cell) {
     if !printed {
         println!("  no two sheets share ground");
     }
+
+    if cell.unhandled.is_empty() {
+        println!("  every land kind in the tile is drawn");
+    } else {
+        println!("  land kinds nothing draws:");
+        for (kind, n) in &cell.unhandled {
+            println!("    {kind:<24} {n:>5} features");
+        }
+    }
 }
 
 /// Mark the samples a mesh's triangles cover. Centre sampling and no
@@ -525,6 +539,15 @@ fn count(mask: &[bool]) -> usize {
 /// far finer would quietly fix the fault it exists to show.
 const FIELD_SAMPLES: usize = 512;
 
+/// Metre-scale roughness in the synthetic ground, in metres.
+///
+/// What a laser survey actually carries once the landform is subtracted: kerbs,
+/// ditches, vehicles, the return off a hedge. 0.4 m is the order of the real
+/// thing, and it is the only part of this ground a road corridor is wide enough to
+/// smooth — the landform waves are hundreds of metres long and a road follows
+/// those quite correctly.
+const ROUGHNESS_M: f32 = 0.4;
+
 /// Samples of margin beyond the carriageway the grading may move.
 ///
 /// Not a tuning constant. With the ground pinned at the kerb itself, both kerbs
@@ -579,9 +602,25 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
         for x in 0..n {
             #[allow(clippy::cast_precision_loss)]
             let (wx, wz) = (x as f32 * step_m, z as f32 * step_m);
+            // Three scales, and the finest is the one that matters.
+            //
+            // The first two are landform — the hills a city sits on. The third is
+            // **survey roughness**, and without it this ground cannot exercise the
+            // grading at all: a laser survey carries metre-scale noise (kerbs,
+            // ditches, parked vehicles, the return off a hedge) and that is exactly
+            // what makes a draped road follow bumps a built road would never have.
+            // With only the long waves the ground is already smooth at the scale of
+            // a road corridor, grading changes nothing, and the harness reports a
+            // fix as having no effect.
+            //
+            // Its amplitude is a fraction of the landform's rather than a share of
+            // `--relief`: roughness does not grow with the size of the hills.
             let a = (wx / 260.0).sin() * (wz / 310.0).cos();
             let b = (wx / 95.0).sin() * (wz / 120.0).sin() * 0.35;
-            samples[z * n + x] = cli.relief * (a + b);
+            let rough = ((wx / 11.0).sin() * (wz / 9.0).cos()
+                + (wx / 4.5).cos() * (wz / 5.5).sin() * 0.5)
+                * ROUGHNESS_M;
+            samples[z * n + x] = cli.relief * (a + b) + rough;
         }
     }
 
@@ -608,10 +647,24 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
             }
         }
         road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris, ROAD_MARGIN_SAMPLES);
+        let before = samples.clone();
         let moved = road_grade::flatten(&mut samples, n, &road, road_grade::DEFAULT_PASSES);
+        // **How far, not just how many.** A count of moved samples says the pass
+        // ran; it does not say whether it changed the ground by half a metre or by
+        // a millimetre, and those look identical in a picture.
+        let (mut sum, mut worst) = (0.0f64, 0.0f32);
+        for (a, b) in samples.iter().zip(&before) {
+            let d = (a - b).abs();
+            sum += f64::from(d);
+            worst = worst.max(d);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let mean = if moved > 0 { sum / moved as f64 } else { 0.0 };
         tracing::info!(
             marked = road.iter().filter(|m| **m).count(),
             moved,
+            mean_move_m = mean,
+            worst_move_m = worst,
             "graded the ground along the roads"
         );
     }
