@@ -51,6 +51,34 @@ that looks exactly like the bug you are hunting.
 Reimplementing a step in the harness "just to see" is the thing not to do. It
 will drift, and it will drift silently, because nothing compares the two.
 
+## The same rule, twice more (2026-09-19, later)
+
+Both were things the client draws and the harness did not, and both produced a
+fault-shaped absence rather than an obvious blank:
+
+- **Every bridge was thrown away.** `tessellate_roads` returns a deck's
+  carriageways in a separate `on_deck` list, tagged with their deck and still at
+  `y = 0`, because the height is measured from AHN some frames later. The harness
+  read `roads.ground` and dropped the rest, and drew no deck slabs either — 19
+  decks and 10 road meshes in one central Groningen cell. What that leaves is a
+  clean square-ended gap in a continuous road, which is exactly what a real
+  tessellation fault looks like; an hour went on one over the railway before the
+  instrument was suspected. There is no AHN here, so `--deck-height` is a flat
+  lift: honest for *is it continuous, where are the joins*, and not evidence about
+  any real bridge's height.
+- **Roads were painted one flat tone.** A flat colour cannot show a joint, a
+  marking's registration round a curve, or whether a slip road's texture runs the
+  way the road does. `road_texture` is in `cartopolis_geo`, so the harness now
+  draws the client's own surface — with the client's mip chain and 8x anisotropy,
+  because without those a road at range aliases into a shimmer that reads as a
+  registration fault.
+
+**`--flicker` measures depth only with `--plain`.** Measured over a Groningen
+motorway: about **100** changed pixels textured against **0** plain, and the mip
+chain moved that by five. Textured it reports surface *and* sampler; plain it
+reports geometry, which is where a coplanar fault lives. With that rule, 20
+street-level viewpoints across five cells on 20 m of synthetic relief report zero.
+
 ## Two smaller versions of the same mistake, same day
 
 Both were reference geometry rather than map geometry, and both read as holes:
