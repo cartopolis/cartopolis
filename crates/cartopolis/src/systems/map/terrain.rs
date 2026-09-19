@@ -1606,7 +1606,7 @@ pub const MAX_GROUND_EDGE_M: f32 = TERRAIN_SAMPLE_M * 4.0;
 /// Re-exported rather than referenced through the new path, so the ~200 call sites
 /// and tests below did not have to move with it.
 pub use cartopolis_geo::terrain_refine::{
-    refine_for_terrain, Crease, GroundField, CREASE_VERTEX_BUDGET, MIN_GROUND_EDGE_M,
+    refine_for_terrain, Crease, GroundField, MIN_GROUND_EDGE_M,
 };
 
 /// The measured field, as the shared refinement asks about it. Both methods
@@ -2141,7 +2141,7 @@ mod tests {
         // its budget on top of whatever the long-edge rule asked for.
         let added = positions.len() - before;
         assert!(
-            added <= CREASE_VERTEX_BUDGET * 2,
+            added <= cartopolis_geo::terrain_refine::CREASE_VERTEX_BUDGET * 2,
             "the crease rule ran away: {added} vertices added"
         );
         // And it is deterministic: the same cell rebuilt must be the same mesh, or
