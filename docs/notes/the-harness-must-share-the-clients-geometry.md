@@ -79,3 +79,34 @@ deterministic under a camera nudge and therefore invisible to a flicker test.
 
 Reach for `--flicker` for coplanar surfaces on the *same* rung. For anything the
 ladder already orders, it will report zero whether the geometry is right or not.
+
+## What the harness is blind to: inside the road band
+
+It shares the client's geometry and the client's depth **ladder**, and it does not
+share the client's depth **shader**. Each surface group is offset by
+`GroundLayer::y_offset()` and that is all — the per-vertex rung
+(`vector_tiles::road_rung` / `road_casing_rung`, drawn by
+`assets/shaders/road_depth.wgsl`) is not applied.
+
+That matters for exactly one region of the stack, because the road sheet is a
+single `GroundLayer`. `ground_stack.rs` says it outright: *"Roads do not get a
+rung each"* — a carriageway, its own kerb casing and a flyover over both are
+ordered *within* the band by that per-vertex rung, inside `ROAD_BAND_ULPS` of
+reserved room.
+
+So:
+
+- `--check` is still right about the road band. It measures **geometry** — which
+  patch of ground two groups both cover — and that is a fact about the tiles, not
+  about how they are drawn.
+- A **picture** is not. Where `--check` reports `RoadCasing(X)` and `Road(X)`
+  sharing ground (2.3–3.0 % of the casing over central Groningen, and the only
+  overlap left anywhere in the six cells surveyed on 2026-09-19), the harness has
+  no way to draw them in the right order and the client does. Do not read a
+  z-fight between a kerb and its own tarmac off a `carto-view` capture.
+
+That residual is expected, not a fault: a kerb band is the slab a carriageway is
+laid on, `road_casing_rung` puts it at the foot of its class's block and
+`road_rung` puts the tarmac above it, and the doc on the former says so — *"it
+lies under its own tarmac"*. `road_stitch` removes the overlaps the ladder cannot
+arbitrate; this is one it can.
