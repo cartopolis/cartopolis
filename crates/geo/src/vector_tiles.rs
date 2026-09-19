@@ -1431,10 +1431,24 @@ pub fn layer_census(tile: &TileData) -> Vec<(String, usize, Vec<(String, usize)>
         let mut total = 0usize;
         for feature in tile.features(meta) {
             total += 1;
-            let kind = kind_of(feature).unwrap_or("-");
-            match kinds.iter_mut().find(|(k, _)| k == kind) {
+            // Flags ride with the kind, because on a `streets` layer they are half
+            // of what decides how a feature is drawn — a bridge-flagged rail and a
+            // tunnel-flagged one take two different paths out of here, and a
+            // census that hides that answers "is this drawn?" with the wrong half
+            // of the question.
+            let mut kind = kind_of(feature).unwrap_or("-").to_string();
+            let flags: Vec<&str> = ["bridge", "tunnel", "oneway", "oneway_reverse", "link"]
+                .into_iter()
+                .filter(|f| flag_of(feature, f))
+                .collect();
+            if !flags.is_empty() {
+                kind.push('[');
+                kind.push_str(&flags.join("+"));
+                kind.push(']');
+            }
+            match kinds.iter_mut().find(|(k, _)| *k == kind) {
                 Some((_, n)) => *n += 1,
-                None => kinds.push((kind.to_string(), 1)),
+                None => kinds.push((kind, 1)),
             }
         }
         kinds.sort_by(|a, b| b.1.cmp(&a.1));

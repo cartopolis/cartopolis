@@ -294,7 +294,7 @@ struct Cell {
     /// `(bridge decks, road meshes riding on one)`. Reported by `--check` rather
     /// than logged, because `tessellate` runs during `load` — before Bevy installs
     /// a log subscriber — so anything it logs goes nowhere at all.
-    bridges: (usize, usize),
+    bridges: (usize, Vec<String>),
     /// Every layer, its feature count and its kinds — see `--census`.
     census: Vec<(String, usize, Vec<(String, usize)>)>,
 }
@@ -497,7 +497,7 @@ fn tessellate(
     tile_m: f32,
     cut: bool,
     deck_m: f32,
-) -> Result<(Vec<SurfaceMesh>, (usize, usize))> {
+) -> Result<(Vec<SurfaceMesh>, (usize, Vec<String>))> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
         .context("ground fills")?;
@@ -547,7 +547,14 @@ fn tessellate(
             indices: deck.indices.clone(),
         });
     }
-    let bridges = (decks.len(), roads.on_deck.len());
+    let bridges = (
+        decks.len(),
+        roads
+            .on_deck
+            .iter()
+            .map(|(_, m)| format!("{:?}", m.group))
+            .collect::<Vec<_>>(),
+    );
     for (_, mut m) in roads.on_deck {
         for p in &mut m.positions {
             p[1] += deck_m;
@@ -626,10 +633,15 @@ fn report(cell: &Cell) {
     #[allow(clippy::cast_precision_loss)]
     let pct = |n: usize| 100.0 * n as f32 / (CHECK_SAMPLES * CHECK_SAMPLES) as f32;
     println!("  covered {:.1} % of the cell", pct(count(&any)));
-    if cell.bridges.0 > 0 || cell.bridges.1 > 0 {
+    if cell.bridges.0 > 0 || !cell.bridges.1.is_empty() {
         println!(
-            "  {} bridge deck(s), {} road mesh(es) riding on one",
-            cell.bridges.0, cell.bridges.1
+            "  {} bridge deck(s), riding on them: {}",
+            cell.bridges.0,
+            if cell.bridges.1.is_empty() {
+                "nothing".to_string()
+            } else {
+                cell.bridges.1.join(", ")
+            }
         );
     }
 
