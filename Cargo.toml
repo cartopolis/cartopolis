@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/geo",
+    "crates/pipeline",
     "crates/simulator",
     "crates/cartopolis",
     "crates/cartopolis_android",

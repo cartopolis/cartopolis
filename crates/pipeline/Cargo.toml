@@ -1,0 +1,50 @@
+# The map preprocessing pipeline: the work that should happen once for everybody,
+# on a server, instead of on every device every time somebody moves.
+#
+# **Why it is here and not in `cartopy`.** The Dutch extractors moved to that
+# repository for its operator console (`docs/notes/where-the-map-data-is-built.md`),
+# and the seam that created is the one its own note calls worse than the one it
+# removed: every *consumer* of those formats is in this tree, in Rust, and nothing
+# but a person keeps the two in step. A pipeline written here does not have that
+# seam at all, because it calls the same `cartopolis_geo` functions the client
+# calls — the producer and the consumer are one body of code, so they cannot
+# disagree about a format or about a calculation. That is the whole argument, and
+# it is not about speed: TypeScript is perfectly capable of the arithmetic.
+#
+# It matters most for the things that are a *calculation* rather than a shape of
+# data. Where the ground is, and where a road has flattened it, has to come out the
+# same on the server and in the app or the two disagree by metres — which is
+# precisely the failure this crate was started to remove.
+#
+# cartopy keeps what cartopy is for: the console, the job log, and the record of
+# which cities have been built. It runs this as a command.
+#
+# **No Bevy**, for the same reason `geo` and `simulator` have none — a preprocessing
+# run has no renderer, no window and no ECS, and linking one would cost minutes per
+# build for nothing.
+[package]
+name = "cartopolis_pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "carto-pipeline"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Blocking HTTP, deliberately. A pipeline stage is a batch job with no event loop
+# and nothing to interleave with, so the async runtime the client and the simulator
+# need would be scaffolding around a `for` loop.
+ureq.workspace = true
+cartopolis_core = { path = "../core" }
+cartopolis_geo = { path = "../geo" }
+
+[lints]
+workspace = true
