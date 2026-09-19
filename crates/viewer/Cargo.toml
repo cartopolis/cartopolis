@@ -1,0 +1,84 @@
+# `carto-view` — the harness the pipeline is checked against.
+#
+# # The split this exists to hold
+#
+# The **pipeline** is responsible for the structure of the world: where the ground
+# is, where the roads are, what sits on what, which surface covers which. The
+# **viewer** is assumed correct. So a wrong picture here means the pipeline is
+# wrong, and fixing world layout means fixing the pipeline and looking again.
+#
+# That assumption is only worth anything if this stays small and still. It draws
+# with stock Bevy materials and carries none of the client's rendering — no custom
+# materials, no depth-bias shader, no ground-detail normal extension, no
+# floating-origin transform propagation. Not because those are wrong, but because
+# a harness that shared them could not answer the only question it is for: when the
+# picture is wrong, which side did it?
+#
+# # Why it does not depend on `cartopolis`
+#
+# Two reasons, and the second is the one that matters.
+#
+# It would rebuild whenever the client changed — and the client is 121.8 MB of link
+# and the thing under active development, so the instrument would be as slow and as
+# unstable as the thing it is meant to give a fixed reading of.
+#
+# And a fault in shared rendering code would appear identically in both, which is
+# exactly the case a harness must be able to tell apart. Two independent renderers
+# disagreeing is information; one renderer agreeing with itself is not.
+#
+# # What it does share, and why that is not the same thing
+#
+# `cartopolis_geo` — the prepared-ground reader, the surface list, the depth
+# ladder. That is what the bytes *mean*, not how they are drawn, and the two sides
+# must agree on it or nothing they show is comparable. Sharing a definition of the
+# data is what makes the comparison possible; sharing the drawing is what would
+# make it meaningless.
+#
+# `bevy.workspace = true` for the same reason in the other direction: the engine is
+# a third-party dependency both happen to use, and naming a different feature set
+# here would fork the whole stack into two compiled copies — which has already
+# happened in this tree once, from one dependency's default feature. Identical
+# features means the engine is built once and this costs a link, not a second Bevy.
+[package]
+name = "cartopolis_viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "carto-view"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bevy.workspace = true
+# Not used by a line of code here, and required anyway. The engine's tone-mapping
+# lookup tables drag in a compressed texture format whose decompressor has no
+# default backend, so *something* in the build has to name one or `bevy_image`
+# refuses to compile. The client names it as a direct dependency and the harness
+# has to make the identical choice — a different one would be a different feature
+# set, and a different feature set is the whole engine compiled twice.
+#
+# Two dependencies now exist here purely to keep that resolution identical (the
+# other is the Linux windowing backend below). That is the standing cost of an
+# independent harness sharing one engine build, and it is cheaper than the
+# alternative in both build time and confidence.
+bevy_image.workspace = true
+clap.workspace = true
+tracing.workspace = true
+cartopolis_core = { path = "../core" }
+cartopolis_geo = { path = "../geo" }
+
+# Wayland windowing is Linux-only, and the client adds it on exactly this target
+# predicate. **Matching it is not optional, for two separate reasons.** Without a
+# backend winit does not merely lack a window — it refuses to compile at all
+# ("the platform you're compiling for is not supported"), so a headless binary
+# that never opens one still needs it. And a feature set that differs from the
+# client's resolves bevy to a second artifact, which is the whole engine compiled
+# twice; cargo unions features only across what is actually in the build, so
+# `cargo build -p cartopolis_viewer` alone does not inherit the client's.
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { workspace = true, features = ["wayland"] }
+
+[lints]
+workspace = true

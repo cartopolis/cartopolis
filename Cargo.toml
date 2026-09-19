@@ -5,6 +5,7 @@ members = [
     "crates/geo",
     "crates/pipeline",
     "crates/simulator",
+    "crates/viewer",
     "crates/cartopolis",
     "crates/cartopolis_android",
     "crates/big_space",
