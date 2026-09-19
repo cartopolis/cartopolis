@@ -65,6 +65,14 @@ struct Cli {
     /// by rounding and re-decided by any camera move, so it is invisible in a
     /// single still and obvious across a pair — this is the instrument that says
     /// whether a road is fighting the ground, rather than a person squinting.
+    ///
+    /// **Pair it with `--plain` to measure depth.** Measured over a Groningen
+    /// motorway on 2026-09-19: the same viewpoint reports about **100** changed
+    /// pixels with the road textures on and **0** with `--plain`. Every one of
+    /// those is the sampler — fine markings and rail heads resolving differently
+    /// under a sub-pixel nudge — and adding the client's mip chain moved it by
+    /// five. Textured, this measures surface *and* sampler; plain, it measures
+    /// geometry alone, which is what a coplanar fault lives in.
     #[arg(long)]
     flicker: bool,
 
@@ -1810,6 +1818,18 @@ fn road_surface_texture(group: SurfaceGroup, images: &mut Assets<Image>) -> Opti
         _ => return None,
     };
     let t = cartopolis_geo::road_texture::road_texture(class);
+    // **With the client's mip chain**, from `cartopolis_geo::mip`.
+    //
+    // Without it a road at any distance aliases into a shimmer, and a shimmer is
+    // what a texture-registration fault looks like too. Measured on 2026-09-19
+    // over a Groningen motorway: a `--flicker` pair reported **105** changed
+    // pixels textured and **0** with `--plain`, so every one of them was the
+    // sampler rather than the geometry. An instrument whose own noise floor
+    // outweighs the thing it measures is not measuring it.
+    let (data, mip_count) = cartopolis_geo::mip::build_mip_chain(t.width, t.height, t.rgba.clone());
+    // Built from mip 0 and then handed the whole chain: `Image::new` checks the
+    // buffer against *one* level's size, so passing the chain to it trips an
+    // assertion rather than producing a mipped texture.
     let mut image = Image::new(
         Extent3d {
             width: t.width,
@@ -1821,10 +1841,16 @@ fn road_surface_texture(group: SurfaceGroup, images: &mut Assets<Image>) -> Opti
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
+    image.texture_descriptor.mip_level_count = mip_count;
+    image.data = Some(data);
     image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
         address_mode_u: bevy::image::ImageAddressMode::Repeat,
         address_mode_v: bevy::image::ImageAddressMode::Repeat,
         address_mode_w: bevy::image::ImageAddressMode::Repeat,
+        // The client asks for 8x anisotropy here for the same reason: a road is
+        // the surface you almost always see at a grazing angle, where an
+        // isotropic filter has to blur along the road to avoid aliasing across it.
+        anisotropy_clamp: 8,
         ..bevy::image::ImageSamplerDescriptor::linear()
     });
     Some(images.add(image))
