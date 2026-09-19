@@ -278,3 +278,165 @@ pub fn refine_for_terrain(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ground with enough curvature to make the crease rule fire everywhere.
+    struct Bumpy;
+
+    impl GroundField for Bumpy {
+        fn min_ground_edge_m(&self) -> f32 {
+            1.5
+        }
+
+        fn at(&self, x: f32, z: f32) -> f32 {
+            (x / 17.0).sin() * 2.0 + (z / 23.0).cos() * 1.5
+        }
+    }
+
+    /// One square of ground, in a local frame `origin` metres from the world origin.
+    fn square(side: f32) -> (Vec<[f32; 3]>, Vec<u32>) {
+        (
+            vec![
+                [0.0, 0.0, 0.0],
+                [side, 0.0, 0.0],
+                [side, 0.0, side],
+                [0.0, 0.0, side],
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+    }
+
+    fn refine(origin: [f32; 2], side: f32, max_edge: f32) -> Vec<[f32; 3]> {
+        let (mut positions, mut indices) = square(side);
+        refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            max_edge,
+            Some(Crease {
+                field: &Bumpy,
+                origin,
+            }),
+        );
+        // Into world metres, so two different local frames are comparable.
+        positions
+            .iter()
+            .map(|p| [origin[0] + p[0], p[1], origin[1] + p[2]])
+            .collect()
+    }
+
+    /// Vertices on the plane `x == wx`, sorted, rounded to millimetres.
+    fn on_seam(v: &[[f32; 3]], wx: f32) -> Vec<i64> {
+        let mut out: Vec<i64> = v
+            .iter()
+            .filter(|p| (p[0] - wx).abs() < 1e-3)
+            .map(|p| (f64::from(p[2]) * 1000.0).round() as i64)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// **Two cells must agree about their shared boundary, having never met.**
+    ///
+    /// This is the property the whole per-edge, decide-on-quantised-endpoints
+    /// design exists for, and it is the one a map tiled into cells depends on: a
+    /// feature crossing a tile border is clipped into two meshes that are
+    /// tessellated, refined and draped independently, and if one splits a boundary
+    /// edge the other does not, the result is a T-junction — a crack you can see
+    /// the sky through, along a seam, in the one place nothing is looking.
+    ///
+    /// Worth pinning here rather than in the client: the client's cells arrive from
+    /// a streamer and a failure would be a rare visual artifact somebody has to
+    /// notice and then reproduce.
+    #[test]
+    fn two_cells_agree_about_the_edge_they_share() {
+        const SIDE: f32 = 120.0;
+        let left = refine([0.0, 0.0], SIDE, 12.5);
+        let right = refine([SIDE, 0.0], SIDE, 12.5);
+
+        let a = on_seam(&left, SIDE);
+        let b = on_seam(&right, SIDE);
+        assert!(
+            a.len() > 4,
+            "the ground is not bumpy enough to be testing anything: {} vertices",
+            a.len()
+        );
+        assert_eq!(
+            a, b,
+            "the two cells refined their shared boundary differently, which is a \
+             T-junction along the seam"
+        );
+    }
+
+    /// Agreement must survive the two meshes being **cut differently**.
+    ///
+    /// This is not hypothetical: a feature crossing a tile border is clipped into
+    /// two different polygons, and earcut answers each with its own triangulation.
+    /// So the two cells meet along one geometric edge while disagreeing about every
+    /// triangle behind it, and the shared boundary still has to come out the same.
+    /// It does because the decision is a pure function of the edge's two endpoints
+    /// and the ground — never of the triangle asking.
+    #[test]
+    fn agreement_survives_a_different_triangulation() {
+        const SIDE: f32 = 120.0;
+        let straight = refine([SIDE, 0.0], SIDE, 12.5);
+
+        // The same square, cut along the other diagonal.
+        let (mut positions, _) = square(SIDE);
+        let mut indices = vec![0, 1, 3, 1, 2, 3];
+        refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            12.5,
+            Some(Crease {
+                field: &Bumpy,
+                origin: [SIDE, 0.0],
+            }),
+        );
+        let flipped: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|p| [SIDE + p[0], p[1], p[2]])
+            .collect();
+
+        assert_eq!(
+            on_seam(&straight, SIDE),
+            on_seam(&flipped, SIDE),
+            "the shared boundary came out differently because the interior was cut \
+             differently"
+        );
+    }
+
+    /// A height lands on every vertex the refinement added, not only the corners.
+    ///
+    /// The refinement is only worth anything if the vertices it adds are then
+    /// *used*; a mesh that is subdivided and then draped by its corners alone is
+    /// the flat chord again, wearing more triangles.
+    #[test]
+    fn the_added_vertices_sit_on_the_ground() {
+        let v = refine([0.0, 0.0], 120.0, 12.5);
+        let worst = v
+            .iter()
+            .map(|p| (Bumpy.at(p[0], p[2]) - p[1]).abs())
+            .fold(0.0f32, f32::max);
+        // The refinement does not displace — it only provides vertices to displace
+        // *by* — so every y is still zero here. This pins that contract: if the
+        // function ever starts draping, the callers that drape afterwards would be
+        // applying the ground twice.
+        assert!(
+            v.iter().all(|p| p[1] == 0.0),
+            "refine_for_terrain displaced a vertex; its callers drape afterwards \
+             and would now do it twice (worst {worst} m)"
+        );
+    }
+}
