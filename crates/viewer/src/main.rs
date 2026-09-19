@@ -37,6 +37,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use clap::Parser;
 
+use cartopolis_geo::road_grade;
 use cartopolis_geo::road_texture::RoadClass;
 use cartopolis_geo::vector_tiles::{self, SurfaceGroup, SurfaceMesh, TileData};
 
@@ -111,6 +112,33 @@ struct Cli {
     /// see rather than the map's colours.
     #[arg(long)]
     plain: bool,
+
+    /// Stand the ground on synthetic relief of this amplitude, in metres.
+    ///
+    /// **This is how the road tearing is reproduced at all.** Every surface is
+    /// bent onto the ground against its *own* triangles, so two of them disagree
+    /// by the ground's curvature between their corners — which on flat ground is
+    /// nothing. Flat, the fault is invisible; on a slope it is the whole problem.
+    ///
+    /// Synthetic rather than the real survey on purpose: no network, identical
+    /// every run, and the amplitude can be turned up until the fault is
+    /// unmistakable instead of marginal.
+    #[arg(long, value_name = "METRES", default_value_t = 0.0)]
+    relief: f32,
+
+    /// Flatten the ground along the roads before anything stands on it
+    /// (`cartopolis_geo::road_grade`), so the fix can be seen against `--relief`
+    /// alone.
+    #[arg(long)]
+    grade: bool,
+
+    /// Leave the landuse fills under the carriageways instead of cutting them out.
+    ///
+    /// **The A/B for the fix that landed on 2026-09-19.** 67 % of the road sheet
+    /// had built land drawn beneath it; flat that is invisible, and on a gradient
+    /// the lower sheet stands through the upper one.
+    #[arg(long)]
+    no_cut: bool,
 
     /// Measure what was built and print it, instead of drawing.
     ///
@@ -300,7 +328,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
             let (lat, _) = cartopolis_core::world::tile_to_lat_lng(x, y, z);
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
-        match tessellate(&tile, tile_m) {
+        match tessellate(&tile, tile_m, !cli.no_cut) {
             Ok(meshes) => cells.push(Cell {
                 z,
                 x,
@@ -321,7 +349,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
 /// before the roads because a bridge-flagged street cuts itself out of the deck it
 /// rides, and the fills come out from under the carriageways because otherwise
 /// three quarters of every street has a second surface beneath it.
-fn tessellate(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>> {
+fn tessellate(tile: &TileData, tile_m: f32, cut: bool) -> Result<Vec<SurfaceMesh>> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
         .context("ground fills")?;
@@ -331,7 +359,9 @@ fn tessellate(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>> {
     let roads = vector_tiles::tessellate_roads(tile, tile_m, &mut decks, None, false)
         .map_err(anyhow::Error::msg)
         .context("road ribbons")?;
-    cartopolis_geo::road_stitch::cut_under_roads(&mut meshes, &roads.ground);
+    if cut {
+        cartopolis_geo::road_stitch::cut_under_roads(&mut meshes, &roads.ground);
+    }
     meshes.extend(roads.ground);
 
     // The roads that run under the ground, and the holes their open approaches
@@ -487,6 +517,111 @@ fn count(mask: &[bool]) -> usize {
     mask.iter().filter(|m| **m).count()
 }
 
+
+/// Samples per side of the synthetic height field over the loaded area.
+///
+/// Matches what the client works at — its field is ~3.1 m on a desktop and 12.5 m
+/// on a handset, and the tearing is a function of that spacing. A harness sampling
+/// far finer would quietly fix the fault it exists to show.
+const FIELD_SAMPLES: usize = 512;
+
+/// Samples of margin beyond the carriageway the grading may move.
+///
+/// Not a tuning constant. With the ground pinned at the kerb itself, both kerbs
+/// are in whatever the road is crossing and the road can only reproduce it —
+/// measured on a 4 m valley, a 3.80 m dip became 3.52 m. Pinned further out, that
+/// band becomes the cutting or embankment a built road actually has.
+const ROAD_MARGIN_SAMPLES: usize = 6;
+
+/// The ground the surfaces stand on.
+struct Field {
+    samples: Vec<f32>,
+    step_m: f32,
+}
+
+impl Field {
+    /// Bilinear height at a world point, `0.0` outside.
+    fn at(&self, x: f32, z: f32) -> f32 {
+        let n = FIELD_SAMPLES;
+        let (fx, fz) = (x / self.step_m, z / self.step_m);
+        #[allow(clippy::cast_precision_loss)]
+        if !(0.0..=(n - 1) as f32).contains(&fx) || !(0.0..=(n - 1) as f32).contains(&fz) {
+            return 0.0;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x0, z0) = (fx.floor() as usize, fz.floor() as usize);
+        let (x1, z1) = ((x0 + 1).min(n - 1), (z0 + 1).min(n - 1));
+        #[allow(clippy::cast_precision_loss)]
+        let (tx, tz) = (fx - x0 as f32, fz - z0 as f32);
+        let s = |x: usize, z: usize| self.samples[z * n + x];
+        let top = s(x0, z0) + (s(x1, z0) - s(x0, z0)) * tx;
+        let bottom = s(x0, z1) + (s(x1, z1) - s(x0, z1)) * tx;
+        top + (bottom - top) * tz
+    }
+}
+
+/// Build the ground, and optionally grade it along the roads.
+///
+/// Two crossing waves rather than a dome: a single hill has almost no curvature at
+/// the scale a surface's triangles span, and curvature between corners *is* the
+/// fault being reproduced.
+fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
+    if cli.relief <= 0.0 {
+        return None;
+    }
+    let n = FIELD_SAMPLES;
+    let span = loaded.extent();
+    #[allow(clippy::cast_precision_loss)]
+    let step_m = span / (n - 1) as f32;
+
+    let mut samples = vec![0.0f32; n * n];
+    for z in 0..n {
+        for x in 0..n {
+            #[allow(clippy::cast_precision_loss)]
+            let (wx, wz) = (x as f32 * step_m, z as f32 * step_m);
+            let a = (wx / 260.0).sin() * (wz / 310.0).cos();
+            let b = (wx / 95.0).sin() * (wz / 120.0).sin() * 0.35;
+            samples[z * n + x] = cli.relief * (a + b);
+        }
+    }
+
+    if cli.grade {
+        let mut road = vec![false; n * n];
+        let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
+        for cell in &loaded.cells {
+            #[allow(clippy::cast_precision_loss)]
+            let off = (
+                (cell.x - loaded.origin.0) as f32 * cell.tile_m,
+                (cell.y - loaded.origin.1) as f32 * cell.tile_m,
+            );
+            for m in &cell.meshes {
+                if !matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)) {
+                    continue;
+                }
+                for t in m.indices.chunks_exact(3) {
+                    let q = |i: u32| {
+                        let v = m.positions[i as usize];
+                        [off.0 + v[0], off.1 + v[2]]
+                    };
+                    tris.push([q(t[0]), q(t[1]), q(t[2])]);
+                }
+            }
+        }
+        road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris, ROAD_MARGIN_SAMPLES);
+        let moved = road_grade::flatten(&mut samples, n, &road, road_grade::DEFAULT_PASSES);
+        tracing::info!(
+            marked = road.iter().filter(|m| **m).count(),
+            moved,
+            "graded the ground along the roads"
+        );
+    }
+
+    let lo = samples.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    tracing::info!(span_m = span, step_m, low_m = lo, high_m = hi, "ground");
+    Some(Field { samples, step_m })
+}
+
 /// The tone this draws a surface in.
 ///
 /// **Mostly the map's own palette, and deliberately not for the road sheet.**
@@ -526,6 +661,7 @@ fn spawn_scene(
     cli: Res<Cli>,
     mut drawn: ResMut<Drawn>,
 ) {
+    let field = build_field(&loaded, &cli);
     for cell in &loaded.cells {
         // Tile x runs east; tile y runs south, which is +z here.
         #[allow(clippy::cast_precision_loss)]
@@ -543,7 +679,7 @@ fn spawn_scene(
                     continue;
                 }
             }
-            let Some(mesh) = to_bevy_mesh(m) else {
+            let Some(mesh) = to_bevy_mesh(m, field.as_ref(), cell_origin) else {
                 continue;
             };
             drawn.meshes += 1;
@@ -581,7 +717,7 @@ fn spawn_scene(
     );
 }
 
-fn to_bevy_mesh(m: &SurfaceMesh) -> Option<Mesh> {
+fn to_bevy_mesh(m: &SurfaceMesh, field: Option<&Field>, cell_origin: Vec3) -> Option<Mesh> {
     if m.positions.is_empty() || m.indices.is_empty() {
         return None;
     }
@@ -589,17 +725,40 @@ fn to_bevy_mesh(m: &SurfaceMesh) -> Option<Mesh> {
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
-    let normals = if m.normals.len() == m.positions.len() {
-        m.normals.clone()
-    } else {
-        vec![[0.0, 1.0, 0.0]; m.positions.len()]
+    // **Each surface is displaced on its own vertices and nothing else**, which is
+    // not a shortcut: it is what a renderer does. A surface is a flat plane between
+    // its own corners, so where the ground curves between one surface's corners and
+    // another's, the two disagree. Refining here would hide the fault this exists
+    // to show.
+    let positions: Vec<[f32; 3]> = match field {
+        None => m.positions.clone(),
+        Some(f) => m
+            .positions
+            .iter()
+            .map(|p| {
+                let y = f.at(cell_origin.x + p[0], cell_origin.z + p[2]);
+                [p[0], p[1] + y, p[2]]
+            })
+            .collect(),
     };
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     if m.uvs.len() == m.positions.len() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone());
     }
+    // Indices before the normals: computing them walks the triangles.
     mesh.insert_indices(bevy::render::mesh::Indices::U32(m.indices.clone()));
+    // Normals off the geometry actually drawn — a displaced surface lit by flat
+    // normals shades as though it were still level.
+    if field.is_some() {
+        mesh.compute_normals();
+    } else {
+        let normals = if m.normals.len() == m.positions.len() {
+            m.normals.clone()
+        } else {
+            vec![[0.0, 1.0, 0.0]; m.positions.len()]
+        };
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    }
     Some(mesh)
 }
 
