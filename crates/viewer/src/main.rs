@@ -200,6 +200,12 @@ struct Cli {
     #[arg(long, value_name = "CLASS")]
     texture: Option<String>,
 
+    /// List every layer in the tile, its feature count and its `kind` values,
+    /// then exit. What is actually in the tile, as opposed to what this build
+    /// makes of it.
+    #[arg(long)]
+    census: bool,
+
     /// Measure what was built and print it, instead of drawing.
     ///
     /// **The half of this harness a picture cannot be.** Both faults chased on
@@ -275,6 +281,8 @@ struct Cell {
     /// the readiest explanation for ground nothing covers, and nothing else in the
     /// picture can point at them.
     unhandled: Vec<(String, usize)>,
+    /// Every layer, its feature count and its kinds — see `--census`.
+    census: Vec<(String, usize, Vec<(String, usize)>)>,
 }
 
 #[derive(Resource)]
@@ -352,6 +360,17 @@ fn main() -> Result<()> {
 
     if let Some(want) = cli.texture.as_ref() {
         return dump_texture(want, cli.shot.as_deref());
+    }
+
+    if cli.census {
+        for cell in &loaded.cells {
+            println!("{}/{}/{}", cell.z, cell.x, cell.y);
+            for (layer, total, kinds) in &cell.census {
+                let list: Vec<String> = kinds.iter().map(|(k, n)| format!("{k} {n}")).collect();
+                println!("  {layer:<20} {total:>6}   {}", list.join(", "));
+            }
+        }
+        return Ok(());
     }
 
     if cli.check {
@@ -443,6 +462,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                 tile_m,
                 meshes,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
+                census: vector_tiles::layer_census(&tile),
             }),
             Err(e) => tracing::warn!(path = %path.display(), error = %format!("{e:#}"), "failed"),
         }

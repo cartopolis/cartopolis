@@ -1403,6 +1403,14 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
     })
 }
 
+/// Every layer in a tile, its feature count, and the `kind` values inside it.
+///
+/// **The answer to "what is actually in this tile?"**, which is the question that
+/// keeps coming back: a surface that is missing, a kind nothing draws, a canal
+/// rendered in pieces — each was a guess about the data until somebody counted.
+/// It reads the tile and nothing else, so it says what is there rather than what
+/// this build makes of it.
+///
 /// Land features this build draws nothing for, by kind and count.
 ///
 /// **An unhandled kind is a hole in the ground**, and a silent one: [`land_group`]
@@ -1416,6 +1424,26 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
 /// forty dropped kiosks, but the count is what says *which* kind to go and look
 /// at, and the coverage measurement already says how much ground is missing.
 #[must_use]
+pub fn layer_census(tile: &TileData) -> Vec<(String, usize, Vec<(String, usize)>)> {
+    let mut out = Vec::new();
+    for meta in tile.layers() {
+        let mut kinds: Vec<(String, usize)> = Vec::new();
+        let mut total = 0usize;
+        for feature in tile.features(meta) {
+            total += 1;
+            let kind = kind_of(feature).unwrap_or("-");
+            match kinds.iter_mut().find(|(k, _)| k == kind) {
+                Some((_, n)) => *n += 1,
+                None => kinds.push((kind.to_string(), 1)),
+            }
+        }
+        kinds.sort_by(|a, b| b.1.cmp(&a.1));
+        out.push((meta.name.clone(), total, kinds));
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
 pub fn unhandled_land_kinds(tile: &TileData) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = Vec::new();
     let Some(meta) = tile.layer("land") else {
@@ -1683,6 +1711,30 @@ pub fn mesh_upload_bytes(vertices: usize, indices: usize) -> usize {
 /// own**, or a hole opens where the one above it used to be. No layer toggle
 /// reaches these groups today (`DataLayers` has none for water or landuse) and one
 /// that did would have to exclude its group from the cut.
+/// Half the drawn width of a narrow waterway, by Shortbread `kind`, or `None` for
+/// one this build leaves to the basemap.
+///
+/// **A ditch is deliberately not here.** The Groningen countryside is a lattice of
+/// them — thousands of features per cell, each a metre or two wide — and a
+/// metre-wide ribbon of water is below the width at which a 3D surface tells you
+/// anything a drawn line does not. They stay on the raster basemap underneath,
+/// which is where everything this path does not draw already lives.
+///
+/// The three that are here are the ones a person would call water: a river you
+/// cannot jump, a canal a boat uses, a stream with a bank. Widths are the drawn
+/// width of the *channel*, not a survey — Shortbread carries no width, so this is
+/// the same kind of nominal figure [`road_width_m`] uses for a street.
+fn water_line_half_width_m(kind: &str) -> Option<f32> {
+    Some(
+        match kind {
+            "river" => 14.0,
+            "canal" => 8.0,
+            "stream" => 3.0,
+            _ => return None,
+        } * 0.5,
+    )
+}
+
 pub fn tessellate_surfaces(
     tile: &TileData,
     tile_m: f32,
@@ -1698,31 +1750,86 @@ pub fn tessellate_surfaces(
             "ocean" | "water_polygons" => Some(SurfaceGroup::Water),
             "sites" => Some(SurfaceGroup::Built),
             "land" => None,
+            // Narrow water is a *line* in Shortbread, not an area, and drawing
+            // only the areas is why a canal renders as a row of disconnected
+            // ponds: OSM maps the wide stretches as polygons and the narrow ones
+            // as ways, and the join between them is invisible on a flat map and
+            // a hole in a 3D one. Handled below rather than here, because it
+            // needs a ribbon rather than a fill.
+            "water_lines" => None,
             _ => continue,
         };
+        let is_water_line = meta.name == "water_lines";
         let extent = TileData::extent(meta);
         let scale = tile_m / extent;
 
         for feature in tile.features(meta) {
-            let group = match fixed {
-                Some(g) => g,
-                None => match kind_of(feature).and_then(land_group) {
+            let group = if is_water_line {
+                SurfaceGroup::Water
+            } else {
+                match fixed {
                     Some(g) => g,
-                    None => continue,
-                },
+                    None => match kind_of(feature).and_then(land_group) {
+                        Some(g) => g,
+                        None => continue,
+                    },
+                }
             };
             let mut positions: Vec<[f32; 3]> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
-            match &feature.geometry {
-                Geometry::Polygon(p) => {
-                    tessellate_polygon(p, scale, extent, &mut positions, &mut indices);
+            if is_water_line {
+                let Some(half) = water_line_half_width_m(kind_of(feature).unwrap_or("")) else {
+                    continue;
+                };
+                let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+                match &feature.geometry {
+                    Geometry::LineString(ls) => lines.push(ls),
+                    Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+                    _ => {}
                 }
-                Geometry::MultiPolygon(mp) => {
-                    for p in mp {
-                        tessellate_polygon(p, scale, extent, &mut positions, &mut indices);
+                let mut uvs: Vec<[f32; 2]> = Vec::new();
+                for ls in lines {
+                    let pts: Vec<[f32; 2]> =
+                        ls.0.iter()
+                            .filter(|c| c.x.is_finite() && c.y.is_finite())
+                            .map(|c| [c.x, c.y])
+                            .collect();
+                    // Clipped, not clamped, exactly as the streets are: the
+                    // neighbouring tile carries its own copy of the same
+                    // waterway and the two must abut rather than overlap.
+                    for run in clip_polyline(&pts, 0.0, extent) {
+                        let world: Vec<[f32; 2]> =
+                            run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+                        // Butt ends. A waterway's end is either the tile border
+                        // or the polygon it runs into, and `stitch` settles the
+                        // overlap with that polygon — an extension would only
+                        // give the cut more to remove.
+                        let ends = [EndJoin::default(), EndJoin::default()];
+                        ribbon(
+                            &world,
+                            half,
+                            0.0,
+                            1.0,
+                            ends,
+                            false,
+                            &mut positions,
+                            &mut uvs,
+                            &mut indices,
+                        );
                     }
                 }
-                _ => {}
+            } else {
+                match &feature.geometry {
+                    Geometry::Polygon(p) => {
+                        tessellate_polygon(p, scale, extent, &mut positions, &mut indices);
+                    }
+                    Geometry::MultiPolygon(mp) => {
+                        for p in mp {
+                            tessellate_polygon(p, scale, extent, &mut positions, &mut indices);
+                        }
+                    }
+                    _ => {}
+                }
             }
             if indices.is_empty() {
                 continue;
@@ -4715,6 +4822,60 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
             any_water |= fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
         }
     }
+
+    // **The narrow waterways too, stroked at the width they are drawn at.**
+    //
+    // `tessellate_surfaces` draws a river, canal or stream that Shortbread
+    // carries as a *line* rather than an area, and this field is what every water
+    // surface asks "how far am I from the bank?". A ribbon the field does not
+    // know about samples as land along its whole length — zero distance from
+    // shore, which is shallow water and foam everywhere. That is the mismatch
+    // `WATER_LAYERS`' own doc warns of, in its other direction: not a shoreline in
+    // open water, but open water that thinks it is all shoreline.
+    if let Some(meta) = tile.layer("water_lines") {
+        let extent = TileData::extent(meta);
+        let s = size as f32 / extent;
+        let transform = Transform::from_row(s, 0.0, 0.0, s, pad as f32, pad as f32);
+        for feature in tile.features(meta) {
+            let Some(half_m) = water_line_half_width_m(kind_of(feature).unwrap_or("")) else {
+                continue;
+            };
+            // Field texels per metre: the stroke has to be the ribbon's width in
+            // the *field's* units, not the tile's.
+            let width_px = 2.0 * half_m * (extent / tile_m.max(1.0)) * s;
+            let stroke = Stroke {
+                width: width_px.max(1.0),
+                line_cap: LineCap::Butt,
+                line_join: LineJoin::Round,
+                ..Stroke::default()
+            };
+            let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+            match &feature.geometry {
+                Geometry::LineString(ls) => lines.push(ls),
+                Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+                _ => continue,
+            }
+            for ls in lines {
+                let mut pb = PathBuilder::new();
+                let mut started = false;
+                for c in &ls.0 {
+                    if !c.x.is_finite() || !c.y.is_finite() {
+                        continue;
+                    }
+                    if started {
+                        pb.line_to(c.x, c.y);
+                    } else {
+                        pb.move_to(c.x, c.y);
+                        started = true;
+                    }
+                }
+                if let Some(path) = pb.finish() {
+                    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                    any_water = true;
+                }
+            }
+        }
+    }
     if !any_water {
         return Ok(None);
     }
@@ -7629,16 +7790,29 @@ mod tests {
                 "{:?}: index out of range",
                 m.group
             );
-            // Tile-local metres, inside the tile (clamped) and flat on the ground.
+            // Tile-local metres, inside the tile, and flat on the ground.
+            //
+            // **A ribbon is allowed half its width past the edge**, and only a
+            // ribbon. A fill is clipped to the tile exactly (`clip_ring`), so it
+            // abuts its neighbour's copy on the border line itself. A narrow
+            // waterway is a *line* clipped to that same border and then widened,
+            // so its cap reaches half a channel beyond — which is what the street
+            // ribbons have always done, for the same reason and to the same
+            // extent. The allowance is the widest water line this build draws.
+            let slack = if m.group == SurfaceGroup::Water {
+                water_line_half_width_m("river").unwrap_or(0.0)
+            } else {
+                0.0
+            };
             for p in &m.positions {
                 assert!(
-                    (0.0..=tile_m).contains(&p[0]),
+                    (-slack..=tile_m + slack).contains(&p[0]),
                     "{:?}: x {} out of tile",
                     m.group,
                     p[0]
                 );
                 assert!(
-                    (0.0..=tile_m).contains(&p[2]),
+                    (-slack..=tile_m + slack).contains(&p[2]),
                     "{:?}: z {} out of tile",
                     m.group,
                     p[2]
