@@ -6,6 +6,8 @@ triggers:
   - adding a new thing that stands on the map (a marker, a vehicle, a mesh)
   - "why is this embankment a ramp" / a wall, a kerb or a dyke crest that reads flat
   - refine_for_terrain, CREASE_SAG_M, MAX_GROUND_EDGE_M, height_enabled
+    (the refinement itself moved to `cartopolis_geo::terrain_refine` on 2026-09-19,
+    so the harness runs it too — see `the-harness-must-share-the-clients-geometry.md`)
 ---
 
 # Terrain relief: what AHN actually holds, and the shape the field takes from it
