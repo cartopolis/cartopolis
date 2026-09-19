@@ -470,6 +470,30 @@ fn report(cell: &Cell) {
         println!("  no two sheets share ground");
     }
 
+    // **Geometry past the cell's own edge.** A tile carries a buffer, so a feature
+    // crossing a boundary is delivered in *both* tiles — and `road_stitch` cuts
+    // within one tile only, so neither copy knows about the other. That is ground
+    // covered twice at every cell edge, which the depth ladder has to arbitrate and
+    // which tears once the ground has a gradient. `the-ground-stack.md` names it as
+    // the case the cut cannot reach; this says how big it is.
+    let mut spill = 0usize;
+    let mut total = 0usize;
+    for m in &cell.meshes {
+        for t in m.indices.chunks_exact(3) {
+            total += 1;
+            let out = t.iter().any(|&i| {
+                let v = m.positions[i as usize];
+                v[0] < 0.0 || v[2] < 0.0 || v[0] > cell.tile_m || v[2] > cell.tile_m
+            });
+            if out {
+                spill += 1;
+            }
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let spill_pct = 100.0 * spill as f32 / total.max(1) as f32;
+    println!("  {spill} of {total} triangles reach past the cell edge ({spill_pct:.1} %)");
+
     if cell.unhandled.is_empty() {
         println!("  every land kind in the tile is drawn");
     } else {

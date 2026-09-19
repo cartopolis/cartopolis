@@ -274,6 +274,36 @@ Water is a deliberate exception in the same area: a lake takes one level for the
 whole polygon, so at a bank it interpenetrates the land by the bank's height. That
 is what a water surface does.
 
+## Grading the ground along a road is not the fix, and is measured
+
+`cartopolis_geo::road_grade` flattens the height field inside a road corridor —
+the idea being that where the ground under a road has no curvature, no two sheets
+over it can disagree. It is written, tested, and **called by nothing**, on purpose.
+
+Measured with `carto-view` on `14/8490/5321`, 2026-09-19:
+
+* **It does not fix the tearing.** Applied without `cut_under_roads`, the street
+  network is still broken into the same disconnected fragments, in a picture and
+  in the overlap count. Removing the overlap is what fixes it; flattening the
+  ground is not a substitute — which is what the top of this note has always said,
+  and the grading was proposed three times anyway.
+* **What it does buy is 0.125 m** of mean movement (0.463 m worst) — the
+  metre-scale roughness a laser survey carries, which makes a draped road follow
+  bumps a built road would never have. That is a *driving comfort* property, not a
+  rendering one, and it is invisible in a frame: 12 cm on a road is sub-pixel
+  shading from 35 m up.
+
+What stops it being wired in is the seam. Grading per cell means two neighbouring
+cells grade the same road against different extents of it — each tile clips at its
+own buffer — and answer differently, which puts a **step at every cell boundary**.
+Grading globally needs the field re-baked once the roads for its box have arrived,
+and the field is baked per map anchor *before* any road cell lands.
+
+So the trade is a visible step, or a re-bake of the whole field, against 12 cm of
+smoothing. Neither is worth it today. If it is ever wanted, the thing that makes it
+safe is the shared world lattice this note already prescribes — not a margin, and
+not a per-cell pass.
+
 ## Instruments
 
 * `--flicker` (see CLAUDE.md) — two captures ~5 cm apart, solid flipped pixels as
