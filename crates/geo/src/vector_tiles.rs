@@ -1424,6 +1424,66 @@ pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
 /// forty dropped kiosks, but the count is what says *which* kind to go and look
 /// at, and the coverage measurement already says how much ground is missing.
 #[must_use]
+/// One street's centre line, in tile-local metres, with what decides how it is
+/// drawn.
+///
+/// The raw input to `tessellate_roads`, handed out so an artifact in a *shape*
+/// can be read as coordinates rather than reconstructed from a picture.
+pub struct StreetLine {
+    pub kind: String,
+    pub flags: String,
+    pub closed: bool,
+    pub points: Vec<[f32; 2]>,
+}
+
+/// Every street centre line in the tile, in tile-local metres.
+#[must_use]
+pub fn street_lines(tile: &TileData, tile_m: f32) -> Vec<StreetLine> {
+    let mut out = Vec::new();
+    let Some(meta) = tile.layer("streets") else {
+        return out;
+    };
+    let extent = TileData::extent(meta);
+    let scale = tile_m / extent;
+    for feature in tile.features(meta) {
+        let flags: Vec<&str> = ["bridge", "tunnel", "oneway", "oneway_reverse", "link"]
+            .into_iter()
+            .filter(|f| flag_of(feature, f))
+            .collect();
+        let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => lines.push(ls),
+            Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+            _ => continue,
+        }
+        for ls in lines {
+            let points: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x * scale, c.y * scale])
+                    .collect();
+            if points.len() < 2 {
+                continue;
+            }
+            let closed = {
+                let (h, t) = (points[0], points[points.len() - 1]);
+                (h[0] - t[0]).hypot(h[1] - t[1]) < 1e-3
+            };
+            out.push(StreetLine {
+                kind: kind_of(feature).unwrap_or("-").to_string(),
+                flags: if flags.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}]", flags.join("+"))
+                },
+                closed,
+                points,
+            });
+        }
+    }
+    out
+}
+
 pub fn layer_census(tile: &TileData) -> Vec<(String, usize, Vec<(String, usize)>)> {
     let mut out = Vec::new();
     for meta in tile.layers() {
@@ -8558,6 +8618,90 @@ mod tests {
             nearest > 0.0,
             "the ribbon reached {nearest} m from the centre — through the middle \
              of the island and out the other side"
+        );
+    }
+
+    /// **A road joining a roundabout must not stub across the island**, which is
+    /// the tooth, and these are the tile's own coordinates for it.
+    ///
+    /// `--dump-lines` over `14/8490/5321`: the roundabout is the closing tail of a
+    /// `residential` way, and a `service` road begins **on one of its vertices**
+    /// and leaves to the south-east. `junction_extent` runs that end on into
+    /// whatever it meets, because at a tee the two have to overlap for the cut to
+    /// resolve them. A roundabout is not a tee: the road it meets curves away, so
+    /// a straight stub cuts the chord — and on a ring this small the chord is the
+    /// island.
+    ///
+    /// The five synthetic rings above all pass because they test the *ring's* own
+    /// ends. The tooth belongs to the road joining it.
+    /// **Known fault, reproduced, not yet fixed** — `#[ignore]` so it states the
+    /// bug without failing the suite. Run it with
+    /// `cargo test -p cartopolis_geo -- --ignored stub_across`.
+    ///
+    /// Measured: the stub reaches **2.35 m** of the roundabout's centre where the
+    /// island begins at 3.05 m. The fix is not a smaller cap — the reach is
+    /// already bounded at `2 x half` and the overshoot is 0.7 m, so any constant
+    /// that fixes this one is a threshold waiting for a tighter roundabout. It
+    /// has to come from the joined road's **curvature at the node**: `half / sin`
+    /// is the far kerb of a road that runs straight through, and a road that
+    /// turns there has its far kerb nearer. `NodeArm` carries one axis per arm and
+    /// a ring contributes two, so the turn is available; spending it correctly is
+    /// the work.
+    #[test]
+    #[ignore = "reproduces a known fault: a stub crosses a small roundabout's island"]
+    fn a_road_joining_a_roundabout_does_not_stub_across_the_island() {
+        // The ring, verbatim, and the centre it turns about.
+        let ring: [[f32; 2]; 10] = [
+            [-1.97, -6.10],
+            [-6.26, -3.24],
+            [-7.33, 1.77],
+            [-4.83, 6.06],
+            [-0.54, 7.85],
+            [1.97, 7.49],
+            [5.54, 4.99],
+            [6.97, 0.34],
+            [6.26, -2.17],
+            [2.68, -5.74],
+        ];
+        #[allow(clippy::cast_precision_loss)]
+        let hub = ring.iter().fold([0.0f32; 2], |a, p| {
+            [
+                a[0] + p[0] / ring.len() as f32,
+                a[1] + p[1] / ring.len() as f32,
+            ]
+        });
+        let inner = ring
+            .iter()
+            .fold(f32::MAX, |a, p| a.min((p[0] - hub[0]).hypot(p[1] - hub[1])))
+            - 3.5;
+
+        // The service road, verbatim, stubbed back into the ring at its head.
+        let spur = [[5.54, 4.99], [17.70, 39.68]];
+        let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        ribbon(
+            &spur,
+            2.0,
+            0.0,
+            12.0,
+            [
+                EndJoin {
+                    extend: 7.0,
+                    cont: None,
+                },
+                EndJoin::default(),
+            ],
+            false,
+            &mut positions,
+            &mut uvs,
+            &mut indices,
+        );
+        let nearest = positions
+            .iter()
+            .fold(f32::MAX, |a, p| a.min((p[0] - hub[0]).hypot(p[2] - hub[1])));
+        assert!(
+            nearest >= inner,
+            "the joining road reaches {nearest} m of the roundabout's centre, \
+             inside the {inner} m where the island is — that is the tooth"
         );
     }
 

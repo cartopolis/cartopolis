@@ -224,6 +224,17 @@ struct Cli {
     #[arg(long, value_name = "METRES", default_value_t = 5.0)]
     deck_height: f32,
 
+    /// Print the tile's street centre lines within this many metres of `--at`,
+    /// in tile-local metres, and exit.
+    ///
+    /// **The end of guessing at a shape.** A roundabout drew a tooth across its
+    /// own island and five synthetic reconstructions of it all behaved; what was
+    /// missing was never a sixth guess but the coordinates the encoder actually
+    /// sent. A picture shows that something is wrong with a shape and never what
+    /// the shape is.
+    #[arg(long, value_name = "METRES")]
+    dump_lines: Option<f32>,
+
     /// Measure what was built and print it, instead of drawing.
     ///
     /// **The half of this harness a picture cannot be.** Both faults chased on
@@ -303,6 +314,8 @@ struct Cell {
     /// than logged, because `tessellate` runs during `load` — before Bevy installs
     /// a log subscriber — so anything it logs goes nowhere at all.
     bridges: (usize, Vec<String>),
+    /// Street centre lines in tile-local metres — see `--dump-lines`.
+    lines: Vec<vector_tiles::StreetLine>,
     /// Every layer, its feature count and its kinds — see `--census`.
     census: Vec<(String, usize, Vec<(String, usize)>)>,
 }
@@ -382,6 +395,47 @@ fn main() -> Result<()> {
 
     if let Some(want) = cli.texture.as_ref() {
         return dump_texture(want, cli.shot.as_deref());
+    }
+
+    if let Some(radius) = cli.dump_lines {
+        let Some(&(lat, lng, _)) = cli.at.first() else {
+            anyhow::bail!("--dump-lines needs an --at to measure from");
+        };
+        for cell in &loaded.cells {
+            let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, cell.z);
+            #[allow(clippy::cast_precision_loss)]
+            let here = [
+                ((fx - cell.x as f64) * f64::from(cell.tile_m)) as f32,
+                ((fy - cell.y as f64) * f64::from(cell.tile_m)) as f32,
+            ];
+            println!(
+                "{}/{}/{}  around [{:.1}, {:.1}]",
+                cell.z, cell.x, cell.y, here[0], here[1]
+            );
+            for line in &cell.lines {
+                if !line
+                    .points
+                    .iter()
+                    .any(|p| (p[0] - here[0]).hypot(p[1] - here[1]) <= radius)
+                {
+                    continue;
+                }
+                let pts: Vec<String> = line
+                    .points
+                    .iter()
+                    .map(|p| format!("[{:.2},{:.2}]", p[0] - here[0], p[1] - here[1]))
+                    .collect();
+                println!(
+                    "  {} {} closed={} {} pts: {}",
+                    line.kind,
+                    line.flags,
+                    line.closed,
+                    line.points.len(),
+                    pts.join(" ")
+                );
+            }
+        }
+        return Ok(());
     }
 
     if cli.census {
@@ -485,6 +539,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                 meshes,
                 bridges,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
+                lines: vector_tiles::street_lines(&tile, tile_m),
                 census: vector_tiles::layer_census(&tile),
             }),
             Err(e) => tracing::warn!(path = %path.display(), error = %format!("{e:#}"), "failed"),
