@@ -1011,14 +1011,27 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
 
             // Deck. `u` runs across the carriageway so the lane markings register
             // with the geometry, exactly as a surface road's do.
+            //
+            // **Wound to face up, and it was not.** The order below is the left
+            // edge first, which in this frame — x east, y south — is the way round
+            // that presents the *top* face to a camera above it. It used to run
+            // left, right, right, left and so faced down: backface-culled from
+            // every angle anybody looks at a road from, so the carriageway simply
+            // was not there. The walls and the roof were fine, which is what made
+            // it read as "the tunnel has no road in it" rather than as a winding
+            // fault — and what a capture showed was the surface road running into
+            // the ground and stopping. `a_tunnel_deck_faces_up` pins it, the same
+            // way `ribbon_faces_up` pins the surface roads and for the same
+            // reason: winding is invisible until it is wrong, and then it is
+            // invisible in the other direction.
             deck.quad(
                 [
                     [l0[0], y0, l0[1]],
-                    [r0[0], y0, r0[1]],
-                    [r1[0], y1, r1[1]],
                     [l1[0], y1, l1[1]],
+                    [r1[0], y1, r1[1]],
+                    [r0[0], y0, r0[1]],
                 ],
-                [[0.0, v0], [1.0, v0], [1.0, v1], [0.0, v1]],
+                [[0.0, v0], [0.0, v1], [1.0, v1], [1.0, v0]],
                 UP,
                 rung,
             );
@@ -1646,6 +1659,44 @@ fn cut_mesh(
 
 #[cfg(test)]
 mod tests {
+    /// **A tunnel's carriageway must face up**, or the road vanishes at the
+    /// portal.
+    ///
+    /// The deck was wound downward and so was backface-culled from above — the
+    /// one direction anybody looks at a road from. The walls and the roof were
+    /// wound correctly, so a tunnel drew its structure and no carriageway, which
+    /// reads as "the tunnel has no road in it" and not as a winding fault. What it
+    /// looked like over Groningen's ring is a motorway running into the ground and
+    /// stopping (2026-09-20).
+    ///
+    /// Same rule and same test as `vector_tiles`' `ribbon_faces_up`: in this frame
+    /// — x east, y south — an up-facing triangle has a non-positive cross product.
+    #[test]
+    fn a_tunnel_deck_faces_up() {
+        let out = build_tunnels(&crate::testdata::groningen(), 1471.0, None);
+        let mut checked = 0usize;
+        for m in &out.meshes {
+            if !matches!(m.group, SurfaceGroup::TunnelRoad(_)) {
+                continue;
+            }
+            for t in m.indices.chunks_exact(3) {
+                let (a, b, c) = (
+                    m.positions[t[0] as usize],
+                    m.positions[t[1] as usize],
+                    m.positions[t[2] as usize],
+                );
+                let cross = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+                assert!(
+                    cross <= 1e-4,
+                    "a tunnel deck triangle is wound downward and will be culled \
+                     from above: {a:?} {b:?} {c:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "the fixture built no tunnel deck to check");
+    }
+
     /// **A tunnel meets the surface road at ground level, or the road jumps.**
     ///
     /// The deck is the same carriageway the surface ribbon is, continued — same
