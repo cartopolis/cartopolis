@@ -976,13 +976,20 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     let mut unshared = open_ends(&lines);
     bridge_short_gaps(tile, tile_m, &lines, &mut unshared);
 
-    let mut deck = Build::default();
+    // **One deck builder per class, not one for the tile.** A tunnel's carriageway
+    // is the surface road continued, so it wants that road's own texture: gravel
+    // under a footpath, tarmac and lane markings under a trunk road. This was a
+    // single builder and a single `Option<RoadClass>` set by whichever tunnel came
+    // first, so a cell with a cycle underpass and a motorway tunnel drew both as
+    // whichever it met first — visibly, over Groningen's ring, as a motorway
+    // surfaced like a towpath (2026-09-20).
+    let mut decks: Vec<(RoadClass, Build)> = Vec::new();
     // The class the open deck buffer is drawing markings for. A batch takes the
     // class of the run that opened it, exactly as the ground road sheet's
     // per-group meshes do — the alternative is a mesh per class per cell, for a
     // difference that is which dashes are painted on a carriageway nobody sees
     // two of at once.
-    let mut road_class_of_tunnel: Option<RoadClass> = None;
+
     let mut shell = Build::default();
     let mut meshes: Vec<SurfaceMesh> = Vec::new();
 
@@ -1068,7 +1075,14 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             .map(|&y| y <= -(depth - ROOF_AT_DEPTH_M) && y + clearance <= CEILING_MAX_Y)
             .collect();
         let sides = offset_sides(centre, half);
-        road_class_of_tunnel.get_or_insert(class);
+        let deck_slot = match decks.iter().position(|(c, _)| *c == class) {
+            Some(i) => i,
+            None => {
+                decks.push((class, Build::default()));
+                decks.len() - 1
+            }
+        };
+        let deck = &mut decks[deck_slot].1;
         let tex = class.texture_length_m().max(1.0);
         // **A carriageway metres underground asks the depth buffer for nothing.**
         //
@@ -1245,8 +1259,8 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         // builder in this crate keeps.
         if let Some(limit) = max_bytes {
             if deck.positions.len() * VERTEX_BYTES >= limit && !deck.is_empty() {
-                let group = SurfaceGroup::TunnelRoad(road_class_of_tunnel.take().unwrap_or(class));
-                meshes.push(std::mem::take(&mut deck).into_mesh(group));
+                let group = SurfaceGroup::TunnelRoad(class);
+                meshes.push(std::mem::take(deck).into_mesh(group));
             }
             if shell.positions.len() * VERTEX_BYTES >= limit && !shell.is_empty() {
                 meshes.push(std::mem::take(&mut shell).into_mesh(SurfaceGroup::TunnelStructure));
@@ -1254,9 +1268,10 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         }
     }
 
-    if !deck.is_empty() {
-        let group = SurfaceGroup::TunnelRoad(road_class_of_tunnel.unwrap_or(RoadClass::Minor));
-        meshes.push(deck.into_mesh(group));
+    for (class, deck) in decks {
+        if !deck.is_empty() {
+            meshes.push(deck.into_mesh(SurfaceGroup::TunnelRoad(class)));
+        }
     }
     if !shell.is_empty() {
         meshes.push(shell.into_mesh(SurfaceGroup::TunnelStructure));
@@ -1888,50 +1903,46 @@ mod tests {
         inside
     }
 
-    /// **Every tunnel in a tile is drawn as whichever one was built first.**
+    /// **Each tunnel keeps its own class**, so a cell with a cycle underpass and a
+    /// road tunnel draws gravel under one and tarmac with lane markings under the
+    /// other.
     ///
-    /// `road_class_of_tunnel` is a single `Option<RoadClass>` for the whole call:
-    /// set by the first tunnel with `get_or_insert`, and read once at the end for
-    /// the group every deck is merged into. A tile with a footpath underpass and a
-    /// road tunnel in it therefore draws both with one class's surface — gravel on
-    /// a trunk road, or tarmac with lane markings down a cycle underpass.
+    /// `road_class_of_tunnel` used to be a single `Option<RoadClass>` for the whole
+    /// call — set by the first tunnel, read once for the group every deck was
+    /// merged into. Over Groningen's ring that drew the motorway in the
+    /// carriageway's tarmac in one cell and in a footpath's gravel in the next,
+    /// changing at the cell boundary, which is the one place a viewer is
+    /// guaranteed to look (2026-09-20).
     ///
-    /// Measured over Groningen's ring on 2026-09-20: cell `14/8490/5321` holds
-    /// tunnels of seven kinds and emits one `TunnelRoad(Carriageway)`; its
-    /// neighbour `14/8491/5321` holds nine and emits one `TunnelRoad(Path)`. The
-    /// *same* tunnel changes class at the cell boundary, which is the one place a
-    /// viewer is guaranteed to see it.
-    ///
-    /// `#[ignore]` — reproduced, not yet fixed. The fix is to carry the class on
-    /// the deck builder rather than beside it, which means a builder per class or
-    /// a group per tunnel, and that is a change to how these meshes are batched.
+    /// **A class is only expected when its tunnels actually build something.** A
+    /// way through a building is a passage rather than a tunnel and is excluded
+    /// by design, so the classes asked for here are the underground features
+    /// `build_tunnels` itself would keep.
     #[test]
-    #[ignore = "reproduces a known fault: one class for every tunnel in a tile"]
     fn each_tunnel_keeps_its_own_class() {
         let tile = crate::testdata::groningen();
         let out = build_tunnels(&tile, 1471.0, None);
 
-        // What the tile actually asks for.
+        let Some(meta) = tile.layer("streets") else {
+            return;
+        };
+        let features = tile.features(meta).to_vec();
+        let passages = building_passages(&tile, &features);
         let mut wanted: Vec<RoadClass> = Vec::new();
-        if let Some(meta) = tile.layer("streets") {
-            for feature in tile.features(meta) {
-                if !underground(feature) {
-                    continue;
-                }
-                let flags = StreetFlags {
-                    oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
-                    oneway_reverse: flag_of(feature, "oneway_reverse"),
-                    link: flag_of(feature, "link"),
-                };
-                if let Some(c) = road_class(kind_of(feature).unwrap_or(""), flags) {
-                    if !wanted.contains(&c) {
-                        wanted.push(c);
-                    }
+        for (fi, feature) in features.iter().enumerate() {
+            if !underground(feature) || passages.contains(&fi) {
+                continue;
+            }
+            let flags = StreetFlags {
+                oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+                oneway_reverse: flag_of(feature, "oneway_reverse"),
+                link: flag_of(feature, "link"),
+            };
+            if let Some(c) = road_class(kind_of(feature).unwrap_or(""), flags) {
+                if !wanted.contains(&c) {
+                    wanted.push(c);
                 }
             }
-        }
-        if wanted.len() < 2 {
-            return; // nothing to tell apart in this fixture
         }
 
         let mut drawn: Vec<RoadClass> = Vec::new();
@@ -1942,10 +1953,18 @@ mod tests {
                 }
             }
         }
+        // Nothing invented: every class drawn is one the tile asked for.
+        for c in &drawn {
+            assert!(
+                wanted.contains(c),
+                "drew a {c:?} tunnel the tile never asked for; wanted {wanted:?}"
+            );
+        }
+        // And the classes are not collapsed onto one another.
         assert!(
-            drawn.len() >= 2,
+            drawn.len() >= wanted.len().min(2),
             "the tile has tunnels of {} classes ({wanted:?}) and they are drawn as \
-             {drawn:?} — every deck took the first tunnel's class",
+             {drawn:?} — the decks were merged onto one class",
             wanted.len()
         );
     }

@@ -330,6 +330,8 @@ struct Cell {
     /// than logged, because `tessellate` runs during `load` — before Bevy installs
     /// a log subscriber — so anything it logs goes nowhere at all.
     bridges: (usize, Vec<String>),
+    /// Ground area the tunnel openings take out, in square metres.
+    openings_m2: f32,
     /// What `build_tunnels` decided, per tunnel — see `--check`.
     tunnels: Vec<(f32, f32, usize, usize)>,
     /// Street centre lines in tile-local metres — see `--dump-lines`.
@@ -549,7 +551,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
         match tessellate(&tile, tile_m, !cli.no_cut, cli.deck_height) {
-            Ok((meshes, bridges, tunnels)) => cells.push(Cell {
+            Ok((meshes, bridges, tunnels, openings_m2)) => cells.push(Cell {
                 z,
                 x,
                 y,
@@ -557,6 +559,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                 meshes,
                 bridges,
                 tunnels,
+                openings_m2,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
                 lines: vector_tiles::street_lines(&tile, tile_m),
                 census: vector_tiles::layer_census(&tile),
@@ -583,6 +586,7 @@ fn tessellate(
     Vec<SurfaceMesh>,
     (usize, Vec<String>),
     Vec<(f32, f32, usize, usize)>,
+    f32,
 )> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
@@ -654,6 +658,21 @@ fn tessellate(
     if !tunnels.openings.is_empty() {
         cartopolis_geo::tunnels::cut_ground(&mut meshes, &tunnels.openings);
     }
+    // Area the tunnel openings deliberately take out of the ground, so a capture
+    // can tell "the tunnel cut this" from "the map has no ground here" — which a
+    // picture cannot, and which cost this session hours over a building site that
+    // happened to sit on a tunnel.
+    let opening_m2: f32 = tunnels
+        .openings
+        .iter()
+        .map(|ring| {
+            let mut a = 0.0f32;
+            for w in ring.windows(2) {
+                a += w[0][0] * w[1][1] - w[1][0] * w[0][1];
+            }
+            (a * 0.5).abs()
+        })
+        .sum();
     let built: Vec<(f32, f32, usize, usize)> = tunnels
         .tunnels
         .iter()
@@ -672,7 +691,7 @@ fn tessellate(
         })
         .collect();
     meshes.extend(tunnels.meshes);
-    Ok((meshes, bridges, built))
+    Ok((meshes, bridges, built, opening_m2))
 }
 
 /// Samples per side the coverage and overlap measurements use. 512 over a
@@ -736,6 +755,21 @@ fn report(cell: &Cell) {
     #[allow(clippy::cast_precision_loss)]
     let pct = |n: usize| 100.0 * n as f32 / (CHECK_SAMPLES * CHECK_SAMPLES) as f32;
     println!("  covered {:.1} % of the cell", pct(count(&any)));
+    // **Where the uncovered ground comes from.** Two very different things look
+    // identical in a capture: a hole the tunnel cut on purpose, and ground the map
+    // carries no polygon for at all.
+    #[allow(clippy::cast_precision_loss)]
+    {
+        let cell_m2 = cell.tile_m * cell.tile_m;
+        let bare = (100.0 - pct(count(&any))) / 100.0 * cell_m2;
+        let cut = cell.openings_m2.min(bare);
+        println!(
+            "  bare ground {:.0} m2 = tunnel openings {:.0} m2 + no ground polygon {:.0} m2",
+            bare,
+            cut,
+            bare - cut
+        );
+    }
     if !cell.tunnels.is_empty() {
         println!("  {} tunnel(s) built:", cell.tunnels.len());
         for (w, len, covered, total) in &cell.tunnels {
