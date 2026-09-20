@@ -511,6 +511,110 @@ fn depth_and_grade(class: RoadClass) -> (f32, f32) {
     }
 }
 
+/// How much of a tunnel must end up under a lid for it to read as a tunnel.
+///
+/// Not a tolerance — a length. Under this the thing is a dip in the road with a
+/// bridge over it, and drawing it as an open cutting is the truthful answer.
+const MIN_COVERED_M: f32 = 40.0;
+
+/// The deepest this class may go and still have headroom under a lid.
+///
+/// The roof test wants the ceiling at or below [`CEILING_MAX_Y`], and the ceiling
+/// sits `clearance` over the deck — so a tunnel shallower than this can never be
+/// roofed however long it is.
+fn min_roofable_depth(class: RoadClass) -> f32 {
+    let clearance = if matches!(class, RoadClass::Path) {
+        PATH_CLEARANCE_M
+    } else {
+        CLEARANCE_M
+    };
+    clearance - CEILING_MAX_Y + ROOF_AT_DEPTH_M
+}
+
+/// **A tunnel is as deep as its length allows, not as deep as its class.**
+///
+/// Both ramps are `depth / grade` long, so a run that ramps from both ends spends
+/// `total - 2 x depth / grade` under a lid — and at [`LEVEL_DEPTH_M`] and
+/// [`MAX_GRADE`] that is 117 m of ramp each end, so a 238 m tunnel is covered for
+/// **four metres**. Measured over Groningen's southern ring on 2026-09-20: six
+/// carriageway tunnels of 171 m to 241 m, every one of them an open canyon with a
+/// few metres of lid somewhere in the middle, which is not what any of them looks
+/// like.
+///
+/// So the depth is reduced until [`MIN_COVERED_M`] fits, and refused outright
+/// below [`min_roofable_depth`] — a run too short to be a tunnel at any depth
+/// stays an open cutting, which is the honest drawing of a dip with a bridge over
+/// it. A tunnel with only one entrance ramps once and gets the full depth.
+fn depth_for_run(class: RoadClass, total: f32, entrances: OpenEnds) -> (f32, f32) {
+    let (depth, grade) = depth_and_grade(class);
+    let ramps = f32::from(u8::from(entrances[0])) + f32::from(u8::from(entrances[1]));
+    if ramps == 0.0 {
+        return (depth, grade);
+    }
+    // The depth at which the ramps and the covered stretch exactly fill the run.
+    let fits = (total - MIN_COVERED_M) * grade / ramps;
+    if fits >= depth {
+        return (depth, grade);
+    }
+    (fits.max(min_roofable_depth(class)), grade)
+}
+
+/// The centre line with a vertex inserted where each entrance ramp reaches full
+/// depth.
+///
+/// Returns the line unchanged when it has no entrance, or is too short to reach
+/// depth at all — in the second case it never gets a roof whatever is inserted,
+/// which is correct: a run shorter than its own two ramps is a dip, not a tunnel.
+fn with_ramp_breaks(
+    centre: &[[f32; 2]],
+    depth: f32,
+    grade: f32,
+    entrances: OpenEnds,
+) -> Vec<[f32; 2]> {
+    let ramp = ramp_m(depth, grade);
+    let total: f32 = centre
+        .windows(2)
+        .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+        .sum();
+    let mut cuts: Vec<f32> = Vec::with_capacity(2);
+    if entrances[0] {
+        cuts.push(ramp);
+    }
+    if entrances[1] {
+        cuts.push(total - ramp);
+    }
+    // A cut outside the run, or on a vertex already, buys nothing.
+    cuts.retain(|s| *s > 0.5 && *s < total - 0.5);
+    if cuts.is_empty() {
+        return centre.to_vec();
+    }
+    cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut out: Vec<[f32; 2]> = Vec::with_capacity(centre.len() + cuts.len());
+    let mut walked = 0.0f32;
+    let mut next = 0usize;
+    out.push(centre[0]);
+    for w in centre.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let seg = (b[0] - a[0]).hypot(b[1] - a[1]);
+        while next < cuts.len() && cuts[next] <= walked + seg {
+            let t = ((cuts[next] - walked) / seg.max(1e-6)).clamp(0.0, 1.0);
+            let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            // Not on top of a vertex that is already there.
+            if out
+                .last()
+                .is_none_or(|q| (p[0] - q[0]).hypot(p[1] - q[1]) > 0.05)
+            {
+                out.push(p);
+            }
+            next += 1;
+        }
+        walked += seg;
+        out.push(b);
+    }
+    out
+}
+
 /// Length of the entrance ramp for a tunnel of this depth and grade, in metres.
 #[must_use]
 pub fn ramp_m(depth: f32, grade: f32) -> f32 {
@@ -808,8 +912,29 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         if half <= 0.0 {
             continue;
         }
-        let (depth, grade) = depth_and_grade(class);
         let entrances = [own[0] && unshared[idx][0], own[1] && unshared[idx][1]];
+        let run_len: f32 = centre
+            .windows(2)
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .sum();
+        let (depth, grade) = depth_for_run(class, run_len, entrances);
+
+        // **Put a vertex where the ramp ends, or the tunnel is never roofed.**
+        //
+        // Everything below — the deck level, and with it whether a lid goes on —
+        // is evaluated *at the centre line's vertices*, and a generalised tunnel
+        // has very few. At [`MAX_GRADE`] a [`LEVEL_DEPTH_M`] tunnel ramps for
+        // 117 m, so a 238 m one is at full depth for about **four metres**; with
+        // five vertices spread over 238 m, none of them lands in that window.
+        // Measured over Groningen's southern ring on 2026-09-20: six carriageway
+        // tunnels, 171 m to 241 m long, and **every one reported 0 of its
+        // vertices roofed** — so the ground was cut open along the whole of each
+        // and the ring was drawn as an open canyon through the city.
+        //
+        // The break points are where the shape actually changes, so this adds two
+        // vertices and no approximation: between them the ramp is linear and
+        // needed none, and past them the tunnel is flat.
+        let centre = &with_ramp_breaks(centre, depth, grade, entrances);
 
         // Distance along the centre line at each vertex, and the deck level there.
         let mut travelled = Vec::with_capacity(centre.len());

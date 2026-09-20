@@ -330,6 +330,8 @@ struct Cell {
     /// than logged, because `tessellate` runs during `load` — before Bevy installs
     /// a log subscriber — so anything it logs goes nowhere at all.
     bridges: (usize, Vec<String>),
+    /// What `build_tunnels` decided, per tunnel — see `--check`.
+    tunnels: Vec<(f32, f32, usize, usize)>,
     /// Street centre lines in tile-local metres — see `--dump-lines`.
     lines: Vec<vector_tiles::StreetLine>,
     /// Every layer, its feature count and its kinds — see `--census`.
@@ -547,13 +549,14 @@ fn load(cli: &Cli) -> Result<Loaded> {
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
         match tessellate(&tile, tile_m, !cli.no_cut, cli.deck_height) {
-            Ok((meshes, bridges)) => cells.push(Cell {
+            Ok((meshes, bridges, tunnels)) => cells.push(Cell {
                 z,
                 x,
                 y,
                 tile_m,
                 meshes,
                 bridges,
+                tunnels,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
                 lines: vector_tiles::street_lines(&tile, tile_m),
                 census: vector_tiles::layer_census(&tile),
@@ -576,7 +579,11 @@ fn tessellate(
     tile_m: f32,
     cut: bool,
     deck_m: f32,
-) -> Result<(Vec<SurfaceMesh>, (usize, Vec<String>))> {
+) -> Result<(
+    Vec<SurfaceMesh>,
+    (usize, Vec<String>),
+    Vec<(f32, f32, usize, usize)>,
+)> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
         .context("ground fills")?;
@@ -647,8 +654,25 @@ fn tessellate(
     if !tunnels.openings.is_empty() {
         cartopolis_geo::tunnels::cut_ground(&mut meshes, &tunnels.openings);
     }
+    let built: Vec<(f32, f32, usize, usize)> = tunnels
+        .tunnels
+        .iter()
+        .map(|t| {
+            let len: f32 = t
+                .centre
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            (
+                t.half_w * 2.0,
+                len,
+                t.covered.iter().filter(|c| **c).count(),
+                t.covered.len(),
+            )
+        })
+        .collect();
     meshes.extend(tunnels.meshes);
-    Ok((meshes, bridges))
+    Ok((meshes, bridges, built))
 }
 
 /// Samples per side the coverage and overlap measurements use. 512 over a
@@ -712,6 +736,12 @@ fn report(cell: &Cell) {
     #[allow(clippy::cast_precision_loss)]
     let pct = |n: usize| 100.0 * n as f32 / (CHECK_SAMPLES * CHECK_SAMPLES) as f32;
     println!("  covered {:.1} % of the cell", pct(count(&any)));
+    if !cell.tunnels.is_empty() {
+        println!("  {} tunnel(s) built:", cell.tunnels.len());
+        for (w, len, covered, total) in &cell.tunnels {
+            println!("    {w:>5.1} m wide, {len:>6.1} m long, {covered}/{total} vertices roofed");
+        }
+    }
     if cell.bridges.0 > 0 || !cell.bridges.1.is_empty() {
         println!(
             "  {} bridge deck(s), riding on them: {}",
