@@ -732,6 +732,94 @@ fn open_ends(lines: &[Vec<[f32; 2]>]) -> Vec<OpenEnds> {
         .collect()
 }
 
+/// **A gap between two lids is not a portal, and the road does not climb out of
+/// it.**
+///
+/// Groningen's southern ring is built *dicht-open-dicht-open*: three covered
+/// stretches with short open ones between, and the carriageway stays at depth the
+/// whole way. Read off the tile on 2026-09-20 it is lid 174 m, open 109 m, lid
+/// 241 m, open 107 m, lid 233 m — 863 m of sunken road with exactly two real
+/// portals, at the far ends.
+///
+/// The tunnel flag marks only the covered parts, so each lid arrives here as its
+/// own run with two ends, and both look like entrances: the model ramped to the
+/// surface and back down inside a 108 m gap, which is why every lid was covered
+/// for a few metres instead of its whole length.
+///
+/// **The bound is the road's own gradient, not a tolerance.** Coming up and going
+/// back down costs `2 x ramp_m`, so a gap shorter than that *cannot* reach the
+/// surface whatever the map says; the open stretch is a cutting, not a pair of
+/// portals. At [`LEVEL_DEPTH_M`] and [`MAX_GRADE`] that is 233 m against
+/// Groningen's 107 m, so the answer is not close to the line.
+///
+/// Only a **surface** run bridges: two tunnels meeting directly are already
+/// handled by [`open_ends`], and a gap with nothing in it is a gap in the data
+/// rather than a road.
+fn bridge_short_gaps(
+    tile: &TileData,
+    tile_m: f32,
+    lines: &[Vec<[f32; 2]>],
+    unshared: &mut [OpenEnds],
+) {
+    let Some(meta) = tile.layer("streets") else {
+        return;
+    };
+    let extent = TileData::extent(meta);
+    let scale = tile_m / extent;
+    let span = 2.0 * ramp_m(LEVEL_DEPTH_M, MAX_GRADE);
+
+    // Every tunnel end, as (run, which end, point).
+    let ends: Vec<(usize, usize, [f32; 2])> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.len() >= 2)
+        .flat_map(|(i, l)| [(i, 0, l[0]), (i, 1, l[l.len() - 1])])
+        .collect();
+
+    for feature in tile.features(meta) {
+        if underground(feature) {
+            continue;
+        }
+        let mut geoms: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => geoms.push(ls),
+            Geometry::MultiLineString(mls) => geoms.extend(mls.iter()),
+            _ => continue,
+        }
+        for ls in geoms {
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x * scale, c.y * scale])
+                    .collect();
+            if pts.len() < 2 {
+                continue;
+            }
+            let len: f32 = pts
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            if len > span {
+                continue;
+            }
+            let (head, tail) = (pts[0], pts[pts.len() - 1]);
+            let at = |p: [f32; 2]| -> Option<(usize, usize)> {
+                ends.iter()
+                    .find(|(_, _, q)| (q[0] - p[0]).hypot(q[1] - p[1]) <= SAME_POINT_M)
+                    .map(|(i, k, _)| (*i, *k))
+            };
+            // Both ends on a tunnel, and not the same tunnel run twice — that
+            // would be a loop off one portal rather than a gap between two.
+            if let (Some((i, ki)), Some((j, kj))) = (at(head), at(tail)) {
+                if i != j {
+                    unshared[i][ki] = false;
+                    unshared[j][kj] = false;
+                }
+            }
+        }
+    }
+}
+
 /// Two ends closer than this are the same point, and the direction between them
 /// means nothing — the ordinary case of two ways sharing a node.
 const SAME_POINT_M: f32 = 1.5;
@@ -885,7 +973,8 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     // An end is a entrance when the line ends there, the border did not cut it,
     // and no second tunnel run ends on the same point.
     let lines: Vec<Vec<[f32; 2]>> = runs.iter().map(|(_, l, _)| l.clone()).collect();
-    let unshared = open_ends(&lines);
+    let mut unshared = open_ends(&lines);
+    bridge_short_gaps(tile, tile_m, &lines, &mut unshared);
 
     let mut deck = Build::default();
     // The class the open deck buffer is drawing markings for. A batch takes the
