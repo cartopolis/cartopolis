@@ -2246,6 +2246,7 @@ dependencies = [
  "i_overlay",
  "image",
  "mvt-reader",
+ "tiff",
  "tiny-skia 0.12.0",
  "tracing",
  "vello_cpu 0.2.0",
@@ -2297,6 +2298,7 @@ dependencies = [
  "clap",
  "image",
  "tracing",
+ "ureq",
 ]
 
 [[package]]

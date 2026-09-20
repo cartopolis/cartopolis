@@ -44,7 +44,14 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::http;
+
 use crate::platform::work::Dispatcher;
+/// The TIFF decode and the RD projection live in `cartopolis_geo::ahn` so the
+/// harness can use them without depending on this crate. Re-exported here because
+/// this module is where the rest of the tree looks for them, and because two
+/// copies of a projection is the drift this tree spent 2026-09-19 removing
+/// everywhere else.
+use cartopolis_geo::ahn::decode_float_tiff;
 
 /// PDOK's public service host. Reached direct on native and through the app's own
 /// origin on the web (`/up/ahn/…`, see [`http::upstream_url`]) — PDOK is a third
@@ -103,12 +110,6 @@ const MAX_GRID: u32 = 4096;
 /// ring around it, so everything a consumer can currently ask about survives a
 /// prune; what goes is the town you flew away from.
 const CACHE_KEEP_M: f64 = 8_000.0;
-
-/// MapServer writes `f32::MAX` where the model has no value — the bridge-shaped
-/// holes in the DTM, and everything outside the flight coverage. Compared with a
-/// threshold rather than for equality: the value survives the round trip exactly
-/// today, but a resampling upstream is entitled to smear it.
-const NODATA_ABOVE: f32 = 1.0e30;
 
 /// Which AHN raster to sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -544,36 +545,6 @@ async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
 /// The georeferencing tags are ignored on purpose: we asked for an exact box at an
 /// exact grid size and the service honours both, so the request *is* the transform.
 /// Reading it back out of the file would only add a way for the two to disagree.
-fn decode_float_tiff(bytes: &[u8], grid: usize) -> Result<Vec<f32>, String> {
-    // An OGC service answers a refused request with an XML exception and HTTP 200,
-    // so "not a TIFF" is the normal error path, not a corruption case. Say what it
-    // said rather than "invalid TIFF magic".
-    if bytes.len() < 4 || !(bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*")) {
-        let text = String::from_utf8_lossy(&bytes[..bytes.len().min(400)]).to_string();
-        return Err(format!("not a GeoTIFF: {}", text.trim()));
-    }
-    let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes))
-        .map_err(|e| format!("tiff open: {e}"))?;
-    let (w, h) = decoder
-        .dimensions()
-        .map_err(|e| format!("tiff dims: {e}"))?;
-    if w as usize != grid || h as usize != grid {
-        return Err(format!("asked for {grid}², got {w}×{h}"));
-    }
-    let image = decoder
-        .read_image()
-        .map_err(|e| format!("tiff read: {e}"))?;
-    let tiff::decoder::DecodingResult::F32(mut v) = image else {
-        return Err("height raster is not float32".to_string());
-    };
-    for s in &mut v {
-        if !s.is_finite() || *s >= NODATA_ABOVE {
-            *s = f32::NAN;
-        }
-    }
-    Ok(v)
-}
-
 /// WGS84 → **RD New** (EPSG:28992), the Dutch national grid, in metres.
 ///
 /// The published polynomial approximation about the Amersfoort datum point, good to
@@ -583,26 +554,7 @@ fn decode_float_tiff(bytes: &[u8], grid: usize) -> Result<Vec<f32>, String> {
 /// answer one question a dozen coefficients answer here.
 #[must_use]
 pub fn wgs84_to_rd(lat: f64, lng: f64) -> [f64; 2] {
-    let dl = 0.36 * (lat - 52.155_174_40);
-    let dp = 0.36 * (lng - 5.387_206_21);
-    let x = 155_000.0 + 190_094.945 * dp
-        - 11_832.228 * dl * dp
-        - 114.221 * dp * dl * dl
-        - 32.391 * dp * dp * dp
-        - 0.705 * dl
-        - 2.340 * dp * dl * dl * dl
-        - 0.608 * dp * dp * dp * dl
-        + 0.008 * dl * dl
-        - 0.192 * dp * dp * dp * dl * dl;
-    let y = 463_000.0 + 309_056.544 * dl + 3_638.893 * dp * dp + 73.077 * dl * dl
-        - 157.984 * dl * dp * dp
-        + 59.788 * dl * dl * dl
-        + 0.433 * dp
-        - 6.439 * dp * dp * dl * dl
-        - 0.032 * dl * dp
-        + 0.092 * dp * dp * dp * dp
-        - 0.054 * dp * dp * dp * dp * dl;
-    [x, y]
+    cartopolis_geo::ahn::wgs84_to_rd(lat, lng)
 }
 
 /// **RD New** → WGS84, the same approximation run the other way.

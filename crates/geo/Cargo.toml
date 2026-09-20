@@ -37,6 +37,9 @@ earcutr.workspace = true
 geo-types.workspace = true
 i_overlay.workspace = true
 image.workspace = true
+# For AHN's float GeoTIFF (`ahn`), which is the same decoder the client used when
+# this lived there.
+tiff.workspace = true
 mvt-reader.workspace = true
 tiny-skia.workspace = true
 tracing.workspace = true

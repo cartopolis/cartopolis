@@ -27,6 +27,8 @@
 //! Headless by default — the machines this runs on have no display. `--window`
 //! asks for one where there is something to put it on.
 
+use std::io::Read;
+
 use anyhow::{Context, Result};
 use bevy::asset::RenderAssetUsages;
 // `RenderTarget` is its own component in Bevy 0.19 (required by `Camera`), and it
@@ -152,6 +154,20 @@ struct Cli {
     /// see rather than the map's colours.
     #[arg(long)]
     plain: bool,
+
+    /// Stand the ground on the **measured** Dutch ground (AHN), fetched once for
+    /// the loaded cells.
+    ///
+    /// `--relief` is synthetic and is for reproducing a fault on demand. This is
+    /// the real thing, and it is what the client draws: same service, same
+    /// coverage, same 0.5 m source raster, resampled to whatever grid the box
+    /// needs. Outside the Netherlands there is nothing to fetch and the ground
+    /// stays flat, which is what the client does there too.
+    ///
+    /// One blocking request, no cache and no retry — a harness run asks once and
+    /// exits, where the client is streaming under a moving camera.
+    #[arg(long)]
+    ahn: bool,
 
     /// Stand the ground on synthetic relief of this amplitude, in metres.
     ///
@@ -965,6 +981,9 @@ impl Field {
 /// the scale a surface's triangles span, and curvature between corners *is* the
 /// fault being reproduced.
 fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
+    if cli.ahn {
+        return measured_field(loaded);
+    }
     if cli.relief <= 0.0 {
         return None;
     }
@@ -1970,4 +1989,97 @@ fn dump_texture(want: &str, path: Option<&std::path::Path>) -> Result<()> {
         "wrote texture"
     );
     Ok(())
+}
+
+/// The real ground under the loaded cells, from AHN.
+///
+/// One WCS request over the whole loaded box, decoded with
+/// `cartopolis_geo::ahn` — the client's own URL and its own decoder, so this is
+/// not a second reading of the service.
+///
+/// Heights are **relative to the middle of the box**, which is what the client
+/// does too: absolute NAP would drop the whole scene by the local ground height
+/// for an identical picture. No-data samples (AHN has none over water) are filled
+/// from their neighbours rather than left as holes, because a `NaN` in the field
+/// propagates into every vertex that samples it.
+fn measured_field(loaded: &Loaded) -> Option<Field> {
+    let span = loaded.extent();
+    let mid = loaded.center();
+    // The box centre in lat/lng, via the cell the origin names.
+    let (lat, lng) = {
+        let c = loaded.cells.first()?;
+        let (flat, flng) = cartopolis_core::world::tile_to_lat_lng(
+            loaded.origin.0 + (mid.x / c.tile_m).round() as i64,
+            loaded.origin.1 + (mid.z / c.tile_m).round() as i64,
+            c.z,
+        );
+        (flat, flng)
+    };
+    if !cartopolis_geo::ahn::covers(lat, lng) {
+        eprintln!("ahn: {lat:.4},{lng:.4} is outside AHN — flat, as in the client");
+        return None;
+    }
+    let rd = cartopolis_geo::ahn::wgs84_to_rd(lat, lng);
+    let half = f64::from(span) * 0.5;
+    let grid = FIELD_SAMPLES as u32;
+    let url = cartopolis_geo::ahn::coverage_url(
+        [rd[0] - half, rd[1] - half],
+        [rd[0] + half, rd[1] + half],
+        grid,
+    );
+    // `eprintln!`, not `tracing`: this runs inside `load`, before the Bevy app
+    // exists, so every `tracing` call here goes to a subscriber that has not been
+    // installed. The first version of this logged its request and its relief and
+    // printed neither, which on a subtle landform is indistinguishable from the
+    // fetch having silently failed.
+    eprintln!("ahn: {url}");
+    let bytes = match ureq::get(&url)
+        .call()
+        .map_err(|e| e.to_string())
+        .and_then(|r| {
+            let mut v = Vec::new();
+            r.into_reader()
+                .read_to_end(&mut v)
+                .map(|_| v)
+                .map_err(|e| e.to_string())
+        }) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("ahn: request failed ({e}) — the ground stays flat");
+            return None;
+        }
+    };
+    let samples = match cartopolis_geo::ahn::decode_float_tiff(&bytes, grid as usize) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ahn: answer could not be read ({e}) — the ground stays flat");
+            return None;
+        }
+    };
+
+    // Relative to the middle, and holes filled from the finite samples around
+    // them. The mean is the honest filler: AHN's no-data is water, which sits at
+    // the level of the ground beside it far more nearly than at zero.
+    let finite: Vec<f32> = samples.iter().copied().filter(|s| s.is_finite()).collect();
+    if finite.is_empty() {
+        eprintln!("ahn: no data at all over this box — the ground stays flat");
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mean = finite.iter().sum::<f32>() / finite.len() as f32;
+    let samples: Vec<f32> = samples
+        .iter()
+        .map(|s| if s.is_finite() { *s - mean } else { 0.0 })
+        .collect();
+    let (lo, hi) = samples
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), s| (a.min(*s), b.max(*s)));
+    #[allow(clippy::cast_precision_loss)]
+    let step_m = span / (FIELD_SAMPLES - 1) as f32;
+    eprintln!(
+        "ahn: datum {mean:.2} m, low {lo:.2} m, high {hi:.2} m, relief {:.2} m, \
+         sample {step_m:.2} m",
+        hi - lo
+    );
+    Some(Field { samples, step_m })
 }

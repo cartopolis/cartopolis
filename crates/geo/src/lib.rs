@@ -11,6 +11,10 @@
 // The crop grown on each registered agricultural field (the RVO's BRP). Split
 // from `paving` — the other surveyed polygon layer — because the two answer
 // different questions and share only the triangulation, which is `flat_fill`.
+// Measured Dutch ground. Here rather than in the client so the harness can ask
+// for it too — it cannot depend on `cartopolis`, and looking at the real ground
+// is the thing it exists for.
+pub mod ahn;
 pub mod crops;
 // The installations standing on ProRail's registered level crossings. Split from
 // `furniture` on the same terms `nav_marks` is: a different source, fetched
