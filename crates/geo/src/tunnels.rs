@@ -1646,6 +1646,108 @@ fn cut_mesh(
 
 #[cfg(test)]
 mod tests {
+    /// **A tunnel meets the surface road at ground level, or the road jumps.**
+    ///
+    /// The deck is the same carriageway the surface ribbon is, continued — same
+    /// width, same texture, same markings — so where the tunnel has an entrance
+    /// its first vertex has to sit at `y = 0`. A step there is a cliff the road
+    /// falls off, and at a shallow angle it reads as the tunnel being somewhere
+    /// else entirely.
+    ///
+    /// The other end of the same rule: a vertex with no entrance is a tunnel that
+    /// continues past the tile border or into another run, and it must *not* come
+    /// up to the surface there — that was the old fault where every tunnel rose to
+    /// meet a border it does not really reach.
+    #[test]
+    fn a_tunnel_meets_the_road_at_its_portal() {
+        let out = build_tunnels(&crate::testdata::groningen(), 1471.0, None);
+        assert!(!out.tunnels.is_empty(), "the fixture has tunnels");
+        for t in &out.tunnels {
+            let (first, last) = (t.road_y[0], t.road_y[t.road_y.len() - 1]);
+            // An entrance is the only way a deck reaches the surface, and every
+            // deck level is at or below it.
+            assert!(first <= 0.001, "a deck starts above ground at {first} m");
+            assert!(last <= 0.001, "a deck ends above ground at {last} m");
+            // Whatever the depth, the deck never exceeds the class's own.
+            let deepest = t.road_y.iter().fold(0.0f32, |a, y| a.min(*y));
+            assert!(
+                deepest >= -LEVEL_DEPTH_M - 0.01,
+                "a deck reaches {deepest} m, past the {LEVEL_DEPTH_M} m this class digs"
+            );
+        }
+    }
+
+    /// **A roofed tunnel has headroom under its lid.**
+    ///
+    /// `depth_for_run` reduces the depth of a short run so that something is
+    /// covered at all, and the floor under that reduction is the depth at which
+    /// the ceiling still clears the ground. If it ever goes below, the lid is
+    /// drawn *inside* the carriageway and the road runs through its own roof.
+    #[test]
+    fn a_roofed_deck_keeps_its_headroom() {
+        let out = build_tunnels(&crate::testdata::groningen(), 1471.0, None);
+        for t in &out.tunnels {
+            for (i, covered) in t.covered.iter().enumerate() {
+                if !covered {
+                    continue;
+                }
+                let ceiling = t.road_y[i] + t.clearance;
+                assert!(
+                    ceiling <= CEILING_MAX_Y + 0.01,
+                    "a lid at {ceiling} m is above the {CEILING_MAX_Y} m it must clear"
+                );
+            }
+        }
+    }
+
+    /// **The ground may not be cut away over a roofed stretch.**
+    ///
+    /// A picture cannot answer this over Groningen's ring: the whole Julianaplein
+    /// is a building site the map carries no landuse for, so every capture shows
+    /// bare ground whether the tunnel opened it or not. Two hours went into
+    /// telling those apart by eye on 2026-09-20 before measuring it instead.
+    ///
+    /// The rule is the one the module already states: the hole and the absent
+    /// ceiling are decided by one test, so a vertex with a lid over it must not
+    /// lie inside any opening. `merge_parallel_openings` is the thing that could
+    /// break it — it replaces two rings with their convex **hull**, which is
+    /// bigger than either, and a hull is free to swallow the roofed stretch
+    /// between two ramps.
+    #[test]
+    fn no_opening_swallows_a_roofed_stretch() {
+        let out = build_tunnels(&crate::testdata::groningen(), 1471.0, None);
+        for t in &out.tunnels {
+            for (i, covered) in t.covered.iter().enumerate() {
+                if !covered {
+                    continue;
+                }
+                let p = t.centre[i];
+                for ring in &out.openings {
+                    assert!(
+                        !point_in_ring(p, ring),
+                        "a roofed vertex at {p:?} lies inside an opening — the \
+                         ground is cut away over a lid"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Even-odd crossing count, for the test above.
+    fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
+        let mut inside = false;
+        for e in ring.windows(2) {
+            let (a, b) = (e[0], e[1]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let t = (p[1] - a[1]) / (b[1] - a[1]);
+                if p[0] < a[0] + t * (b[0] - a[0]) {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
     /// **Every tunnel in a tile is drawn as whichever one was built first.**
     ///
     /// `road_class_of_tunnel` is a single `Option<RoadClass>` for the whole call:
