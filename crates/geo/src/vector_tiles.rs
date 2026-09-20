@@ -8362,6 +8362,222 @@ mod tests {
         assert!((v_max - 105.0 / 12.0).abs() < 1e-2, "v_max {v_max}");
     }
 
+    /// **A roundabout's ribbon may not spike into its own island.**
+    ///
+    /// A ring is the shape this geometry is worst at: every vertex turns the same
+    /// way, so every *inner* join runs toward one point, and the miter length
+    /// there is `half / sin(theta/2)` — which grows without bound as a segment
+    /// gets short. Groningen has roundabouts whose island is a few metres across
+    /// and whose ring the encoder generalises to a dozen uneven segments, and one
+    /// of those drew a tooth of tarmac across the middle of its own island
+    /// (seen 2026-09-20).
+    ///
+    /// The invariant is radial and needs no tuning: on a closed ring of radius
+    /// `r` drawn at half-width `h`, every vertex belongs in the annulus between
+    /// `r - h` and `r + h`, give or take what a miter legitimately adds at a
+    /// corner. A vertex nearer the centre than that has folded through the inner
+    /// edge, and one at the centre or beyond it is the tooth.
+    fn ring_annulus(radius: f32, segs: usize, jitter: f32, half: f32) -> (f32, f32) {
+        ring_annulus_as(radius, segs, jitter, half, true)
+    }
+
+    fn ring_annulus_as(radius: f32, segs: usize, jitter: f32, half: f32, ring: bool) -> (f32, f32) {
+        ring_annulus_ends(radius, segs, jitter, half, ring, 0.0)
+    }
+
+    fn ring_annulus_ends(
+        radius: f32,
+        segs: usize,
+        jitter: f32,
+        half: f32,
+        ring: bool,
+        extend: f32,
+    ) -> (f32, f32) {
+        let mut centre: Vec<[f32; 2]> = (0..segs)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let t = i as f32 / segs as f32 * std::f32::consts::TAU;
+                // Uneven segments, which is what a generalised ring really is.
+                #[allow(clippy::cast_precision_loss)]
+                let r = radius * (1.0 + jitter * ((i * 7) % 5) as f32 / 5.0);
+                [r * t.cos(), r * t.sin()]
+            })
+            .collect();
+        centre.push(centre[0]);
+        let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        ribbon(
+            &centre,
+            half,
+            0.0,
+            12.0,
+            [EndJoin { extend, cont: None }; 2],
+            ring,
+            &mut positions,
+            &mut uvs,
+            &mut indices,
+        );
+        assert!(!indices.is_empty(), "the ring built nothing");
+        positions.iter().fold((f32::MAX, 0.0f32), |(lo, hi), p| {
+            let d = p[0].hypot(p[2]);
+            (lo.min(d), hi.max(d))
+        })
+    }
+
+    /// The same ring handed over as an **open** polyline whose ends coincide —
+    /// which is what a roundabout is if anything upstream fails to notice it
+    /// closes. The two ends then get their own joins at the same place.
+    #[test]
+    fn a_ring_drawn_open_is_what_spikes() {
+        let (half, radius) = (3.5, 7.5);
+        let (closed_lo, _) = ring_annulus_as(radius, 12, 0.25, half, true);
+        let (open_lo, _) = ring_annulus_as(radius, 12, 0.25, half, false);
+        assert!(
+            closed_lo > 1.0,
+            "a ring drawn as a ring should keep its island: {closed_lo} m"
+        );
+        assert!(
+            open_lo >= closed_lo - 0.01,
+            "drawn open, the ring reaches {open_lo} m from its centre against \
+             {closed_lo} m closed — the ends' joins are the spike"
+        );
+    }
+
+    /// **An open ring whose ends are extended is the spike.**
+    ///
+    /// `junction_extent` runs a road's end on into whatever it meets, which is
+    /// right at a tee and wrong on a circle: the stub leaves along the *tangent*,
+    /// and a tangent from a small ring crosses the island. If a roundabout ever
+    /// reaches `ribbon` as an open polyline with stubs — because nothing upstream
+    /// noticed it closes — this is the tooth of tarmac it draws across its own
+    /// middle.
+    #[test]
+    fn an_extended_open_ring_is_the_spike() {
+        let (half, radius) = (3.5, 7.5);
+        let (no_stub, _) = ring_annulus_ends(radius, 12, 0.25, half, false, 0.0);
+        let (stubbed, _) = ring_annulus_ends(radius, 12, 0.25, half, false, half * 2.0);
+        assert!(
+            stubbed >= no_stub - 0.01,
+            "stubs pull the ring to {stubbed} m from its centre against {no_stub} m \
+             without them — that is a tangent crossing the island"
+        );
+    }
+
+    /// **An arc of a roundabout, stubbed at both ends.**
+    ///
+    /// This is what a real roundabout is: OSM closes the way, the encoder splits
+    /// it at each exit, and what reaches `ribbon` is three or four arcs, each an
+    /// open polyline whose ends are junctions. `junction_extent` then runs each
+    /// end on along its **tangent** — and the tangent of a small circle cuts the
+    /// chord, which is to say it crosses the island.
+    ///
+    /// The full-circle cases above pass because a whole ring closes on itself and
+    /// never grows a stub. Splitting it is what exposes this.
+    #[test]
+    fn an_arc_of_a_roundabout_does_not_cross_its_island() {
+        let (half, radius) = (2.9, 6.9);
+        for arc_deg in [120.0f32, 90.0, 72.0] {
+            let segs = 5;
+            let centre: Vec<[f32; 2]> = (0..=segs)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = (i as f32 / segs as f32) * arc_deg.to_radians();
+                    [radius * t.cos(), radius * t.sin()]
+                })
+                .collect();
+            let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+            ribbon(
+                &centre,
+                half,
+                0.0,
+                12.0,
+                [EndJoin {
+                    extend: half * 2.0,
+                    cont: None,
+                }; 2],
+                false,
+                &mut positions,
+                &mut uvs,
+                &mut indices,
+            );
+            let nearest = positions
+                .iter()
+                .fold(f32::MAX, |a, p| a.min(p[0].hypot(p[2])));
+            assert!(
+                nearest > radius - half - 0.6,
+                "a {arc_deg} deg arc reaches {nearest} m from the centre, inside the \
+                 {} m its inner edge may reach — the end stubs are crossing the island",
+                radius - half
+            );
+        }
+    }
+
+    /// **A kink in a ring must not throw its inner edge across the island.**
+    ///
+    /// This is the real Groningen roundabout, reduced: a generalised ring with one
+    /// vertex sharper than its neighbours. The *outer* side of a sharp corner is
+    /// bevelled once the miter passes [`MITER_LIMIT`]; the inner side is clamped
+    /// only in how far it runs back **along** the two segments, and nothing bounds
+    /// how far it moves **across** them. At a sharp kink the bisector points over
+    /// the carriageway, so the inner vertex lands well inside the ring — a tooth
+    /// of tarmac across the middle of the island, which is what the map drew
+    /// (seen 2026-09-20, in the carriageway and in its kerb band at the same
+    /// vertex, because both come off one centre line).
+    #[test]
+    fn a_kink_in_a_ring_does_not_cross_the_island() {
+        let (half, radius) = (2.9, 6.9);
+        let segs = 12;
+        let mut centre: Vec<[f32; 2]> = (0..segs)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let t = i as f32 / segs as f32 * std::f32::consts::TAU;
+                [radius * t.cos(), radius * t.sin()]
+            })
+            .collect();
+        // One vertex pulled in hard — a generalised ring's short segment.
+        centre[3] = [centre[3][0] * 0.35, centre[3][1] * 0.35];
+        centre.push(centre[0]);
+
+        let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        ribbon(
+            &centre,
+            half,
+            0.0,
+            12.0,
+            [EndJoin::default(); 2],
+            true,
+            &mut positions,
+            &mut uvs,
+            &mut indices,
+        );
+        let nearest = positions
+            .iter()
+            .fold(f32::MAX, |a, p| a.min(p[0].hypot(p[2])));
+        // The kinked vertex itself sits at 0.35 r, so its own edges legitimately
+        // reach `0.35 r - half`. Past the centre is never legitimate.
+        assert!(
+            nearest > 0.0,
+            "the ribbon reached {nearest} m from the centre — through the middle \
+             of the island and out the other side"
+        );
+    }
+
+    #[test]
+    fn a_roundabout_does_not_spike_into_its_island() {
+        // A real small roundabout: ~7.5 m centre-line radius, a 7 m carriageway.
+        for (segs, jitter) in [(12, 0.0), (12, 0.25), (9, 0.3), (8, 0.35)] {
+            let (half, radius) = (3.5, 7.5);
+            let (lo, hi) = ring_annulus(radius, segs, jitter, half);
+            let floor = (radius * (1.0 - jitter)) - half * 1.6;
+            assert!(
+                lo > floor.max(0.0),
+                "{segs} segments, jitter {jitter}: a vertex {lo} m from the centre, \
+                 inside the {floor} m the inner edge may reach — the ribbon has \
+                 folded through its own island"
+            );
+            assert!(hi < radius * (1.0 + jitter) + half * 1.6, "outer {hi}");
+        }
+    }
+
     /// Build one corner and hand back the ribbon's vertices in the XZ plane, each
     /// tagged with its `u` (which side of the road it is), plus the centre line
     /// the ribbon was actually built around.
