@@ -1521,6 +1521,68 @@ fn cut_mesh(
 
 #[cfg(test)]
 mod tests {
+    /// **Every tunnel in a tile is drawn as whichever one was built first.**
+    ///
+    /// `road_class_of_tunnel` is a single `Option<RoadClass>` for the whole call:
+    /// set by the first tunnel with `get_or_insert`, and read once at the end for
+    /// the group every deck is merged into. A tile with a footpath underpass and a
+    /// road tunnel in it therefore draws both with one class's surface — gravel on
+    /// a trunk road, or tarmac with lane markings down a cycle underpass.
+    ///
+    /// Measured over Groningen's ring on 2026-09-20: cell `14/8490/5321` holds
+    /// tunnels of seven kinds and emits one `TunnelRoad(Carriageway)`; its
+    /// neighbour `14/8491/5321` holds nine and emits one `TunnelRoad(Path)`. The
+    /// *same* tunnel changes class at the cell boundary, which is the one place a
+    /// viewer is guaranteed to see it.
+    ///
+    /// `#[ignore]` — reproduced, not yet fixed. The fix is to carry the class on
+    /// the deck builder rather than beside it, which means a builder per class or
+    /// a group per tunnel, and that is a change to how these meshes are batched.
+    #[test]
+    #[ignore = "reproduces a known fault: one class for every tunnel in a tile"]
+    fn each_tunnel_keeps_its_own_class() {
+        let tile = crate::testdata::groningen();
+        let out = build_tunnels(&tile, 1471.0, None);
+
+        // What the tile actually asks for.
+        let mut wanted: Vec<RoadClass> = Vec::new();
+        if let Some(meta) = tile.layer("streets") {
+            for feature in tile.features(meta) {
+                if !underground(feature) {
+                    continue;
+                }
+                let flags = StreetFlags {
+                    oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+                    oneway_reverse: flag_of(feature, "oneway_reverse"),
+                    link: flag_of(feature, "link"),
+                };
+                if let Some(c) = road_class(kind_of(feature).unwrap_or(""), flags) {
+                    if !wanted.contains(&c) {
+                        wanted.push(c);
+                    }
+                }
+            }
+        }
+        if wanted.len() < 2 {
+            return; // nothing to tell apart in this fixture
+        }
+
+        let mut drawn: Vec<RoadClass> = Vec::new();
+        for m in &out.meshes {
+            if let SurfaceGroup::TunnelRoad(c) = m.group {
+                if !drawn.contains(&c) {
+                    drawn.push(c);
+                }
+            }
+        }
+        assert!(
+            drawn.len() >= 2,
+            "the tile has tunnels of {} classes ({wanted:?}) and they are drawn as \
+             {drawn:?} — every deck took the first tunnel's class",
+            wanted.len()
+        );
+    }
+
     use super::*;
 
     #[test]
