@@ -470,3 +470,14 @@ groups for a buffer whose size never changes.
 * Everything **outside the Netherlands**. `HeightLayer::covers` is AHN's own envelope;
   elsewhere the field never bakes and every consumer behaves exactly as it did before
   this module existed.
+
+## It is on, and there is no switch
+
+Worth stating plainly, because a stale comment next to the aerial toggle said the
+opposite and was believed on 2026-09-20: **the measured ground has no toggle**.
+`update_terrain_field` carries no run condition and reads no layer flag; the only
+gate is `HeightLayer::covers`. Over the Netherlands it bakes, and everywhere else
+it does not, which is the same thing as being off where there is nothing to fetch.
+
+The aerial basemap *is* opt-in, and for its own reason — it replaces the drawn
+ground rather than adding to it. That reason does not transfer.

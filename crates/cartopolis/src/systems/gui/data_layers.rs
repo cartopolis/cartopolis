@@ -551,8 +551,16 @@ pub struct DataLayers {
     pub street_detail_enabled: bool,
     /// Feature toggle (under Map): the **aerial basemap** (`systems::aerial`) —
     /// PDOK's Luchtfoto RGB under the clipmap in place of the drawn one. Off by
-    /// default for the same reason the height layer is: it reaches a third
-    /// party's service and only answers over the Netherlands.
+    /// default because it *replaces* the drawn ground rather than adding to it,
+    /// which is a change to how the map looks and not only to what it knows.
+    ///
+    /// It used to say "for the same reason the height layer is", and that has been
+    /// wrong since the measured ground stopped being opt-in — `terrain` has no
+    /// toggle at all now, only `HeightLayer::covers`. The line survived the change
+    /// that made it false and then answered a direct question about whether AHN is
+    /// on by default with the opposite of the truth (2026-09-20). Reaching a third
+    /// party is not by itself a reason to be off; `Default` below is the one that
+    /// counts and it already said so.
     ///
     /// Read by `map_stream` alone. `map_geometry`, `globe`, `navigation` and the
     /// router keep the vector template, so nothing about the geometry, the
