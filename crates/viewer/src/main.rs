@@ -716,9 +716,11 @@ fn tessellate(
             // halfway point and without the walk.
             let mid = t.centre[t.centre.len() / 2];
             let (a, b) = (t.centre[0], t.centre[t.centre.len() - 1]);
-            // +y is south in tile space, so north is −dy and this is a compass
-            // bearing rather than a mathematical angle.
-            let bearing = (b[0] - a[0])
+            // The **camera's** yaw for looking along this tunnel, not a compass
+            // bearing: yaw turns anticlockwise from north here and in the client
+            // (see `viewpoint`), so this is printed ready to paste into either
+            // program rather than ready to read off a map.
+            let bearing = (a[0] - b[0])
                 .atan2(a[1] - b[1])
                 .to_degrees()
                 .rem_euclid(360.0);
@@ -1650,8 +1652,16 @@ fn viewpoint(cli: &Cli, loaded: &Loaded, ground: &Ground, i: usize) -> (Vec3, Ve
         .copied()
         .unwrap_or((-35.0, 45.0));
     let (pitch, yaw) = (pitch_d.to_radians(), yaw_d.to_radians());
+    // **The client's convention, sign and all.** Its free camera is
+    // `Quat::from_euler(YXZ, yaw, pitch, 0)` looking down its own −Z, which works
+    // out to `(−cos p · sin y, sin p, −cos p · cos y)`: yaw turns *anticlockwise*
+    // from north. This was the mirror image of it, so the same `--at` and `--look`
+    // in the two programs framed two different views — the harness answering for a
+    // viewpoint nobody had asked about, which is worse than not answering
+    // (2026-09-21: `--look=-18,69` looked up the ring road here and across the city
+    // centre there).
     let dir = Vec3::new(
-        yaw.sin() * pitch.cos(),
+        -yaw.sin() * pitch.cos(),
         pitch.sin(),
         -yaw.cos() * pitch.cos(),
     );
