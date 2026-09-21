@@ -1943,6 +1943,10 @@ fn run_client() {
         // The LoD2.2 buildings' walls, with the window pattern on them
         // (`systems::building_windows`).
         .add_plugins(MaterialPlugin::<systems::building_windows::BuildingMaterial>::default())
+        // The far building tier's own material: the same `StandardMaterial`, plus a
+        // vertex stage that takes the outermost ring down into the map rather than
+        // ending the city at a cell edge (`systems::building_fade`).
+        .add_plugins(MaterialPlugin::<systems::building_fade::FarBuildingMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::grass::GrassMaterial>::default())
         // Roads and their casings. The ladder that decides which of two
         // overlapping ribbons is on top rides in a vertex attribute, so the road
@@ -3160,6 +3164,11 @@ fn run_client() {
                 // reaches the OSM buildings, which are never drawn over 3DBAG
                 // coverage — see `systems::building_windows`.
                 systems::building_windows::update_building_windows,
+                // Keep the far tier's height ramp centred on the camera. Every
+                // frame, affordable for the reason the line above is: five
+                // materials, not one per cell.
+                systems::building_fade::update_building_fade
+                    .after(systems::ground_detail::track_grid_origin),
                 // Track the camera after it has been positioned this frame.
                 // Nested to stay under the per-tuple system limit, as elsewhere in
                 // this file. Both track the camera and both must run after it has

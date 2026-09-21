@@ -1094,28 +1094,63 @@ pub(crate) fn update_window_glow(
         ),
         Added<systems::osm_buildings::WindowGlow>,
     >,
+    // **The far lane's windows are a second material type**, because that lane's
+    // buildings carry the height ramp that takes the outermost ring down into the
+    // map and a window has to travel with its wall (`systems::building_fade`).
+    // Same buckets, same ramp; the only difference is which `Assets` the handle
+    // lives in, so the *glow* is described once below and applied twice.
+    far_windows: Query<(
+        &systems::osm_buildings::WindowGlow,
+        &MeshMaterial3d<crate::systems::building_fade::FarBuildingMaterial>,
+    )>,
+    new_far_windows: Query<
+        (
+            &systems::osm_buildings::WindowGlow,
+            &MeshMaterial3d<crate::systems::building_fade::FarBuildingMaterial>,
+        ),
+        Added<systems::osm_buildings::WindowGlow>,
+    >,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut fade_materials: ResMut<Assets<crate::systems::building_fade::FarBuildingMaterial>>,
 ) {
     let elevation = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     // Begin glowing as the sun lowers in the evening (elevation ~0.18), reaching
     // full a little after dusk — a gentle ramp, not an on/off at full dark.
     let glow = ((0.18 - elevation) / 0.33).clamp(0.0, 1.0);
+    // Subtle, warm, per-bucket. One place, so two lanes drawing one city cannot
+    // drift into lighting it two different colours.
+    let emissive = |bucket: &systems::osm_buildings::WindowGlow| {
+        let e = 1.2 * glow * bucket.0;
+        LinearRgba::rgb(e, 0.72 * e, 0.34 * e)
+    };
     let mut apply = |bucket: &systems::osm_buildings::WindowGlow,
                      mat: &MeshMaterial3d<StandardMaterial>| {
         if let Some(mut m) = materials.get_mut(&mat.0) {
-            let e = 1.2 * glow * bucket.0; // subtle, warm; per-bucket brightness
-            m.emissive = LinearRgba::rgb(e, 0.72 * e, 0.34 * e);
+            m.emissive = emissive(bucket);
         }
     };
+    let mut apply_far =
+        |bucket: &systems::osm_buildings::WindowGlow,
+         mat: &MeshMaterial3d<crate::systems::building_fade::FarBuildingMaterial>| {
+            if let Some(mut m) = fade_materials.get_mut(&mat.0) {
+                m.base.emissive = emissive(bucket);
+            }
+        };
     // Only rewrite every window's emissive when the time of day actually changed;
     // otherwise just catch up newly-streamed windows.
     if dev.is_changed() {
         for (bucket, mat) in windows.iter() {
             apply(bucket, mat);
         }
+        for (bucket, mat) in far_windows.iter() {
+            apply_far(bucket, mat);
+        }
     } else {
         for (bucket, mat) in new_windows.iter() {
             apply(bucket, mat);
+        }
+        for (bucket, mat) in new_far_windows.iter() {
+            apply_far(bucket, mat);
         }
     }
 }

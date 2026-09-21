@@ -45,7 +45,7 @@ use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 /// requested patch size, so changing the patch radius never invalidates the cache
 /// (each cell is `cache/buildings/{CACHE_ZOOM}/{x}/{y}.json`). Kept coarse (few,
 /// large cells) so a patch is a handful of Overpass queries, not dozens.
-const CACHE_ZOOM: u32 = 14;
+pub(crate) const CACHE_ZOOM: u32 = 14;
 /// Polite pace against a PUBLIC Overpass instance (see [`overpass_pace`]).
 const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
 /// Concurrent live queries against our own Overpass (see [`overpass_pace`]).
@@ -673,6 +673,16 @@ pub struct OsmBuildings {
     /// a city. Sharing one handle also puts both lanes in the same batch set,
     /// which is what lets them merge into one draw on a GPU that batches.
     building_material: Option<Handle<StandardMaterial>>,
+    /// The same, for the **far** lane, which carries the height ramp that takes
+    /// the outermost ring down into the map (`systems::building_fade`). A separate
+    /// handle because it is a separate material *type*: the detail patch and the
+    /// LoD2.2 shells never fade, and giving them a vertex stage they do not use
+    /// would cost the base attribute on every vertex of a 720k-vertex cell.
+    far_building_material: Option<Handle<crate::systems::building_fade::FarBuildingMaterial>>,
+    /// The far lane's window buckets. **Not tidiness**: a window is a quad standing
+    /// proud of a wall this tier now lowers, and on the shared material it would
+    /// keep its height and hang in the air over a building sinking under it.
+    far_window_materials: Option<[Handle<crate::systems::building_fade::FarBuildingMaterial>; 4]>,
     /// Per-bucket window materials shared by every window mesh, far or detail;
     /// their emissive is driven by `update_window_glow` through the cells'
     /// `WindowGlow` entities.
@@ -782,6 +792,8 @@ impl Default for OsmBuildings {
             terrain_revision: 0,
             far_cells: HashMap::new(),
             building_material: None,
+            far_building_material: None,
+            far_window_materials: None,
             window_materials: None,
             buildings: Vec::new(),
         }
@@ -939,7 +951,7 @@ const FAR_CELL_RADIUS: i64 = 3;
 /// be a ring of covered cells that neither streamer owns — buildings simply
 /// missing, at a distance that changes with the tier. `the_far_ring_meets_the_lod22_
 /// handover` pins it on both tiers.
-fn far_cell_radius() -> i64 {
+pub(crate) fn far_cell_radius() -> i64 {
     crate::systems::load_control::radius(FAR_CELL_RADIUS)
 }
 /// Re-fetch the patch once the camera has moved this many tiles from the last centre.
@@ -986,6 +998,7 @@ pub fn update_buildings(
     mut osm: ResMut<OsmBuildings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut fade_materials: ResMut<Assets<crate::systems::building_fade::FarBuildingMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
     time: Res<Time>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -1417,14 +1430,17 @@ pub fn update_buildings(
             match built {
                 Ok(Some((grid_cell, mesh, windows))) => {
                     let material = osm
-                        .building_material
+                        .far_building_material
                         .get_or_insert_with(|| {
-                            materials.add(StandardMaterial {
-                                base_color: Color::WHITE,
-                                perceptual_roughness: 0.95,
-                                double_sided: !BACKFACE_CULL,
-                                cull_mode: building_cull_mode(),
-                                ..default()
+                            fade_materials.add(crate::systems::building_fade::FarBuildingMaterial {
+                                base: StandardMaterial {
+                                    base_color: Color::WHITE,
+                                    perceptual_roughness: 0.95,
+                                    double_sided: !BACKFACE_CULL,
+                                    cull_mode: building_cull_mode(),
+                                    ..default()
+                                },
+                                extension: default(),
                             })
                         })
                         .clone();
@@ -1450,17 +1466,22 @@ pub fn update_buildings(
                     // Window meshes: same recipe as the detail patch, but the four
                     // bucket materials are shared across every far cell.
                     let win_mats = osm
-                        .window_materials
+                        .far_window_materials
                         .get_or_insert_with(|| {
                             std::array::from_fn(|_| {
-                                materials.add(StandardMaterial {
-                                    base_color: Color::srgb(0.07, 0.09, 0.13),
-                                    emissive: LinearRgba::BLACK,
-                                    perceptual_roughness: 0.25,
-                                    double_sided: true,
-                                    cull_mode: None,
-                                    ..default()
-                                })
+                                fade_materials.add(
+                                    crate::systems::building_fade::FarBuildingMaterial {
+                                        base: StandardMaterial {
+                                            base_color: Color::srgb(0.07, 0.09, 0.13),
+                                            emissive: LinearRgba::BLACK,
+                                            perceptual_roughness: 0.25,
+                                            double_sided: true,
+                                            cull_mode: None,
+                                            ..default()
+                                        },
+                                        extension: default(),
+                                    },
+                                )
                             })
                         })
                         .clone();
@@ -1671,8 +1692,11 @@ fn build_far_from_text(
     let oz = grid_cell.z as f32 * WORLD_CELL_EDGE;
 
     // Deduped — see the far-cell merge.
-    let mut buf = MeshData::with_dedup();
-    let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+    // `with_bases` because this is the tier that fades: the ramp scales a building
+    // about its own ground, and `set_base` folds that into the vertex Y where a
+    // shader cannot get it back (`systems::building_fade`).
+    let mut buf = MeshData::with_dedup().with_bases();
+    let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default().with_bases());
     for b in &buildings {
         // The far tier keeps the one-block outlines and skips parts entirely:
         // from kilometres away a part is sub-pixel massing, and rendering both
@@ -1842,6 +1866,9 @@ pub(crate) struct MeshData {
     dedup: Option<HashMap<VertexKey, u32, BuildHasherDefault<VertexHasher>>>,
     /// Ground offset added to every vertex pushed — see [`MeshData::set_base`].
     base_y: f32,
+    /// Per-vertex copy of [`Self::base_y`] when the buffer was built with
+    /// [`MeshData::with_bases`]; `None` on every buffer that never fades.
+    bases: Option<Vec<f32>>,
 }
 
 /// A vertex's position, flat normal and colour, as raw bit patterns.
@@ -1922,6 +1949,20 @@ impl MeshData {
         }
     }
 
+    /// Also record each vertex's [`set_base`](Self::set_base), as
+    /// `building_fade::ATTRIBUTE_BUILDING_BASE`.
+    ///
+    /// **Opt-in, because only the far tier fades.** `set_base` folds the ground
+    /// height into the vertex Y, where a shader wanting to scale a building's
+    /// *height* — rather than its distance from the world's zero — cannot get it
+    /// back. Keeping it costs four bytes a vertex: nothing on the far tier's
+    /// simplified boxes, and ~2.9 MB of graphics memory on one 720k-vertex LoD2.2
+    /// cell, on the tier with the least of it.
+    pub(crate) fn with_bases(mut self) -> Self {
+        self.bases = Some(Vec::new());
+        self
+    }
+
     /// Lift every vertex pushed from now on by `base` metres — the measured ground
     /// under the building about to be written (`systems::terrain`).
     ///
@@ -1961,6 +2002,13 @@ impl MeshData {
         self.positions.push([v.x, v.y, v.z]);
         self.normals.push([n.x, n.y, n.z]);
         self.colors.push(color);
+        // **After the dedup lookup, not before it.** A shared vertex keeps the base
+        // of whichever building pushed it first, which is correct precisely because
+        // the dedup key already contains the *lifted* position: two buildings can
+        // only share a vertex if they stand at the same height there.
+        if let Some(bases) = &mut self.bases {
+            bases.push(self.base_y);
+        }
         if let (Some(k), Some(map)) = (key, &mut self.dedup) {
             map.insert(k, idx);
         }
@@ -2100,6 +2148,12 @@ impl MeshData {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
+        if let Some(bases) = self.bases {
+            mesh.insert_attribute(
+                crate::systems::building_fade::ATTRIBUTE_BUILDING_BASE,
+                bases,
+            );
+        }
         mesh.insert_indices(Indices::U32(self.indices));
         Some(mesh)
     }

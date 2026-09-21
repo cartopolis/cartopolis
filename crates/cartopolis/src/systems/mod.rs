@@ -50,9 +50,9 @@ pub use gui::{
     script_editor, settings, splash, text_touch, theme, ui,
 };
 pub use map::{
-    aerial, atmosphere_patch, building_facts, building_select, building_windows, cache_reset,
-    cell_bundle, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather, grass,
-    ground_detail, height, interiors, light_shafts, load_control, lod22, lod3, map_geometry,
+    aerial, atmosphere_patch, building_facts, building_fade, building_select, building_windows,
+    cache_reset, cell_bundle, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather,
+    grass, ground_detail, height, interiors, light_shafts, load_control, lod22, lod3, map_geometry,
     map_stream, model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
     render_features, render_scale, rendering, road_depth, sky, sky_dome, stream_ledger,
     street_detail, street_furniture, street_labels, surveyed, tall_structures, terrain,
