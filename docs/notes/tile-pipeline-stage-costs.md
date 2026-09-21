@@ -18,19 +18,33 @@ Release build, `crates/geo/tests/fixtures/groningen_z14.mvt`, this container,
 
 | stage | 2026-08-24 | 2026-09-21, before | after |
 |---|---|---|---|
-| `tessellate_roads` | **3.1 ms** | **103.1 ms** | 82.5 ms |
-| `tessellate_surfaces` | 0.8 ms | 14.0 ms | 10.6 ms |
-| `cut_under_roads` | not timed | not timed | **124.8 ms**, ×2 per cell |
+| `tessellate_roads` | **3.1 ms** | **103.1 ms** | **38.4 ms** |
+| `cut_under_roads` | not timed | not timed* | **47.5 ms**, ×2 per cell |
+| render 512² whole | — | 68.9 ms | **31.4 ms** |
+| render 256² whole | — | 50.2 ms | **29.0 ms** |
+| `water_shore_field` | 19.4 ms | 34.6 ms | **24.5 ms** |
+| `tessellate_surfaces` | 0.8 ms | 14.0 ms | **8.2 ms** |
+| parse + decode all layers | 14.7 ms | 15.6 ms | 15.4 ms |
+| mip chain | 9.9 ms | 11.4 ms | 10.2 ms |
 | `build_tunnels` | not timed | not timed | 3.0 ms |
-| `water_shore_field` | 19.4 ms | 35.1 ms | 34.6 ms |
-| render 512² whole | — | 68.9 ms | 69.5 ms |
-| render 256² 1/64 sub | 8.2 ms | 8.4 ms | 8.1 ms |
 | `ocean_mask` 256² | 0.3 ms | 0.3 ms | 0.3 ms |
 
-**The last two rows are the method, not decoration.** They are stages nothing in
-the window touched, and they read the same across a month and across the fix, so
-the large movements above them are the code and not the box. Quote a stage
-timing here only with a pair of unchanged rows beside it.
+\* `cut_under_roads` had no timing row at all until one was added on
+2026-09-21, and by then the bounded cut had already landed; its true
+pre-September-21 cost is unmeasured and was higher than the 128.5 ms the first
+reading gave.
+
+Summing the stages a dense cell actually runs — and `cut_under_roads` runs
+twice — that is **~478 ms of CPU before, ~198 ms after**.
+
+**`ocean_mask` is the control, and it is now the only one.** A wall-clock
+comparison on a shared box is worth nothing without a stage that nothing
+touched reading the same on both sides, and that row has read 0.30–0.32 ms
+across a month and across every change here. The 1/64 overzoom sub-tile used to
+serve the same purpose and **no longer can**: the raster banding changed it too
+(8.4 → 7.0 ms). Anyone quoting a timing from this hatch owes a control row
+beside it, and owes a check that the control is still untouched by whatever they
+changed.
 
 `tessellate_roads` overtook the whole 512² rasteriser. That is the inversion the
 first note describes the other way round, and any reasoning that starts "the
@@ -80,13 +94,29 @@ city blocks:
 | clip contours per boolean | 4.2 | **17.2** |
 
 Those 412 are mostly *genuine* — a block-sized subject really does overlap
-hundreds of road triangles — so a finer grid does not remove them. The fix is to
-dice the subject triangles to the bucket grid before cutting, so each boolean
-meets a handful of blockers instead of seventeen. **That was deliberately not
-done on 2026-09-21**: it changes how a cut sheet is triangulated, which has to
-be argued against `road_stitch`'s no-hairline-cracks invariant, and this
-container's software rasteriser cannot judge whether a crack opened. It needs a
-real graphics card.
+hundreds of road triangles — so a finer grid does not remove them.
+
+**Dicing the subjects was the obvious fix and it is refuted.** Timing the
+phases inside the call gives `i_overlay` 66 % of it, and across the two call
+sites the solver costs **~1.43 µs per clip contour with near-zero fixed
+overhead** — 4.2 contours cost 5.3 µs on the road sheet, 17.2 cost 23.9 µs
+here, and that line predicts both totals within 14 %. Cost therefore tracks the
+*total* number of contours inserted, and dicing a subject into sixteen pieces
+leaves that total alone: each blocker simply meets more, smaller subjects.
+Reducing it means regrouping blockers or subjects, which does change how a cut
+sheet is triangulated and so has to be argued against the no-hairline-cracks
+invariant on a real graphics card.
+
+Two cheaper things were measured and are worth not repeating. Only **19 of
+6,157** subject triangles are wholly buried by a single blocker, so hoisting the
+containment test to avoid wasted contour insertions saves four contours in
+total. And the bucket grid is *not* mis-sized here either: 9.6 cells per query
+at a 24 m edge.
+
+What did work was **threading it**: the cut is order-independent by
+construction, so it runs on four threads and the stage went 128.5 → 47.5 ms
+with byte-identical output. The remaining 47.5 ms is still the largest single
+item in the pipeline.
 
 ## Batching the bank field's building fills — tried, measured, reverted
 
@@ -120,6 +150,69 @@ buildings `Winding`), whose comment records a max channel delta of 8/255
 against the per-feature raster and attributes it to anti-aliased edges. That
 attribution is worth re-checking against the coincident-wall case above before
 it is relied on.
+
+## What the parallelism rests on, and what it costs
+
+Three stages are threaded now and the argument is not the same in each.
+
+**`road_stitch`** is exact. A ribbon is cut against the *uncut* geometry of its
+superiors, never a running union, so no result feeds another — the same fact the
+module doc gives for why walk order cannot matter. Two splits exist because the
+callers are shaped differently: the roads are 1,214 ribbons of ~18 triangles
+(split across ribbons), the fill sheets are four ribbons of thousands (split
+inside one). `stitch_is_the_same_cut_split_across_threads` compares both against
+a forced-serial run byte for byte.
+
+**The shore field's second pass** is exact for a narrower reason: the y-sweeps
+carry a running minimum between rows and are left serial, while the parabola
+envelope reads and writes one row with row-local scratch.
+
+**The raster is not exact**, and that is the one to know about. Bands change the
+magnitudes coordinates are computed at, so f32 rounds a few edge samples
+differently: up to 8/255 on isolated anti-aliased pixels, which is the figure
+`flush_batch` already records for the paint batching. Bleed rows remove the part
+that is *clipping* (2,443 differing bytes → 312) and no amount removes the rest
+(256 rows of bleed still leaves 43). The band count is a constant rather than
+the core count, so at least the basemap does not vary between machines.
+
+Two instrument consequences, both live traps. `perf::paths` and `perf::passes`
+are **thread-local**, so a banded render records most of its work where the
+measuring code cannot see it — every budget and hatch that reads them goes
+through `render_mvt_serial` instead. And the 1/64 overzoom row stopped being a
+usable control the moment banding touched it.
+
+## Threading this crate breaks the web build, and the native suite cannot see it
+
+Adding `std::thread::scope` behind `#[cfg(not(target_arch = "wasm32"))]` broke
+`wasm32` twice in one change, both times invisibly to 1,647 passing tests.
+
+**A dead branch still has to resolve.** `cfg` strips items *before* name
+resolution and knows nothing about reachability, so calling a
+`cfg(not(wasm32))` function from inside an `if let` whose condition is bound to
+`None` on wasm is still `error[E0425]`. Put the *call* behind the cfg, not just
+the value it branches on — or give the serial path a name both arms can reach.
+
+**And this crate builds `-D unused`**, so anything left unreachable when the
+threading is stripped — a thread-count ceiling, a merge helper, a band count —
+is a hard error on wasm and nothing at all natively.
+
+Run the lane before believing a threading change. It is **nightly with specific
+flags**, and a plain `cargo check --target wasm32` is worse than useless here:
+`-p cartopolis_geo` alone resolves a different feature set and dies inside
+`uuid`, which reads exactly like your bug and is not.
+
+```bash
+rustup target add wasm32-unknown-unknown
+RUSTUP_TOOLCHAIN=nightly \
+RUSTFLAGS="--cfg=web_sys_unstable_apis -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128" \
+cargo check --locked -p cartopolis --no-default-features --features audio \
+    --target wasm32-unknown-unknown
+```
+
+The target is not installed in the agent container by default and `rustup
+target add` fails as the agent user (the download cache directory is missing);
+it installs as root through the host, `ssh host "docker exec -u root
+viberfox-agent …"`, with `RUSTUP_HOME=/usr/local/rustup`.
 
 ## Work that is still on the main thread
 
