@@ -286,6 +286,44 @@ impl Tunnel {
     /// two carriageways, their walls and their verges — so filling only the
     /// carriageway's own width would leave a ditch either side of a flush lid,
     /// which is the same fault in a narrower shape.
+    /// Bounding box of the covered span, widened by the carriageway's half width:
+    /// `[min_x, min_y, max_x, max_y]`, or `None` where nothing is covered.
+    ///
+    /// [`covered_weight`](Self::covered_weight) walks every segment and its only
+    /// early exit fires *inside* a tunnel, so a point nowhere near one — which is
+    /// almost every point the ground asks about — is its worst case. A caller
+    /// holding many tunnels should reject against this first, expanded by its own
+    /// taper. Kept as a method rather than a field because `centre` and `covered`
+    /// are public and a cached box would go stale behind them.
+    #[must_use]
+    pub fn covered_bounds(&self) -> Option<[f32; 4]> {
+        let mut b: Option<[f32; 4]> = None;
+        for i in 0..self.centre.len().saturating_sub(1) {
+            if !(self.covered[i] && self.covered[i + 1]) {
+                continue;
+            }
+            for p in [self.centre[i], self.centre[i + 1]] {
+                b = Some(match b {
+                    None => [p[0], p[1], p[0], p[1]],
+                    Some(v) => [
+                        v[0].min(p[0]),
+                        v[1].min(p[1]),
+                        v[2].max(p[0]),
+                        v[3].max(p[1]),
+                    ],
+                });
+            }
+        }
+        b.map(|v| {
+            [
+                v[0] - self.half_w,
+                v[1] - self.half_w,
+                v[2] + self.half_w,
+                v[3] + self.half_w,
+            ]
+        })
+    }
+
     #[must_use]
     pub fn covered_weight(&self, p: [f32; 2], taper_m: f32) -> f32 {
         let mut best = 0.0f32;

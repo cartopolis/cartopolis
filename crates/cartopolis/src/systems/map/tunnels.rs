@@ -64,7 +64,37 @@ pub struct CellTunnels {
 /// One cell's tunnels in the anchored world-XZ frame.
 struct Cell {
     tunnels: Vec<Tunnel>,
+    /// Each tunnel's covered span as a bounding box, by the same index as
+    /// `tunnels`; `None` where that tunnel has no lid at all.
+    ///
+    /// The same precomputation, and for the same reason, as [`Mouth`]'s: every
+    /// ground vertex in the city asks `covered_weight` whether it is over a lid,
+    /// and that walks every segment of every tunnel with a distance each, exiting
+    /// early only when the answer is *yes*. A vertex nowhere near a tunnel is
+    /// therefore the worst case and it is also the common one.
+    covered: Vec<Option<[f32; 4]>>,
+    /// The union of `covered`, so a cell with no lid in it costs one comparison
+    /// rather than one per tunnel.
+    covered_bbox: Option<[f32; 4]>,
     openings: Vec<Mouth>,
+}
+
+/// Is `p` inside `b` grown by `pad`?
+fn within(p: [f32; 2], b: [f32; 4], pad: f32) -> bool {
+    p[0] >= b[0] - pad && p[0] <= b[2] + pad && p[1] >= b[1] - pad && p[1] <= b[3] + pad
+}
+
+/// The smallest box containing both.
+fn union(a: Option<[f32; 4]>, b: [f32; 4]) -> Option<[f32; 4]> {
+    Some(match a {
+        None => b,
+        Some(v) => [
+            v[0].min(b[0]),
+            v[1].min(b[1]),
+            v[2].max(b[2]),
+            v[3].max(b[3]),
+        ],
+    })
 }
 
 /// One opening, with the two things every frame asks of it precomputed.
@@ -125,17 +155,23 @@ impl Tunnels {
             return;
         }
         let shift = |p: [f32; 2]| [p[0] + world.x, p[1] + world.y];
+        let moved: Vec<Tunnel> = tunnels
+            .tunnels
+            .into_iter()
+            .map(|b| Tunnel {
+                centre: b.centre.iter().copied().map(shift).collect(),
+                ..b
+            })
+            .collect();
+        // Once, here, while the cell is being installed — see `Cell::covered`.
+        let covered: Vec<Option<[f32; 4]>> = moved.iter().map(Tunnel::covered_bounds).collect();
+        let covered_bbox = covered.iter().flatten().fold(None, |a, b| union(a, *b));
         self.cells.insert(
             cell,
             Cell {
-                tunnels: tunnels
-                    .tunnels
-                    .into_iter()
-                    .map(|b| Tunnel {
-                        centre: b.centre.iter().copied().map(shift).collect(),
-                        ..b
-                    })
-                    .collect(),
+                tunnels: moved,
+                covered,
+                covered_bbox,
                 openings: tunnels
                     .openings
                     .into_iter()
@@ -381,10 +417,23 @@ impl Tunnels {
     pub fn covered_weight(&self, p: Vec2, taper_m: f32) -> f32 {
         let at = [p.x, p.y];
         let mut best = 0.0f32;
-        for t in self.cells.values().flat_map(|c| c.tunnels.iter()) {
-            best = best.max(t.covered_weight(at, taper_m));
-            if best >= 1.0 {
-                break;
+        for c in self.cells.values() {
+            // A cell with no lid anywhere, or one the point is nowhere near, is
+            // one comparison — which is the answer for almost every vertex, and
+            // was previously a walk of every segment of every tunnel in the city.
+            match c.covered_bbox {
+                Some(b) if within(at, b, taper_m) => {}
+                _ => continue,
+            }
+            for (t, bounds) in c.tunnels.iter().zip(&c.covered) {
+                let Some(b) = bounds else { continue };
+                if !within(at, *b, taper_m) {
+                    continue;
+                }
+                best = best.max(t.covered_weight(at, taper_m));
+                if best >= 1.0 {
+                    return best;
+                }
             }
         }
         best
