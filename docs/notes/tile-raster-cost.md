@@ -1,7 +1,7 @@
 ---
 topic: tile-raster-cost
 triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly", "paint batching", "fill rule", vello_cpu, "benchmark", "streaming performance", print_tile_pipeline_time]
-updated: 2026-08-24
+updated: 2026-09-21
 ---
 
 # Vector-tile rasterisation cost
@@ -23,6 +23,15 @@ with warmup:
 
 **Rasterisation dominates the tile pipeline by ~20× over MVT parsing** — the cost
 is tiny-skia's scan conversion, not protobuf decoding.
+
+> **That is still true of parsing and no longer true of the pipeline.** The
+> tessellators and the cuts after them overtook the rasteriser during September
+> 2026: `tessellate_roads` went 3.1 ms → 103 ms and `cut_under_roads` — which
+> nothing timed at all — reads 124.8 ms, against 69 ms to rasterise the whole
+> 512² tile. Anything reasoning from "the cost is scan conversion" is wrong
+> about a city tile now. `docs/notes/tile-pipeline-stage-costs.md` has the
+> current per-stage table, what the cost turned out to be, and the three
+> plausible explanations that measuring killed.
 
 **Do not trust the per-layer breakdown.** A reconstruction of the per-layer loop
 summed to ~282 ms against a measured 121 ms total, so that attribution was never
