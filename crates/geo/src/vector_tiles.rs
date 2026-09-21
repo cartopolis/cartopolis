@@ -687,7 +687,151 @@ fn render_mvt_culled(
     source_m: f32,
     cull: bool,
 ) -> Result<Vec<u8>, String> {
-    let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    render_mvt_banded(tile, sub, size, source_m, cull, raster_bands(size))
+}
+
+/// Rows a band renders beyond its own span and then discards.
+///
+/// Sized by measurement, not by argument: `banding_the_raster_changes_no_pixels`
+/// fails at any value too small for the widest stroke that can reach into a kept
+/// row, and it fails loudly — a seam every `TILE_PX / bands` rows.
+const RASTER_BLEED_PX: u32 = 32;
+
+/// Bands a raster is split into, everywhere, on every machine.
+const RASTER_BANDS: u32 = 4;
+
+/// Rows of the raster one thread should take.
+///
+/// One band is the whole tile and the serial path. `None` of this exists on
+/// wasm, which has no threads to hand.
+fn raster_bands(size: u32) -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // A band under this is not worth a thread: the paint loop's fixed work
+        // — resolving each layer, sorting the streets — is paid per band, so a
+        // thin band is mostly overhead.
+        const MIN_BAND_ROWS: u32 = 64;
+        // **A constant, not the core count.** The bands are not bit-identical to
+        // a single pixmap (see `render_rows`), so a band count that varied with
+        // the machine would make the basemap itself vary with the machine — and
+        // this tree leans on rasters being reproducible.
+        let by_rows = (size / MIN_BAND_ROWS).max(1);
+        return by_rows.min(RASTER_BANDS).max(1);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = size;
+        1
+    }
+}
+
+/// One-pixmap render, for the instruments.
+///
+/// `perf::paths` and `perf::passes` are **thread-local** counters, so a banded
+/// render records most of its work on threads the measuring code never reads —
+/// the counts would silently come back a quarter of the truth. Every budget and
+/// every printing hatch that reads those counters goes through here instead, and
+/// the wall-clock hatch does not, because what it must time is what ships.
+#[cfg(test)]
+pub(crate) fn render_mvt_serial(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+) -> Result<Vec<u8>, String> {
+    render_mvt_banded(tile, sub, size, source_m, sub.factor > 1, 1)
+}
+
+/// [`render_mvt_culled`] over a stated number of horizontal bands.
+///
+/// **Splitting the raster by rows is exact, and that is a property of how
+/// coverage is computed rather than a hope.** A pixel's anti-aliased coverage
+/// comes from the path's geometry inside that pixel; geometry above or below the
+/// band cannot reach it, and every band paints the same layers in the same
+/// `PAINT_ORDER` against the same background. So each band produces exactly the
+/// rows it would have produced in one pixmap, and the bytes concatenate in row
+/// order because that is how a pixmap is laid out.
+///
+/// It is pinned rather than argued: `banding_the_raster_changes_no_pixels`
+/// renders the fixture whole and in bands and compares the two byte for byte.
+fn render_mvt_banded(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    cull: bool,
+    bands: u32,
+) -> Result<Vec<u8>, String> {
+    if bands <= 1 {
+        return render_rows(tile, sub, size, source_m, cull, 0, size);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let rows = size.div_ceil(bands);
+        let parts: Vec<Result<Vec<u8>, String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..bands)
+                .map(|b| {
+                    let y0 = b * rows;
+                    let h = rows.min(size.saturating_sub(y0));
+                    s.spawn(move || {
+                        if h == 0 {
+                            return Ok(Vec::new());
+                        }
+                        render_rows(tile, sub, size, source_m, cull, y0, h)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("raster band panicked".to_string()))
+                })
+                .collect()
+        });
+        let mut out = Vec::with_capacity((size * size * 4) as usize);
+        for part in parts {
+            out.extend(part?);
+        }
+        return Ok(out);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    render_rows(tile, sub, size, source_m, cull, 0, size)
+}
+
+/// `rows` rows of the raster, starting at `y0`. `size` stays the whole tile's
+/// pixel size — it is what the transform scales against — and only the pixmap
+/// and the vertical shift change.
+fn render_rows(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    cull: bool,
+    want_y0: u32,
+    want_rows: u32,
+) -> Result<Vec<u8>, String> {
+    // **Bleed, because a band edge is not neutral.** The first version of this
+    // assumed a pixel's anti-aliased coverage depends only on the path inside
+    // that pixel, so bands would concatenate exactly. They do not:
+    // `banding_the_raster_changes_no_pixels` measured 2,443 bytes of a 1,048,576
+    // byte raster differing, all of them along the seam, because tiny-skia clips
+    // the geometry to the pixmap and a shape entering from above loses the part
+    // that decides the boundary row.
+    //
+    // So each band renders extra rows it then throws away. The kept rows are
+    // interior to the pixmap that produced them, and therefore identical to the
+    // single-pixmap render. The bleed has to clear the widest thing that can
+    // reach into a row — a motorway's casing at the raster's own scale — and
+    // `RASTER_BLEED_PX` is checked by that same test rather than reasoned about.
+    let top = RASTER_BLEED_PX.min(want_y0);
+    let bottom = RASTER_BLEED_PX.min(size.saturating_sub(want_y0 + want_rows));
+    let y0 = want_y0 - top;
+    let rows = top + want_rows + bottom;
+
+    let mut pixmap = Pixmap::new(size, rows).ok_or_else(|| "pixmap alloc failed".to_string())?;
     pixmap.fill(tiny_skia::Color::from_rgba8(
         ((palette::PAPER >> 16) & 0xFF) as u8,
         ((palette::PAPER >> 8) & 0xFF) as u8,
@@ -742,7 +886,12 @@ fn render_mvt_culled(
             0.0,
             scale,
             -(sub.x as f32) * px,
-            -(sub.y as f32) * px,
+            // The band's first row is this pixmap's row 0, so everything is
+            // lifted by where the band starts. This is the **only** place the
+            // split is visible: the scale stays the whole tile's, because that
+            // is what the stroke widths and the window below are authored
+            // against, and a band that rescaled would draw thinner roads.
+            -(sub.y as f32) * px - y0 as f32,
         );
 
         // The slice of the source tile that lands on the pixmap, in tile-extent
@@ -928,7 +1077,13 @@ fn render_mvt_culled(
 
     // Fully opaque throughout (opaque background, opaque paints), so tiny-skia's
     // premultiplied buffer is already straight RGBA.
-    Ok(pixmap.take())
+    // Hand back only the rows the caller asked for; the bleed above and below
+    // has done its job by existing.
+    let stride = (size * 4) as usize;
+    let data = pixmap.take();
+    let from = top as usize * stride;
+    let to = from + want_rows as usize * stride;
+    Ok(data[from..to].to_vec())
 }
 
 /// Axis-aligned bounds `(min_x, min_y, max_x, max_y)` of a geometry in tile-extent
@@ -5078,6 +5233,43 @@ fn squared_distance_transform(grid: &mut [f32], size: usize) {
 
     // Pass 2, along x. Its input is an arbitrary function now, not a mask, so
     // this one really is the parabola envelope — over contiguous rows.
+    //
+    // **Every row is independent here, and pass 1 was not.** The y-sweeps above
+    // carry a running minimum from one row to the next, so they have to be
+    // walked in order; the envelope reads one row and writes that same row, with
+    // scratch that belongs to the row. So this pass — and only this pass — is
+    // split across threads. The shore field is 1,056 rows of 1,056 samples and
+    // the envelope is the expensive half of the transform.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Below this the whole transform is well under a millisecond and the
+        // threads cost more than the sweep.
+        const PARALLEL_MIN_SIZE: usize = 256;
+        let threads = crate::road_stitch::available_threads().min(4);
+        if threads > 1 && size >= PARALLEL_MIN_SIZE {
+            let rows = size.div_ceil(threads);
+            std::thread::scope(|s| {
+                for band in grid.chunks_mut(rows * size) {
+                    s.spawn(move || {
+                        // Per thread: the envelope's vertices and breakpoints are
+                        // rebuilt for each row anyway, so sharing them would buy
+                        // nothing and cost a lock.
+                        let mut f = vec![0.0f32; size];
+                        let mut d = vec![0.0f32; size];
+                        let mut v = vec![0usize; size];
+                        let mut z = vec![0.0f32; size + 1];
+                        for row in band.chunks_mut(size) {
+                            f.copy_from_slice(row);
+                            lower_envelope(&f, &mut d, &mut v, &mut z);
+                            row.copy_from_slice(&d);
+                        }
+                    });
+                }
+            });
+            return;
+        }
+    }
+
     let mut f = vec![0.0f32; size];
     let mut d = vec![0.0f32; size];
     // Parabola vertices and the breakpoints between them; both need one extra slot.
@@ -5908,6 +6100,90 @@ mod tests {
     /// from just outside the window goes missing, which on the map reads as a seam
     /// along a tile border and is exactly what a rendering change must not do.
     #[test]
+    fn banding_the_raster_changes_no_geometry() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
+        // The whole tile and two overzoomed windows, so the band offset is
+        // exercised against a non-zero sub-tile shift as well as against zero.
+        for (factor, x, y) in [(1, 0, 0), (4, 2, 1), (8, 3, 5)] {
+            let sub = SubTile { factor, x, y };
+            let whole = render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1)
+                .expect("whole render");
+            // 7 is in the list on purpose: it does not divide TILE_PX, so the
+            // last band is short and the row arithmetic has to survive it.
+            for bands in [2u32, 3, 4, 7] {
+                let split =
+                    render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, bands)
+                        .expect("banded render");
+                assert_eq!(
+                    split.len(),
+                    whole.len(),
+                    "factor {factor} in {bands} bands produced a different sized raster"
+                );
+
+                let max_delta = split
+                    .iter()
+                    .zip(&whole)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap_or(0);
+                let differing = split.iter().zip(&whole).filter(|(a, b)| a != b).count();
+                let stride = (TILE_PX * 4) as usize;
+                let worst_row = split
+                    .chunks(stride)
+                    .zip(whole.chunks(stride))
+                    .map(|(a, b)| a.iter().zip(b).filter(|(p, q)| p != q).count())
+                    .max()
+                    .unwrap_or(0);
+
+                // **Not bit-equality, and the reason is recorded rather than
+                // waved at.** Shifting the transform by the band's first row
+                // changes the magnitudes the coordinates are computed at, so f32
+                // rounds a few edge samples differently and the anti-aliased
+                // coverage moves by a step or two. Bleed rows remove the part
+                // that is clipping (2,443 bytes to 312 on this fixture); this
+                // residue is arithmetic and does not go away with more of them —
+                // 128 rows of bleed still left 96, and 256 left 43.
+                //
+                // What must not happen is geometry going missing at a seam, and
+                // that is a different shape entirely: it would be a whole row
+                // disagreeing, at full channel range, not four bytes in a
+                // thousand at a delta of three. Both are bounded here so the
+                // failure is legible either way.
+                // 8/255 is not a number picked to make this pass: it is the
+                // figure `flush_batch` already records for the paint batching,
+                // whose delta against a per-feature raster is likewise all
+                // anti-aliased edges. An overzoomed window rounds coarser than
+                // the whole tile — factor 4 reaches 5 where factor 1 reaches 3 —
+                // because the coordinates are four times larger before they are
+                // shifted.
+                //
+                // This is the weaker of the two checks. Lost geometry is caught
+                // by `worst_row` below: a missing road is a long run of pixels
+                // in one row at full channel range, not a handful at a delta of
+                // five.
+                assert!(
+                    max_delta <= 8,
+                    "factor {factor} in {bands} bands moved a channel by {max_delta}/255 — past anti-aliasing, so a band lost or gained geometry"
+                );
+                // Scaled by the number of seams, because that is what the residue
+                // is made of: one seam costs ~312 bytes on this fixture and six
+                // cost ~1,259. An absolute bound would pass at four bands and
+                // fail at seven for nothing worth failing over.
+                assert!(
+                    differing * 2000 <= whole.len() * bands as usize,
+                    "factor {factor} in {bands} bands differs in {differing} of {} bytes — more than rounding at {} seams",
+                    whole.len(),
+                    bands - 1
+                );
+                assert!(
+                    worst_row * 4 <= stride,
+                    "factor {factor} in {bands} bands has a row with {worst_row} of                      {stride} bytes differing — that is a seam, not rounding"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn culling_off_screen_features_changes_no_pixels() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
         // Corners, edges and middle, across the overzoom range map_stream uses
@@ -5980,7 +6256,9 @@ mod tests {
     #[ignore = "printing hatch: it reports numbers, it does not assert them"]
     fn dump_paint_split() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
-        let whole = || render_mvt_culled(&tile, SubTile::WHOLE, TILE_PX, NOMINAL_Z14_TILE_M, false);
+        // Serial: `perf::passes` is thread-local — see `render_mvt_serial`.
+        let whole =
+            || render_mvt_banded(&tile, SubTile::WHOLE, TILE_PX, NOMINAL_Z14_TILE_M, false, 1);
         for _ in 0..2 {
             whole().expect("warmup");
         }

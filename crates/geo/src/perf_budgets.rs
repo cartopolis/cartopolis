@@ -116,10 +116,10 @@ fn rasterising_a_dense_tile_costs_the_same_at_both_raster_sizes() {
     warm(&tile);
 
     let (_, small) = Cost::measure(|| {
-        crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 256, NOMINAL_Z14_TILE_M)
+        crate::vector_tiles::render_mvt_serial(&tile, SubTile::WHOLE, 256, NOMINAL_Z14_TILE_M)
     });
     let (_, large) = Cost::measure(|| {
-        crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 512, NOMINAL_Z14_TILE_M)
+        crate::vector_tiles::render_mvt_serial(&tile, SubTile::WHOLE, 512, NOMINAL_Z14_TILE_M)
     });
 
     perf::within(small, RENDER_DENSE_ALLOCS, "render_mvt_sized 256²");
@@ -205,11 +205,11 @@ fn an_overzoomed_sub_tile_submits_far_fewer_paths_than_the_whole_tile() {
     warm(&tile);
 
     let (_, whole_paths, _) = perf::paths::measure(|| {
-        crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 256, NOMINAL_Z14_TILE_M)
+        crate::vector_tiles::render_mvt_serial(&tile, SubTile::WHOLE, 256, NOMINAL_Z14_TILE_M)
     });
 
     let (_, sub_paths, _) = perf::paths::measure(|| {
-        crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M)
+        crate::vector_tiles::render_mvt_serial(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M)
     });
 
     assert!(
@@ -336,7 +336,7 @@ fn print_tile_pipeline_cost() {
         }
 
         let (_, cost) = Cost::measure(|| {
-            crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M)
+            crate::vector_tiles::render_mvt_serial(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M)
         });
         println!(
             "{}",
