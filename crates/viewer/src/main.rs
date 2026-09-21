@@ -1130,6 +1130,64 @@ impl Field {
     }
 }
 
+/// Flatten the height survey along the roads, in place.
+///
+/// **A built road is graded and a survey is not.** AHN reads the kerbs, the
+/// parked cars, the hedge and the return off a passing lorry, so a carriageway
+/// draped straight onto it rides every one of them — and the ground beside it,
+/// which is refined far more coarsely, cuts across the same bumps as a chord.
+/// What that looks like is a ragged green ridge spiking up along the edge of
+/// every road.
+///
+/// This used to live inside the synthetic half of `build_field`, below an early
+/// return, so `--grade` did nothing at all on measured ground — a flag that
+/// silently did nothing, on the one field where the fault it answers is real
+/// (2026-09-21).
+fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded) {
+    let mut road = vec![false; n * n];
+    let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
+    for cell in &loaded.cells {
+        #[allow(clippy::cast_precision_loss)]
+        let off = (
+            (cell.x - loaded.origin.0) as f32 * cell.tile_m,
+            (cell.y - loaded.origin.1) as f32 * cell.tile_m,
+        );
+        for m in &cell.meshes {
+            if !matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)) {
+                continue;
+            }
+            for t in m.indices.chunks_exact(3) {
+                let q = |i: u32| {
+                    let v = m.positions[i as usize];
+                    [off.0 + v[0], off.1 + v[2]]
+                };
+                tris.push([q(t[0]), q(t[1]), q(t[2])]);
+            }
+        }
+    }
+    road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris, ROAD_MARGIN_SAMPLES);
+    let before: Vec<f32> = samples.to_vec();
+    let moved = road_grade::flatten(samples, n, &road, road_grade::DEFAULT_PASSES);
+    // **How far, not just how many.** A count of moved samples says the pass
+    // ran; it does not say whether it changed the ground by half a metre or by
+    // a millimetre, and those look identical in a picture.
+    let (mut sum, mut worst) = (0.0f64, 0.0f32);
+    for (a, b) in samples.iter().zip(&before) {
+        let d = (a - b).abs();
+        sum += f64::from(d);
+        worst = worst.max(d);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mean = if moved > 0 { sum / moved as f64 } else { 0.0 };
+    tracing::info!(
+        marked = road.iter().filter(|m| **m).count(),
+        moved,
+        mean_move_m = mean,
+        worst_move_m = worst,
+        "graded the ground along the roads"
+    );
+}
+
 /// Build the ground, and optionally grade it along the roads.
 ///
 /// Two crossing waves rather than a dome: a single hill has almost no curvature at
@@ -1137,7 +1195,14 @@ impl Field {
 /// fault being reproduced.
 fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
     if cli.ahn {
-        return measured_field(loaded);
+        let mut field = measured_field(loaded)?;
+        // **The measured field is the one that needs this**, and it was the one
+        // that never got it: the grading sat below this return, so `--grade` was
+        // a flag that silently did nothing on real ground.
+        if cli.grade {
+            grade_along_roads(&mut field.samples, field.n, field.step_m, loaded);
+        }
+        return Some(field);
     }
     if cli.relief <= 0.0 {
         return None;
@@ -1175,48 +1240,7 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
     }
 
     if cli.grade {
-        let mut road = vec![false; n * n];
-        let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
-        for cell in &loaded.cells {
-            #[allow(clippy::cast_precision_loss)]
-            let off = (
-                (cell.x - loaded.origin.0) as f32 * cell.tile_m,
-                (cell.y - loaded.origin.1) as f32 * cell.tile_m,
-            );
-            for m in &cell.meshes {
-                if !matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)) {
-                    continue;
-                }
-                for t in m.indices.chunks_exact(3) {
-                    let q = |i: u32| {
-                        let v = m.positions[i as usize];
-                        [off.0 + v[0], off.1 + v[2]]
-                    };
-                    tris.push([q(t[0]), q(t[1]), q(t[2])]);
-                }
-            }
-        }
-        road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris, ROAD_MARGIN_SAMPLES);
-        let before = samples.clone();
-        let moved = road_grade::flatten(&mut samples, n, &road, road_grade::DEFAULT_PASSES);
-        // **How far, not just how many.** A count of moved samples says the pass
-        // ran; it does not say whether it changed the ground by half a metre or by
-        // a millimetre, and those look identical in a picture.
-        let (mut sum, mut worst) = (0.0f64, 0.0f32);
-        for (a, b) in samples.iter().zip(&before) {
-            let d = (a - b).abs();
-            sum += f64::from(d);
-            worst = worst.max(d);
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let mean = if moved > 0 { sum / moved as f64 } else { 0.0 };
-        tracing::info!(
-            marked = road.iter().filter(|m| **m).count(),
-            moved,
-            mean_move_m = mean,
-            worst_move_m = worst,
-            "graded the ground along the roads"
-        );
+        grade_along_roads(&mut samples, n, step_m, loaded);
     }
 
     let lo = samples.iter().copied().fold(f32::INFINITY, f32::min);
