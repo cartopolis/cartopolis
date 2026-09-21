@@ -78,6 +78,34 @@ It also cannot see the `VK_ERROR_DEVICE_LOST` class at all: those are Intel iGPU
 command-buffer timeouts, and a CPU rasteriser has no such failure mode. The
 per-frame streaming caps stay a rule enforced by reading, not by testing.
 
+## Two captures of one viewpoint are not the same picture (2026-09-21)
+
+**The camera is placed relative to measured ground, and the measurement settles
+differently each run**, so two `--shot` runs at one `--at` can differ by a few
+pixels of camera height. Over a city at a grazing angle that is a *large* per-pixel
+difference: measured on the Deck, two runs of the same viewpoint with a shading
+term switched between them differed by a mean of 26.5/255 over the near field, and
+rolling one image down **four pixels** took that to 6.95. The shading term under
+test was worth a small fraction of either number.
+
+So an image-difference A/B of a shading term is, by default, a measurement of the
+camera. Three ways out, in order of preference:
+
+* **Visualise the term itself.** A temporary `return` in the fragment shader that
+  paints the weight — not the shaded result — answers "where does this apply and
+  how strongly" from *one* capture, with no pair to align. This is what settled
+  the clipmap cross-fade after two wrong readings of a difference image.
+* **Assert a number, not a picture** — the `--dump-state`/`--expect` route, which
+  is why every layer here has a countable field beside its visible one.
+* **Align before differencing**, and report the offset you removed. A pair whose
+  best alignment is not (0, 0) is a pair that was not the same viewpoint, and the
+  residual is the most that can honestly be attributed to the change.
+
+The cheap tell is to difference two captures that had the *same* settings: if that
+"noise floor" is not near zero, nothing in the real comparison is readable. Ours
+was not — and the run used as the reference was the cache-filling one, which makes
+it worse, not better.
+
 ## The shutter and the map share one thread pool
 
 **Fixed 2026-08-06.** This was the note's open bug — a capture firing below the
