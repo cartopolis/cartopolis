@@ -980,6 +980,15 @@ pub struct ShotMetrics {
     /// over the whole box and barely moves — so a capture that wants to state the
     /// ground has slopes in it has to assert this.
     pub terrain_sample_m: f32,
+    /// Samples of the height field the roads have been graded flat over
+    /// (`terrain::RoadMask`).
+    ///
+    /// Assertable, and the only thing that is: the fault it answers is a ragged
+    /// ridge standing along every road, which is a *shading* difference on ground
+    /// that is a metre out — so on a software rasteriser the picture is not
+    /// evidence and this is. `0` out of AHN, with the layer off, or before the
+    /// first cell's ribbons have landed.
+    pub terrain_graded_samples: usize,
     /// Whether the half-metre tier under the camera has baked
     /// (`terrain::update_fine_terrain`), and what it actually samples at.
     ///
@@ -1152,7 +1161,8 @@ lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
 ground_m,height_patches,\
-terrain_ready,terrain_relief_m,terrain_sample_m,fine_terrain_ready,fine_terrain_sample_m,\
+terrain_ready,terrain_relief_m,terrain_sample_m,terrain_graded_samples,\
+fine_terrain_ready,fine_terrain_sample_m,\
 ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
 gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
@@ -1231,6 +1241,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("ground_m", 2),
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
+    ("terrain_graded_samples", 0),
     ("fine_terrain_sample_m", 2),
     ("ground_detail_sample_m", 2),
     ("water_drop_m", 2),
@@ -2913,6 +2924,7 @@ pub struct ShotReadouts<'w, 's> {
     vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
     height: Res<'w, crate::systems::height::HeightLayer>,
     terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    road_mask: Res<'w, crate::systems::terrain::RoadMask>,
     map_anchor: Res<'w, MapAnchor>,
     basemap_holes: Res<'w, crate::systems::map_stream::BasemapHoles>,
     ground_detail: Res<'w, crate::systems::ground_detail::GroundDetail>,
@@ -3570,6 +3582,7 @@ pub fn drive_capture(
             // lowers it on a handset, and a metric that reported the nominal number
             // there would say the phone measured ground it never asked for.
             terrain_sample_m: readouts.terrain.sample_m(),
+            terrain_graded_samples: readouts.road_mask.marked_samples(),
             ground_detail_ready: readouts.ground_detail.slope.is_some(),
             ground_detail_sample_m: readouts.ground_detail.sample_m,
             fine_terrain_ready: readouts.terrain.fine_ready(),
@@ -4280,6 +4293,7 @@ mod tests {
             terrain_ready: false,
             terrain_relief_m: 0.0,
             terrain_sample_m: 0.0,
+            terrain_graded_samples: 0,
             upload_peak_kb: 0,
             upload_peak_asset_kb: 0,
             gpu_resident_kb: 0,

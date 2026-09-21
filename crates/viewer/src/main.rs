@@ -1034,14 +1034,6 @@ const MAX_MEASURED_SAMPLES: usize = 2049;
 /// those quite correctly.
 const ROUGHNESS_M: f32 = 0.4;
 
-/// Samples of margin beyond the carriageway the grading may move.
-///
-/// Not a tuning constant. With the ground pinned at the kerb itself, both kerbs
-/// are in whatever the road is crossing and the road can only reproduce it —
-/// measured on a 4 m valley, a 3.80 m dip became 3.52 m. Pinned further out, that
-/// band becomes the cutting or embankment a built road actually has.
-const ROAD_MARGIN_SAMPLES: usize = 6;
-
 /// The longest ground edge left unsplit before draping, in metres.
 ///
 /// The client's `MAX_GROUND_EDGE_M` — four times its field spacing, off the shared
@@ -1165,7 +1157,14 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
             }
         }
     }
-    road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris, ROAD_MARGIN_SAMPLES);
+    road_grade::mark_roads(
+        &mut road,
+        n,
+        (0.0, 0.0),
+        step_m,
+        &tris,
+        road_grade::DEFAULT_MARGIN_SAMPLES,
+    );
     let before: Vec<f32> = samples.to_vec();
     let moved = road_grade::flatten(samples, n, &road, road_grade::DEFAULT_PASSES);
     // **How far, not just how many.** A count of moved samples says the pass

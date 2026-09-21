@@ -162,6 +162,11 @@ pub struct CellStores<'w> {
     /// all of these: built from this parse, keyed by this cell, and retired with
     /// it — a tunnel whose mesh has gone must not still be a floor to stand on.
     tunnels: ResMut<'w, crate::systems::tunnels::Tunnels>,
+    /// Where the roads are, on the height field's own grid
+    /// (`systems::terrain::RoadMask`). Not keyed by cell and not retired with one:
+    /// it is a single grid in the anchor's frame that every cell marks its own part
+    /// of, and it is cleared by the re-anchor rather than by the ring.
+    road_mask: ResMut<'w, crate::systems::terrain::RoadMask>,
 }
 
 /// Everything a surface cell needs to *make a material out of*, in one parameter
@@ -1454,6 +1459,21 @@ pub fn update_map_surfaces(
         stores
             .roads
             .insert_cell(c, wx, wz, std::mem::take(&mut cell_places.drive_lines));
+        // **Where this cell's carriageways are, for the height field to grade
+        // itself along.** A survey reads the kerbs, the parked cars and the hedge;
+        // a built road has none of them, so without this a ridge stands along every
+        // road for its whole length (`systems::terrain::RoadMask`). Marked from the
+        // drawn ribbons rather than from centre lines, because at a junction the
+        // drawn surface is the junction's actual shape.
+        stores.road_mask.mark_cell(
+            stream.anchor_generation,
+            crate::quality::budget()
+                .terrain_grid
+                .clamp(65, crate::systems::terrain::TERRAIN_GRID),
+            c,
+            Vec2::new(wx, wz),
+            &surface_meshes,
+        );
         // Whatever this server draws with a model of its own is queued to be stood
         // up (`systems::placeholder_models`). The worker has already left those
         // forms out of the merged furniture mesh, so this is the *only* geometry

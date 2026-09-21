@@ -75,6 +75,14 @@
 /// the alternative is a runtime that grows with the widest road in the country.
 pub const DEFAULT_PASSES: usize = 24;
 
+/// Samples of margin beyond the carriageway the grading may move.
+///
+/// Not a tuning constant. With the ground pinned at the kerb itself, both kerbs
+/// are in whatever the road is crossing and the road can only reproduce it —
+/// measured on a 4 m valley, a 3.80 m dip became 3.52 m. Pinned further out, that
+/// band becomes the cutting or embankment a built road actually has beside it.
+pub const DEFAULT_MARGIN_SAMPLES: usize = 6;
+
 /// Flatten `samples` wherever `road` is set, holding everything else fixed.
 ///
 /// `samples` and `road` are both `n × n`, row-major, and the same grid. Returns

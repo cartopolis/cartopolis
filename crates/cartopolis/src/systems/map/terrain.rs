@@ -278,6 +278,9 @@ struct CoarseBake {
     /// handset lowers, so the snapshot cannot read it off [`TERRAIN_GRID`].
     grid: usize,
     water_rev: u32,
+    /// The road-mask revision this bake graded against, so a mask that grew while
+    /// it was out asks for another one.
+    road_rev: u32,
     /// The rings the bake carved with, handed back so the water surfaces are drawn
     /// against the same numbers the ground was cut to.
     water: crate::systems::water_levels::WaterLevelField,
@@ -337,6 +340,11 @@ pub struct TerrainField {
     /// the set of rings moves. Without the second half the first field over a city is
     /// the only one that ever exists, and it is the one baked before any water arrived.
     answered_water_rev: Option<u32>,
+    /// Road-mask revision the coarse field was graded against. The third half of
+    /// the same pair: the roads land after the field too, and without this the only
+    /// field a city ever gets is the one baked before any road arrived — which is
+    /// the one with a ridge along every street.
+    answered_road_rev: Option<u32>,
     /// The measured water levels the bakes carved with, kept so the surfaces can be
     /// drawn against the same numbers. One build per bake rather than one per mesh.
     water: crate::systems::water_levels::WaterLevelField,
@@ -783,6 +791,130 @@ impl TerrainSnapshot {
     }
 }
 
+/// Where the drawn roads are, on the coarse field's own grid.
+///
+/// **A built road is graded and a survey is not.** AHN reads the kerbs, the parked
+/// cars, the hedge and the return off a passing lorry; a carriageway draped
+/// straight onto that rides every one of them, while the ground beside it — which
+/// is refined far more coarsely — cuts the same bumps as a chord. What that looks
+/// like is a ragged ridge standing along the edge of every road for its whole
+/// length, and it was in this client on every platform until 2026-09-21 because
+/// nothing called [`cartopolis_geo::road_grade`] at all.
+///
+/// It is a mask rather than the road geometry because the geometry is enormous and
+/// the bake only ever asks one question of it — "is this sample road?" — and
+/// because the answer accumulates: cells stream in one at a time and each marks
+/// its own part of one grid that outlives them.
+#[derive(Resource, Default)]
+pub struct RoadMask {
+    marks: Vec<bool>,
+    grid: usize,
+    /// The anchor generation these marks are in the frame of. Marks from before a
+    /// re-anchor describe roads in a frame that has moved.
+    gen: Option<u32>,
+    /// Bumped whenever a cell adds marks, so the bake knows to run again. Cells
+    /// that contain no road at all do not move it — most of a rural box is that,
+    /// and a bump per empty cell would re-bake the box for nothing.
+    pub revision: u32,
+    /// Cells already marked. A cell is re-tessellated whenever the terrain revision
+    /// moves, which is exactly what this feeds, so without it the mask would grow a
+    /// bump per cell per bake for ever.
+    marked: std::collections::HashSet<(i64, i64)>,
+}
+
+impl RoadMask {
+    /// Mark one cell's road ribbons, in the anchored world-XZ frame.
+    ///
+    /// `origin` is the cell's north-west corner in world metres — the same origin
+    /// its tile-local mesh coordinates are relative to.
+    pub fn mark_cell(
+        &mut self,
+        gen: u32,
+        grid: usize,
+        cell: (i64, i64),
+        origin: Vec2,
+        meshes: &[crate::systems::vector_tiles::SurfaceMesh],
+    ) {
+        if grid == 0 {
+            return;
+        }
+        if self.gen != Some(gen) || self.grid != grid {
+            self.marks = vec![false; grid * grid];
+            self.grid = grid;
+            self.gen = Some(gen);
+            self.marked.clear();
+            // Not a bump: an empty mask is what the next bake would produce anyway,
+            // and the bake is already re-running because the anchor moved.
+        }
+        if !self.marked.insert(cell) {
+            return;
+        }
+        // **The ribbons, not the tunnels.** A tunnel's carriageway is metres below
+        // this surface and grading the ground down to meet it would dig a trench
+        // over every bore.
+        let tris: Vec<[[f32; 2]; 3]> = meshes
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.group,
+                    crate::systems::vector_tiles::SurfaceGroup::Road(_)
+                        | crate::systems::vector_tiles::SurfaceGroup::RoadCasing(_)
+                )
+            })
+            .flat_map(|m| {
+                m.indices.chunks_exact(3).filter_map(move |t| {
+                    let q = |i: u32| {
+                        m.positions
+                            .get(i as usize)
+                            .map(|v| [origin.x + v[0], origin.y + v[2]])
+                    };
+                    Some([q(t[0])?, q(t[1])?, q(t[2])?])
+                })
+            })
+            .collect();
+        if tris.is_empty() {
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let step_m = TERRAIN_HALF_M * 2.0 / (grid - 1).max(1) as f32;
+        cartopolis_geo::road_grade::mark_roads(
+            &mut self.marks,
+            grid,
+            (-TERRAIN_HALF_M, -TERRAIN_HALF_M),
+            step_m,
+            &tris,
+            cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
+        );
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// The marks for `gen`, or an empty mask when they belong to another frame.
+    #[must_use]
+    fn for_gen(&self, gen: u32, grid: usize) -> Vec<bool> {
+        if self.gen == Some(gen) && self.grid == grid {
+            self.marks.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// How many samples are marked — what `--dump-state` reports, and the cheap
+    /// "did this do anything?" test.
+    #[must_use]
+    pub fn marked_samples(&self) -> usize {
+        self.marks.iter().filter(|m| **m).count()
+    }
+}
+
+/// How long the road mask must stop growing before the field is baked again.
+///
+/// The mask gains a cell at a time as the streamer works through the ring, and a
+/// bake per cell would be twenty bakes and twenty retears of the whole city per
+/// anchor. Waiting for the burst to finish makes it one, at the cost of the roads
+/// being ungraded for that first second — which is the same second the field
+/// itself is missing for, and everything downstream already handles that.
+const ROAD_SETTLE_S: f32 = 0.75;
+
 /// Keep [`TerrainField`] in step with the map anchor: request the box once, bake it
 /// when it lands, and drop it whenever the layer is off or out of coverage.
 pub fn update_terrain_field(
@@ -790,6 +922,9 @@ pub fn update_terrain_field(
     mut height: ResMut<HeightLayer>,
     stream: Res<MapStream>,
     levels: Res<crate::systems::water_levels::WaterLevels>,
+    roads: Res<RoadMask>,
+    time: Res<Time>,
+    mut settled: Local<(u32, f32)>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -803,14 +938,31 @@ pub fn update_terrain_field(
         // water half still satisfied.
         field.answered_gen = None;
         field.answered_water_rev = None;
+        field.answered_road_rev = None;
         field.wanted_gen = None;
         field.abandon_coarse_job();
         return;
     }
     field.wanted_gen = Some(stream.anchor_generation);
     let water_rev = levels.revision;
+    // **The roads have to stop arriving before they are worth baking in.** The mask
+    // grows a cell at a time, so this waits for the burst to end rather than baking
+    // per cell; `settled` is (the revision last seen, when it was last seen).
+    let now = time.elapsed_secs();
+    if settled.0 != roads.revision {
+        *settled = (roads.revision, now);
+    }
+    let road_rev = if now - settled.1 >= ROAD_SETTLE_S {
+        roads.revision
+    } else {
+        // Still arriving. Answer with whatever the last bake used, so this is not a
+        // reason to bake — and never a reason to *skip* one the anchor or the water
+        // has asked for.
+        field.answered_road_rev.unwrap_or(0)
+    };
     if field.answered_gen == Some(stream.anchor_generation)
         && field.answered_water_rev == Some(water_rev)
+        && field.answered_road_rev == Some(road_rev)
     {
         return;
     }
@@ -838,17 +990,19 @@ pub fn update_terrain_field(
 
     let gen = stream.anchor_generation;
     let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
+    let road = roads.for_gen(gen, grid);
     let sink = field.coarse_sink.clone();
     field.coarse_job = Some(gen);
     crate::platform::workers::submit(
         "terrain_field",
         Box::new(move || {
-            let baked = bake(&job, anchor, TERRAIN_HALF_M, grid, &water);
+            let baked = bake(&job, anchor, TERRAIN_HALF_M, grid, &water, &road);
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
                     gen,
                     grid,
                     water_rev,
+                    road_rev,
                     water,
                     baked,
                 });
@@ -877,6 +1031,7 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
     // field carries a scar from exactly that bug (see `answered_gen`).
     field.answered_gen = Some(done.gen);
     field.answered_water_rev = Some(done.water_rev);
+    field.answered_road_rev = Some(done.road_rev);
     field.water = done.water;
     let Some((samples, datum, carved)) = done.baked else {
         field.clear();
@@ -945,6 +1100,7 @@ fn bake(
     half: f32,
     n: usize,
     water: &crate::systems::water_levels::WaterLevelField,
+    road: &[bool],
 ) -> Option<(Vec<f32>, f32, usize)> {
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
@@ -993,6 +1149,21 @@ fn bake(
         n,
         Some(FILL_REACH_M / (half * 2.0 / (n - 1) as f32)),
     );
+    // **After the holes and before the datum.** The relaxation holds unmarked
+    // samples fixed as its boundary condition, so it needs them to be heights
+    // rather than the no-data the survey leaves under every building — and it must
+    // see the same absolute metres the carve did. What it buys is the ridge that
+    // otherwise stands along every road for its whole length: a survey reads the
+    // kerbs, the parked cars and the hedge, and a built road has none of them.
+    if road.len() == n * n {
+        let moved = cartopolis_geo::road_grade::flatten(
+            &mut raw,
+            n,
+            road,
+            cartopolis_geo::road_grade::DEFAULT_PASSES,
+        );
+        tracing::debug!(moved, "graded the field along the roads");
+    }
     let mut samples = vec![0.0f32; n * n];
     for z in 0..n {
         for x in 0..n {
@@ -2761,6 +2932,9 @@ mod tests {
             TERRAIN_HALF_M,
             n,
             &crate::systems::water_levels::WaterLevelField::default(),
+            // No roads either: this test is about the ramp the patch carries, and
+            // an empty mask is what a box with no streamed cell in it yet has.
+            &[],
         )
         .expect("patch covers the field");
         assert_eq!(carved, 0, "an empty water field must carve nothing");
@@ -2785,5 +2959,106 @@ mod tests {
             assert_eq!(baked[i * n], 0.0, "west rim");
             assert_eq!(baked[i * n + n - 1], 0.0, "east rim");
         }
+    }
+
+    /// **A road cell marks the field it will be drawn on.**
+    ///
+    /// The mask is the whole of what makes the bake able to grade, and nothing in a
+    /// picture distinguishes "the grading ran and this ground is genuinely rough"
+    /// from "the mask was empty, so it did nothing" — which is what the client did
+    /// on every platform until 2026-09-21. So this asserts the two facts the bake
+    /// depends on: a cell with carriageways in it marks samples, and it marks them
+    /// where the road actually is.
+    #[test]
+    fn a_cell_of_roads_marks_the_field_under_them() {
+        use crate::systems::vector_tiles::{SurfaceGroup, SurfaceMesh};
+
+        let grid = 129;
+        let step = TERRAIN_HALF_M * 2.0 / (grid - 1) as f32;
+        // A 40 m square of carriageway at the field's centre, given as a cell whose
+        // own origin is the anchor — so tile-local and world metres coincide and the
+        // expected samples are arithmetic rather than a second implementation.
+        let quad = |half: f32| SurfaceMesh {
+            group: SurfaceGroup::Road(cartopolis_geo::road_texture::RoadClass::Carriageway),
+            positions: vec![
+                [-half, 0.0, -half],
+                [half, 0.0, -half],
+                [half, 0.0, half],
+                [-half, 0.0, half],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        };
+
+        let mut mask = RoadMask::default();
+        assert_eq!(mask.marked_samples(), 0, "nothing is marked before a cell");
+        mask.mark_cell(7, grid, (0, 0), Vec2::ZERO, &[quad(20.0)]);
+
+        let marked = mask.marked_samples();
+        assert!(marked > 0, "a cell of carriageway marked nothing");
+        // The centre is road; a point well outside the square *and* outside the
+        // margin is not. The margin is in samples, so this is stated in samples.
+        let at = |x: i32, z: i32| {
+            let c = (grid / 2) as i32;
+            mask.marks[((c + z) as usize) * grid + (c + x) as usize]
+        };
+        assert!(at(0, 0), "the middle of the carriageway is not marked");
+        let clear = (20.0 / step).ceil() as i32
+            + cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES as i32
+            + 2;
+        assert!(!at(clear, 0), "ground {clear} samples away was marked");
+
+        // **The same cell twice must not count twice.** Every cell is re-tessellated
+        // whenever the terrain revision moves, and the terrain revision is what this
+        // mask drives — so a bump per re-tessellation is a bake that never settles.
+        let rev = mask.revision;
+        mask.mark_cell(7, grid, (0, 0), Vec2::ZERO, &[quad(20.0)]);
+        assert_eq!(mask.revision, rev, "the same cell was marked twice");
+
+        // A re-anchor is a different frame, so the marks go.
+        mask.mark_cell(8, grid, (0, 0), Vec2::ZERO, &[]);
+        assert_eq!(
+            mask.marked_samples(),
+            0,
+            "marks from before a re-anchor survived it"
+        );
+    }
+
+    /// A tunnel's carriageway is metres below the ground and must not drag the
+    /// ground down to meet it — the mask is the surface network, not every road.
+    #[test]
+    fn a_tunnel_deck_does_not_grade_the_ground_over_it() {
+        use crate::systems::vector_tiles::{SurfaceGroup, SurfaceMesh};
+
+        let mut mask = RoadMask::default();
+        mask.mark_cell(
+            1,
+            129,
+            (0, 0),
+            Vec2::ZERO,
+            &[SurfaceMesh {
+                group: SurfaceGroup::TunnelRoad(
+                    cartopolis_geo::road_texture::RoadClass::Carriageway,
+                ),
+                positions: vec![
+                    [-20.0, -7.0, -20.0],
+                    [20.0, -7.0, -20.0],
+                    [20.0, -7.0, 20.0],
+                ],
+                indices: vec![0, 1, 2],
+                uvs: Vec::new(),
+                normals: Vec::new(),
+                colors: Vec::new(),
+                rungs: Vec::new(),
+            }],
+        );
+        assert_eq!(
+            mask.marked_samples(),
+            0,
+            "a bore graded the ground above itself"
+        );
     }
 }

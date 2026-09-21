@@ -2062,6 +2062,7 @@ fn run_client() {
         .init_resource::<systems::interiors::Interiors>()
         .init_resource::<systems::interiors::InteriorFloors>()
         .init_resource::<systems::tunnels::Tunnels>()
+        .init_resource::<systems::terrain::RoadMask>()
         .init_resource::<systems::building_select::BuildingSelection>()
         .init_resource::<systems::picking::PrimClick>()
         .init_resource::<systems::street_detail::StreetDetail>()
