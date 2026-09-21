@@ -1210,10 +1210,8 @@ fn graphics_tab(
     // Read before the rows below, because `tri_state` borrows `prefs` mutably and
     // the label beside each row has to say what "Automatic" resolved to.
     let caps = crate::quality::capabilities();
-    let ao_possible = caps.is_some_and(|caps| caps.compute_shaders);
     let shafts_possible_adapter = caps.is_some_and(|caps| !caps.software_renderer);
     let shadows_now = prefs.shadows_on();
-    let prefs_ao_default = ao_possible;
     let prefs_shafts_default = shafts_possible_adapter && shadows_now;
 
     ui.add_space(6.0);
@@ -1248,31 +1246,9 @@ fn graphics_tab(
     );
 
     ui.add_space(6.0);
-    // Both of these fall back to the **adapter**, not to the tier, so the
-    // "Automatic" value shown beside the checkbox is what this machine can do
-    // rather than what its class is assumed to want. Passing the resolved answer
-    // as the default is what keeps the row honest when the capability says no: a
-    // run with no compute stage shows Automatic = off, and ticking the box
-    // explicitly still shows off, because asking cannot make the pass exist.
-    tri_state(
-        ui,
-        &mut prefs.ambient_occlusion,
-        prefs_ao_default,
-        "Ambient occlusion",
-    );
-    ui.label(
-        egui::RichText::new(if ao_possible {
-            "Darkens the ground where a wall, a kerb or a tree trunk meets it. \
-             Costs a depth pass, a normal pass and a compute pass, and turns \
-             multisampling off — an edge filter replaces it. Applies immediately."
-        } else {
-            "Needs a compute shader, which this graphics backend does not have."
-        })
-        .small()
-        .color(theme::TEXT_DIM),
-    );
-
-    ui.add_space(6.0);
+    // This one falls back to the **adapter**, not to the tier, so the "Automatic"
+    // value shown beside the checkbox is what this machine can do rather than what
+    // its class is assumed to want.
     tri_state(
         ui,
         &mut prefs.light_shafts,

@@ -9,7 +9,7 @@ triggers: [ScreenSpaceAmbientOcclusion, ssao, "ambient occlusion", Fxaa, Msaa,
   ContactShadows, "contact shadow", wall_base_tone, wall_shade, ground_texture,
   ground_finish_texture, WALL_FINISH_RANGE, "buildings look like they are floating",
   "the ground is flat", "paving has no texture"]
-updated: 2026-09-11
+updated: 2026-09-21
 ---
 
 # Why the city read as a model, and the four things that were missing
@@ -27,56 +27,78 @@ That is a scene where **every surface in the world has the same finish** and
 what separates a render from a photograph, and neither is about geometry — the
 geometry was already surveyed.
 
-## These two are capability settings, not tier settings
+## Ambient occlusion was removed on 2026-09-21, and it took four things with it
 
-They were tier fields first (`Budget::ambient_occlusion`, `Budget::light_shafts`)
-and that was wrong. A tier is a guess about the *class* of machine, resolved
-before a renderer exists — which is the same mistake `gpu_affords_atmosphere`
-made and `free_camera::setup_camera`'s sky block spends thirty lines explaining.
-Both of these have a real capability behind them that the device can be asked
-about directly:
+It is gone: `ScreenSpaceAmbientOcclusion`, the `DepthPrepass` and `NormalPrepass`
+it required, the contact shadows that were the depth prepass's other consumer,
+and the Settings ▸ Graphics row. The sections below are kept in the past tense
+because the *reasoning* is what a future attempt needs, and because three of the
+four consequences are now facts about the client in the other direction.
 
-- **Ambient occlusion** is a compute pass, so it needs a backend with a compute
+**What came back.** Multisampling: it was forced off wherever occlusion was on,
+and the desktop rung's 2× is available again wherever the surface permits it. The
+`Fxaa` that stood in for those samples now appears only when a *restricted*
+surface is what took them (`Budget::wants_edge_filter`, one argument now).
+
+**What went.** The contact darkening where a lamppost, a bench or a wall meets
+the ground. `wall_shade` (below) still bakes the building half of that cue into
+the vertices on every rung, and is unaffected.
+
+**What the absence is now load-bearing for.** With no prepass there is exactly one
+pipeline drawing each mesh, which is what lets a material move vertices in its own
+vertex stage without a matching `prepass_vertex_shader` — see
+[the-city-stops-at-a-line.md](the-city-stops-at-a-line.md), whose building fade
+this unblocks. **Anything that reintroduces a prepass owes that note a read**, and
+owes this one an edit.
+
+## Why it was a capability setting and not a tier setting
+
+Light shafts still are one, and occlusion was. They were tier fields first
+(`Budget::ambient_occlusion`, `Budget::light_shafts`) and that was wrong: a tier
+is a guess about the *class* of machine, resolved before a renderer exists — the
+same mistake `gpu_affords_atmosphere` made and `free_camera::setup_camera`'s sky
+block spends thirty lines explaining. Each had a real capability behind it that
+the device can be asked about directly:
+
+- **Ambient occlusion** was a compute pass, so it needed a backend with a compute
   stage (`Capabilities::compute_shaders`, read off
-  `limits().max_compute_workgroup_size_x`, which is 0 on WebGL2).
+  `limits().max_compute_workgroup_size_x`, which is 0 on WebGL2). That field is
+  still measured and logged; nothing gates on it now.
 - **Light shafts** need an adapter that rasterises in hardware and a shadow map
   to cut the shafts out of.
 
-`AppPrefs::ambient_occlusion` / `light_shafts` are `Option<bool>` on the same
-pattern as `shadows` and `sky_lighting`, except that `None` resolves against the
-*adapter* rather than against `quality::budget()`. An explicit `Some(true)` still
-has to pass the capability test — asking for a pass the backend cannot run does
-not make it appear, exactly as `SkyPreference::Full` still has to pass
-`FLOAT32_FILTERABLE`.
+`AppPrefs::light_shafts` is `Option<bool>` on the same pattern as `shadows` and
+`sky_lighting`, except that `None` resolves against the *adapter* rather than
+against `quality::budget()`. An explicit `Some(true)` still has to pass the
+capability test — asking for a pass the backend cannot run does not make it
+appear, exactly as `SkyPreference::Full` still has to pass `FLOAT32_FILTERABLE`.
 
-Both apply **immediately**, from Settings ▸ Graphics.
+It applies **immediately**, from Settings ▸ Graphics.
 `systems::render_features::apply_render_features` owns adding and removing every
 component involved, and the camera spawn deliberately inserts none of them — two
 places that can disagree about one component is how a setting comes to read "on"
 over a scene that does not have it. That live toggle is safe here and is not safe
 for the sky: an `Atmosphere` cannot be removed without tearing down GPU resources
-still in flight, while an occlusion pass and a fog volume are pipeline state that
-bevy respecialises on the next frame.
+still in flight, while a fog volume is pipeline state that bevy respecialises on
+the next frame.
 
-One trap in the removal: `ScreenSpaceAmbientOcclusion` carries
+One trap that was in the removal path, worth keeping for the next required
+component: `ScreenSpaceAmbientOcclusion` carried
 `#[require(DepthPrepass, NormalPrepass)]`, and **bevy does not remove a required
-component when the requiring one goes** — so switching occlusion off has to drop
-both prepasses by hand, or the run keeps paying for two passes nothing reads.
+component when the requiring one goes** — so switching occlusion off had to drop
+both prepasses by hand, or the run kept paying for two passes nothing read.
 
-## Ambient occlusion costs the multisampling, and that is not optional
+## Ambient occlusion cost the multisampling, and that was not optional
 
-`ScreenSpaceAmbientOcclusion` reads a depth and a normal prepass, neither of
-which is multisampled, so bevy requires `Msaa::Off` and **warns and carries on**
-if it does not get it. A rung that asked for both would silently get the samples
-and no occlusion.
+`ScreenSpaceAmbientOcclusion` read a depth and a normal prepass, neither of which
+is multisampled, so bevy required `Msaa::Off` and **warned and carried on** if it
+did not get it. A rung that asked for both silently got the samples and no
+occlusion.
 
-So the three answers to "what sample count does the main pass get" are resolved
-in one place, `quality::Budget::main_pass_msaa`: the tier's own choice, the
-web-and-software-adapter restriction to 1 or 4, and ambient occlusion. And
-because switching AO on takes the desktop rung's 2× away, the same run gains
-`Fxaa` — `Budget::wants_edge_filter` is true exactly when something took the
-samples away, so a rung that never had any (the phone) does not quietly gain a
-full-screen pass.
+So the answers to "what sample count does the main pass get" are resolved in one
+place, `quality::Budget::main_pass_msaa`. There were three — the tier's own
+choice, the web-and-software-adapter restriction to 1 or 4, and ambient occlusion
+— and there are two now.
 
 **FXAA and not TAA**, and this is a property of this codebase rather than a
 preference: `big_space` re-anchors the whole coordinate frame as the camera
@@ -86,7 +108,11 @@ would additionally need `smaa_luts` back.
 
 ## The prepass broke a pipeline that had been fine for a year
 
-Ambient occlusion requires `DepthPrepass` + `NormalPrepass`, which this client
+**Kept although the prepass is gone again**, because the lesson is about
+`specialize` and not about occlusion, and because the client has now been in this
+state twice.
+
+Ambient occlusion required `DepthPrepass` + `NormalPrepass`, which this client
 had never had. **Bevy runs a material's `specialize` hook for the prepass as well
 as for the main pass** — `PrepassPipelineSpecializer` calls `user_specialize`,
 and bevy's own source comments that this is "a bit risky because it's possible to
@@ -249,7 +275,7 @@ Recorded so the next person does not have to re-measure it:
 - No screen-space reflections, no contact shadows (`bevy_pbr` has both), no
   parallax, no decals.
 
-## Volumetric fog is refused on a software adapter, and ambient occlusion is not
+## Volumetric fog is refused on a software adapter, and ambient occlusion was not
 
 Measured 2026-09-04 in this container (Mesa lavapipe, `--shots --only city`):
 
@@ -265,10 +291,12 @@ sample count), and refuses an explicit `Some(true)` with it. `render_features`
 then spawns no fog volume either — a volume with no pass to consume it is not
 free, since bevy extracts and uniform-buffers every `FogVolume` in the world.
 
-Ambient occlusion is deliberately **kept** there, at three seconds a frame. It is
-what compiles the prepass, and the prepass is the thing most likely to break —
-had it been skipped in the container, the pipeline failure above would have
-reached a real GPU instead.
+Ambient occlusion was deliberately **kept** there, at three seconds a frame, for a
+reason that is worth repeating whenever something asks to be skipped in the
+container: it was what compiled the prepass, and the prepass was the thing most
+likely to break. Had it been skipped here, the pipeline failure above would have
+reached a real GPU instead. It is moot now — the pass was removed on 2026-09-21 —
+and the smokes are three seconds a frame cheaper for it.
 
 ## None of this can be judged in the container
 

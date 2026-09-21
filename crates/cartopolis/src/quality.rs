@@ -805,27 +805,24 @@ impl Budget {
 
     /// The sample count the main pass actually gets, with every clamp applied.
     ///
-    /// [`Self::msaa`] is what the *tier* asks for; three things can overrule it,
-    /// and until this existed they were three separate expressions at the camera
-    /// with nothing keeping them in step.
+    /// [`Self::msaa`] is what the *tier* asks for, and `restricted` is what can
+    /// overrule it: the web and a software adapter both permit only 1 and 4
+    /// samples, and an unsupported request does not degrade — it fails to create
+    /// the main texture and renders nothing (see [`Self::msaa`]). That is a
+    /// property of *this run's surface and adapter*, so the caller answers it.
     ///
-    /// * `restricted` — the web and a software adapter both permit only 1 and 4
-    ///   samples, and an unsupported request does not degrade, it fails to create
-    ///   the main texture and renders nothing (see [`Self::msaa`]). That is a
-    ///   property of *this run's surface and adapter*, so the caller answers it.
-    /// * `occlusion` — bevy's SSAO node requires `Msaa::Off` and merely warns if
-    ///   it does not get it, so a run asking for both would silently get the
-    ///   multisampling and no occlusion at all. Passed in rather than read from
-    ///   the tier because ambient occlusion is not a tier setting: it is the
-    ///   adapter's capability and the user's preference
-    ///   (`AppPrefs::ambient_occlusion_on`), and it can change while the app runs.
+    /// There used to be a second overrule here, `occlusion`, because bevy's SSAO
+    /// node requires `Msaa::Off` and merely warns if it does not get it — a run
+    /// asking for both got the multisampling and no occlusion. The occlusion pass
+    /// was removed (2026-09-21, see `render_features`), so the clamp went with it
+    /// and multisampling is available again wherever the surface permits it.
     ///
     /// Returning the answer from one function is what makes
     /// [`wants_edge_filter`](Self::wants_edge_filter) truthful: the edge filter
     /// has to go on exactly when the samples went away.
     #[must_use]
-    pub fn main_pass_msaa(&self, restricted: bool, occlusion: bool) -> Msaa {
-        if occlusion || restricted {
+    pub fn main_pass_msaa(&self, restricted: bool) -> Msaa {
+        if restricted {
             Msaa::Off
         } else {
             self.msaa
@@ -840,8 +837,8 @@ impl Budget {
     /// it gave up edge quality on purpose and an extra pass is the thing it has
     /// least of.
     #[must_use]
-    pub fn wants_edge_filter(&self, restricted: bool, occlusion: bool) -> bool {
-        self.msaa != Msaa::Off && self.main_pass_msaa(restricted, occlusion) == Msaa::Off
+    pub fn wants_edge_filter(&self, restricted: bool) -> bool {
+        self.msaa != Msaa::Off && self.main_pass_msaa(restricted) == Msaa::Off
     }
 }
 
@@ -1078,9 +1075,14 @@ pub struct Capabilities {
     ///
     /// True everywhere this client currently ships — native Vulkan/Metal/DX12,
     /// lavapipe, and WebGPU — and false on WebGL2, which has no compute stage at
-    /// all. It is the hard requirement for bevy's ambient-occlusion pass, which is
-    /// compute rather than a full-screen draw, and so it is what
-    /// `AppPrefs::ambient_occlusion_on` falls back to instead of a tier.
+    /// all.
+    ///
+    /// **Nothing gates on it any more**, and it is kept because it is a
+    /// measurement rather than a setting: it was the hard requirement for bevy's
+    /// ambient-occlusion pass, which was removed on 2026-09-21
+    /// (`render_features`), and `report_capabilities` still logs it because "what
+    /// could this adapter have done" is the first question asked of a device that
+    /// renders differently from every other.
     pub compute_shaders: bool,
 }
 

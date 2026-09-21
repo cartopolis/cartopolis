@@ -1013,16 +1013,12 @@ pub fn setup_camera(
             // to every cfg in this tree — was handed a 2× that a Vulkan
             // implementation is under no obligation to support.
             //
-            // The third clamp is ambient occlusion, which bevy's SSAO node
-            // requires `Msaa::Off` for; all three now resolve in
-            // `quality::Budget::main_pass_msaa` so the answer here and the
-            // decision to add `Fxaa` below cannot disagree.
-            //
-            // Spawned with the answer the preference gives *now*;
-            // `render_features::apply_render_features` keeps it in step if the
-            // setting is flipped later, since a sample count and an occlusion
-            // pass cannot both be on.
-            budget.main_pass_msaa(restricted_sample_counts, prefs.ambient_occlusion_on()),
+            // There used to be a third clamp here — ambient occlusion, whose SSAO
+            // node requires `Msaa::Off` — and with it a reconciliation in
+            // `render_features` for when the setting was flipped mid-run. The
+            // occlusion pass was removed on 2026-09-21, so the sample count is
+            // decided once, here, and nothing moves it afterwards.
+            budget.main_pass_msaa(restricted_sample_counts),
             // How a shadow edge is filtered. Stated rather than left to bevy's
             // required-component default for the same reason `tonemapping` below
             // is: the default is the expensive one. `Gaussian` takes nine taps

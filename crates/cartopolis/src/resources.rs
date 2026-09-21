@@ -515,17 +515,6 @@ pub struct AppPrefs {
     /// this device would have chosen".
     #[serde(default)]
     pub shadows: Option<bool>,
-    /// Screen-space ambient occlusion: the contact darkening where two surfaces
-    /// meet. `None` asks the *adapter*, not the tier — see
-    /// [`Self::ambient_occlusion_on`].
-    ///
-    /// Applies immediately: `render_features::apply_render_features` adds and
-    /// removes the component on the live camera. That is safe here in a way it is
-    /// not for the sky, whose `Atmosphere` cannot be removed without tearing down
-    /// GPU resources still in flight — an occlusion pass owns no such thing, and
-    /// bevy respecialises the pipelines on the next frame.
-    #[serde(default)]
-    pub ambient_occlusion: Option<bool>,
     /// Volumetric fog: sunlight picked out as shafts by the air between you and
     /// whatever is casting. `None` asks the adapter — see
     /// [`Self::light_shafts_on`].
@@ -621,7 +610,6 @@ impl Default for AppPrefs {
             mic_gain: unit_gain(),
             sky: SkyPreference::default(),
             shadows: None,
-            ambient_occlusion: None,
             light_shafts: None,
             sky_lighting: None,
             background_connection: false,
@@ -650,30 +638,14 @@ impl AppPrefs {
             .unwrap_or(crate::quality::budget().sky_ibl)
     }
 
-    /// Ambient occlusion, with `None` resolved against **what this adapter can
-    /// do** rather than against the device's tier.
+    /// Light shafts, with `None` resolved against **what this adapter can do**
+    /// rather than against the device's tier.
     ///
-    /// This is the difference between this pair of settings and the two above
-    /// them, and it is deliberate. `shadows_on` and `sky_lighting_on` fall back to
+    /// This is the difference between this setting and the two above it, and it is
+    /// deliberate. `shadows_on` and `sky_lighting_on` fall back to
     /// `quality::budget()`, i.e. to a guess about the *class* of machine, made
-    /// before a renderer exists. These fall back to a measured property of the
-    /// adapter this run actually found: bevy's occlusion pass is a compute
-    /// shader, so a backend without compute cannot run it at any setting, and
-    /// there is nothing else about it a tier knows better than the device does.
-    ///
-    /// `None` before the capabilities are measured — i.e. before
-    /// `free_camera::setup_camera` has run — answers `false`, which is correct
-    /// rather than merely safe: there is no camera to put the pass on yet.
-    #[must_use]
-    pub fn ambient_occlusion_on(&self) -> bool {
-        let Some(caps) = crate::quality::capabilities() else {
-            return false;
-        };
-        self.ambient_occlusion.unwrap_or(caps.compute_shaders) && caps.compute_shaders
-    }
-
-    /// Light shafts, with `None` resolved against the adapter. See
-    /// [`Self::ambient_occlusion_on`].
+    /// before a renderer exists. This falls back to a measured property of the
+    /// adapter this run actually found.
     ///
     /// Two refusals, and both are properties of this run rather than judgements
     /// about the picture. A **CPU rasteriser** cannot march this at any usable
@@ -1907,7 +1879,6 @@ mod tests {
             // The two capability-resolved ones, set for the same reason: `None`
             // is the serde default and also means "ask the adapter", so a field
             // left unset would round-trip while proving nothing.
-            ambient_occlusion: Some(false),
             light_shafts: Some(true),
             sky_lighting: Some(true),
             // Non-default, like everything else here: the field defaults to

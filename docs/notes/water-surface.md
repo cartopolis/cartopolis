@@ -264,8 +264,12 @@ comment says so); this client is forward-rendered on purpose.
   Costs a full-screen copy plus the march. Two things make it more than a shader
   change: it moves water from the opaque pass into `Transmissive3d`, which is the
   coplanar ground ordering this tree has been bitten by repeatedly, and it needs a
-  `DepthPrepass`, which today only exists while ambient occlusion is switched on
-  (`render_features.rs` removes both prepasses by hand when it goes).
+  `DepthPrepass`, which **this client no longer has at all** — ambient occlusion
+  was the only thing that asked for one and was removed on 2026-09-21
+  (`surface-finish-and-occlusion.md`). Adding one back is now its own decision
+  with its own consequences, not a component to insert: see
+  `the-city-stops-at-a-line.md`, whose building fade depends on there being no
+  second pipeline drawing each mesh.
 * **Planar.** A second camera mirrored about the water plane rendering into a
   quarter-resolution image, sampled by screen UV. Reflects off-screen geometry,
   which screen-space cannot, and needs no pass move — but it is a second scene

@@ -142,8 +142,14 @@ impl MaterialExtension for RoadDepthExtension {
         // `lib.rs::handle_render_error` halts the renderer on — i.e. the app draws
         // nothing for the rest of the process. It stayed latent for as long as
         // this client had no prepass at all, and appeared the moment ambient
-        // occlusion required one (`quality::Budget::ambient_occlusion`, which
-        // pulls in `DepthPrepass` + `NormalPrepass`).
+        // occlusion required one.
+        //
+        // **There is no prepass again**: ambient occlusion was removed on
+        // 2026-09-21 (`systems::render_features`) and took `DepthPrepass` and
+        // `NormalPrepass` with it, so this branch is currently unreachable. It
+        // stays because the last time it was unreachable somebody added a feature
+        // that needed a prepass, and the cost of keeping it is one string compare
+        // per pipeline specialisation.
         //
         // Matched on the label because that is the only thing here that
         // distinguishes the two calls: the mesh key carries the prepass *bits* in
