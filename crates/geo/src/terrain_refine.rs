@@ -109,6 +109,17 @@ pub fn refine_for_terrain(
     // the driver, and three passes each spending it in full is the burst it exists
     // to stop.
     let mut spent = 0usize;
+    // **Across every pass, for the same reason it is keyed on positions.** The
+    // answer is a pure function of the two quantised endpoints and the field, and
+    // neither moves between passes — so an edge the crease rule refused in pass 1
+    // is refused in pass 2 for exactly the same reason, and re-deriving it costs
+    // three `field.at` samples of a 2,049² grid to reach the answer already held.
+    // An edge it *accepted* was split and is not asked about again.
+    //
+    // A refusal charged to an exhausted budget survives too, and must: `spent`
+    // only ever grows, so the later pass would refuse it anyway, and answering it
+    // consistently is what the per-edge key exists for.
+    let mut decided: HashMap<[i32; 6], bool> = HashMap::new();
     for _ in 0..MAX_REFINE_PASSES {
         let mut midpoints: HashMap<(u32, u32), u32> = HashMap::new();
         // **Whether an edge splits is a property of where it is, not of which
@@ -138,7 +149,6 @@ pub fn refine_for_terrain(
         // rounding is against a future source that computes them twice. `y` is in
         // the key because a surveyed wall has two vertices over one plan position
         // and they are not one edge.
-        let mut decided: HashMap<[i32; 6], bool> = HashMap::new();
         let split = |a: u32,
                      b: u32,
                      positions: &mut Vec<[f32; 3]>,
