@@ -582,7 +582,29 @@ pub(crate) fn stitch_some(ribbons: &mut [Ribbon], cut_count: usize) {
         seen: vec![0; buckets.tris.len()],
         tick: 0,
     };
-    let mut cuts: Vec<(usize, Cut)> = Vec::new();
+    // The fallback every target has: one ribbon at a time, reusing the overlay
+    // and scratch built above. Named rather than inlined because wasm must reach
+    // it **without the threaded branch existing at all** — `cfg` strips items
+    // before names are resolved, and it does not care that a branch is
+    // unreachable, so a call to a `cfg(not(wasm32))` function inside a
+    // statically-dead `if` still fails to compile for the web.
+    let cut_each = |ribbons: &[Ribbon],
+                    overlay: &mut Overlay<i32>,
+                    scratch: &mut Scratch|
+     -> Vec<(usize, Cut)> {
+        let mut out: Vec<(usize, Cut)> = Vec::new();
+        for i in 0..cut_count {
+            let cut = if ribbons[i].indices.len() / 3 >= PARALLEL_CHUNK_TRIS * 2 {
+                cut_ribbon_parallel(i, ribbons, &buckets)
+            } else {
+                cut_ribbon(i, ribbons, &buckets, overlay, scratch)
+            };
+            if let Some(cut) = cut {
+                out.push((i, cut));
+            }
+        }
+        out
+    };
 
     // **Two ways to split, because the two callers are shaped differently.**
     // `tessellate_roads` hands this 1,214 ribbons of ~18 triangles each, so the
@@ -590,24 +612,13 @@ pub(crate) fn stitch_some(ribbons: &mut [Ribbon], cut_count: usize) {
     // holding thousands, so it divides inside one. Neither split can change the
     // answer — see `cut_ribbon_parallel`.
     #[cfg(not(target_arch = "wasm32"))]
-    let spread = spread_ribbons(ribbons, cut_count);
+    let cuts = match spread_ribbons(ribbons, cut_count) {
+        Some(bounds) => cut_ribbons_in_parallel(ribbons, &buckets, &bounds),
+        None => cut_each(ribbons, &mut overlay, &mut scratch),
+    };
     #[cfg(target_arch = "wasm32")]
-    let spread: Option<Vec<usize>> = None;
+    let cuts = cut_each(ribbons, &mut overlay, &mut scratch);
 
-    if let Some(bounds) = spread {
-        cuts = cut_ribbons_in_parallel(ribbons, &buckets, &bounds);
-    } else {
-        for i in 0..cut_count {
-            let cut = if ribbons[i].indices.len() / 3 >= PARALLEL_CHUNK_TRIS * 2 {
-                cut_ribbon_parallel(i, ribbons, &buckets)
-            } else {
-                cut_ribbon(i, ribbons, &buckets, &mut overlay, &mut scratch)
-            };
-            if let Some(cut) = cut {
-                cuts.push((i, cut));
-            }
-        }
-    }
     for (i, cut) in cuts {
         ribbons[i].positions = cut.positions;
         ribbons[i].uvs = cut.uvs;
@@ -643,6 +654,10 @@ const PARALLEL_CHUNK_TRIS: usize = 512;
 
 /// Ceiling on the threads one cut may raise.
 ///
+/// Gated with the threading it bounds: the crate builds `-D unused`, and on a
+/// target with no threads an ungated constant is a hard error rather than a
+/// warning.
+///
 /// **Deliberately small, and the reason is the neighbours rather than the
 /// arithmetic.** This runs inside a job on `platform::workers`' pool, which is
 /// itself only a few threads wide and is already the documented scarce resource
@@ -650,6 +665,7 @@ const PARALLEL_CHUNK_TRIS: usize = 512;
 /// Four keeps a burst of cells from multiplying into more runnable threads than
 /// the machine has cores, and the stages this helps are the two that dominate a
 /// cell, so the tail is short.
+#[cfg(not(target_arch = "wasm32"))]
 const PARALLEL_MAX_THREADS: usize = 4;
 
 /// Where to cut the ribbon list so each thread gets a comparable share of
@@ -816,10 +832,13 @@ pub(crate) fn available_threads() -> usize {
 
 /// Concatenate the chunks of one ribbon's cut, in order.
 ///
+/// Only the threaded split produces chunks, so this is gated with it.
+///
 /// `None` from every chunk means no chunk was touched, so the ribbon is left
 /// exactly as laid — the same contract [`cut_ribbon_inner`] has on its own. A
 /// chunk that *was* touched carries all of its triangles, cut or not, so a merge
 /// of a touched chunk and an untouched one is still the whole ribbon.
+#[cfg(not(target_arch = "wasm32"))]
 fn merge_cuts(parts: Vec<Option<(Cut, bool)>>) -> Option<Cut> {
     if !parts.iter().flatten().any(|(_, touched)| *touched) {
         return None;

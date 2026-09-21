@@ -692,12 +692,17 @@ fn render_mvt_culled(
 
 /// Rows a band renders beyond its own span and then discards.
 ///
-/// Sized by measurement, not by argument: `banding_the_raster_changes_no_pixels`
+/// Sized by measurement, not by argument: `banding_the_raster_changes_no_geometry`
 /// fails at any value too small for the widest stroke that can reach into a kept
 /// row, and it fails loudly — a seam every `TILE_PX / bands` rows.
 const RASTER_BLEED_PX: u32 = 32;
 
 /// Bands a raster is split into, everywhere, on every machine.
+///
+/// Gated with the threading it configures: this crate builds `-D unused`, so on
+/// a target that renders serially an ungated constant is an error, not a
+/// warning.
+#[cfg(not(target_arch = "wasm32"))]
 const RASTER_BANDS: u32 = 4;
 
 /// Rows of the raster one thread should take.
@@ -744,16 +749,23 @@ pub(crate) fn render_mvt_serial(
 
 /// [`render_mvt_culled`] over a stated number of horizontal bands.
 ///
-/// **Splitting the raster by rows is exact, and that is a property of how
-/// coverage is computed rather than a hope.** A pixel's anti-aliased coverage
-/// comes from the path's geometry inside that pixel; geometry above or below the
-/// band cannot reach it, and every band paints the same layers in the same
-/// `PAINT_ORDER` against the same background. So each band produces exactly the
-/// rows it would have produced in one pixmap, and the bytes concatenate in row
-/// order because that is how a pixmap is laid out.
+/// **Splitting the raster by rows is very nearly exact, and "very nearly" is the
+/// honest word.** The first version of this said the split was exact, reasoning
+/// that a pixel's anti-aliased coverage comes only from the path inside that
+/// pixel. Measuring refuted it twice over. Geometry entering a band from outside
+/// is clipped to the pixmap, which decides the boundary row wrongly — 2,443
+/// bytes of a 1,048,576 byte raster, all along the seam — and that part is what
+/// [`RASTER_BLEED_PX`] removes. What is left after the bleed does not go away
+/// with more of it (128 rows still left 96 bytes, 256 left 43): shifting the
+/// transform by the band's first row changes the magnitudes the coordinates are
+/// computed at, so `f32` rounds a few edge samples differently.
 ///
-/// It is pinned rather than argued: `banding_the_raster_changes_no_pixels`
-/// renders the fixture whole and in bands and compares the two byte for byte.
+/// So a band differs from a single pixmap by at most **8/255 on isolated
+/// anti-aliased pixels** — the same figure [`flush_batch`] records for the paint
+/// batching, arrived at the same way. `banding_the_raster_changes_no_geometry`
+/// bounds that delta, the total differing bytes per seam, and the worst single
+/// row, because the failure that matters looks nothing like the residue: a band
+/// that lost a road is a long run of one row at full channel range.
 fn render_mvt_banded(
     tile: &TileData,
     sub: SubTile,
@@ -816,7 +828,7 @@ fn render_rows(
     // **Bleed, because a band edge is not neutral.** The first version of this
     // assumed a pixel's anti-aliased coverage depends only on the path inside
     // that pixel, so bands would concatenate exactly. They do not:
-    // `banding_the_raster_changes_no_pixels` measured 2,443 bytes of a 1,048,576
+    // `banding_the_raster_changes_no_geometry` measured 2,443 bytes of a 1,048,576
     // byte raster differing, all of them along the seam, because tiny-skia clips
     // the geometry to the pixmap and a shape entering from above loses the part
     // that decides the boundary row.

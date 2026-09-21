@@ -904,6 +904,18 @@ impl RoadMask {
 
     /// How many samples are marked — what `--dump-state` reports, and the cheap
     /// "did this do anything?" test.
+    ///
+    /// **The carriageway, not the ground that ends up graded.** Marking and
+    /// widening were one call until the margin was found to compound across
+    /// cells; the widening now happens once, inside the bake, against a copy, so
+    /// this counts the road surface itself and the graded region is this plus
+    /// `DEFAULT_MARGIN_SAMPLES` around it.
+    ///
+    /// That makes the figure **not comparable to the one recorded when the
+    /// metric was introduced** — 1,927,048 of 4.2 M over Groningen — because
+    /// that reading was of the compounded margin, which was the bug. Expect a
+    /// much smaller number here and do not read the drop as grading having
+    /// stopped working.
     #[must_use]
     pub fn marked_samples(&self) -> usize {
         self.marks.iter().filter(|m| **m).count()
@@ -1000,7 +1012,7 @@ pub fn update_terrain_field(
     crate::platform::workers::submit(
         "terrain_field",
         Box::new(move || {
-            let baked = bake(&job, anchor, TERRAIN_HALF_M, grid, &water, &road);
+            let baked = bake(&job, anchor, TERRAIN_HALF_M, grid, &water, road);
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
                     gen,
@@ -1104,7 +1116,10 @@ fn bake(
     half: f32,
     n: usize,
     water: &crate::systems::water_levels::WaterLevelField,
-    road: &[bool],
+    // **By value, so the widening below mutates it in place.** `for_gen` already
+    // hands the worker its own copy of the mask; taking a slice here meant
+    // copying all 4.2 M samples a second time just to be allowed to grow them.
+    mut road: Vec<bool>,
 ) -> Option<(Vec<f32>, f32, usize)> {
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
@@ -1161,9 +1176,8 @@ fn bake(
     // kerbs, the parked cars and the hedge, and a built road has none of them.
     if road.len() == n * n {
         // The margin, once, here — `mark_cell` marks the carriageway and nothing
-        // else. This is the worker, and `road` is already an owned copy, so the
-        // widening costs no allocation the bake was not paying anyway.
-        let mut road = road.to_vec();
+        // else. This is the worker, and `road` was moved in, so the widening
+        // costs no allocation at all.
         cartopolis_geo::road_grade::dilate_mask(
             &mut road,
             n,
@@ -2947,7 +2961,7 @@ mod tests {
             &crate::systems::water_levels::WaterLevelField::default(),
             // No roads either: this test is about the ramp the patch carries, and
             // an empty mask is what a box with no streamed cell in it yet has.
-            &[],
+            Vec::new(),
         )
         .expect("patch covers the field");
         assert_eq!(carved, 0, "an empty water field must carve nothing");
