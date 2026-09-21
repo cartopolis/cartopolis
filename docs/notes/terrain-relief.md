@@ -101,6 +101,40 @@ RD box onto the world box directly. RD is rotated against Web Mercator by the me
 convergence (~1° over NL) and scaled slightly differently: the axis-aligned shortcut
 puts the corners of a 6.4 km field ~80 m out, which is a hill in the wrong place.
 
+## What a bake actually cost, and the two loops it was (measured 2026-09-21)
+
+`worker_split` in `--dump-state` put `terrain_fine` at **14.0 s for one job** at 600 m
+over Groningen, and **31.4 s across four** at 2,500 m — where it was why the capture
+sat out its whole `--wait` reporting `busy=["terrain"]` and never settled. Neither is
+the AHN fetch (4.7 s, measured against PDOK the same day) and neither is arithmetic
+the tier needs. Both were one helper.
+
+**`WaterLevelField::level_at` was a linear scan over every ring.** The register yields
+**8,144** of them over this city and the fine tier samples 1024², so one bake asked
+~8.5 billion bounding-box questions. The bounding-box reject was there and was doing
+its job; what it could not do is stop being asked. `RingGrid` buckets the rings into a
+uniform grid over their union box — a grid and not a tree, because the query is a
+point and canals are small, similar and evenly spread — and a sample now tests the
+handful near it. `the_ring_index_answers_exactly_what_a_full_scan_does` pins that this
+changed no answer, against the scan it replaced, including outside the indexed area
+where `cell_of` clamps to an edge bucket.
+
+Worth knowing *where* that cost appeared, because it is two modules from its cause: it
+is the **terrain** stream that shows up busy, the cost is in `water_levels`, and
+nothing about the symptom says "water". It also scaled with the register rather than
+with the map, so it arrived gradually as the water extractor covered more of the
+country and never looked like a regression.
+
+**`encode_slope`'s box blur re-summed its window per texel.** 25 taps where a sliding
+window costs two, over 1024² texels, two channels, two passes — ~105 M loads against
+~8 M — and the vertical pass walked *columns* over a 4 MB array, so every tap was its
+own cache line. It is a running sum now, and the vertical pass holds one accumulator
+per column and steps rows, so both the add and the subtract are sequential.
+`the_running_box_blur_matches_summing_the_window_per_texel` compares it against the
+direct form on a field with a cliff, a ripple and a plateau, and allows one unit of
+`Rg8Snorm` — a running sum carries float error the re-summation does not, and what has
+to hold is that it stays inside a quantisation step.
+
 ## The field arrives *after* the anchor, so every consumer needs a revision
 
 `at()` returns 0 while the request is in flight, which is the same answer it gives

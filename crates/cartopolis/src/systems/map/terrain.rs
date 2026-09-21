@@ -931,6 +931,22 @@ impl RoadMask {
 /// itself is missing for, and everything downstream already handles that.
 const ROAD_SETTLE_S: f32 = 0.75;
 
+/// The same, for the measured water levels.
+///
+/// **They arrive the same way the road marks do and were not treated the same way.**
+/// `WaterLevels` bumps its revision per station as the register answers, and every
+/// bump the field has not already baked is a bake — which is a retear of every cell
+/// standing on the field. Measured cold over Groningen on 2026-09-21 the revision
+/// went 2 → 51 during one fill, and the bake it triggered at +90 s re-tessellated
+/// nine surface cells and twenty-five building cells.
+///
+/// Longer than the road settle because the two bursts are not the same shape: the
+/// marks arrive from cells the client is already meshing, a ring's worth inside a
+/// second, while the levels arrive from a register over the network and a straggler
+/// two seconds behind its neighbours is ordinary. Two seconds of a flat sea, once,
+/// against a rebuild of the whole ring.
+const WATER_SETTLE_S: f32 = 2.0;
+
 /// Keep [`TerrainField`] in step with the map anchor: request the box once, bake it
 /// when it lands, and drop it whenever the layer is off or out of coverage.
 pub fn update_terrain_field(
@@ -941,6 +957,7 @@ pub fn update_terrain_field(
     roads: Res<RoadMask>,
     time: Res<Time>,
     mut settled: Local<(u32, f32)>,
+    mut water_settled: Local<(u32, f32)>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -960,7 +977,6 @@ pub fn update_terrain_field(
         return;
     }
     field.wanted_gen = Some(stream.anchor_generation);
-    let water_rev = levels.revision;
     // **The roads have to stop arriving before they are worth baking in.** The mask
     // grows a cell at a time, so this waits for the burst to end rather than baking
     // per cell; `settled` is (the revision last seen, when it was last seen).
@@ -968,6 +984,18 @@ pub fn update_terrain_field(
     if settled.0 != roads.revision {
         *settled = (roads.revision, now);
     }
+    // The water levels get the same treatment, for the same reason — see
+    // [`WATER_SETTLE_S`]. The first bake is not held up by this: an empty register is
+    // revision 0 and settles immediately, and a level that lands afterwards is what
+    // the wait is for.
+    if water_settled.0 != levels.revision {
+        *water_settled = (levels.revision, now);
+    }
+    let water_rev = if now - water_settled.1 >= WATER_SETTLE_S {
+        levels.revision
+    } else {
+        field.answered_water_rev.unwrap_or(0)
+    };
     let road_rev = if now - settled.1 >= ROAD_SETTLE_S {
         roads.revision
     } else {
@@ -982,6 +1010,15 @@ pub fn update_terrain_field(
     {
         return;
     }
+    // **A bake records what it used, not what asked for it.** The settled revisions
+    // above decide *whether* to bake; the data handed to the worker below is always
+    // the live mask and the live levels. Recording the settled numbers instead —
+    // which is what this did for the roads — means the field reports having baked an
+    // older input than it did, and bakes a second time, over identical data, the
+    // moment the settle passes. One redundant bake is one redundant retear of every
+    // cell in two streamers.
+    let baked_water_rev = levels.revision;
+    let baked_road_rev = roads.revision;
     // One bake at a time. A re-anchor that lands while one is out would otherwise
     // queue a second over the same worker pool, and the first is already worthless.
     if field.coarse_job.is_some() {
@@ -1005,6 +1042,19 @@ pub fn update_terrain_field(
     height.drop_patch(&req);
 
     let gen = stream.anchor_generation;
+    // **Every bake is a retear of every streamer that stands on the ground**, so
+    // which of the three inputs moved is worth naming. The field is the head of that
+    // chain: a bake bumps `revision`, and `map_geometry` and `lod22` answer a bump by
+    // re-tessellating their whole ring. Three bakes in a cold fill is three rings.
+    tracing::info!(
+        anchor_gen = gen,
+        answered_gen = ?field.answered_gen,
+        water_rev,
+        answered_water_rev = ?field.answered_water_rev,
+        road_rev,
+        answered_road_rev = ?field.answered_road_rev,
+        "terrain field bake queued"
+    );
     let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
     let road = roads.for_gen(gen, grid);
     let sink = field.coarse_sink.clone();
@@ -1017,8 +1067,8 @@ pub fn update_terrain_field(
                 *g = Some(CoarseBake {
                     gen,
                     grid,
-                    water_rev,
-                    road_rev,
+                    water_rev: baked_water_rev,
+                    road_rev: baked_road_rev,
                     water,
                     baked,
                 });
@@ -1358,29 +1408,53 @@ fn encode_slope(samples: &[f32], n: usize, sample_m: f32) -> Vec<u8> {
     }
     let mut out = vec![0u8; n * n * 2];
     let r = DETAIL_CARRIED_TEXELS / 2;
+    let k = DETAIL_CARRIED_TEXELS as f32;
     let mut lo = vec![0.0f32; n * n];
+    // Per-column running sums for the vertical pass — see below for why it is not a
+    // column walk.
+    let mut col = vec![0.0f32; n];
     for (channel, g) in [&gx, &gz].into_iter().enumerate() {
-        // Separable box blur: the horizontal pass lands in `lo` and the vertical reads
-        // it back, differencing into the output as it goes.
+        // **A box blur is a running sum, and this one was a re-summation.** The window
+        // is `DETAIL_CARRIED_TEXELS` = 25 wide, so summing it per texel costs 25 taps
+        // where sliding it costs two — and for a 1024² tier, across two channels and
+        // two passes, that is ~105 M loads against ~8 M. Clamp-to-edge is what makes
+        // the slide exact rather than approximate: the sample entering and the sample
+        // leaving are both clamped indices, so the window is the same window the
+        // re-summation formed, term for term.
         for z in 0..n {
-            for x in 0..n {
-                let mut sum = 0.0;
-                for d in 0..DETAIL_CARRIED_TEXELS {
-                    let sx = (x + d).saturating_sub(r).min(n - 1);
-                    sum += g[z * n + sx];
-                }
-                lo[z * n + x] = sum / DETAIL_CARRIED_TEXELS as f32;
+            let row = &g[z * n..z * n + n];
+            let mut sum = 0.0;
+            for d in 0..DETAIL_CARRIED_TEXELS {
+                sum += row[d.saturating_sub(r).min(n - 1)];
+            }
+            lo[z * n] = sum / k;
+            for x in 1..n {
+                sum += row[(x + DETAIL_CARRIED_TEXELS - 1).saturating_sub(r).min(n - 1)];
+                sum -= row[(x - 1).saturating_sub(r).min(n - 1)];
+                lo[z * n + x] = sum / k;
             }
         }
-        for x in 0..n {
-            for z in 0..n {
-                let mut sum = 0.0;
-                for d in 0..DETAIL_CARRIED_TEXELS {
-                    let sz = (z + d).saturating_sub(r).min(n - 1);
-                    sum += lo[sz * n + x];
+        // **The vertical pass walks rows, not columns.** Written the obvious way — `x`
+        // outer, `z` inner — every one of the 25 taps is a separate cache line, over a
+        // 4 MB array, a million times. Holding one accumulator per column and stepping
+        // `z` outward makes both the add and the subtract a sequential row read.
+        for (x, c) in col.iter_mut().enumerate() {
+            let mut sum = 0.0;
+            for d in 0..DETAIL_CARRIED_TEXELS {
+                sum += lo[d.saturating_sub(r).min(n - 1) * n + x];
+            }
+            *c = sum;
+        }
+        for z in 0..n {
+            if z > 0 {
+                let add = (z + DETAIL_CARRIED_TEXELS - 1).saturating_sub(r).min(n - 1);
+                let sub = (z - 1).saturating_sub(r).min(n - 1);
+                for (x, c) in col.iter_mut().enumerate() {
+                    *c += lo[add * n + x] - lo[sub * n + x];
                 }
-                let carried = sum / DETAIL_CARRIED_TEXELS as f32;
-                let residual = (g[z * n + x] - carried) / DETAIL_SLOPE_RANGE;
+            }
+            for (x, &c) in col.iter().enumerate() {
+                let residual = (g[z * n + x] - c / k) / DETAIL_SLOPE_RANGE;
                 out[(z * n + x) * 2 + channel] =
                     ((residual.clamp(-1.0, 1.0) * 127.0).round() as i8) as u8;
             }
@@ -2318,6 +2392,90 @@ mod tests {
                  every {FINE_SAMPLE_M} m, so this is no longer a shortcut"
             );
         }
+    }
+
+    /// The sliding window must be the same window the re-summation formed.
+    ///
+    /// `encode_slope`'s box blur went from 25 taps a texel to two, which is a rewrite
+    /// of the arithmetic and not just of the loop — clamp-to-edge at both ends, a
+    /// running sum that survives 1024 add/subtract steps, and a vertical pass that
+    /// walks rows while holding one accumulator per column. Any of those getting the
+    /// index by one is a residual that is wrong everywhere and looks like lighting.
+    ///
+    /// The oracle is the direct form. The output is `Rg8Snorm`, so the comparison is
+    /// on the quantised byte: a running sum accumulates float error the re-summation
+    /// does not, and what has to hold is that it stays inside a quantisation step
+    /// (1/127 of the slope range), not that the two agree bit for bit.
+    #[test]
+    fn the_running_box_blur_matches_summing_the_window_per_texel() {
+        // Not smooth: a residual filter's job is the high-frequency part, so the test
+        // field has to have one. Deterministic, and with a plateau, a cliff and a
+        // ripple so the clamped edges are exercised from both sides.
+        const N: usize = 96;
+        let mut samples = vec![0.0f32; N * N];
+        for z in 0..N {
+            for x in 0..N {
+                let (fx, fz) = (x as f32, z as f32);
+                let ripple = ((fx * 0.7).sin() + (fz * 1.3).cos()) * 0.35;
+                let cliff = if x > N / 2 { 4.0 } else { 0.0 };
+                let slope = fz * 0.05;
+                samples[z * N + x] = ripple + cliff + slope;
+            }
+        }
+        let got = encode_slope(&samples, N, FINE_SAMPLE_M);
+
+        // The direct form, exactly as it was written before the slide.
+        let mut gx = vec![0.0f32; N * N];
+        let mut gz = vec![0.0f32; N * N];
+        let inv = 1.0 / (2.0 * FINE_SAMPLE_M);
+        for z in 0..N {
+            for x in 0..N {
+                let (xm, xp) = (x.saturating_sub(1), (x + 1).min(N - 1));
+                let (zm, zp) = (z.saturating_sub(1), (z + 1).min(N - 1));
+                gx[z * N + x] = (samples[z * N + xp] - samples[z * N + xm]) * inv;
+                gz[z * N + x] = (samples[zp * N + x] - samples[zm * N + x]) * inv;
+            }
+        }
+        let r = DETAIL_CARRIED_TEXELS / 2;
+        let mut want = vec![0u8; N * N * 2];
+        let mut lo = vec![0.0f32; N * N];
+        for (channel, g) in [&gx, &gz].into_iter().enumerate() {
+            for z in 0..N {
+                for x in 0..N {
+                    let mut sum = 0.0;
+                    for d in 0..DETAIL_CARRIED_TEXELS {
+                        sum += g[z * N + (x + d).saturating_sub(r).min(N - 1)];
+                    }
+                    lo[z * N + x] = sum / DETAIL_CARRIED_TEXELS as f32;
+                }
+            }
+            for x in 0..N {
+                for z in 0..N {
+                    let mut sum = 0.0;
+                    for d in 0..DETAIL_CARRIED_TEXELS {
+                        sum += lo[(z + d).saturating_sub(r).min(N - 1) * N + x];
+                    }
+                    let carried = sum / DETAIL_CARRIED_TEXELS as f32;
+                    let residual = (g[z * N + x] - carried) / DETAIL_SLOPE_RANGE;
+                    want[(z * N + x) * 2 + channel] =
+                        ((residual.clamp(-1.0, 1.0) * 127.0).round() as i8) as u8;
+                }
+            }
+        }
+
+        assert_eq!(got.len(), want.len());
+        let mut worst = 0i32;
+        for (i, (&a, &b)) in got.iter().zip(&want).enumerate() {
+            let d = (a as i8 as i32 - b as i8 as i32).abs();
+            assert!(
+                d <= 1,
+                "texel {i} is {d} apart: running {} vs direct {}",
+                a as i8,
+                b as i8
+            );
+            worst = worst.max(d);
+        }
+        assert!(worst <= 1, "worst quantised difference was {worst}");
     }
 
     /// The tier must agree with the coarse field at its own rim, or walking out of it

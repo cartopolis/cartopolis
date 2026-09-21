@@ -218,9 +218,136 @@ impl WaterLevels {
 pub struct WaterLevelField {
     /// `(level in NAP, ring in world XZ, bounding box)`.
     rings: std::sync::Arc<Vec<(f32, Vec<[f32; 2]>, [f32; 4])>>,
+    /// Which rings are near which patch of ground ([`RingGrid`]).
+    grid: std::sync::Arc<RingGrid>,
+}
+
+/// A uniform grid over the rings' bounding boxes, so a sample tests the rings near
+/// it rather than all of them.
+///
+/// **The bounding-box reject was not enough and the arithmetic says why.** It is one
+/// comparison, but it was one comparison *per ring*: over Groningen the register
+/// yields **8,144** rings, the fine terrain tier samples 1024², and the product is
+/// ~8.5 billion tests for one bake. Measured on the Deck 2026-09-21, that bake was
+/// **14.0 s** at 600 m and 31.4 s across four of them at 2,500 m — where it was the
+/// reason a capture sat out its whole `--wait` with `busy=["terrain"]` and never
+/// settled. Nothing about it was visible as "water": it is the terrain stream, and
+/// the cost is in a helper two modules away.
+///
+/// A grid rather than a tree because the query is a **point** and the population is
+/// a city's canals: small, similar in size, spread evenly over the box. A bucket
+/// lookup is two multiplies and an index, and the build is one pass.
+#[derive(Default)]
+struct RingGrid {
+    /// South-west corner of the indexed area, in world XZ.
+    origin: [f32; 2],
+    /// Reciprocal of the bucket edge in metres.
+    inv_cell: f32,
+    cols: usize,
+    rows: usize,
+    /// Ring indices per bucket, row-major. A ring spanning several buckets is listed
+    /// in each: duplication in the index, never in the ring list.
+    buckets: Vec<Vec<u32>>,
+}
+
+/// Buckets across the longer side of the indexed area.
+///
+/// 128 puts a city's 12.8 km terrain box on a 100 m grid, which is the scale of the
+/// canals themselves — so a bucket holds a handful of rings and a big lake is listed
+/// in a bounded number of them. Higher would spend more on a bake's build pass than
+/// it saves in its lookups; lower leaves the scan this exists to remove.
+const RING_GRID_SPAN: usize = 128;
+
+impl RingGrid {
+    fn build(rings: &[(f32, Vec<[f32; 2]>, [f32; 4])]) -> Self {
+        if rings.is_empty() {
+            return Self::default();
+        }
+        let mut area = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for (_, _, bb) in rings {
+            area[0] = area[0].min(bb[0]);
+            area[1] = area[1].min(bb[1]);
+            area[2] = area[2].max(bb[2]);
+            area[3] = area[3].max(bb[3]);
+        }
+        let span = (area[2] - area[0]).max(area[3] - area[1]).max(1.0);
+        let cell = span / RING_GRID_SPAN as f32;
+        let inv_cell = 1.0 / cell;
+        let cols = (((area[2] - area[0]) * inv_cell).ceil() as usize + 1).max(1);
+        let rows = (((area[3] - area[1]) * inv_cell).ceil() as usize + 1).max(1);
+        let mut grid = Self {
+            origin: [area[0], area[1]],
+            inv_cell,
+            cols,
+            rows,
+            buckets: vec![Vec::new(); cols * rows],
+        };
+        for (i, (_, _, bb)) in rings.iter().enumerate() {
+            let (x0, z0) = grid.cell_of(bb[0], bb[1]);
+            let (x1, z1) = grid.cell_of(bb[2], bb[3]);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    grid.buckets[z * cols + x].push(i as u32);
+                }
+            }
+        }
+        grid
+    }
+
+    /// The bucket a world-XZ point falls in, clamped to the indexed area — a point
+    /// outside it is answered by the edge bucket and then rejected by the rings'
+    /// own bounding boxes, which is cheaper than a second range test here.
+    fn cell_of(&self, wx: f32, wz: f32) -> (usize, usize) {
+        let fx = ((wx - self.origin[0]) * self.inv_cell).floor();
+        let fz = ((wz - self.origin[1]) * self.inv_cell).floor();
+        (
+            (fx.max(0.0) as usize).min(self.cols.saturating_sub(1)),
+            (fz.max(0.0) as usize).min(self.rows.saturating_sub(1)),
+        )
+    }
+
+    /// The rings whose bounding box could contain this point.
+    fn near(&self, wx: f32, wz: f32) -> &[u32] {
+        if self.buckets.is_empty() {
+            return &[];
+        }
+        let (x, z) = self.cell_of(wx, wz);
+        &self.buckets[z * self.cols + x]
+    }
+
+    /// The rings within `tol` metres, as the buckets that reach that far.
+    fn near_within(&self, wx: f32, wz: f32, tol: f32) -> impl Iterator<Item = u32> + '_ {
+        // An empty index has no bucket to clamp into — `cell_of` would answer (0, 0)
+        // and the lookup would index a zero-length `buckets`. `near` guards the same
+        // way; this one did not, and a field with no water in it is the ordinary case
+        // outside the register's coverage.
+        let empty = self.buckets.is_empty();
+        let (x0, z0) = self.cell_of(wx - tol, wz - tol);
+        let (x1, z1) = self.cell_of(wx + tol, wz + tol);
+        let cols = self.cols;
+        (z0..=z1).take_while(move |_| !empty).flat_map(move |z| {
+            (x0..=x1).flat_map(move |x| self.buckets[z * cols + x].iter().copied())
+        })
+    }
 }
 
 impl WaterLevelField {
+    /// The **only** way to make one, so a ring list and its index cannot disagree.
+    ///
+    /// Not a nicety: `overlapping_bodies_carve_to_the_lower_level` used to reach
+    /// through `Arc::get_mut` and extend `rings` in place, which is harmless while the
+    /// list is the whole structure and silently wrong the moment anything is derived
+    /// from it — the added ring was invisible to every query, and the test failed by
+    /// answering the *shallower* level. Building the two together is what removes the
+    /// possibility rather than documenting it.
+    fn from_rings(rings: Vec<(f32, Vec<[f32; 2]>, [f32; 4])>) -> Self {
+        let grid = RingGrid::build(&rings);
+        Self {
+            rings: std::sync::Arc::new(rings),
+            grid: std::sync::Arc::new(grid),
+        }
+    }
+
     /// Project every loaded ring into world XZ, keeping its level in **NAP**.
     ///
     /// Deliberately not converted to the world's relative frame here. The terrain bakes
@@ -253,9 +380,7 @@ impl WaterLevelField {
                 Some((r.level_nap_m, pts, bb))
             })
             .collect();
-        Self {
-            rings: std::sync::Arc::new(rings),
-        }
+        Self::from_rings(rings)
     }
 
     #[must_use]
@@ -275,9 +400,7 @@ impl WaterLevelField {
             bb[2] = bb[2].max(p[0]);
             bb[3] = bb[3].max(p[1]);
         }
-        Self {
-            rings: std::sync::Arc::new(vec![(level_nap_m, ring.to_vec(), bb)]),
-        }
+        Self::from_rings(vec![(level_nap_m, ring.to_vec(), bb)])
     }
 
     /// The lowest surface among the loaded bodies, in metres above NAP.
@@ -294,8 +417,11 @@ impl WaterLevelField {
     /// The water surface height at a world-XZ point, in metres above NAP, or `None`
     /// where no ring covers it.
     ///
-    /// The bounding-box test first is not an optimisation detail: this is called once
-    /// per no-data sample of a 1024² grid, and a city cell holds hundreds of rings.
+    /// Called once per sample of a 1024² grid, against a register that yields
+    /// thousands of rings over a city — so it goes through [`RingGrid`] rather than
+    /// over the whole list. The bounding-box test is still here and still earns its
+    /// keep: a bucket holds the rings whose *box* overlaps it, not the rings that
+    /// contain the point.
     ///
     /// Where rings overlap — a bridge's water and the canal under it are separate
     /// bodies in the register — the **lowest** wins. Two surfaces claiming one point is
@@ -304,7 +430,8 @@ impl WaterLevelField {
     #[must_use]
     pub fn level_at(&self, wx: f32, wz: f32) -> Option<f32> {
         let mut found: Option<f32> = None;
-        for (level, pts, bb) in self.rings.iter() {
+        for &i in self.grid.near(wx, wz) {
+            let (level, pts, bb) = &self.rings[i as usize];
             if wx < bb[0] || wx > bb[2] || wz < bb[1] || wz > bb[3] {
                 continue;
             }
@@ -331,7 +458,11 @@ impl WaterLevelField {
             return Some(level);
         }
         let mut best: Option<(f32, f32)> = None;
-        for (level, pts, bb) in self.rings.iter() {
+        // The buckets the tolerance reaches, not the whole list. A ring whose box
+        // straddles several of them is offered more than once; `distance_to_ring` is
+        // idempotent and the `min` below does not care.
+        for i in self.grid.near_within(wx, wz, tol) {
+            let (level, pts, bb) = &self.rings[i as usize];
             if wx < bb[0] - tol || wx > bb[2] + tol || wz < bb[1] - tol || wz > bb[3] + tol {
                 continue;
             }
@@ -505,6 +636,121 @@ pub fn update_water_levels(
 mod tests {
     use super::*;
 
+    /// A field of many small rings plus one that spans most of the box, which is the
+    /// case the grid has to get right: a big lake belongs to many buckets, and a ring
+    /// listed in only the bucket its corner falls in would be invisible from the rest
+    /// of itself.
+    fn scattered_field() -> WaterLevelField {
+        let mut rings = Vec::new();
+        for i in 0..40 {
+            for j in 0..40 {
+                let (x, z) = (i as f32 * 30.0 - 600.0, j as f32 * 30.0 - 600.0);
+                let pts = vec![[x, z], [x + 12.0, z], [x + 12.0, z + 12.0], [x, z + 12.0]];
+                let bb = [x, z, x + 12.0, z + 12.0];
+                rings.push((-0.5 - i as f32 * 0.01, pts, bb));
+            }
+        }
+        // The spanner: one body across the whole indexed area, at a level low enough
+        // that the `min` rule makes it observable wherever it overlaps a small one.
+        rings.push((
+            -9.0,
+            vec![
+                [-500.0, -500.0],
+                [500.0, -500.0],
+                [500.0, 500.0],
+                [-500.0, 500.0],
+            ],
+            [-500.0, -500.0, 500.0, 500.0],
+        ));
+        WaterLevelField::from_rings(rings)
+    }
+
+    /// The index may not change a single answer — it is a way of asking the same
+    /// question, and the bake it speeds up decides where the ground is.
+    ///
+    /// Brute force is the oracle because it is what this replaced: `level_at` walked
+    /// every ring, which over Groningen is 8,144 of them per sample of a 1024² grid.
+    #[test]
+    fn the_ring_index_answers_exactly_what_a_full_scan_does() {
+        let field = scattered_field();
+        let scan_at = |wx: f32, wz: f32| -> Option<f32> {
+            let mut found: Option<f32> = None;
+            for (level, pts, bb) in field.rings.iter() {
+                if wx < bb[0] || wx > bb[2] || wz < bb[1] || wz > bb[3] {
+                    continue;
+                }
+                if !point_in_ring(pts, wx, wz) {
+                    continue;
+                }
+                found = Some(found.map_or(*level, |p: f32| p.min(*level)));
+            }
+            found
+        };
+        // Deliberately not on the lattice the rings were built on: the samples that
+        // matter are the ones that fall between bodies, outside the indexed area, and
+        // exactly on a bucket boundary.
+        let mut checked = 0;
+        for i in -70..70 {
+            for j in -70..70 {
+                let (wx, wz) = (i as f32 * 9.7, j as f32 * 9.7);
+                assert_eq!(
+                    field.level_at(wx, wz),
+                    scan_at(wx, wz),
+                    "index and scan disagree at ({wx}, {wz})"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 10_000, "the sweep did not cover enough ground");
+        // Far outside the indexed area, where `cell_of` clamps to an edge bucket and
+        // the rings' own boxes are what must reject the point.
+        for (wx, wz) in [(9e5, 0.0), (0.0, -9e5), (-9e5, 9e5)] {
+            assert_eq!(field.level_at(wx, wz), None);
+        }
+    }
+
+    /// Same contract for the tolerant query, which reaches across buckets.
+    #[test]
+    fn the_ring_index_answers_the_tolerant_query_exactly_too() {
+        let field = scattered_field();
+        const TOL: f32 = 7.0;
+        let scan_near = |wx: f32, wz: f32| -> Option<f32> {
+            if let Some(level) = field.level_at(wx, wz) {
+                return Some(level);
+            }
+            let mut best: Option<(f32, f32)> = None;
+            for (level, pts, bb) in field.rings.iter() {
+                if wx < bb[0] - TOL || wx > bb[2] + TOL || wz < bb[1] - TOL || wz > bb[3] + TOL {
+                    continue;
+                }
+                let d = distance_to_ring(pts, wx, wz);
+                if d <= TOL && best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, *level));
+                }
+            }
+            best.map(|(_, level)| level)
+        };
+        for i in -60..60 {
+            for j in -60..60 {
+                let (wx, wz) = (i as f32 * 11.3, j as f32 * 11.3);
+                assert_eq!(
+                    field.level_near(wx, wz, TOL),
+                    scan_near(wx, wz),
+                    "index and scan disagree at ({wx}, {wz})"
+                );
+            }
+        }
+    }
+
+    /// An empty register must not build a grid that any query can index into.
+    #[test]
+    fn an_empty_field_indexes_to_nothing() {
+        let field = WaterLevelField::default();
+        assert!(field.is_empty());
+        assert_eq!(field.level_at(0.0, 0.0), None);
+        assert_eq!(field.level_near(0.0, 0.0, 50.0), None);
+    }
+
     /// The wire format is a seam with an extractor in another repository, so pin the
     /// shape rather than trusting that both sides were changed together.
     #[test]
@@ -543,14 +789,17 @@ mod tests {
             .is_empty());
     }
 
+    /// One square ring, as a `(level, points, bbox)` triple.
+    fn square_ring(level: f32, half: f32) -> (f32, Vec<[f32; 2]>, [f32; 4]) {
+        (
+            level,
+            vec![[-half, -half], [half, -half], [half, half], [-half, half]],
+            [-half, -half, half, half],
+        )
+    }
+
     fn square(level: f32, half: f32) -> WaterLevelField {
-        WaterLevelField {
-            rings: std::sync::Arc::new(vec![(
-                level,
-                vec![[-half, -half], [half, -half], [half, half], [-half, half]],
-                [-half, -half, half, half],
-            )]),
-        }
+        WaterLevelField::from_rings(vec![square_ring(level, half)])
     }
 
     #[test]
@@ -580,11 +829,7 @@ mod tests {
     /// floats on its own sheet instead of being buried by the carve under it.
     #[test]
     fn overlapping_bodies_carve_to_the_lower_level() {
-        let mut f = square(-1.0, 10.0);
-        let deeper = square(-3.0, 5.0);
-        std::sync::Arc::get_mut(&mut f.rings)
-            .expect("sole owner")
-            .extend(deeper.rings.iter().cloned());
+        let f = WaterLevelField::from_rings(vec![square_ring(-1.0, 10.0), square_ring(-3.0, 5.0)]);
         assert_eq!(f.level_at(0.0, 0.0), Some(-3.0), "the deeper body must win");
         assert_eq!(f.level_at(8.0, 0.0), Some(-1.0), "outside the deeper one");
         assert_eq!(f.lowest_nap(), Some(-3.0));
