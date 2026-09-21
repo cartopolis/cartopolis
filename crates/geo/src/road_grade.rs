@@ -53,7 +53,7 @@
 //! both kerbs are *in* the valley, so the only surface meeting them is the valley.
 //! Measured on a 4 m V with a three-sample road, the dip went 3.80 m → 3.52 m.
 //!
-//! So the mark is grown by a margin before relaxing ([`mark_roads`]'s `grow`), and
+//! So the mark is grown by a margin before relaxing ([`dilate_mask`]), and
 //! the survey is held fixed at the *outer* edge of that instead of at the kerb.
 //! The carriageway is then free to depart from the ground beneath it, and the
 //! margin becomes the surface that bends to meet it — which is a cutting or an
@@ -153,16 +153,15 @@ pub fn flatten(samples: &mut [f32], n: usize, road: &[bool], passes: usize) -> u
 /// junction, where the drawn surface is the junction's actual shape and a widened
 /// centre line is two overlapping rectangles.
 ///
-/// `grow` widens the mark by that many samples, which is how the flattening gets
-/// somewhere to meet the ground: with no margin the boundary condition sits on the
-/// kerb sample itself, which is half road and half verge in a grid this coarse.
+/// This marks and nothing else. The margin the flattening needs to meet the
+/// ground on is [`dilate_mask`], applied once to the finished mask — see there for
+/// why the two must not be one call.
 pub fn mark_roads(
     road: &mut [bool],
     n: usize,
     origin: (f32, f32),
     step_m: f32,
     triangles: &[[[f32; 2]; 3]],
-    grow: usize,
 ) {
     if n == 0 || road.len() < n * n || step_m <= 0.0 {
         return;
@@ -190,26 +189,41 @@ pub fn mark_roads(
             }
         }
     }
-    for _ in 0..grow {
-        dilate(road, n);
-    }
 }
 
-/// One sample of growth in the four directions. Separate passes rather than a
-/// radius, so `grow` is a count of samples and reads as one.
-fn dilate(road: &mut [bool], n: usize) {
-    let was = road.to_vec();
-    for z in 0..n {
-        for x in 0..n {
-            if was[z * n + x] {
-                continue;
-            }
-            let near = (x > 0 && was[z * n + x - 1])
-                || (x + 1 < n && was[z * n + x + 1])
-                || (z > 0 && was[(z - 1) * n + x])
-                || (z + 1 < n && was[(z + 1) * n + x]);
-            if near {
-                road[z * n + x] = true;
+/// Widen the mark by `grow` samples in the four directions.
+///
+/// **Separate from [`mark_roads`], and it has to be.** The mask a streamer builds
+/// is *accumulated* — each cell marks its own part of one grid that already holds
+/// every earlier cell's roads. Growing inside `mark_roads` therefore re-grew
+/// everything already in the buffer: after a twenty-cell burst the first cell's
+/// roads had been widened twenty times over, some 375 m rather than the 19 m this
+/// asks for, and `terrain_graded_samples` read 1,927,048 of 4.2 M — 46 % of a
+/// 6.4 km box called road. Growth is idempotent only when it happens once, so it
+/// happens once, here, against a mask that is finished.
+///
+/// Two buffers swapped rather than a copy per pass: `grow` is 6 and the desktop
+/// grid is 2,049², so the old copy-per-pass was six allocations of 4.2 MB every
+/// time a cell landed.
+pub fn dilate_mask(road: &mut [bool], n: usize, grow: usize) {
+    if n == 0 || road.len() < n * n || grow == 0 {
+        return;
+    }
+    let mut was = vec![false; n * n];
+    for _ in 0..grow {
+        was.copy_from_slice(&road[..n * n]);
+        for z in 0..n {
+            for x in 0..n {
+                if was[z * n + x] {
+                    continue;
+                }
+                let near = (x > 0 && was[z * n + x - 1])
+                    || (x + 1 < n && was[z * n + x + 1])
+                    || (z > 0 && was[(z - 1) * n + x])
+                    || (z + 1 < n && was[(z + 1) * n + x]);
+                if near {
+                    road[z * n + x] = true;
+                }
             }
         }
     }
@@ -322,9 +336,7 @@ mod tests {
                 road[z * N + x] = true;
             }
         }
-        for _ in 0..8 {
-            dilate(&mut road, N);
-        }
+        dilate_mask(&mut road, N, 8);
 
         let changed = flatten(&mut g, N, &road, 200);
         assert!(changed > 0, "nothing was flattened");
@@ -364,9 +376,7 @@ mod tests {
                 road[z * N + x] = true;
             }
         }
-        for _ in 0..6 {
-            dilate(&mut road, N);
-        }
+        dilate_mask(&mut road, N, 6);
         flatten(&mut g, N, &road, 300);
 
         // Straight down the middle, the three carriageway samples should sit on one
@@ -457,14 +467,14 @@ mod tests {
         const N: usize = 8;
         let mut road = vec![false; N * N];
         let far = [[[900.0, 900.0], [910.0, 900.0], [900.0, 910.0]]];
-        mark_roads(&mut road, N, (0.0, 0.0), 1.0, &far, 0);
+        mark_roads(&mut road, N, (0.0, 0.0), 1.0, &far);
         assert!(
             !road.iter().any(|m| *m),
             "an off-grid ribbon marked something"
         );
 
         let over = [[[-50.0, -50.0], [50.0, -50.0], [-50.0, 50.0]]];
-        mark_roads(&mut road, N, (0.0, 0.0), 1.0, &over, 0);
+        mark_roads(&mut road, N, (0.0, 0.0), 1.0, &over);
         assert!(road[0], "a ribbon covering the origin marked nothing");
     }
 
@@ -477,9 +487,48 @@ mod tests {
         let one = {
             let mut r = vec![false; N * N];
             r[mid] = true;
-            dilate(&mut r, N);
+            dilate_mask(&mut r, N, 1);
             r.iter().filter(|m| **m).count()
         };
         assert_eq!(one, 5, "one step is the sample and its four neighbours");
+    }
+
+    /// **Widening is idempotent, and marking a second cell must not re-widen the
+    /// first.** The streamer accumulates one mask across cells, so growth inside
+    /// `mark_roads` compounded: twenty cells grew the earliest roads twenty times
+    /// over. Marking is now pure, and this pins that it stays pure.
+    #[test]
+    fn marking_twice_does_not_widen_what_was_marked_before() {
+        const N: usize = 40;
+        // Two one-sample roads far enough apart that neither's own 6-sample margin
+        // can reach the other: the left one's reaches x = 9, the right one's
+        // begins at x = 24. Everything left of 20 is therefore the left road's
+        // business alone, and the doubly-grown mark the old code produced reached
+        // x = 15 — inside the window, which is what makes this a real gate.
+        let tri = |c: f32| [[[c, 19.0], [c + 1.0, 19.0], [c, 20.0]]];
+        const WINDOW: usize = 20;
+
+        let mut once = vec![false; N * N];
+        mark_roads(&mut once, N, (0.0, 0.0), 1.0, &tri(2.0));
+        dilate_mask(&mut once, N, DEFAULT_MARGIN_SAMPLES);
+
+        let mut twice = vec![false; N * N];
+        mark_roads(&mut twice, N, (0.0, 0.0), 1.0, &tri(2.0));
+        mark_roads(&mut twice, N, (0.0, 0.0), 1.0, &tri(30.0));
+        dilate_mask(&mut twice, N, DEFAULT_MARGIN_SAMPLES);
+
+        for z in 0..N {
+            for x in 0..WINDOW {
+                assert_eq!(
+                    once[z * N + x],
+                    twice[z * N + x],
+                    "a second cell landing changed the first road's margin at ({x}, {z})"
+                );
+            }
+        }
+        assert!(
+            once.iter().filter(|m| **m).count() > 0,
+            "the fixture marked nothing at all"
+        );
     }
 }

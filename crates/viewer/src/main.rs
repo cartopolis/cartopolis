@@ -1157,14 +1157,8 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
             }
         }
     }
-    road_grade::mark_roads(
-        &mut road,
-        n,
-        (0.0, 0.0),
-        step_m,
-        &tris,
-        road_grade::DEFAULT_MARGIN_SAMPLES,
-    );
+    road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris);
+    road_grade::dilate_mask(&mut road, n, road_grade::DEFAULT_MARGIN_SAMPLES);
     let before: Vec<f32> = samples.to_vec();
     let moved = road_grade::flatten(samples, n, &road, road_grade::DEFAULT_PASSES);
     // **How far, not just how many.** A count of moved samples says the pass

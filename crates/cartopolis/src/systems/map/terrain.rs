@@ -877,13 +877,17 @@ impl RoadMask {
         }
         #[allow(clippy::cast_precision_loss)]
         let step_m = TERRAIN_HALF_M * 2.0 / (grid - 1).max(1) as f32;
+        // **Marking only.** The margin is applied once, to the finished mask, on
+        // the bake's worker — see `road_grade::dilate_mask`. Growing here grew
+        // every earlier cell again, so the mark spread a little further on every
+        // cell that landed; and it did it on the main thread, six full passes over
+        // a 2,049² grid per cell.
         cartopolis_geo::road_grade::mark_roads(
             &mut self.marks,
             grid,
             (-TERRAIN_HALF_M, -TERRAIN_HALF_M),
             step_m,
             &tris,
-            cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
         );
         self.revision = self.revision.wrapping_add(1);
     }
@@ -1156,10 +1160,19 @@ fn bake(
     // otherwise stands along every road for its whole length: a survey reads the
     // kerbs, the parked cars and the hedge, and a built road has none of them.
     if road.len() == n * n {
+        // The margin, once, here — `mark_cell` marks the carriageway and nothing
+        // else. This is the worker, and `road` is already an owned copy, so the
+        // widening costs no allocation the bake was not paying anyway.
+        let mut road = road.to_vec();
+        cartopolis_geo::road_grade::dilate_mask(
+            &mut road,
+            n,
+            cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
+        );
         let moved = cartopolis_geo::road_grade::flatten(
             &mut raw,
             n,
-            road,
+            &road,
             cartopolis_geo::road_grade::DEFAULT_PASSES,
         );
         tracing::debug!(moved, "graded the field along the roads");
