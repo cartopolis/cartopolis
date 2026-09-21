@@ -584,9 +584,28 @@ pub(crate) fn stitch_some(ribbons: &mut [Ribbon], cut_count: usize) {
     };
     let mut cuts: Vec<(usize, Cut)> = Vec::new();
 
-    for i in 0..cut_count {
-        if let Some(cut) = cut_ribbon(i, ribbons, &buckets, &mut overlay, &mut scratch) {
-            cuts.push((i, cut));
+    // **Two ways to split, because the two callers are shaped differently.**
+    // `tessellate_roads` hands this 1,214 ribbons of ~18 triangles each, so the
+    // work divides across *ribbons*; `cut_under_roads` hands it four sheets
+    // holding thousands, so it divides inside one. Neither split can change the
+    // answer — see `cut_ribbon_parallel`.
+    #[cfg(not(target_arch = "wasm32"))]
+    let spread = spread_ribbons(ribbons, cut_count);
+    #[cfg(target_arch = "wasm32")]
+    let spread: Option<Vec<usize>> = None;
+
+    if let Some(bounds) = spread {
+        cuts = cut_ribbons_in_parallel(ribbons, &buckets, &bounds);
+    } else {
+        for i in 0..cut_count {
+            let cut = if ribbons[i].indices.len() / 3 >= PARALLEL_CHUNK_TRIS * 2 {
+                cut_ribbon_parallel(i, ribbons, &buckets)
+            } else {
+                cut_ribbon(i, ribbons, &buckets, &mut overlay, &mut scratch)
+            };
+            if let Some(cut) = cut {
+                cuts.push((i, cut));
+            }
         }
     }
     for (i, cut) in cuts {
@@ -615,6 +634,213 @@ pub(crate) struct Cut {
 /// triangles of the crossing road that reach this triangle. Same answer — a set of
 /// consistently wound triangles is its own union under a non-zero fill rule — for
 /// a fraction of the work.
+/// Triangles a chunk must be worth before the cut is split across threads.
+///
+/// Below this the whole ribbon is a few hundred microseconds and the split is
+/// all overhead. It also keeps the thread count honest on a small tile: a
+/// four-triangle sheet never spawns anything.
+const PARALLEL_CHUNK_TRIS: usize = 512;
+
+/// Ceiling on the threads one cut may raise.
+///
+/// **Deliberately small, and the reason is the neighbours rather than the
+/// arithmetic.** This runs inside a job on `platform::workers`' pool, which is
+/// itself only a few threads wide and is already the documented scarce resource
+/// here — `workers.rs` exists because our blocking jobs starved Bevy's own pool.
+/// Four keeps a burst of cells from multiplying into more runnable threads than
+/// the machine has cores, and the stages this helps are the two that dominate a
+/// cell, so the tail is short.
+const PARALLEL_MAX_THREADS: usize = 4;
+
+/// Where to cut the ribbon list so each thread gets a comparable share of
+/// *triangles*, or `None` when there is not enough work to bother.
+///
+/// Weighted by triangle count rather than by ribbon count, because the ribbons
+/// in one tile differ by orders of magnitude — a motorway's carriageway against
+/// a cul-de-sac's — and equal counts would leave one thread holding most of the
+/// tile.
+#[cfg(not(target_arch = "wasm32"))]
+fn spread_ribbons(ribbons: &[Ribbon], cut_count: usize) -> Option<Vec<usize>> {
+    let total: usize = ribbons[..cut_count]
+        .iter()
+        .map(|r| r.indices.len() / 3)
+        .sum();
+    let threads = (total / PARALLEL_CHUNK_TRIS)
+        .min(PARALLEL_MAX_THREADS)
+        .min(available_threads());
+    // **Only when there are enough ribbons to divide fairly.** With four sheets
+    // and four threads the split is one sheet each, and the sheets are nothing
+    // like equal — the run is then as long as the biggest of them and three
+    // threads idle. Below this the caller splits *inside* a ribbon instead, which
+    // is the shape `cut_under_roads` wants and measured 2.5× on.
+    if threads < 2 || cut_count < threads * 2 {
+        return None;
+    }
+    let want = total.div_ceil(threads);
+    let mut bounds = vec![0usize];
+    let mut carried = 0usize;
+    for (i, r) in ribbons[..cut_count].iter().enumerate() {
+        carried += r.indices.len() / 3;
+        if carried >= want && bounds.len() < threads {
+            bounds.push(i + 1);
+            carried = 0;
+        }
+    }
+    bounds.push(cut_count);
+    bounds.dedup();
+    (bounds.len() > 2).then_some(bounds)
+}
+
+/// Cut a contiguous span of ribbons per thread, and return every cut in ribbon
+/// order.
+///
+/// Same argument as [`cut_ribbon_parallel`]: a ribbon is cut against the uncut
+/// geometry of its superiors, so which thread holds which span cannot change
+/// what any of them keeps. The spans are walked in order and each thread returns
+/// its own cuts in order, so the assembled list is the serial list.
+#[cfg(not(target_arch = "wasm32"))]
+fn cut_ribbons_in_parallel(
+    ribbons: &[Ribbon],
+    buckets: &Buckets,
+    bounds: &[usize],
+) -> Vec<(usize, Cut)> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = bounds
+            .windows(2)
+            .map(|w| {
+                let (lo, hi) = (w[0], w[1]);
+                s.spawn(move || {
+                    let mut overlay: Overlay<i32> = Overlay::new(64);
+                    let mut scratch = Scratch {
+                        ids: Vec::new(),
+                        seen: vec![0; buckets.tris.len()],
+                        tick: 0,
+                    };
+                    let mut out: Vec<(usize, Cut)> = Vec::new();
+                    for i in lo..hi {
+                        if let Some(cut) =
+                            cut_ribbon(i, ribbons, buckets, &mut overlay, &mut scratch)
+                        {
+                            out.push((i, cut));
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// Cut one ribbon, splitting its triangles across threads when there are enough
+/// of them to pay for it.
+///
+/// **This cannot change the answer, and that is a property of the algorithm
+/// rather than a hope.** Every triangle is cut against the *uncut* geometry of
+/// its superiors — never a running union — so no triangle's result is an input
+/// to any other's, which is the same fact [`stitch`] documents to explain why
+/// the walk order does not matter. Each chunk therefore computes exactly what it
+/// would have computed in sequence; the chunks are merged in index order, and
+/// vertices are re-emitted per triangle rather than shared, so concatenating
+/// them with an index offset reproduces the serial buffers verbatim.
+/// `stitch_is_the_same_cut_split_across_threads` pins that byte for byte.
+fn cut_ribbon_parallel(i: usize, ribbons: &[Ribbon], buckets: &Buckets) -> Option<Cut> {
+    let n = ribbons[i].indices.len() / 3;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let threads = (n / PARALLEL_CHUNK_TRIS)
+            .min(PARALLEL_MAX_THREADS)
+            .min(available_threads());
+        if threads > 1 {
+            let span = n.div_ceil(threads);
+            let parts: Vec<Option<(Cut, bool)>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..threads)
+                    .map(|k| {
+                        let lo = k * span;
+                        let hi = ((k + 1) * span).min(n);
+                        s.spawn(move || {
+                            if lo >= hi {
+                                return None;
+                            }
+                            // Some(..) is "this chunk ran", not "this chunk was
+                            // cut" — a chunk that matched nothing still owns its
+                            // triangles and they are part of the ribbon.
+                            // Per thread, never shared: the overlay is the
+                            // expensive thing to build and the whole point of
+                            // keeping one is that it is reused across triangles.
+                            let mut overlay: Overlay<i32> = Overlay::new(64);
+                            let mut scratch = Scratch {
+                                ids: Vec::new(),
+                                seen: vec![0; buckets.tris.len()],
+                                tick: 0,
+                            };
+                            Some(cut_ribbon_inner(
+                                i,
+                                ribbons,
+                                buckets,
+                                &mut overlay,
+                                &mut scratch,
+                                lo..hi,
+                            ))
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or(None))
+                    .collect()
+            });
+            return merge_cuts(parts);
+        }
+    }
+
+    let mut overlay: Overlay<i32> = Overlay::new(64);
+    let mut scratch = Scratch {
+        ids: Vec::new(),
+        seen: vec![0; buckets.tris.len()],
+        tick: 0,
+    };
+    let (cut, touched) = cut_ribbon_inner(i, ribbons, buckets, &mut overlay, &mut scratch, 0..n);
+    touched.then_some(cut)
+}
+
+/// Threads this machine will actually run at once, or 1 where it cannot say.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn available_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
+
+/// Concatenate the chunks of one ribbon's cut, in order.
+///
+/// `None` from every chunk means no chunk was touched, so the ribbon is left
+/// exactly as laid — the same contract [`cut_ribbon_inner`] has on its own. A
+/// chunk that *was* touched carries all of its triangles, cut or not, so a merge
+/// of a touched chunk and an untouched one is still the whole ribbon.
+fn merge_cuts(parts: Vec<Option<(Cut, bool)>>) -> Option<Cut> {
+    if !parts.iter().flatten().any(|(_, touched)| *touched) {
+        return None;
+    }
+    let mut out = Cut {
+        positions: Vec::new(),
+        uvs: Vec::new(),
+        colors: Vec::new(),
+        indices: Vec::new(),
+    };
+    for (part, _) in parts.into_iter().flatten() {
+        let base = out.positions.len() as u32;
+        out.positions.extend(part.positions);
+        out.uvs.extend(part.uvs);
+        out.colors.extend(part.colors);
+        out.indices
+            .extend(part.indices.into_iter().map(|v| v + base));
+    }
+    Some(out)
+}
+
 fn cut_ribbon(
     i: usize,
     ribbons: &[Ribbon],
@@ -622,6 +848,19 @@ fn cut_ribbon(
     overlay: &mut Overlay<i32>,
     scratch: &mut Scratch,
 ) -> Option<Cut> {
+    let n = ribbons[i].indices.len() / 3;
+    let (cut, touched) = cut_ribbon_inner(i, ribbons, buckets, overlay, scratch, 0..n);
+    touched.then_some(cut)
+}
+
+fn cut_ribbon_inner(
+    i: usize,
+    ribbons: &[Ribbon],
+    buckets: &Buckets,
+    overlay: &mut Overlay<i32>,
+    scratch: &mut Scratch,
+    tris: std::ops::Range<usize>,
+) -> (Cut, bool) {
     let r = &ribbons[i];
     let has_uvs = !r.uvs.is_empty();
     let has_colors = !r.colors.is_empty();
@@ -648,7 +887,13 @@ fn cut_ribbon(
     };
 
     let y = r.positions.first().map_or(0.0, |p| p[1]);
-    for (seq, t) in r.indices.chunks_exact(3).enumerate() {
+    for (seq, t) in r
+        .indices
+        .chunks_exact(3)
+        .enumerate()
+        .skip(tris.start)
+        .take(tris.len())
+    {
         let vs = [
             r.positions[t[0] as usize],
             r.positions[t[1] as usize],
@@ -797,17 +1042,172 @@ fn cut_ribbon(
         }
     }
     drop(emit);
-    touched.then_some(Cut {
-        positions,
-        uvs,
-        colors,
-        indices,
-    })
+    (
+        Cut {
+            positions,
+            uvs,
+            colors,
+            indices,
+        },
+        touched,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Splitting a ribbon's cut across threads must produce the same buffers,
+    /// to the bit, as cutting it in one.
+    ///
+    /// **The claim being tested is not "threads are safe" but "this particular
+    /// decomposition is exact".** Each triangle is cut against the *uncut*
+    /// geometry of its superiors, so no triangle's result feeds another's; the
+    /// chunks are merged in index order and vertices are re-emitted per triangle
+    /// rather than shared, so concatenating with an index offset should reproduce
+    /// the serial run verbatim. Two things would break that silently and neither
+    /// shows in a partition test: a chunk that matched nothing dropping its own
+    /// triangles instead of passing them through, and the self-fold rule reading
+    /// a chunk-local sequence number instead of the ribbon's.
+    ///
+    /// Built on the real fixture rather than a synthetic bar, because the
+    /// self-fold case needs a ribbon that actually laps over itself.
+    #[test]
+    fn stitch_is_the_same_cut_split_across_threads() {
+        let tile = crate::vector_tiles::TileData::parse(crate::testdata::GRONINGEN_Z14)
+            .expect("fixture parses");
+        let mut decks =
+            crate::vector_tiles::tessellate_bridges(&tile, crate::vector_tiles::NOMINAL_Z14_TILE_M)
+                .expect("decks");
+        let roads = crate::vector_tiles::tessellate_roads(
+            &tile,
+            crate::vector_tiles::NOMINAL_Z14_TILE_M,
+            &mut decks,
+            None,
+            false,
+        )
+        .expect("roads");
+
+        // One ribbon per road mesh, cut against all the others — the shape
+        // `cut_under_roads` builds, and big enough that the threaded path runs.
+        let build = || -> Vec<Ribbon> {
+            roads
+                .ground
+                .iter()
+                .enumerate()
+                .map(|(i, m)| Ribbon {
+                    group: m.group,
+                    rung: 0.0,
+                    priority: (0, 0, i, 0, 0),
+                    bridge: false,
+                    positions: m.positions.clone(),
+                    uvs: m.uvs.clone(),
+                    colors: m.colors.clone(),
+                    indices: m.indices.clone(),
+                })
+                .collect()
+        };
+
+        let biggest = roads
+            .ground
+            .iter()
+            .map(|m| m.indices.len() / 3)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            biggest >= PARALLEL_CHUNK_TRIS * 2,
+            "fixture's largest road mesh is {biggest} triangles, below the {} the \
+             threaded path needs — this test would pass without exercising it",
+            PARALLEL_CHUNK_TRIS * 2
+        );
+
+        let mut threaded = build();
+        stitch(&mut threaded);
+
+        // The same cut, forced through one thread per ribbon.
+        let mut serial = build();
+        for r in serial.iter_mut() {
+            snap(r);
+        }
+        let buckets = Buckets::build(&serial);
+        let mut overlay: Overlay<i32> = Overlay::new(64);
+        let mut scratch = Scratch {
+            ids: Vec::new(),
+            seen: vec![0; buckets.tris.len()],
+            tick: 0,
+        };
+        let mut cuts: Vec<(usize, Cut)> = Vec::new();
+        for i in 0..serial.len() {
+            if let Some(cut) = cut_ribbon(i, &serial, &buckets, &mut overlay, &mut scratch) {
+                cuts.push((i, cut));
+            }
+        }
+        for (i, cut) in cuts {
+            serial[i].positions = cut.positions;
+            serial[i].uvs = cut.uvs;
+            serial[i].colors = cut.colors;
+            serial[i].indices = cut.indices;
+        }
+
+        assert_eq!(threaded.len(), serial.len());
+        for (k, (t, s)) in threaded.iter().zip(&serial).enumerate() {
+            assert_eq!(
+                t.positions, s.positions,
+                "ribbon {k} ({:?}) has different positions threaded",
+                t.group
+            );
+            assert_eq!(t.indices, s.indices, "ribbon {k} has different indices");
+            assert_eq!(t.uvs, s.uvs, "ribbon {k} has different uvs");
+            assert_eq!(t.colors, s.colors, "ribbon {k} has different colours");
+        }
+
+        // **The other split, exercised directly.** `stitch` divides across
+        // ribbons when there are enough of them, which is the roads' shape and
+        // the one the loop above just checked. `cut_under_roads` has four sheets
+        // and divides *inside* one instead, so that path never runs here unless
+        // it is called on purpose — and it is the path with the merge in it,
+        // which is where a dropped chunk or a chunk-local sequence number would
+        // hide.
+        let mut staged = build();
+        for r in staged.iter_mut() {
+            snap(r);
+        }
+        let buckets = Buckets::build(&staged);
+        let widest = staged
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, r)| r.indices.len())
+            .map(|(i, _)| i)
+            .expect("the fixture has road ribbons");
+
+        let split = cut_ribbon_parallel(widest, &staged, &buckets);
+        let mut overlay: Overlay<i32> = Overlay::new(64);
+        let mut scratch = Scratch {
+            ids: Vec::new(),
+            seen: vec![0; buckets.tris.len()],
+            tick: 0,
+        };
+        let whole = cut_ribbon(widest, &staged, &buckets, &mut overlay, &mut scratch);
+
+        match (split, whole) {
+            (Some(a), Some(b)) => {
+                assert_eq!(a.positions, b.positions, "chunked cut moved a vertex");
+                assert_eq!(a.indices, b.indices, "chunked cut changed the topology");
+                assert_eq!(a.uvs, b.uvs, "chunked cut changed a uv");
+                assert_eq!(a.colors, b.colors, "chunked cut changed a colour");
+            }
+            (None, None) => panic!(
+                "the widest ribbon was untouched by the cut, so this proves \
+                 nothing — pick a fixture whose roads actually cross"
+            ),
+            (a, b) => panic!(
+                "chunked and whole disagree about whether the ribbon was cut at \
+                 all: {} vs {}",
+                a.is_some(),
+                b.is_some()
+            ),
+        }
+    }
 
     /// A ribbon whose triangles are the two halves of an axis-aligned quad.
     fn bar(x0: f32, z0: f32, x1: f32, z1: f32, priority: u32) -> Ribbon {
