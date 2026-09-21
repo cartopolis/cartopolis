@@ -201,6 +201,18 @@ struct Tri {
     bbox: Bbox,
 }
 
+/// Reused across every triangle of one [`stitch`]: the candidate list, and the
+/// stamps that keep it free of duplicates without sorting it.
+///
+/// `seen[t] == tick` means triangle `t` is already in `ids` for the query being
+/// gathered. `tick` rises once per multi-bucket query and `seen` starts at zero,
+/// so the first query's stamp is 1 and no entry can be mistaken for stamped.
+struct Scratch {
+    ids: Vec<u32>,
+    seen: Vec<u32>,
+    tick: u32,
+}
+
 /// Which road triangles pass through each bucket of a coarse grid over the tile.
 struct Buckets {
     origin: [f32; 2],
@@ -304,20 +316,29 @@ impl Buckets {
     /// A road triangle at z14 is usually a fraction of a bucket across, so the
     /// common case is one bucket and its list is already unique — the sort and
     /// dedup only earn their keep when a triangle straddles a bucket line.
-    fn candidates(&self, b: &Bbox, out: &mut Vec<u32>) {
-        out.clear();
+    fn candidates(&self, b: &Bbox, s: &mut Scratch) {
+        s.ids.clear();
         let (x0, y0, x1, y1) = self.range(b);
         if x0 == x1 && y0 == y1 {
-            out.extend_from_slice(&self.cells[y0 * self.cols + x0]);
+            // One bucket's list is already unique, so this needs no stamping.
+            s.ids.extend_from_slice(&self.cells[y0 * self.cols + x0]);
             return;
         }
+        // A triangle spans about four buckets (measured over the Groningen
+        // fixture), so the multi-bucket path is the common one and its duplicates
+        // used to be removed by sorting ~55 ids per triangle, 21,557 times a tile.
+        // Stamping is the same answer in one pass and no comparisons.
+        s.tick += 1;
         for y in y0..=y1 {
             for x in x0..=x1 {
-                out.extend_from_slice(&self.cells[y * self.cols + x]);
+                for &t in &self.cells[y * self.cols + x] {
+                    if s.seen[t as usize] != s.tick {
+                        s.seen[t as usize] = s.tick;
+                        s.ids.push(t);
+                    }
+                }
             }
         }
-        out.sort_unstable();
-        out.dedup();
     }
 }
 
@@ -485,12 +506,23 @@ pub fn cut_under_roads(sheets: &mut Vec<SurfaceMesh>, roads: &[SurfaceMesh]) {
             priority: (1, 0, i, 0, 0),
             bridge: false,
             positions: m.positions.clone(),
-            uvs: m.uvs.clone(),
-            colors: m.colors.clone(),
+            // **Blockers, and nothing else.** A blocker is read only as the
+            // snapped triangles `Buckets` builds out of its positions and indices,
+            // plus its `bridge` and `priority`; its texture coordinates and
+            // colours are never looked at, and the results below take only the
+            // first `sheets.len()` entries, so the roads' own would be dropped
+            // even if they were carried.
+            uvs: Vec::new(),
+            colors: Vec::new(),
             indices: m.indices.clone(),
         });
     }
-    stitch(&mut ribbons);
+    // Only the sheets are cut. The roads went in to block, and they are already a
+    // partition among themselves — `tessellate_roads` stitched them — so cutting
+    // them here gathered candidates and ran the separating-axis test over every
+    // road triangle in the cell a second and third time to produce answers this
+    // function discards.
+    stitch_some(&mut ribbons, sheets.len());
     for (m, r) in sheets.iter_mut().zip(ribbons.into_iter()) {
         // A flat ground sheet's normals are every one of them straight up, so
         // restating them at the new length is exact rather than an approximation —
@@ -527,17 +559,32 @@ pub fn cut_under_roads(sheets: &mut Vec<SurfaceMesh>, roads: &[SurfaceMesh]) {
 /// list in. Every patch of ground ends up with the single highest-priority ribbon
 /// that covers it.
 pub(crate) fn stitch(ribbons: &mut [Ribbon]) {
+    stitch_some(ribbons, ribbons.len());
+}
+
+/// [`stitch`], but only the first `cut_count` ribbons are cut down.
+///
+/// The rest still block — they are snapped, indexed and tested against exactly as
+/// before, so what the cut ribbons keep is identical either way. This exists for
+/// [`cut_under_roads`], whose blockers are already a partition among themselves
+/// and whose results for them are thrown away.
+pub(crate) fn stitch_some(ribbons: &mut [Ribbon], cut_count: usize) {
     for r in ribbons.iter_mut() {
         snap(r);
     }
+    let cut_count = cut_count.min(ribbons.len());
     let buckets = Buckets::build(ribbons);
     // One overlay reused across the whole tile: building a fresh one per triangle
     // is a large share of what a cut costs, and there are thousands of them.
     let mut overlay: Overlay<i32> = Overlay::new(64);
-    let mut scratch: Vec<u32> = Vec::new();
+    let mut scratch = Scratch {
+        ids: Vec::new(),
+        seen: vec![0; buckets.tris.len()],
+        tick: 0,
+    };
     let mut cuts: Vec<(usize, Cut)> = Vec::new();
 
-    for i in 0..ribbons.len() {
+    for i in 0..cut_count {
         if let Some(cut) = cut_ribbon(i, ribbons, &buckets, &mut overlay, &mut scratch) {
             cuts.push((i, cut));
         }
@@ -573,7 +620,7 @@ fn cut_ribbon(
     ribbons: &[Ribbon],
     buckets: &Buckets,
     overlay: &mut Overlay<i32>,
-    scratch: &mut Vec<u32>,
+    scratch: &mut Scratch,
 ) -> Option<Cut> {
     let r = &ribbons[i];
     let has_uvs = !r.uvs.is_empty();
@@ -635,7 +682,7 @@ fn cut_ribbon(
         let mut any = false;
         let mut buried = false;
         overlay.clear();
-        for c in scratch.iter() {
+        for c in scratch.ids.iter() {
             let other = &buckets.tris[*c as usize];
             let j = other.ribbon as usize;
             if !overlaps(&tb, &other.bbox) {
