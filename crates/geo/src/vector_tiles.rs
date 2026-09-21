@@ -2998,6 +2998,8 @@ pub fn tessellate_roads(
     // against their own deck, never against the ground.
     let mut staged_on_deck: Vec<Vec<crate::road_stitch::Ribbon>> =
         (0..decks.len()).map(|_| Vec::new()).collect();
+    // The ground stretches that run up to a deck — see [`Approach`].
+    let mut approaches: Vec<Approach> = Vec::new();
 
     for (fi, feature) in features.iter().enumerate() {
         // A tunnel is refused by `drawn_street` because it is not on the ground —
@@ -3130,6 +3132,40 @@ pub fn tessellate_roads(
                 // is not a junction — extending there would push tarmac out past
                 // the structure.
                 let whole = parts.len() == 1 && parts[0].1.len() == run.len();
+                // **The approaches, before `parts` is consumed.** A ground run
+                // that neighbours a deck run *in the same street* is the road that
+                // climbs onto that structure — which is the one fact nothing
+                // downstream could recover, and the reason a raster ramp leaked
+                // into every street near a bridge. `split_by_deck` has always
+                // known it and only the deck tag survived.
+                //
+                // Ordered abutment-first, because the ramp is measured from the
+                // deck outwards and a caller cannot tell which end of a run met
+                // the structure by looking at it.
+                for (pi, (on_deck, part)) in parts.iter().enumerate() {
+                    if on_deck.is_some() || part.len() < 2 {
+                        continue;
+                    }
+                    // The deck is behind this run if the previous part is on one,
+                    // and ahead of it if the next part is. Both is a short ground
+                    // stretch between two spans, which is an approach to each.
+                    let before = pi.checked_sub(1).and_then(|j| parts[j].0);
+                    let after = parts.get(pi + 1).and_then(|p| p.0);
+                    for (deck, reversed) in [(before, false), (after, true)] {
+                        let Some(d) = deck else { continue };
+                        let mut points = part.clone();
+                        // Abutment first: a run whose deck is *behind* it already
+                        // starts there, and one whose deck is ahead ends there.
+                        if reversed {
+                            points.reverse();
+                        }
+                        #[allow(clippy::cast_possible_truncation)]
+                        approaches.push(Approach {
+                            deck: d as u32,
+                            points,
+                        });
+                    }
+                }
                 for (pi, (on_deck, part)) in parts.into_iter().enumerate() {
                     let ends = if whole {
                         [join_head, join_tail]
@@ -3388,6 +3424,7 @@ pub fn tessellate_roads(
             )
             .collect(),
         on_deck,
+        approaches,
     })
 }
 
@@ -3406,6 +3443,39 @@ pub struct RoadTessellation {
     /// `(deck index, mesh)` — the index is into the `decks` slice that was passed
     /// in, whose slabs have had these meshes cut out of them.
     pub on_deck: Vec<(u32, SurfaceMesh)>,
+    /// The ground stretches that run up to a deck, one per abutment.
+    pub approaches: Vec<Approach>,
+}
+
+/// A road that climbs onto a structure: the ground stretch of a bridge-flagged
+/// street immediately either side of the span, with the abutment first.
+///
+/// # What this is for, and why nothing else could supply it
+///
+/// A deck stands at a measured height and the road that reaches it is drawn flat,
+/// so a viaduct ends in a vertical step. Grading the ground back down from the
+/// abutment fixes that, and the question it immediately raises is *which* ground —
+/// measured over the Groningen fixture, ramping through the whole road corridor
+/// raised 18 % of the city's streets for five bridges, because a raster mask is
+/// one connected shape and a ramp travels through everything touching it.
+///
+/// The distinction it needs is not a height and not a level: the approach and the
+/// street passing underneath are both at grade and both unflagged
+/// (`bridge-heights.md` — "the approach roads that climb to it in reality are
+/// ordinary unflagged ways"), so neither `level_of` nor the survey can separate
+/// them. What separates them is that the approach is **the same street feature as
+/// the span**, which [`split_by_deck`] establishes and then used to discard.
+///
+/// Centre lines rather than ribbons, because the consumer rasterises them into a
+/// corridor of its own width and a ribbon would have to be un-widened first.
+#[derive(Debug, Clone)]
+pub struct Approach {
+    /// Index into the `decks` slice this run climbs to.
+    pub deck: u32,
+    /// The run in tile-local metres, **abutment first**. A caller cannot recover
+    /// which end met the structure by looking at the geometry, and the ramp is
+    /// measured from the deck outwards.
+    pub points: Vec<[f32; 2]>,
 }
 
 /// Which deck a point stands on, if any.

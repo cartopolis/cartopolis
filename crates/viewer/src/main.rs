@@ -364,6 +364,9 @@ struct Cell {
     /// structure, so it is what `grade_along_roads` pins the embankment to, and a
     /// count could not say where.
     decks: Vec<vector_tiles::BridgeDeck>,
+    /// The ground stretches that climb onto those decks, abutment first. What
+    /// bounds the approach ramp to the roads that actually reach a structure.
+    approaches: Vec<vector_tiles::Approach>,
     /// Street centre lines in tile-local metres — see `--dump-lines`.
     lines: Vec<vector_tiles::StreetLine>,
     /// Every layer, its feature count and its kinds — see `--census`.
@@ -581,21 +584,24 @@ fn load(cli: &Cli) -> Result<Loaded> {
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
         match tessellate(&tile, tile_m, (z, x, y), !cli.no_cut, cli.deck_height) {
-            Ok((meshes, bridges, tunnels, bores, openings_m2, decks)) => cells.push(Cell {
-                z,
-                x,
-                y,
-                tile_m,
-                meshes,
-                bridges,
-                tunnels,
-                bores,
-                openings_m2,
-                decks,
-                unhandled: vector_tiles::unhandled_land_kinds(&tile),
-                lines: vector_tiles::street_lines(&tile, tile_m),
-                census: vector_tiles::layer_census(&tile),
-            }),
+            Ok((meshes, bridges, tunnels, bores, openings_m2, decks, approaches)) => {
+                cells.push(Cell {
+                    z,
+                    x,
+                    y,
+                    tile_m,
+                    meshes,
+                    bridges,
+                    tunnels,
+                    bores,
+                    openings_m2,
+                    decks,
+                    approaches,
+                    unhandled: vector_tiles::unhandled_land_kinds(&tile),
+                    lines: vector_tiles::street_lines(&tile, tile_m),
+                    census: vector_tiles::layer_census(&tile),
+                });
+            }
             Err(e) => tracing::warn!(path = %path.display(), error = %format!("{e:#}"), "failed"),
         }
     }
@@ -622,6 +628,7 @@ fn tessellate(
     Vec<cartopolis_geo::tunnels::Tunnel>,
     f32,
     Vec<vector_tiles::BridgeDeck>,
+    Vec<vector_tiles::Approach>,
 )> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
@@ -632,6 +639,7 @@ fn tessellate(
     let roads = vector_tiles::tessellate_roads(tile, tile_m, &mut decks, None, false)
         .map_err(anyhow::Error::msg)
         .context("road ribbons")?;
+    let approaches = roads.approaches.clone();
     if cut {
         cartopolis_geo::road_stitch::cut_under_roads(&mut meshes, &roads.ground);
     }
@@ -748,7 +756,15 @@ fn tessellate(
         })
         .collect();
     meshes.extend(tunnels.meshes);
-    Ok((meshes, bridges, built, tunnels.tunnels, opening_m2, decks))
+    Ok((
+        meshes,
+        bridges,
+        built,
+        tunnels.tunnels,
+        opening_m2,
+        decks,
+        approaches,
+    ))
 }
 
 /// Samples per side the coverage and overlap measurements use. 512 over a
@@ -1191,12 +1207,59 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
             road[i] = false;
         }
     }
+    // **The ramp corridor is the approach roads, not every road.** Ramping through
+    // the whole mask raised 18 % of this cell's streets for five bridges, because
+    // a raster corridor is one connected shape and the gradient travels through
+    // everything touching it — including the street passing *under* the viaduct.
+    // `tessellate_roads` now hands back the ground stretch of each bridge-flagged
+    // street either side of its span, which is the one thing that separates the
+    // road climbing onto a structure from the road going under it.
+    let mut ramp = vec![false; n * n];
+    let mut approach_tris: Vec<[[f32; 2]; 3]> = Vec::new();
+    for cell in &loaded.cells {
+        #[allow(clippy::cast_precision_loss)]
+        let off = (
+            (cell.x - loaded.origin.0) as f32 * cell.tile_m,
+            (cell.y - loaded.origin.1) as f32 * cell.tile_m,
+        );
+        for a in &cell.approaches {
+            // A centre line has no width, and a sample is only marked when a
+            // triangle covers it, so the run is laid out as a quad strip a couple
+            // of samples wide. The dilation below is what gives it the corridor;
+            // this only has to be thick enough not to fall between samples.
+            let half = step_m;
+            for w in a.points.windows(2) {
+                let (p, q) = (
+                    [off.0 + w[0][0], off.1 + w[0][1]],
+                    [off.0 + w[1][0], off.1 + w[1][1]],
+                );
+                let (dx, dz) = (q[0] - p[0], q[1] - p[1]);
+                let len = dx.hypot(dz);
+                if len < 1e-3 {
+                    continue;
+                }
+                let (nx, nz) = (-dz / len * half, dx / len * half);
+                let (a0, a1) = ([p[0] + nx, p[1] + nz], [p[0] - nx, p[1] - nz]);
+                let (b0, b1) = ([q[0] + nx, q[1] + nz], [q[0] - nx, q[1] - nz]);
+                approach_tris.push([a0, a1, b0]);
+                approach_tris.push([a1, b1, b0]);
+            }
+        }
+    }
+    road_grade::mark_roads(&mut ramp, n, (0.0, 0.0), step_m, &approach_tris);
+    road_grade::dilate_mask(&mut ramp, n, road_grade::DEFAULT_MARGIN_SAMPLES);
+    for i in 0..n * n {
+        if deck[i] {
+            ramp[i] = false;
+        }
+    }
+
     let mut pins = vec![f32::NAN; n * n];
     let mut abutments = 0usize;
     for z in 1..n - 1 {
         for x in 1..n - 1 {
             let i = z * n + x;
-            if !road[i] {
+            if !ramp[i] {
                 continue;
             }
             if deck[i - 1] || deck[i + 1] || deck[i - n] || deck[i + n] {
@@ -1210,7 +1273,7 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
     let raised = road_grade::ramp_from_pins(
         samples,
         n,
-        &road,
+        &ramp,
         &mut pins,
         step_m,
         road_grade::MAX_APPROACH_GRADE,
