@@ -683,6 +683,19 @@ pub fn update_lod22(
         | (crate::systems::lod3::coverage_revision() << 1);
     let reanchored = lod.stream.sync(stream.anchor_generation);
     if reanchored || lod.terrain_revision != terrain.revision || lod.bag_revision != bag_revision {
+        // The same line `map_geometry` logs, for the same reason: a ring rebuilt
+        // once because the ground arrived and a ring rebuilt four times because
+        // four facts arrived separately are indistinguishable from outside, and
+        // this streamer's cells are the most expensive meshes the client builds.
+        tracing::info!(
+            cells = lod.cells.len(),
+            reanchored,
+            terrain_rev = terrain.revision,
+            was_terrain_rev = lod.terrain_revision,
+            bag_rev = bag_revision,
+            was_bag_rev = lod.bag_revision,
+            "lod22 ring retear"
+        );
         lod.terrain_revision = terrain.revision;
         lod.bag_revision = bag_revision;
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();

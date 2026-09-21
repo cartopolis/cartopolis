@@ -15,6 +15,15 @@
 //! ever, so retrying without end is a request every thirty seconds for the life of
 //! the process to re-learn one permanent fact. A few attempts covers the transient
 //! case, then it latches empty and says so once.
+//!
+//! **The ladder is for not being able to ask, never for having been told no.** A
+//! 404 is the host answering, and it answers in about 70 ms; until 2026-09-21 that
+//! answer went down the same ladder as a dead socket and was not believed for a
+//! minute. What made that expensive rather than merely untidy is [`Self::revision`]:
+//! `map_geometry` and `lod22` rebuild their whole ring when it moves, so a manifest
+//! believed at +60 s re-tessellated nine surface cells and twenty-five building
+//! cells a minute into the fill — measured, in `docs/notes/one-pass-cells.md`.
+//! `http::fetch_optional` is what tells the two apart.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -151,11 +160,35 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
         return Some(Manifest::empty(zoom)); // configured off: a definitive "no"
     }
     let url = format!("{base}{sub}");
-    let text = match http::fetch_string(http::Request::get(url.clone())).await {
-        Ok(t) => t,
+    // **A 404 here is the answer, not a failure to get one**, and the difference was
+    // worth 60 seconds of every cold start. The host answers "I do not serve crops"
+    // in about 70 ms; treated as transient it cost `MAX_ATTEMPTS` tries at
+    // `RETRY_SECS` apart, so the answer latched at ~+60 s — and since `revision()`
+    // is what `map_geometry` and `lod22` rebuild on, *that* is when the whole ring
+    // was torn up and re-tessellated, a minute into the fill. Measured cold over
+    // Groningen on 2026-09-21: the crops manifest retore 9 surface cells at +67 s
+    // and the LoD3 manifest 25 building cells at +70 s, both of them 404s.
+    let bytes = match http::fetch_optional(http::Request::get(url.clone())).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            // The host was reached and does not serve this tree. It will not start
+            // while the client runs, so this latches now rather than after a ladder
+            // of retries — and every consumer sees "no coverage" before it builds
+            // anything, which is the whole point.
+            tracing::info!(%url, "no coverage on this host; the layer stays as it was");
+            return Some(Manifest::empty(zoom));
+        }
         Err(e) => {
             tracing::debug!(%url, error = %e, "coverage unreachable");
             return None;
+        }
+    };
+    let text = match String::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            // Reached, answered, unreadable — an answer, and the same one next time.
+            tracing::warn!(%url, error = %e, "coverage is not UTF-8");
+            return Some(Manifest::empty(zoom));
         }
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {

@@ -310,13 +310,55 @@ impl Default for Breaker {
     }
 }
 
+/// What came back, when the host was reached at all.
+///
+/// The distinction [`fetch`] flattens away and [`fetch_optional`] keeps: a host
+/// that answers **404** was reached, understood the request and said the document
+/// does not exist. That is an *answer*, and it will be the same answer tomorrow. A
+/// connection that timed out is not an answer at all, and asking again is the only
+/// way to find out. The two deserve opposite retry policies and had the same one.
+pub enum Answer {
+    Body(Vec<u8>),
+    /// The host answered with a non-2xx status.
+    Refused(u16),
+}
+
 /// Fetch the response body as bytes. `Err` carries a human-readable message, to
 /// match the `Result<_, String>` shape the fetchers already use.
 ///
 /// `await` this inside a task spawned on `IoTaskPool` (see module docs); it is not
 /// meant to be blocked on from a system.
 pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
-    imp::fetch(req).await
+    let url = req.url.clone();
+    match imp::fetch_answer(req).await? {
+        Answer::Body(bytes) => Ok(bytes),
+        // The shape `ureq` produced when this was one function, kept verbatim: it
+        // is what every "… status code 404" line in the logs and the notes reads.
+        Answer::Refused(status) => Err(format!("{url}: status code {status}")),
+    }
+}
+
+/// Fetch a document the host is allowed not to have.
+///
+/// Three outcomes rather than two. `Ok(Some)` is the document; **`Ok(None)` is the
+/// host saying it does not serve this**, which is a fact and not a failure; `Err` is
+/// not having been able to ask.
+///
+/// The caller that needs this is any additive tree whose absence is permanent —
+/// `systems::coverage`, where treating a 404 as transient cost three attempts thirty
+/// seconds apart before a 67 ms answer was believed, and where the belief is what
+/// retears a whole ring.
+///
+/// **Only 404 and 410 answer `None`.** A 5xx is the host failing rather than
+/// answering, and a 403 may be a misconfiguration that is fixed while the client
+/// runs; both keep the retry they had.
+pub async fn fetch_optional(req: Request) -> Result<Option<Vec<u8>>, String> {
+    let url = req.url.clone();
+    match imp::fetch_answer(req).await? {
+        Answer::Body(bytes) => Ok(Some(bytes)),
+        Answer::Refused(404 | 410) => Ok(None),
+        Answer::Refused(status) => Err(format!("{url}: status code {status}")),
+    }
 }
 
 /// Fetch the response body and decode it as UTF-8.
@@ -367,11 +409,11 @@ mod imp {
             .build()
     });
 
-    /// Native: a blocking `ureq` call. `fetch` is `async` for a uniform signature,
-    /// but has no internal await points — it is expected to run on an `IoTaskPool`
-    /// thread, where blocking is fine (that is what the pool is for). `ureq`'s
-    /// `gzip` feature transparently inflates compressed responses.
-    pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
+    /// Native: a blocking `ureq` call. `fetch_answer` is `async` for a uniform
+    /// signature, but has no internal await points — it is expected to run on an
+    /// `IoTaskPool` thread, where blocking is fine (that is what the pool is for).
+    /// `ureq`'s `gzip` feature transparently inflates compressed responses.
+    pub async fn fetch_answer(req: Request) -> Result<super::Answer, String> {
         let mut builder = match req.method {
             Method::Get => AGENT.get(&req.url),
             Method::Post => AGENT.post(&req.url),
@@ -395,14 +437,23 @@ mod imp {
         // `read_to_end` is the body coming down and inflating. The split is what
         // `super::stats` exists to record — see its doc for who consumes it.
         let started = std::time::Instant::now();
-        let response = match req.body {
+        let response = match match req.body {
             Some(ref bytes) => builder.send_bytes(bytes),
             None => builder.call(),
-        }
-        .map_err(|e| {
-            super::stats::record_error();
-            e.to_string()
-        })?;
+        } {
+            Ok(response) => response,
+            // **A status is an answer.** `ureq` reports a non-2xx as an error, and
+            // flattening it into the transport failures below is what made a
+            // permanent 404 indistinguishable from a host that was merely down.
+            Err(ureq::Error::Status(status, _)) => {
+                super::stats::record_error();
+                return Ok(super::Answer::Refused(status));
+            }
+            Err(e) => {
+                super::stats::record_error();
+                return Err(e.to_string());
+            }
+        };
         let ttfb = started.elapsed();
 
         let body_started = std::time::Instant::now();
@@ -420,7 +471,7 @@ mod imp {
             ttfb.as_micros() as u64,
             body_started.elapsed().as_micros() as u64,
         );
-        Ok(buf)
+        Ok(super::Answer::Body(buf))
     }
 }
 
@@ -492,7 +543,7 @@ mod imp {
     /// Web: the browser `fetch`, via `ehttp`. Runs on the wasm executor; the
     /// `User-Agent` header (if any) is dropped by the browser. Identification-
     /// obligated upstreams are reached through the relay instead (ADR-034).
-    pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
+    pub async fn fetch_answer(req: Request) -> Result<super::Answer, String> {
         let mut request = match req.method {
             Method::Get => ehttp::Request::get(&req.url),
             Method::Post => ehttp::Request::post(&req.url, req.body.clone().unwrap_or_default()),
@@ -515,11 +566,13 @@ mod imp {
         };
         if !response.ok {
             super::stats::record_error();
-            return Err(format!("HTTP {} {}", response.status, response.status_text));
+            // The status, not a message: the caller decides whether this host has
+            // answered a question or merely failed to. See `super::Answer`.
+            return Ok(super::Answer::Refused(response.status));
         }
         // The browser owns the connection: no TTFB/body split is observable, and
         // `Instant` panics on wasm anyway. Count what is countable.
         super::stats::record(response.bytes.len() as u64, 0, 0);
-        Ok(response.bytes)
+        Ok(super::Answer::Body(response.bytes))
     }
 }
