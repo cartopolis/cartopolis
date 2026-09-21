@@ -552,6 +552,18 @@ pub fn building_passages(
     features: &[Feature],
 ) -> std::collections::HashSet<usize> {
     let mut out = std::collections::HashSet::new();
+    // **Before the buildings are touched at all.** A passage is a way that is
+    // flagged underground; where the tile has none — which is most tiles, and
+    // every tile in a city with no tunnels in it — there is nothing to test and
+    // no reason to have an opinion about the buildings. `building_rings` walks
+    // all 8,552 footprints on the Groningen fixture and allocates a `Vec` per
+    // one, and this is called from two places per cell, so the answer that is
+    // always the empty set cost ~17,000 allocations and two copies of every
+    // building in the tile. It also *forces the decode* of the buildings layer
+    // inside the road tessellator, whether or not anything else wanted it.
+    if !features.iter().any(underground) {
+        return out;
+    }
     let rings = building_rings(tile);
     if rings.is_empty() {
         // No buildings in this tile: nothing here is a passage, which is the
