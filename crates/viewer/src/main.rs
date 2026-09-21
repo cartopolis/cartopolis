@@ -359,6 +359,11 @@ struct Cell {
     /// where the client drew a trench, which is the one thing an instrument may
     /// not do.
     bores: Vec<cartopolis_geo::tunnels::Tunnel>,
+    /// The bridge decks, kept for the same reason `bores` are: the *ground* needs
+    /// them. A deck is where an approach road stops being ground and becomes
+    /// structure, so it is what `grade_along_roads` pins the embankment to, and a
+    /// count could not say where.
+    decks: Vec<vector_tiles::BridgeDeck>,
     /// Street centre lines in tile-local metres — see `--dump-lines`.
     lines: Vec<vector_tiles::StreetLine>,
     /// Every layer, its feature count and its kinds — see `--census`.
@@ -576,7 +581,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
         match tessellate(&tile, tile_m, (z, x, y), !cli.no_cut, cli.deck_height) {
-            Ok((meshes, bridges, tunnels, bores, openings_m2)) => cells.push(Cell {
+            Ok((meshes, bridges, tunnels, bores, openings_m2, decks)) => cells.push(Cell {
                 z,
                 x,
                 y,
@@ -586,6 +591,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                 tunnels,
                 bores,
                 openings_m2,
+                decks,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
                 lines: vector_tiles::street_lines(&tile, tile_m),
                 census: vector_tiles::layer_census(&tile),
@@ -615,6 +621,7 @@ fn tessellate(
     Vec<Built>,
     Vec<cartopolis_geo::tunnels::Tunnel>,
     f32,
+    Vec<vector_tiles::BridgeDeck>,
 )> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
@@ -741,7 +748,7 @@ fn tessellate(
         })
         .collect();
     meshes.extend(tunnels.meshes);
-    Ok((meshes, bridges, built, tunnels.tunnels, opening_m2))
+    Ok((meshes, bridges, built, tunnels.tunnels, opening_m2, decks))
 }
 
 /// Samples per side the coverage and overlap measurements use. 512 over a
@@ -1135,9 +1142,10 @@ impl Field {
 /// return, so `--grade` did nothing at all on measured ground — a flag that
 /// silently did nothing, on the one field where the fault it answers is real
 /// (2026-09-21).
-fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded) {
+fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded, deck_m: f32) {
     let mut road = vec![false; n * n];
     let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
+    let mut deck_tris: Vec<[[f32; 2]; 3]> = Vec::new();
     for cell in &loaded.cells {
         #[allow(clippy::cast_precision_loss)]
         let off = (
@@ -1156,11 +1164,69 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
                 tris.push([q(t[0]), q(t[1]), q(t[2])]);
             }
         }
+        for deck in &cell.decks {
+            for t in deck.indices.chunks_exact(3) {
+                let q = |i: u32| {
+                    let v = deck.positions[i as usize];
+                    [off.0 + v[0], off.1 + v[2]]
+                };
+                deck_tris.push([q(t[0]), q(t[1]), q(t[2])]);
+            }
+        }
     }
     road_grade::mark_roads(&mut road, n, (0.0, 0.0), step_m, &tris);
     road_grade::dilate_mask(&mut road, n, road_grade::DEFAULT_MARGIN_SAMPLES);
+
+    // **Where the ground stops and the structure starts.** Unlike the client, this
+    // harness pushes a deck's carriageways into the cell's own meshes, so the
+    // marking above has just claimed the roads *on* every deck as ground. Clearing
+    // the deck footprint out of the corridor is what stops the relaxation grading
+    // the land up to meet a road that is not standing on it — and the samples that
+    // survive next to the footprint are the abutments, which is the one place the
+    // road genuinely is at deck height.
+    let mut deck = vec![false; n * n];
+    road_grade::mark_roads(&mut deck, n, (0.0, 0.0), step_m, &deck_tris);
+    for i in 0..n * n {
+        if deck[i] {
+            road[i] = false;
+        }
+    }
+    let mut pins = vec![f32::NAN; n * n];
+    let mut abutments = 0usize;
+    for z in 1..n - 1 {
+        for x in 1..n - 1 {
+            let i = z * n + x;
+            if !road[i] {
+                continue;
+            }
+            if deck[i - 1] || deck[i + 1] || deck[i - n] || deck[i + n] {
+                pins[i] = deck_m;
+                abutments += 1;
+            }
+        }
+    }
+
     let before: Vec<f32> = samples.to_vec();
-    let moved = road_grade::flatten(samples, n, &road, road_grade::DEFAULT_PASSES);
+    let raised = road_grade::ramp_from_pins(
+        samples,
+        n,
+        &road,
+        &mut pins,
+        step_m,
+        road_grade::MAX_APPROACH_GRADE,
+    );
+    let moved = road_grade::flatten_pinned(samples, n, &road, &pins, road_grade::DEFAULT_PASSES);
+    // **`println!`, not `tracing`, and the reason is the one `report` gives.**
+    // `build_field` runs before the `App` exists, so Bevy has not installed a log
+    // subscriber yet and every `tracing` line from here goes nowhere at all. The
+    // "graded the ground along the roads" line below has been invisible for its
+    // whole life for exactly this reason, which is why the grading looked like it
+    // was not running today.
+    println!(
+        "  approach ramps: {} deck triangles, {abutments} abutment samples, \
+         {raised} samples raised",
+        deck_tris.len() / 3
+    );
     // **How far, not just how many.** A count of moved samples says the pass
     // ran; it does not say whether it changed the ground by half a metre or by
     // a millimetre, and those look identical in a picture.
@@ -1172,12 +1238,9 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
     }
     #[allow(clippy::cast_precision_loss)]
     let mean = if moved > 0 { sum / moved as f64 } else { 0.0 };
-    tracing::info!(
-        marked = road.iter().filter(|m| **m).count(),
-        moved,
-        mean_move_m = mean,
-        worst_move_m = worst,
-        "graded the ground along the roads"
+    println!(
+        "  graded along the roads: {} marked, {moved} moved, mean {mean:.3} m, worst {worst:.3} m",
+        road.iter().filter(|m| **m).count()
     );
 }
 
@@ -1193,7 +1256,13 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
         // that never got it: the grading sat below this return, so `--grade` was
         // a flag that silently did nothing on real ground.
         if cli.grade {
-            grade_along_roads(&mut field.samples, field.n, field.step_m, loaded);
+            grade_along_roads(
+                &mut field.samples,
+                field.n,
+                field.step_m,
+                loaded,
+                cli.deck_height,
+            );
         }
         return Some(field);
     }
@@ -1233,7 +1302,7 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
     }
 
     if cli.grade {
-        grade_along_roads(&mut samples, n, step_m, loaded);
+        grade_along_roads(&mut samples, n, step_m, loaded, cli.deck_height);
     }
 
     let lo = samples.iter().copied().fold(f32::INFINITY, f32::min);
