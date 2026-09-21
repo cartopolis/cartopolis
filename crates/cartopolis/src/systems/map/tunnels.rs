@@ -37,32 +37,17 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use cartopolis_geo::tunnels::Tunnel;
 
-/// How far back up a tunnel is lifted at one place: whatever the height survey
-/// has already dug there, but never more than the depth the tessellator put the
-/// carriageway at.
-///
-/// **A tunnel must not be dug twice, and it must not be filled in either.** The
-/// survey's bare-ground model has no roof to hide the bottom of a cutting, so over
-/// an open cut it measures the trench — and sinking an invented seven metres into
-/// a measured nine puts the carriageway sixteen metres under the street. Lifting
-/// by `dug` cancels exactly the part the measurement already accounts for.
-///
-/// The cap is what stops the other error. Clamped to `depth`, the lift can raise
-/// the deck to the measured ground at that place and no further, so a fully
-/// measured cut lands the deck on the trench floor with its wall tops at street
-/// level; a covered tunnel, where the laser saw the lid and `dug` is zero, keeps
-/// the whole convention; a partly measured cut absorbs what was measured and
-/// invents the rest; and outside the Netherlands the field is flat zero and this
-/// is the old behaviour to the bit.
+/// How far back up a tunnel is lifted at one place — see
+/// [`cartopolis_geo::tunnels::lift_for`], which is where it lives.
 ///
 /// One function because four places computed it — the drawn mesh, the walkable
 /// floor, the nearest-tunnel metric and the shot harness — and three of them had
 /// their own idea of the cap. The drawn deck and the floor under it disagreeing is
-/// not a cosmetic difference; it is the avatar walking through the road.
-#[must_use]
-pub fn lift_for(depth: f32, dug: f32) -> f32 {
-    dug.max(0.0).min(depth.max(0.0))
-}
+/// not a cosmetic difference; it is the avatar walking through the road. It sits
+/// in the shared crate rather than here for the fifth caller: the harness draws
+/// the same tunnels from the same tiles and cannot depend on this crate, so a copy
+/// there is a copy that drifts (`docs/notes/harness-and-client-agree.md`).
+pub use cartopolis_geo::tunnels::lift_for;
 
 /// One cell's tunnels, as the worker built them: tile-local metres.
 #[derive(Default)]

@@ -315,6 +315,24 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
+/// One tunnel `build_tunnels` decided on, as `--check` reports it.
+///
+/// **The place is the part that was missing.** A count of tunnels and how much of
+/// each is roofed says whether the rules fired; it does not say where to stand to
+/// look at one, and every viewpoint over a lid in this tree was found by hand from
+/// a tile index and arithmetic done twice. `mid` is the midpoint of the centre
+/// line on Earth, which is what `--at` and the client's `--shot` both take.
+struct Built {
+    width_m: f32,
+    length_m: f32,
+    covered: usize,
+    vertices: usize,
+    /// Midpoint of the centre line, WGS84.
+    mid: (f64, f64),
+    /// Compass bearing along the centre line at its midpoint, degrees.
+    bearing: f32,
+}
+
 /// One cell's tessellated ground, and where it sits.
 struct Cell {
     z: u32,
@@ -333,7 +351,14 @@ struct Cell {
     /// Ground area the tunnel openings take out, in square metres.
     openings_m2: f32,
     /// What `build_tunnels` decided, per tunnel — see `--check`.
-    tunnels: Vec<(f32, f32, usize, usize)>,
+    tunnels: Vec<Built>,
+    /// The tunnels themselves, kept because the *ground* needs them: over a lid
+    /// the height survey is stale and has to be overridden
+    /// (`cartopolis_geo::tunnels::fill_over_lids`), and the tunnel's own mesh must
+    /// not be dug twice (`stand_tunnel_on`). Without these the harness drew a park
+    /// where the client drew a trench, which is the one thing an instrument may
+    /// not do.
+    bores: Vec<cartopolis_geo::tunnels::Tunnel>,
     /// Street centre lines in tile-local metres — see `--dump-lines`.
     lines: Vec<vector_tiles::StreetLine>,
     /// Every layer, its feature count and its kinds — see `--census`.
@@ -550,8 +575,8 @@ fn load(cli: &Cli) -> Result<Loaded> {
             let (lat, _) = cartopolis_core::world::tile_to_lat_lng(x, y, z);
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
-        match tessellate(&tile, tile_m, !cli.no_cut, cli.deck_height) {
-            Ok((meshes, bridges, tunnels, openings_m2)) => cells.push(Cell {
+        match tessellate(&tile, tile_m, (z, x, y), !cli.no_cut, cli.deck_height) {
+            Ok((meshes, bridges, tunnels, bores, openings_m2)) => cells.push(Cell {
                 z,
                 x,
                 y,
@@ -559,6 +584,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                 meshes,
                 bridges,
                 tunnels,
+                bores,
                 openings_m2,
                 unhandled: vector_tiles::unhandled_land_kinds(&tile),
                 lines: vector_tiles::street_lines(&tile, tile_m),
@@ -580,12 +606,14 @@ fn load(cli: &Cli) -> Result<Loaded> {
 fn tessellate(
     tile: &TileData,
     tile_m: f32,
+    cell: (u32, i64, i64),
     cut: bool,
     deck_m: f32,
 ) -> Result<(
     Vec<SurfaceMesh>,
     (usize, Vec<String>),
-    Vec<(f32, f32, usize, usize)>,
+    Vec<Built>,
+    Vec<cartopolis_geo::tunnels::Tunnel>,
     f32,
 )> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
@@ -673,7 +701,7 @@ fn tessellate(
             (a * 0.5).abs()
         })
         .sum();
-    let built: Vec<(f32, f32, usize, usize)> = tunnels
+    let built: Vec<Built> = tunnels
         .tunnels
         .iter()
         .map(|t| {
@@ -682,16 +710,36 @@ fn tessellate(
                 .windows(2)
                 .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
                 .sum();
-            (
-                t.half_w * 2.0,
-                len,
-                t.covered.iter().filter(|c| **c).count(),
-                t.covered.len(),
-            )
+            // The midpoint by *index* rather than by arc length: a centre line
+            // here is a handful of vertices and the question is only "where do I
+            // stand to look at this", which a vertex answers as well as an exact
+            // halfway point and without the walk.
+            let mid = t.centre[t.centre.len() / 2];
+            let (a, b) = (t.centre[0], t.centre[t.centre.len() - 1]);
+            // +y is south in tile space, so north is −dy and this is a compass
+            // bearing rather than a mathematical angle.
+            let bearing = (b[0] - a[0])
+                .atan2(a[1] - b[1])
+                .to_degrees()
+                .rem_euclid(360.0);
+            let (z, cx, cy) = cell;
+            let (lat, lng) = cartopolis_core::world::tile_frac_to_lat_lng(
+                cx as f64 + f64::from(mid[0] / tile_m),
+                cy as f64 + f64::from(mid[1] / tile_m),
+                z,
+            );
+            Built {
+                width_m: t.half_w * 2.0,
+                length_m: len,
+                covered: t.covered.iter().filter(|c| **c).count(),
+                vertices: t.covered.len(),
+                mid: (lat, lng),
+                bearing,
+            }
         })
         .collect();
     meshes.extend(tunnels.meshes);
-    Ok((meshes, bridges, built, opening_m2))
+    Ok((meshes, bridges, built, tunnels.tunnels, opening_m2))
 }
 
 /// Samples per side the coverage and overlap measurements use. 512 over a
@@ -772,8 +820,12 @@ fn report(cell: &Cell) {
     }
     if !cell.tunnels.is_empty() {
         println!("  {} tunnel(s) built:", cell.tunnels.len());
-        for (w, len, covered, total) in &cell.tunnels {
-            println!("    {w:>5.1} m wide, {len:>6.1} m long, {covered}/{total} vertices roofed");
+        for t in &cell.tunnels {
+            println!(
+                "    {:>5.1} m wide, {:>6.1} m long, {}/{} vertices roofed, \
+                 --at {:.5},{:.5} --look=-20,{:.0}",
+                t.width_m, t.length_m, t.covered, t.vertices, t.mid.0, t.mid.1, t.bearing
+            );
         }
     }
     if cell.bridges.0 > 0 || !cell.bridges.1.is_empty() {
@@ -953,12 +1005,23 @@ fn count(mask: &[bool]) -> usize {
     mask.iter().filter(|m| **m).count()
 }
 
-/// Samples per side of the synthetic height field over the loaded area.
+/// Samples per side of the **synthetic** height field over the loaded area.
 ///
 /// Matches what the client works at — its field is ~3.1 m on a desktop and 12.5 m
 /// on a handset, and the tearing is a function of that spacing. A harness sampling
 /// far finer would quietly fix the fault it exists to show.
+///
+/// The *measured* field sizes itself instead (`measured_field`), off
+/// [`cartopolis_geo::ahn::SAMPLE_M`]: a synthetic landform is smooth at any
+/// spacing, and real ground with a ten-metre trench cut through it is not.
 const FIELD_SAMPLES: usize = 512;
+
+/// The most samples per side one measured field may ask AHN for.
+///
+/// The client's own grid, and for its reason: this is one request and one raster,
+/// 2049² is 12 MB on the wire, and AHN's native half metre over the same box would
+/// be a hundred times that.
+const MAX_MEASURED_SAMPLES: usize = 2049;
 
 /// Metre-scale roughness in the synthetic ground, in metres.
 ///
@@ -979,10 +1042,10 @@ const ROAD_MARGIN_SAMPLES: usize = 6;
 
 /// The longest ground edge left unsplit before draping, in metres.
 ///
-/// The client's `MAX_GROUND_EDGE_M` — four times its 3.125 m field spacing. Stated
-/// here rather than imported because it lives in the client crate this harness
-/// deliberately does not depend on; the refinement it is handed to is shared.
-const MAX_GROUND_EDGE_M: f32 = 3.125 * 4.0;
+/// The client's `MAX_GROUND_EDGE_M` — four times its field spacing, off the shared
+/// constant rather than a copy of the number, because the client crate this harness
+/// deliberately does not depend on is where the other half of the pair lives.
+const MAX_GROUND_EDGE_M: f32 = cartopolis_geo::ahn::SAMPLE_M * 4.0;
 
 /// The ground the surfaces stand on, as a resource so the camera can stand on it
 /// too. Built once in `main` rather than inside `spawn_scene`, which is what lets
@@ -1004,6 +1067,10 @@ impl Ground {
 struct Field {
     samples: Vec<f32>,
     step_m: f32,
+    /// Samples per side. Carried rather than read off a constant because the
+    /// measured field sizes itself to the ground it covers, and the synthetic one
+    /// does not.
+    n: usize,
 }
 
 impl terrain_refine::GroundField for Field {
@@ -1018,10 +1085,32 @@ impl terrain_refine::GroundField for Field {
     }
 }
 
+/// The two questions `cartopolis_geo::tunnels` asks of a height survey, answered
+/// off this field — the same pair the client answers off its streamed one.
+impl cartopolis_geo::tunnels::Survey for Field {
+    fn here(&self, x: f32, z: f32) -> f32 {
+        Field::at(self, x, z)
+    }
+
+    fn around(&self, x: f32, z: f32) -> f32 {
+        // The client's sampler, to the ring and the count: the highest of eight
+        // points on a circle. A mean would be dragged down by the trench itself
+        // wherever the ring clips it.
+        let r = cartopolis_geo::tunnels::DATUM_M;
+        let mut hi = Field::at(self, x, z);
+        for k in 0..8 {
+            #[allow(clippy::cast_precision_loss)]
+            let a = std::f32::consts::TAU * k as f32 / 8.0;
+            hi = hi.max(Field::at(self, x + r * a.cos(), z + r * a.sin()));
+        }
+        hi
+    }
+}
+
 impl Field {
     /// Bilinear height at a world point, `0.0` outside.
     fn at(&self, x: f32, z: f32) -> f32 {
-        let n = FIELD_SAMPLES;
+        let n = self.n;
         let (fx, fz) = (x / self.step_m, z / self.step_m);
         #[allow(clippy::cast_precision_loss)]
         if !(0.0..=(n - 1) as f32).contains(&fx) || !(0.0..=(n - 1) as f32).contains(&fz) {
@@ -1131,7 +1220,7 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
     let lo = samples.iter().copied().fold(f32::INFINITY, f32::min);
     let hi = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     tracing::info!(span_m = span, step_m, low_m = lo, high_m = hi, "ground");
-    Some(Field { samples, step_m })
+    Some(Field { samples, step_m, n })
 }
 
 /// The tone this draws a surface in.
@@ -1193,7 +1282,7 @@ fn spawn_scene(
                     continue;
                 }
             }
-            let Some(mesh) = to_bevy_mesh(m, field, cell_origin) else {
+            let Some(mesh) = to_bevy_mesh(m, field, cell_origin, &cell.bores) else {
                 continue;
             };
             drawn.meshes += 1;
@@ -1254,7 +1343,12 @@ fn spawn_scene(
     );
 }
 
-fn to_bevy_mesh(m: &SurfaceMesh, field: Option<&Field>, cell_origin: Vec3) -> Option<Mesh> {
+fn to_bevy_mesh(
+    m: &SurfaceMesh,
+    field: Option<&Field>,
+    cell_origin: Vec3,
+    bores: &[cartopolis_geo::tunnels::Tunnel],
+) -> Option<Mesh> {
     if m.positions.is_empty() || m.indices.is_empty() {
         return None;
     }
@@ -1292,21 +1386,60 @@ fn to_bevy_mesh(m: &SurfaceMesh, field: Option<&Field>, cell_origin: Vec3) -> Op
     };
     let mut rungs = Vec::new();
     if let Some(f) = field {
-        terrain_refine::refine_for_terrain(
-            &mut positions,
-            &mut indices,
-            &mut uvs,
-            &mut normals,
-            &mut colors,
-            &mut rungs,
-            MAX_GROUND_EDGE_M,
-            Some(terrain_refine::Crease {
-                field: f,
-                origin: [cell_origin.x, cell_origin.z],
-            }),
-        );
-        for p in &mut positions {
-            p[1] += f.at(cell_origin.x + p[0], cell_origin.z + p[2]);
+        // **A tunnel is not ground and must not be treated as it.** Refining its
+        // walls against the field splits a vertical quad into a grid following a
+        // hillside it does not stand on, and displacing it by the field alone digs
+        // it twice — the survey has already measured the open trench, so an
+        // invented seven metres on top of a measured nine puts the carriageway
+        // sixteen metres under the street. The rules are the client's, in
+        // `cartopolis_geo::tunnels`, because a second copy of them here is exactly
+        // the drift this harness exists to rule out.
+        let origin = [cell_origin.x, cell_origin.z];
+        if matches!(
+            m.group,
+            SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
+        ) {
+            cartopolis_geo::tunnels::stand_tunnel_on(&mut positions, origin, f, &|p| {
+                bores
+                    .iter()
+                    .filter_map(|t| t.road_under([p[0] - origin[0], p[1] - origin[1]]))
+                    .min_by(f32::total_cmp)
+                    .map(|y| -y)
+            });
+        } else {
+            // The measured ground with the lids back on it — one surface, so the
+            // refinement resolves the lift as well as the landform. Applied after
+            // refining instead, it tears the ground along every buried road.
+            let lidded = cartopolis_geo::tunnels::Lidded {
+                ground: f,
+                around: &|x, z| <Field as cartopolis_geo::tunnels::Survey>::around(f, x, z),
+                weight: &|p| {
+                    let local = [p[0] - origin[0], p[1] - origin[1]];
+                    bores.iter().fold(0.0f32, |best, t| {
+                        best.max(t.covered_weight(local, cartopolis_geo::tunnels::DATUM_M))
+                    })
+                },
+            };
+            terrain_refine::refine_for_terrain(
+                &mut positions,
+                &mut indices,
+                &mut uvs,
+                &mut normals,
+                &mut colors,
+                &mut rungs,
+                MAX_GROUND_EDGE_M,
+                Some(terrain_refine::Crease {
+                    field: &lidded,
+                    origin,
+                }),
+            );
+            for p in &mut positions {
+                p[1] += terrain_refine::GroundField::at(
+                    &lidded,
+                    cell_origin.x + p[0],
+                    cell_origin.z + p[2],
+                );
+            }
         }
     }
     let vertex_count = positions.len();
@@ -1317,14 +1450,20 @@ fn to_bevy_mesh(m: &SurfaceMesh, field: Option<&Field>, cell_origin: Vec3) -> Op
     // Indices before the normals: computing them walks the triangles.
     mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
     // Normals off the geometry actually drawn — a displaced surface lit by flat
-    // normals shades as though it were still level.
-    if field.is_some() {
+    // normals shades as though it were still level. A tunnel keeps the ones it was
+    // built with, as it does in the client: its walls are vertical, and re-deriving
+    // them from the ground's slope lights them as the hillside they are cut into.
+    let volumetric = matches!(
+        m.group,
+        SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
+    );
+    if field.is_some() && !volumetric {
         mesh.compute_normals();
     } else {
-        let normals = if m.normals.len() == m.positions.len() {
+        let normals = if m.normals.len() == vertex_count {
             m.normals.clone()
         } else {
-            vec![[0.0, 1.0, 0.0]; m.positions.len()]
+            vec![[0.0, 1.0, 0.0]; vertex_count]
         };
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     }
@@ -2085,7 +2224,17 @@ fn measured_field(loaded: &Loaded) -> Option<Field> {
     }
     let rd = cartopolis_geo::ahn::wgs84_to_rd(lat, lng);
     let half = f64::from(span) * 0.5;
-    let grid = FIELD_SAMPLES as u32;
+    // **As finely as the client bakes it, not as finely as one constant happened
+    // to allow.** A fixed 512 samples is 3.1 m over one cell and 5.7 m over four,
+    // and 5.7 m is not a coarser picture of the same ground: it aliased the
+    // Groningen ring's trench into a crumpled valley with folds and creases down
+    // its sides, none of which the client has (measured 2026-09-21). The grid
+    // follows the box so that the spacing does not.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = ((span / cartopolis_geo::ahn::SAMPLE_M).round() as usize + 1)
+        .clamp(2, MAX_MEASURED_SAMPLES);
+    #[allow(clippy::cast_possible_truncation)]
+    let grid = n as u32;
     let url = cartopolis_geo::ahn::coverage_url(
         [rd[0] - half, rd[1] - half],
         [rd[0] + half, rd[1] + half],
@@ -2121,9 +2270,18 @@ fn measured_field(loaded: &Loaded) -> Option<Field> {
         }
     };
 
-    // Relative to the middle, and holes filled from the finite samples around
-    // them. The mean is the honest filler: AHN's no-data is water, which sits at
-    // the level of the ground beside it far more nearly than at zero.
+    // **Holes are closed from the ground around them, exactly as the client closes
+    // them.** AHN is a bare-earth model: there is *no data* under every building,
+    // so a city arrives as a field of pits, and this used to drop each one to the
+    // box's mean — a metre-deep crater per house. A mesh bent onto that crumples
+    // along every street, which is the harness inventing the fault it was built to
+    // find (2026-09-21). `fill_holes` is the client's own, shared for this.
+    let mut samples = samples;
+    cartopolis_geo::ahn::fill_holes(
+        &mut samples,
+        n,
+        Some(cartopolis_geo::ahn::FILL_REACH_M / (span / (n - 1) as f32)),
+    );
     let finite: Vec<f32> = samples.iter().copied().filter(|s| s.is_finite()).collect();
     if finite.is_empty() {
         eprintln!("ahn: no data at all over this box — the ground stays flat");
@@ -2139,11 +2297,11 @@ fn measured_field(loaded: &Loaded) -> Option<Field> {
         .iter()
         .fold((f32::MAX, f32::MIN), |(a, b), s| (a.min(*s), b.max(*s)));
     #[allow(clippy::cast_precision_loss)]
-    let step_m = span / (FIELD_SAMPLES - 1) as f32;
+    let step_m = span / (n - 1) as f32;
     eprintln!(
         "ahn: datum {mean:.2} m, low {lo:.2} m, high {hi:.2} m, relief {:.2} m, \
-         sample {step_m:.2} m",
+         sample {step_m:.2} m over {n}²",
         hi - lo
     );
-    Some(Field { samples, step_m })
+    Some(Field { samples, step_m, n })
 }

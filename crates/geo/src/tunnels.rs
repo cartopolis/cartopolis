@@ -81,6 +81,7 @@
 //! a lid over its own entrance.
 
 use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
+use crate::terrain_refine::GroundField;
 use crate::vector_tiles::{
     clip_polyline, flag_of, kind_of, road_depth_rung, SurfaceGroup, SurfaceMesh, TileData,
     VERTEX_BYTES,
@@ -357,6 +358,134 @@ pub struct TunnelTessellation {
     pub openings: Vec<Vec<[f32; 2]>>,
     /// Every tunnel in the tile, for footing and collision.
     pub tunnels: Vec<Tunnel>,
+}
+
+/// How far to reach for the land *around* a tunnel when asking how much of its
+/// depth the height survey has already dug.
+///
+/// Wider than the cut and narrower than the block: a dual carriageway in a trench
+/// is about 25 m of road plus its walls, so a shorter reach samples the trench
+/// itself and finds no drop at all, while a much longer one starts finding the
+/// next street's embankment and lifting the tunnel out of its own hole.
+pub const DATUM_M: f32 = 30.0;
+
+/// How far back up a tunnel is lifted at one place: whatever the height survey has
+/// already dug there, but never more than the depth the tessellator put the
+/// carriageway at.
+///
+/// **A tunnel must not be dug twice, and it must not be filled in either.** The
+/// survey's bare-ground model has no roof to hide the bottom of a cutting, so over
+/// an open cut it measures the trench — and sinking an invented seven metres into
+/// a measured nine puts the carriageway sixteen metres under the street. Lifting
+/// by `dug` cancels exactly the part the measurement already accounts for.
+///
+/// The cap is what stops the other error. Clamped to `depth`, the lift can raise
+/// the deck to the measured ground at that place and no further, so a fully
+/// measured cut lands the deck on the trench floor with its wall tops at street
+/// level; a covered tunnel, where the laser saw the lid and `dug` is zero, keeps
+/// the whole convention; a partly measured cut absorbs what was measured and
+/// invents the rest; and outside the Netherlands the field is flat zero and this
+/// is the old behaviour to the bit.
+#[must_use]
+pub fn lift_for(depth: f32, dug: f32) -> f32 {
+    dug.max(0.0).min(depth.max(0.0))
+}
+
+/// What the height survey says about one place, in whatever frame the caller's
+/// meshes are in.
+///
+/// Two questions and no more, because those are the two the tunnel rules ask: how
+/// high the ground is *here*, and how high the land is *around* here. The client
+/// answers them from its streamed `TerrainField` and the harness from one blocking
+/// request, and neither detail belongs in the rules.
+pub trait Survey {
+    /// Ground height at a point.
+    fn here(&self, x: f32, z: f32) -> f32;
+    /// Height of the land around that point, [`DATUM_M`] out — the level the
+    /// tunnel was cut down from.
+    fn around(&self, x: f32, z: f32) -> f32;
+}
+
+/// Stand a tunnel's own mesh — its deck, its walls, its roof — on the measured
+/// ground.
+///
+/// `depth_at` answers how deep the tessellator put the carriageway at a point, as
+/// a positive number of metres, and `None` where no corridor covers it; those
+/// vertices (the notch triangles on the outside of a bend reach a hair past the
+/// corridor) keep `fallback`, which callers set to the deepest vertex in the mesh.
+///
+/// **The cap is the depth under this vertex, not the deepest point of the mesh it
+/// is in.** A merged mesh is the whole tile's tunnels, so a mesh-wide cap lifts
+/// everything shallower too far — and almost all of a tunnel is shallower, because
+/// the ramps spend about 117 m each reaching full depth on runs that arrive
+/// 170–240 m long. Asking by position also keeps a wall from shearing: the top of
+/// a wall quad and the deck under it get one lift, so the clearance between them
+/// survives.
+pub fn stand_tunnel_on(
+    positions: &mut [[f32; 3]],
+    origin: [f32; 2],
+    survey: &dyn Survey,
+    depth_at: &dyn Fn([f32; 2]) -> Option<f32>,
+) {
+    let fallback = -positions.iter().map(|p| p[1]).fold(0.0_f32, f32::min);
+    for p in positions.iter_mut() {
+        let (x, z) = (origin[0] + p[0], origin[1] + p[2]);
+        let here = survey.here(x, z);
+        let dug = survey.around(x, z) - here;
+        let depth = depth_at([x, z]).unwrap_or(fallback);
+        p[1] += here + lift_for(depth, dug);
+    }
+}
+
+/// The measured ground with every lid put back on it.
+///
+/// **Two sources disagree and one of them is stale.** The height survey measures
+/// what it flew over, and Groningen's ring was an open trench when it was flown
+/// and has a lid on it now — so the survey digs nine metres out of ground that is
+/// continuous, the lid stays at street level, and a covered road reads as a raised
+/// platform with a ditch either side. The map's tag is the newer fact, so over a
+/// covered stretch the ground is lifted back to the level of the land around it,
+/// tapering out so the fill has no crease at its edge.
+///
+/// **It is a `GroundField` and not a pass over finished vertices**, and that is
+/// the whole point of the type. Added afterwards, the lift is a second surface the
+/// refinement never saw: a land parcel earcut into two triangles interpolates it
+/// across a 100 m chord while the road beside it, which has a vertex every few
+/// metres, follows it — so the two disagree by metres and the ground tears open
+/// along the buried road. Those were the dark jagged seams running down the
+/// Zuiderplantsoen over Groningen's ring (measured 2026-09-21). Handed to
+/// [`crate::terrain_refine::refine_for_terrain`] as the crease field instead, the
+/// lift is part of the surface being resolved, every mesh splits its edges against
+/// the same function, and the shared-edge agreement the refinement already
+/// guarantees covers the lid too.
+///
+/// Nothing happens where there is no tunnel (the weight is 0 and this is one
+/// comparison), and nothing happens over an *open* stretch — which is right,
+/// because there the survey and the map agree that the ground is missing.
+pub struct Lidded<'a> {
+    /// The measured ground, before any lid.
+    pub ground: &'a dyn GroundField,
+    /// The level of the land around a point, [`DATUM_M`] out — what a lid is
+    /// lifted back to.
+    pub around: &'a dyn Fn(f32, f32) -> f32,
+    /// [`Tunnel::covered_weight`] over whichever tunnels the caller holds.
+    pub weight: &'a dyn Fn([f32; 2]) -> f32,
+}
+
+impl GroundField for Lidded<'_> {
+    fn min_ground_edge_m(&self) -> f32 {
+        self.ground.min_ground_edge_m()
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        let here = self.ground.at(x, z);
+        let w = (self.weight)([x, z]);
+        if w > 0.0 {
+            here + w * ((self.around)(x, z) - here)
+        } else {
+            here
+        }
+    }
 }
 
 /// True for a way the tiles flag as a tunnel.
@@ -1759,6 +1888,164 @@ fn cut_mesh(
     mesh.colors = colors;
     mesh.rungs = rungs;
     true
+}
+
+#[cfg(test)]
+mod terrain_tests {
+    use super::{lift_for, stand_tunnel_on, GroundField, Lidded, Survey, Tunnel, DATUM_M};
+
+    /// A survey that has already dug a trench `dug` metres deep everywhere.
+    struct Dug(f32);
+
+    impl Survey for Dug {
+        fn here(&self, _x: f32, _z: f32) -> f32 {
+            -self.0
+        }
+        fn around(&self, _x: f32, _z: f32) -> f32 {
+            0.0
+        }
+    }
+
+    impl GroundField for Dug {
+        fn min_ground_edge_m(&self) -> f32 {
+            crate::terrain_refine::MIN_GROUND_EDGE_M
+        }
+        fn at(&self, _x: f32, _z: f32) -> f32 {
+            -self.0
+        }
+    }
+
+    /// The ground a mesh is actually bent onto over `t`, with `dug` metres already
+    /// measured out of it. Handed to a closure rather than returned: `Lidded`
+    /// borrows the two closures it is built from, which cannot outlive the call
+    /// that makes them.
+    fn lidded<R>(ground: &Dug, t: &Tunnel, f: impl FnOnce(&Lidded<'_>) -> R) -> R {
+        let around = |_x: f32, _z: f32| 0.0;
+        let weight = |p: [f32; 2]| t.covered_weight(p, DATUM_M);
+        f(&Lidded {
+            ground,
+            around: &around,
+            weight: &weight,
+        })
+    }
+
+    /// One straight tunnel 200 m long, 10 m wide, its deck 7 m down, with
+    /// `covered` as given per vertex.
+    fn bore(covered: [bool; 3]) -> Tunnel {
+        Tunnel {
+            centre: vec![[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]],
+            road_y: vec![-7.0, -7.0, -7.0],
+            half_w: 5.0,
+            clearance: super::CLEARANCE_M,
+            covered: covered.to_vec(),
+        }
+    }
+
+    /// **A tunnel must not be dug twice.** The survey's bare-ground model has no
+    /// roof to hide the bottom of a cutting, so over an open cut it measures the
+    /// trench — and displacing an invented seven metres by a measured nine puts the
+    /// carriageway sixteen metres under the street, with its wall tops buried.
+    ///
+    /// Three cases and one piece of arithmetic settles all of them, which is why
+    /// they are one test: a fully measured cut lands the deck exactly on the
+    /// measured floor, a lid the laser flew over (nothing dug) keeps the whole
+    /// convention, and a partly measured cut absorbs what was measured and invents
+    /// the rest.
+    #[test]
+    fn a_tunnel_is_not_dug_twice() {
+        let depth = |_: [f32; 2]| Some(7.0);
+        for (dug, want) in [(7.0, -7.0), (0.0, -7.0), (3.0, -7.0), (9.0, -9.0)] {
+            let mut deck = vec![[50.0, -7.0, 0.0]];
+            stand_tunnel_on(&mut deck, [0.0, 0.0], &Dug(dug), &depth);
+            assert!(
+                (deck[0][1] - want).abs() < 1e-3,
+                "a {dug} m cut put the deck at {} m, not {want} m",
+                deck[0][1]
+            );
+        }
+    }
+
+    /// The lift is capped by the depth at *that place*, so it can raise a deck to
+    /// the measured ground and no further. Without the cap a survey that dug deeper
+    /// than the convention lifts the deck above the land beside it — the
+    /// carriageway standing proud of the ground.
+    #[test]
+    fn the_lift_never_exceeds_the_depth() {
+        assert!((lift_for(7.0, 20.0) - 7.0).abs() < 1e-6);
+        assert!((lift_for(2.4, 6.4) - 2.4).abs() < 1e-6);
+        // Rising ground rather than a cutting is not a lift at all.
+        assert!(lift_for(7.0, -3.0).abs() < 1e-6);
+    }
+
+    /// **Where a road has a lid, the ground over it is whole**, and the survey —
+    /// flown when the road was an open trench — says it is not. Over a covered
+    /// stretch the ground is lifted back to the land around it; over an open one
+    /// nothing happens, because there the two sources agree that the ground is
+    /// missing.
+    #[test]
+    fn ground_is_lifted_over_a_lid_and_left_alone_over_a_gap() {
+        let ground = Dug(9.0);
+        let covered = bore([true, true, true]);
+        let open = bore([false, false, false]);
+
+        let lid = lidded(&ground, &covered, |f| f.at(100.0, 0.0));
+        assert!(lid.abs() < 1e-3, "ground over a lid stayed {lid} m down");
+
+        let gap = lidded(&ground, &open, |f| f.at(100.0, 0.0));
+        assert!(
+            (gap + 9.0).abs() < 1e-3,
+            "ground over an open cut was filled in to {gap} m"
+        );
+    }
+
+    /// The fill tapers rather than stopping, or it leaves a crease along the line
+    /// where it ends — a straight-sided plateau in the middle of a park.
+    #[test]
+    fn the_fill_tapers_out_rather_than_creasing() {
+        let ground = Dug(9.0);
+        let t = bore([true, true, true]);
+        lidded(&ground, &t, |field| {
+            let at = |off: f32| field.at(100.0, off);
+            // Over the carriageway, fully lifted; a datum out, not lifted at all;
+            // and monotone in between.
+            assert!(at(0.0).abs() < 1e-3);
+            assert!((at(5.0 + DATUM_M + 1.0) + 9.0).abs() < 1e-3);
+            let mid = at(5.0 + DATUM_M * 0.5);
+            assert!(
+                mid < -1.0 && mid > -8.0,
+                "the taper's midpoint is {mid} m, which is a step and not a slope"
+            );
+        });
+    }
+
+    /// **The lid has to be part of the surface the refinement resolves.**
+    ///
+    /// A mesh is split until the field departs from its own chord by less than
+    /// `CREASE_SAG_M`. Over a lid the lift is nine metres across a thirty-metre
+    /// taper, so an unrefined edge crossing it misses by metres — and the mesh
+    /// next to it, subdivided differently, misses by a different amount. That
+    /// difference is a hole in the ground along the buried road.
+    ///
+    /// This pins the property that makes the refinement close it: the field the
+    /// crease rule reads must *be* the ground with the lid on, so the sag it
+    /// measures is the real one.
+    #[test]
+    fn the_lid_is_visible_to_the_crease_rule() {
+        let ground = Dug(9.0);
+        let t = bore([true, true, true]);
+        lidded(&ground, &t, |field| {
+            // A 60 m edge straight across the corridor: its ends are down in the
+            // trench's datum and its middle is up on the lid.
+            let (a, b) = ([100.0, -50.0], [100.0, 50.0]);
+            let chord = f32::midpoint(field.at(a[0], a[1]), field.at(b[0], b[1]));
+            let sag = (field.at(100.0, 0.0) - chord).abs();
+            assert!(
+                sag > crate::terrain_refine::CREASE_SAG_M,
+                "the lid sags {sag} m under its own chord, which the crease rule \
+                 would not split — so the lift is invisible to it and the ground tears"
+            );
+        });
+    }
 }
 
 #[cfg(test)]

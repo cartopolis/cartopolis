@@ -55,7 +55,7 @@ pub const CREASE_SAG_M: f32 = 0.15;
 /// Half the coarse field's own spacing. A floor for the desktop's field, not the
 /// number itself — read it through [`GroundField::min_ground_edge_m`], which scales
 /// it to the field the machine actually has.
-pub const MIN_GROUND_EDGE_M: f32 = 3.125 * 0.5;
+pub const MIN_GROUND_EDGE_M: f32 = crate::ahn::SAMPLE_M * 0.5;
 
 /// Vertices one [`refine_for_terrain`] call may add on the crease rule's account.
 /// A bound on the burst, not a target.

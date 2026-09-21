@@ -143,7 +143,7 @@ const TAPER_START: f32 = 0.82;
 /// ~150 m", which was true of the 25 m field it was written for and would be 37 m of
 /// the 6.25 m one — every building footprint an unfilled pit, with nothing in the
 /// constant to say the resolution had moved out from under it.
-const FILL_REACH_M: f32 = 150.0;
+use cartopolis_geo::ahn::FILL_REACH_M;
 
 /// Extra RD metres requested around the field's own box, so a bilinear lookup at
 /// the very edge still has measured samples on both sides of it.
@@ -1445,122 +1445,15 @@ fn carve_water(
     carved
 }
 
-/// Relaxation passes over the cells [`fill_holes`] invented.
-const FILL_SMOOTH_PASSES: usize = 4;
-
-/// Close no-data holes out to `reach_cells` from the nearest measurement, in two
-/// sweeps plus a short relaxation. `None` reaches as far as it takes.
+/// Close no-data holes out to `reach_cells` from the nearest measurement — see
+/// [`cartopolis_geo::ahn::fill_holes`], which is where it lives.
 ///
-/// A chamfer distance transform carrying the nearest measured value (two sweeps,
-/// O(n)), then a few Jacobi passes restricted to the cells that were filled. The
-/// transform alone leaves a ridge along the Voronoi boundary down the middle of
-/// anything wide, and the relaxation is what turns that crease into a smooth
-/// interpolation. Measurements are never written, only holes.
-///
-/// **The reach is in cells and every caller derives it from metres**, because this
-/// replaced a fixed count of one-cell dilations that was documented as "~150 m" and
-/// was only ever 150 m at the one sampling it was written against. A fill whose reach
-/// is a unit mistake away from the resolution is how a change to [`TERRAIN_GRID`]
-/// leaves every building footprint an unfilled pit — and the pass-count form could
-/// not be scaled to the fine tier at all, which would have wanted ~300 passes over a
-/// million samples.
-fn fill_holes(grid: &mut [f32], n: usize, reach_cells: Option<f32>) {
-    if grid.iter().all(|v| v.is_finite()) {
-        return;
-    }
-    // `best` is the squared chamfer distance to the nearest measurement; `FAR` is "no
-    // source seen yet" and must be finite, because it is compared and added to.
-    const FAR: i32 = i32::MAX / 4;
-    const ORTHO: i32 = 3;
-    const DIAG: i32 = 4;
-    let mut best = vec![FAR; grid.len()];
-    let mut val = vec![0.0f32; grid.len()];
-    let filled: Vec<bool> = grid.iter().map(|v| !v.is_finite()).collect();
-    for i in 0..grid.len() {
-        if grid[i].is_finite() {
-            best[i] = 0;
-            val[i] = grid[i];
-        }
-    }
-    let relax =
-        |x: usize, z: usize, nx: i32, nz: i32, w: i32, best: &mut [i32], val: &mut [f32]| {
-            if nx < 0 || nz < 0 || nx >= n as i32 || nz >= n as i32 {
-                return;
-            }
-            let from = nz as usize * n + nx as usize;
-            let to = z * n + x;
-            let cand = best[from].saturating_add(w);
-            if cand < best[to] {
-                best[to] = cand;
-                val[to] = val[from];
-            }
-        };
-    for z in 0..n {
-        for x in 0..n {
-            let (xi, zi) = (x as i32, z as i32);
-            relax(x, z, xi - 1, zi, ORTHO, &mut best, &mut val);
-            relax(x, z, xi, zi - 1, ORTHO, &mut best, &mut val);
-            relax(x, z, xi - 1, zi - 1, DIAG, &mut best, &mut val);
-            relax(x, z, xi + 1, zi - 1, DIAG, &mut best, &mut val);
-        }
-    }
-    for z in (0..n).rev() {
-        for x in (0..n).rev() {
-            let (xi, zi) = (x as i32, z as i32);
-            relax(x, z, xi + 1, zi, ORTHO, &mut best, &mut val);
-            relax(x, z, xi, zi + 1, ORTHO, &mut best, &mut val);
-            relax(x, z, xi + 1, zi + 1, DIAG, &mut best, &mut val);
-            relax(x, z, xi - 1, zi + 1, DIAG, &mut best, &mut val);
-        }
-    }
-    // `ORTHO` is one cell, so the transform's units are thirds of a cell.
-    let limit = reach_cells.map_or(FAR, |r| ((r * ORTHO as f32).round() as i32).max(0));
-    let mut filled = filled;
-    for (i, v) in grid.iter_mut().enumerate() {
-        if v.is_finite() {
-            continue;
-        }
-        if best[i] <= limit {
-            *v = val[i];
-        } else {
-            // Out of reach: unknown ground, which the bake reads as the anchor's own
-            // level. Un-marking it keeps the relaxation off cells that are still NaN,
-            // where averaging a neighbourhood of NaNs poisons the ones beside it.
-            filled[i] = false;
-        }
-    }
-    // Smooth the invented ground only. Four passes takes the Voronoi crease out of a
-    // canal-width hole without moving anything measured.
-    let mut prev = vec![0.0f32; grid.len()];
-    for _ in 0..FILL_SMOOTH_PASSES {
-        prev.copy_from_slice(grid);
-        for z in 0..n {
-            for x in 0..n {
-                let i = z * n + x;
-                if !filled[i] {
-                    continue;
-                }
-                let mut sum = 0.0;
-                let mut count = 0.0;
-                for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-                    let (nx, nz) = (x as i32 + dx, z as i32 + dz);
-                    if nx < 0 || nz < 0 || nx >= n as i32 || nz >= n as i32 {
-                        continue;
-                    }
-                    let v = prev[nz as usize * n + nx as usize];
-                    if !v.is_finite() {
-                        continue;
-                    }
-                    sum += v;
-                    count += 1.0;
-                }
-                if count > 0.0 {
-                    grid[i] = sum / count;
-                }
-            }
-        }
-    }
-}
+/// It is in the shared crate because the harness draws the same ground from the
+/// same service and had no filling at all: AHN's bare-earth model is *no data*
+/// under every building, so an unfilled city is a field of pits, and a mesh bent
+/// onto it crumples along every street. That read as a fault in the map
+/// (2026-09-21) and was a fault in the instrument.
+use cartopolis_geo::ahn::fill_holes;
 
 /// Longest ground edge (m) left unsplit before displacement.
 ///
@@ -2177,6 +2070,25 @@ mod tests {
     /// A failure here does not look like a failure: every sample would land a little
     /// off the ground it claims to measure, which reads as a slightly wrong height and
     /// nothing else.
+    /// **The harness must resolve the ground as finely as this does.**
+    ///
+    /// `carto-view` sizes its one AHN request off `cartopolis_geo::ahn::SAMPLE_M`,
+    /// and a harness on a coarser raster does not draw a smoother version of the
+    /// same city — it draws a different one. Asked for 5.73 m where this bakes
+    /// 3.125 m, it aliased the Groningen ring's trench into folds and creases the
+    /// client does not have, and those read as a fault in the map (2026-09-21).
+    ///
+    /// So the two numbers are one number. Change the box or the grid here and this
+    /// fails until the shared constant is changed with it.
+    #[test]
+    fn the_harness_resolves_the_ground_as_finely_as_the_client() {
+        assert!(
+            (TERRAIN_SAMPLE_M - cartopolis_geo::ahn::SAMPLE_M).abs() < 1e-6,
+            "the client bakes {TERRAIN_SAMPLE_M} m and the harness asks for {} m",
+            cartopolis_geo::ahn::SAMPLE_M
+        );
+    }
+
     #[test]
     fn the_affine_rd_map_is_exact_enough_for_half_metre_samples() {
         // Comfortably under FINE_SAMPLE_M (~0.5 m); measured worst case is ~15 mm.

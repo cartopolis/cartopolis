@@ -133,16 +133,24 @@ pub fn lat_lng_to_tile(lat: f64, lng: f64, zoom: u32) -> (i64, i64) {
     (x.floor() as i64, y.floor() as i64)
 }
 
+/// Fractional Web Mercator tile coordinate → WGS84, the exact inverse of
+/// [`lat_lng_to_tile_frac`].
+///
+/// A place *inside* a tile is where most answers land — a metre offset in a
+/// tile-local mesh, a tunnel's midpoint, a corridor endpoint — and saying where
+/// one of those is on Earth took flooring to the corner and losing the rest.
+#[must_use]
+pub fn tile_frac_to_lat_lng(x: f64, y: f64, zoom: u32) -> (f64, f64) {
+    let n = 2.0_f64.powi(zoom as i32);
+    let lng = (x / n) * 360.0 - 180.0;
+    let lat_rad = ((1.0 - (2.0 * y) / n) * std::f64::consts::PI).sinh().atan();
+    (lat_rad.to_degrees(), lng)
+}
+
 /// Tile corner (north-west) as WGS84.
 #[must_use]
 pub fn tile_to_lat_lng(x: i64, y: i64, zoom: u32) -> (f64, f64) {
-    let n = 2.0_f64.powi(zoom as i32);
-    let lng = (x as f64 / n) * 360.0 - 180.0;
-    let lat_rad = ((1.0 - (2.0 * y as f64) / n) * std::f64::consts::PI)
-        .sinh()
-        .atan();
-    let lat = lat_rad.to_degrees();
-    (lat, lng)
+    tile_frac_to_lat_lng(x as f64, y as f64, zoom)
 }
 
 #[must_use]

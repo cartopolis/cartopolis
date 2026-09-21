@@ -2519,14 +2519,22 @@ fn water_surface(
 /// Ground surfaces get a fresh normal from the field's own slope; the vegetation
 /// groups keep theirs (a tree's normals describe the tree, not the hill).
 #[allow(clippy::too_many_arguments)]
-/// How far to reach for the land *around* a tunnel when asking how much of its depth
-/// the measurement has already dug.
-///
-/// Wider than the cut and narrower than the block: a dual carriageway in a trench is
-/// about 25 m of road plus its walls, so a shorter reach samples the trench itself
-/// and finds no drop at all, while a much longer one starts finding the next street's
-/// embankment and lifting the tunnel out of its own hole.
-pub const TUNNEL_DATUM_M: f32 = 30.0;
+/// How far to reach for the land *around* a tunnel — see
+/// [`cartopolis_geo::tunnels::DATUM_M`], which is where it lives so the harness
+/// reaches for the same distance.
+pub use cartopolis_geo::tunnels::DATUM_M as TUNNEL_DATUM_M;
+
+/// What [`cartopolis_geo::tunnels`] asks of the streamed height field.
+struct FieldSurvey<'a>(&'a TerrainField);
+
+impl cartopolis_geo::tunnels::Survey for FieldSurvey<'_> {
+    fn here(&self, x: f32, z: f32) -> f32 {
+        self.0.at(x, z)
+    }
+    fn around(&self, x: f32, z: f32) -> f32 {
+        self.0.surrounding(x, z, TUNNEL_DATUM_M)
+    }
+}
 
 fn stand_on_terrain(
     group: SurfaceGroup,
@@ -2593,16 +2601,12 @@ fn stand_on_terrain(
         group,
         SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
     ) {
-        let mesh_cap = -positions.iter().map(|p| p[1]).fold(0.0_f32, f32::min);
-        for p in positions.iter_mut() {
-            let (x, z) = (origin.x + p[0], origin.y + p[2]);
-            let here = terrain.at(x, z);
-            let dug = terrain.surrounding(x, z, TUNNEL_DATUM_M) - here;
-            let depth = tunnels
-                .convention_depth(Vec2::new(x, z))
-                .unwrap_or(mesh_cap);
-            p[1] += here + crate::systems::tunnels::lift_for(depth, dug);
-        }
+        cartopolis_geo::tunnels::stand_tunnel_on(
+            positions,
+            origin.to_array(),
+            &FieldSurvey(terrain),
+            &|p| tunnels.convention_depth(Vec2::from_array(p)),
+        );
         return;
     }
     // A viaduct wants *one* height for the whole thing: it is straight, and the
@@ -2621,27 +2625,18 @@ fn stand_on_terrain(
         );
         return;
     }
-    // **Where a road has a lid, the ground over it is whole.** The height survey
-    // measures what it flew over, and Groningen's ring was an open trench when it
-    // was flown and has a lid on it now — so the survey digs nine metres out of
-    // ground that is continuous, the lid stays at street level, and a covered road
-    // reads as a raised platform with a ditch either side. The map's tag is the
-    // newer fact, so the ground is lifted back to the level of the land around it
-    // wherever a covered stretch is under it, tapering out over `TUNNEL_DATUM_M`
-    // so the fill has no crease at its edge.
-    //
-    // Nothing happens where there is no tunnel (the weight is 0 and this is one
-    // comparison), and nothing happens over an *open* stretch — which is right,
-    // because there the survey and the map agree that the ground is missing.
-    let fill = |p: &mut [f32; 3]| {
-        let (x, z) = (origin.x + p[0], origin.y + p[2]);
-        let w = tunnels.covered_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
-        if w > 0.0 {
-            let here = terrain.at(x, z);
-            p[1] += w * (terrain.surrounding(x, z, TUNNEL_DATUM_M) - here);
-        }
+    // **The ground these stand on is the measured ground with the lids back on
+    // it**, and that has to be one surface rather than a displacement and a later
+    // correction. Where a road has a lid the survey — flown before the lid was
+    // built — still shows the open trench; lifting the vertices afterwards left
+    // the lift invisible to the refinement, so a land parcel of two triangles
+    // interpolated nine metres across a chord while the road beside it followed
+    // the taper, and the ground tore open along the buried road.
+    let lidded = cartopolis_geo::tunnels::Lidded {
+        ground: &**terrain,
+        around: &|x, z| terrain.surrounding(x, z, TUNNEL_DATUM_M),
+        weight: &|p| tunnels.covered_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
-
     if !volumetric {
         crate::systems::terrain::refine_for_terrain(
             positions,
@@ -2652,14 +2647,16 @@ fn stand_on_terrain(
             rungs,
             terrain.ground_edge_m(),
             Some(crate::systems::terrain::Crease {
-                field: &**terrain,
+                field: &lidded,
                 origin: origin.to_array(),
             }),
         );
     }
-    for p in positions.iter_mut() {
-        p[1] += terrain.at(origin.x + p[0], origin.y + p[2]);
-        fill(p);
+    {
+        use cartopolis_geo::terrain_refine::GroundField as _;
+        for p in positions.iter_mut() {
+            p[1] += lidded.at(origin.x + p[0], origin.y + p[2]);
+        }
     }
     if !volumetric {
         // Normals from the field, then flattened where the fill has raised the
