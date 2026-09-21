@@ -379,6 +379,7 @@ fn print_tile_pipeline_cost() {
 #[ignore = "printing hatch: it reports numbers, it does not assert them"]
 fn print_tile_pipeline_time() {
     use crate::perf::stopwatch::{self, line};
+    use crate::tunnels::build_tunnels;
     use crate::vector_tiles::{
         ocean_mask_sized, render_mvt_sized, tessellate_bridges, tessellate_roads,
         tessellate_surfaces, water_shore_field,
@@ -456,6 +457,25 @@ fn print_tile_pipeline_time() {
         tessellate_roads(&tile, NOMINAL_Z14_TILE_M, &mut decks.clone(), None, false).expect("roads")
     });
     println!("{}", line("tessellate_roads (groningen z14)", &t));
+
+    // **The stages the client runs after the tessellators, which this hatch used
+    // not to time at all.** They were added to `map_geometry`'s worker in
+    // September and were invisible here, which is most of how a hundredfold
+    // regression in the road path reached `main` without a number moving: the
+    // budgets above stop at the rasteriser and the timings stopped at
+    // `tessellate_roads`. A stage nothing measures is a stage nothing defends.
+    let roads = tessellate_roads(&tile, NOMINAL_Z14_TILE_M, &mut decks.clone(), None, false)
+        .expect("roads");
+    let surfaces = tessellate_surfaces(&tile, NOMINAL_Z14_TILE_M, None).expect("surfaces");
+    let t = stopwatch::time(|| {
+        let mut sheets = surfaces.clone();
+        crate::road_stitch::cut_under_roads(&mut sheets, &roads.ground);
+        sheets
+    });
+    println!("{}", line("cut_under_roads (groningen z14)", &t));
+
+    let t = stopwatch::time(|| build_tunnels(&tile, NOMINAL_Z14_TILE_M, None));
+    println!("{}", line("build_tunnels (groningen z14)", &t));
 
     println!();
 }
