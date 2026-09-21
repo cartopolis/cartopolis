@@ -690,6 +690,125 @@ fn spawn_map_tile(
         .detach();
 }
 
+/// The mip bias a clipmap tile reaches at the edge of its own ring.
+///
+/// **One, and it is derived rather than chosen.** Each level covers twice the ground
+/// of the one above it at the same raster size, so its texel density is exactly half:
+/// one mip level. A tile sampled at bias 1.0 is therefore sampled at precisely the
+/// density its parent carries, which is what makes the two meet without a step. Any
+/// other value would be a decision to draw the seam somewhere else rather than to
+/// remove it.
+const LOD_BLEND_BIAS: f32 = 1.0;
+
+/// Whether the level cross-fade is on at all.
+///
+/// `CARTO_NO_LOD_BLEND=1` strips it, on the same rule as `CARTO_NO_GROUND_DETAIL`,
+/// `CARTO_NO_HAZE` and the rest: this is a *shading* change, and on a software
+/// rasteriser — or under haze, or with the vector surfaces drawn over the ring it
+/// softens — the only honest A/B is the same scene with the term removed. It is also
+/// what a bisect reaches for when a seam turns up somewhere unexpected.
+#[must_use]
+pub fn lod_blend_enabled() -> bool {
+    !matches!(
+        std::env::var("CARTO_NO_LOD_BLEND").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Half-extent of a level's ring in metres: centre to the *outer* edge of the
+/// outermost tile, which is where the coarser level takes over.
+fn ring_half_extent_m(radius: i64, tile_m: f32) -> f32 {
+    (radius as f32 + 0.5) * tile_m
+}
+
+/// Write each clipmap tile's ring into its material, so the shader can soften the
+/// tile towards the level beneath it (`assets/shaders/ground_detail.wgsl`).
+///
+/// **Why the ring and not the camera.** The seam is at the ring's edge, not at a
+/// distance — a level ends where its tiles end, and on a square boundary. Chebyshev
+/// distance from the level's own centre is 1.0 along exactly that boundary, so the
+/// blend reaches full bias where the parent becomes visible and nowhere else.
+///
+/// The coarsest level is left at zero: it has no parent in the pyramid, so softening
+/// its rim would blur the horizon into nothing rather than into the next level down.
+///
+/// Rewritten only when the desired set or the floating origin moves — the same two
+/// triggers, and the same reasoning, as
+/// [`ground_detail::refresh_ground_detail`](crate::systems::ground_detail::refresh_ground_detail):
+/// touching every tile material is affordable on a cell crossing and would not be
+/// every frame. The tile count is part of the key for the reason the count is there:
+/// a tile that landed after the last write would otherwise keep the zero it was
+/// built with until the camera happened to move.
+pub fn refresh_tile_lod_blend(
+    stream: Res<MapStream>,
+    origin: Res<crate::systems::ground_detail::GridCellOrigin>,
+    mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
+    // **`StreamTileReady` is not a nicety here, it is what keeps the placeholder
+    // out.** Every untextured tile shares one `placeholder` material, so writing a
+    // ring into a tile that has not got its own would write it into all of them —
+    // including the backstop, whose `basemap` is `None` and which would then blend
+    // its rim towards the bound fallback texture. A white horizon, from a system
+    // whose whole job is that nothing steps.
+    tiles: Query<
+        (
+            &StreamTile,
+            &MeshMaterial3d<crate::systems::ground_detail::GroundMaterial>,
+        ),
+        With<StreamTileReady>,
+    >,
+    mut applied: Local<Option<(Vec<(u32, i64, i64)>, Vec2, usize)>>,
+) {
+    let Some((clat, clng, _)) = stream.anchor else {
+        return;
+    };
+    let Some((centres, _, ring_bias)) = stream.desired.key.clone() else {
+        return;
+    };
+    let want = (centres, origin.0, tiles.iter().len());
+    if applied.as_ref() == Some(&want) {
+        return;
+    }
+    let centres = &want.0;
+    let budget = crate::quality::budget();
+    let finest = stream.current_zoom;
+    let bias = if lod_blend_enabled() {
+        LOD_BLEND_BIAS
+    } else {
+        0.0
+    };
+    for (tile, material) in &tiles {
+        let Some(mut material) = materials.get_mut(&material.0) else {
+            continue;
+        };
+        let Some(&(_, ctx, cty)) = centres.iter().find(|(z, _, _)| *z == tile.key.z) else {
+            continue;
+        };
+        // Belt and braces against the placeholder the query filter already excludes:
+        // with no image of its own there is nothing to sample softer, and the bound
+        // fallback is a white texture.
+        if tile.key.z == MIN_ZOOM || material.extension.basemap.is_none() {
+            material.extension.lod = Vec4::ZERO;
+            continue;
+        }
+        let radius = (budget.radius(if tile.key.z == finest {
+            LOAD_RADIUS
+        } else {
+            COARSE_RADIUS
+        }) - ring_bias)
+            .max(1);
+        let gs = tile_to_meters(tile.key.z, clat) as f32;
+        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
+        // The ring's centre in the anchored world frame is its centre *tile's* centre,
+        // placed exactly as `update_map_stream` places every tile — then moved into
+        // render space, which is the frame `world_position` arrives in.
+        let cx = ((ctx as f64 + 0.5 - fcx) * gs as f64) as f32 - origin.0.x;
+        let cz = ((cty as f64 + 0.5 - fcy) * gs as f64) as f32 - origin.0.y;
+        let half = ring_half_extent_m(radius, gs);
+        material.extension.lod = Vec4::new(cx, cz, 1.0 / half, bias);
+    }
+    *applied = Some(want);
+}
+
 /// Resting height of a clipmap level's tiles, relative to the ground plane.
 ///
 /// A fixed function of the *zoom*, not the pyramid level: level indices shift when
@@ -1616,6 +1735,13 @@ pub fn apply_stream_textures(
                     crate::systems::tile_loader::ground_sampler(),
                 );
                 let handle = images.add(bevy_image);
+                let mut extension = detail.extension(&origin);
+                // The same handle the base colour takes, bound a second time so the
+                // cross-fade can sample it at a mip bias
+                // (`refresh_tile_lod_blend`). The ring itself is written by that
+                // system on its next pass; until then `lod.w` is 0 and the tile is
+                // drawn exactly as it was before.
+                extension.basemap = Some(handle.clone());
                 let mat = materials.add(crate::systems::ground_detail::GroundMaterial {
                     base: StandardMaterial {
                         base_color_texture: Some(handle),
@@ -1627,7 +1753,7 @@ pub fn apply_stream_textures(
                     // The half-metre residual slope, if a tier has landed. Read at
                     // spawn like `WaterSeaState`, and kept in step afterwards by
                     // `ground_detail::refresh_ground_detail`.
-                    extension: detail.extension(&origin),
+                    extension,
                 });
                 commands
                     .entity(entity)

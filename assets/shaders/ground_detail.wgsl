@@ -42,6 +42,13 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var detail_slope: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var detail_sampler: sampler;
 
+// The clipmap level's ring, for the cross-fade below: xy its centre in render-space
+// XZ, z 1 / its half-extent, w the mip bias to reach at its edge. Zero on every
+// ground surface that is not a clipmap tile, which is the off switch.
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> lod: vec4<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var lod_basemap: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var lod_basemap_sampler: sampler;
+
 // Metres of rise per metre of run a fully-saturated texel stands for. Must equal
 // `terrain::DETAIL_SLOPE_RANGE`.
 const SLOPE_RANGE: f32 = 1.0;
@@ -51,11 +58,62 @@ const SLOPE_RANGE: f32 = 1.0;
 // hard edge here would draw a square of texture around the camera.
 const RIM_START: f32 = 0.80;
 
+// Where the level-to-level cross-fade starts, as a fraction of the ring's
+// half-extent. 0.65 is a little over the outermost ring and a half of tiles at the
+// finest level's radius of 4 — wide enough that the softening reads as distance
+// rather than as a second edge just inside the first, narrow enough that most of the
+// ring keeps the sharpness it was rasterised at.
+const LOD_BLEND_START: f32 = 0.65;
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     pbr_input.material.base_color =
         alpha_discard(pbr_input.material, pbr_input.material.base_color);
+
+    // A clipmap level meets the coarser one beneath it along the edge of its own
+    // ring, and across that edge the texel density halves in one step — a hard square
+    // line of sharpness drawn across the ground, which no amount of filtering removes
+    // because it is a difference in the *source*, not in the sampling rate.
+    //
+    // The levels above `vector_tiles::MAX_SOURCE_ZOOM` are magnified renders of the
+    // same z14 body, so a child's own mip 1 is, texel for texel, its parent's
+    // density. Ramping a mip bias to 1.0 across the outer band of the ring therefore
+    // lands the child's edge on exactly the sharpness the parent carries just beyond
+    // it, and the step becomes a gradient. Nothing is blended between two textures and
+    // nothing is made transparent: the tile stays one opaque quad, sampled softer
+    // towards its rim.
+    //
+    // The branch is on a uniform-buffer value, so the sample below stays in uniform
+    // control flow — and every ground surface that is not a clipmap tile carries
+    // `lod.w == 0` and pays one comparison.
+    //
+    // **`VERTEX_UVS_A` is not optional here.** `VertexOutput::uv` exists only when
+    // the mesh carries UV0, and several groups that share this material do not —
+    // `tessellate_surfaces` leaves `uvs` empty for the flat colour fills. Reading
+    // `in.uv` unguarded does not fail on the tiles, which have it; it fails to
+    // compile the *specialisation* the fills need, which is a pipeline that never
+    // builds and a shader error at the first draw of a grass polygon.
+#ifdef VERTEX_UVS_A
+    if lod.w > 0.0 {
+        let ring = (in.world_position.xz - lod.xy) * lod.z;
+        // Chebyshev, because the ring is a square of tiles and not a disc: this is
+        // exactly 1.0 along the whole outer boundary, which is where the parent
+        // takes over.
+        let edge = max(abs(ring.x), abs(ring.y));
+        let t = smoothstep(LOD_BLEND_START, 1.0, edge);
+        let soft = textureSampleBias(lod_basemap, lod_basemap_sampler, in.uv, lod.w * t);
+        // `mix`, not an assignment: at `t = 0` the inner ring must be bit-for-bit
+        // what it was, and this fetch and bevy's own are not obliged to agree in the
+        // last bit. Only the colour is taken — `alpha_discard` has already run
+        // against the alpha above, and re-deciding it here from a softer sample
+        // would move a cutout that has already been made.
+        pbr_input.material.base_color = vec4<f32>(
+            mix(pbr_input.material.base_color.rgb, soft.rgb, t),
+            pbr_input.material.base_color.a,
+        );
+    }
+#endif
 
     if detail.w > 0.0 {
         let d = (in.world_position.xz - detail.xy) * detail.z;

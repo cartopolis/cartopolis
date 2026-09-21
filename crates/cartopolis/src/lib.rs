@@ -2824,6 +2824,14 @@ fn run_client() {
                 // sweep, which is the only thing allowed to act on it.
                 systems::map_stream::update_tile_occlusion
                     .after(systems::map_stream::apply_stream_textures),
+                // Each tile's own ring, so the shader can soften it into the level
+                // beneath rather than meeting it at a step. After the textures, for
+                // the reason the occlusion pass is: a tile that gained its material
+                // this frame gets its ring in the same frame instead of being drawn
+                // once at full sharpness and corrected afterwards.
+                systems::map_stream::refresh_tile_lod_blend
+                    .after(systems::map_stream::apply_stream_textures)
+                    .after(systems::ground_detail::track_grid_origin),
                 // Stand the basemap on the measured ground. After the spawn pass,
                 // so a tile that appeared this frame is lifted in the same frame
                 // it is placed rather than showing flat for one.

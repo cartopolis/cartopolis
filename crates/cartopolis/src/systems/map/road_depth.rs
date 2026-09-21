@@ -75,9 +75,16 @@ pub type RoadMaterial = ExtendedMaterial<StandardMaterial, RoadDepthExtension>;
 /// flat surfaces carry (`systems::ground_detail`) — a carriageway's camber is exactly
 /// the kind of half-metre relief no mesh here can hold.
 ///
-/// The three bindings and their meaning are `GroundDetailExtension`'s, deliberately at
-/// the same numbers, so the *fragment* shader is literally the same file. Two material
+/// The bindings and their meaning are `GroundDetailExtension`'s, deliberately at the
+/// same numbers, so the *fragment* shader is literally the same file. Two material
 /// types, two vertex stages, one description of what the ground looks like up close.
+///
+/// That sameness is a standing obligation, not a coincidence: a binding added to one
+/// must be added to the other, or the shared shader declares a binding this material's
+/// layout does not supply and the pipeline fails validation — which
+/// `lib.rs::handle_render_error` answers by halting the renderer for the rest of the
+/// process. The clipmap cross-fade's three (103–105) are here for that reason alone; a
+/// road is never a clipmap tile, so they are never written and `lod.w` stays 0.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct RoadDepthExtension {
     /// xy: the detail box's centre in render-space XZ. z: 1 / its half-extent.
@@ -87,6 +94,13 @@ pub struct RoadDepthExtension {
     #[texture(101)]
     #[sampler(102)]
     pub slope: Option<Handle<Image>>,
+    /// Always zero — see the type's own docs.
+    #[uniform(103)]
+    pub lod: Vec4,
+    /// Always `None` — see the type's own docs.
+    #[texture(104)]
+    #[sampler(105)]
+    pub basemap: Option<Handle<Image>>,
 }
 
 impl MaterialExtension for RoadDepthExtension {

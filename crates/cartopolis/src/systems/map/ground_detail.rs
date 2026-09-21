@@ -64,6 +64,26 @@ pub struct GroundDetailExtension {
     #[texture(101)]
     #[sampler(102)]
     pub slope: Option<Handle<Image>>,
+    /// The clipmap level's ring, for the level-to-level cross-fade: xy its centre in
+    /// **render-space** XZ, z `1 /` its half-extent, w the mip bias to reach at its
+    /// edge. [`crate::systems::map_stream::refresh_tile_lod_blend`] writes it and
+    /// says what it is for.
+    ///
+    /// `w = 0` is the off switch and is what every ground surface that is not a
+    /// clipmap tile carries — the vector surfaces, the roads, the paving, the
+    /// volumetric groups. The shader takes no second sample at all there.
+    #[uniform(103)]
+    pub lod: Vec4,
+    /// The tile's *own* basemap image, bound a second time so the shader can sample
+    /// it at a mip bias.
+    ///
+    /// The same handle `base_color_texture` already holds, so this costs a binding
+    /// and no memory. Bound here rather than reached for through
+    /// `bevy_pbr::pbr_bindings`, whose base-colour binding is `#ifdef BINDLESS`-shaped
+    /// and is bevy's to rearrange; this one is ours and is the same on every platform.
+    #[texture(104)]
+    #[sampler(105)]
+    pub basemap: Option<Handle<Image>>,
 }
 
 impl MaterialExtension for GroundDetailExtension {
@@ -96,6 +116,10 @@ impl GroundDetail {
         GroundDetailExtension {
             params: self.params(origin),
             slope: self.slope.clone(),
+            // The clipmap's own; a caller that is a tile fills these in after
+            // (`map_stream::apply_stream_textures`), and everything else leaves
+            // them off.
+            ..default()
         }
     }
 

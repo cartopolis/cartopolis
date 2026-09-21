@@ -1294,6 +1294,21 @@ pub fn update_map_surfaces(
     let bgt_revision = crate::systems::surveyed::coverage_revision()
         | (crate::systems::crops::coverage_revision() << 1);
     if surfaces.terrain_revision != terrain.revision || surfaces.bgt_revision != bgt_revision {
+        // **What a retear costs, and why it is worth a line in the log.** Each one
+        // re-tessellates the whole ring, and a cell job is the most expensive thing
+        // this client runs on a worker — measured cold over Groningen on 2026-09-21,
+        // 3.6 s per cell and 54.7% of all worker time in the fill. Two very
+        // different worlds look identical from outside: a ring rebuilt once because
+        // the ground arrived, and a ring rebuilt four times because four separate
+        // facts arrived one after another. This says which.
+        tracing::info!(
+            cells = surfaces.loaded.len(),
+            terrain_rev = terrain.revision,
+            was_terrain_rev = surfaces.terrain_revision,
+            bgt_rev = bgt_revision,
+            was_bgt_rev = surfaces.bgt_revision,
+            "surface ring retear"
+        );
         surfaces.terrain_revision = terrain.revision;
         surfaces.bgt_revision = bgt_revision;
         surfaces.clear();
@@ -2076,6 +2091,9 @@ fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
         return GroundDetailExtension {
             params: crate::systems::ground_detail::DETAIL_OPTED_OUT,
             slope: None,
+            // A surface group is never a clipmap tile, so the level cross-fade is
+            // off here as it is on every other ground material but those.
+            ..default()
         };
     }
     GroundDetailExtension::default()
