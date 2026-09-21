@@ -94,8 +94,55 @@ pub const DEFAULT_MARGIN_SAMPLES: usize = 6;
 /// survey has no reading at all over water and reports holes, which are filled
 /// later; treating a hole as a height would relax the road down into it.
 pub fn flatten(samples: &mut [f32], n: usize, road: &[bool], passes: usize) -> usize {
+    flatten_pinned(samples, n, road, &[], passes)
+}
+
+/// [`flatten`], with some samples held at a height of the caller's choosing.
+///
+/// `pins` is parallel to `samples`; a finite entry is a height to hold that sample
+/// at, and anything else means "no opinion". An empty slice is no pins at all,
+/// which is exactly [`flatten`].
+///
+/// # Why a second boundary, and what it is for
+///
+/// [`flatten`]'s only boundary is the unmarked ground *outside* the corridor, so
+/// the corridor can only ever be pulled back towards the land either side of it.
+/// That is right for an ordinary street and it cannot express the one thing a
+/// built road does that the ground does not: arrive somewhere else. A bridge's
+/// approach has to reach the abutment at deck height, and the deck is metres above
+/// everything the relaxation can see.
+///
+/// A pin is that other end. Held fixed, it makes the smoothest surface between the
+/// two boundaries the solution — and between a pinned height and the surrounding
+/// ground the smoothest surface is a **ramp**, which is what an embankment is. So
+/// the approach grade is not built, tapered or tuned here; it falls out of the same
+/// relaxation that was already grading the road, and its gradient is decided by how
+/// far the corridor runs before the pin (i.e. by `passes`).
+///
+/// **A pin is applied wherever it is given, marked or not.** The caller owns that
+/// choice, because the sample an abutment lands on is a fact about the structure
+/// rather than about the corridor, and it routinely sits a sample or two outside
+/// the dilated mask.
+pub fn flatten_pinned(
+    samples: &mut [f32],
+    n: usize,
+    road: &[bool],
+    pins: &[f32],
+    passes: usize,
+) -> usize {
     if n < 3 || samples.len() < n * n || road.len() < n * n {
         return 0;
+    }
+    let pinned = pins.len() >= n * n;
+    // The pins go in *before* the cells are collected, so a pinned sample is a
+    // boundary value the relaxation reads rather than a free sample it overwrites.
+    // Nothing else in the loop has to know they exist.
+    if pinned {
+        for i in 0..n * n {
+            if pins[i].is_finite() {
+                samples[i] = pins[i];
+            }
+        }
     }
     // The interior marked samples, once — the relaxation walks this list every
     // pass, and a city's roads are a few per cent of a field.
@@ -103,6 +150,9 @@ pub fn flatten(samples: &mut [f32], n: usize, road: &[bool], passes: usize) -> u
     for z in 1..n - 1 {
         for x in 1..n - 1 {
             let i = z * n + x;
+            if pinned && pins[i].is_finite() {
+                continue;
+            }
             if road[i] && samples[i].is_finite() {
                 cells.push(i);
             }
@@ -143,6 +193,137 @@ pub fn flatten(samples: &mut [f32], n: usize, road: &[bool], passes: usize) -> u
         .zip(&before)
         .filter(|(&i, &was)| samples[i] != was)
         .count()
+}
+
+/// The steepest a built approach may climb, as a rise over run.
+///
+/// Not a number chosen here: `cartopolis_geo::tunnels::MAX_GRADE` has used the same
+/// 6 % to build a tunnel's descent since that module was written, and an approach
+/// embankment and a tunnel ramp are the same piece of road engineering seen from
+/// either side of the ground. Dutch motorway design is gentler than this; 6 % is
+/// the urban ceiling, and taking the looser of the two keeps a short approach from
+/// being stretched further than the land it is on.
+pub const MAX_APPROACH_GRADE: f32 = 0.06;
+
+/// Raise the ground along the road corridor so every pin is reachable at no more
+/// than `max_grade`, and return how many samples were raised.
+///
+/// # Why this is not the relaxation
+///
+/// [`flatten_pinned`] holds a pin and solves for the smoothest surface, and for an
+/// abutment that is the wrong answer — provably, not marginally. A corridor is a
+/// strip held at the surrounding ground along both of its long sides, and the
+/// smoothest surface in a strip with a raised end **decays exponentially away from
+/// that end**, over a length of about the strip's own width. Measured on a 15
+/// sample corridor with a 7 m abutment: the climb arrives in a 1.9 m step within a
+/// few samples of the deck and is flat thereafter, which is the abrupt end this was
+/// meant to remove, reproduced by a different route.
+///
+/// The quantity an embankment is actually made of is a **gradient along the road**,
+/// so that is what is propagated: a pin's height minus `max_grade` times the
+/// distance travelled *within the corridor* to reach it. Geodesic rather than
+/// straight-line, because a road ramps along its own length and not across the
+/// buildings beside it, and taking the highest requirement where two pins meet,
+/// because an approach shared by two decks has to satisfy both.
+///
+/// The ground is only ever raised. Where the land already stands higher than the
+/// approach needs, it is left alone and the road is in a cutting — which is what a
+/// road through a rise is, and inventing a trench for it would delete the hill.
+///
+/// Distances are chamfered over eight neighbours in alternating sweeps rather than
+/// solved with a queue: the grid is 2,049² on the desktop, the corridor is a few
+/// per cent of it, and a sweep pair is exact for a straight run and converges in a
+/// handful for one that bends.
+/// `pins` is extended as this runs: every sample the ramp raises becomes a pin
+/// itself, so the relaxation that follows smooths the rest of the corridor and
+/// leaves the engineered grade where this put it. Without that the embankment is
+/// simply averaged away again by the ground either side of it, which is the
+/// exponential decay above arriving one step later.
+pub fn ramp_from_pins(
+    samples: &mut [f32],
+    n: usize,
+    road: &[bool],
+    pins: &mut [f32],
+    step_m: f32,
+    max_grade: f32,
+) -> usize {
+    if n < 3 || samples.len() < n * n || road.len() < n * n || pins.len() < n * n {
+        return 0;
+    }
+    if step_m <= 0.0 || max_grade <= 0.0 {
+        return 0;
+    }
+    // `req[i]` is the height the approach must have reached by sample `i`. It falls
+    // as the corridor runs away from a pin and is `-inf` where no pin reaches.
+    let mut req = vec![f32::NEG_INFINITY; n * n];
+    let mut any = false;
+    for i in 0..n * n {
+        if pins[i].is_finite() {
+            req[i] = pins[i];
+            any = true;
+        }
+    }
+    if !any {
+        return 0;
+    }
+
+    // A step costs its own length in fall. The diagonal is the honest √2 rather
+    // than 1, or a ramp laid out diagonally would be allowed to climb 41 % faster
+    // than the same ramp laid out along the grid.
+    let drop_straight = max_grade * step_m;
+    let drop_diagonal = drop_straight * std::f32::consts::SQRT_2;
+
+    // Four sweeps: two pairs. One pair carries a straight run exactly; a corridor
+    // that doubles back needs the second, and nothing here needs more than that.
+    for _ in 0..2 {
+        for z in 1..n - 1 {
+            for x in 1..n - 1 {
+                let i = z * n + x;
+                if !road[i] || pins[i].is_finite() {
+                    continue;
+                }
+                let best = (req[i - 1] - drop_straight)
+                    .max(req[i - n] - drop_straight)
+                    .max(req[i - n - 1] - drop_diagonal)
+                    .max(req[i - n + 1] - drop_diagonal);
+                if best > req[i] {
+                    req[i] = best;
+                }
+            }
+        }
+        for z in (1..n - 1).rev() {
+            for x in (1..n - 1).rev() {
+                let i = z * n + x;
+                if !road[i] || pins[i].is_finite() {
+                    continue;
+                }
+                let best = (req[i + 1] - drop_straight)
+                    .max(req[i + n] - drop_straight)
+                    .max(req[i + n + 1] - drop_diagonal)
+                    .max(req[i + n - 1] - drop_diagonal);
+                if best > req[i] {
+                    req[i] = best;
+                }
+            }
+        }
+    }
+
+    let mut raised = 0;
+    for i in 0..n * n {
+        if !road[i] || pins[i].is_finite() {
+            continue;
+        }
+        let want = req[i];
+        // A sample the survey has no reading for is left as the hole it is: the
+        // fill pass that comes later owns those, and writing a ramp into one would
+        // put an embankment over open water.
+        if want.is_finite() && samples[i].is_finite() && want > samples[i] {
+            samples[i] = want;
+            pins[i] = want;
+            raised += 1;
+        }
+    }
+    raised
 }
 
 /// Mark every grid sample covered by one of `triangles`, given in the same world
@@ -351,6 +532,103 @@ mod tests {
             "chord error under the road went {before:.3} m -> {after:.3} m, \
              which is not enough to stop two sheets disagreeing"
         );
+    }
+
+    /// **The approach ramp is not built anywhere — it is what the relaxation
+    /// already does, once the far end is pinned.**
+    ///
+    /// Flat ground, a road running east–west, and the abutment of a 7 m deck pinned
+    /// at the eastern end of the corridor. What has to come out is an embankment:
+    /// rising all the way, never stepping, and reaching the deck exactly.
+    ///
+    /// This is the fault [`bridge-heights.md`] records as "the step is accepted" —
+    /// a deck with vertical ends, tarmac and lane markings stopping dead at one
+    /// edge and restarting at the other — and the fix it names and marks "Not
+    /// done": sample the approach from the survey and lift the approach ribbons
+    /// with it.
+    #[test]
+    fn a_pinned_abutment_grades_its_own_approach() {
+        const N: usize = 61;
+        const DECK: f32 = 7.0;
+        // Dead flat, so anything that appears in the corridor was put there by the
+        // pin rather than inherited from the ground.
+        let mut g = vec![0.0f32; N * N];
+        let row = N / 2;
+
+        let mut road = vec![false; N * N];
+        for z in row - 1..=row + 1 {
+            for x in 1..N - 1 {
+                road[z * N + x] = true;
+            }
+        }
+        dilate_mask(&mut road, N, DEFAULT_MARGIN_SAMPLES);
+
+        // The abutment: the easternmost two columns of the corridor, held at deck
+        // height. Two columns rather than one so the pin cannot be stepped over by
+        // a four-neighbour average.
+        let mut pins = vec![f32::NAN; N * N];
+        for z in row - 1..=row + 1 {
+            for x in N - 3..N - 1 {
+                pins[z * N + x] = DECK;
+            }
+        }
+
+        // The two stages: the gradient is propagated along the corridor, then the
+        // relaxation smooths what the ramp did not claim.
+        const STEP_M: f32 = 3.125;
+        let raised = ramp_from_pins(&mut g, N, &road, &mut pins, STEP_M, MAX_APPROACH_GRADE);
+        assert!(raised > 0, "the ramp raised nothing");
+        flatten_pinned(&mut g, N, &road, &pins, 400);
+
+        let at = |x: usize| g[row * N + x];
+        assert!(
+            (at(N - 3) - DECK).abs() < 1e-3,
+            "the approach does not reach the deck: {:.3} m against {DECK:.1} m",
+            at(N - 3)
+        );
+
+        // Monotone, and within the design gradient at every single sample. A step
+        // is the fault being fixed, so it is asserted directly rather than inferred
+        // from the endpoints.
+        let ceiling = MAX_APPROACH_GRADE * STEP_M;
+        let mut worst_rise = 0.0f32;
+        for x in 2..N - 3 {
+            let rise = at(x + 1) - at(x);
+            assert!(
+                rise >= -1e-4,
+                "the approach falls away at column {x}: {rise:.4} m"
+            );
+            worst_rise = worst_rise.max(rise);
+        }
+        println!(
+            "steepest sample of the approach: {worst_rise:.4} m against a {ceiling:.4} m ceiling"
+        );
+        assert!(
+            worst_rise <= ceiling + 1e-4,
+            "the approach climbs at {:.1} % against a {:.1} % ceiling",
+            100.0 * worst_rise / STEP_M,
+            100.0 * MAX_APPROACH_GRADE
+        );
+
+        // And it is long enough to be an embankment rather than a wall: 7 m at 6 %
+        // is about 117 m, which at this spacing is 37 samples.
+        let climbing = (1..N - 2).filter(|&x| at(x) > 0.01).count();
+        println!("the approach occupies {climbing} samples");
+        assert!(
+            climbing >= 30,
+            "the climb is only {climbing} samples long, so it is a step with a \
+             slope on it rather than an approach"
+        );
+
+        // And the land away from the road is still the land. An embankment is a
+        // corridor, not a plateau.
+        for x in 1..N - 1 {
+            let far = g[1 * N + x];
+            assert!(
+                far.abs() < 1e-4,
+                "ground outside the corridor moved to {far:.4} m at column {x}"
+            );
+        }
     }
 
     /// Across the road there is nothing left to disagree about: the carriageway's
