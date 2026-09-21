@@ -88,6 +88,69 @@ be argued against `road_stitch`'s no-hairline-cracks invariant, and this
 container's software rasteriser cannot judge whether a crack opened. It needs a
 real graphics card.
 
+## Batching the bank field's building fills — tried, measured, reverted
+
+`water_shore_field`'s second pass fills all 8,552 building footprints into the
+bank mask **one `fill_path` at a time**, which is exactly the shape the paint
+loop was fixed for in August (118,905 allocations → 1,137, at ~4 µs of
+per-call tiny-skia setup per feature). Batching them into shared paths was
+built and measured: **34.6 ms → 29.9 ms**.
+
+It was reverted, because an equivalence test against the per-feature
+rasterisation failed and kept failing:
+
+- `EvenOdd` across a batch XORs two overlapping footprints back to background.
+- `Winding` fixes that, but needs the batch to agree which way round solid is,
+  and the source does not guarantee ring orientation. Imposing orientation per
+  ring did **not** fix it either.
+- What remains is irreducible: where two buildings share a wall, their
+  coincident edges run opposite ways and cancel, so a pixel centre lying
+  exactly on that wall comes out unpainted. Filled separately, each polygon
+  claims it.
+
+Three texels of 65,536 on the fixture, always in the direction of *erasing*
+built ground. Small, but this mask feeds the reflection term, and 4.7 ms on a
+30 ms stage does not buy a mask that quietly loses buildings. The test that
+caught it was written because the existing bank-field test only asserts that
+*some* texel reads zero and *some* reads the far value — both still true of a
+mask with holes punched in it.
+
+**The same construction is live in the paint loop** (`flush_batch` fills
+buildings `Winding`), whose comment records a max channel delta of 8/255
+against the per-feature raster and attributes it to anti-aliased edges. That
+attribution is worth re-checking against the coincident-wall case above before
+it is relied on.
+
+## Work that is still on the main thread
+
+Tile-stage timings above are worker time. These are not, and no hatch here
+measures them:
+
+- **`build_mesh`, called from `update_map_surfaces`** — the terrain
+  refinement, the height displacement and a full normal recomputation, for
+  every surface of every cell, two cells a frame. Pure buffer work; it is on
+  the main thread only because the height field arrives after the worker job
+  has returned flat meshes. Moving it wants a second worker stage gated on the
+  field. **The largest main-thread item in the map pipeline.**
+- `RoadMask::mark_cell` still rasterises road triangles into the grid there
+  (the dilation moved to the worker on 2026-09-21, the marking did not).
+- `RoadMask::for_gen` clones the whole 4.2 MB mask per bake; an `Arc` removes
+  the copy.
+
+Two vectorisation candidates, both now measured as hot: `dilate_mask` over
+4.2 M `bool`s is a **bitset** problem (shifts and ORs, 525 KB instead of
+4.2 MB), and `road_grade::flatten` is 24 four-neighbour relaxation passes over
+~1.9 M samples. `road_stitch`'s candidate filter is already ~8 ns per test and
+tiny-skia vectorises internally; neither is worth hand-tuning.
+
+**A GPU compute path is not obviously safe here** and the reason is in
+`docs/notes/device-loss-strands-the-swapchain.md`: every per-frame cap in the
+streaming path exists because upload and mesh churn has lost the device on an
+Intel integrated GPU and on an Adreno 840, a lost device is terminal in this
+client, and a readback would contend with the same worker pool that already
+starved the screenshot path once. `road_stitch` being order-independent by
+construction makes CPU parallelism the cheaper first move.
+
 ## The instrument is the actual lesson
 
 A hundredfold regression reached `main` with every test green, because:
