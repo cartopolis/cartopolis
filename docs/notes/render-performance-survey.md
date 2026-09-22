@@ -140,7 +140,7 @@ buckets so a streaming cost cannot be read as a frame cost — `city` on `deck-1
 | `bevy_render::renderer::render_system` | 13.3 | 6.8 |
 | `bevy_app::main_schedule::Main::run_main` | 192.0 | **5.9** |
 | `bevy_core_pipeline::schedule::camera_driver` | 5.8 | 4.0 |
-| `Opaque3d, MeshPipeline` specialization | 4.5 | 2.4 |
+| `write_binned_instance_buffers<Opaque3d, MeshPipeline>` | 4.5 | 2.4 |
 | `submit_pending_command_buffers` | 6.4 | 2.3 |
 | `prepare_preprocess_bind_groups` | 3.1 | 1.6 |
 | `main_opaque_pass_3d` | — | 0.9 |
@@ -164,13 +164,20 @@ path.
 Two things in that settled column are worth someone's attention, and neither is a
 pass:
 
-- **`camera_driver` at 4.0 ms/frame settled**, second only to `render_system`.
-- **Pipeline specialization at ~2.4 ms/frame in a scene that has not changed.**
-  Specialization should approach zero once every pipeline is resident, so a
-  steady 2.4 ms suggests keys are being missed or re-derived each frame — and
-  `StandardMaterial::depth_bias` is part of the specialization key, with a rung
-  per `GroundLayer`. That is the same fact behind this note's pipeline-cache
-  entry, showing up as a steady-state cost rather than only a warm-up one.
+- **`camera_driver` at 3.6 ms/frame settled**, second only to `render_system`.
+- **Instance-buffer and batching preparation at ~4.2 ms/frame together** —
+  `write_binned_instance_buffers` 2.36, `prepare_preprocess_bind_groups` 1.52,
+  `batch_and_prepare_binned_render_phase` 0.34. All three scale with the number
+  of batched draws, of which this viewpoint has 522, so **draw count is the lever
+  on the render thread's CPU** even though it is not the lever on the GPU passes.
+
+  An earlier draft of this section called that 2.4 ms row "pipeline
+  specialization" and it is not. The chrome trace truncated the type name at 58
+  characters and `Opaque3d, MeshPipeline` was read as a specialization key; the
+  in-harness counter prints the whole path and it is
+  `bevy_render::batching::gpu_preprocessing::write_binned_instance_buffers`.
+  Nothing here measures specialization, and this note's pipeline-cache entry is
+  neither supported nor contradicted by it.
 
 **`update_map_surfaces` is a streaming cost and not a frame cost**, which is what
 the whole-run total of 53.7 s could not distinguish and what this split exists to
