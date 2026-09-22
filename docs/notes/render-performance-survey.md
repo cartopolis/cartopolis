@@ -204,6 +204,13 @@ Stating the bound at the spawn site, `deck-1`, all three scenarios:
 | low-orbit | 106 → **106** | 7.82 → 8.7 ms |
 | **city (3 km)** | 522 → **331** | 14.41 → **11.2 ms** |
 
+**Every figure in this section was measured before the branch was rebased**, and
+`main` moved underneath it during the day — `634be61` deleted the depth prepass
+and `4a214b2` changed the basemap cross-fade, both in the render path. The
+*mechanism* is unaffected, since a tile with no `Aabb` cannot be culled whatever
+else changed, but the exact saving on today's `main` has not been re-measured.
+Treat the ratios as sound and the absolute milliseconds as of that branch.
+
 **City: 191 fewer draws (−37 %) and 3.2 ms (−22 %)**, 69 fps to 89. The two orbit
 scenarios are *unchanged*, which is the correctness check rather than a
 disappointment: from 180 km looking straight down the whole pyramid is in frame,
@@ -229,7 +236,22 @@ thinner — both orbit scenarios came back 0.5–0.9 ms slower on identical draw
 counts, which is at the edge of the ~0.7 ms run-to-run spread this machine shows
 and is the one number here worth re-running before trusting.
 
-### And the prepass is missing from the diagnostics
+### The prepass was missing because it had been deleted
+
+Answered while rebasing, not by measurement: `634be61 refactor(view): remove
+ambient occlusion, and the prepass it was the only user of` landed on `main`
+during this work. So "no prepass appears in any scenario's pass list" is simply
+true — there is no prepass — and the 3.0×-overdraw finding below describes a
+build that no longer exists.
+
+Worth keeping the sequence straight, because the measurement was taken on a
+branch that still *contained* the prepass code and still reported nothing for it.
+That is not resolved by the deletion and remains the open half: either it was
+already inert on that branch, or a pass can run here without
+`RenderDiagnosticsPlugin` reporting it. The second would matter, since the whole
+2026-09-22 investigation began from a 10 ms hole in the pass list.
+
+### And the prepass was missing from the diagnostics
 
 This note records, as a standing finding, that at `orbit` "the **depth prepass**
 runs 3.0× overdraw while the opaque pass runs exactly 1.0×". **No prepass appears
