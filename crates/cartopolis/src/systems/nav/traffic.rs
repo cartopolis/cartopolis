@@ -290,9 +290,23 @@ struct Turn {
     len: f32,
     /// 0 at `from`, 1 at `to`.
     t: f32,
+    /// Carriageway height at each end, so a turn off a tunnel ramp onto a
+    /// surface street rises with the road instead of stepping at the node.
+    from_y: f32,
+    to_y: f32,
 }
 
 impl Turn {
+    /// The carriageway height at the current `t`.
+    ///
+    /// Linear where the position is cubic, deliberately: the two roads meet at
+    /// one node, so the height at each end is the same number both lines report
+    /// and there is nothing between them to curve through.
+    fn deck(&self) -> f32 {
+        let t = self.t.clamp(0.0, 1.0);
+        self.from_y + (self.to_y - self.from_y) * t
+    }
+
     /// Position and unit heading at the current `t`.
     fn pose(&self) -> (Vec2, Vec2) {
         let (t, l) = (self.t.clamp(0.0, 1.0), self.len);
@@ -331,6 +345,10 @@ pub struct WorldDriveLine {
     /// Cumulative length at each point, so a car can be advanced without walking
     /// the line from the start every frame.
     pub cumulative: Vec<f32>,
+    /// Carriageway height above the ground sheet at each point — see
+    /// [`cartopolis_geo::traffic::DriveLine::deck`]. Parallel to `points`, and
+    /// every operation on one must keep it so.
+    pub deck: Vec<f32>,
 }
 
 impl WorldDriveLine {
@@ -344,6 +362,16 @@ impl WorldDriveLine {
     /// be handed off, and it should sit at the end until it is rather than
     /// teleporting to the start.
     fn at(&self, s: f32) -> (Vec2, Vec2) {
+        let (p, d, _) = self.at_with_deck(s);
+        (p, d)
+    }
+
+    /// [`at`](Self::at), and the carriageway height there.
+    ///
+    /// One walk rather than two: the interpolation that places the car is the
+    /// same one that places its road, and doing them apart is how a deck and the
+    /// thing standing on it come to disagree.
+    fn at_with_deck(&self, s: f32) -> (Vec2, Vec2, f32) {
         let s = s.clamp(0.0, self.length());
         // Linear scan from the start. The lines are simplified to ~8 m steps and
         // capped in length, so this is a handful of comparisons; a binary search
@@ -355,7 +383,11 @@ impl WorldDriveLine {
         let (a, b) = (self.points[i], self.points[i + 1]);
         let seg = (b - a).length().max(1e-4);
         let t = ((s - self.cumulative[i]) / seg).clamp(0.0, 1.0);
-        (a.lerp(b, t), (b - a) / seg)
+        let deck = match (self.deck.get(i), self.deck.get(i + 1)) {
+            (Some(y0), Some(y1)) => y0 + (y1 - y0) * t,
+            _ => 0.0,
+        };
+        (a.lerp(b, t), (b - a) / seg, deck)
     }
 
     /// Arc length of the point on this line closest to `p`.
@@ -472,6 +504,14 @@ impl DriveNetwork {
                     run += (w[1] - w[0]).length();
                     cumulative.push(run);
                 }
+                // A line whose profile did not survive is flat rather than
+                // wrong: a mismatched length here would index past the end on
+                // whichever car reached that point.
+                let deck = if l.deck.len() == points.len() {
+                    l.deck
+                } else {
+                    vec![0.0; points.len()]
+                };
                 (run > 1.0).then_some(WorldDriveLine {
                     points,
                     flow: l.flow,
@@ -479,6 +519,7 @@ impl DriveNetwork {
                     half_width: l.half_width,
                     uses: l.uses,
                     cumulative,
+                    deck,
                 })
             })
             .collect();
@@ -1002,7 +1043,7 @@ pub fn drive_traffic(
 
         // ── Where that leaves it ─────────────────────────────────────────────
         let mut pose = pose_of(&car, line, kind);
-        if pose.is_some_and(|(p, _)| p.distance(cam) > kind.recycle_radius()) {
+        if pose.is_some_and(|(p, _, _)| p.distance(cam) > kind.recycle_radius()) {
             key = None;
             line = None;
             car.turn = None;
@@ -1015,13 +1056,13 @@ pub fn drive_traffic(
         // which is more visible than the traffic itself. The crossing itself is
         // a `Turn` — see its note for why the hand-off cannot simply be a swap.
         if car.turn.is_none() {
-            if let (Some(k), Some(l), Some((p, travel))) = (key, line, pose) {
+            if let (Some(k), Some(l), Some((p, travel, from_y))) = (key, line, pose) {
                 if car.s > l.length() {
                     match hand_off(&net, candidates, k, p, travel, kind) {
                         Some((next, next_dir)) => {
                             let nl = net.get(next).expect("hand_off only offers lines it read");
                             let entry = if next_dir > 0.0 { 0.0 } else { nl.length() };
-                            let (centre, heading) = nl.at(entry);
+                            let (centre, heading, to_y) = nl.at_with_deck(entry);
                             let to_dir = heading * next_dir;
                             let to = centre + right_of(to_dir) * kind.offset(nl);
                             // The corner is not in the data: two centre lines
@@ -1039,6 +1080,8 @@ pub fn drive_traffic(
                                 to_dir,
                                 len: span,
                                 t: 0.0,
+                                from_y,
+                                to_y,
                             });
                             car.line = Some(next);
                             car.dir = next_dir;
@@ -1088,7 +1131,7 @@ pub fn drive_traffic(
             pose = pose_of(&car, line, kind);
         }
 
-        let (Some(_), Some((pos, travel))) = (key, pose) else {
+        let (Some(_), Some((pos, travel, deck))) = (key, pose) else {
             *vis = Visibility::Hidden;
             continue;
         };
@@ -1106,7 +1149,29 @@ pub fn drive_traffic(
         };
         let facing = car.heading;
 
-        let y = terrain.ground_at(pos.x, pos.y) + CAR_RIDE_HEIGHT;
+        // **Under the ground where the road is under the ground.** `deck` is
+        // this line's own carriageway height, resolved per feature, so a street
+        // crossing over the ring keeps its traffic on the bridge rather than
+        // sampling the tunnel beneath it.
+        //
+        // The lift is the arithmetic `map_geometry::stand_on_terrain` does to the
+        // drawn deck, through the same `lift_for`: over an open cutting the
+        // survey has *already* dug the trench, so adding an invented seven metres
+        // to a measured nine would put the car nine metres under its own road.
+        // Two places computing one number is the failure this whole area keeps
+        // having, so they compute it with one function.
+        let ground = terrain.ground_at(pos.x, pos.y);
+        let sunk = if deck < 0.0 {
+            // `at`, not `ground_at`, on both sides of the subtraction: this is
+            // the same difference `stand_tunnel_on` takes for the drawn deck, so
+            // the lift the car gets and the lift its road got are one number.
+            let dug = terrain.surrounding(pos.x, pos.y, cartopolis_geo::tunnels::DATUM_M)
+                - terrain.at(pos.x, pos.y);
+            deck + cartopolis_geo::tunnels::lift_for(-deck, dug)
+        } else {
+            0.0
+        };
+        let y = ground + sunk + CAR_RIDE_HEIGHT;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;
@@ -1147,19 +1212,20 @@ fn lane_key(dir: f32) -> i8 {
 
 /// Where an agent is and which way it is pointing: on its line, or on the curve
 /// across the junction it is in the middle of.
-fn pose_of(car: &Car, line: Option<&WorldDriveLine>, kind: AgentKind) -> Option<(Vec2, Vec2)> {
+fn pose_of(car: &Car, line: Option<&WorldDriveLine>, kind: AgentKind) -> Option<(Vec2, Vec2, f32)> {
     let l = line?;
     if let Some(t) = &car.turn {
-        return Some(t.pose());
+        let (p, h) = t.pose();
+        return Some((p, h, t.deck()));
     }
     let along = if car.dir > 0.0 {
         car.s
     } else {
         l.length() - car.s
     };
-    let (centre, heading) = l.at(along);
+    let (centre, heading, deck) = l.at_with_deck(along);
     let travel = heading * car.dir;
-    Some((centre + right_of(travel) * kind.offset(l), travel))
+    Some((centre + right_of(travel) * kind.offset(l), travel, deck))
 }
 
 /// Turn `from` toward `to` by at most `max_rad`.
@@ -1390,6 +1456,7 @@ mod tests {
                 drive: true,
                 walk: true,
             },
+            deck: vec![0.0; points.len()],
         }
     }
 
@@ -1618,6 +1685,8 @@ mod tests {
             to_dir: Vec2::Y,
             len: 8.0,
             t: 0.0,
+            from_y: 0.0,
+            to_y: 0.0,
         };
         let (p0, d0) = turn.pose();
         assert!(p0.distance(turn.from) < 1e-3, "{p0} != {}", turn.from);
@@ -1649,6 +1718,8 @@ mod tests {
             to_dir: Vec2::Y,
             len: 9.0,
             t: 0.0,
+            from_y: 0.0,
+            to_y: 0.0,
         };
         let ahead = Turn {
             to: Vec2::new(9.0, 0.0),

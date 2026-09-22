@@ -19,10 +19,14 @@
 //!   a painted road is the same width either way; traffic cannot, because the two
 //!   send a car in opposite directions. Getting this wrong is not subtle: half
 //!   the one-way streets in the city would run backwards.
-//! * **Tunnels are refused**, by going through
-//!   [`drawn_street`](crate::vector_tiles::drawn_street) — the same refusal the
-//!   geometry, the raster and the street labels inherit. A car on a tunnelled
-//!   carriageway drives along the surface above it.
+//! * **A tunnel is a road here, and its depth travels with the line.** The
+//!   geometry, the raster and the street labels all refuse a tunnel-flagged way
+//!   (`drawn_street`), because they draw the ground and a tunnel is not on it.
+//!   This is a *network*, and inheriting that refusal cut the graph at every
+//!   portal: a car reaching Groningen's ring ran to the end of its line and was
+//!   recycled, so 863 m of carriageway under the park carried nothing. Each line
+//!   now carries [`DriveLine::deck`], the height of its own carriageway, which
+//!   `cartopolis::systems::tunnels` resolved per feature.
 //! * **Lines are simplified and short ones dropped.** A z14 street carries
 //!   junction-accurate detail no car needs, and every vertex is a step in the
 //!   steering loop. [`DRIVE_SIMPLIFY_M`] is the same idea as the labels'
@@ -35,7 +39,7 @@
 
 use mvt_reader::feature::Feature;
 
-use crate::vector_tiles::{drawn_street, kind_of, TileData};
+use crate::vector_tiles::{kind_of, street_shape, TileData};
 
 /// Vertices closer together than this are merged. A z14 street line has
 /// junction-accurate detail; a car following it needs a driving line.
@@ -81,6 +85,23 @@ pub struct DriveLine {
     /// centre line — and so a walker can be put on the pavement *outside* it.
     pub half_width: f32,
     pub uses: Uses,
+    /// Height of the carriageway above the ground sheet at each point, parallel
+    /// to [`points`](Self::points). Zero on an ordinary street; negative through
+    /// a tunnel and the open cuttings between its lids.
+    ///
+    /// **Parallel arrays, and every operation on one must keep them so** — the
+    /// same contract, and the same failure, as `Route::points` and
+    /// `Route::levels`: thinned independently they drift apart at the first
+    /// collapsed pair, and the symptom is a car descending a few metres before
+    /// the portal.
+    ///
+    /// It is on the line rather than sampled from the world because *position is
+    /// not enough*. A street crossing over Groningen's ring is at the same XZ as
+    /// the carriageway seven metres under it, so a depth read off the map would
+    /// drop that street's traffic into the tunnel — the identical mistake
+    /// `DeckPlates::lift_at` made in the other direction, hoisting an underpass
+    /// onto the viaduct above it.
+    pub deck: Vec<f32>,
 }
 
 impl DriveLine {
@@ -158,7 +179,11 @@ pub fn walk_ok(kind: &str) -> bool {
 /// Takes the cell's already-parsed [`TileData`] rather than the tile body, for
 /// the reason every other consumer on this worker does: they each read a
 /// different layer out of the same bytes.
-pub fn extract_drive_lines(tile: &TileData, tile_m: f32) -> Result<Vec<DriveLine>, String> {
+pub fn extract_drive_lines(
+    tile: &TileData,
+    tile_m: f32,
+    sunken: &[crate::tunnels::SunkenWay],
+) -> Result<Vec<DriveLine>, String> {
     use geo_types::Geometry;
 
     let Some(meta) = tile.layer("streets") else {
@@ -169,20 +194,30 @@ pub fn extract_drive_lines(tile: &TileData, tile_m: f32) -> Result<Vec<DriveLine
     let scale = tile_m / extent;
 
     let mut out = Vec::new();
-    for feature in features {
+    for (fi, feature) in features.iter().enumerate() {
         let Some(kind) = kind_of(feature) else {
             continue;
         };
+        // This feature's own sunken corridors, if `tunnels` decided it has any.
+        let mine: Vec<&crate::tunnels::SunkenWay> =
+            sunken.iter().filter(|s| s.feature == fi).collect();
         let drive = drive_speed(kind);
         let walk = walk_ok(kind);
         if drive.is_none() && !walk {
             continue;
         }
         let speed = drive.unwrap_or(0.0);
-        // The same refusal the geometry and the raster make — and the reason it
-        // is shared rather than restated is that a tunnel that is drawn in one
-        // place and not another is worse than either answer.
-        let Some((_, half_width)) = drawn_street(feature) else {
+        // **A tunnel is a road, and refusing it put a hole in the network.**
+        //
+        // This was `drawn_street`, which takes every tunnel-flagged way off the
+        // ground sheet because the geometry draws it somewhere else. That is the
+        // right answer for a *ribbon* and the wrong one for a network: it left
+        // the drive graph cut at every portal, so a car reaching Groningen's ring
+        // tunnel ran to the end of its line and was recycled, and the 863 m of
+        // carriageway under the park carried no traffic at all. Where the road
+        // goes is `street_shape`'s business; how deep it goes is the corridor's,
+        // and a flagged way with no corridor is an arcade at ground level.
+        let Some((_, half_width)) = street_shape(feature) else {
             continue;
         };
         let flow = flow_of(feature);
@@ -217,6 +252,17 @@ pub fn extract_drive_lines(tile: &TileData, tile_m: f32) -> Result<Vec<DriveLine
             if points.len() < 2 {
                 continue;
             }
+            // **After the simplify, never before it.** The two arrays have to be
+            // parallel, and the cheap way to guarantee that is to derive one from
+            // the other's surviving points rather than to thin both and hope.
+            let deck: Vec<f32> = points
+                .iter()
+                .map(|p| {
+                    mine.iter()
+                        .filter_map(|s| s.road_under(*p))
+                        .fold(0.0f32, f32::min)
+                })
+                .collect();
             let candidate = DriveLine {
                 points,
                 flow,
@@ -226,6 +272,7 @@ pub fn extract_drive_lines(tile: &TileData, tile_m: f32) -> Result<Vec<DriveLine
                     drive: drive.is_some(),
                     walk,
                 },
+                deck,
             };
             if candidate.length() < MIN_DRIVE_LEN_M {
                 continue;
@@ -302,7 +349,7 @@ mod tests {
 
     #[test]
     fn the_fixture_yields_a_drivable_network() {
-        let lines = extract_drive_lines(&fixture(), TILE_M).expect("extract");
+        let lines = extract_drive_lines(&fixture(), TILE_M, &[]).expect("extract");
         assert!(
             lines.len() > 10,
             "a city tile should be drivable: {}",

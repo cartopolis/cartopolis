@@ -611,6 +611,7 @@ fn spawn_geometry_task(
                 let mut deck_roads = Vec::new();
                 let mut cell_tunnels = Vec::new();
                 let mut cell_openings = Vec::new();
+                let sunken_ways: Vec<cartopolis_geo::tunnels::SunkenWay>;
                 let mut labels = Vec::new();
                 let mut cell_places = CellPlaces::default();
                 // **One** parse for all seven consumers. Each of them used to open
@@ -767,6 +768,12 @@ fn spawn_geometry_task(
                                 &tunnels.openings,
                             );
                             cell_tunnels = tunnels.tunnels;
+                            // Kept for the drive network below, which needs to
+                            // know how deep each *street* runs. It cannot ask the
+                            // finished tunnels, because those are corridors and a
+                            // car belongs to a feature — see
+                            // `cartopolis_geo::tunnels::SunkenWay`.
+                            sunken_ways = tunnels.sunken;
                             cell_openings = tunnels.openings;
                             meshes.extend(tunnels.meshes);
                             // Trees ride the same fetch and the same per-cell
@@ -1052,7 +1059,11 @@ fn spawn_geometry_task(
                             // The drivable network for ambient traffic, off the
                             // same `streets` layer the ribbons and the routing
                             // graph are built from (`systems::traffic`).
-                            match cartopolis_geo::traffic::extract_drive_lines(&tile, tile_m) {
+                            match cartopolis_geo::traffic::extract_drive_lines(
+                                &tile,
+                                tile_m,
+                                &sunken_ways,
+                            ) {
                                 Ok(lines) => cell_places.drive_lines = lines,
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "drive line extraction failed");
