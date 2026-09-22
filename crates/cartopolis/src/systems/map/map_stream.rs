@@ -16,7 +16,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bevy::camera::visibility::NoFrustumCulling;
+use bevy::camera::primitives::Aabb;
+
+/// Half-height of a clipmap tile's stated bound, in metres.
+///
+/// The bound cannot be derived — see the spawn site — so it is stated, and it is
+/// stated generously because the two failure modes are not symmetric. Too large
+/// keeps a tile that could have been culled, which costs one draw. Too small
+/// culls ground somebody is looking at, which is a hole in the world.
+///
+/// 500 m against a measured 39.9 m of relief over Groningen, on a tile 1.5 km
+/// across at z14 and larger at every coarser level.
+const TILE_AABB_Y_MARGIN_M: f32 = 500.0;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy::tasks::IoTaskPool;
@@ -1440,8 +1451,34 @@ pub fn update_map_stream(
             Transform::from_translation(local),
             tile_cell,
             ChildOf(root),
-            // Flat tiles + big_space rebasing confuse frustum culling; opt out.
-            NoFrustumCulling,
+            // **An explicit bound, so these can be culled like anything else.**
+            //
+            // This was `NoFrustumCulling`, on the stated reasoning that "flat
+            // tiles + big_space rebasing confuse frustum culling". big_space was
+            // not the problem: the tile is a child of the `BigSpace` root with its
+            // own `GridCell`, and producing a correct `GlobalTransform` for
+            // exactly that arrangement is what the crate is for.
+            //
+            // The problem is that `stream.quads` **caches one quad mesh per zoom
+            // and reuses it**. Bevy's `calculate_bounds` only gives an `Aabb` to
+            // an entity that has none, and only while it can see the mesh's
+            // positions — which for a stashed, reused handle is the first spawn
+            // and no other. An entity with no `Aabb` is treated exactly like one
+            // that opted out, so the opt-out was describing the symptom.
+            //
+            // So the bound is stated rather than derived. It has to stay correct
+            // when the flat quad is later swapped for a relief mesh, and
+            // `calculate_bounds` will not revisit an entity that already has one,
+            // so it is deliberately generous in Y: `TILE_AABB_Y_MARGIN_M` is far
+            // beyond any relief this field carries (39.9 m measured over
+            // Groningen) and still negligible against a tile that is 1.5 km across
+            // at z14 and larger at every coarser level. A too-large bound costs a
+            // tile that could have been culled; a too-small one deletes ground
+            // somebody is looking at.
+            Aabb::from_min_max(
+                Vec3::new(-gs / 2.0, -TILE_AABB_Y_MARGIN_M, -gs / 2.0),
+                Vec3::new(gs / 2.0, TILE_AABB_Y_MARGIN_M, gs / 2.0),
+            ),
             // The ground never casts, on any tile, in any shape. This used to be
             // inserted only by the relief path below, on the reasoning quoted
             // there — which was right about relief and silently wrong about
