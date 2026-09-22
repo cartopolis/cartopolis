@@ -1441,12 +1441,17 @@ fn run_client() {
         let (chrome, guard) = tracing_chrome::ChromeLayerBuilder::new()
             .include_args(true)
             .build();
+        // **Narrow on purpose: this writes a lot.** `bevy_ecs` alone emits a span
+        // per system run, per `system_commands` flush and per executor wake — over
+        // one `city` scenario that is 14.17 M events and a **4.8 GB** file, and the
+        // first draft of this filter had `bevy_app`, `bevy_render` and this crate
+        // at `trace` on top of it. Everything the per-system table is built from
+        // lives in `bevy_ecs`; the rest was bulk nobody read.
+        //
+        // Even so: use the smallest scenario that shows the problem
+        // (`--perf --only <one>`), and do not leave the file on a slot's disk.
         let chrome_filter = tracing_subscriber::EnvFilter::try_from_env("CARTO_TRACE_FILTER")
-            .unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new(
-                    "off,bevy_ecs=trace,bevy_app=trace,bevy_render=trace,cartopolis=trace",
-                )
-            });
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off,bevy_ecs=info"));
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::fmt::layer()
