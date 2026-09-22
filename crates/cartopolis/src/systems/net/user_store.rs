@@ -984,6 +984,35 @@ fn plausible_start(loc: &SavedLocation) -> bool {
         && RESTORE_ALT_RANGE.contains(&loc.altitude)
 }
 
+/// Everything that reads the loaded document to set the session up.
+///
+/// **A set rather than three `.after()` edges, because the hazard is the one a
+/// fourth restore would silently walk into.** [`autosave_user_store`]'s first
+/// deadline is time zero — `next_at` is a `Local<f32>` starting at 0.0, so it
+/// saves on the very first frame it runs — and it writes the live resources over
+/// `UserStore::data` wholesale. Nothing ordered it against the restores, and
+/// measured on 2026-09-22 the executor ran it *first*: the autosave wrote the
+/// launch's default `DevPanelState` into `data.sky`, and `restore_sky_prefs`
+/// then read back what the autosave had just written rather than what was on
+/// disk. A `user.json` seeded with `sun_mode: night, fog_density: 0.42` came out
+/// of a single 60-second run as `manual, 0.15`. That is "the day/night setting
+/// is not remembered", and `data.layers` was going the same way in the same
+/// function — `last_location` escaped only by accident, because `MapAnchor::geo`
+/// is still `None` that early and the autosave skips the block that writes it.
+///
+/// So the invariant is stated once, here: **nothing writes the store until
+/// everything that must read it has.** Joining this set is what a new restore
+/// system does, and the edge it needs then already exists — the same reason the
+/// panel chain in `lib.rs` is one `.chain()` tuple rather than a dozen scattered
+/// links.
+///
+/// Deliberately *not* fixed by moving the autosave's first deadline: a grace
+/// period is a guess about how long a restore takes, and a restore that waits
+/// for something (as [`restore_start_location`] waits for the anchor) can
+/// outlast any number picked here.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Restore;
+
 /// Once the world anchor exists, put the session where it should begin, through
 /// the normal teleport path (which restores the camera pose — mode and
 /// orientation — as well as the spot).
@@ -1267,6 +1296,58 @@ mod tests {
             "and the same for fog: {}",
             p.fog_density
         );
+    }
+
+    /// The autosave must never write the document before a restore has read it.
+    ///
+    /// The regression this pins cost the day/night setting: `autosave_user_store`
+    /// saves on the first frame it runs, and with nothing ordering it against
+    /// `restore_sky_prefs` the executor ran it first, so the restore read the
+    /// launch defaults the autosave had just written instead of the file. See
+    /// [`Restore`].
+    ///
+    /// Read out of `lib.rs` rather than run, for the reason
+    /// `egui_manager::every_root_ui_panel_is_in_the_chain` is: what has to hold
+    /// is a property of the *registration*, and a test that builds its own
+    /// two-system schedule would only be re-testing that Bevy honours
+    /// `.after()`. It would stay green with the edge deleted from the app, which
+    /// is precisely the change that reintroduces the bug.
+    #[test]
+    fn the_autosave_is_ordered_after_every_restore() {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let text = std::fs::read_to_string(lib).expect("lib.rs is readable");
+
+        assert!(
+            text.contains(".after(systems::user_store::Restore)"),
+            "autosave_user_store must be ordered after the Restore set — without \
+             it the autosave's time-zero deadline overwrites the document the \
+             restores have not read yet"
+        );
+        assert!(
+            text.contains(".in_set(systems::user_store::Restore)"),
+            "the restore systems must join the Restore set, or the edge above \
+             orders the autosave after nothing"
+        );
+
+        // And every restore is inside it: one registered outside the set gets no
+        // edge at all, silently, which is how this began.
+        for name in [
+            "restore_start_location",
+            "restore_layer_prefs",
+            "restore_sky_prefs",
+        ] {
+            let at = text
+                .find(&format!("systems::user_store::{name}"))
+                .unwrap_or_else(|| panic!("{name} is registered in lib.rs"));
+            let set_at = text
+                .find(".in_set(systems::user_store::Restore)")
+                .expect("checked above");
+            assert!(
+                at < set_at,
+                "{name} is registered after the tuple that joins the Restore set, \
+                 so it is not in it"
+            );
+        }
     }
 
     fn test_store() -> UserStore {

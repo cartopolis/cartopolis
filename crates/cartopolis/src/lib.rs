@@ -2839,7 +2839,11 @@ fn run_client() {
                 // the last interactive session was looking at.
                 systems::user_store::restore_sky_prefs
                     .run_if(not(systems::shot_harness::harness_active)),
-            ),
+            )
+                // All three read the loaded document, and the autosave below
+                // overwrites it — on the first frame, unordered against them
+                // until this edge existed. See `user_store::Restore`.
+                .in_set(systems::user_store::Restore),
             systems::geo_nav::apply_teleport
                 .after(systems::geo_nav::drive_geocode)
                 .after(systems::user_store::restore_start_location)
@@ -2853,6 +2857,11 @@ fn run_client() {
                 .after(attach_avatar_to_bigspace)
                 .before(systems::free_camera::camera_controls),
             systems::user_store::autosave_user_store
+                // Never before a restore has read the document this overwrites:
+                // its first deadline is time zero, so without this it wrote the
+                // launch defaults over the saved sky and layers on frame one and
+                // the restores then read back its own output.
+                .after(systems::user_store::Restore)
                 .run_if(not(systems::shot_harness::harness_active)),
             // Nested to stay under the per-tuple system limit.
             (
