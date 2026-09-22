@@ -5614,6 +5614,73 @@ mod bytes {
 
 #[cfg(test)]
 mod tests {
+
+    /// Where every bridge deck in a tile is, **on Earth**.
+    ///
+    /// The sibling of `tunnels::tests::dump_the_fixture_bores`, and it exists for
+    /// the same reason: `docs/grade-shots.toml`'s own header records that half
+    /// its first bridge cameras missed, one of them photographing the city centre
+    /// with the viaduct behind it, and re-aiming them by hand missed again on
+    /// 2026-09-22. A deck's position is a thing the tiles know exactly, so it
+    /// should be printed rather than estimated off a map.
+    ///
+    /// ```text
+    /// CARTO_BRIDGE_TILE=/tmp/t.mvt CARTO_BRIDGE_XYZ=14/8490/5321 \
+    ///     cargo test -p cartopolis_geo dump_the_bridge_decks -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "diagnostic: prints where the tile's viaducts are"]
+    fn dump_the_bridge_decks() {
+        let owned = std::env::var("CARTO_BRIDGE_TILE")
+            .ok()
+            .map(|p| std::fs::read(p).expect("tile reads"));
+        let tile = match &owned {
+            Some(b) => TileData::parse(b).expect("tile parses"),
+            None => crate::testdata::groningen(),
+        };
+        let key: Option<(f64, f64, f64)> = std::env::var("CARTO_BRIDGE_XYZ").ok().and_then(|s| {
+            let v: Vec<f64> = s.split('/').filter_map(|p| p.parse().ok()).collect();
+            (v.len() == 3).then(|| (v[0], v[1], v[2]))
+        });
+        // The tile's own ground size, derived from its coordinates rather than
+        // written down — the same care the tunnel dump takes.
+        let tile_m = key.map_or(1471.0, |(z, _, y)| {
+            let n = 2f64.powf(z);
+            let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+            (40_075_016.686 * lat0.cos() / n) as f32
+        });
+        let decks = super::tessellate_bridges(&tile, tile_m).expect("bridges tessellate");
+        println!("decks={}", decks.len());
+        let mut sorted: Vec<&BridgeDeck> = decks.iter().collect();
+        // Biggest first: a viaduct worth photographing is a large structure, and a
+        // tile is mostly twenty-metre canal bridges.
+        sorted.sort_by(|a, b| {
+            let area = |d: &BridgeDeck| (d.max[0] - d.min[0]) * (d.max[1] - d.min[1]);
+            area(b).total_cmp(&area(a))
+        });
+        for (i, d) in sorted.iter().take(8).enumerate() {
+            let (cx, cz) = (
+                (d.min[0] + d.max[0]) * 0.5,
+                (d.min[1] + d.max[1]) * 0.5,
+            );
+            let here = key.map_or(String::new(), |(z, x, y)| {
+                let n = 2f64.powf(z);
+                let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+                let span = 40_075_016.686 * lat0.cos() / n;
+                let (fx, fy) = (x + f64::from(cx) / span, y + f64::from(cz) / span);
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * fy / n))
+                    .sinh()
+                    .atan()
+                    .to_degrees();
+                format!("  at {lat:.6},{:.6}", fx / n * 360.0 - 180.0)
+            });
+            println!(
+                "deck {i}: {:.0}x{:.0} m{here}",
+                d.max[0] - d.min[0],
+                d.max[1] - d.min[1]
+            );
+        }
+    }
     use super::bytes::{
         extract_street_labels, ocean_mask, render_mvt, roads_and_decks, tessellate_bridges,
         tessellate_roads, tessellate_surfaces, water_shore_field,

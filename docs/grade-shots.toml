@@ -47,14 +47,15 @@
 # all missed the tunnel by 80 to 120 m. The targets below are `--dump-state`'s
 # own `tunnel_entrance_lat`/`lng`, measured off the tile.
 #
-# **`tunnel-julianaweg` is gone, because that tunnel is not in the data.** It
-# aimed at 53.204316, 6.567396 and described a 127 m run too short to reach full
-# depth. Measured off the station tile 2026-09-22, the only tunnel-flagged ways
-# anywhere in it are a 38 m cycle underpass, a 36 m dip beside it and an 8 m stub
-# a kilometre west — nothing within 800 m of where that camera was pointed. The
-# two views below replace it with the tunnels that are there, and they are aimed
-# at positions `tunnels::tests::dump_the_fixture_bores` printed rather than at
-# ones converted by hand.
+# **The fixture is not the tile these places are in, and that cost a round.** The
+# checked-in `groningen_z14.mvt` is tile 8490/**5319**; the ring, the station and
+# Julianaweg are in 8490–8492/5320–5321. Measuring the fixture and converting
+# with the live tile's coordinates put two cameras several hundred metres out and
+# produced a confident note saying Julianaweg was not in the data at all. It is:
+# 127 m, half-width 5 m, reaching −3.21 m — exactly the "too short to reach full
+# depth" case its description always claimed. Every target below was printed by
+# `dump_the_fixture_bores` or `dump_the_bridge_decks` from a tile fetched by its
+# own z/x/y, which is the only form of this that cannot be got wrong.
 #
 # Note this file did not parse at all until 2026-09-22 (`time`/`fog`/`clouds`/
 # `rain` were not manifest keys and `deny_unknown_fields` refused the lot), so
@@ -114,47 +115,47 @@ look = [-90.0, 68.0]
 
 [[shot]]
 group = "tunnels"
-name = "tunnel-underpass-cycle"
-description = "A cycle underpass on the station tile: three tagged runs end to end, 38 m in all, at PATH_DEPTH_M rather than the road's seven metres. The narrow, shallow case, and the one where giving a path the road's depth would read as a mistake in the ground rather than as an underpass."
-at = [53.210613, 6.565845, 18]
-look_at = [53.210627, 6.566520]
+name = "tunnel-julianaweg"
+description = "Julianaweg, 127 m of tagged road tunnel — shorter than two 120 m ramps, so `depth_for_run` reduces its depth rather than crossing the ramps over each other and it settles at 3.2 m. Expect a dip that sags and comes back up, not a tunnel: the honest answer for an underpass, and the one case the tiles cannot tell from a tunnel under a hill."
+at = [53.204313, 6.567658, 45]
+look_at = [53.203614, 6.566491]
 
 [[shot]]
 group = "tunnels"
-name = "tunnel-underpass-shallow"
-description = "A 36 m tagged run 40 m north-east of it, which never reaches depth at all — `depth_for_run` refuses a tunnel too short to be one and leaves it a dip in the road. Expect a dip, not a tunnel: that is the honest drawing of a way somebody tagged under a footbridge, and the one case the tiles cannot tell from a tunnel under a hill."
-at = [53.211206, 6.566601, 16]
-look_at = [53.210915, 6.566954]
+name = "tunnel-underpass-cycle"
+description = "A 73 m cycle underpass north of the station, at PATH_DEPTH_M and PATH_GRADE rather than the road's seven metres and 6 %. The narrow, shallow case: giving a path the road's depth is not merely too deep, it is the difference between a dip and nothing at all, because the ramp is derived from the depth and a short run never gets there."
+at = [53.211321, 6.565462, 22]
+look_at = [53.211235, 6.564649]
 
 # ─── Bridges ────────────────────────────────────────────────────────────────
 
 [[shot]]
 group = "bridges"
 name = "bridge-emmaviaduct"
-description = "The Emmaviaduct over the rail yard, across the deck: the measured-height case (bridge-heights.md puts it at 6.6 m). Expect a deck standing clear of the tracks with its approaches meeting it, not a slab lying in the ground."
-at = [53.207566, 6.564711, 94]
-look = [-28.0, 251.8]
+description = "The Emmaviaduct over the rail yard, 100 x 258 m, seen across the deck — the measured-height case (bridge-heights.md puts it at 6.6 m). Expect a deck standing clear of the tracks with its approaches *climbing* to meet it, which is what the approach grading added on 2026-09-22 and what every earlier capture of this showed as a vertical step."
+at = [53.205680, 6.559384, 110]
+look_at = [53.207332, 6.562142]
 
 [[shot]]
 group = "bridges"
 name = "bridge-laan-1940"
-description = "Laan 1940-1945, 569 m — the longest viaduct in the city and the one where a wrong height is most obvious, because the error accumulates along the whole deck."
-at = [53.210177, 6.541063, 114]
-look = [-26.0, 46.7]
+description = "Laan 1940-1945, the largest structure in the city at 384 x 332 m of deck, and the one where a wrong height or a missing embankment is most obvious because the error accumulates along the whole approach."
+at = [53.207349, 6.544973, 180]
+look_at = [53.211122, 6.544973]
+
+[[shot]]
+group = "bridges"
+name = "bridge-eastring"
+description = "The eastern ring's interchange, 408 x 217 m: two decks crossing, which is the case `DeckPlates::lift_at` takes the tallest for and the case an approach shared by two structures has to satisfy both of."
+at = [53.219263, 6.589842, 170]
+look_at = [53.219263, 6.595842]
 
 [[shot]]
 group = "bridges"
 name = "bridge-beneluxweg"
-description = "Beneluxweg, a 322 m viaduct on the eastern ring. A second long deck in a different part of the city, so a failure that depends on the cell rather than on the road shows up as one of the two."
-at = [53.215113, 6.595273, 101]
-look = [-26.0, 165.9]
-
-[[shot]]
-group = "bridges"
-name = "bridge-petersburgweg"
-description = "Sint-Petersburgweg, a 305 m cycle bridge: the narrow, light case, where a wrongly-lifted deck is most obvious against the path either side."
-at = [53.220085, 6.591845, 92]
-look = [-26.0, 155.1]
+description = "A 50 x 37 m deck on the same ring — the small, ordinary case, so a fault that only shows on a large structure is distinguishable from one that shows on every deck."
+at = [53.213268, 6.598434, 70]
+look_at = [53.214030, 6.599707]
 
 # ─── Crossroads ─────────────────────────────────────────────────────────────
 #
