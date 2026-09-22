@@ -95,6 +95,25 @@ pub struct Manifest {
     /// normally sets this once at the top instead of per shot.
     #[serde(default)]
     pub hide_ui: Option<bool>,
+    /// Hour of day, fog, cloud and rain for every shot that names none of its
+    /// own.
+    ///
+    /// **A group is a set of views of one subject, and the light has to be the
+    /// same across them or two captures are not comparable.** `docs/grade-shots
+    /// .toml` wrote these four at the top on exactly that reasoning — a seven
+    /// metre trench reads only when the sun puts one wall in shadow, so every
+    /// tunnel view wants the same mid-afternoon — and `deny_unknown_fields`
+    /// rejected the file. It had therefore **never parsed**, so the manifest that
+    /// exists to check grade separation could not be run at all, which is a large
+    /// part of why this feature was verified by hand-aimed one-off captures.
+    #[serde(default)]
+    pub time: Option<f32>,
+    #[serde(default)]
+    pub fog: Option<f32>,
+    #[serde(default)]
+    pub clouds: Option<f32>,
+    #[serde(default)]
+    pub rain: Option<f32>,
     #[serde(default, rename = "shot")]
     pub shots: Vec<Preset>,
 }
@@ -122,6 +141,20 @@ pub struct Preset {
     /// `[pitch, yaw]` in degrees (−90 = straight down). Defaults to straight down.
     #[serde(default)]
     pub look: Option<[f32; 2]>,
+    /// `[lat, lng]` to aim at, instead of an angle — overrides `look`.
+    ///
+    /// The instrument that removes the aiming error this manifest's own header
+    /// is about. A pitch aims at whatever is `altitude / tan(pitch)` metres
+    /// ahead of a camera whose altitude is measured from the *anchor's* ground,
+    /// while the subject stands on the measured ground somewhere else; at the
+    /// shallow angle a sunken road needs, three metres of difference moves the
+    /// aim thirty. `shot_harness::aim_scripted_camera` has computed this from
+    /// where the camera really ends up since the day tunnels landed, and until
+    /// 2026-09-22 there was **no way to ask for it** — not a flag, not a
+    /// manifest key — so every camera in this file was aimed by the method that
+    /// missed eleven times.
+    #[serde(default)]
+    pub look_at: Option<[f64; 2]>,
     /// "free", "earth" or "avatar"; falls back to the manifest's `mode`.
     #[serde(default)]
     pub mode: Option<String>,
@@ -369,6 +402,39 @@ at = [53.2194, 6.5665, 12000000]
 mode = "earth"
 out = "img/custom.png"
 "#;
+
+    /// **Every manifest in the tree loads**, which `docs/grade-shots.toml` did
+    /// not for the whole life of the feature it exists to check.
+    ///
+    /// It set `time`, `fog`, `clouds` and `rain` at the top — correctly, because
+    /// a group is a set of views of one subject and they have to be lit alike —
+    /// and [`Manifest`] had no such keys, so `deny_unknown_fields` refused the
+    /// file. The only symptom was a one-line parse error from a command nobody
+    /// in CI runs, so the grade-separation image set was dead on arrival and
+    /// tunnels went on being verified by hand-aimed one-off captures instead.
+    /// A manifest that cannot be loaded is not a manifest, and this is cheap.
+    #[test]
+    fn every_checked_in_manifest_loads() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&root).expect("docs/ reads").flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "toml") {
+                let text = std::fs::read_to_string(&path).expect("a manifest reads");
+                // Only the shot manifests: `docs/` also holds `perf.toml`, whose
+                // scenarios are a different schema.
+                if !text.contains("[[shot]]") {
+                    continue;
+                }
+                seen += 1;
+                let m: Manifest = toml::from_str(&text)
+                    .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
+                m.validate()
+                    .unwrap_or_else(|e| panic!("{} is invalid: {e}", path.display()));
+            }
+        }
+        assert!(seen >= 2, "found {seen} shot manifests, expected at least the documentation set and the grade set");
+    }
 
     #[test]
     fn parses_and_defaults_paths() {

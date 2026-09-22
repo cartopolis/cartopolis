@@ -32,6 +32,22 @@
 # look in. A tunnel is viewed **along** its tunnel, which is the only angle that
 # sees into an open cut; a bridge is viewed **across** its deck, which is the
 # angle that shows it standing clear of what it crosses.
+#
+# **And the tunnel views aim with `look_at`, not with a pitch.** Computing the
+# position is only half of it: what lands in frame is `altitude / tan(pitch)`
+# metres ahead of a camera whose altitude is measured from the map anchor's
+# ground, while the road stands on the measured ground somewhere else, so at the
+# shallow angle a cut needs three metres of difference moves the aim thirty. This
+# whole file was written before there was any way to ask for `look_at` — the
+# harness has computed it since the day tunnels landed and neither a flag nor a
+# manifest key reached it — which is why the three ring cameras it shipped with
+# all missed the tunnel by 80 to 120 m. The targets below are `--dump-state`'s
+# own `tunnel_entrance_lat`/`lng`, measured off the tile.
+#
+# Note this file did not parse at all until 2026-09-22 (`time`/`fog`/`clouds`/
+# `rain` were not manifest keys and `deny_unknown_fields` refused the lot), so
+# none of it had ever been run. `shot_presets::every_checked_in_manifest_loads`
+# is the guard.
 
 tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
 size = "1600x900"
@@ -51,24 +67,38 @@ wait = 90.0
 
 [[shot]]
 group = "tunnels"
-name = "tunnel-ring-cut"
-description = "Groningen's southern ring beside DUO (Weg der Verenigde Naties, 171 m tagged tunnel), looking west along the tunnel. Expect a sunken carriageway with its markings in it, a retaining wall along each side, and the ground unbroken over the stretches with a building on top."
-at = [53.205934, 6.577048, 43]
-look = [-18.0, 249.0]
+name = "tunnel-ring-portal-west"
+description = "The south-western portal of Groningen's ring (Weg der Verenigde Naties), looking along the road in the direction of travel. Expect the carriageway to run down into the cut and go under, with a retaining wall either side — not to stop dead at the grass."
+at = [53.205088, 6.574282, 45]
+look_at = [53.205391, 6.575533]
 
 [[shot]]
 group = "tunnels"
-name = "tunnel-ring-mid"
-description = "The 242 m stretch of the same road, looking north-east along it — the opposite direction to `tunnel-ring-cut`, so the two together show both walls of one cut lit and shadowed."
-at = [53.205788, 6.577177, 58]
-look = [-20.0, 47.8]
+name = "tunnel-ring-portal-east"
+description = "The north-eastern portal of the same chain, 863 m away, looking back along it. The pair brackets the whole sunken road."
+at = [53.209551, 6.583836, 45]
+look_at = [53.209087, 6.582730]
 
 [[shot]]
 group = "tunnels"
-name = "tunnel-ring-east"
-description = "The 232 m stretch at the Oosterpoort end. The longest single tagged run here, so this is the one that reaches full depth well clear of both ramps."
-at = [53.207901, 6.58047, 58]
-look = [-20.0, 52.1]
+name = "tunnel-ring-cutting-south"
+description = "The 109 m open cutting between the first two lids, across the trench. This is the stretch the tunnel flag does *not* mark: until 2026-09-22 it was drawn as ordinary road on the ground between two decks seven metres below it, so the carriageway stepped 7 m at each end of it."
+at = [53.206738, 6.575552, 80]
+look_at = [53.205912, 6.576931]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-cutting-north"
+description = "The 107 m cutting between the second and third lids. A second one in a different cell, so a fault that depends on the cell shows up as one of the two."
+at = [53.208806, 6.579482, 80]
+look_at = [53.207980, 6.580861]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-ring-plan"
+description = "The whole chain from above: lid, cutting, lid, cutting, lid. The one view that shows the road is continuous rather than a row of stubs, and the only one a depth cannot be read from — pair it with `tunnel_road_m`."
+at = [53.207200, 6.579100, 420]
+look = [-90.0, 68.0]
 
 [[shot]]
 group = "tunnels"

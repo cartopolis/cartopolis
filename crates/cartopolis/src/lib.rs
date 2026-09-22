@@ -132,6 +132,20 @@ struct Cli {
     #[arg(long, value_name = "PITCH,YAW")]
     look: Vec<String>,
 
+    /// Aim at a place instead of at an angle: `--look-at 53.20542,6.57551`,
+    /// paired with `--at` by position and overriding `--look`.
+    ///
+    /// **A pitch is not an aim.** What lands in frame is `altitude / tan(pitch)`
+    /// metres ahead, and `altitude` is measured above the *map anchor's* ground
+    /// while the subject stands on the measured ground somewhere else; at the
+    /// shallow angle a sunken road or a viaduct needs, three metres of difference
+    /// moves the aim thirty. Given a target, the direction is computed each frame
+    /// from where the camera actually ended up, in the frame the world is drawn
+    /// in (`shot_harness::aim_scripted_camera`). `--dump-state`'s
+    /// `tunnel_entrance_lat`/`lng` is where to get the numbers for a tunnel.
+    #[arg(long, value_name = "LAT,LNG")]
+    look_at: Vec<String>,
+
     /// Offscreen render size for `--shot` (default 1280x720). Overrides the
     /// manifest's `size` in a `--shots` run.
     #[arg(long, value_name = "WxH")]
@@ -340,6 +354,7 @@ fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
         path,
         at: &cli.at,
         look: &cli.look,
+        look_at: &cli.look_at,
         size: cli.size.as_deref().unwrap_or(DEFAULT_SIZE),
         settle: cli.settle.unwrap_or(DEFAULT_SETTLE),
         wait: cli.wait.unwrap_or(DEFAULT_WAIT),

@@ -1324,6 +1324,10 @@ pub struct ShotArgs<'a> {
     /// Zero or more "pitch,yaw", paired with `at` by index; the last one carries
     /// over to any waypoint past the end.
     pub look: &'a [String],
+    /// Zero or more "lat,lng" to aim at, paired with `at` by index and taking
+    /// precedence over `look` — see [`ShotSpec::look_at`]. The last one carries
+    /// over, as `look` does.
+    pub look_at: &'a [String],
     pub size: &'a str,
     pub settle: f32,
     pub wait: f32,
@@ -1349,6 +1353,7 @@ impl Default for ShotArgs<'_> {
             path: PathBuf::new(),
             at: &[],
             look: &[],
+            look_at: &[],
             size: DEFAULT_SIZE,
             settle: DEFAULT_SETTLE,
             wait: DEFAULT_WAIT,
@@ -1371,6 +1376,7 @@ impl ShotHarness {
             path,
             at,
             look,
+            look_at,
             size,
             settle,
             wait,
@@ -1403,12 +1409,18 @@ impl ShotHarness {
                 .map(|l| nums(l, 2, "--look"))
                 .transpose()?
                 .unwrap_or_else(|| vec![-90.0, 0.0]);
+            let target = look_at
+                .get(i)
+                .or_else(|| look_at.last())
+                .map(|l| nums(l, 2, "--look-at"))
+                .transpose()?;
             shots.push(ShotSpec {
                 lat: p[0],
                 lng: p[1],
                 alt: p[2],
                 pitch_deg: angles[0] as f32,
                 yaw_deg: angles[1] as f32,
+                look_at: target.map(|t| [t[0], t[1]]),
                 ..default()
             });
         }
@@ -1524,7 +1536,7 @@ impl ShotHarness {
                     yaw_deg: look[1],
                     name: Some(p.name.clone()),
                     description: p.description.clone(),
-                    look_at: None,
+                    look_at: p.look_at,
                     out: Some(manifest.out_path(manifest_path, p)),
                     mode: p.mode.clone().or_else(|| manifest.mode.clone()),
                     hide_ui: p.hide_ui.or(manifest.hide_ui),
@@ -1533,11 +1545,14 @@ impl ShotHarness {
                     settle: None,
                     wait: None,
                     in_place: false,
+                    // Per shot first, then the manifest's own default. A group
+                    // is a set of views of one subject and they have to be lit
+                    // alike, or two of them cannot be compared.
                     env: ShotEnv {
-                        time: p.time,
-                        fog: p.fog,
-                        clouds: p.clouds,
-                        rain: p.rain,
+                        time: p.time.or(manifest.time),
+                        fog: p.fog.or(manifest.fog),
+                        clouds: p.clouds.or(manifest.clouds),
+                        rain: p.rain.or(manifest.rain),
                     },
                 }
             })
