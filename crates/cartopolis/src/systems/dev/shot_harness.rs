@@ -1109,6 +1109,32 @@ pub struct ShotMetrics {
     /// A list like `busy`, so it rides the CSV as one `|`-joined cell and is
     /// excluded from the `--expect` vocabulary.
     pub worker_split: Vec<String>,
+    /// How wide the tile worker pool is (`platform::workers::worker_count`).
+    ///
+    /// On record because every reading above is a *sum over threads* and means
+    /// nothing without it: 32 s of busy is saturation on one thread and idleness
+    /// on eight. It is also the one number here that the machine chooses rather
+    /// than the scene, so a pair of runs that disagree on it are not comparable.
+    pub worker_threads: usize,
+    /// Fraction of the pool's available thread-time actually spent inside jobs,
+    /// over the same window — `busy / (threads × window)`.
+    ///
+    /// **This is the compute-bound-or-starved question, and nothing else here
+    /// answers it.** `worker_busy_ms` says what the decodes cost and
+    /// `worker_wait_ms` says that jobs queued, but a burst that queues behind a
+    /// saturated pool and a burst that queues waiting for its bytes to arrive
+    /// produce the same large wait. Utilisation separates them: near 1.0 the
+    /// cores are the wall and making the work cheaper is the only lever; low,
+    /// with a large wait, the pool is starved and the fill is bound by fetches
+    /// or by dispatch order, where cheaper work buys nothing.
+    ///
+    /// Measured 2026-09-22 on a Steam Deck (8 threads), Groningen at 3 km on the
+    /// handset rung: **0.13**, i.e. 31.7 s of work inside 247 thread-seconds. The
+    /// fill was waiting, not computing — which is the opposite of what the
+    /// per-cell costs alone suggest.
+    ///
+    /// Wall-clock-derived, so paired-run material and never a gate.
+    pub worker_utilisation: f32,
     /// The capture ran on a CPU rasteriser (Mesa lavapipe in a container or CI)
     /// rather than a GPU. Geometry, placement, culling and UI layout are the same
     /// picture either way; the tone-mapped sky is not, so a colour or lighting
@@ -1167,7 +1193,7 @@ ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
 gpu_resident_peak_kb,warm_tile_hits,warm_tile_mb,warm_cell_restores,warm_cell_mb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
 fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
-worker_jobs,worker_busy_ms,worker_wait_ms,worker_split";
+worker_jobs,worker_busy_ms,worker_wait_ms,worker_threads,worker_utilisation,worker_split";
 
 /// The avatar's contribution to [`ShotMetrics`].
 ///
@@ -1223,6 +1249,7 @@ impl ShotMetrics {
 /// costs a column some readability — never its label.
 const CSV_PRECISION: &[(&str, usize)] = &[
     ("settled_s", 2),
+    ("worker_utilisation", 3),
     ("warm_tile_mb", 1),
     ("warm_cell_mb", 1),
     ("frame_ms", 2),
@@ -3621,6 +3648,26 @@ pub fn drive_capture(
                 .map(|(_, t)| t.wait_us)
                 .sum::<u64>()
                 / 1000,
+            worker_threads: crate::platform::workers::worker_count(),
+            // `busy / (threads × window)`. The window is the shot's own elapsed
+            // time, which is what the worker account above was deltaed over, so
+            // the two describe the same seconds. Guarded rather than clamped: a
+            // zero-length window or an unsized pool would otherwise divide by
+            // zero and report `inf` as a performance result.
+            worker_utilisation: {
+                let threads = crate::platform::workers::worker_count().max(1) as f64;
+                let window_us = f64::from(verdict.at) * 1_000_000.0;
+                let busy_us = progress
+                    .worker_window
+                    .iter()
+                    .map(|(_, t)| t.busy_us)
+                    .sum::<u64>() as f64;
+                if window_us > 0.0 {
+                    (busy_us / (threads * window_us)) as f32
+                } else {
+                    0.0
+                }
+            },
             worker_split: progress
                 .worker_window
                 .iter()
@@ -3718,6 +3765,8 @@ pub fn drive_capture(
                     worker_jobs = m.worker_jobs,
                     worker_busy_ms = m.worker_busy_ms,
                     worker_wait_ms = m.worker_wait_ms,
+                    worker_threads = m.worker_threads,
+                    worker_util = format!("{:.2}", m.worker_utilisation),
                     worker_split = m.worker_split.join("|"),
                     software_renderer = m.software_renderer,
                     "shot state"
@@ -4316,6 +4365,8 @@ mod tests {
             // Two entries for the same reason as `busy` above: this is the other
             // list-valued column, and the `|` join is what keeps it one cell.
             worker_split: vec!["map_tiles:2:10:5".into(), "lod22:1:8:3".into()],
+            worker_threads: 0,
+            worker_utilisation: 0.0,
         }
     }
 

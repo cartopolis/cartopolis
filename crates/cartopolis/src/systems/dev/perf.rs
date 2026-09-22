@@ -370,6 +370,29 @@ pub struct Window {
     pub upload_kb: u64,
     /// Tile-worker jobs finished in the window.
     pub worker_jobs: u64,
+    /// Time spent inside those jobs, and time they sat queued before starting,
+    /// summed over every stream, in milliseconds.
+    pub worker_busy_ms: u64,
+    pub worker_wait_ms: u64,
+    /// How wide the tile worker pool is. Every number above is a sum *over
+    /// threads* and is uninterpretable without it — 32 s of busy is saturation
+    /// on one thread and near-idleness on eight.
+    pub worker_threads: usize,
+    /// Fraction of the pool's available thread-time actually spent working, over
+    /// this window: `busy / (threads × wall_s)`.
+    ///
+    /// **The column to read first on a `load` window.** A large `worker_wait_ms`
+    /// has two completely different causes that no other number here separates:
+    /// jobs queued behind a saturated pool, and jobs queued waiting for their
+    /// bytes to arrive. Near 1.0 the cores are the wall, and only cheaper work
+    /// helps. Low, with a large wait, the pool is starved and the fill is bound
+    /// by fetches or dispatch order — where making the work cheaper buys nothing
+    /// at all.
+    ///
+    /// Measured 2026-09-22, `deck-1`, 8 threads, handset rung at 3 km over
+    /// Groningen: **0.13**. The fill was waiting, not computing, which is the
+    /// opposite of what the per-cell costs on their own suggest.
+    pub worker_utilisation: f32,
     /// Mesh assets arriving per frame. On a settled window this should be ~0;
     /// whatever it is, is what the mesh allocator is being paid to process.
     pub mesh_added_per_frame: f64,
@@ -701,15 +724,35 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
     let per_frame = if frames == 0 { 1.0 } else { f64::from(frames) };
 
     let workers = crate::platform::workers::stats::snapshot();
-    let worker_jobs = workers.iter().fold(0u64, |acc, (label, totals)| {
-        let then = base
-            .workers
-            .iter()
-            .find(|(l, _)| l == label)
-            .map(|(_, t)| *t)
-            .unwrap_or_default();
-        acc + totals.since(then).jobs
-    });
+    let worker_window = workers.iter().fold(
+        crate::platform::workers::stats::Totals::default(),
+        |acc, (label, totals)| {
+            let then = base
+                .workers
+                .iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, t)| *t)
+                .unwrap_or_default();
+            let d = totals.since(then);
+            crate::platform::workers::stats::Totals {
+                jobs: acc.jobs + d.jobs,
+                busy_us: acc.busy_us + d.busy_us,
+                wait_us: acc.wait_us + d.wait_us,
+            }
+        },
+    );
+    let worker_jobs = worker_window.jobs;
+    let worker_threads = crate::platform::workers::worker_count();
+    // `busy / (threads × wall)`. Guarded rather than clamped: a zero-length
+    // window would otherwise report `inf` as a performance result.
+    let worker_utilisation = {
+        let denom = worker_threads.max(1) as f64 * f64::from(base.wall_s) * 1_000_000.0;
+        if denom > 0.0 {
+            (worker_window.busy_us as f64 / denom) as f32
+        } else {
+            0.0
+        }
+    };
     let counts = readouts.census.counts();
     let store = &readouts.diagnostics;
 
@@ -771,6 +814,10 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
             .saturating_sub(base.upload_bytes)
             / 1024,
         worker_jobs,
+        worker_busy_ms: worker_window.busy_us / 1000,
+        worker_wait_ms: worker_window.wait_us / 1000,
+        worker_threads,
+        worker_utilisation,
         mesh_added_per_frame: readouts.churn.added.saturating_sub(base.mesh_added) as f64
             / per_frame,
         resident_kb: readouts.uploads.resident_kb(),
@@ -821,6 +868,10 @@ fn log_window(w: &Window) {
         mesh_slab_mb = opt(w.mesh_slab_mb, 0),
         upload_kb = w.upload_kb,
         worker_jobs = w.worker_jobs,
+        worker_busy_s = format!("{:.1}", w.worker_busy_ms as f64 / 1000.0),
+        worker_wait_s = format!("{:.1}", w.worker_wait_ms as f64 / 1000.0),
+        worker_threads = w.worker_threads,
+        worker_util = format!("{:.2}", w.worker_utilisation),
         mesh_added_per_frame = format!("{:.1}", w.mesh_added_per_frame),
         resident_mb = format!(
             "{:.0} ({:.0} tex / {:.0} geo)",
