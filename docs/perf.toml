@@ -2,10 +2,18 @@
 #
 #     cargo perf                       # every scenario → /tmp/perf.json
 #     cargo perf --only orbit,city     # a subset
-#     cargo perf --features perf       # + the GPU passes and allocation columns
+#
+#     # + the GPU passes and allocation columns. NOT `cargo perf --features perf`:
+#     cargo run -p cartopolis --features perf -- --perf
 #
 # `cargo perf` is an alias for `cargo run -p cartopolis -- --perf`, so it takes the
-# rest of the shot harness's flags too (`--size`, `--settle`, `--wait`).
+# rest of the shot harness's flags too (`--size`, `--settle`, `--wait`) — but a
+# cargo alias *appends*, and this one already ends in `--`, so anything meant for
+# cargo itself lands on the binary instead. `--features perf` through the alias
+# builds without the feature and then dies on "unexpected argument '--features'",
+# which reads as the flag not existing rather than as being in the wrong place.
+# This file and `.cargo/config.toml` both documented it that way and it cost a
+# build to find out (2026-09-22).
 #
 # This is *not* `docs/shots.toml` with different numbers. That manifest picks views
 # because they look good in a README; every entry here is picked because it costs

@@ -81,8 +81,14 @@ rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]
 shots = ["run", "-p", "cartopolis", "--", "--shots"]
 
 # Run the performance suite from `docs/perf.toml` — every scenario flown, settled,
-# captured and then measured twice. Extra flags pass through:
+# captured and then measured twice. Extra flags pass through to the *binary*:
 #   cargo perf --only orbit
-#   cargo perf --features perf        # + GPU passes and allocation columns
+#
+# **The GPU-pass and allocation columns cannot be reached through this alias.** A
+# cargo alias appends, and this one ends in `--`, so `cargo perf --features perf`
+# expands to `… -- --perf --features perf` and clap rejects it with "unexpected
+# argument '--features'". A cargo flag has to go before the `--`, i.e. spell the
+# run out:
+#   cargo run -p cartopolis --features perf -- --perf
 # `docs/notes/performance-suite.md` says what each column may be trusted for.
 perf = ["run", "-p", "cartopolis", "--", "--perf"]
