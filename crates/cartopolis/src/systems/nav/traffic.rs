@@ -349,6 +349,9 @@ pub struct WorldDriveLine {
     /// [`cartopolis_geo::traffic::DriveLine::deck`]. Parallel to `points`, and
     /// every operation on one must keep it so.
     pub deck: Vec<f32>,
+    /// This way is flagged `bridge`, so its height comes from `DeckPlates` —
+    /// which is measured, and so arrives some frames after the cell does.
+    pub on_deck: bool,
 }
 
 impl WorldDriveLine {
@@ -520,6 +523,7 @@ impl DriveNetwork {
                     uses: l.uses,
                     cumulative,
                     deck,
+                    on_deck: l.on_deck,
                 })
             })
             .collect();
@@ -885,6 +889,7 @@ pub fn drive_traffic(
     net: Res<DriveNetwork>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    decks: Res<crate::systems::map_geometry::DeckPlates>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     grids: Query<&Grid, With<BigSpace>>,
     mut cars: Query<
@@ -1135,6 +1140,7 @@ pub fn drive_traffic(
             *vis = Visibility::Hidden;
             continue;
         };
+        let on_deck = line.is_some_and(|l| l.on_deck);
 
         // ── Draw ─────────────────────────────────────────────────────────────
         //
@@ -1171,7 +1177,14 @@ pub fn drive_traffic(
         } else {
             0.0
         };
-        let y = ground + sunk + CAR_RIDE_HEIGHT;
+        // …and **over** it where the road is over it. A deck's height is
+        // measured rather than tessellated, so it cannot travel on the line the
+        // way the tunnel depth does; what travels is `on_deck`, and that is the
+        // half that matters — `lift_at` answers by position, and a viaduct and
+        // the street under it are at the same position. Asking only for a line
+        // the tile flagged `bridge` is what keeps the underpass underneath.
+        let lift = if on_deck { decks.lift_at(pos) } else { 0.0 };
+        let y = ground + sunk + lift + CAR_RIDE_HEIGHT;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;
@@ -1457,6 +1470,7 @@ mod tests {
                 walk: true,
             },
             deck: vec![0.0; points.len()],
+            on_deck: false,
         }
     }
 

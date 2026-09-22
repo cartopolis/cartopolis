@@ -39,7 +39,7 @@
 
 use mvt_reader::feature::Feature;
 
-use crate::vector_tiles::{kind_of, street_shape, TileData};
+use crate::vector_tiles::{flag_of, kind_of, street_shape, TileData};
 
 /// Vertices closer together than this are merged. A z14 street line has
 /// junction-accurate detail; a car following it needs a driving line.
@@ -102,6 +102,17 @@ pub struct DriveLine {
     /// `DeckPlates::lift_at` made in the other direction, hoisting an underpass
     /// onto the viaduct above it.
     pub deck: Vec<f32>,
+    /// Whether this way is flagged `bridge`.
+    ///
+    /// A deck's height is a *measurement* — `map_geometry::resolve_bridge_decks`
+    /// reads it out of the survey some frames after the cell lands — so unlike
+    /// [`deck`](Self::deck) it cannot be baked here. What can be recorded here is
+    /// the half that is a fact about the road rather than about the world, and
+    /// it is the half that matters: `DeckPlates::lift_at` answers by position,
+    /// and a viaduct and the street beneath it are at the same position. The
+    /// route line settled this the same way (`Route::levels`), and the first
+    /// attempt there hoisted every underpass onto the structure above it.
+    pub on_deck: bool,
 }
 
 impl DriveLine {
@@ -221,6 +232,7 @@ pub fn extract_drive_lines(
             continue;
         };
         let flow = flow_of(feature);
+        let on_deck = flag_of(feature, "bridge");
 
         let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
             Geometry::LineString(ls) => vec![ls],
@@ -273,6 +285,7 @@ pub fn extract_drive_lines(
                     walk,
                 },
                 deck,
+                on_deck,
             };
             if candidate.length() < MIN_DRIVE_LEN_M {
                 continue;
