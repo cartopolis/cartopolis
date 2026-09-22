@@ -140,6 +140,11 @@ type Tessellated = (
     // for the same reason the decks are: neither can be placed until the height
     // arrives.
     Vec<(u32, SurfaceMesh)>,
+    // The ground stretch of each bridge-flagged street either side of its span,
+    // which is what the height field grades an embankment along. Travels with the
+    // decks because it is indexed by them and waits on the same measurement — see
+    // `Plate::approaches`.
+    Vec<cartopolis_geo::vector_tiles::Approach>,
     Vec<StreetLabelLine>,
     // What the cell holds that a player can walk up to: the furniture standing in
     // its streets (which is also what makes those props solid) and its named
@@ -239,6 +244,16 @@ struct Plate {
     /// Cell origin in world metres; a deck's rings are tile-local.
     world: Vec2,
     height: f32,
+    /// The ground stretches of this deck's own street either side of its span,
+    /// tile-local, abutment first — `vector_tiles::Approach`.
+    ///
+    /// Carried here because the *terrain* is what has to act on them and the
+    /// terrain cannot ask the tile: the approach and the street passing
+    /// underneath are both at grade and both unflagged, so nothing about their
+    /// geometry separates them. What separates them is that the approach is the
+    /// same street feature as the span, which `split_by_deck` establishes on the
+    /// worker and which is lost the moment the cell's meshes are merged.
+    approaches: Vec<Vec<[f32; 2]>>,
 }
 
 impl DeckPlates {
@@ -286,6 +301,125 @@ impl DeckPlates {
             }
         }
         best
+    }
+
+    /// The two grids the height field needs to build an embankment: where the
+    /// approach roads run, and how high the structure they climb to stands.
+    ///
+    /// Both are `n × n` on the terrain field's own grid, which is centred on the
+    /// map anchor and spans `±half` metres — the same frame `RoadMask::mark_cell`
+    /// marks in. `lift[i]` is the deck height at a sample the structure covers and
+    /// `f32::NAN` everywhere else; `ramp[i]` is an approach sample.
+    ///
+    /// **Rasterised here rather than on the bake's worker** because it is per
+    /// *plate*, not per sample: each one scans its own bounding box, so a city's
+    /// forty-odd viaducts cost a few tens of thousands of point-in-outline tests
+    /// against the four million samples a full-grid pass would be.
+    ///
+    /// **And the approaches are a mask of their own, not part of the road mask.**
+    /// Ramping through the whole road corridor raised 18 % of the Groningen
+    /// fixture's streets for five bridges: a raster mask is one connected shape
+    /// and a gradient travels through everything touching it, including the street
+    /// passing *under* the viaduct. The approach is separable only because it is
+    /// the same street feature as the span (`vector_tiles::Approach`).
+    #[must_use]
+    pub fn grade_masks(&self, n: usize, half: f32) -> (Vec<bool>, Vec<f32>) {
+        let mut ramp = vec![false; n * n];
+        let mut lift = vec![f32::NAN; n * n];
+        if n < 3 || self.plates.is_empty() {
+            return (ramp, lift);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let step = half * 2.0 / (n - 1) as f32;
+        if step <= 0.0 {
+            return (ramp, lift);
+        }
+        // World XZ → grid index, clamped to the interior.
+        let to_grid = |v: f32| -> Option<usize> {
+            let k = ((v + half) / step).round();
+            (k >= 0.0 && k < n as f32).then_some(k as usize)
+        };
+
+        for plate in self.plates.values().flatten() {
+            // The structure: every sample its outline covers, at its height.
+            let (lo, hi) = (plate.deck.min, plate.deck.max);
+            if lo[0] > hi[0] {
+                continue;
+            }
+            let (x0, x1) = (
+                to_grid(plate.world.x + lo[0] - step),
+                to_grid(plate.world.x + hi[0] + step),
+            );
+            let (z0, z1) = (
+                to_grid(plate.world.y + lo[1] - step),
+                to_grid(plate.world.y + hi[1] + step),
+            );
+            if let (Some(x0), Some(x1), Some(z0), Some(z1)) = (x0, x1, z0, z1) {
+                for z in z0..=z1 {
+                    for x in x0..=x1 {
+                        #[allow(clippy::cast_precision_loss)]
+                        let p = [
+                            -half + x as f32 * step - plate.world.x,
+                            -half + z as f32 * step - plate.world.y,
+                        ];
+                        if plate.deck.contains(p) {
+                            let i = z * n + x;
+                            // The tallest wins, matching `lift_at`: at an
+                            // interchange the approach climbs to the top deck.
+                            if !(lift[i] >= plate.height) {
+                                lift[i] = plate.height;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The approaches: a centre line has no width and a sample is only
+            // marked when something covers it, so each run is walked as a corridor
+            // one step either side. The dilation the caller applies is what gives
+            // it the embankment's real width; this only has to be thick enough not
+            // to fall between samples.
+            for run in &plate.approaches {
+                for w in run.windows(2) {
+                    let (a, b) = (
+                        Vec2::new(plate.world.x + w[0][0], plate.world.y + w[0][1]),
+                        Vec2::new(plate.world.x + w[1][0], plate.world.y + w[1][1]),
+                    );
+                    let len = a.distance(b);
+                    if len < 1e-3 {
+                        continue;
+                    }
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let steps = (len / step).ceil() as usize + 1;
+                    for k in 0..=steps {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = k as f32 / steps as f32;
+                        let p = a.lerp(b, t);
+                        let (Some(gx), Some(gz)) = (to_grid(p.x), to_grid(p.y)) else {
+                            continue;
+                        };
+                        for dz in -1i32..=1 {
+                            for dx in -1i32..=1 {
+                                let (x, z) = (gx as i32 + dx, gz as i32 + dz);
+                                if x >= 0 && z >= 0 && (x as usize) < n && (z as usize) < n {
+                                    ramp[z as usize * n + x as usize] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // **A sample the structure stands on is not approach.** The abutment is
+        // the ramp sample *beside* the deck, and leaving the two overlapping lets
+        // the relaxation grade the land up to meet a road that is not standing on
+        // it.
+        for i in 0..n * n {
+            if lift[i].is_finite() {
+                ramp[i] = false;
+            }
+        }
+        (ramp, lift)
     }
 }
 
@@ -399,6 +533,8 @@ impl Default for MapSurfaces {
 /// A cell's decks, waiting on their heights.
 struct PendingDecks {
     decks: Vec<BridgeDeck>,
+    /// The approach runs, by the same index as `decks`.
+    approaches: Vec<cartopolis_geo::vector_tiles::Approach>,
     /// `(deck index, mesh)` — the road surfaces those decks carry, waiting on the
     /// same heights.
     roads: Vec<(u32, SurfaceMesh)>,
@@ -609,6 +745,7 @@ fn spawn_geometry_task(
                 let mut grass = None;
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
+                let mut approaches = Vec::new();
                 let mut cell_tunnels = Vec::new();
                 let mut cell_openings = Vec::new();
                 let sunken_ways: Vec<cartopolis_geo::tunnels::SunkenWay>;
@@ -727,6 +864,11 @@ fn spawn_geometry_task(
                                     // so they travel beside the decks and are
                                     // lifted with them in `resolve_bridge_decks`.
                                     deck_roads = roads.on_deck;
+                                    // **The one thing that tells a road climbing
+                                    // onto a structure from the road going under
+                                    // it**, and it was discarded here. See
+                                    // `Plate::approaches`.
+                                    approaches = roads.approaches;
                                 }
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
@@ -1141,6 +1283,7 @@ fn spawn_geometry_task(
                             shore,
                             decks,
                             deck_roads,
+                            approaches,
                             labels,
                             cell_places,
                             grass,
@@ -1497,8 +1640,20 @@ pub fn update_map_surfaces(
     }
     let deferred = ready.split_off(take);
     surfaces.stream.defer(deferred);
-    for (c, (outcome, shore, decks, deck_roads, street_names, mut cell_places, grass, tunnels)) in
-        ready
+    for (
+        c,
+        (
+            outcome,
+            shore,
+            decks,
+            deck_roads,
+            approaches,
+            street_names,
+            mut cell_places,
+            grass,
+            tunnels,
+        ),
+    ) in ready
     {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
@@ -1744,6 +1899,7 @@ pub fn update_map_surfaces(
                 c,
                 PendingDecks {
                     decks,
+                    approaches,
                     roads: deck_roads,
                     world: Vec2::new(wx, wz),
                     tile_m,
@@ -1842,11 +1998,20 @@ pub fn resolve_bridge_decks(
                 .decks
                 .into_iter()
                 .zip(&heights)
-                .filter(|(_, &h)| h > 0.0)
-                .map(|(deck, &height)| Plate {
+                .enumerate()
+                .filter(|(_, (_, &h))| h > 0.0)
+                .map(|(i, (deck, &height))| Plate {
                     deck,
                     world: cell_world,
                     height,
+                    // This deck's own approaches, by the index
+                    // `vector_tiles::Approach::deck` carries.
+                    approaches: pending
+                        .approaches
+                        .iter()
+                        .filter(|a| a.deck as usize == i)
+                        .map(|a| a.points.clone())
+                        .collect(),
                 })
                 .collect(),
         );
@@ -2828,6 +2993,74 @@ mod tests {
         }
     }
 
+    /// **The approach corridor is the approach, and the deck is not in it.**
+    ///
+    /// The two failure modes this separates are the ones that made the ramp worth
+    /// having a mask of its own. Marking the approach over the structure lets the
+    /// relaxation grade the land up to meet a road that is not standing on it; and
+    /// a ramp that travels through the whole road mask raised 18 % of the
+    /// Groningen fixture's streets for five bridges, because the street passing
+    /// *under* a viaduct touches its approach and a gradient goes wherever a
+    /// raster corridor is connected.
+    #[test]
+    fn the_approach_is_marked_beside_the_deck_and_never_on_it() {
+        let mut plates = DeckPlates::default();
+        // A 40 m deck at the grid's own origin, with an approach running 60 m east
+        // out of its eastern edge.
+        let run: Vec<[f32; 2]> = (0..7).map(|k| [40.0 + k as f32 * 10.0, 20.0]).collect();
+        plates.set_cell(
+            (0, 0),
+            vec![Plate {
+                deck: square_deck(40.0),
+                world: Vec2::new(-20.0, -20.0),
+                height: 6.0,
+                approaches: vec![run],
+            }],
+        );
+
+        // 201 samples over ±100 m is one per metre, which resolves a 40 m deck.
+        let (n, half) = (201usize, 100.0f32);
+        let (ramp, lift) = plates.grade_masks(n, half);
+        let at = |x: f32, z: f32| -> usize {
+            let g = |v: f32| ((v + half).round()) as usize;
+            g(z) * n + g(x)
+        };
+
+        // On the structure: a height, and not approach.
+        assert_eq!(
+            lift[at(0.0, 0.0)],
+            6.0,
+            "the deck's own ground has no height"
+        );
+        assert!(
+            !ramp[at(0.0, 0.0)],
+            "the deck is not something to ramp along"
+        );
+
+        // Beside it, along the run: approach, and no height of its own.
+        assert!(
+            ramp[at(30.0, 0.0)],
+            "the approach beside the deck is not marked"
+        );
+        assert!(
+            lift[at(30.0, 0.0)].is_nan(),
+            "a sample off the structure must carry no deck height"
+        );
+
+        // Well away from both: neither.
+        assert!(
+            !ramp[at(-80.0, -80.0)],
+            "ordinary ground was marked as approach"
+        );
+        assert!(lift[at(-80.0, -80.0)].is_nan());
+
+        // And an empty set of plates is an empty pair, not a panic — which is
+        // every tile in a city with no viaduct in it.
+        let (ramp, lift) = DeckPlates::default().grade_masks(n, half);
+        assert!(!ramp.iter().any(|m| *m));
+        assert!(!lift.iter().any(|v| v.is_finite()));
+    }
+
     /// The route line asks one question of a deck — "how high are you here" — and
     /// the answer has to be in the world frame, because that is the only frame the
     /// route knows. A deck's own rings are tile-local, so the cell origin is part of
@@ -2841,6 +3074,7 @@ mod tests {
                 deck: square_deck(40.0),
                 world: Vec2::new(1000.0, 2000.0),
                 height: 6.0,
+                approaches: Vec::new(),
             }],
         );
 
@@ -2875,6 +3109,7 @@ mod tests {
                     deck: square_deck(40.0),
                     world: Vec2::ZERO,
                     height,
+                    approaches: Vec::new(),
                 }],
             );
         }
@@ -2896,6 +3131,7 @@ mod tests {
                 deck: square_deck(40.0),
                 world: Vec2::ZERO,
                 height: 6.0,
+                approaches: Vec::new(),
             }],
         );
         assert_ne!(plates.revision, start, "an arriving deck is a change");

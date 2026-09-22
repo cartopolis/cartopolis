@@ -281,10 +281,14 @@ struct CoarseBake {
     /// The road-mask revision this bake graded against, so a mask that grew while
     /// it was out asks for another one.
     road_rev: u32,
+    deck_rev: u32,
     /// The rings the bake carved with, handed back so the water surfaces are drawn
     /// against the same numbers the ground was cut to.
     water: crate::systems::water_levels::WaterLevelField,
     baked: Option<(Vec<f32>, f32, usize)>,
+    /// `(abutment samples, samples the embankment raised)` — see
+    /// [`TerrainField::approach_samples`].
+    approach: (usize, usize),
 }
 
 /// One finished fine-tier bake, on its way back from a worker.
@@ -345,6 +349,26 @@ pub struct TerrainField {
     /// field a city ever gets is the one baked before any road arrived — which is
     /// the one with a ridge along every street.
     answered_road_rev: Option<u32>,
+    /// Deck revision the coarse field built its approach embankments against.
+    ///
+    /// The fourth of the same family, and the one that arrives latest of all: a
+    /// deck's height is measured from the survey a few frames after its cell
+    /// lands (`map_geometry::resolve_bridge_decks`), so the first field over a
+    /// city is always baked before any viaduct has a height. Without this the
+    /// only field a city gets is that one, and every bridge keeps the vertical
+    /// step at both ends that `bridge-heights.md` has recorded as unfixed since
+    /// the decks landed.
+    answered_deck_rev: Option<u32>,
+    /// What the last bake's approach grading did: samples pinned at a deck's
+    /// abutment, and samples the embankment raised.
+    ///
+    /// **A metric, because an embankment is not a thing a capture can assert.**
+    /// The ramp is 150 m of ground rising six metres, which from any angle that
+    /// shows the viaduct reads as ground; a number says whether it was built.
+    /// Zero abutments with decks standing is the failure this reports — the
+    /// approaches never reached the field — and it is the shape the whole feature
+    /// had for a month while the grading sat wired into `carto-view` alone.
+    pub approach_samples: (usize, usize),
     /// The measured water levels the bakes carved with, kept so the surfaces can be
     /// drawn against the same numbers. One build per bake rather than one per mesh.
     water: crate::systems::water_levels::WaterLevelField,
@@ -955,9 +979,11 @@ pub fn update_terrain_field(
     stream: Res<MapStream>,
     levels: Res<crate::systems::water_levels::WaterLevels>,
     roads: Res<RoadMask>,
+    decks: Res<crate::systems::map_geometry::DeckPlates>,
     time: Res<Time>,
     mut settled: Local<(u32, f32)>,
     mut water_settled: Local<(u32, f32)>,
+    mut deck_settled: Local<(u32, f32)>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -972,6 +998,7 @@ pub fn update_terrain_field(
         field.answered_gen = None;
         field.answered_water_rev = None;
         field.answered_road_rev = None;
+        field.answered_deck_rev = None;
         field.wanted_gen = None;
         field.abandon_coarse_job();
         return;
@@ -996,6 +1023,18 @@ pub fn update_terrain_field(
     } else {
         field.answered_water_rev.unwrap_or(0)
     };
+    // The decks arrive a few at a time as each cell's heights are measured, so
+    // they get the same debounce the roads and the water levels get — and for the
+    // sharpest version of the same reason, since a bake retears every streamer
+    // standing on the ground.
+    if deck_settled.0 != decks.revision {
+        *deck_settled = (decks.revision, now);
+    }
+    let deck_rev = if now - deck_settled.1 >= ROAD_SETTLE_S {
+        decks.revision
+    } else {
+        field.answered_deck_rev.unwrap_or(0)
+    };
     let road_rev = if now - settled.1 >= ROAD_SETTLE_S {
         roads.revision
     } else {
@@ -1007,6 +1046,7 @@ pub fn update_terrain_field(
     if field.answered_gen == Some(stream.anchor_generation)
         && field.answered_water_rev == Some(water_rev)
         && field.answered_road_rev == Some(road_rev)
+        && field.answered_deck_rev == Some(deck_rev)
     {
         return;
     }
@@ -1019,6 +1059,7 @@ pub fn update_terrain_field(
     // cell in two streamers.
     let baked_water_rev = levels.revision;
     let baked_road_rev = roads.revision;
+    let baked_deck_rev = decks.revision;
     // One bake at a time. A re-anchor that lands while one is out would otherwise
     // queue a second over the same worker pool, and the first is already worthless.
     if field.coarse_job.is_some() {
@@ -1053,24 +1094,39 @@ pub fn update_terrain_field(
         answered_water_rev = ?field.answered_water_rev,
         road_rev,
         answered_road_rev = ?field.answered_road_rev,
+        deck_rev,
+        answered_deck_rev = ?field.answered_deck_rev,
         "terrain field bake queued"
     );
     let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
     let road = roads.for_gen(gen, grid);
+    // Per plate, not per sample — see `DeckPlates::grade_masks`.
+    let (ramp, deck_lift) = decks.grade_masks(grid, TERRAIN_HALF_M);
     let sink = field.coarse_sink.clone();
     field.coarse_job = Some(gen);
     crate::platform::workers::submit(
         "terrain_field",
         Box::new(move || {
-            let baked = bake(&job, anchor, TERRAIN_HALF_M, grid, &water, road);
+            let (baked, approach) = bake(
+                &job,
+                anchor,
+                TERRAIN_HALF_M,
+                grid,
+                &water,
+                road,
+                ramp,
+                &deck_lift,
+            );
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
                     gen,
                     grid,
                     water_rev: baked_water_rev,
                     road_rev: baked_road_rev,
+                    deck_rev: baked_deck_rev,
                     water,
                     baked,
+                    approach,
                 });
             }
         }),
@@ -1098,6 +1154,8 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
     field.answered_gen = Some(done.gen);
     field.answered_water_rev = Some(done.water_rev);
     field.answered_road_rev = Some(done.road_rev);
+    field.answered_deck_rev = Some(done.deck_rev);
+    field.approach_samples = done.approach;
     field.water = done.water;
     let Some((samples, datum, carved)) = done.baked else {
         field.clear();
@@ -1170,7 +1228,13 @@ fn bake(
     // hands the worker its own copy of the mask; taking a slice here meant
     // copying all 4.2 M samples a second time just to be allowed to grow them.
     mut road: Vec<bool>,
-) -> Option<(Vec<f32>, f32, usize)> {
+    // Where the approach roads run, and how high the structure they climb to
+    // stands — `map_geometry::DeckPlates::grade_masks`. Separate from `road`
+    // because a gradient travels through everything a raster corridor touches,
+    // and the street passing *under* a viaduct touches its approach.
+    mut ramp: Vec<bool>,
+    deck_lift: &[f32],
+) -> (Option<(Vec<f32>, f32, usize)>, (usize, usize)) {
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
     // really `n` longitudes and `n` latitudes (`geo_nav::WorldFrame` says why this
@@ -1192,7 +1256,7 @@ fn bake(
         }
     }
     if !raw.iter().any(|v| v.is_finite()) {
-        return None;
+        return (None, (0, 0));
     }
 
     // The datum is the ground at the anchor — the field's own centre — so the
@@ -1202,7 +1266,11 @@ fn bake(
     let datum = if centre.is_finite() {
         centre
     } else {
-        median_finite(&raw)?
+        // Before the grading below, so there is nothing to report about it.
+        let Some(m) = median_finite(&raw) else {
+            return (None, (0, 0));
+        };
+        m
     };
 
     // The same carve the fine tier gets, and it matters here for a different reason:
@@ -1224,6 +1292,7 @@ fn bake(
     // see the same absolute metres the carve did. What it buys is the ridge that
     // otherwise stands along every road for its whole length: a survey reads the
     // kerbs, the parked cars and the hedge, and a built road has none of them.
+    let mut approach = (0usize, 0usize);
     if road.len() == n * n {
         // The margin, once, here — `mark_cell` marks the carriageway and nothing
         // else. This is the worker, and `road` was moved in, so the widening
@@ -1233,13 +1302,79 @@ fn bake(
             n,
             cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
         );
-        let moved = cartopolis_geo::road_grade::flatten(
+        // **An embankment is a gradient along the road, so it is built before the
+        // relaxation and pinned against it.** `flatten_pinned` on its own cannot
+        // express one: a corridor is a strip held at the surrounding ground along
+        // both long sides, and the smoothest surface in a strip with a raised end
+        // decays exponentially away from it — measured on a 15-sample corridor, a
+        // 7 m abutment arrives as a 1.9 m step within a few samples of the deck
+        // and is flat after that, which is the abrupt end this exists to remove,
+        // reproduced by another route (`road_grade::ramp_from_pins`).
+        let mut pins = vec![f32::NAN; n * n];
+        let mut abutments = 0usize;
+        if ramp.len() == n * n && deck_lift.len() == n * n {
+            cartopolis_geo::road_grade::dilate_mask(
+                &mut ramp,
+                n,
+                cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
+            );
+            // A dilated approach may have grown over the structure; the abutment
+            // is the sample *beside* the deck, not on it.
+            for i in 0..n * n {
+                if deck_lift[i].is_finite() {
+                    ramp[i] = false;
+                }
+            }
+            // **The pin is the deck's height above the ground at the abutment**,
+            // which is what `deck_height` measured it against: the survey's DSM
+            // over the structure less its DTM around it. So the absolute level to
+            // reach is the ground here plus that clearance, and a road already
+            // standing higher is left alone by `ramp_from_pins` — it is in a
+            // cutting, and inventing a trench for it would delete the hill.
+            for z in 1..n - 1 {
+                for x in 1..n - 1 {
+                    let i = z * n + x;
+                    if !ramp[i] || !raw[i].is_finite() {
+                        continue;
+                    }
+                    let lift = [i - 1, i + 1, i - n, i + n]
+                        .into_iter()
+                        .filter_map(|k| deck_lift.get(k).copied())
+                        .filter(|v| v.is_finite())
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    if lift.is_finite() {
+                        pins[i] = raw[i] + lift;
+                        abutments += 1;
+                    }
+                }
+            }
+        }
+        let raised = cartopolis_geo::road_grade::ramp_from_pins(
+            &mut raw,
+            n,
+            &ramp,
+            &mut pins,
+            (half * 2.0) as f32 / (n - 1) as f32,
+            cartopolis_geo::road_grade::MAX_APPROACH_GRADE,
+        );
+        // Pinned, not plain: every sample the ramp raised became a pin itself, so
+        // the relaxation smooths the rest of the corridor and leaves the
+        // engineered grade where the pass above put it. Without that the
+        // embankment is averaged away again by the ground either side.
+        let moved = cartopolis_geo::road_grade::flatten_pinned(
             &mut raw,
             n,
             &road,
+            &pins,
             cartopolis_geo::road_grade::DEFAULT_PASSES,
         );
-        tracing::debug!(moved, "graded the field along the roads");
+        approach = (abutments, raised);
+        tracing::debug!(
+            moved,
+            abutments,
+            raised,
+            "graded the field along the roads and up to the decks"
+        );
     }
     let mut samples = vec![0.0f32; n * n];
     for z in 0..n {
@@ -1249,7 +1384,7 @@ fn bake(
             samples[z * n + x] = h * edge_taper(x, z, n);
         }
     }
-    Some((samples, datum, carved))
+    (Some((samples, datum, carved)), approach)
 }
 
 /// World-XZ → RD metres over a small box, as an affine map.
@@ -3111,7 +3246,7 @@ mod tests {
         // A test grid, not `TERRAIN_GRID`: the bake runs a `wgs84_to_rd` polynomial
         // per sample and the real field is four million of them.
         let n = 129;
-        let (baked, datum, carved) = bake(
+        let (baked, approach) = bake(
             &patch,
             anchor,
             TERRAIN_HALF_M,
@@ -3120,8 +3255,16 @@ mod tests {
             // No roads either: this test is about the ramp the patch carries, and
             // an empty mask is what a box with no streamed cell in it yet has.
             Vec::new(),
-        )
-        .expect("patch covers the field");
+            // …and no decks, for the same reason.
+            Vec::new(),
+            &[],
+        );
+        assert_eq!(
+            approach,
+            (0, 0),
+            "a box with no viaduct in it must build no embankment"
+        );
+        let (baked, datum, carved) = baked.expect("patch covers the field");
         assert_eq!(carved, 0, "an empty water field must carve nothing");
         // The datum is the ground at the anchor, and the field is zero there. The
         // tolerance is the synthetic patch's own 125 m sample spacing: `at` takes

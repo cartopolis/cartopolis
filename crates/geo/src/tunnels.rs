@@ -2907,8 +2907,37 @@ mod tests {
                 .windows(2)
                 .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
                 .sum();
+            // **Every tunnel's position on Earth, not only the deep ones.** The
+            // entrance printout above skips anything shallower than a metre and
+            // anything already at full depth on its first vertex, which is most of
+            // a city's underpasses — so aiming a camera at one of *those* meant
+            // hand-converting tile metres again, and two of `grade-shots.toml`'s
+            // views were still missing by 26 and 74 metres for exactly that
+            // reason. The conversion is right here and can be wrong only once.
+            let mid = b
+                .centre
+                .get(b.centre.len() / 2)
+                .copied()
+                .unwrap_or([0.0, 0.0]);
+            let here = key.map_or(String::new(), |k| {
+                let (lat, lon) = {
+                    let (z, x, y) = k;
+                    let n = 2f64.powf(z);
+                    let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+                    let span = 40_075_016.686 * lat0.cos() / n;
+                    let (fx, fy) = (x + f64::from(mid[0]) / span, y + f64::from(mid[1]) / span);
+                    (
+                        (std::f64::consts::PI * (1.0 - 2.0 * fy / n))
+                            .sinh()
+                            .atan()
+                            .to_degrees(),
+                        fx / n * 360.0 - 180.0,
+                    )
+                };
+                format!("  mid {lat:.6},{lon:.6}")
+            });
             println!(
-                "tunnel {i}: half_w={:.1} len={len:.0}m deepest={deepest:.2} ends=({:.0},{:.0})->({:.0},{:.0})",
+                "tunnel {i}: half_w={:.1} len={len:.0}m deepest={deepest:.2} ends=({:.0},{:.0})->({:.0},{:.0}){here}",
                 b.half_w,
                 b.centre.first().map_or(0.0, |p| p[0]),
                 b.centre.first().map_or(0.0, |p| p[1]),

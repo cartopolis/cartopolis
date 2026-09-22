@@ -47,6 +47,15 @@
 # all missed the tunnel by 80 to 120 m. The targets below are `--dump-state`'s
 # own `tunnel_entrance_lat`/`lng`, measured off the tile.
 #
+# **`tunnel-julianaweg` is gone, because that tunnel is not in the data.** It
+# aimed at 53.204316, 6.567396 and described a 127 m run too short to reach full
+# depth. Measured off the station tile 2026-09-22, the only tunnel-flagged ways
+# anywhere in it are a 38 m cycle underpass, a 36 m dip beside it and an 8 m stub
+# a kilometre west — nothing within 800 m of where that camera was pointed. The
+# two views below replace it with the tunnels that are there, and they are aimed
+# at positions `tunnels::tests::dump_the_fixture_bores` printed rather than at
+# ones converted by hand.
+#
 # Note this file did not parse at all until 2026-09-22 (`time`/`fog`/`clouds`/
 # `rain` were not manifest keys and `deny_unknown_fields` refused the lot), so
 # none of it had ever been run. `shot_presets::every_checked_in_manifest_loads`
@@ -103,29 +112,19 @@ description = "The whole chain from above: lid, cutting, lid, cutting, lid. The 
 at = [53.207200, 6.579100, 420]
 look = [-90.0, 68.0]
 
-# **These last two are still aimed by hand, and still miss.** Measured on the
-# Deck 2026-09-22 with everything above landing on its subject: `tunnel_ahead_m`
-# 26.2 m for the Julianaweg view and 73.5 m for the cycle underpass, both with
-# `tunnel_ahead_road_m` of 0 — so each is photographing ground-level road near a
-# tunnel rather than the tunnel. They are in the station tile, whose only
-# tunnel-flagged ways are footpaths and arcades, so there is no
-# `tunnel_entrance_lat` to aim at the way the ring views do; fixing them means
-# measuring that tile the way `dump_the_fixture_bores` measures the ring one.
-# Left in, with the number, rather than removed or quietly left looking fine.
-
-[[shot]]
-group = "tunnels"
-name = "tunnel-julianaweg"
-description = "Julianaweg, 127 m: shorter than two 120 m ramps, so it never reaches `LEVEL_DEPTH_M`. Expect a dip that sags and comes back up, not a tunnel — the honest answer for an underpass and the one case the tiles cannot tell from a tunnel under a hill."
-at = [53.204316, 6.567396, 37]
-look = [-18.0, 221.9]
-
 [[shot]]
 group = "tunnels"
 name = "tunnel-underpass-cycle"
-description = "A 287 m pedestrian tunnel, looking south along it. `PATH_DEPTH_M` and `PATH_GRADE`, not the road's seven metres and 6 %."
-at = [53.211409, 6.564011, 30]
-look = [-16.0, 179.7]
+description = "A cycle underpass on the station tile: three tagged runs end to end, 38 m in all, at PATH_DEPTH_M rather than the road's seven metres. The narrow, shallow case, and the one where giving a path the road's depth would read as a mistake in the ground rather than as an underpass."
+at = [53.210613, 6.565845, 18]
+look_at = [53.210627, 6.566520]
+
+[[shot]]
+group = "tunnels"
+name = "tunnel-underpass-shallow"
+description = "A 36 m tagged run 40 m north-east of it, which never reaches depth at all — `depth_for_run` refuses a tunnel too short to be one and leaves it a dip in the road. Expect a dip, not a tunnel: that is the honest drawing of a way somebody tagged under a footbridge, and the one case the tiles cannot tell from a tunnel under a hill."
+at = [53.211206, 6.566601, 16]
+look_at = [53.210915, 6.566954]
 
 # ─── Bridges ────────────────────────────────────────────────────────────────
 

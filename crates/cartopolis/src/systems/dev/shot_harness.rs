@@ -989,6 +989,16 @@ pub struct ShotMetrics {
     /// evidence and this is. `0` out of AHN, with the layer off, or before the
     /// first cell's ribbons have landed.
     pub terrain_graded_samples: usize,
+    /// Samples pinned at a viaduct's abutment, and samples the approach
+    /// embankment raised — `terrain`'s approach grading.
+    ///
+    /// **Because an embankment is not something a capture can assert.** It is
+    /// 150 m of ground rising six metres, which from any angle that also shows
+    /// the viaduct reads as ground. A zero here with decks standing is the exact
+    /// failure this feature had for a month: the grading existed and nothing in
+    /// the client called it.
+    pub approach_abutments: usize,
+    pub approach_raised: usize,
     /// Whether the half-metre tier under the camera has baked
     /// (`terrain::update_fine_terrain`), and what it actually samples at.
     ///
@@ -1188,6 +1198,7 @@ traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,terrain_sample_m,terrain_graded_samples,\
+approach_abutments,approach_raised,\
 fine_terrain_ready,fine_terrain_sample_m,\
 ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
@@ -1269,6 +1280,8 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
     ("terrain_graded_samples", 0),
+    ("approach_abutments", 0),
+    ("approach_raised", 0),
     ("fine_terrain_sample_m", 2),
     ("ground_detail_sample_m", 2),
     ("water_drop_m", 2),
@@ -3635,6 +3648,8 @@ pub fn drive_capture(
             // there would say the phone measured ground it never asked for.
             terrain_sample_m: readouts.terrain.sample_m(),
             terrain_graded_samples: readouts.road_mask.marked_samples(),
+            approach_abutments: readouts.terrain.approach_samples.0,
+            approach_raised: readouts.terrain.approach_samples.1,
             ground_detail_ready: readouts.ground_detail.slope.is_some(),
             ground_detail_sample_m: readouts.ground_detail.sample_m,
             fine_terrain_ready: readouts.terrain.fine_ready(),
@@ -4368,6 +4383,8 @@ mod tests {
             terrain_relief_m: 0.0,
             terrain_sample_m: 0.0,
             terrain_graded_samples: 0,
+            approach_abutments: 0,
+            approach_raised: 0,
             upload_peak_kb: 0,
             upload_peak_asset_kb: 0,
             gpu_resident_kb: 0,
