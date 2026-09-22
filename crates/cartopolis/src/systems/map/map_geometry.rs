@@ -2455,6 +2455,9 @@ fn build_mesh(
     // handle is pure duplication. Same reasoning as `tile_loader::TILE_TEXTURE_USAGE`
     // and, since the cells are spawned in the frame their mesh is added, the
     // auto-`Aabb` pass still sees the geometry before extraction takes it.
+    // Before `indices` is moved into the mesh: the oversize report below needs
+    // both counts, and the upload cost is a function of the pair.
+    let index_count = indices.len();
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
@@ -2494,6 +2497,32 @@ fn build_mesh(
             rungs = vec![0.0; positions.len()];
         }
         mesh.insert_attribute(crate::systems::road_depth::ATTRIBUTE_ROAD_RUNG, rungs);
+    }
+    // **Say which group produced an oversize piece.** `upload_meter` already
+    // flags a mesh no per-frame throttle can spread, and it is downstream of
+    // every producer in the client — it sees an `AssetId` and a vertex count and
+    // cannot name what made it, so six such meshes a run were attributable to
+    // nothing. Here the group is in hand.
+    //
+    // Deliberately a report and not a clamp: the cap is enforced where a mesh is
+    // *cut*, and cutting one here means splitting a finished mesh into several
+    // entities, which is the caller's shape to change and not this function's.
+    // What this buys is knowing which caller to change.
+    {
+        let bytes = cartopolis_geo::vector_tiles::mesh_upload_bytes(positions.len(), index_count);
+        let cap = crate::systems::lod22::max_cell_mesh_bytes();
+        if bytes > cap {
+            tracing::warn!(
+                group = ?sm.group,
+                asset_kb = bytes / 1024,
+                cap_kb = cap / 1024,
+                vertices = positions.len(),
+                indices = index_count,
+                terrain_ready = terrain.is_ready(),
+                "a finished surface is over the cell mesh cap — the cap is applied \
+                 where the mesh is cut and this group grew past it afterwards"
+            );
+        }
     }
     mesh
 }
