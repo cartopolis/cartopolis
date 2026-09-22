@@ -17,6 +17,9 @@
 #         --expect 'settled==true' --expect 'tunnel_count>0' \
 #         --expect 'basemap_open_tiles>0' --expect 'tunnel_road_m<=-6.0'
 #
+# Measured over the ring on the Deck, 2026-09-22: `tunnel_count` 45, `tunnel_road_m`
+# −7.0, `basemap_open_tiles` 57–74 depending on where the camera stands.
+#
 # The last two are the pair that a picture cannot separate: `tunnel_road_m` says
 # the carriageway is genuinely down there rather than a stripe painted on the
 # grass, and `basemap_open_tiles` says the *raster* sheet has the hole too — cut
@@ -99,6 +102,16 @@ name = "tunnel-ring-plan"
 description = "The whole chain from above: lid, cutting, lid, cutting, lid. The one view that shows the road is continuous rather than a row of stubs, and the only one a depth cannot be read from — pair it with `tunnel_road_m`."
 at = [53.207200, 6.579100, 420]
 look = [-90.0, 68.0]
+
+# **These last two are still aimed by hand, and still miss.** Measured on the
+# Deck 2026-09-22 with everything above landing on its subject: `tunnel_ahead_m`
+# 26.2 m for the Julianaweg view and 73.5 m for the cycle underpass, both with
+# `tunnel_ahead_road_m` of 0 — so each is photographing ground-level road near a
+# tunnel rather than the tunnel. They are in the station tile, whose only
+# tunnel-flagged ways are footpaths and arcades, so there is no
+# `tunnel_entrance_lat` to aim at the way the ring views do; fixing them means
+# measuring that tile the way `dump_the_fixture_bores` measures the ring one.
+# Left in, with the number, rather than removed or quietly left looking fine.
 
 [[shot]]
 group = "tunnels"
