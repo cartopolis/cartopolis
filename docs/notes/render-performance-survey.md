@@ -185,6 +185,50 @@ say. One caveat travels with every row: this workspace's own crates build at
 `opt-level = 1` and dependencies at `3`, so our systems and bevy's are not on
 equal terms in this table.
 
+### The first measured win off all this: cull the clipmap (2026-09-22)
+
+The clipmap carried `NoFrustumCulling` with the reason "flat tiles + big_space
+rebasing confuse frustum culling", so every tile in the pyramid was submitted to
+the main pass whether or not it was on screen. big_space was not the cause. The
+cause is that `stream.quads` caches one quad mesh per zoom and reuses it, and
+bevy's `calculate_bounds` gives an `Aabb` only to an entity that has none, only
+while it can see the mesh's positions — for a stashed, reused handle that is the
+first spawn and no other. **An entity with no `Aabb` is culled exactly as little
+as one that opted out**, so the component was describing the symptom.
+
+Stating the bound at the spawn site, `deck-1`, all three scenarios:
+
+| scenario | draws | frame |
+|---|---|---|
+| orbit (180 km) | 149 → **149** | 8.95 → 9.5 ms |
+| low-orbit | 106 → **106** | 7.82 → 8.7 ms |
+| **city (3 km)** | 522 → **331** | 14.41 → **11.2 ms** |
+
+**City: 191 fewer draws (−37 %) and 3.2 ms (−22 %)**, 69 fps to 89. The two orbit
+scenarios are *unchanged*, which is the correctness check rather than a
+disappointment: from 180 km looking straight down the whole pyramid is in frame,
+so a correct culler removes nothing, and a drop there would have meant ground was
+being deleted. The settled capture shows continuous ground to the horizon.
+
+The saving lands exactly where the per-system table said it would, which is what
+makes this a confirmation rather than a coincidence:
+
+| settled, ms/frame | before | after |
+|---|---|---|
+| `run_render_schedule` | 13.5 | 9.94 |
+| `render_system` | 6.36 | 4.85 |
+| `camera_driver` | 3.59 | 2.72 |
+| `write_binned_instance_buffers` | 2.36 | 1.11 |
+| `prepare_preprocess_bind_groups` | 1.52 | 0.80 |
+| `Main::run_main` | 5.03 | **5.47** |
+
+**The main world got slower and that is the trade**: it now runs the frustum test
+it was skipping. Where the render thread dominates, as at `city`, buying 3.6 ms
+there for 0.4 ms here is overwhelmingly worth it. Where it does not, the trade is
+thinner — both orbit scenarios came back 0.5–0.9 ms slower on identical draw
+counts, which is at the edge of the ~0.7 ms run-to-run spread this machine shows
+and is the one number here worth re-running before trusting.
+
 ### And the prepass is missing from the diagnostics
 
 This note records, as a standing finding, that at `orbit` "the **depth prepass**
