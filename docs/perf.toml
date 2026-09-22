@@ -96,8 +96,38 @@ clouds = 0.2
 rain = 0.0
 steady_frames = 30
 
-# Deliberately only three, and all three have been run. A ground-level pair and a
-# route view were drafted and removed before anyone ran them: on this container a
-# 3 km city view already takes minutes to settle and still is not quiet, so a 100 m
-# view is a scenario nobody would wait for. Add them back alongside a host that can
-# settle them — an entry here is a claim that the viewpoint has been measured.
+[[scenario]]
+name = "street"
+description = """
+Ground level in the centre of Groningen — every streamer at once, and the only \
+scenario that measures what a person actually looks at. Surfaces, paving, \
+buildings, interiors, street furniture and traffic all reach their finest ring \
+here, and it is where the per-cell tessellation cost lands: 277 ms per ground \
+surface cell on the handset rung, 45 % of all worker time in the fill.
+
+Added 2026-09-22, when a host that can settle it became available. The three \
+scenarios above are all teleports to altitude, and none of them exercises the \
+ground streamers at their finest ring — which is why a fill dominated by waiting \
+rather than by computing went unmeasured. Read `worker_utilisation` first here: \
+it is the column that says whether the cores or the fetches are the wall, and on \
+the handset rung it reads 0.13 against 8 threads.
+
+Not expected to go `quiet` — like `city`, and more so. It is a streaming \
+measurement, not an idle one."""
+at = [53.2194, 6.5665, 120]
+look = [-10.0, 35.0]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
+steady_frames = 30
+
+# Four scenarios, and all four have been run. A route view is still missing and an
+# entry here is a claim that the viewpoint has been measured, so it stays out until
+# somebody measures it.
+#
+# **On this container the ground-level entry is not runnable in practice** — a 3 km
+# city view already takes minutes on a CPU rasteriser and `street` is strictly
+# heavier. It is measured on `deck-1` (an AMD Van Gogh, one ssh hop through the
+# VPS), which settles it in ~31 s. Anyone adding a ground-level scenario owes the
+# same: a host that can settle it, and a reading taken there.
