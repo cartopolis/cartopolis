@@ -1390,27 +1390,82 @@ fn run_client() {
     // was quietly adding its own formatted layer on top of the Android one — see
     // the `fmt_layer` note where that plugin is configured below. The device log
     // showed every line twice.
+    // What the stderr log shows, shared by both arms below so a profiling build and
+    // an ordinary one log identically.
+    //
+    // wgpu/naga at `warn` so GPU validation + device-loss errors surface (they're
+    // the real cause of the zoom-out crash; the panics only show the aftermath).
+    // Override with RUST_LOG.
+    //
+    // `bevy_render=error` is not redundant with those: a validation failure is
+    // reported by Bevy's *own* `bevy_render::error_handler`, which then writes the
+    // `AppExit` that ends the run — and the `off` default silenced exactly that.
+    // The observed failure was a `--shot` that exited 0 in 3 s with no PNG and an
+    // empty log; the wgpu targets above said nothing, because the error never came
+    // from them. A run that dies for a render reason must say so.
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    fn stderr_filter() -> tracing_subscriber::EnvFilter {
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "off,cartopolis=info,bevy_render=error,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn",
+            )
+        })
+    }
+
+    // **The per-system profiler's sink, and it has to carry its own filter.**
+    //
+    // `bevy/trace` wraps every system run in a span, but the filter below defaults
+    // to `off` for everything that is not this crate — so a chrome layer sharing it
+    // would faithfully record nothing at all, which is the same silent-no-op that
+    // makes `bevy/trace_chrome` unusable here (see `Cargo.toml`'s `perf` block).
+    // It therefore takes `CARTO_TRACE_FILTER`, defaulting to the span targets bevy
+    // actually emits on, and leaves the stderr layer's filter alone: a profiling
+    // run must not also turn the log into a wall of text.
+    //
+    // The guard is what writes the file, on drop. `run` reaches its end normally
+    // for every exit except a render error, so a profiling run gets its trace and
+    // a crashed one does not — which is the right way round, since the thing being
+    // profiled is a run that worked.
+    #[cfg(all(
+        feature = "perf",
+        not(target_arch = "wasm32"),
+        not(target_os = "android")
+    ))]
+    let _chrome_guard = {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        // `with_filter` is `Layer`'s, and per-layer filtering is the whole point
+        // here: the stderr arm keeps its `off`-by-default filter while the chrome
+        // arm records spans that filter would drop.
+        use tracing_subscriber::Layer as _;
+        let (chrome, guard) = tracing_chrome::ChromeLayerBuilder::new()
+            .include_args(true)
+            .build();
+        let chrome_filter = tracing_subscriber::EnvFilter::try_from_env("CARTO_TRACE_FILTER")
+            .unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(
+                    "off,bevy_ecs=trace,bevy_app=trace,bevy_render=trace,cartopolis=trace",
+                )
+            });
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_filter(stderr_filter()),
+            )
+            .with(chrome.with_filter(chrome_filter))
+            .init();
+        tracing::info!("chrome trace: writing trace-*.json in the working directory");
+        guard
+    };
+
+    #[cfg(all(
+        not(feature = "perf"),
+        not(target_arch = "wasm32"),
+        not(target_os = "android")
+    ))]
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                // wgpu/naga at `warn` so GPU validation + device-loss errors
-                // surface (they're the real cause of the zoom-out crash; the
-                // panics only show the aftermath). Override with RUST_LOG.
-                //
-                // `bevy_render=error` is not redundant with those: a validation
-                // failure is reported by Bevy's *own* `bevy_render::error_handler`,
-                // which then writes the `AppExit` that ends the run — and the `off`
-                // default silenced exactly that. The observed failure was a `--shot`
-                // that exited 0 in 3 s with no PNG and an empty log; the wgpu
-                // targets above said nothing, because the error never came from
-                // them. A run that dies for a render reason must say so.
-                .unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(
-                        "off,cartopolis=info,bevy_render=error,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn",
-                    )
-                }),
-        )
+        .with_env_filter(stderr_filter())
         .init();
 
     let mut app = App::new();
