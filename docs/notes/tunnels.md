@@ -73,6 +73,67 @@ Three things follow:
   cut is held at full depth (so the two halves meet flush at the border), and an
   end another tunnel run also ends on is a tagging split, not a opening.
 
+## The corridor is the chain, not the tagged run
+
+**Settled 2026-09-22, and it is the fault every capture of this feature had been
+photographing.** Groningen's southern ring is built *dicht-open-dicht-open* —
+lid 174 m, open 109 m, lid 241 m, open 107 m, lid 233 m — and the tunnel flag
+marks only the covered parts. So the ring arrives as six lid runs with ordinary
+*untagged* road between them.
+
+`bridge_short_gaps` already had to find those connecting ways: it is how it knows
+the lids either side are not portals (a gap shorter than `2 × ramp_m` cannot
+reach the surface whatever the map says). Having found them it threw the geometry
+away. Nothing else looked at them, so `tessellate_roads` drew each one as an
+ordinary carriageway on the ground at `y = 0` — **between two decks seven metres
+below it**.
+
+Measured on `groningen_ring_z14`: 863 m of carriageway with **six vertical
+seven-metre steps** in it. From above, the road ran out of the city and stopped
+dead in a park; `dump_the_fixture_bores` printed the whole 239 m of the deepest
+run as `-7.00 m` from metre zero, with no ramp anywhere, because that run is a
+*middle* lid and both its ends are gap-joined.
+
+Each gap is now absorbed into the corridor as an **open cutting**: the same deck,
+walls and ground hole a tunnel already builds, and never a lid, because the one
+thing the tile does say about that stretch is that it is not covered. Three
+things follow and each was a bug before it was a rule.
+
+- **A cutting's depth is the depth of the lids at its two ends**, interpolated,
+  not its own idea of full depth. A lid that had to settle for less
+  (`depth_for_run` reduces the depth until `MIN_COVERED_M` fits) would otherwise
+  step at the join — the same fault, moved along by one road. That is why `Plan`
+  exists: every run's profile is resolved before any of it is built.
+- **A short gap is a seam in the tagging, not a stretch of sky** (`MIN_CUTTING_M`,
+  25 m). *Not tagged* is not the same as *not covered*, and on the station
+  fixture two path tunnels end four metres apart; opening that punched a 5 × 4 m
+  hole in the ground over what is plainly one continuous tunnel. Under the
+  threshold the deck runs through and the lid carries on.
+- **The ground and the surface ribbon come away for free.** `cut_ground` already
+  cuts every group `is_ground` admits, and that includes `Road` — so emitting the
+  cutting's opening removes the flat ribbon that was drawn over it with no change
+  in `tessellate_roads` at all.
+
+`the_ring_road_never_steps_between_a_lid_and_the_road_beside_it` is the guard,
+and it is local: at every end of every sunken carriageway either another corridor
+continues at the same depth, or the road has come back up, or the tile border cut
+it. A step is none of those, and the test names the place and the height.
+
+### The opening merge needed tightening to take it
+
+`parallel_and_near`'s proximity half is an overlap of *bounding boxes* grown by
+`MEDIAN_M`, which two long diagonal corridors satisfy a long way before the
+corridors themselves are near. With the cuttings present, a 46 m footpath and the
+ring's carriageway **88 m away** passed it, were parallel to within a degree, and
+hulled a **130 × 102 m crater** out of the park between them.
+
+Tightening the distance does not settle it: the two rings come within 19 m at one
+corner, and a cutting legitimately *touches* the lid it joins. What actually
+distinguishes the case the merge exists for is that a dual carriageway's halves
+are **the same road** — same class, same width, mapped as two ways — so that is
+the key now, and a footpath can no longer be hulled into a trunk road however
+parallel it runs.
+
 ## A tunnel is covered, and it took two wrong rules to get there
 
 The roof rule went wrong twice, and both times the symptom was the same picture:
@@ -292,13 +353,69 @@ evidence anyway on a software rasteriser at handset quality — the profile prin
 by `tunnels::tests::dump_the_fixture_bores` says more in ten lines than any of
 them did.
 
+### Both halves of the aiming fix existed and neither could be reached
+
+Found 2026-09-22, and between them they are most of why this feature was verified
+by hand-aimed one-off captures for a month.
+
+**`docs/grade-shots.toml` had never parsed.** It sets `time`, `fog`, `clouds` and
+`rain` at the top — correctly, since a group is a set of views of one subject and
+a seven-metre trench reads only when the sun puts one wall in shadow — and those
+were not `Manifest` keys, so `deny_unknown_fields` refused the whole file. The
+only symptom was a one-line error from a command nothing in CI runs. The manifest
+built to check grade separation was therefore dead from the day it was written.
+`shot_presets::every_checked_in_manifest_loads` is the guard now.
+
+**And `--look-at` did not exist as a flag.** `ShotSpec::look_at` is threaded
+through `lerp`, the MCP surface and `aim_scripted_camera`, which has computed the
+aim from where the camera really ends up since the day tunnels landed; nothing
+could set it. So the three ring cameras the manifest shipped with were aimed by
+pitch, and run on a real GPU they report `tunnel_ahead_m` of **82.7, 116.9 and
+89.6 m** — all three photograph a park, which is exactly what the section above
+predicts and what two sessions spent days rediscovering by eye. There is a
+`--look-at LAT,LNG` flag and a `look_at` preset key now, and the ring views are
+aimed at `--dump-state`'s own `tunnel_entrance_lat`/`lng`.
+
+## Traffic drives the corridor, and its depth travels on the line
+
+`extract_drive_lines` went through `drawn_street`, which takes every
+tunnel-flagged way off the *ground sheet* because the geometry draws it somewhere
+else. That is the right answer for a ribbon and the wrong one for a **network**:
+it cut the drive graph at every portal, so a car reaching the ring ran to the end
+of its line and was recycled, and 863 m of carriageway under the park carried no
+traffic at all. And `drive_traffic` placed every car at `terrain.ground_at + ride
+height`, so even the untagged cuttings would have had their cars driving through
+the air over the trench.
+
+**The depth is on the line (`DriveLine::deck`), never sampled from the world.**
+An ordinary street crossing over the ring is at the same world XZ as the
+carriageway seven metres under it, so a depth read by position drops that
+street's traffic into the tunnel — which is `DeckPlates::lift_at`'s first
+attempt seen in a mirror ([grade-separation.md](grade-separation.md)). The only
+thing that knows which of two roads at one point a car is on is the feature its
+line came from, so `tunnels::SunkenWay` keys each corridor to its `streets`
+feature and `extract_drive_lines` samples only its own. It covers the cuttings as
+well as the lids, and it has to: a cutting is an *untagged* way this module has
+decided is seven metres down, so a consumer reading the tunnel flag would put its
+cars on the ground over an open trench.
+
+**The lift a car gets is the lift its road got**, through the same `lift_for`.
+Over an open cutting the survey has already dug the trench, so adding an invented
+seven metres to a measured nine would put the car nine metres under its own road.
+
+A bridge is the same question upside down and is answered the same way, except
+that a deck's height is a *measurement* arriving some frames after the cell, so
+it cannot be baked on the worker: the line carries `on_deck` and `DeckPlates` is
+consulted only for the lines that have it.
+
 ## What is not done
 
 - **Nothing collides with the roof**, so flying up through it works.
 - **The routing graph is unchanged**: `RoadGraph` is built from the same
   `streets` features and never knew about the tunnel flag either way, so a route
   through one is drawn on the surface (`navigation.rs` says why a negative grade
-  is not pushed down).
+  is not pushed down). Note the *ambient* traffic now does know — the two are
+  separate networks and only one of them has been taught.
 - **Depth is a constant, and it need not be.** See below.
 - **A cell built before its neighbour's tunnel streams in keeps its trench.** The
   cell rebuild triggers are the terrain revision, the surveyed-data revision and
