@@ -98,6 +98,42 @@ static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
 // runs it by hand.
 #[cfg(not(target_arch = "wasm32"))]
 static STALLED: AtomicBool = AtomicBool::new(false);
+/// The beat time a stall started from, so its length can be measured on the
+/// recovery edge rather than guessed from either poll.
+///
+/// Neither poll knows it on its own: at detection `quiet_ms` is however long the
+/// gap had grown by the first poll that noticed, which is the *threshold* and not
+/// the stall; at recovery `quiet_ms` is the gap the resuming frame closed, which
+/// is a few hundred milliseconds. Summing either reports the wrong number with
+/// the right shape, and the first version of this counter summed the first one.
+#[cfg(not(target_arch = "wasm32"))]
+static STALL_BEGAN_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Stalls seen, and milliseconds spent in them, since the process started.
+///
+/// The log lines say a stall happened; these say **how much of a run was spent
+/// frozen**, which is a different question and the one a performance window
+/// needs. Measured 2026-09-22 on `deck-1`, ground level over Groningen: 22
+/// stalls totalling 63.2 s of a 101.2 s fill — 62% of it — which is also the
+/// whole explanation for that window's worker utilisation reading 0.16 against
+/// wall clock and 0.44 against the time the loop was actually alive.
+///
+/// Relaxed counters for the same reason as the heartbeat: written from the
+/// watcher, read for a report, and never controlling anything.
+static STALL_COUNT: AtomicU64 = AtomicU64::new(0);
+static STALL_MS: AtomicU64 = AtomicU64::new(0);
+
+/// How many stalls, and how many milliseconds of them, so far.
+///
+/// A window measures the delta between two of these, exactly as the worker and
+/// fetch accounts do.
+#[must_use]
+pub fn stall_totals() -> (u64, u64) {
+    (
+        STALL_COUNT.load(Ordering::Relaxed),
+        STALL_MS.load(Ordering::Relaxed),
+    )
+}
 
 /// The main loop is alive. Called once per frame; everything else here is
 /// downstream of this store not happening.
@@ -175,6 +211,8 @@ fn watch() {
         let stalled = quiet_ms >= STALL.as_millis() as u64;
 
         if stalled && !STALLED.swap(true, Ordering::Relaxed) {
+            // The last beat before the silence: the stall's true start.
+            STALL_BEGAN_MS.store(last, Ordering::Relaxed);
             // ERROR, not WARN: on Android the log filter is the crash report's
             // contents, and a stall that reads as a warning is one nobody scrolls
             // back to. This is the line the whole module exists to emit.
@@ -185,8 +223,17 @@ fn watch() {
             );
             dump_threads();
         } else if !stalled && STALLED.swap(false, Ordering::Relaxed) {
+            // Counted on the recovery edge, because only here is the length
+            // known: the beat that ended the silence landed at `now - quiet_ms`,
+            // and the one before it is what detection saved.
+            let resumed_at = now.saturating_sub(quiet_ms);
+            let was = STALL_BEGAN_MS.load(Ordering::Relaxed);
+            let frozen_ms = resumed_at.saturating_sub(was);
+            STALL_COUNT.fetch_add(1, Ordering::Relaxed);
+            STALL_MS.fetch_add(frozen_ms, Ordering::Relaxed);
             tracing::error!(
                 recovered_after_ms = quiet_ms,
+                frozen_ms,
                 "main loop resumed after a stall"
             );
         }

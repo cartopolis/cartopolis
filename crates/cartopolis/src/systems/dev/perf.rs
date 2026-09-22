@@ -220,6 +220,8 @@ enum Phase {
 #[derive(Clone, Debug, Default)]
 struct Base {
     upload_bytes: u64,
+    /// `(stalls, stalled_ms)` at the window's start — a delta, like the rest.
+    stalls: (u64, u64),
     workers: Vec<(&'static str, crate::platform::workers::stats::Totals)>,
     mesh_added: u64,
     frames: u32,
@@ -382,6 +384,23 @@ pub struct Window {
     /// threads* and is uninterpretable without it — 32 s of busy is saturation
     /// on one thread and near-idleness on eight.
     pub worker_threads: usize,
+    /// Main-loop stalls in this window, and how many milliseconds of it they
+    /// account for (`platform::watchdog`).
+    ///
+    /// **Read this beside `worker_utilisation`, because one explains the other.**
+    /// A stalled main loop dispatches nothing, so every streamer's queue stops
+    /// being refilled and the worker pool drains — the utilisation column then
+    /// reports starvation whose cause is not the network at all.
+    ///
+    /// Measured 2026-09-22 on `deck-1`, ground level over Groningen: 22 stalls
+    /// of ~2.9 s in a 101 s fill, strictly alternating with the "large GPU
+    /// upload queued in one frame" warning, with the main thread parked in the
+    /// kernel's `__drm_exec_lock_obj` — i.e. blocked in the graphics driver on
+    /// buffer locks, not computing a large frame. Utilisation over that window
+    /// reads 0.16 against wall clock and 0.44 against the time the loop was
+    /// alive.
+    pub stalls: u64,
+    pub stalled_ms: u64,
     /// Whether the scenario actually settled, or the `wait` cap ran out.
     ///
     /// **Read this before any rate in the window.** Everything here divided by
@@ -723,6 +742,7 @@ pub fn drive_perf_window(
 fn take_base(readouts: &PerfReadouts) -> Base {
     Base {
         upload_bytes: readouts.uploads.total_bytes,
+        stalls: crate::platform::watchdog::stall_totals(),
         workers: crate::platform::workers::stats::snapshot(),
         mesh_added: readouts.churn.added,
         frames: 0,
@@ -833,6 +853,14 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
             .saturating_sub(base.upload_bytes)
             / 1024,
         settled: perf.settled,
+        stalls: {
+            let (n, _) = crate::platform::watchdog::stall_totals();
+            n.saturating_sub(base.stalls.0)
+        },
+        stalled_ms: {
+            let (_, ms) = crate::platform::watchdog::stall_totals();
+            ms.saturating_sub(base.stalls.1)
+        },
         worker_jobs,
         worker_busy_ms: worker_window.busy_us / 1000,
         worker_wait_ms: worker_window.wait_us / 1000,
@@ -906,6 +934,8 @@ fn log_window(w: &Window) {
         worker_wait_s = format!("{:.1}", w.worker_wait_ms as f64 / 1000.0),
         worker_threads = w.worker_threads,
         worker_util = format!("{:.2}", w.worker_utilisation),
+        stalls = w.stalls,
+        stalled_s = format!("{:.1}", w.stalled_ms as f64 / 1000.0),
         mesh_added_per_frame = format!("{:.1}", w.mesh_added_per_frame),
         resident_mb = format!(
             "{:.0} ({:.0} tex / {:.0} geo)",
