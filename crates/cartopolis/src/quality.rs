@@ -1158,7 +1158,39 @@ fn on_this_machine(budget: Budget) -> Budget {
     } else {
         budget
     };
-    with_shadow_filter_override(budget)
+    with_shadow_cascade_override(with_shadow_filter_override(budget))
+}
+
+/// Apply `CARTO_SHADOW_CASCADES`, if it is set.
+///
+/// The companion to [`with_shadow_filter_override`] and it exists for the same
+/// reason: the two halves of what shadows cost are the **caster** passes, one per
+/// cascade, and the **per-fragment** lookup, and telling them apart needs a lever
+/// on each that does not need a rebuild.
+///
+/// Measured on the Deck 2026-09-22, `city` at 3 km: the filter is worth 0.63 ms of
+/// the opaque pass and **nothing at all** to the frame, while the whole of shadows
+/// is most of a frame that the pass timers never see — one caster pass per cascade
+/// is rendered and `RenderDiagnosticsPlugin` reports none of them. So the number
+/// worth sweeping is this one, and until now there was no way to sweep it short of
+/// moving the whole tier.
+///
+/// Clamped to bevy's own 1..=4 rather than passed through: `shadow_cascades` is
+/// shared by the sun and the moon precisely so the two can never disagree (bevy
+/// panics outright if they do — CLAUDE.md), and a flag that could put a 0 or a 9
+/// in there would hand that panic back through the one door left open. 0 is not
+/// how you turn shadows off; `CARTO_NO_SHADOWS` is.
+fn with_shadow_cascade_override(budget: Budget) -> Budget {
+    let Some(n) = crate::env_value("CARTO_SHADOW_CASCADES")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 4))
+    else {
+        return budget;
+    };
+    Budget {
+        shadow_cascades: n,
+        ..budget
+    }
 }
 
 /// Apply `CARTO_SHADOW_FILTER`, if it is set.
