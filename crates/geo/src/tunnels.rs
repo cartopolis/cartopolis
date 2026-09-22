@@ -214,29 +214,7 @@ impl Tunnel {
     /// a field.
     #[must_use]
     pub fn road_under(&self, p: [f32; 2]) -> Option<f32> {
-        let mut best: Option<(f32, f32)> = None;
-        for i in 0..self.centre.len().saturating_sub(1) {
-            let (a, b) = (self.centre[i], self.centre[i + 1]);
-            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            let len_sq = dx * dx + dy * dy;
-            if len_sq <= 1e-9 {
-                continue;
-            }
-            // Clamped projection: past either end of a segment the nearest point
-            // is that end, which is what makes a chain of segments behave as one
-            // corridor with rounded ends rather than as a set of infinite strips.
-            let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
-            let (cx, cy) = (a[0] + dx * t, a[1] + dy * t);
-            let d = (p[0] - cx).hypot(p[1] - cy);
-            if d > self.half_w {
-                continue;
-            }
-            let y = self.road_y[i] + (self.road_y[i + 1] - self.road_y[i]) * t;
-            if best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, y));
-            }
-        }
-        best.map(|(_, y)| y)
+        road_under_line(&self.centre, &self.road_y, self.half_w, p)
     }
 
     /// How far `p` is from this tunnel's carriageway in plan, and the deck level
@@ -396,6 +374,81 @@ pub struct TunnelTessellation {
     pub openings: Vec<Vec<[f32; 2]>>,
     /// Every tunnel in the tile, for footing and collision.
     pub tunnels: Vec<Tunnel>,
+    /// The same corridors keyed to the `streets` feature each came off, for the
+    /// consumers that **travel** the road rather than draw it. See [`SunkenWay`].
+    pub sunken: Vec<SunkenWay>,
+}
+
+/// One street's sunken profile, keyed to the feature it belongs to.
+///
+/// **Keyed, because position is not enough, and that mistake has been made here
+/// twice already.** `DeckPlates::lift_at` sampled a bridge's height as a function
+/// of world XZ and hoisted the underpass onto the viaduct above it
+/// ([`grade-separation.md`](../../../docs/notes/grade-separation.md)); asking
+/// "is there a tunnel under this car" has the identical shape, and Groningen's
+/// ring has ordinary streets crossing over it. The only thing that knows whether
+/// a car is *on* the sunken road or on the one above it is which feature its
+/// line came from, so that is what travels with the profile.
+///
+/// It covers the cuttings as well as the lids, and it has to: a cutting is an
+/// untagged surface way that this module has decided is seven metres down, so a
+/// consumer reading the tunnel flag would put its cars on the ground over an open
+/// trench.
+#[derive(Clone, Debug)]
+pub struct SunkenWay {
+    /// Index into the tile's `streets` features, as `tile.features` orders them.
+    pub feature: usize,
+    /// Centre line, tile-local metres.
+    pub centre: Vec<[f32; 2]>,
+    /// Deck level at each vertex, metres, negative.
+    pub road_y: Vec<f32>,
+    /// Half the carriageway, so a point beside the corridor can be told from one
+    /// on it.
+    pub half_w: f32,
+}
+
+impl SunkenWay {
+    /// The deck level under `p`, or `None` where `p` is not over this corridor.
+    ///
+    /// The same clamped-projection walk [`Tunnel::road_under`] does, and for the
+    /// same reason — a chain of segments has to behave as one corridor with
+    /// rounded ends rather than as a set of infinite strips.
+    #[must_use]
+    pub fn road_under(&self, p: [f32; 2]) -> Option<f32> {
+        road_under_line(&self.centre, &self.road_y, self.half_w, p)
+    }
+}
+
+/// The deck level under `p` on a corridor, or `None` where `p` is not over it.
+///
+/// One function because two types hold the same three fields and a car asks this
+/// per frame — [`Tunnel`], which is what the drawn world and the avatar's footing
+/// read, and [`SunkenWay`], which is what the drive network reads. They agreeing
+/// is the difference between a car on the carriageway and a car in the roof.
+fn road_under_line(centre: &[[f32; 2]], road_y: &[f32], half_w: f32, p: [f32; 2]) -> Option<f32> {
+    let mut best: Option<(f32, f32)> = None;
+    for i in 0..centre.len().saturating_sub(1) {
+        let (a, b) = (centre[i], centre[i + 1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len_sq = dx * dx + dy * dy;
+        if len_sq <= 1e-9 {
+            continue;
+        }
+        // Clamped projection: past either end of a segment the nearest point is
+        // that end, which is what makes a chain of segments behave as one
+        // corridor with rounded ends rather than as a set of infinite strips.
+        let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+        let (cx, cy) = (a[0] + dx * t, a[1] + dy * t);
+        let d = (p[0] - cx).hypot(p[1] - cy);
+        if d > half_w {
+            continue;
+        }
+        let y = road_y[i] + (road_y[i + 1] - road_y[i]) * t;
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, y));
+        }
+    }
+    best.map(|(_, y)| y)
 }
 
 /// How far to reach for the land *around* a tunnel when asking how much of its
@@ -696,6 +749,18 @@ fn depth_and_grade(class: RoadClass) -> (f32, f32) {
 /// bridge over it, and drawing it as an open cutting is the truthful answer.
 const MIN_COVERED_M: f32 = 40.0;
 
+/// How long an untagged gap between two lids must be before it is open sky.
+///
+/// The tunnel flag marks the covered parts, so the stretches between them arrive
+/// untagged — but *not tagged* is not the same as *not covered*, and the tiles
+/// cannot tell a hundred metres of open cutting from a four-metre seam where
+/// somebody split one way in two. A stretch of road is the unit here, so this is
+/// `traffic::MIN_DRIVE_LEN_M`'s twenty-five metres rather than a tolerance:
+/// above it the gap is a piece of road with sky over it, below it the lid simply
+/// carries on. Groningen's ring is not near the line in either direction — its
+/// open stretches are 107 m and 109 m, and the fixture's seam is 4 m.
+const MIN_CUTTING_M: f32 = 25.0;
+
 /// The deepest this class may go and still have headroom under a lid.
 ///
 /// The roof test wants the ceiling at or below [`CEILING_MAX_Y`], and the ceiling
@@ -939,9 +1004,10 @@ fn bridge_short_gaps(
     tile_m: f32,
     lines: &[Vec<[f32; 2]>],
     unshared: &mut [OpenEnds],
-) {
+) -> Vec<Cutting> {
+    let mut cuttings = Vec::new();
     let Some(meta) = tile.layer("streets") else {
-        return;
+        return cuttings;
     };
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
@@ -955,7 +1021,7 @@ fn bridge_short_gaps(
         .flat_map(|(i, l)| [(i, 0, l[0]), (i, 1, l[l.len() - 1])])
         .collect();
 
-    for feature in tile.features(meta) {
+    for (fi, feature) in tile.features(meta).iter().enumerate() {
         if underground(feature) {
             continue;
         }
@@ -993,10 +1059,66 @@ fn bridge_short_gaps(
                 if i != j {
                     unshared[i][ki] = false;
                     unshared[j][kj] = false;
+                    // **And the way itself is not a surface street.** Clearing the
+                    // two ends says the road does not climb out here; it does not
+                    // say what the road between them is, and until 2026-09-22
+                    // nothing did — so the carriageway was drawn on the ground at
+                    // `y = 0` between two decks seven metres under it. Keeping the
+                    // geometry is what lets the cutting be built at depth below.
+                    let flags = StreetFlags {
+                        oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+                        oneway_reverse: flag_of(feature, "oneway_reverse"),
+                        link: flag_of(feature, "link"),
+                    };
+                    let kind = kind_of(feature).unwrap_or("");
+                    if let Some(class) = road_class(kind, flags) {
+                        let half = road_width_m(kind, flags) * 0.5;
+                        if half > 0.0 {
+                            cuttings.push(Cutting {
+                                centre: pts.clone(),
+                                half,
+                                class,
+                                joins: [(i, ki), (j, kj)],
+                                feature: fi,
+                            });
+                        }
+                    }
                 }
             }
         }
     }
+    cuttings
+}
+
+/// A surface street that runs between two lids, and therefore is not a surface
+/// street at all.
+///
+/// Groningen's southern ring is built *dicht-open-dicht-open* and the tunnel flag
+/// marks only the covered parts, so the open stretches between them arrive as
+/// ordinary untagged ways. [`bridge_short_gaps`] already had to find them — that
+/// is how it knows the lids either side are not portals — and threw the geometry
+/// away, which left the road drawn flat on the ground between two decks at
+/// −7 m: six vertical seven-metre steps in 863 m of carriageway, and a car that
+/// teleports at each one.
+///
+/// So the way is absorbed into the corridor and built as an **open cutting**: the
+/// same deck, walls and ground hole as a tunnel, and never a lid, because the one
+/// thing the tile does say about this stretch is that it is not covered.
+struct Cutting {
+    /// The way's own geometry, tile-local metres, running from `joins[0]` to
+    /// `joins[1]`.
+    centre: Vec<[f32; 2]>,
+    /// Half the carriageway width the *surface* feature asks for. Its own, not the
+    /// lid's: this is the ribbon the ground hole has to swallow, so a cut sized
+    /// from the lid would leave a sliver of surface road beside the trench.
+    half: f32,
+    class: RoadClass,
+    /// `(run, end)` at each end, so the depth the cutting is held at is the depth
+    /// of the lids it joins rather than a second opinion about it. A cutting that
+    /// decided its own depth would step at both ends instead of one.
+    joins: [(usize, usize); 2],
+    /// The untagged `streets` feature this was read off.
+    feature: usize,
 }
 
 /// Two ends closer than this are the same point, and the direction between them
@@ -1010,6 +1132,36 @@ const SAME_POINT_M: f32 = 1.5;
 /// the line (offset parallel to travel, cosine near 1) and a pair of carriageways
 /// sits across it (offset perpendicular, cosine near 0).
 const JOIN_ALONG_COS: f32 = 0.7;
+
+/// One stretch of sunken road, resolved: where it runs, how deep it is at each
+/// vertex, and which of those vertices have a lid over them.
+///
+/// **The profile is settled before anything is built**, which is the whole reason
+/// this type exists. A cutting's depth is the depth of the lids at its two ends,
+/// so there has to be a moment when every lid's answer is known and no geometry
+/// has been emitted yet. It also makes the builder one loop over one kind of
+/// thing, rather than one loop that knows about tags and a second that does not.
+#[derive(Clone)]
+struct Plan {
+    /// Centre line, tile-local metres, with a vertex wherever the shape changes.
+    centre: Vec<[f32; 2]>,
+    /// Distance along `centre` at each vertex — the texture's `v`, kept rather
+    /// than re-derived so the deck and the walls cannot disagree about it.
+    travelled: Vec<f32>,
+    /// Deck level at each vertex, negative.
+    road_y: Vec<f32>,
+    /// Whether each vertex has a lid over it. A cutting is `false` throughout:
+    /// the tunnel flag is what says where a lid is, and it does not reach here.
+    roofed: Vec<bool>,
+    class: RoadClass,
+    half: f32,
+    clearance: f32,
+    /// The `streets` feature this stretch came off — a tunnel-flagged way for a
+    /// lid, the untagged way it absorbed for a cutting. Carried so the drive
+    /// network can key a car's depth to its own road rather than to whatever
+    /// happens to be under it ([`SunkenWay`]).
+    feature: usize,
+}
 
 /// A corridor's two offset sides, per segment.
 ///
@@ -1153,7 +1305,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     // and no second tunnel run ends on the same point.
     let lines: Vec<Vec<[f32; 2]>> = runs.iter().map(|(_, l, _)| l.clone()).collect();
     let mut unshared = open_ends(&lines);
-    bridge_short_gaps(tile, tile_m, &lines, &mut unshared);
+    let cuttings = bridge_short_gaps(tile, tile_m, &lines, &mut unshared);
 
     // **One deck builder per class, not one for the tile.** A tunnel's carriageway
     // is the surface road continued, so it wants that road's own texture: gravel
@@ -1171,7 +1323,15 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
 
     let mut shell = Build::default();
     let mut meshes: Vec<SurfaceMesh> = Vec::new();
+    // Openings carry the corridor they came out of until the merge below has had
+    // its say — see [`merge_parallel_openings`].
+    let mut openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)> = Vec::new();
 
+    // **Every run's profile is resolved before any of it is built**, because a
+    // cutting takes its depth from the lids at its two ends and cannot be planned
+    // until they are. Parallel to `runs`, so `Cutting::joins` still indexes it
+    // after the runs that carry no road class have dropped out.
+    let mut planned: Vec<Option<Plan>> = Vec::with_capacity(runs.len());
     for (idx, (fi, centre, own)) in runs.iter().enumerate() {
         let feature = &features[*fi];
         let flags = StreetFlags {
@@ -1181,10 +1341,12 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         };
         let kind = kind_of(feature).unwrap_or("");
         let Some(class) = road_class(kind, flags) else {
+            planned.push(None);
             continue;
         };
         let half = road_width_m(kind, flags) * 0.5;
         if half <= 0.0 {
+            planned.push(None);
             continue;
         }
         let entrances = [own[0] && unshared[idx][0], own[1] && unshared[idx][1]];
@@ -1253,6 +1415,130 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             .iter()
             .map(|&y| y <= -(depth - ROOF_AT_DEPTH_M) && y + clearance <= CEILING_MAX_Y)
             .collect();
+        planned.push(Some(Plan {
+            centre: centre.clone(),
+            travelled,
+            road_y,
+            roofed,
+            class,
+            half,
+            clearance,
+            feature: *fi,
+        }));
+    }
+
+    // The open stretches between two lids, at the depth of the lids either side.
+    //
+    // Built here rather than in the loop above because it is the one run whose
+    // profile is a function of its *neighbours*: holding it at its own idea of
+    // full depth would step wherever a lid had to settle for less
+    // ([`depth_for_run`]), which is the fault this is fixing, moved along by one
+    // road. Never roofed — the tile says the lid stops here.
+    let mut plans: Vec<Plan> = planned.iter().flatten().cloned().collect();
+    for cut in &cuttings {
+        let end_depth = |(run, end): (usize, usize)| -> Option<f32> {
+            let p = planned.get(run)?.as_ref()?;
+            let y = if end == 0 {
+                p.road_y.first()
+            } else {
+                p.road_y.last()
+            }?;
+            Some(-*y)
+        };
+        let (Some(d0), Some(d1)) = (end_depth(cut.joins[0]), end_depth(cut.joins[1])) else {
+            continue;
+        };
+        // Both lids at the surface is a pair of dips somebody tagged, not a
+        // cutting, and sinking the road between them would dig a trench across
+        // ground the map never said was open.
+        if d0 <= ROOF_AT_DEPTH_M && d1 <= ROOF_AT_DEPTH_M {
+            continue;
+        }
+        // **Snapped to the decks it joins.** The two ends were matched within
+        // `SAME_POINT_M`, so leaving them where the surface way put them parts the
+        // carriageway by up to a metre and a half at each lid — a slot in the road
+        // at exactly the place this exists to close.
+        let mut centre = cut.centre.clone();
+        let anchor = |(run, end): (usize, usize)| -> Option<[f32; 2]> {
+            let p = planned.get(run)?.as_ref()?;
+            if end == 0 {
+                p.centre.first().copied()
+            } else {
+                p.centre.last().copied()
+            }
+        };
+        if let (Some(a), Some(b), true) = (
+            anchor(cut.joins[0]),
+            anchor(cut.joins[1]),
+            centre.len() >= 2,
+        ) {
+            let last = centre.len() - 1;
+            centre[0] = a;
+            centre[last] = b;
+        }
+        let mut travelled = Vec::with_capacity(centre.len());
+        let mut total = 0.0f32;
+        for i in 0..centre.len() {
+            if i > 0 {
+                total += (centre[i][0] - centre[i - 1][0]).hypot(centre[i][1] - centre[i - 1][1]);
+            }
+            travelled.push(total);
+        }
+        if total <= 1e-3 {
+            continue;
+        }
+        let road_y: Vec<f32> = travelled
+            .iter()
+            .map(|&s| -(d0 + (d1 - d0) * (s / total)))
+            .collect();
+        let clearance = if matches!(cut.class, RoadClass::Path) {
+            PATH_CLEARANCE_M
+        } else {
+            CLEARANCE_M
+        };
+        // **A short gap is a seam in the tagging, not a stretch of sky.** The
+        // deck runs through either way — that is what a cutting is for — but
+        // taking the ground away over it is a claim the tile never made. On the
+        // fixture two path tunnels end four metres apart, and cutting that
+        // punched a 5 × 4 m hole in the ground over what is plainly one
+        // continuous tunnel.
+        let roofed: Vec<bool> = if total < MIN_CUTTING_M {
+            road_y
+                .iter()
+                .map(|&y| y + clearance <= CEILING_MAX_Y)
+                .collect()
+        } else {
+            vec![false; centre.len()]
+        };
+        plans.push(Plan {
+            roofed,
+            centre,
+            travelled,
+            road_y,
+            class: cut.class,
+            // The wider of the two, so the hole this opens in the ground always
+            // swallows the surface ribbon it is replacing *and* meets the lid's
+            // wall without a step where the two widths disagree.
+            half: cut
+                .half
+                .max(planned[cut.joins[0].0].as_ref().map_or(0.0, |p| p.half)),
+            clearance,
+            feature: cut.feature,
+        });
+    }
+
+    for plan in &plans {
+        let Plan {
+            centre,
+            travelled,
+            road_y,
+            roofed,
+            class,
+            half,
+            clearance,
+            ..
+        } = plan;
+        let (class, half, clearance) = (*class, *half, *clearance);
         let sides = offset_sides(centre, half);
         let deck_slot = match decks.iter().position(|(c, _)| *c == class) {
             Some(i) => i,
@@ -1424,15 +1710,30 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         // the ground. Keyed on the roof being missing rather than on the entrance
         // flag, so the hole and the absent ceiling are decided by one test and
         // cannot disagree about where the opening is.
-        out.openings.extend(opening_rings(centre, &roofed, half));
+        openings.extend(
+            opening_rings(centre, roofed, half)
+                .into_iter()
+                .map(|ring| (class, half, ring)),
+        );
 
         out.tunnels.push(Tunnel {
             centre: centre.clone(),
-            road_y,
+            road_y: road_y.clone(),
             half_w: half,
             clearance,
             covered: roofed.clone(),
         });
+        // The same corridor, keyed to its street, for the drive network. Only
+        // where it is genuinely below the surface: a flagged way that never
+        // descends is an arcade, and a car on one is on the ground.
+        if road_y.iter().any(|&y| y < -0.05) {
+            out.sunken.push(SunkenWay {
+                feature: plan.feature,
+                centre: centre.clone(),
+                road_y: road_y.clone(),
+                half_w: half,
+            });
+        }
 
         // Cut the meshes loose as they fill, the same contract every other
         // builder in this crate keeps.
@@ -1463,7 +1764,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     // world. Merged by convex hull, which is exactly right for two parallel
     // corridors; the parallelism test is what guards it, because the hull of two
     // corridors that diverge is a wedge of ground taken away for nothing.
-    out.openings = merge_parallel_openings(std::mem::take(&mut out.openings));
+    out.openings = merge_parallel_openings(openings);
     out.meshes = meshes;
     out
 }
@@ -1475,20 +1776,41 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
 const MEDIAN_M: f32 = 30.0;
 
 /// Replace pairs of near, parallel corridors with the corridor containing both.
-fn merge_parallel_openings(openings: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
+/// **Only the two halves of one road**, which is what the carriageway key is for.
+///
+/// The proximity half of the test is an overlap of *bounding boxes* grown by
+/// [`MEDIAN_M`], and for two long diagonal corridors that is satisfied a long way
+/// before the corridors themselves are near: measured over the DUO cut on
+/// 2026-09-22, a 46 m footpath and the ring's carriageway **88 m away** passed it,
+/// were parallel to within a degree, and hulled a 130 × 102 m crater out of the
+/// park between them. Tightening the distance does not settle it either — the two
+/// rings come within 19 m at one corner, and a cutting legitimately *touches* the
+/// lid it joins.
+///
+/// What actually distinguishes the case this exists for is that a dual
+/// carriageway's halves are the same road: same class, same width, mapped as two
+/// ways. So that is the key, and a footpath can no longer be hulled into a trunk
+/// road however parallel it happens to run.
+fn merge_parallel_openings(openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)>) -> Vec<Vec<[f32; 2]>> {
     let mut out: Vec<Vec<[f32; 2]>> = Vec::with_capacity(openings.len());
     let mut merged = vec![false; openings.len()];
     for i in 0..openings.len() {
         if merged[i] {
             continue;
         }
-        let mut ring = openings[i].clone();
+        let (class, half, ref first) = openings[i];
+        let mut ring = first.clone();
         for j in (i + 1)..openings.len() {
-            if merged[j] || !parallel_and_near(&ring, &openings[j]) {
+            let (other_class, other_half, ref other) = openings[j];
+            if merged[j]
+                || other_class != class
+                || (other_half - half).abs() > 0.01
+                || !parallel_and_near(&ring, other)
+            {
                 continue;
             }
             let mut both = ring.clone();
-            both.extend_from_slice(&openings[j]);
+            both.extend_from_slice(other);
             ring = convex_hull(&both);
             merged[j] = true;
         }
@@ -2629,6 +2951,131 @@ mod tests {
                 b[3]
             );
         }
+    }
+
+    /// **The carriageway may not step**, and until 2026-09-22 Groningen's ring
+    /// stepped six times.
+    ///
+    /// The tunnel flag marks only the covered parts, so the ring arrives as six
+    /// lid runs with untagged road between them. [`bridge_short_gaps`] knew that
+    /// — it is why those lids get no portal — and then threw the connecting way
+    /// away, so the road between two decks at −7 m was drawn on the ground at
+    /// zero: 863 m of carriageway with six vertical seven-metre steps in it, a
+    /// car teleporting at each, and from above a road that simply stopped dead in
+    /// a park.
+    ///
+    /// The invariant is local and needs no camera: at every end of every sunken
+    /// carriageway, either another corridor continues at the same depth, or the
+    /// road has come back up to the surface, or the tile border cut it. A step is
+    /// none of those.
+    /// The ring tile's own ground size in metres, which is what `build_tunnels`
+    /// scales tile units by. Derived from the tile's coordinates rather than
+    /// written down: a hand-typed span puts every distance measured here out by a
+    /// fraction of a per cent, and these tests compare distances.
+    fn ring_tile_m() -> f32 {
+        let (_, y) = crate::testdata::GRONINGEN_RING_TILE;
+        let n = 2f64.powi(14);
+        #[allow(clippy::cast_precision_loss)]
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n))
+            .sinh()
+            .atan();
+        #[allow(clippy::cast_possible_truncation)]
+        let m = (40_075_016.686 * lat.cos() / n) as f32;
+        m
+    }
+
+    #[test]
+    fn the_ring_road_never_steps_between_a_lid_and_the_road_beside_it() {
+        let tile_m = ring_tile_m();
+        let out = build_tunnels(&crate::testdata::groningen_ring(), tile_m, None);
+        // The carriageways, not the footpaths: `half_w` is the road's own width
+        // and the ring's is 5 m against a cycle underpass's 1.1.
+        let roads: Vec<&Tunnel> = out.tunnels.iter().filter(|t| t.half_w >= 4.0).collect();
+        assert!(
+            roads.len() >= 10,
+            "expected the ring's six lids and the cuttings between them, got {}",
+            roads.len()
+        );
+
+        // Every end of every corridor, as (point, depth there).
+        let ends: Vec<([f32; 2], f32)> = roads
+            .iter()
+            .filter(|t| t.centre.len() >= 2)
+            .flat_map(|t| {
+                [
+                    (t.centre[0], t.road_y[0]),
+                    (t.centre[t.centre.len() - 1], t.road_y[t.road_y.len() - 1]),
+                ]
+            })
+            .collect();
+
+        let mut deep_ends = 0;
+        for (i, (p, y)) in ends.iter().enumerate() {
+            // At the surface: the road has climbed out, which is a portal.
+            if *y > -0.5 {
+                continue;
+            }
+            // Cut by the tile border: the run carries on into the neighbour and
+            // is deliberately held at depth so the two halves meet flush.
+            if p[0] <= 1.0 || p[1] <= 1.0 || p[0] >= tile_m - 1.0 || p[1] >= tile_m - 1.0 {
+                continue;
+            }
+            deep_ends += 1;
+            let partner = ends
+                .iter()
+                .enumerate()
+                .find(|(j, (q, _))| *j != i && (q[0] - p[0]).hypot(q[1] - p[1]) <= SAME_POINT_M);
+            let Some((_, (_, other))) = partner else {
+                panic!(
+                    "a carriageway {:.1} m down ends at {p:?} with nothing continuing it — \
+                     the road steps to the surface here",
+                    -y
+                );
+            };
+            assert!(
+                (other - y).abs() <= 0.25,
+                "two corridors meet at {p:?} at {y:.2} m and {other:.2} m — \
+                 a {:.1} m step in the carriageway",
+                (other - y).abs()
+            );
+        }
+        assert!(
+            deep_ends >= 8,
+            "only {deep_ends} sunken ends were checked, so the fixture is not the ring"
+        );
+    }
+
+    /// The open stretches between the lids are open, and the lids are not.
+    ///
+    /// The other half of the same change: a cutting that took a lid with it would
+    /// roof the whole ring and there would be nothing to see, and one that opened
+    /// a four-metre tagging seam would punch a hole in ground nothing said was
+    /// open ([`MIN_CUTTING_M`]).
+    #[test]
+    fn the_cuttings_are_open_and_the_lids_are_not() {
+        let out = build_tunnels(&crate::testdata::groningen_ring(), ring_tile_m(), None);
+        let roads: Vec<&Tunnel> = out.tunnels.iter().filter(|t| t.half_w >= 4.0).collect();
+        let (mut open, mut lidded) = (0, 0);
+        for t in &roads {
+            let len: f32 = t
+                .centre
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            if t.covered.iter().all(|c| !c) {
+                // An open cutting, which is what the 107 m gaps are.
+                assert!(
+                    len >= MIN_CUTTING_M,
+                    "a {len:.0} m stretch was opened; under {MIN_CUTTING_M} m the \
+                     lid carries on"
+                );
+                open += 1;
+            } else if t.covered.iter().any(|c| *c) {
+                lidded += 1;
+            }
+        }
+        assert!(open >= 4, "expected the ring's open cuttings, got {open}");
+        assert!(lidded >= 6, "expected the ring's lids, got {lidded}");
     }
 
     /// The cut must actually take ground away. It is the one step between a tunnel

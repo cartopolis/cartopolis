@@ -34,6 +34,27 @@ pub static GRONINGEN_Z14: &[u8] = include_bytes!("../tests/fixtures/groningen_z1
 /// order to place its integer lattice on the globe.
 pub const GRONINGEN_TILE: (i64, i64) = (8490, 5319);
 
+/// The z14 tile **east** of [`GRONINGEN_Z14`], which is the one with the road
+/// tunnels in it: Groningen's southern ring at DUO.
+///
+/// `GRONINGEN_Z14` is the station tile and its only tunnel-flagged ways are
+/// footpaths and arcades — four bores, 2.2 m wide, 3.6 m down. So every claim the
+/// tunnel work made about *road* tunnels was measured on a live fetch nobody
+/// could re-run, and the checked-in suite could not tell a carriageway that
+/// descends from one that steps seven metres at the portal. This tile carries
+/// `Weg der Verenigde Naties` as the thing it actually is: six lid runs of 172 m
+/// to 242 m, in opposite-heading pairs, with the open cuttings between them.
+pub static GRONINGEN_RING_Z14: &[u8] = include_bytes!("../tests/fixtures/groningen_ring_z14.mvt");
+
+/// [`GRONINGEN_RING_Z14`]'s own tile coordinates.
+pub const GRONINGEN_RING_TILE: (i64, i64) = (8491, 5321);
+
+/// [`GRONINGEN_RING_Z14`], parsed. A fresh `TileData` per call, as
+/// [`groningen`] is and for the same reason.
+pub fn groningen_ring() -> TileData {
+    TileData::parse(GRONINGEN_RING_Z14).expect("the groningen_ring_z14 fixture parses")
+}
+
 /// A sparser z10 tile, so a regression that only shows on dense data is
 /// distinguishable from one that scales with the fixed overhead of a parse.
 pub static LOWZOOM_526_334: &[u8] = include_bytes!("../tests/fixtures/lowzoom_10_526_334.mvt");
@@ -65,8 +86,9 @@ mod tests {
     /// The fixture files this module owns. Adding one means adding it here too —
     /// otherwise its copies are unguarded, which is the state the whole module
     /// exists to leave behind.
-    const FIXTURE_FILES: [&str; 3] = [
+    const FIXTURE_FILES: [&str; 4] = [
         "groningen_z14.mvt",
+        "groningen_ring_z14.mvt",
         "lowzoom_10_526_334.mvt",
         "lowzoom_10_534_336.mvt",
     ];
