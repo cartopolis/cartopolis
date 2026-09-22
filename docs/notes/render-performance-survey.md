@@ -53,6 +53,92 @@ rasteriser's and are **not** comparable to a device; the counts are exact.
 | 150 m, −20° | 653 | 70 | 971 |
 | 3 km, −30°, `CARTO_QUALITY=phone` | 209 | — | 491 |
 
+## On a real GPU the frame is none of the things this note was optimising (2026-09-22)
+
+Everything above was measured on the container's CPU rasteriser, where the table
+says not to read a millisecond. `deck-1` is an AMD Van Gogh with Vulkan
+timestamps, so `elapsed_gpu` there is a real GPU number and the whole suite was
+re-run on it. Dev profile, default 640×360, tiles from
+`tiles.cartopolis.org`, every steady window `quiet=true`.
+
+| scenario | frame | fps | draws | entities | measured GPU passes | **unaccounted** |
+|---|---|---|---|---|---|---|
+| orbit (180 km) | 8.95 ms | 112 | 149 | 1109 | 4.11 ms | 4.84 ms (54 %) |
+| low-orbit | 7.82 ms | 128 | 106 | 985 | 4.03 ms | 3.79 ms (49 %) |
+| city (3 km) | 14.41 ms | 69 | 522 | 2295 | 4.00 ms | 9.73 ms (72 %) |
+
+**Measured GPU pass time is the same 4 ms in all three.** Three scenes differing
+by 5× in draw calls cost an identical amount of instrumented GPU work, while the
+unaccounted remainder tracks the scene. Whatever sets a frame here is not in a
+pass the instrument can see.
+
+### Three candidates were eliminated, each by an A/B on that hardware
+
+- **Fill.** A resolution sweep of `city` at 640×360 / 1280×720 / 1920×1080 —
+  1×, 4×, 9× the pixels, and `fragment_invocations` duly 0.57 M / 2.2 M / 4.9 M —
+  moved the frame 13.79 → 15.32 → 23.58 ms. The unaccounted remainder was 9.82 /
+  9.13 / 15.19 ms: a **floor of about 10 ms that nine times the pixels barely
+  touches**.
+- **The shadow filter.** `CARTO_SHADOW_FILTER=fast` against `soft` cut the opaque
+  pass from 2.385 to 1.759 ms — a real, repeatable 0.63 ms, 26 % of that pass —
+  and the frame went 13.77 → 13.87 ms, i.e. nowhere. **0.6 ms of GPU pass time was
+  removed and no frame time came back.**
+- **Shadows entirely.** `CARTO_NO_SHADOWS=1` on `city`: 13.73 → 13.94 ms, with
+  `draws` unchanged at 522. The sun is the only casting light (the moon has
+  `shadow_maps_enabled: false` unconditionally), so this is the whole shadow cost,
+  caster passes included, and it is **not on the critical path at all**.
+
+That last one is worth stating plainly because this note's "not done, and it is
+the big one" is shadow-map caching. On this hardware, at these scenarios, caching
+every cascade perfectly would buy nothing. It may still be the big one on an
+Adreno, which has a fraction of the fill rate and where the note's phone figures
+were never taken — but it is not what a Deck frame is made of, and the claim
+should not be repeated without a device measurement behind it.
+
+### What the remainder does correlate with
+
+| scenario | unaccounted | entities | µs per entity |
+|---|---|---|---|
+| orbit | 4.84 ms | 1109 | 4.36 |
+| low-orbit | 3.79 ms | 985 | 3.85 |
+| city | 9.73 ms | 2295 | 4.24 |
+
+**Not draws, not pixels, not shadows — entity count**, at a near-constant
+~4.2 µs each. Beside it, `process_cpu_percent` is flat at 21–23 % across all
+three while the frame varies by a factor of two: on eight cores that is roughly
+two busy threads and six idle, which is what a single-threaded bottleneck looks
+like rather than a machine out of capacity.
+
+Three points is a correlation and not a cause, and it is deliberately not written
+up here as one. The honest statement is that the cost scales with how many
+entities the main world holds, and that nothing in the render passes explains a
+frame.
+
+### The per-system profiler cannot be reached, and fails silently
+
+`bevy/trace` and `bevy/debug` are both already in the `perf` feature, so the spans
+exist and their names resolve. Collecting them is the problem: **`bevy/trace_chrome`
+lives inside `LogPlugin`, and `lib.rs` disables `LogPlugin` on desktop** in favour
+of this tree's own `tracing_subscriber`. Building with the feature therefore
+succeeds, runs, and writes no trace file at all — no warning, no error, one full
+client rebuild to discover.
+
+Reaching those spans means installing a chrome layer on *our* subscriber under the
+`perf` feature, which needs `tracing-chrome` as a direct dependency (it is not in
+`Cargo.lock` today, not even transitively). That is the next step for anyone
+continuing this, and it is the step that turns the correlation above into a name.
+
+### And the prepass is missing from the diagnostics
+
+This note records, as a standing finding, that at `orbit` "the **depth prepass**
+runs 3.0× overdraw while the opaque pass runs exactly 1.0×". **No prepass appears
+in `RenderDiagnosticsPlugin`'s output at `orbit` or anywhere else now** — the pass
+list is the same seven entries in every scenario, with no prepass and no shadow
+pass among them. `perf::gpu_passes` does not filter; it reports what the store
+holds. Whether the prepass was turned off since, or is running unrecorded, is not
+established here — but the 3.0× figure cannot currently be reproduced, and
+something that renders is going unmeasured either way.
+
 ## Negative results — do not re-open these first
 
 ### SIMD is already done, and the remaining candidates are not vectorisable
@@ -743,12 +829,20 @@ dropped: bevy already culls every caster against every cascade frustum, so a
 second mechanism would be two answers to one question — and this repo's rule is
 to remove the overlap rather than arbitrate it.
 
-### Not done, and it is the big one
+### Not done — and on a Deck it would buy nothing (qualified 2026-09-22)
 
 **Nothing caches a shadow map.** The city is static and the sun moves 15°/hour,
 and bevy re-renders every cascade every frame regardless. Re-rendering the outer
 cascades only every N frames is the real structural win here and bevy 0.19 has no
 API for it — it is engine work, not a setting.
+
+**This was written from the software rasteriser and the hardware A/B contradicts
+it.** `CARTO_NO_SHADOWS=1` on `deck-1` moves `city` by 13.73 → 13.94 ms, i.e. not
+at all — so on that GPU the ceiling for perfectly caching every cascade is zero.
+See the 2026-09-22 section near the top. The idea may still hold on a handset,
+where fill is scarce and none of these figures were taken; it is no longer
+evidence-backed on a desktop-class GPU, and "the big one" should not be repeated
+until a device says so.
 
 ### What is still unmeasured
 
