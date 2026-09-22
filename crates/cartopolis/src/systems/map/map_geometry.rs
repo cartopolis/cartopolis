@@ -102,6 +102,28 @@ type Cell = (i64, i64);
 /// they can be consumed.
 const SURFACE_MAX_IN_FLIGHT: usize = 8;
 
+/// How much bigger a ground surface gets when it is refined against the measured
+/// terrain, as a divisor on the byte cap handed to the tessellators.
+///
+/// The cap is enforced where a mesh is *built*, and `stand_on_terrain` subdivides
+/// it afterwards, so the cap has to leave room for that. Measured on `deck-1`,
+/// 2026-09-22, ground level over Groningen: a surface cut to the 8 MB cap came
+/// out of refinement at **11.3 MB** — 261,673 vertices where the cap allowed
+/// about 165,000. That is 1.41x on the bytes, and the worst piece is what the
+/// bound exists to stop, so **2** rather than 1.5: the failure modes are not
+/// symmetric, and a cap that is too generous is the one that freezes the frame.
+///
+/// It is a divisor and not a second constant so the relationship cannot drift —
+/// `lod22::max_cell_mesh_bytes` remains the one place the ceiling is decided, and
+/// this says only "and leave room for the refinement".
+///
+/// Zero effect where the height layer is off: nothing refines, so the pieces are
+/// simply smaller than they need to be, which costs draws and not correctness. A
+/// tighter version would ask `TerrainField::is_ready()` — it cannot, because this
+/// is resolved on the frame that *spawns* the worker and the field that will
+/// refine the result may not have landed yet.
+const TERRAIN_REFINE_EXPANSION: usize = 2;
+
 /// A finished tessellation (`None` = fetch or tessellation failed), the cell's
 /// distance-to-shore field when it holds any water (`systems::water`), its
 /// bridge decks — which are handed over *unmerged*, because each one still has to
@@ -476,7 +498,31 @@ fn spawn_geometry_task(
     // asset). The derived cap is never above the frame budget and never above
     // 8 MB, so a machine that asked for a budget keeps exactly the pieces it
     // asked for and the rest gain the ceiling they never had.
-    let mesh_bytes = Some(crate::systems::lod22::max_cell_mesh_bytes());
+    // **And the bound has to survive what happens to the mesh after it.** The
+    // tessellators cut a cell to this many bytes, and then `stand_on_terrain`
+    // subdivides every ground surface against the measured height field —
+    // `refine_for_terrain`, per edge, precisely to follow a hill earcut's two
+    // triangles cannot. So the cap was being applied *before* the only step that
+    // multiplies the geometry, and the piece that reached the GPU was larger than
+    // the piece that was measured.
+    //
+    // Measured on `deck-1` 2026-09-22, ground level over Groningen: a surface cut
+    // to this 8 MB cap arrived as a single **11.3 MB** mesh of 261,673 vertices,
+    // in a frame that uploaded 86 MB and took **3,766 ms**. Twenty-two such
+    // frames froze 63 s of a 101 s fill, and a frozen main loop dispatches
+    // nothing, so the worker pool drained to 0.16 utilisation behind it. The
+    // bound existing and not holding is what made that invisible: `upload_meter`
+    // flagged the asset every time, and the number it flagged was inside the cap
+    // everybody believed was in force.
+    //
+    // Dividing rather than splitting afterwards, deliberately. Splitting a
+    // refined mesh is the more exact answer and it is a bigger change — this
+    // function returns one mesh per surface and its caller spawns one entity for
+    // it — while the refinement's expansion is bounded and cheap to allow for
+    // here. What it costs is more pieces, i.e. more draws, which is the trade
+    // `MAX_CELL_MESH_BYTES` already documents and `ShotMetrics::draws` already
+    // reports.
+    let mesh_bytes = Some(crate::systems::lod22::max_cell_mesh_bytes() / TERRAIN_REFINE_EXPANSION);
     IoTaskPool::get()
         .spawn(async move {
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
