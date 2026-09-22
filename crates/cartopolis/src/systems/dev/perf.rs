@@ -244,6 +244,10 @@ pub struct PerfProgress {
     /// Smallest and largest `fragment_shader_invocations` seen per pass this
     /// window. See [`GpuPass::frag_min`].
     frag_seen: std::collections::HashMap<String, (f64, f64, u32)>,
+    /// Whether the scenario's settle verdict was an actual settle or the `wait`
+    /// cap running out. Recorded when the `load` window closes and carried into
+    /// the `steady` window, which inherits the same doubt.
+    settled: bool,
 }
 
 /// Running count of mesh asset events, for [`Window::mesh_added_per_frame`].
@@ -378,6 +382,17 @@ pub struct Window {
     /// threads* and is uninterpretable without it — 32 s of busy is saturation
     /// on one thread and near-idleness on eight.
     pub worker_threads: usize,
+    /// Whether the scenario actually settled, or the `wait` cap ran out.
+    ///
+    /// **Read this before any rate in the window.** Everything here divided by
+    /// `wall_s` — `fps`, `mesh_added_per_frame`, `worker_utilisation` — is
+    /// measured against a window that a timeout stretches to the cap. Measured
+    /// 2026-09-22 on `deck-1`: all four scenarios timed out at 90 s blocked on
+    /// `terrain`, against a city fill that settles in ~31 s when the height
+    /// service answers, so utilisation read roughly a third of its true value
+    /// and looked like a finding. A window with this `false` is a report about
+    /// a world still being built.
+    pub settled: bool,
     /// Fraction of the pool's available thread-time actually spent working, over
     /// this window: `busy / (threads × wall_s)`.
     ///
@@ -658,6 +673,10 @@ pub fn drive_perf_window(
     }
 
     if perf.phase == Phase::Load && progress.verdict_reached() {
+        // A verdict is reached either way: the settle test passing, or `wait`
+        // running out. Record which, because every rate in the window below is
+        // divided by its wall clock and a timeout stretches that to the cap.
+        perf.settled = progress.verdict_settled();
         let window = close(&mut perf, "load", &run, &readouts);
         perf.samples.push(window);
         perf.phase = Phase::Quiescing;
@@ -813,6 +832,7 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
             .total_bytes
             .saturating_sub(base.upload_bytes)
             / 1024,
+        settled: perf.settled,
         worker_jobs,
         worker_busy_ms: worker_window.busy_us / 1000,
         worker_wait_ms: worker_window.wait_us / 1000,
@@ -832,6 +852,20 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
     // its bytes were counted as an upload this frame.
     window.quiet =
         window.upload_kb == 0 && window.worker_jobs == 0 && window.mesh_added_per_frame < 0.5;
+    if !window.settled {
+        tracing::warn!(
+            scenario = %window.scenario,
+            phase = %window.phase,
+            wall_s = format!("{:.1}", window.wall_s),
+            worker_util = format!("{:.2}", window.worker_utilisation),
+            "perf: this scenario never settled — `wait` ran out. Every rate in \
+             this window is divided by a wall clock the timeout stretched to the \
+             cap, so `worker_utilisation` and `fps` understate and \
+             `mesh_added_per_frame` overstates. Find what `busy` names in the \
+             shot state line above (a stalled external layer will sit there) \
+             before reading any number here as a measurement."
+        );
+    }
     if phase == "steady" && !window.quiet {
         tracing::warn!(
             scenario = %window.scenario,

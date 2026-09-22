@@ -1866,6 +1866,15 @@ impl ShotProgress {
         self.verdict.is_some()
     }
 
+    /// Whether that verdict was the *quiet* arm rather than `--wait` running
+    /// out. Distinct from [`Self::verdict_reached`] on purpose: both arms reach
+    /// a verdict, and the suite divides a window's whole cost by its wall clock,
+    /// which a timeout stretches to the cap. A caller that cannot tell the two
+    /// apart reports a stalled layer as a performance result.
+    pub(crate) fn verdict_settled(&self) -> bool {
+        self.verdict.as_ref().is_some_and(|v| v.settled)
+    }
+
     /// Whether the shutter has fired for the viewpoint the suite is holding.
     pub(crate) fn perf_captured(&self) -> bool {
         self.perf_captured
