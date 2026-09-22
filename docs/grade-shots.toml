@@ -74,7 +74,14 @@ fog = 0.0
 clouds = 0.0
 rain = 0.0
 settle = 3.0
-wait = 90.0
+# **180, not 90, and the extra minute is the approach grading.** A deck's height
+# is measured from its own survey probe, so the decks resolve a few seconds after
+# the cells they came with; the field then bakes a second time to grade the
+# embankments, and that bake re-tessellates every streamer standing on the ground.
+# Measured on the Deck 2026-09-22: the five high views settled inside 90 s and the
+# four low ones over the densest part of the city did not. It is the price of
+# grading to a height nobody has measured yet, and it is paid once per anchor.
+wait = 180.0
 
 # ─── Tunnels ────────────────────────────────────────────────────────────────
 
