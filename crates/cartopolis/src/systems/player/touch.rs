@@ -357,12 +357,18 @@ pub fn recognize_touch_gestures(
         return;
     };
 
-    let mut fingers: Vec<(u64, Vec2)> = touches.iter().map(|t| (t.id(), t.position())).collect();
-    // Id order, so "the pair" is the same two fingers frame to frame and the
-    // angle between them doesn't flip sign when the iteration order changes.
-    fingers.sort_unstable_by_key(|(id, _)| *id);
-
     let previous = std::mem::take(&mut gestures.seen);
+    let fingers = fingers_this_frame(
+        &touches
+            .iter()
+            .map(|t| (t.id(), t.position()))
+            .collect::<Vec<_>>(),
+        &touches
+            .iter_just_released()
+            .map(|t| (t.id(), t.position()))
+            .collect::<Vec<_>>(),
+        &previous,
+    );
 
     // Hand the UI its fingers first: what is left is the map's, and neither
     // bridge below ever sees the ones the UI took. `previous` is the *whole*
@@ -405,6 +411,55 @@ pub fn recognize_touch_gestures(
     }
 
     gestures.seen = fingers;
+}
+
+/// Which fingers this frame has, id-sorted — `pressed`, plus any that landed
+/// **and** lifted before this recogniser ever ran.
+///
+/// # Why the second list is not redundant
+///
+/// [`Touches::iter`] is a *level*: it yields `pressed`, and `bevy_input` removes
+/// an id from `pressed` the instant it processes that id's `Ended` event. So a
+/// frame whose event batch carries a `Started` and an `Ended` for one finger
+/// leaves nothing behind but a `just_released` entry, and a recogniser that
+/// polls the level alone never sees the tap at all — no press, no click, no
+/// verdict, nothing in any log to say a finger was ever on the glass.
+///
+/// On a desktop that is unreachable, which is why it stood for so long: a 100 ms
+/// tap spans six 60 Hz frames. On a handset drawing a city it is the ordinary
+/// case — Android delivers touch at 120 Hz or better into a frame that may be
+/// 40 ms long, and the *second* tap of a double tap is precisely the brisk one.
+/// It is also why the panels kept working while the map stopped answering:
+/// `egui_manager::pointer_events` reads the `TouchInput` **stream** in order and
+/// so has always seen both edges. The asymmetry was the bug, not the device.
+///
+/// Reinstating the finger for one frame is enough, and deliberately less than
+/// synthesising a whole press/release pair here: the state machine downstream
+/// already separates a press from its release by a frame
+/// (`TouchGestures::deferred_release`), so the finger is adopted and the `Left`
+/// press written now, it is absent next frame, and the ordinary lift path writes
+/// the release and records the tap.
+///
+/// Conditioned on the finger being **new**. A touch that was live last frame and
+/// released this one is an ordinary lift; extending that by a frame would delay
+/// every release on every platform to fix a case none of them has.
+fn fingers_this_frame(
+    pressed: &[(u64, Vec2)],
+    just_released: &[(u64, Vec2)],
+    previous: &[(u64, Vec2)],
+) -> Vec<(u64, Vec2)> {
+    let mut fingers = pressed.to_vec();
+    for (id, at) in just_released {
+        let known = previous.iter().any(|(seen, _)| seen == id)
+            || fingers.iter().any(|(live, _)| live == id);
+        if !known {
+            fingers.push((*id, *at));
+        }
+    }
+    // Id order, so "the pair" is the same two fingers frame to frame and the
+    // angle between them doesn't flip sign when the iteration order changes.
+    fingers.sort_unstable_by_key(|(id, _)| *id);
+    fingers
 }
 
 /// Move this frame's fingers between the UI's set and the map's, and hand back
@@ -1074,6 +1129,124 @@ mod tests {
             Some((false, false, false)),
             "{seen:?}"
         );
+    }
+
+    // ── a tap that begins and ends inside one frame ──────────────────────
+
+    /// The phone case, on the pure half: a finger present in neither the level
+    /// nor last frame's list is still a finger.
+    #[test]
+    fn a_finger_that_landed_and_lifted_in_one_frame_is_still_seen() {
+        let at = Vec2::new(200.0, 300.0);
+        assert_eq!(
+            fingers_this_frame(&[], &[(0, at)], &[]),
+            vec![(0, at)],
+            "a tap inside one frame is the whole tap, not nothing"
+        );
+    }
+
+    /// …and an ordinary lift is *not* extended by it, or every release on every
+    /// platform would arrive a frame late to fix a case none of them has.
+    #[test]
+    fn an_ordinary_lift_is_not_held_over() {
+        let at = Vec2::new(200.0, 300.0);
+        assert!(fingers_this_frame(&[], &[(0, at)], &[(0, at)]).is_empty());
+    }
+
+    /// A finger still down is never duplicated by its own stale release.
+    #[test]
+    fn a_live_finger_is_listed_once() {
+        let at = Vec2::new(200.0, 300.0);
+        assert_eq!(
+            fingers_this_frame(&[(0, at)], &[(0, at)], &[]),
+            vec![(0, at)]
+        );
+    }
+
+    /// The bug as it reached the phone, end to end: Android delivers touch far
+    /// faster than a city renders, so both edges of a brisk tap land in one
+    /// frame's batch. Before this, `Touches::iter()` was empty by the time the
+    /// recogniser ran and the tap simply never happened — which is what made the
+    /// building card unreachable on a handset while every panel still worked.
+    #[test]
+    fn a_tap_whose_both_edges_land_in_one_frame_still_clicks() {
+        use bevy::input::touch::{TouchInput, TouchPhase};
+        use bevy::window::{PrimaryWindow, WindowPlugin};
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::input::InputPlugin,
+            WindowPlugin::default(),
+        ))
+        .init_resource::<TouchGestures>()
+        .init_resource::<UiClaimRegions>()
+        .add_systems(Update, recognize_touch_gestures);
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<PrimaryWindow>>()
+            .single(app.world())
+            .expect("primary window");
+
+        let at = Vec2::new(200.0, 300.0);
+        let mut seen: Vec<(bool, bool, bool)> = Vec::new();
+        // Both phases in one batch, twice — the double tap a person makes at the
+        // speed a person makes it, on a device slow enough to see neither half.
+        for _ in 0..2 {
+            for phase in [TouchPhase::Started, TouchPhase::Ended] {
+                app.world_mut().write_message(TouchInput {
+                    phase,
+                    position: at,
+                    window,
+                    force: None,
+                    id: 0,
+                });
+            }
+            for _ in 0..3 {
+                app.update();
+                let clicked = app
+                    .world()
+                    .resource::<ButtonInput<MouseButton>>()
+                    .just_pressed(MouseButton::Left);
+                let g = app.world().resource::<TouchGestures>();
+                seen.push((clicked, g.touch_click(), g.double_tap()));
+            }
+        }
+
+        let clicks: Vec<_> = seen.iter().filter(|(clicked, ..)| *clicked).collect();
+        assert_eq!(clicks.len(), 2, "one click per tap: {seen:?}");
+        assert_eq!(*clicks[0], (true, true, false), "{seen:?}");
+        assert_eq!(
+            *clicks[1],
+            (true, true, true),
+            "the second tap pairs, so the card opens: {seen:?}"
+        );
+    }
+
+    /// A double tap at a handset's frame time still pairs.
+    ///
+    /// The worry this answers is that the two dead frames between a lift and the
+    /// next adoption (the recogniser owes a release, and nothing may press on
+    /// top of it) eat [`DOUBLE_TAP_SECS`]. They do not, and the reason is worth
+    /// keeping: a *slow* second tap arrives long after the release was paid, and
+    /// a *fast* one has most of the window left over. It is only worth a test,
+    /// not a mechanism.
+    #[test]
+    fn a_double_tap_survives_a_handsets_frame_time() {
+        const SLOW_DT: f32 = 0.08; // 12.5 fps
+        let at = Vec2::new(200.0, 300.0);
+        for gap_secs in [0.16_f32, 0.25] {
+            let mut g = TouchGestures::default();
+            emulate_mouse(&mut g, &[(0, at)], SLOW_DT); // tap one lands
+            emulate_mouse(&mut g, &[], SLOW_DT); // …and lifts
+            for _ in 0..((gap_secs / SLOW_DT) as usize) {
+                emulate_mouse(&mut g, &[], SLOW_DT);
+            }
+            for _ in 0..3 {
+                emulate_mouse(&mut g, &[(1, at)], SLOW_DT);
+            }
+            assert!(g.pending_double, "a {gap_secs}s gap is a double tap");
+        }
     }
 
     // ── the UI's fingers ─────────────────────────────────────────────────

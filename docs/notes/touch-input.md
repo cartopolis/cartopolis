@@ -1,7 +1,7 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
-updated: 2026-09-14
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
+updated: 2026-09-22
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -31,6 +31,10 @@ them was tried on paper and abandoned.
 | egui (panels, buttons, fields) | `egui_manager::pointer_events` | the ordered `WindowEvent` stream |
 | World clicks (picking, gizmo, route pick, zoom-to-cursor) | `touch::emulate_mouse` | the settled `Touches` set |
 | Camera gestures (pinch, twist, tilt) | `touch::recognize` → `TouchGestures` | the settled `Touches` set |
+
+"Settled" is `Touches::pressed` **plus the fingers that ended inside this frame**
+(`fingers_this_frame`), which is not a detail — the bare level loses a fast tap
+whole, and that is the section further down.
 
 egui cannot share the other two's source: it needs the events **in stream
 order**, because a press must carry the position it had at its own point in the
@@ -99,6 +103,41 @@ bevyengine/bevy#12442). Hold a finger still for one frame and `delta()` hands
 back the previous frame's delta a second time, which reads as the map continuing
 to slide under a motionless finger. `touch.rs` therefore keeps its own
 last-seen positions and never calls `delta()`.
+
+## `Touches` is a level, and a brisk tap never appears in it (fixed 2026-09-22)
+
+`Touches::iter()` yields `pressed`, and `bevy_input` removes an id from
+`pressed` the instant it processes that id's `Ended` event. So a frame whose
+event batch carries a `Started` **and** an `Ended` for one finger leaves nothing
+behind but a `just_released` entry — and `recognize_touch_gestures`, which polls
+the level once per frame, saw no finger at all. No press, no click, no verdict,
+nothing in any log to say a hand had touched the glass.
+
+**This is why a tap did nothing on Android while every panel still worked.** The
+three bridges do not read the same thing: `egui_manager::pointer_events` reads
+the ordered `TouchInput` *stream* and so has always seen both edges, while the
+world side polled the resource. The asymmetry was the bug, and the device only
+decided how often it fired — a 100 ms tap spans six 60 Hz frames and is
+unmissable on a desktop, but Android delivers touch at 120 Hz or better into a
+frame that may be 40 ms long, so on a handset drawing a city the tap lands
+entirely between two samples. The *second* tap of a double tap is precisely the
+brisk one, which is how the building card became unreachable on a phone
+(`docs/notes/selecting-a-building.md`) while the double tap itself was working
+exactly as designed.
+
+`fingers_this_frame` reinstates such a finger for one frame. Deliberately less
+than synthesising a whole press/release pair: the state machine downstream
+already separates a press from its release by a frame (`deferred_release`), so
+the finger is adopted and the `Left` press written now, it is absent next frame,
+and the ordinary lift path writes the release and records the tap. Conditioned
+on the finger being **new** — a touch that was live last frame and released this
+one is an ordinary lift, and extending that would delay every release on every
+platform to fix a case none of them has.
+
+The general rule this leaves behind: **anything that has to see both edges of a
+gesture reads the event stream, not the resource.** A level can only answer what
+is true at the moment it is sampled, and the whole of a fast tap is over before
+the next sample.
 
 ## The browser claims the gestures first
 

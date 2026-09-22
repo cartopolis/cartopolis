@@ -1,7 +1,7 @@
 ---
 topic: buildings
-triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double click", "double tap", "touch", "see through walls", "avatar inside a building", bagviewer]
-updated: 2026-09-14
+triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double click", "double tap", "touch", "tap does nothing on android", "fingers_this_frame", "see through walls", "avatar inside a building", bagviewer]
+updated: 2026-09-22
 ---
 
 # Selecting a building, and seeing into one
@@ -88,6 +88,23 @@ Four things about the shape of that:
   the context menu is still the long press or the right button — a building is
   the only click consumer that *opens* something over the map, which is what
   earns it the extra press.
+
+### …and on Android it then opened nothing at all (fixed 2026-09-22)
+
+Reported as "tap doesn't work on android", and the gate above was not the cause:
+`touch.double_tap()` was correct and simply never became true, because the tap
+before it had never been seen. `recognize_touch_gestures` polled
+`Touches::iter()` — a *level* that no longer contains a finger whose `Ended`
+arrived in the same frame's event batch — and a handset drawing a city runs
+frames long enough that a brisk tap lands entirely between two samples. The
+second tap of a double tap is exactly the brisk one.
+
+Two things worth carrying away. The symptom pointed at the newest code and the
+fault was in the oldest: this gate shipped on 2026-09-14 and the polling has been
+there since touch arrived, working everywhere anyone had tried it. And it was
+invisible from a desktop **by construction** — a 100 ms tap spans six 60 Hz
+frames, so no amount of clicking here could reproduce it.
+`docs/notes/touch-input.md` has the mechanism and the rule it leaves behind.
 
 ## Roof area and volume are measured, not fetched
 
