@@ -229,6 +229,10 @@ pub struct SurfaceMaterials<'w> {
 #[derive(Resource, Default)]
 pub struct DeckPlates {
     plates: HashMap<Cell, Vec<Plate>>,
+    /// What each cell's decks looked like last time, so a cell that is
+    /// re-tessellated and publishes the same decks does not move the revision —
+    /// see [`set_cell`](Self::set_cell).
+    digests: HashMap<Cell, u64>,
     /// Bumped on every change, so a consumer that caches geometry can tell it has
     /// gone stale. The decks land some frames *after* the cell they belong to —
     /// their height is a measurement — so "the route was drawn before the viaduct
@@ -258,16 +262,91 @@ struct Plate {
 
 impl DeckPlates {
     /// Install (or replace) one cell's lifted decks.
+    ///
+    /// **The revision moves only when the decks do, and that is load-bearing now
+    /// that the height field grades against it.** Every terrain bake bumps
+    /// `TerrainField::revision`, every streamer standing on the ground answers
+    /// that by re-tessellating its whole ring, and every rebuilt cell with a
+    /// viaduct in it arrives back here. Bumping unconditionally therefore closes a
+    /// loop — bake, retear, re-publish, bake — that never settles and retears the
+    /// city about once a second for the rest of the session.
+    ///
+    /// A retear produces the *same* decks: a plate's height is the survey's DSM
+    /// over the structure less its DTM around it (`deck_height`), which does not
+    /// depend on the field being graded, and the approaches are the tessellation's
+    /// own output. So comparing is enough, and comparing a digest rather than the
+    /// meshes keeps it to a few dozen words per cell.
+    ///
+    /// `RoadMask::mark_cell` avoids the same loop a different way — it marks each
+    /// cell once per anchor generation and ignores it thereafter — which does not
+    /// suit here, because a deck legitimately *changes* when its measurement lands.
     fn set_cell(&mut self, cell: Cell, plates: Vec<Plate>) {
         if plates.is_empty() && !self.plates.contains_key(&cell) {
             return;
         }
+        let digest = Self::digest(&plates);
+        let unchanged = self.digests.get(&cell) == Some(&digest);
         self.plates.insert(cell, plates);
-        self.revision = self.revision.wrapping_add(1);
+        self.digests.insert(cell, digest);
+        if !unchanged {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// Everything the *height field* grades against, over every streamed cell, as
+    /// one number.
+    ///
+    /// **A counter cannot answer this and a digest can.** The terrain bake waits
+    /// for the decks to stop moving, and every bake retears every cell — so each
+    /// rebuilt cell passes through `remove_cell` and back through `set_cell`, and
+    /// a monotonic `revision` moves twice per cell per bake whatever the decks
+    /// actually did. Measured over Groningen on 2026-09-22 that was **fifteen
+    /// bakes** in one fill, the last eight over identical input, each one a retear
+    /// of every streamer standing on the ground.
+    ///
+    /// Summed rather than folded in order, because the cells are a `HashMap` and
+    /// iterate in whatever order they please: addition commutes, so the same set
+    /// of decks is the same number however it was arrived at, and a cell that
+    /// leaves and comes back unchanged leaves it where it started.
+    #[must_use]
+    pub fn grade_digest(&self) -> u64 {
+        self.digests.values().fold(0u64, |a, d| a.wrapping_add(*d))
+    }
+
+    /// Everything about a cell's decks that any consumer reads, as one number.
+    ///
+    /// The outlines are compared by their bounding box rather than vertex by
+    /// vertex: a deck whose *shape* changed without its extent changing would have
+    /// to be a different tile of the same cell, which is a re-anchor, and that
+    /// clears the whole resource anyway.
+    fn digest(plates: &[Plate]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |v: u32| {
+            h ^= u64::from(v);
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for p in plates {
+            eat(p.height.to_bits());
+            eat(p.world.x.to_bits());
+            eat(p.world.y.to_bits());
+            for v in p.deck.min.iter().chain(p.deck.max.iter()) {
+                eat(v.to_bits());
+            }
+            for run in &p.approaches {
+                eat(run.len() as u32);
+                if let (Some(a), Some(b)) = (run.first(), run.last()) {
+                    for v in a.iter().chain(b.iter()) {
+                        eat(v.to_bits());
+                    }
+                }
+            }
+        }
+        h
     }
 
     /// Drop one cell's decks (cell retired).
     pub fn remove_cell(&mut self, cell: &Cell) {
+        self.digests.remove(cell);
         if self.plates.remove(cell).is_some() {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -3114,6 +3193,55 @@ mod tests {
             );
         }
         assert_eq!(plates.lift_at(Vec2::new(20.0, 20.0)), 11.0);
+    }
+
+    /// **A cell that is re-tessellated and publishes the same decks must not move
+    /// the revision**, or the terrain grading loops on itself for ever.
+    ///
+    /// The height field now grades its approach embankments against these plates,
+    /// so a bake bumps `TerrainField::revision`; every streamer standing on the
+    /// ground answers that by re-tessellating its ring; every rebuilt cell with a
+    /// viaduct arrives back in `set_cell`. Bumping unconditionally closes that
+    /// loop and the city retears about once a second for the rest of the session —
+    /// with nothing in the log to say why, because each step is behaving exactly
+    /// as designed.
+    #[test]
+    fn republishing_the_same_decks_is_not_a_change() {
+        let plate = || Plate {
+            deck: square_deck(40.0),
+            world: Vec2::new(100.0, 200.0),
+            height: 6.0,
+            approaches: vec![vec![[40.0, 20.0], [90.0, 20.0]]],
+        };
+        let mut plates = DeckPlates::default();
+        plates.set_cell((1, 1), vec![plate()]);
+        let after_first = plates.revision;
+        assert_ne!(after_first, 0, "the first deck is a change");
+
+        plates.set_cell((1, 1), vec![plate()]);
+        assert_eq!(
+            plates.revision, after_first,
+            "the same cell re-tessellated to the same decks moved the revision"
+        );
+
+        // A measurement that lands differently is a change, which is the case the
+        // revision exists for: a deck's height arrives some frames after its cell.
+        let mut taller = plate();
+        taller.height = 6.5;
+        plates.set_cell((1, 1), vec![taller]);
+        assert_ne!(
+            plates.revision, after_first,
+            "a deck that changed height must move the revision"
+        );
+
+        // …and so is one whose approaches changed, since those are what the
+        // embankment is graded along.
+        let mut rerouted = plate();
+        rerouted.approaches = vec![vec![[40.0, 20.0], [140.0, 20.0]]];
+        rerouted.height = 6.5;
+        let before = plates.revision;
+        plates.set_cell((1, 1), vec![rerouted]);
+        assert_ne!(plates.revision, before, "a moved approach must be a change");
     }
 
     /// A deck must die with its cell, and every change must be visible to a consumer

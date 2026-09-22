@@ -281,7 +281,7 @@ struct CoarseBake {
     /// The road-mask revision this bake graded against, so a mask that grew while
     /// it was out asks for another one.
     road_rev: u32,
-    deck_rev: u32,
+    deck_rev: u64,
     /// The rings the bake carved with, handed back so the water surfaces are drawn
     /// against the same numbers the ground was cut to.
     water: crate::systems::water_levels::WaterLevelField,
@@ -358,7 +358,7 @@ pub struct TerrainField {
     /// only field a city gets is that one, and every bridge keeps the vertical
     /// step at both ends that `bridge-heights.md` has recorded as unfixed since
     /// the decks landed.
-    answered_deck_rev: Option<u32>,
+    answered_deck_rev: Option<u64>,
     /// What the last bake's approach grading did: samples pinned at a deck's
     /// abutment, and samples the embankment raised.
     ///
@@ -983,7 +983,7 @@ pub fn update_terrain_field(
     time: Res<Time>,
     mut settled: Local<(u32, f32)>,
     mut water_settled: Local<(u32, f32)>,
-    mut deck_settled: Local<(u32, f32)>,
+    mut deck_settled: Local<(u64, f32)>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1027,11 +1027,14 @@ pub fn update_terrain_field(
     // they get the same debounce the roads and the water levels get — and for the
     // sharpest version of the same reason, since a bake retears every streamer
     // standing on the ground.
-    if deck_settled.0 != decks.revision {
-        *deck_settled = (decks.revision, now);
+    // **The content, not the counter** — `DeckPlates::grade_digest` says why a
+    // counter cannot work here.
+    let deck_digest = decks.grade_digest();
+    if deck_settled.0 != deck_digest {
+        *deck_settled = (deck_digest, now);
     }
     let deck_rev = if now - deck_settled.1 >= ROAD_SETTLE_S {
-        decks.revision
+        deck_digest
     } else {
         field.answered_deck_rev.unwrap_or(0)
     };
@@ -1059,7 +1062,7 @@ pub fn update_terrain_field(
     // cell in two streamers.
     let baked_water_rev = levels.revision;
     let baked_road_rev = roads.revision;
-    let baked_deck_rev = decks.revision;
+    let baked_deck_rev = deck_digest;
     // One bake at a time. A re-anchor that lands while one is out would otherwise
     // queue a second over the same worker pool, and the first is already worthless.
     if field.coarse_job.is_some() {
@@ -3219,6 +3222,94 @@ mod tests {
         let level = f.level_over([[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]]);
         assert!((level - f.at(0.0, 0.0)).abs() < 0.01);
         assert_eq!(TerrainField::default().level_over([[0.0, 0.0]]), 0.0);
+    }
+
+    /// **The embankment is built, and it climbs at the design grade.**
+    ///
+    /// The wiring test for the thing that existed for a day and was reachable
+    /// only from `carto-view` (`bridge-heights.md`). A flat box, a deck standing
+    /// six metres over it, and an approach running west out of the abutment: the
+    /// ground along that approach has to rise to meet the deck at no more than
+    /// `MAX_APPROACH_GRADE`, and the ground either side of it must not move at
+    /// all.
+    #[test]
+    fn an_approach_climbs_to_its_deck_at_the_design_grade() {
+        let anchor = (53.2194, 6.5665, 14);
+        let centre = wgs84_to_rd(anchor.0, anchor.1);
+        let (w, h) = (64, 64);
+        let half_rd = 4_000.0f64;
+        // Dead flat at 20 m, so anything the output carries is the grading.
+        let patch = HeightPatch {
+            min: [centre[0] - half_rd, centre[1] - half_rd],
+            max: [centre[0] + half_rd, centre[1] + half_rd],
+            w,
+            h,
+            samples: vec![20.0f32; w * h],
+        };
+        let n = 129;
+        let step = TERRAIN_HALF_M * 2.0 / (n - 1) as f32;
+        let mid = n / 2;
+
+        // The structure: a 3-sample block at the middle, six metres up. The
+        // approach: the row west of it, out to the rim.
+        let mut deck_lift = vec![f32::NAN; n * n];
+        let mut ramp = vec![false; n * n];
+        let mut road = vec![false; n * n];
+        for dz in -1i32..=1 {
+            let z = (mid as i32 + dz) as usize;
+            for dx in 0..3 {
+                deck_lift[z * n + mid + dx] = 6.0;
+            }
+            for x in 1..mid {
+                ramp[z * n + x] = true;
+                road[z * n + x] = true;
+            }
+        }
+
+        let (baked, approach) = bake(
+            &patch,
+            anchor,
+            TERRAIN_HALF_M,
+            n,
+            &crate::systems::water_levels::WaterLevelField::default(),
+            road,
+            ramp,
+            &deck_lift,
+        );
+        let (samples, _datum, _carved) = baked.expect("patch covers the field");
+
+        assert!(
+            approach.0 > 0,
+            "no abutment sample was pinned, so no embankment was built at all — \
+             which is exactly the state this feature was in while the grading \
+             sat wired into carto-view alone"
+        );
+        assert!(approach.1 > 0, "the embankment raised nothing");
+
+        // At the abutment the ground has climbed most of the way to the deck…
+        let at = |x: usize| samples[mid * n + x];
+        let abutment = at(mid - 1);
+        assert!(
+            abutment > 4.0,
+            "the ground at the abutment reached {abutment:.2} m of the deck's 6"
+        );
+        // …and it got there no faster than the design grade allows.
+        for x in 2..mid {
+            let rise = at(x) - at(x - 1);
+            assert!(
+                rise <= cartopolis_geo::road_grade::MAX_APPROACH_GRADE * step + 1e-3,
+                "the embankment climbed {rise:.3} m over {step:.2} m at sample {x}, \
+                 steeper than the {:.0} % ceiling",
+                cartopolis_geo::road_grade::MAX_APPROACH_GRADE * 100.0
+            );
+        }
+        // And the ground away from the corridor is untouched, or the ramp has
+        // travelled through everything the mask happens to connect.
+        let away = samples[(mid + 20) * n + (mid - 20)];
+        assert!(
+            away.abs() < 0.05,
+            "ground 20 samples off the approach moved to {away:.2} m"
+        );
     }
 
     #[test]

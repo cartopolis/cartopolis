@@ -50,7 +50,48 @@ in reality are ordinary unflagged ways drawn flat. Two consequences:
 
 The fix that removes the constraint is **sampling the approach profile from AHN
 too** — the embankments are solid earth, so they are in the DTM — and lifting the
-approach ribbons with it. Not done.
+approach ribbons with it. Done 2026-09-22, and the shape of how it was *not* done
+for a day is worth keeping: see below.
+
+## The approach is graded now, and the grading existed a day before anything called it
+
+`road_grade::ramp_from_pins`, `flatten_pinned` and `MAX_APPROACH_GRADE` landed on
+2026-09-21 with their own tests. The only thing that ever called them was
+`carto-view`, so the client's bake went on calling plain `flatten` and every
+viaduct in the thing people actually look at kept its vertical step. A feature
+can be complete, tested and unreachable at the same time, and nothing in a green
+suite says so.
+
+Three pieces sat between the two and each is load-bearing.
+
+**The approach corridor is not the road corridor.** `RoadTessellation::approaches`
+— the ground stretch of each bridge-flagged street either side of its span — was
+handed to the client's worker and dropped. It is the only thing that separates
+the road climbing onto a structure from the road passing under it: both are at
+grade, both are unflagged, so neither `level_of` nor the survey can tell them
+apart, and what does is that the approach is the *same street feature* as the
+span. Ramping through the whole road mask instead raised 18 % of the Groningen
+fixture's streets for five bridges, because a raster corridor is one connected
+shape and a gradient travels through everything touching it.
+
+**The pins arrive after the field that has to reach them.** A deck's height is a
+measurement, resolved some frames after its cell lands, so the first field over a
+city is always baked before any viaduct has one. The decks therefore get the
+treatment the road marks and the water levels already had — a revision, a settle
+window, and an `answered_deck_rev` so a bake records what it used.
+
+**And a re-published deck must not count as a change.** A bake bumps
+`TerrainField::revision`, every streamer answers that by re-tessellating its
+ring, and every rebuilt cell with a viaduct lands back in `DeckPlates::set_cell`.
+Bumping there unconditionally closes a loop that never settles and retears the
+city about once a second, with nothing in the log to say why. `set_cell` compares
+a digest now; it is sound because a retear produces the same decks, the height
+being a fact about the survey rather than about the field being graded.
+
+`approach_abutments` and `approach_raised` are in `--dump-state`, because an
+embankment is 150 m of ground rising six metres and from any angle that also
+shows the viaduct that reads as ground. Zero abutments with decks standing is
+precisely the failure above, and no picture would have reported it.
 
 There is a second place a deck height already exists, and it does not help
 either: the Kadaster's 3D basisvoorziening ships the BGT's

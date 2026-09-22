@@ -170,6 +170,32 @@ has to probe the middle of a *segment* rather than a vertex — a vertex is rout
 the portal, which the surface run legitimately shares, and a probe sitting on a
 shared node reports a 0.0 m hit against a label that is drawn correctly.
 
+## The ambient traffic carries a grade too, and for the same reason
+
+Settled 2026-09-22. `systems::traffic` had both halves of the fault the route
+line had: `extract_drive_lines` inherited `drawn_street`'s refusal of every
+tunnel-flagged way, which is right for a ribbon and wrong for a *network* — it
+cut the drive graph at every portal, so a car reaching Groningen's ring ran to
+the end of its line and was recycled — and `drive_traffic` placed every car at
+`terrain.ground_at + ride height`, so the traffic on a viaduct drove through the
+rail yard underneath it.
+
+**Both halves are fixed the way the route line's was, and the reasoning
+transfers exactly.** A depth or a lift read by *position* cannot work, because a
+street crossing over the ring and the carriageway seven metres under it are at
+the same world XZ — the mirror image of `DeckPlates::lift_at` hoisting an
+underpass onto the structure above it. So the line carries its own grade:
+`DriveLine::deck` for the tunnel depth, resolved per `streets` feature by
+`tunnels::SunkenWay`, and `DriveLine::on_deck` for the bridge, which is a flag
+rather than a height because a deck's height is a measurement that arrives after
+the worker has finished with the tile.
+
+The one thing that differs from the route is that the drive network also covers
+the **untagged** stretches: the open cuttings between a tunnel's lids are
+ordinary surface ways that `cartopolis_geo::tunnels` has decided are seven metres
+down ([tunnels.md](tunnels.md)), so a consumer reading the tunnel flag would put
+its cars on the ground over an open trench.
+
 ## Still flat elsewhere
 
 **Street labels on bridges cannot be fixed from this data.** `street_labels` carries
@@ -180,7 +206,8 @@ behind it; the labels have no equivalent. A source carrying `bridge` on that lay
 what it would take.
 
 **The avatar still walks under decks**, and the reason is the same one, one step
-worse. `AvatarState` has no grade and nothing to derive one from: the sim is
+worse — note the ambient traffic escaped it only because a car belongs to a
+*line*, and the avatar belongs to nothing. `AvatarState` has no grade and nothing to derive one from: the sim is
 authoritative for position, holds no map data, and never will
 (`docs/notes/terrain-relief.md` has the matching argument for the terrain lift, which
 works precisely because a height field *is* a function of position and a deck is
