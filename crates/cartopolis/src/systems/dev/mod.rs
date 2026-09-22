@@ -12,5 +12,8 @@ pub mod pipeline_health;
 pub mod render_census;
 pub mod shot_harness;
 pub mod shot_presets;
+/// Per-system CPU time, counted in process and read per perf window.
+#[cfg(feature = "perf")]
+pub mod system_timings;
 pub mod upload_meter;
 pub mod window_icon;

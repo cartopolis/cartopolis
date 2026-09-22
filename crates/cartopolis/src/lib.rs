@@ -1412,45 +1412,34 @@ fn run_client() {
         })
     }
 
-    // **The per-system profiler's sink, and it has to carry its own filter.**
+    // **The per-system counter, which reports through `perf` rather than a file.**
     //
-    // `bevy/trace` wraps every system run in a span, but the filter below defaults
-    // to `off` for everything that is not this crate — so a chrome layer sharing it
-    // would faithfully record nothing at all, which is the same silent-no-op that
-    // makes `bevy/trace_chrome` unusable here (see `Cargo.toml`'s `perf` block).
-    // It therefore takes `CARTO_TRACE_FILTER`, defaulting to the span targets bevy
-    // actually emits on, and leaves the stderr layer's filter alone: a profiling
-    // run must not also turn the log into a wall of text.
+    // `bevy/trace` wraps every system run in a span and
+    // `systems::dev::system_timings` counts them in process, so a perf window can
+    // subtract two snapshots and say what *that window* cost. The alternative —
+    // writing a chrome trace and aggregating it elsewhere — was built first and
+    // thrown away: one `city` scenario was 2.5 GB, it needed a second program to
+    // read, and a whole-run total cannot separate a streaming cost from a frame
+    // cost, which is the only question worth asking here.
     //
-    // The guard is what writes the file, on drop. `run` reaches its end normally
-    // for every exit except a render error, so a profiling run gets its trace and
-    // a crashed one does not — which is the right way round, since the thing being
-    // profiled is a run that worked.
+    // It carries its own filter, and that is load-bearing: the stderr filter
+    // defaults to `off` outside this crate, so a layer sharing it would faithfully
+    // count nothing — the same silent no-op that makes `bevy/trace_chrome`
+    // unusable in this tree. `bevy_ecs=info` is where the system spans live;
+    // `CARTO_TRACE_FILTER` widens it for anyone who wants the render thread too.
     #[cfg(all(
         feature = "perf",
         not(target_arch = "wasm32"),
         not(target_os = "android")
     ))]
-    let _chrome_guard = {
+    {
         use tracing_subscriber::layer::SubscriberExt as _;
         use tracing_subscriber::util::SubscriberInitExt as _;
-        // `with_filter` is `Layer`'s, and per-layer filtering is the whole point
-        // here: the stderr arm keeps its `off`-by-default filter while the chrome
-        // arm records spans that filter would drop.
+        // `with_filter` is `Layer`'s, and per-layer filtering is the whole point:
+        // the stderr arm keeps its `off`-by-default filter while the counting arm
+        // sees spans that filter would drop.
         use tracing_subscriber::Layer as _;
-        let (chrome, guard) = tracing_chrome::ChromeLayerBuilder::new()
-            .include_args(true)
-            .build();
-        // **Narrow on purpose: this writes a lot.** `bevy_ecs` alone emits a span
-        // per system run, per `system_commands` flush and per executor wake — over
-        // one `city` scenario that is 14.17 M events and a **4.8 GB** file, and the
-        // first draft of this filter had `bevy_app`, `bevy_render` and this crate
-        // at `trace` on top of it. Everything the per-system table is built from
-        // lives in `bevy_ecs`; the rest was bulk nobody read.
-        //
-        // Even so: use the smallest scenario that shows the problem
-        // (`--perf --only <one>`), and do not leave the file on a slot's disk.
-        let chrome_filter = tracing_subscriber::EnvFilter::try_from_env("CARTO_TRACE_FILTER")
+        let span_filter = tracing_subscriber::EnvFilter::try_from_env("CARTO_TRACE_FILTER")
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off,bevy_ecs=info"));
         tracing_subscriber::registry()
             .with(
@@ -1458,11 +1447,9 @@ fn run_client() {
                     .with_writer(std::io::stderr)
                     .with_filter(stderr_filter()),
             )
-            .with(chrome.with_filter(chrome_filter))
+            .with(systems::dev::system_timings::SystemTimings.with_filter(span_filter))
             .init();
-        tracing::info!("chrome trace: writing trace-*.json in the working directory");
-        guard
-    };
+    }
 
     #[cfg(all(
         not(feature = "perf"),

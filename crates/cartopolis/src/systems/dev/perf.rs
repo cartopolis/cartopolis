@@ -224,6 +224,12 @@ struct Base {
     mesh_added: u64,
     frames: u32,
     wall_s: f32,
+    /// Per-system CPU totals at the window's start, so the window's own cost is a
+    /// subtraction. Exactly the same shape as `workers` above and read the same
+    /// way — see `systems::dev::system_timings` for why this is counted in process
+    /// rather than written to a trace file.
+    #[cfg(feature = "perf")]
+    systems: std::collections::HashMap<Box<str>, super::system_timings::Cost>,
 }
 
 /// Live state of the suite. Present only under `--perf`.
@@ -264,6 +270,28 @@ pub fn count_mesh_churn(mut events: MessageReader<AssetEvent<Mesh>>, mut churn: 
 // ---------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------
+
+/// How many systems a window reports. The tail is a long list of sub-microsecond
+/// rows that nobody reads and that would dominate the report's size.
+///
+/// Gated with its only consumer: without `perf` there is no counter, so an
+/// ungated constant is dead code and this crate denies that.
+#[cfg(feature = "perf")]
+pub const TOP_SYSTEMS: usize = 12;
+
+/// One system's CPU cost over a window.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SystemCost {
+    /// The system's full type path, off bevy's `info_span!("system", name = …)`.
+    /// The span itself is called `system` for every one of them, so reading the
+    /// span name gives a single row covering millions of calls.
+    pub name: String,
+    pub ms: f64,
+    pub calls: u64,
+    /// `ms` over the window's frame count — the per-frame cost, which is what a
+    /// steady window is asking about.
+    pub ms_per_frame: f64,
+}
 
 /// One render pass as `RenderDiagnosticsPlugin` reports it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -322,6 +350,20 @@ pub struct Window {
     pub mesh_slab_mb: Option<f64>,
     /// Per render pass. Empty without the `perf` feature.
     pub gpu_passes: Vec<GpuPass>,
+    /// The dearest systems *in this window*, dearest first. Empty without the
+    /// `perf` feature.
+    ///
+    /// **Per window, not per run, and that distinction is the whole point.** A
+    /// whole-run total cannot separate a streaming cost from a frame cost:
+    /// `update_map_surfaces` is 170 ms/frame while tiles arrive and absent from
+    /// the top twelve once the scene settles, and a single number covering both
+    /// reads as a catastrophic frame cost that does not exist.
+    ///
+    /// CPU time summed across the pool's threads, so it is **not** a share of the
+    /// frame — two systems each billing 4 ms may have run at the same moment on
+    /// different cores. Truncated to the dearest `TOP_SYSTEMS`; a full table is a
+    /// trace file's job and this is deliberately not one.
+    pub systems: Vec<SystemCost>,
 
     // ---- this client's own -----------------------------------------------
     /// GPU upload traffic over the window, in kB.
@@ -643,6 +685,8 @@ fn take_base(readouts: &PerfReadouts) -> Base {
         mesh_added: readouts.churn.added,
         frames: 0,
         wall_s: 0.0,
+        #[cfg(feature = "perf")]
+        systems: super::system_timings::snapshot(),
     }
 }
 
@@ -678,6 +722,31 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
         }
     }
 
+    // The window's own per-system cost: the totals now, less the totals when it
+    // opened. Without the feature there is no counter and the list is empty,
+    // which is the difference between "not instrumented" and "costs nothing" that
+    // the module docs insist on everywhere else.
+    #[cfg(feature = "perf")]
+    let systems: Vec<SystemCost> = {
+        let now = super::system_timings::snapshot();
+        super::system_timings::delta(&base.systems, &now)
+            .into_iter()
+            .take(TOP_SYSTEMS)
+            .map(|(name, cost)| {
+                #[allow(clippy::cast_precision_loss)]
+                let ms = cost.nanos as f64 / 1.0e6;
+                SystemCost {
+                    name,
+                    ms,
+                    calls: cost.calls,
+                    ms_per_frame: ms / per_frame,
+                }
+            })
+            .collect()
+    };
+    #[cfg(not(feature = "perf"))]
+    let systems: Vec<SystemCost> = Vec::new();
+
     let mut window = Window {
         scenario: run
             .names
@@ -695,6 +764,7 @@ fn close(perf: &mut PerfProgress, phase: &str, run: &PerfRun, readouts: &PerfRea
         mesh_slabs: diag(store, "mesh_allocator_slabs"),
         mesh_slab_mb: diag(store, "mesh_allocator_slabs_size").map(|b| b / 1_048_576.0),
         gpu_passes: passes,
+        systems,
         upload_kb: readouts
             .uploads
             .total_bytes
@@ -775,6 +845,22 @@ fn log_window(w: &Window) {
             gpu_ms = opt(p.gpu_ms, 3),
             cpu_ms = opt(p.cpu_ms, 3),
             "perf gpu pass"
+        );
+    }
+    // The dearest systems, one line each, beside the passes. This is the column
+    // that says whether a frame is the render thread's or the main world's, and
+    // it is worth reading before any pass: on `deck-1` the settled `city` frame is
+    // 14.6 ms of render schedule against 5.9 ms of main world, of which only
+    // 4.0 ms is in a pass the GPU timers can see.
+    for s in &w.systems {
+        tracing::info!(
+            scenario = %w.scenario,
+            phase = %w.phase,
+            system = %s.name,
+            ms = format!("{:.1}", s.ms),
+            ms_per_frame = format!("{:.3}", s.ms_per_frame),
+            calls = s.calls,
+            "perf system"
         );
     }
 }

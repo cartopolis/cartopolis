@@ -92,12 +92,15 @@ fast-dev = ["bevy/dynamic_linking"]
 #   exact and machine-independent, and there is no way to get it without a branch
 #   on every allocation in the process.
 # * Bevy's own diagnostic plugins, which add per-frame work to the render app.
-# * `tracing-chrome`, the sink those per-system spans are written to. **Not
-#   `bevy/trace_chrome`**, which looks like the obvious way to get this and cannot
-#   work here: that feature installs its layer inside Bevy's `LogPlugin`, and
-#   `run` disables `LogPlugin` on desktop in favour of this tree's own subscriber.
-#   Asking for it builds, runs, and produces no trace file, with nothing said —
-#   one full client rebuild to discover (2026-09-22).
+# * `systems::dev::system_timings`, which counts those spans per system and is
+#   read per perf window. **Not `bevy/trace_chrome`**, which looks like the
+#   obvious way to get this and cannot work here: that feature installs its layer
+#   inside Bevy's `LogPlugin`, and `run` disables `LogPlugin` on desktop in favour
+#   of this tree's own subscriber, so asking for it builds, runs and produces no
+#   trace file with nothing said — one full client rebuild to discover. A chrome
+#   layer on *our* subscriber was then built and also thrown away: 2.5 GB for one
+#   scenario, a second program needed to read it, and a whole-run total cannot
+#   separate a streaming cost from a frame cost (2026-09-22).
 #
 # The suite runs *without* this feature and reports its other columns; the ones it
 # cannot measure come back absent rather than zero, which is the difference between
@@ -107,7 +110,6 @@ perf = [
     "bevy/debug",
     "bevy/sysinfo_plugin",
     "cartopolis_geo/perf",
-    "dep:tracing-chrome",
 ]
 # Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
 # codegen bug, or a host that really does predate AVX2 — not for shipped builds,
@@ -127,7 +129,6 @@ tiff.workspace = true
 serde.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tracing-chrome = { workspace = true, optional = true }
 uuid.workspace = true
 dotenvy.workspace = true
 serde_json.workspace = true

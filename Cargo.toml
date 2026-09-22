@@ -268,12 +268,6 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = [
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# The per-system profiler's sink, behind `cartopolis/perf` and never in a shipped
-# build. It is a direct dependency rather than `bevy/trace_chrome` because that
-# feature installs its layer inside Bevy's `LogPlugin`, which this tree disables on
-# desktop in favour of its own subscriber — so it builds, runs and writes no trace
-# at all. `docs/notes/render-performance-survey.md`.
-tracing-chrome = "0.7"
 ureq = { version = "2.9", features = ["gzip"] }
 dotenvy = "0.15"
 serde_json = "1"
