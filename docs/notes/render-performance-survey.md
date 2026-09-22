@@ -128,6 +128,56 @@ Reaching those spans means installing a chrome layer on *our* subscriber under t
 `Cargo.lock` today, not even transitively). That is the next step for anyone
 continuing this, and it is the step that turns the correlation above into a name.
 
+### The missing 10 ms is CPU work on the render thread (answered 2026-09-22)
+
+The per-system profiler below settled it. Per-system spans, split into 100-frame
+buckets so a streaming cost cannot be read as a frame cost — `city` on `deck-1`,
+`Main::run_main` counted once per frame:
+
+| system | streaming (frames 200–299) | **settled (frames 1600–1699)** |
+|---|---|---|
+| `bevy_render::run_render_schedule` | 46.8 ms/frame | **14.6 ms/frame** |
+| `bevy_render::renderer::render_system` | 13.3 | 6.8 |
+| `bevy_app::main_schedule::Main::run_main` | 192.0 | **5.9** |
+| `bevy_core_pipeline::schedule::camera_driver` | 5.8 | 4.0 |
+| `Opaque3d, MeshPipeline` specialization | 4.5 | 2.4 |
+| `submit_pending_command_buffers` | 6.4 | 2.3 |
+| `prepare_preprocess_bind_groups` | 3.1 | 1.6 |
+| `main_opaque_pass_3d` | — | 0.9 |
+| `map_geometry::update_map_surfaces` | **170.4** | **absent from the top 12** |
+
+**The render schedule is the critical path and the main world is not.** Settled,
+`run_render_schedule` is 14.6 ms against a 14.4 ms frame, while the whole main-world
+schedule is 5.9 ms — the two run in parallel under bevy's pipelined rendering, so
+the frame is the render thread's and the main world has headroom to spare.
+
+**And the GPU passes are 4.0 ms of that 14.6.** The remaining ~10.6 ms is
+render-thread *CPU* work — extraction, specialization, batching, bind-group and
+buffer preparation — which is the same ~10 ms the table at the top of this section
+could not account for. Every earlier negative result follows from it at once:
+resolution did not matter because this work is resolution-independent, shadows did
+not matter because removing a caster pass does not remove the preparation around
+it, the cost tracked entity count because extraction and batching are per-entity,
+and process CPU sat flat near two busy threads because exactly two are on the
+path.
+
+Two things in that settled column are worth someone's attention, and neither is a
+pass:
+
+- **`camera_driver` at 4.0 ms/frame settled**, second only to `render_system`.
+- **Pipeline specialization at ~2.4 ms/frame in a scene that has not changed.**
+  Specialization should approach zero once every pipeline is resident, so a
+  steady 2.4 ms suggests keys are being missed or re-derived each frame — and
+  `StandardMaterial::depth_bias` is part of the specialization key, with a rung
+  per `GroundLayer`. That is the same fact behind this note's pipeline-cache
+  entry, showing up as a steady-state cost rather than only a warm-up one.
+
+**`update_map_surfaces` is a streaming cost and not a frame cost**, which is what
+the whole-run total of 53.7 s could not distinguish and what this split exists to
+say. One caveat travels with every row: this workspace's own crates build at
+`opt-level = 1` and dependencies at `3`, so our systems and bevy's are not on
+equal terms in this table.
+
 ### And the prepass is missing from the diagnostics
 
 This note records, as a standing finding, that at `orbit` "the **depth prepass**
