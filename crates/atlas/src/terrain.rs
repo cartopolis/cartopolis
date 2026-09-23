@@ -288,7 +288,7 @@ mod tests {
         (plane, svc, dir)
     }
 
-    /// The tile over central Groningen (Grote Markt).
+    /// A tile over the north of Groningen city (the Grote Markt is 8490/5320).
     const GRONINGEN: (u32, i64, i64) = (14, 8490, 5318);
 
     #[tokio::test]

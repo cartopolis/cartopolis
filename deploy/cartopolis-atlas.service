@@ -7,7 +7,11 @@
 #
 # **Its own process and its own user**, never the simulator's: pipeline work and
 # terrain cutting are seconds of CPU, and the simulator's runtime is shared with
-# the 20 Hz tick. The only thing it writes is its data directory.
+# the 20 Hz tick. It writes three places: its data directory, the map data tree
+# Caddy serves as 3dbag.cartopolis.org, and the autopilot's control file. The
+# last two belong to `ubuntu` (cartopy's pipeline wrote them as that user), so
+# the service runs with group `ubuntu` and umask 0002: what it creates stays
+# writable by the other writers, and the directories it writes into need g+w.
 #
 # Listens on the docker0 gateway only, like the simulator's HTTP listener, so it
 # is reachable from off the machine through Caddy and nothing else.
@@ -16,6 +20,9 @@
 #   listen = "172.17.0.1:4749"
 #   data_dir = "/data/cartopolis/atlas/data"
 #   upstream_concurrency = 3
+#   site_dir = "/data/3dbag/site"
+#   admin_api = "http://172.17.0.1:4748"
+#   autopilot_config = "/data/agent/state/autopilot.json"
 [Unit]
 Description=Cartopolis atlas
 Documentation=https://code.garage44.eu/jeroen/cartopolis
@@ -25,7 +32,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=cartoatlas
-Group=cartoatlas
+Group=ubuntu
+UMask=0002
 WorkingDirectory=/data/cartopolis/atlas
 ExecStart=/data/cartopolis/atlas/atlas --config /data/cartopolis/atlas/atlas.toml
 Restart=always
@@ -33,6 +41,8 @@ RestartSec=3s
 Environment=RUST_LOG=info
 
 ReadWritePaths=/data/cartopolis/atlas/data
+ReadWritePaths=/data/3dbag/site
+ReadWritePaths=/data/agent/state
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true

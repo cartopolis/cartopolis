@@ -69,8 +69,9 @@ jobs:
             sleep 0.2
           done
           curl -sf http://127.0.0.1:47490/ | grep -q '/viewer/'
+          curl -sf http://127.0.0.1:47490/api/pipeline/health | grep -q '"ok":true'
           kill "$pid"
-          echo "startup + front page ok"
+          echo "startup + front page + pipeline surface ok"
 
       # A rename, not a copy over the running binary: `install` straight onto it
       # would truncate a file a live process is executing.

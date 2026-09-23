@@ -24,6 +24,13 @@ pub struct AtlasConfig {
     /// Requests to PDOK allowed in flight at once. PDOK is a shared public
     /// service and we are a guest on it; the client's own height layer uses 3.
     pub upstream_concurrency: usize,
+    /// The tree the map data pipelines write, which Caddy serves as
+    /// `3dbag.cartopolis.org` and the console reads coverage from.
+    pub site_dir: PathBuf,
+    /// The simulator's HTTP surface, asked whether a console bearer is an admin.
+    pub admin_api: String,
+    /// The autopilot's control file, which the console steers.
+    pub autopilot_config: PathBuf,
 }
 
 impl Default for AtlasConfig {
@@ -32,6 +39,9 @@ impl Default for AtlasConfig {
             listen: SocketAddr::from(([127, 0, 0, 1], 4749)),
             data_dir: PathBuf::from("data/atlas"),
             upstream_concurrency: 3,
+            site_dir: PathBuf::from("data/atlas/site"),
+            admin_api: "http://127.0.0.1:4748".to_string(),
+            autopilot_config: PathBuf::from("/data/agent/state/autopilot.json"),
         }
     }
 }

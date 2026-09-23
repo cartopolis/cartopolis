@@ -1,114 +1,118 @@
 ---
 topic: pipeline
-triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, cartopy, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
-updated: 2026-08-30
+triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, cartopy, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
+updated: 2026-09-23
 ---
 
-# The map's Dutch layers are built in the other repository
+# The map's Dutch layers are built by atlas
 
-`tools/3dbag_extract.py`, `tools/3dbag_lod22.py`, `tools/bag_attributes.py`,
-`tools/bgt_objects.py` and `tools/dikes.py` are gone from this tree. They are
-TypeScript in
-[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) under `server/`, run
-by an admin console rather than by four ssh commands per city.
+The extractors that turn the Dutch open registers into the per-cell files the
+client streams live in `crates/atlas/src/pipeline/`: `water`, `buildings`,
+`lod22`, `bag`, `dikes` and `bgt`, plus `bv3d` (the Kadaster's 3D
+basisvoorziening, which `water` and `bgt` both read). They write
+`<dataset>/14/{x}/{y}.json` and a `coverage.json` per dataset into
+`/data/3dbag/site`, which Caddy serves as `3dbag.cartopolis.org`.
 
-The move was for the console, and the console was the whole point: an operator
-wants to see what a box is currently serving, press a button and watch a log, and
-none of that fits a script somebody scps to a VPS. `docs/guides/server.md` §8 has
-the operational half.
+They have been ported twice. They started as Python in `tools/`, run by four ssh
+commands per city. In 2026-08 they became TypeScript in `jeroen/cartopy`, behind
+an admin console, because an operator wants to see what a box is serving, press a
+button and watch a log. In 2026-09 they became Rust in atlas
+(`atlas.md`), and the console moved with them to `crates/atlas/console`. The
+formats did not change either time.
+
+Two ways in, one code path: the console's Data tab (`/api/pipeline/*`,
+`crates/atlas/src/console.rs`, one job at a time) and a shell:
+
+```bash
+atlas run --out /tmp/site --area groningen --datasets buildings,bag
+atlas run --out /tmp/site --name delfzijl --bbox 253000 592000 258000 597000 --datasets bgt
+```
+
+`--bbox` is RD New (EPSG:28992), the grid these registers publish on, not degrees.
 
 ## What did *not* move, and why
 
 `tools/ifc_lod3.py` and `tools/ifc_demo_building.py` stay Python. They need
-`ifcopenshell`, which has no equivalent in JS worth having, and they are a manual
+`ifcopenshell`, which has no Rust equivalent worth having, and they are a manual
 one-off per building rather than a pipeline — a person supplies the model, the
 identificatie and the georeferencing on the command line.
 
 `gen_stars.py`, `id_presets.py` and `subset-icon-font.py` were never server-side
-at all: they generate artifacts that are committed here (a star catalogue, a Rust
-table, a subset font), they run on a workstation, and two of them need Python
-libraries with no JS counterpart.
+at all: they generate artifacts committed here and run on a workstation.
 
-## The seam this created, which is worse than the one it removed
+## The seam is shorter now, and still there
 
-**The consumers of these formats are in this repository.** `lod22.rs`,
-`building_facts.rs`, `surveyed.rs`, `osm_buildings.rs` and `dikes.rs` each parse
-one of them,
-and the producer is now in a repository with a different language and a different
-CI. Nothing checks that the two agree — it is the `src/types.ts` problem cartopy's
-README already describes, four times over and much wider.
+**The producers and the consumers are in one repository**, but not in one crate
+and not on one type. Atlas writes each format through `serde_json::Value`, and
+`lod22.rs`, `building_facts.rs`, `surveyed.rs`, `osm_buildings.rs`, `dikes.rs`
+and `water_levels.rs` in the client each parse their own. A renamed key still
+compiles on both sides and arrives as a layer that draws nothing. What changed is
+that one commit can now change both sides, and one gate tests both. Moving each
+format onto a shared type in `cartopolis_geo` is the obvious next step and has
+not been taken.
 
-**And it now runs in the other direction too.** `systems::crops` parses a format
-whose producer does not exist yet: `server/pipeline/brp.ts` is unwritten, so the
-crop layer draws nothing anywhere until somebody writes it (2026-08-30,
-`crop-parcels.md`). That is the *safe* direction of this seam and the order to
-keep — a client that can read a form the host never sends is inert, while an
-extractor that emits a form no client knows is content silently thrown away. The
-wire format is pinned in `crops.rs`'s `CATEGORIES` and in the follow-up ticket.
+cartopy pinned the formats with `server/pipeline/format.test.ts` against captures
+of a real run. That test was not ported: it existed because the parsers were in
+another repository, and each client module already pins its shape in its own
+tests. **Change a wire format in atlas and change its parser in the same
+commit.**
 
-The mitigation is `server/pipeline/format.test.ts` over there: each format pinned
-against trimmed captures of a real run, so a renamed key fails a test instead of
-reaching a client as a layer that silently draws nothing. It is not a compiler.
-**Change a wire format here and change it there**, and read that test file first —
-it is the closest thing to a specification either side has.
+**The seam runs in the other direction too.** `systems::crops` parses a format
+whose producer does not exist: cartopy never had a BRP extractor, so the crop
+layer draws nothing anywhere until somebody writes one in `pipeline/`
+(`crop-parcels.md`). That is the *safe* direction — a client that can read a form
+the host never sends is inert, while an extractor that emits a form no client
+knows is content silently thrown away.
 
-## The port was checked against the Python, not assumed equivalent
+## Each port was checked against the one before, not assumed equivalent
 
-Measured 2026-08-29, over a 1 km square of Groningen
-(`--bbox 233000 582000 234000 583000`), running both implementations against the
-live sources and diffing every output file:
+**Python → TypeScript**, 2026-08-29, over a 1 km square of Groningen
+(`233000 582000 234000 583000`): `buildings`, `bag`, `bgt` and `dikes`
+structurally identical to 1e-6 across all files. `lod22` was the same surface
+with a different triangulation: 8,695 buildings on both sides, same ids, same
+vertex counts, 3 buildings differing by one wall triangle, because the JS
+`earcut` and Python's `mapbox_earcut` pick different diagonals.
 
-- **`buildings`, `bag`, `bgt`, `dikes`: structurally identical** to a tolerance
-  of 1e-6, across all 40 files. Same file set, same ids, same tags, same counts — 3,126
-  buildings, 7,586 addresses, 140 berths, 180 monuments, 261 boundaries, 3,258
-  paved surfaces on both sides. Vertex positions agreed to 0.02 mm.
-- **`lod22`: the same surface, a different triangulation.** 8,695 buildings on
-  both sides, same ids, same vertex counts; the JS `earcut` and the Python
-  `mapbox_earcut` binding pick different diagonals across the same polygon, so
-  the index arrays legitimately differ. 3 buildings of 8,695 differed by one
-  *wall* triangle (roof counts identical), and a handful of vertices differed by
-  ~7 mm — a last-digit disagreement at the 7th decimal place.
+**TypeScript → Rust**, 2026-09-23, over `233000 581000 234000 582000`, both
+implementations run against the live sources and every file diffed:
 
-That last one is the reason a byte-for-byte comparison is the wrong test for this
-pipeline and a structural one is the right one.
+- `buildings` (2,494 buildings), `bag` (2,516 buildings, 7,793 addresses),
+  `dikes` and `water`: identical.
+- `bgt`: 7 of 9 files identical; the other 2 differ in 3–22 paving coordinates by
+  at most 6e-7° (the 7th decimal place, ~5 cm at worst, mostly one unit in the
+  last place). The cause is most likely V8's `Math.cos` and libm's `cos`
+  rounding the last bit differently. Porting V8's degree-to-radian arithmetic
+  exactly did not change it.
+- `lod22`: same buildings, ids and vertex counts; `earcutr` picks different
+  diagonals again.
 
-`dikes` and the paving materials were ported later than the rest — they landed on
-`main` while the port was in review, inside the very Python it replaces — and were
-checked the same way against the same square: 12 files, no differences at all.
-That is the failure mode to watch for here. A branch that removes a producer can
-be revert-clean in git and still lose a feature somebody added to it in the
-meantime, because the loss is a *deletion* that merges without a conflict on every
-file but one.
+A byte-for-byte comparison is the wrong test for this pipeline and a structural
+one is the right one. And the failure mode to watch in a port is a producer
+feature added *while the port was in review*: `dikes` and the paving materials
+landed inside the Python the first port was replacing, and a deletion merges
+without a conflict.
 
 ## The projection is the load-bearing part, and it agrees for a reason
 
-Every coordinate in every dataset goes through one RD (EPSG:28992) → WGS84
-transform, and a projection that is subtly wrong does not fail: it writes a
-complete, well-formed city half a metre to the left, and nothing downstream can
-tell.
+Every coordinate in every dataset goes through one RD → WGS84 transform
+(`pipeline/rd.rs`), and a projection that is subtly wrong does not fail: it writes
+a complete, well-formed city half a metre to the left.
 
-proj4js was checked against the `pyproj` in `/data/3dbag/venv` on the VPS — the
-one that produced the tiles now being served. They agree to ~3e-10 degrees, about
-0.02 mm. **They agree because neither has the NSGI grid.** PROJ on that box has no
-`nl_nsgi_rdtrans2018.tif`, so it falls back to the seven-parameter Helmert, which
-is what proj4js does unconditionally.
-
-Install that grid next to PROJ and the two stop agreeing: PROJ would move to a
-sub-centimetre grid shift and proj4js would not, so the same area extracted by
-each would differ by a couple of decimetres. Nothing on the map would look wrong.
-The only thing that would say so is the fixture test.
+`rd.rs` is proj4js's `sterea` + Bessel + seven-parameter Helmert ported line for
+line, and agrees with proj4js to under 1e-11° at 49 reference points. proj4js in
+turn agreed with the `pyproj` in `/data/3dbag/venv` to ~3e-10° (0.02 mm) — **because
+neither has the NSGI grid.** PROJ on that box has no
+`nl_nsgi_rdtrans2018.tif` and falls back to the same Helmert. Install that grid
+and PROJ would move by a couple of decimetres while `rd.rs` would not. Nothing on
+the map would look wrong.
 
 ## One covered area per dataset, still
 
 Each extractor rewrites the whole `coverage.json` for its dataset from the run
 that just happened, so extracting a second city **replaces** the first rather than
 adding to it — the first city's cell files stay on disk and the client stops being
-told they are there.
-
-This was inherited from the Python, where it was hidden behind an ssh command
-somebody typed deliberately. A console with eight cities in a dropdown makes it a
-button, so the console warns before doing it, and the API answers a start request
-with the list of datasets it would displace. Merging coverage across areas is the
-obvious fix and has not been made: the manifests would have to be read back and
-unioned, and a cell listed in a manifest whose files were deleted is worse than a
-cell that is not listed.
+told they are there. The console warns before doing it, and `POST
+/api/pipeline/jobs` answers with the datasets it would displace (`replaces`).
+Merging coverage across areas is the obvious fix and has not been made: the
+manifests would have to be read back and unioned, and a cell listed in a manifest
+whose files were deleted is worse than a cell that is not listed.

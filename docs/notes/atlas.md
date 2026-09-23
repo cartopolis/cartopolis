@@ -14,12 +14,13 @@ management.
 
 ## Why it exists
 
-The pipelines are TypeScript in cartopy while their readers (`lod22.rs`,
+The pipelines were TypeScript in cartopy while their readers (`lod22.rs`,
 `building_facts.rs`, `surveyed.rs`, `osm_buildings.rs`, `dikes.rs`, `crops.rs`)
-are Rust here, and nothing checks that the two agree
-(`where-the-map-data-is-built.md`). In one workspace the writer and the reader
-share one Rust type per format, so a mismatch is a compile error. It also lets
-server-side work use `cartopolis_geo` directly.
+are Rust here, and nothing checked that the two agreed
+(`where-the-map-data-is-built.md`). In one workspace one commit changes both
+sides and one gate tests them, and the writer and the reader *can* share one Rust
+type per format, which would make a mismatch a compile error — the port did not
+do that yet. It also lets server-side work use `cartopolis_geo` directly.
 
 ## Rules, several learned from OpenSimulator's ROBUST
 
@@ -56,15 +57,43 @@ server-side work use `cartopolis_geo` directly.
    flattening server-side. **Built** (`crates/atlas`, format
    `cartopolis_geo::terrain_tile`): z8–z17, 129² samples, 33 KB a tile. Against
    live PDOK from the VPS (2026-09-23): a first cut takes 0.2–0.3 s and a repeat
-   is ~1 ms from disk. Central Groningen (`14/8490/5318`) spans −1.0 to +10.6 m
+   is ~1 ms from disk. North Groningen (`14/8490/5318`) spans −1.0 to +10.6 m
    NAP. A tile over the Markermeer is a remembered 404, not a flat tile.
-2. Port the cartopy pipelines one at a time, when each next needs changing. Each
-   is diffed against the TypeScript output for the same area, as the
-   Python-to-TypeScript port was. The admin GUI stays a separate web app pointed
-   at atlas's API.
+2. Port the cartopy pipelines. **Done 2026-09-23, all at once rather than one at
+   a time**, because the goal became retiring cartopy altogether. All six datasets
+   (`crates/atlas/src/pipeline/`), each diffed against the TypeScript output for
+   the same square (`where-the-map-data-is-built.md` has the results), and
+   cartopy's server surface route for route: the one-job runner (`jobs.rs`), the
+   admin check against the simulator (`auth.rs`), coverage (`coverage.rs`), the
+   autopilot control file (`autopilot.rs`), all under `/api/pipeline/*`
+   (`console.rs`). The admin GUI moved into `crates/atlas/console` unchanged
+   except for the log cursor (below) and its address: it is static files behind
+   Caddy at `cartopolis.org/console/`, the front page's *Sign in*, published by
+   `deploy-console.yml`. web.cartopolis.org, its old hostname, was dropped
+   rather than redirected — one site, not two.
 3. Move accounts once the token design is agreed. The in-world player actions
    (block, report, delete my account) stay on the wire, with the simulator
    passing them on.
+
+## The pipeline surface, as ported
+
+- **A dataset is a blocking function over a `Ctx`**, and the runner gives the one
+  running job a plain thread of its own rather than tokio's blocking pool. The
+  `Ctx` is the only way a dataset reaches the world: log, progress, a cancel
+  checked in every paging loop, and atomic tmp-and-rename writes into a tree
+  Caddy serves live.
+- **A panicking dataset is a failed step, not a dead runner** (`catch_unwind`).
+  There is one runner thread and every later job would otherwise queue behind it
+  forever. cartopy's Bun server had no equivalent failure to guard.
+- **The log cursor is lines ever written, not lines held.** Each job keeps the
+  last 2,000 lines. cartopy's console asked for `since = lines it held`, and its
+  server read that as an index into the buffer, so once a long BAG run filled the
+  buffer the followed log stopped updating. The console now keeps the server's
+  `total` as its cursor.
+- **It writes as `cartoatlas` in group `ubuntu`, umask 0002**
+  (`deploy/cartopolis-atlas.service`). The site tree and the autopilot's control
+  file belong to `ubuntu`, and the autopilot writes that file too, so anything
+  atlas creates must stay writable by the group.
 
 ## Contracts a port must keep
 

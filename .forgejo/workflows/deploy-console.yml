@@ -1,0 +1,60 @@
+name: Deploy console
+
+# Build the admin console (crates/atlas/console) and publish it to
+# https://cartopolis.org/console/. It was `jeroen/cartopy`'s deploy, to
+# web.cartopolis.org, until 2026-09.
+#
+# On every push to `main` that touches it, as it always was: the build is Bun
+# over ~35 KB of TypeScript, it takes seconds, and publishing static files
+# interrupts nobody — unlike the simulator or atlas, nothing restarts.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/atlas/console/**"
+      - ".forgejo/workflows/deploy-console.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-console
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: build & publish the console
+    runs-on: ubuntu-latest
+    container:
+      # The image carries Bun already (`tools/*.ts` are Bun scripts).
+      image: cartopolis-ci:latest
+      # Caddy serves this directory as cartopolis.org/console/. It is in the runner's
+      # `valid_volumes` from when cartopy published it.
+      options: >-
+        --volume /data/cartopolis/admin:/publish
+    defaults:
+      run:
+        working-directory: crates/atlas/console
+    steps:
+      - uses: actions/checkout@v4
+
+      # `--frozen-lockfile`: a deploy must build what was reviewed.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Both gates before the build, so a red one costs seconds rather than a
+      # published site nobody checked. `tsc` earns its keep: `src/types.ts`
+      # describes Rust structs by hand and nothing else checks them.
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build
+
+      # `--delete`, so a file dropped from the build does not linger on the site.
+      - name: Publish
+        run: |
+          command -v rsync >/dev/null || { apt-get update -qq && apt-get install -y -qq rsync >/dev/null; }
+          rsync -a --delete dist/ /publish/
+          echo "published $(du -sh /publish | cut -f1) to /data/cartopolis/admin"

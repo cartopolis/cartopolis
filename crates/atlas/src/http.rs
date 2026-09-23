@@ -21,12 +21,15 @@ pub const TERRAIN_MEDIA_TYPE: &str = "application/vnd.cartopolis.terrain";
 #[derive(Clone)]
 pub struct AtlasState {
     pub terrain: Arc<TerrainService>,
+    /// The admin console's pipeline surface, `/api/pipeline/*`.
+    pub console: crate::console::ConsoleState,
 }
 
 /// `cartopolis.org` itself. Atlas owns the site root; the browser build of the
 /// client lives at `/viewer/`, and Caddy routes that, `/ws` and the other client
-/// paths before anything reaches here. Registration and account pages land beside
-/// this as they move over from the simulator.
+/// paths before anything reaches here. *Sign in* is the console at `/console/`
+/// (`crates/atlas/console`), which Caddy serves as static files: the operator's
+/// pages and the players' registration, verification and house claim.
 const FRONT_PAGE: &str = r#"<!doctype html>
 <html lang="en">
 <head>
@@ -50,17 +53,20 @@ const FRONT_PAGE: &str = r#"<!doctype html>
   <p>A shared 3D world on the real map.</p>
   <a class="button" href="/viewer/">Open the map</a>
   <a class="button quiet" href="/apk/">Android app</a>
+  <a class="button quiet" href="/console/">Sign in</a>
 </main>
 </body>
 </html>
 "#;
 
 pub fn router(state: AtlasState) -> Router {
+    let console = crate::console::router(state.console.clone());
     Router::new()
         .route("/", get(|| async { axum::response::Html(FRONT_PAGE) }))
         .route("/health", get(|| async { "ok" }))
         .route("/terrain/{z}/{x}/{y}", get(terrain_tile))
         .with_state(state)
+        .nest("/api/pipeline", console)
 }
 
 async fn terrain_tile(
@@ -119,8 +125,20 @@ mod tests {
 
     async fn serve(source: Arc<dyn HeightSource>) -> (String, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
+        struct Nobody;
+        impl crate::auth::Authority for Nobody {
+            fn admin(&self, _: &str) -> Result<Option<crate::auth::Principal>, String> {
+                Ok(None)
+            }
+        }
         let state = AtlasState {
             terrain: Arc::new(TerrainService::new(source, dir.path(), 2)),
+            console: crate::console::ConsoleState {
+                auth: Arc::new(crate::auth::Auth::new(Box::new(Nobody))),
+                runner: crate::jobs::Runner::new(dir.path(), crate::jobs::Registry::new()),
+                out_root: dir.path().to_path_buf(),
+                autopilot: dir.path().join("autopilot.json"),
+            },
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -162,7 +180,8 @@ mod tests {
         let (status, media, body) = get(format!("{base}/")).await;
         assert_eq!(status, 200);
         assert!(media.starts_with("text/html"));
-        assert!(String::from_utf8_lossy(&body).contains("href=\"/viewer/\""));
+        let page = String::from_utf8_lossy(&body);
+        assert!(page.contains("href=\"/viewer/\"") && page.contains("href=\"/console/\""));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

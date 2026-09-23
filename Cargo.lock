@@ -2233,13 +2233,17 @@ dependencies = [
  "cartopolis_core",
  "cartopolis_geo",
  "clap",
+ "earcutr",
  "figment",
+ "flate2",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "url",
 ]
 
 [[package]]
