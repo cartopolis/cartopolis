@@ -3414,12 +3414,31 @@ fn stand_on_terrain<G: MeasuredGround>(
         group,
         SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
     ) {
+        // The tops of the walls and headwalls, before they are lifted: they sit
+        // at the tessellator's `WALL_TOP_Y` (0) and every other vertex is below.
+        let tops: Vec<bool> = positions.iter().map(|p| p[1] >= -1e-3).collect();
         cartopolis_geo::tunnels::stand_tunnel_on(
             positions,
             origin.to_array(),
             &FieldSurvey(&**terrain),
             &|p| tunnels.convention_depth(Vec2::from_array(p)),
         );
+        // **A wall reaches the ground it holds back.** Lifted with the deck, a
+        // wall's top lands the tunnel's convention depth above the deck, and
+        // where the survey dug deeper than that — 12.2 m under the ring's
+        // westbound lid against a 7 m convention — it stood five metres below
+        // the filled ground over the lid: a headwall floating in the mouth with
+        // earth-coloured sky above it, and torn banks along every cutting
+        // (2026-09-23). So a top is raised to the level the ground beside it is
+        // filled to, never lowered.
+        if group == SurfaceGroup::TunnelStructure {
+            for (p, top) in positions.iter_mut().zip(tops) {
+                if top {
+                    let (x, z) = (origin.x + p[0], origin.y + p[2]);
+                    p[1] = p[1].max(terrain.lid_level(x, z, TUNNEL_DATUM_M));
+                }
+            }
+        }
         return;
     }
     // A viaduct wants *one* height for the whole thing: it is straight, and the
@@ -3447,8 +3466,8 @@ fn stand_on_terrain<G: MeasuredGround>(
     // the taper, and the ground tore open along the buried road.
     let lidded = cartopolis_geo::tunnels::Lidded {
         ground: &**terrain,
-        around: &|x, z| terrain.surrounding(x, z, TUNNEL_DATUM_M),
-        weight: &|p| tunnels.covered_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
+        around: &|x, z| terrain.lid_level(x, z, TUNNEL_DATUM_M),
+        weight: &|p| tunnels.fill_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
     let t0 = bevy::platform::time::Instant::now();
     if !volumetric {
@@ -3489,7 +3508,7 @@ fn stand_on_terrain<G: MeasuredGround>(
             .iter()
             .map(|p| {
                 let (x, z) = (origin.x + p[0], origin.y + p[2]);
-                let w = tunnels.covered_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
+                let w = tunnels.fill_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
                 let n = terrain.normal_at(x, z);
                 n.lerp(Vec3::Y, w).normalize_or(Vec3::Y).to_array()
             })

@@ -648,6 +648,7 @@ pub fn update_grass(
     mut materials: ResMut<Assets<GrassMaterial>>,
     mut images: ResMut<Assets<Image>>,
     terrain: Res<TerrainField>,
+    tunnels: Res<crate::systems::tunnels::Tunnels>,
     weather: Res<WeatherState>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -767,7 +768,7 @@ pub fn update_grass(
                 > inner.max(0.0)
         });
     if need_field && !patches.in_flight {
-        spawn_mask_job(&patches, &areas, &terrain, cam);
+        spawn_mask_job(&patches, &areas, &terrain, &tunnels, cam);
         patches.in_flight = true;
         // Claimed here rather than when the job lands, so a cell arriving while
         // the worker runs queues exactly one more rebuild instead of a rebuild
@@ -1114,12 +1115,21 @@ fn mask_image(px: u32, data: Vec<u8>) -> Image {
 /// and ~410k on the full one, which is a frame or more on a phone. It is also
 /// why the trigger has [`FIELD_MARGIN_M`] of slack — the answer is allowed to
 /// take a while.
-fn spawn_mask_job(patches: &GrassPatches, areas: &GrassAreas, terrain: &TerrainField, cam: Vec2) {
+fn spawn_mask_job(
+    patches: &GrassPatches,
+    areas: &GrassAreas,
+    terrain: &TerrainField,
+    tunnels: &crate::systems::tunnels::Tunnels,
+    cam: Vec2,
+) {
     let cells = areas.snapshot();
     let ground = terrain.snapshot();
     let sink = patches.pending.clone();
     let (field_m, field_px) = field_dims();
     let origin = cam - Vec2::splat(field_m * 0.5);
+    // Grass stands on the ground as the ground is drawn — filled over a lid —
+    // not on the survey's old trench floor inside the tunnel under it.
+    let lids = tunnels.lids_near(cam, field_m * 0.5 + cartopolis_geo::tunnels::DATUM_M);
     crate::platform::workers::submit(
         "grass",
         Box::new(move || {
@@ -1133,7 +1143,7 @@ fn spawn_mask_job(patches: &GrassPatches, areas: &GrassAreas, terrain: &TerrainF
                 .collect();
             let field =
                 turf::mask_field(&placed, [origin.x, origin.y], field_m, field_px, &|x, z| {
-                    ground.at(x, z)
+                    lids.ground_at(x, z, &ground)
                 });
             if let Ok(mut g) = sink.lock() {
                 *g = Some(field);

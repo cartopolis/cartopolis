@@ -1109,17 +1109,39 @@ pub fn apply_terrain_to_tiles(
         // The lift the vector ground over a lid takes (`tunnels::Lidded`), added
         // to this sheet's own floor rather than replacing it, so the basemap stays
         // at or under the vector ground as `floor_at` promises.
+        //
+        // **The least lift among the vertex and its four grid neighbours**, not
+        // its own. This sheet's quads are far coarser than the vector ground's
+        // refined triangles, so a quad whose corners were lifted by their own
+        // fill spans the crease at a lid's edge as a straight chord — above the
+        // finer ground on one side of it — and the basemap stood up through the
+        // road over the ring's east lid and through the canal beside it
+        // (captures, 2026-09-23). The least of the neighbourhood keeps the sheet
+        // under the ground it underlies, at the cost of the fill arriving a quad
+        // late at a lid's edge, where the vector ground covers it anyway.
+        let step = gs / divisions.max(1) as f32;
+        let lift_at = |x: f32, z: f32| -> (f32, f32) {
+            let w = tunnels.fill_weight(Vec2::new(x, z), cartopolis_geo::tunnels::DATUM_M);
+            if w <= 0.0 {
+                return (0.0, 0.0);
+            }
+            let here = field.at(x, z);
+            let around = field.lid_level(x, z, cartopolis_geo::tunnels::DATUM_M);
+            (w * (around - here).max(0.0), w)
+        };
         let lid = |wx: f32, wz: f32| -> (f32, f32) {
             if lids == 0 {
                 return (0.0, 0.0);
             }
-            let w = tunnels.covered_weight(Vec2::new(wx, wz), cartopolis_geo::tunnels::DATUM_M);
+            let (own, w) = lift_at(wx, wz);
             if w <= 0.0 {
                 return (0.0, 0.0);
             }
-            let here = field.at(wx, wz);
-            let around = field.surrounding(wx, wz, cartopolis_geo::tunnels::DATUM_M);
-            (w * (around - here).max(0.0), w)
+            let least = [(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)]
+                .iter()
+                .map(|(dx, dz)| lift_at(wx + dx, wz + dz).0)
+                .fold(own, f32::min);
+            (least, w)
         };
         let mesh = crate::systems::terrain::displaced_grid(
             &field, &globe, centre, gs, divisions, &rings, &lid,

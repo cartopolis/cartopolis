@@ -186,18 +186,65 @@ pub fn enabled() -> bool {
     )
 }
 
+/// Fade the slope out where the ground is filled back over a lid or beside a deep
+/// cutting (`Tunnels::fill_weight`).
+///
+/// The half-metre tier is the same survey the fill corrects — flown when the ring
+/// was an open trench — so its slopes are the trench's sides, and shaded onto the
+/// flat ground over a lid they drew a crumpled ditch that was not there: gone with
+/// `CARTO_NO_GROUND_DETAIL=1` in the 2026-09-23 captures. The vector ground's own
+/// normals are already flattened by the same weight (`map_geometry`).
+///
+/// Only the texels inside a filled tunnel's box are visited, so a box with no
+/// tunnel in it — nearly all of them — costs one query.
+fn flatten_over_fills(
+    bytes: &mut [u8],
+    grid: usize,
+    centre: Vec2,
+    half_m: f32,
+    tunnels: &crate::systems::tunnels::Tunnels,
+) {
+    if grid < 2 {
+        return;
+    }
+    let Some(b) = tunnels.filled_box_near(centre, half_m, cartopolis_geo::tunnels::DATUM_M) else {
+        return;
+    };
+    let sample = half_m * 2.0 / (grid - 1) as f32;
+    let origin = centre - Vec2::splat(half_m);
+    let index = |v: f32, o: f32| (((v - o) / sample).floor().max(0.0) as usize).min(grid - 1);
+    let (x0, x1) = (index(b[0], origin.x), index(b[2], origin.x));
+    let (z0, z1) = (index(b[1], origin.y), index(b[3], origin.y));
+    for z in z0..=z1 {
+        for x in x0..=x1 {
+            let p = origin + Vec2::new(x as f32 * sample, z as f32 * sample);
+            let w = tunnels.fill_weight(p, cartopolis_geo::tunnels::DATUM_M);
+            if w <= 0.0 {
+                continue;
+            }
+            let i = (z * grid + x) * 2;
+            for b in &mut bytes[i..i + 2] {
+                let v = f32::from(*b as i8) * (1.0 - w);
+                *b = (v.round() as i8) as u8;
+            }
+        }
+    }
+}
+
 /// Take a finished tier bake and put its slope into the shared image.
 pub fn receive_ground_detail(
     mut detail: ResMut<GroundDetail>,
     mut field: ResMut<TerrainField>,
     mut images: ResMut<Assets<Image>>,
+    tunnels: Res<crate::systems::tunnels::Tunnels>,
 ) {
-    let Some((bytes, grid, centre, half_m)) = field.take_fine_slope() else {
+    let Some((mut bytes, grid, centre, half_m)) = field.take_fine_slope() else {
         return;
     };
     if !enabled() {
         return;
     }
+    flatten_over_fills(&mut bytes, grid, centre, half_m, &tunnels);
     detail.centre = centre;
     detail.half_m = half_m;
     detail.sample_m = if grid > 1 {

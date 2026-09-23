@@ -622,6 +622,9 @@ struct BuildCtx {
     north: f64,
     east: f64,
     ground: TerrainSnapshot,
+    /// The tunnels under the cell, so what stands on the ground stands on the
+    /// ground filled back over a lid (`LidSnapshot::ground_at`).
+    lids: crate::systems::tunnels::LidSnapshot,
     wants_trees: bool,
 }
 
@@ -651,7 +654,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let w = ctx.local(lat, lng);
         Vec2::new(w.x - ox, w.y - oz)
     };
-    let ground_at = |p: Vec2| ctx.ground.at(p.x + ox, p.y + oz);
+    let ground_at = |p: Vec2| ctx.lids.ground_at(p.x + ox, p.y + oz, &ctx.ground);
 
     let mut meshes: Vec<(PropClass, Mesh)> = Vec::new();
     let mut colliders: Vec<Footprint> = Vec::new();
@@ -721,7 +724,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             let mut positions = sm.positions.clone();
             if ctx.ground.is_ready() {
                 for p in positions.iter_mut() {
-                    p[1] += ctx.ground.at(p[0] + ox, p[2] + oz);
+                    p[1] += ctx.lids.ground_at(p[0] + ox, p[2] + oz, &ctx.ground);
                 }
             }
             let mut mesh = Mesh::new(
@@ -1245,6 +1248,8 @@ pub struct PropFar;
 pub struct StreetDetail {
     anchor: Option<(i64, i64, u32, f64)>,
     terrain_revision: u32,
+    /// The lids every built cell was placed against (`Tunnels::lid_digest`).
+    lid_digest: u64,
     /// (master toggle, trees toggle) the standing cells were built under; a
     /// change is a full retear, like `DetailWants`.
     wants_was: Option<(bool, bool)>,
@@ -1269,6 +1274,7 @@ impl Default for StreetDetail {
         Self {
             anchor: None,
             terrain_revision: 0,
+            lid_digest: 0,
             wants_was: None,
             cells: CellStream::new(Policy {
                 // Both halves of the endpoint's pace, for the reason
@@ -1324,7 +1330,7 @@ pub fn update_street_detail(
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<BuildingColliders>,
-    terrain: Res<crate::systems::terrain::TerrainField>,
+    filled: crate::systems::tunnels::FilledTerrain,
     layers: Res<crate::systems::data_layers::DataLayers>,
     surfaces: ResMut<crate::systems::map_geometry::MapSurfaces>,
     veg_lod: Res<crate::systems::vegetation::VegetationLod>,
@@ -1337,11 +1343,20 @@ pub fn update_street_detail(
         return;
     };
 
+    let terrain = &filled.terrain;
     let wants = (layers.street_detail_enabled, layers.trees_enabled);
     let reanchored = sd.cells.sync(stream.anchor_generation);
-    if reanchored || sd.wants_was != Some(wants) || sd.terrain_revision != terrain.revision {
+    // The lids, as the terrain: what stands on the ground was placed on the
+    // ground as it was filled when the cell was built.
+    let lids = filled.tunnels.lid_digest(Vec2::ZERO, f32::MAX / 4.0);
+    if reanchored
+        || sd.wants_was != Some(wants)
+        || sd.terrain_revision != terrain.revision
+        || sd.lid_digest != lids
+    {
         sd.wants_was = Some(wants);
         sd.terrain_revision = terrain.revision;
+        sd.lid_digest = lids;
         let retired: Vec<Entity> = sd.cell_entities.drain().flat_map(|(_, e)| e).collect();
         sd.spawned_meshes = 0;
         sd.cells.retire_all(retired);
@@ -1416,6 +1431,19 @@ pub fn update_street_detail(
             north,
             east,
             ground: terrain.snapshot(),
+            lids: {
+                let c = lat_lng_to_local(
+                    (north + south) / 2.0,
+                    (west + east) / 2.0,
+                    ax,
+                    ay,
+                    z,
+                    tile_m,
+                );
+                let half = tile_to_meters(DETAIL_ZOOM, clat) as f32 * 0.5
+                    + cartopolis_geo::tunnels::DATUM_M;
+                filled.tunnels.lids_near(Vec2::new(c.x, c.y), half)
+            },
             wants_trees: wants.1,
         };
         IoTaskPool::get()
@@ -1960,6 +1988,7 @@ mod tests {
             north: 90.0,
             east: 180.0,
             ground: TerrainSnapshot::default(),
+            lids: crate::systems::tunnels::LidSnapshot::default(),
             wants_trees: true,
         }
     }

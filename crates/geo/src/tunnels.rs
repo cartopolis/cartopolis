@@ -175,6 +175,11 @@ pub const CEILING_MAX_Y: f32 = -0.6;
 /// cut into.
 const WALL_TOP_Y: f32 = 0.0;
 
+/// How deep an open stretch must be before the survey's trench beside it counts as
+/// its own cut, and is filled back to the land around ([`Tunnel::fill_weight`]).
+/// A metre: shallower is the top of a ramp, where the ground and the road meet.
+pub const FILL_DEPTH_M: f32 = 1.0;
+
 /// Two ends of a run and whether each is a entrance.
 type OpenEnds = [bool; 2];
 
@@ -276,9 +281,27 @@ impl Tunnel {
     /// are public and a cached box would go stale behind them.
     #[must_use]
     pub fn covered_bounds(&self) -> Option<[f32; 4]> {
+        self.bounds_where(|i| self.covered[i] && self.covered[i + 1])
+    }
+
+    /// [`covered_bounds`](Self::covered_bounds) for [`fill_weight`](Self::fill_weight)'s
+    /// segments.
+    #[must_use]
+    pub fn fill_bounds(&self) -> Option<[f32; 4]> {
+        self.bounds_where(|i| self.fills(i))
+    }
+
+    /// Whether segment `i` is covered, or sunk deep enough that the survey's
+    /// trench beside it is this road's own cut.
+    fn fills(&self, i: usize) -> bool {
+        (self.covered[i] && self.covered[i + 1])
+            || self.road_y[i].min(self.road_y[i + 1]) < -FILL_DEPTH_M
+    }
+
+    fn bounds_where(&self, keep: impl Fn(usize) -> bool) -> Option<[f32; 4]> {
         let mut b: Option<[f32; 4]> = None;
         for i in 0..self.centre.len().saturating_sub(1) {
-            if !(self.covered[i] && self.covered[i + 1]) {
+            if !keep(i) {
                 continue;
             }
             for p in [self.centre[i], self.centre[i + 1]] {
@@ -305,9 +328,29 @@ impl Tunnel {
 
     #[must_use]
     pub fn covered_weight(&self, p: [f32; 2], taper_m: f32) -> f32 {
+        self.weight_where(p, taper_m, |i| self.covered[i] && self.covered[i + 1])
+    }
+
+    /// How much the ground at `p` should be put back to the level of the land
+    /// around it: [`covered_weight`](Self::covered_weight), and **also** beside an
+    /// open stretch sunk more than [`FILL_DEPTH_M`].
+    ///
+    /// The survey was flown when the whole ring was an open trench, so beside an
+    /// open cutting it still shows that trench's sloped sides wider than the
+    /// cutting drawn here — and the ground there tore down the slope from the
+    /// top of the wall, which stood five metres short of the land around it
+    /// (measured over the ring's cuttings, 2026-09-23). Inside the cutting the
+    /// ground is cut away, so filling it cannot close the hole; what this lifts is
+    /// the verge beside the wall.
+    #[must_use]
+    pub fn fill_weight(&self, p: [f32; 2], taper_m: f32) -> f32 {
+        self.weight_where(p, taper_m, |i| self.fills(i))
+    }
+
+    fn weight_where(&self, p: [f32; 2], taper_m: f32, keep: impl Fn(usize) -> bool) -> f32 {
         let mut best = 0.0f32;
         for i in 0..self.centre.len().saturating_sub(1) {
-            if !(self.covered[i] && self.covered[i + 1]) {
+            if !keep(i) {
                 continue;
             }
             let (a, b) = (self.centre[i], self.centre[i + 1]);

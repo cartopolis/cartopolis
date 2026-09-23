@@ -768,6 +768,28 @@ impl TerrainSnapshot {
         hi
     }
 
+    /// The level ground over a lid, or beside a cutting, is put back to: the
+    /// **middle** of the ring of samples [`surrounding`](Self::surrounding) takes
+    /// the highest of.
+    ///
+    /// The highest is right for "how much has the survey dug here" and wrong for
+    /// "how high is the land": it is taken afresh at every point, so anything raised
+    /// within thirty metres makes it jump. Beside the Europaweg over the ring's
+    /// east lid it caught ground 30 m north, lifted the lid 4–5 m above the street
+    /// with 1.7 m steps between 3 m samples, and the basemap stood up through the
+    /// road in shards (measured 2026-09-23). The middle of the ring ignores the
+    /// sample or two on a ramp *and* the two that fall in the trench along its axis.
+    #[must_use]
+    pub fn lid_level(&self, wx: f32, wz: f32, radius_m: f32) -> f32 {
+        let mut ring = [0.0f32; 8];
+        for (k, h) in ring.iter_mut().enumerate() {
+            let a = std::f32::consts::TAU * k as f32 / 8.0;
+            *h = self.at(wx + radius_m * a.cos(), wz + radius_m * a.sin());
+        }
+        ring.sort_by(f32::total_cmp);
+        0.5 * (ring[3] + ring[4])
+    }
+
     /// Longest ground edge to leave unsplit before displacement, for *this* field.
     ///
     /// Derived rather than constant because the field's resolution is a budget

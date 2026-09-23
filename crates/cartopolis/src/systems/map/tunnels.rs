@@ -70,6 +70,33 @@ pub struct LidSnapshot {
 }
 
 impl LidSnapshot {
+    /// The ground at a point as the vector ground is drawn: the survey, filled
+    /// back over a lid or beside a deep cutting (`tunnels::Lidded` in
+    /// `map_geometry`). For things placed on the ground on a worker — trees, the
+    /// grass mask — which stood on the survey's old trench floor, under the lid,
+    /// until 2026-09-23.
+    #[must_use]
+    pub fn ground_at(
+        &self,
+        x: f32,
+        z: f32,
+        ground: &crate::systems::terrain::TerrainSnapshot,
+    ) -> f32 {
+        let here = ground.at(x, z);
+        if self.tunnels.is_empty() {
+            return here;
+        }
+        let w = self
+            .tunnels
+            .iter()
+            .map(|t| t.fill_weight([x, z], cartopolis_geo::tunnels::DATUM_M))
+            .fold(0.0f32, f32::max);
+        if w <= 0.0 {
+            return here;
+        }
+        here + w * (ground.lid_level(x, z, cartopolis_geo::tunnels::DATUM_M) - here)
+    }
+
     /// Whether a building with this footprint (world XZ) stands in a covered
     /// tunnel's old trench and so is not to be drawn —
     /// [`cartopolis_geo::tunnels::stands_in_a_covered_trench`].
@@ -95,21 +122,28 @@ impl LidSnapshot {
     }
 }
 
+/// The measured terrain and the streamed tunnels together, for a system at
+/// Bevy's parameter ceiling that needs the filled ground
+/// ([`LidSnapshot::ground_at`]).
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct FilledTerrain<'w> {
+    pub terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    pub tunnels: Res<'w, Tunnels>,
+}
+
 /// One cell's tunnels in the anchored world-XZ frame.
 struct Cell {
     tunnels: Vec<Tunnel>,
-    /// Each tunnel's covered span as a bounding box, by the same index as
-    /// `tunnels`; `None` where that tunnel has no lid at all.
+    /// Each tunnel's filled span ([`Tunnel::fill_bounds`]: covered, or sunk
+    /// deep enough that the ground beside it is filled) as a bounding box, by the
+    /// same index as `tunnels`; `None` where it has neither.
     ///
-    /// The same precomputation, and for the same reason, as [`Mouth`]'s: every
-    /// ground vertex in the city asks `covered_weight` whether it is over a lid,
-    /// and that walks every segment of every tunnel with a distance each, exiting
-    /// early only when the answer is *yes*. A vertex nowhere near a tunnel is
-    /// therefore the worst case and it is also the common one.
-    covered: Vec<Option<[f32; 4]>>,
-    /// The union of `covered`, so a cell with no lid in it costs one comparison
-    /// rather than one per tunnel.
-    covered_bbox: Option<[f32; 4]>,
+    /// Precomputed because every ground vertex in the city asks `fill_weight`
+    /// about it, and a vertex nowhere near a tunnel — the common case — would
+    /// otherwise walk every segment of every tunnel to find that out. The union
+    /// makes a cell with no such stretch one comparison.
+    filled: Vec<Option<[f32; 4]>>,
+    filled_bbox: Option<[f32; 4]>,
     openings: Vec<Mouth>,
 }
 
@@ -197,15 +231,15 @@ impl Tunnels {
                 ..b
             })
             .collect();
-        // Once, here, while the cell is being installed — see `Cell::covered`.
-        let covered: Vec<Option<[f32; 4]>> = moved.iter().map(Tunnel::covered_bounds).collect();
-        let covered_bbox = covered.iter().flatten().fold(None, |a, b| union(a, *b));
+        // Once, here, while the cell is being installed — see `Cell::filled`.
+        let filled: Vec<Option<[f32; 4]>> = moved.iter().map(Tunnel::fill_bounds).collect();
+        let filled_bbox = filled.iter().flatten().fold(None, |a, b| union(a, *b));
         self.cells.insert(
             cell,
             Cell {
                 tunnels: moved,
-                covered,
-                covered_bbox,
+                filled,
+                filled_bbox,
                 openings: tunnels
                     .openings
                     .into_iter()
@@ -274,7 +308,10 @@ impl Tunnels {
         let (lo, hi) = (centre - half, centre + half);
         let mut sum: u64 = 0;
         for c in self.cells.values() {
-            for b in c.covered.iter().flatten() {
+            // The filled bounds, a superset of the covered ones: the basemap's
+            // fill reads `fill_weight`, and the buildings rule reads covered
+            // corridors inside them.
+            for b in c.filled.iter().flatten() {
                 if b[0] <= hi.x && lo.x <= b[2] && b[1] <= hi.y && lo.y <= b[3] {
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     b.map(f32::to_bits).hash(&mut h);
@@ -285,6 +322,24 @@ impl Tunnels {
         sum
     }
 
+    /// The union of every filled stretch's box that reaches the square, grown by
+    /// `pad`, or `None` where none does — so a caller that has to visit a grid
+    /// can visit only the part a fill could touch.
+    #[must_use]
+    pub fn filled_box_near(&self, centre: Vec2, half: f32, pad: f32) -> Option<[f32; 4]> {
+        let (lo, hi) = (centre - half, centre + half);
+        let mut out: Option<[f32; 4]> = None;
+        for c in self.cells.values() {
+            for b in c.filled.iter().flatten() {
+                let g = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
+                if g[0] <= hi.x && lo.x <= g[2] && g[1] <= hi.y && lo.y <= g[3] {
+                    out = union(out, g);
+                }
+            }
+        }
+        out
+    }
+
     /// The lids and openings within `half` of `centre`, copied so a worker job
     /// can ask [`LidSnapshot::holds`] of its buildings without the resource.
     #[must_use]
@@ -292,7 +347,9 @@ impl Tunnels {
         let (lo, hi) = (centre - half, centre + half);
         let mut out = LidSnapshot::default();
         for c in self.cells.values() {
-            for (t, b) in c.tunnels.iter().zip(&c.covered) {
+            // The filled bounds, a superset of the covered: `holds` asks each
+            // tunnel about its covered stretches, and `ground_at` about all of it.
+            for (t, b) in c.tunnels.iter().zip(&c.filled) {
                 if let Some(b) = b {
                     if b[0] <= hi.x && lo.x <= b[2] && b[1] <= hi.y && lo.y <= b[3] {
                         out.tunnels.push(t.clone());
@@ -477,33 +534,24 @@ impl Tunnels {
         best.map(|(_, at, h)| (at, h))
     }
 
-    /// True where the ground has been taken away — the open approach at a entrance.
-    ///
-    /// The one thing that makes a tunnel enterable on foot. Everywhere else the
-    /// ground is a floor and the deck under it is unreachable, which is what keeps
-    /// the pavement over a tunnel walkable; here the ground is a hole, so the floor
-    /// is whatever is at the bottom of it.
-    /// How much the land at `p` is ground over a lid rather than the open trench
-    /// the height survey measured — 1 over a covered stretch, 0 well away from
-    /// one. See [`cartopolis_geo::tunnels::Tunnel::covered_weight`].
+    /// How much the ground at `p` is put back to the level of the land around it
+    /// — over a lid, or beside a deep cutting — from 1 on the corridor to 0 past
+    /// `taper_m`. See [`cartopolis_geo::tunnels::Tunnel::fill_weight`].
     #[must_use]
-    pub fn covered_weight(&self, p: Vec2, taper_m: f32) -> f32 {
+    pub fn fill_weight(&self, p: Vec2, taper_m: f32) -> f32 {
         let at = [p.x, p.y];
         let mut best = 0.0f32;
         for c in self.cells.values() {
-            // A cell with no lid anywhere, or one the point is nowhere near, is
-            // one comparison — which is the answer for almost every vertex, and
-            // was previously a walk of every segment of every tunnel in the city.
-            match c.covered_bbox {
+            match c.filled_bbox {
                 Some(b) if within(at, b, taper_m) => {}
                 _ => continue,
             }
-            for (t, bounds) in c.tunnels.iter().zip(&c.covered) {
+            for (t, bounds) in c.tunnels.iter().zip(&c.filled) {
                 let Some(b) = bounds else { continue };
                 if !within(at, *b, taper_m) {
                     continue;
                 }
-                best = best.max(t.covered_weight(at, taper_m));
+                best = best.max(t.fill_weight(at, taper_m));
                 if best >= 1.0 {
                     return best;
                 }
@@ -512,6 +560,12 @@ impl Tunnels {
         best
     }
 
+    /// True where the ground has been taken away — the open approach at a entrance.
+    ///
+    /// The one thing that makes a tunnel enterable on foot. Everywhere else the
+    /// ground is a floor and the deck under it is unreachable, which is what keeps
+    /// the pavement over a tunnel walkable; here the ground is a hole, so the floor
+    /// is whatever is at the bottom of it.
     #[must_use]
     pub fn over_opening(&self, p: Vec2) -> bool {
         let at = [p.x, p.y];
