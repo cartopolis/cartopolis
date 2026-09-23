@@ -1206,6 +1206,30 @@ fn spawn_geometry_task(
                                             veg_seed(cell),
                                         );
                                         cell_places.surveyed.7 = city.len();
+                                        // **A registered tree is a point, and a
+                                        // register is not a map of the roads.**
+                                        // The scatter keeps out of every drawn
+                                        // street (`scatter::RoadMask`); the
+                                        // registers' trees were only
+                                        // de-duplicated, so wherever a surveyed
+                                        // trunk lands inside a drawn carriageway
+                                        // — the OSM ribbon's width is a class
+                                        // convention, not the kerb — a tree grew
+                                        // out of the road (reported 2026-09-23).
+                                        // By the trunk alone: a street tree's
+                                        // crown overhangs the road on purpose.
+                                        let mut roads: Option<scatter::RoadMask> = None;
+                                        let mut off_road = |list: &mut Vec<scatter::TreeInstance>| {
+                                            if list.is_empty() {
+                                                return;
+                                            }
+                                            let mask = roads.get_or_insert_with(|| {
+                                                scatter::RoadMask::build(&tile, tile_m)
+                                            });
+                                            list.retain(|t| !mask.blocks(t.x, t.z, 0.0));
+                                        };
+                                        let mut city = city;
+                                        off_road(&mut city);
                                         if !municipal::supersedes(
                                             cell.0,
                                             cell.1,
@@ -1220,6 +1244,8 @@ fn spawn_geometry_task(
                                                     veg_seed(cell),
                                                 );
                                             cell_places.surveyed.0 = planted.len();
+                                            let mut planted = planted;
+                                            off_road(&mut planted);
                                             trees.extend(planted);
                                         }
                                         trees.extend(city);
@@ -1230,10 +1256,14 @@ fn spawn_geometry_task(
                                         // leaves the volumetric groups alone: a
                                         // third of a tree is not a smaller tree.
                                         if !cell_openings.is_empty() {
+                                            // By the crown, not the trunk: a
+                                            // tree on the lip of a trench
+                                            // otherwise hangs over the road in it.
                                             trees.retain(|t| {
-                                                !cartopolis_geo::tunnels::in_an_opening(
+                                                !cartopolis_geo::tunnels::near_an_opening(
                                                     &cell_openings,
                                                     [t.x, t.z],
+                                                    t.radius * 0.8,
                                                 )
                                             });
                                         }

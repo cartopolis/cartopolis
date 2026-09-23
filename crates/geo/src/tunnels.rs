@@ -715,6 +715,26 @@ pub fn in_an_opening(openings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
     openings.iter().any(|ring| point_in_ring(p, ring))
 }
 
+/// [`in_an_opening`], for something with a footprint: true when `p` is inside
+/// an opening or within `r` of its edge.
+///
+/// A tree is tested by its trunk and drawn by its crown, and a 4 m crown whose
+/// trunk stands on the lip of a trench hangs over the carriageway — which is
+/// what the captures over Groningen's cuttings showed (2026-09-23).
+#[must_use]
+pub fn near_an_opening(openings: &[Vec<[f32; 2]>], p: [f32; 2], r: f32) -> bool {
+    openings.iter().any(|ring| {
+        point_in_ring(p, ring)
+            || ring.windows(2).any(|w| {
+                let (a, b) = (w[0], w[1]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let len_sq = (dx * dx + dy * dy).max(1e-9);
+                let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+                (p[0] - (a[0] + dx * t)).hypot(p[1] - (a[1] + dy * t)) < r
+            })
+    })
+}
+
 /// Even-odd point in ring.
 pub(crate) fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
     let mut inside = false;
@@ -3188,6 +3208,34 @@ mod tests {
             checked[0] > 0 && checked[1] > 0,
             "no tunnel faces to check: {checked:?}"
         );
+    }
+
+    /// **No crown hangs over an open trench** once the caller's filter has run.
+    /// The ring fixture's park is laid over the whole corridor, so the scatter
+    /// plants into the cuttings unless the openings keep it out — and the trunk
+    /// alone is not enough, since a crown on the lip overhangs the carriageway.
+    #[test]
+    fn no_tree_crown_reaches_into_an_opening() {
+        let tile_m = ring_tile_m();
+        let tile = crate::testdata::groningen_ring();
+        let out = build_tunnels(&tile, tile_m, None);
+        let mut trees = crate::scatter::scatter_vegetation(&tile, tile_m, 7).expect("scatters");
+        let before = trees.len();
+        trees.retain(|t| !near_an_opening(&out.openings, [t.x, t.z], t.radius * 0.8));
+        assert!(
+            trees.len() < before,
+            "the filter removed nothing — no tree was near an opening"
+        );
+        for t in &trees {
+            for ring in &out.openings {
+                assert!(
+                    !point_in_ring([t.x, t.z], ring),
+                    "a tree stands in an opening at {},{}",
+                    t.x,
+                    t.z
+                );
+            }
+        }
     }
 
     /// **A sunken road under water is covered.** The ring passes under the Oude

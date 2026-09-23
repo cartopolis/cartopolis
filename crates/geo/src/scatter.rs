@@ -428,7 +428,8 @@ impl RoadMask {
         }
     }
 
-    pub(crate) fn build(tile: &TileData, tile_m: f32) -> Self {
+    #[must_use]
+    pub fn build(tile: &TileData, tile_m: f32) -> Self {
         use crate::vector_tiles::drawn_street;
         use geo_types::Geometry;
 
