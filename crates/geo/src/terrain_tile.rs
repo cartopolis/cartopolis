@@ -75,14 +75,18 @@ impl TerrainTile {
         out.extend_from_slice(&(self.grid as u16).to_le_bytes());
         out.extend_from_slice(&min.to_le_bytes());
         out.extend_from_slice(&step.to_le_bytes());
-        for h in &self.heights {
-            let q = if h.is_finite() {
-                (((h - min) / step).round() as u32).min(u32::from(NO_DATA - 1)) as u16
-            } else {
-                NO_DATA
-            };
-            out.extend_from_slice(&q.to_le_bytes());
-        }
+        let steps: Vec<u16> = self
+            .heights
+            .iter()
+            .map(|h| {
+                if h.is_finite() {
+                    (((h - min) / step).round() as u32).min(u32::from(NO_DATA - 1)) as u16
+                } else {
+                    NO_DATA
+                }
+            })
+            .collect();
+        out.extend_from_slice(&pack(&steps, self.grid));
         out
     }
 
@@ -102,15 +106,58 @@ impl TerrainTile {
                 grid * grid * 2
             ));
         }
-        let heights = body
-            .chunks_exact(2)
-            .map(|b| match u16::from_le_bytes([b[0], b[1]]) {
+        let heights = unpack(body, grid)
+            .into_iter()
+            .map(|q| match q {
                 NO_DATA => f32::NAN,
                 q => min + f32::from(q) * step,
             })
             .collect();
         Ok(Self { grid, heights })
     }
+}
+
+/// The steps as the wire carries them: each one as its difference from the sample
+/// to its west (the first in a row from 0), zig-zagged so a small fall is a small
+/// number, then the low bytes of the whole tile followed by the high bytes.
+///
+/// **For the compressor, not for size on its own** — the body is the same 2 bytes a
+/// sample either way. Ground changes slowly from one sample to the next, so the
+/// differences are small, their high bytes are nearly all zero, and a run of zeros
+/// is what gzip packs best. Measured on Groningen tiles (2026-09-23): 33 KB bodies
+/// gzip to 18–21 KB as plain steps and to 12–16 KB like this, which is the form
+/// that crosses the network once the server compresses responses.
+///
+/// The arithmetic wraps in 16 bits, so every difference is representable and the
+/// round trip is exact whatever the neighbouring values are — a hole next to
+/// measured ground included.
+fn pack(steps: &[u16], grid: usize) -> Vec<u8> {
+    let mut lo = Vec::with_capacity(steps.len());
+    let mut hi = Vec::with_capacity(steps.len());
+    for row in steps.chunks(grid) {
+        let mut prev = 0u16;
+        for &v in row {
+            let d = v.wrapping_sub(prev) as i16;
+            let z = ((d << 1) ^ (d >> 15)) as u16;
+            lo.push(z as u8);
+            hi.push((z >> 8) as u8);
+            prev = v;
+        }
+    }
+    lo.extend_from_slice(&hi);
+    lo
+}
+
+fn unpack(body: &[u8], grid: usize) -> Vec<u16> {
+    let (lo, hi) = body.split_at(body.len() / 2);
+    let mut out = Vec::with_capacity(lo.len());
+    for (i, (&l, &h)) in lo.iter().zip(hi).enumerate() {
+        let z = u16::from(l) | (u16::from(h) << 8);
+        let d = ((z >> 1) as i16) ^ -((z & 1) as i16);
+        let prev = if i % grid == 0 { 0 } else { out[i - 1] };
+        out.push(u16::wrapping_add(prev, d as u16));
+    }
+    out
 }
 
 /// Where each sample of tile `z/x/y` is, as WGS84 `(lat, lng)`, row-major.
@@ -212,6 +259,41 @@ mod tests {
                 assert!((a - b).abs() <= 0.005 + 1e-4, "{a} came back as {b}");
             }
         }
+    }
+
+    /// The difference packing is exact for any values, not only for smooth ground:
+    /// a hole beside measured ground and a jump across the whole range both survive.
+    #[test]
+    fn the_packing_round_trips_any_steps() {
+        let grid = 5;
+        let steps: Vec<u16> = vec![
+            0,
+            NO_DATA,
+            0,
+            1,
+            NO_DATA - 1, //
+            NO_DATA,
+            NO_DATA,
+            7,
+            6,
+            5, //
+            32768,
+            32767,
+            0,
+            65534,
+            1, //
+            100,
+            101,
+            99,
+            100,
+            100, //
+            1,
+            2,
+            3,
+            4,
+            5,
+        ];
+        assert_eq!(unpack(&pack(&steps, grid), grid), steps);
     }
 
     #[test]
