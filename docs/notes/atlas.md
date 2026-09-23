@@ -70,7 +70,10 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
    except for the log cursor (below) and its address: it is static files behind
    Caddy at `cartopolis.org/console/`, the front page's *Sign in*, published by
    `deploy-console.yml`. web.cartopolis.org, its old hostname, was dropped
-   rather than redirected — one site, not two.
+   rather than redirected — one site, not two. The same build serves the
+   players' pages (`/register`, `/verify`, `/house`) at the site root, so the
+   simulator's `CARTO_PUBLIC_BASE_URL` is just `https://cartopolis.org` and
+   carries no console path.
 3. Move accounts once the token design is agreed. The in-world player actions
    (block, report, delete my account) stay on the wire, with the simulator
    passing them on.

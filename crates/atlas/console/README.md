@@ -106,12 +106,14 @@ Caddy does in production, so the console sees one origin and needs no CORS.
 ## Deployment
 
 `.forgejo/workflows/deploy-console.yml` builds `dist/` and publishes it to
-`/data/cartopolis/admin`, which Caddy serves as `cartopolis.org/console/`. The
-simulator prefixes the console calls (`/api/admin`, `/api/login`,
-`/api/logout`, `/api/register`, `/api/houses`) are proxied to the simulator on
-that hostname, and `/api/pipeline/*` falls through to atlas with everything
-else. The simulator's `CARTO_PUBLIC_BASE_URL` must be
-`https://cartopolis.org/console`, or verification emails link to the wrong place.
+`/data/cartopolis/admin`. Caddy serves it on cartopolis.org as the operator's
+pages under `/console/` and the players' pages at `/register`, `/verify` and
+`/house` (`src/lib/base.ts`). The simulator's routes the console calls
+(`/api/admin`, `/api/login`, `/api/logout`, `/api/register`, `/api/houses`)
+are proxied to it on that hostname, and `/api/pipeline/*` falls
+through to atlas with everything else. The simulator's `CARTO_PUBLIC_BASE_URL`
+is just the site, `https://cartopolis.org`: it builds
+`{base}/verify?token=…`, which lands on the player page.
 
 **Two hand-synced seams.** `src/types.ts` describes what the simulator's
 `auth::AccountRow` and atlas's `jobs::Job` / `coverage::CoverageEntry`

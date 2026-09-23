@@ -2,7 +2,6 @@ import {route} from 'preact-router'
 import {useState} from 'preact/hooks'
 
 import {$s} from '@/app'
-import {at} from '@/lib/base'
 import {signIn} from '@/lib/accounts'
 
 export const Login = () => {
@@ -59,7 +58,7 @@ export const Login = () => {
               * private world is a button that leads to a refusal.
               */}
             {$s.registration?.open && (
-                <button class="ghost" disabled={busy} onClick={() => route(at('/register'))} type="button">
+                <button class="ghost" disabled={busy} onClick={() => route('/register')} type="button">
                     Create an account
                 </button>
             )}
@@ -68,7 +67,7 @@ export const Login = () => {
               * server that does not hand out houses should not offer the page.
               */}
             {$s.registration?.houses_open && (
-                <button class="ghost" disabled={busy} onClick={() => route(at('/house'))} type="button">
+                <button class="ghost" disabled={busy} onClick={() => route('/house')} type="button">
                     Claim your house
                 </button>
             )}

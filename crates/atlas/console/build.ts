@@ -83,7 +83,13 @@ if (serve) {
                 } as RequestInit)
             }
 
-            // Mounted at /console/ as in production (`src/lib/base.ts`).
+            // Mounted as in production (`src/lib/base.ts`): the player pages at
+            // the root, everything else under /console/.
+            if (['/register', '/verify', '/house'].includes(url.pathname)) {
+                return new Response(Bun.file(path.join(dist, 'index.html')), {
+                    headers: {'Content-Type': 'text/html'},
+                })
+            }
             if (!url.pathname.startsWith('/console/')) {
                 return Response.redirect(`${url.origin}/console/`, 302)
             }

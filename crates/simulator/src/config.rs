@@ -103,8 +103,8 @@ pub struct SimConfig {
     /// Display name beside it.
     #[serde(default = "default_mail_from_name")]
     pub mail_from_name: String,
-    /// Public base URL of the web app, which verification links are built against
-    /// — e.g. `https://cartopolis.org/console`. Never taken from the request's `Host`
+    /// Public origin of the web app, which verification links are built against
+    /// — e.g. `https://cartopolis.org`. Never taken from the request's `Host`
     /// header; see [`crate::mail::MailConfig::public_base_url`].
     #[serde(default = "default_public_base_url")]
     pub public_base_url: String,

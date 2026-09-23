@@ -60,7 +60,7 @@ export const Register = (_props: RoutableProps) => {
                 </p>
                 <p class="hint">
                     Nothing arrived? It may be in a spam folder.{' '}
-                    <a href={`${at('/verify')}?resend=${encodeURIComponent(email.trim())}`}>Send another</a>.
+                    <a href={`/verify?resend=${encodeURIComponent(email.trim())}`}>Send another</a>.
                 </p>
             </div>
         )

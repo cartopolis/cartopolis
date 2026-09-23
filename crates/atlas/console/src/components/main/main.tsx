@@ -15,7 +15,7 @@ import {Pipeline} from '@/components/pages/pipeline/pipeline'
 import {Register} from '@/components/pages/register/register'
 import {Verify} from '@/components/pages/verify/verify'
 import {loadAccounts, signOut} from '@/lib/accounts'
-import {at} from '@/lib/base'
+import {PLAYER_PATHS, at} from '@/lib/base'
 
 /**
  * The operator's half: sign in, then one of two lists.
@@ -107,18 +107,19 @@ const AdminView = (_props: RoutableProps) => {
  * Two audiences on one origin, told apart by the path.
  *
  * `/register` and `/verify` are for people who have no account, `/house` is for
- * players who do; everything else is the operator's. They share this deployment because they share an API and a
- * TLS termination, and because the verification link has to point *somewhere* the
- * simulator's `/api` is same-origin with. Caddy already serves this host that way
- * (`try_files {path} /index.html`), so an unknown path is a route rather than a
- * 404 — nothing on the server needs changing for these two.
+ * players who do, and all three are at the site root; everything under
+ * `/console/` is the operator's (`lib/base.ts`). They share this build because
+ * they share an API, and because the verification link has to point *somewhere*
+ * the simulator's `/api` is same-origin with. Caddy serves `index.html` for the
+ * three player paths and for any path under `/console/`, so each is a route
+ * rather than a 404.
  *
  * The header's sign-out button is deliberately absent on the player routes: the
  * session it would end is the operator's, and the person following a link out of
  * their inbox — or signing in to claim their house — has never seen it.
  */
 export const Main = () => {
-    const playerRoute = ['/register', '/verify', '/house'].map(at).includes(window.location.pathname)
+    const playerRoute = PLAYER_PATHS.includes(window.location.pathname)
 
     return (
         <div class="app">
@@ -142,9 +143,9 @@ export const Main = () => {
 
             <main class="view">
                 <Router>
-                    <Register path={at('/register')} />
-                    <Verify path={at('/verify')} />
-                    <House path={at('/house')} />
+                    <Register path="/register" />
+                    <Verify path="/verify" />
+                    <House path="/house" />
                     <AdminView default />
                 </Router>
             </main>

@@ -43,8 +43,8 @@ pub struct MailConfig {
     pub from: String,
     /// Display name beside it.
     pub from_name: String,
-    /// The base URL verification links are built against — the public URL of the
-    /// web app, e.g. `https://cartopolis.org/console`.
+    /// The origin verification links are built against — the public URL of the
+    /// web app, e.g. `https://cartopolis.org`.
     ///
     /// Not derived from the request's `Host` header, deliberately: that header is
     /// attacker-controlled, and a link built from it is a link an attacker chose
