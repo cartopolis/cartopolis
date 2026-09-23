@@ -44,7 +44,7 @@ jobs:
       # published site nobody checked. `tsc` earns its keep: `src/types.ts`
       # describes Rust structs by hand and nothing else checks them.
       - name: Typecheck
-        run: bunx tsc --noEmit
+        run: bun x tsc --noEmit
 
       - name: Test
         run: bun test
