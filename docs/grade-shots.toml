@@ -1,9 +1,9 @@
 # Known places to check that grade separation still works: tunnels under the
 # ground, bridges over it, and the two things that are neither.
 #
-#     cargo shots --manifest docs/grade-shots.toml            # everything
-#     cargo shots --manifest docs/grade-shots.toml --only tunnels
-#     cargo shots --manifest docs/grade-shots.toml --only bridges,crossroads
+#     cargo shots docs/grade-shots.toml            # everything
+#     cargo shots docs/grade-shots.toml --only tunnels
+#     cargo shots docs/grade-shots.toml --only bridges,crossroads
 #     # …or, with a client that stays up between views:
 #     slot claim deck && slot sync      # a VPS slot when the Deck is held
 #     slot run -- bash /tmp/cap.sh      # --shot-serve, see CLAUDE.md
@@ -13,7 +13,7 @@
 # view in a group go on the command line beside `--only`, and the run exits
 # non-zero with the measured value beside the failure:
 #
-#     cargo shots --manifest docs/grade-shots.toml --only tunnels \
+#     cargo shots docs/grade-shots.toml --only tunnels \
 #         --expect 'settled==true' --expect 'tunnel_count>0' \
 #         --expect 'basemap_open_tiles>0' --expect 'tunnel_road_m<=-6.0'
 #
