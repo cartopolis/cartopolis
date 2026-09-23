@@ -5659,10 +5659,7 @@ mod tests {
             area(b).total_cmp(&area(a))
         });
         for (i, d) in sorted.iter().take(8).enumerate() {
-            let (cx, cz) = (
-                (d.min[0] + d.max[0]) * 0.5,
-                (d.min[1] + d.max[1]) * 0.5,
-            );
+            let (cx, cz) = ((d.min[0] + d.max[0]) * 0.5, (d.min[1] + d.max[1]) * 0.5);
             let here = key.map_or(String::new(), |(z, x, y)| {
                 let n = 2f64.powf(z);
                 let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
