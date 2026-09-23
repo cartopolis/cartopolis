@@ -745,6 +745,58 @@ pub fn stands_in_a_covered_trench(
         || in_an_opening(openings, p)
 }
 
+/// How far outside a sunken road's carriageway a surveyed wall may run and still
+/// be that road's own retaining or portal wall, metres.
+pub const WALL_REACH_M: f32 = 3.0;
+
+/// Whether a surveyed **wall** is part of a sunken road — a retaining wall along a
+/// cutting, a portal's headwall across a mouth, a tunnel's side wall under a lid
+/// — and so already drawn by this module.
+///
+/// The survey registers those walls as ordinary boundaries, and the 3D product
+/// measures them from the trench floor to the top. Drawn the way every other
+/// boundary is — a box standing *up* from the ground by its measured height — the
+/// ring's east portal wall became a 7 m slab across both mouths and the north
+/// cutting's retaining wall a 9 m one along its edge, pale blocks that filled the
+/// mouths from the deck to above the lid (2026-09-23).
+///
+/// The test is by length, not by a point: the line is sampled every metre or two,
+/// and it is the tunnel's when most of the samples lie over a sunken corridor
+/// (deck more than a metre down) widened by [`WALL_REACH_M`], or in an opening.
+/// A garden wall that merely crosses the ground over a lid is mostly elsewhere.
+#[must_use]
+pub fn wall_of_a_sunken_road(
+    tunnels: &[Tunnel],
+    openings: &[Vec<[f32; 2]>],
+    line: &[[f32; 2]],
+) -> bool {
+    if line.len() < 2 || (tunnels.is_empty() && openings.is_empty()) {
+        return false;
+    }
+    let mut samples = 0usize;
+    let mut near = 0usize;
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (len / 1.5).ceil().max(1.0) as usize;
+        for k in 0..=steps {
+            #[allow(clippy::cast_precision_loss)]
+            let t = k as f32 / steps as f32;
+            let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            samples += 1;
+            let sunken = tunnels.iter().any(|tu| {
+                road_under_line(&tu.centre, &tu.road_y, tu.half_w + WALL_REACH_M, p)
+                    .is_some_and(|y| y < -1.0)
+            });
+            if sunken || in_an_opening(openings, p) {
+                near += 1;
+            }
+        }
+    }
+    near * 5 >= samples * 3
+}
+
 /// [`stands_in_a_covered_trench`] for a whole footprint: true when any of its
 /// corners, the middle of any of its edges, or its centre qualifies, each with
 /// `dug` asked at that point.
@@ -3407,6 +3459,37 @@ mod tests {
             &out.openings,
             beside,
             7.0
+        ));
+    }
+
+    /// **The survey's own tunnel walls are recognised, and a wall elsewhere is
+    /// not.** Measured on the ring tile's BGT (cartopy `bgt.ts`, 2026-09-23), in
+    /// this tile's metres.
+    #[test]
+    fn the_surveyed_walls_of_the_ring_are_the_tunnels() {
+        let out = build_tunnels(&crate::testdata::groningen_ring(), ring_tile_m(), None);
+        // The east portal's headwall, measured 7.02 m, across both mouths.
+        let headwall = [[956.0f32, 319.0], [969.0, 352.0]];
+        // The north cutting's retaining wall, measured 9.11 m.
+        let retaining = [[691.0f32, 556.0], [779.0, 478.0]];
+        // A wall running along the lid.
+        let along_lid = [[772.0f32, 474.0], [961.0, 333.0]];
+        for (name, w) in [
+            ("headwall", &headwall[..]),
+            ("retaining wall", &retaining[..]),
+            ("wall along the lid", &along_lid[..]),
+        ] {
+            assert!(
+                wall_of_a_sunken_road(&out.tunnels, &out.openings, w),
+                "the ring's {name} is not recognised as the tunnel's"
+            );
+        }
+        // A wall of the same length a hundred metres from the ring.
+        let elsewhere = [[691.0f32, 656.0], [779.0, 578.0]];
+        assert!(!wall_of_a_sunken_road(
+            &out.tunnels,
+            &out.openings,
+            &elsewhere
         ));
     }
 

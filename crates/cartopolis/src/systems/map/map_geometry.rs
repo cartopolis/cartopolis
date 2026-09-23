@@ -1338,12 +1338,35 @@ fn spawn_geometry_task(
                                         // their own builder — one box per surveyed
                                         // segment, in the same group and material
                                         // as everything above.
-                                        let lines = crate::systems::surveyed::surveyed_lines(
+                                        let mut lines = crate::systems::surveyed::surveyed_lines(
                                             &surveyed,
                                             cell.0,
                                             cell.1,
                                             tile_m,
                                         );
+                                        // A sunken road's retaining and portal
+                                        // walls are the tunnel's to draw; stood up
+                                        // from the ground by their measured height
+                                        // they filled its mouths
+                                        // (`tunnels::wall_of_a_sunken_road`).
+                                        if !cell_tunnels.is_empty() {
+                                            let before = lines.len();
+                                            lines.retain(|l| {
+                                                l.kind != furniture::LineKind::Wall
+                                                    || !cartopolis_geo::tunnels::wall_of_a_sunken_road(
+                                                        &cell_tunnels,
+                                                        &cell_openings,
+                                                        &l.points,
+                                                    )
+                                            });
+                                            if lines.len() < before {
+                                                tracing::info!(
+                                                    cell = ?cell,
+                                                    dropped = before - lines.len(),
+                                                    "surveyed walls of a sunken road left to the tunnel"
+                                                );
+                                            }
+                                        }
                                         cell_places.surveyed.2 = lines.len();
                                         meshes.extend(furniture::build_line_meshes(
                                             &lines, mesh_bytes,
