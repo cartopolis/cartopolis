@@ -2410,7 +2410,8 @@ pub fn update_map_surfaces(
 /// hides a whole layer: `osm` (OSM buildings), `lod22` (3DBAG buildings),
 /// `basemap` (clipmap tiles), `tunnel` (tunnel decks and walls), `surface`
 /// (every vector ground mesh), or any fragment of a ground group's name as
-/// `{:?}` prints it (`grass`, `road`, `built`, `furniture` …). Unset, it
+/// `{:?}` prints it (`grass`, `road`, `built`, `furniture` …), and `!word` hides
+/// every ground group whose name does *not* contain it. Unset, it
 /// costs one empty check a frame.
 fn debug_hide_tokens() -> &'static [String] {
     static TOKENS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
@@ -2457,7 +2458,12 @@ pub fn debug_hide_layers(
             || (surface && has("surface"))
             || group.is_some_and(|g| {
                 let name = format!("{:?}", g.0).to_ascii_lowercase();
-                tokens.iter().any(|t| name.contains(t.as_str()))
+                tokens.iter().any(|t| match t.strip_prefix('!') {
+                    // `!word`: every ground group *except* those naming it, so a
+                    // layer can be looked at on its own (`!tunnel`).
+                    Some(keep) => !name.contains(keep),
+                    None => name.contains(t.as_str()),
+                })
             });
         if hide && *v != Visibility::Hidden {
             *v = Visibility::Hidden;
@@ -3432,6 +3438,21 @@ fn stand_on_terrain<G: MeasuredGround>(
         // (2026-09-23). So a top is raised to the level the ground beside it is
         // filled to, never lowered.
         if group == SurfaceGroup::TunnelStructure {
+            // **Under water the structure stays under the water.** The ground
+            // beneath a canal is carved to the registered level less a bed, and
+            // `stand_tunnel_on` reads that dip as trench the survey already dug,
+            // so it lifted the tunnel under the Oude Winschoterdiep until its
+            // roof and wall tops stood above the water — two dark wedges running
+            // from the east mouth across the canal (bisected with
+            // CARTO_DBG_HIDE=tunnel, 2026-09-23). The roof and walls are held
+            // below the registered surface; the deck is left where it is, so the
+            // traffic on it is unchanged.
+            for p in positions.iter_mut() {
+                let (x, z) = (origin.x + p[0], origin.y + p[2]);
+                if let Some(w) = terrain.water_surface_at(x, z) {
+                    p[1] = p[1].min(w - UNDER_WATER_M);
+                }
+            }
             for (p, top) in positions.iter_mut().zip(tops) {
                 if top {
                     let (x, z) = (origin.x + p[0], origin.y + p[2]);
@@ -3534,6 +3555,9 @@ thread_local! {
     /// normals, and the vertex count out. Read and reset per cell job.
     static GROUND_SPLIT: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
 }
+
+/// How far below a registered water surface a tunnel's roof and walls are held.
+const UNDER_WATER_M: f32 = 0.3;
 
 /// The level the ground at `(x, z)` is filled to where it is filled at all: the
 /// middle of the land around (`TerrainField::lid_level`), and never below a

@@ -61,6 +61,11 @@ pub struct CellTunnels {
     pub openings: Vec<Vec<[f32; 2]>>,
 }
 
+/// How far outside a covered corridor [`Tunnels::cover_over`] still holds the
+/// ground above the roof: half the widest median a dual carriageway is mapped
+/// with, so the strip between two lids is covered from both sides.
+const COVER_REACH_M: f32 = 6.0;
+
 /// Covered tunnels and openings copied out of [`Tunnels`] for a worker job, in the
 /// anchored world-XZ frame.
 #[derive(Clone, Default)]
@@ -440,11 +445,16 @@ impl Tunnels {
         let at = [p.x, p.y];
         self.cells
             .values()
-            .filter(|c| c.filled_bbox.is_some_and(|b| within(at, b, 0.0)))
+            .filter(|c| c.filled_bbox.is_some_and(|b| within(at, b, COVER_REACH_M)))
             .flat_map(|c| c.tunnels.iter())
-            .filter(|t| t.covered_weight(at, 0.0) >= 1.0)
+            // **Beside the lid as well as on it**: a dual carriageway is two
+            // corridors with a strip between them, and over that strip the fill
+            // could still come out below the inner walls' tops, which ran out of
+            // the ground the length of the ring's east lid as a wedge toward the
+            // canal (2026-09-23).
+            .filter(|t| t.covered_weight(at, COVER_REACH_M) > 0.0)
             .filter_map(|t| {
-                t.road_under(at).map(|y| {
+                t.road_near(at, COVER_REACH_M).map(|y| {
                     y + lift_for(-y, dug) + t.clearance - cartopolis_geo::tunnels::CEILING_MAX_Y
                 })
             })

@@ -223,6 +223,13 @@ impl Tunnel {
         road_under_line(&self.centre, &self.road_y, self.half_w, p)
     }
 
+    /// The deck level under `p` on this corridor widened by `reach` metres either
+    /// side, or `None` past that.
+    #[must_use]
+    pub fn road_near(&self, p: [f32; 2], reach: f32) -> Option<f32> {
+        road_under_line(&self.centre, &self.road_y, self.half_w + reach, p)
+    }
+
     /// How far `p` is from this tunnel's carriageway in plan, and the deck level
     /// there. Zero distance means `p` is over it.
     ///
