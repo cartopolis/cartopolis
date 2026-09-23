@@ -203,7 +203,7 @@ both to a Forgejo release — a versioned one on a `v*` tag, or the rolling
 **Web (WebAssembly).** `crates/cartopolis/serve-threads.sh` builds and serves the wasm
 client with real threads (shared memory + `-Z build-std` + COOP/COEP headers — the
 script's header comment explains what breaks if one of the three is missing).
-`deploy-web.yml` does the same with LTO and publishes to
+`deploy-wasm.yml` does the same with LTO and publishes to
 [cartopolis.org](https://cartopolis.org) on every push to `main`; it is a
 separate workflow because rebuilding std and linking ~70 MB would block the test
 lanes. The web target runs against WebGL2 (no storage buffers — hence the CPU
@@ -372,7 +372,7 @@ wasm- or Android-shaped, run that lane locally first —
 two environment variables.
 
 Both jobs use the prebuilt `cartopolis-ci` image and check out with `lfs: true` — add
-that to any new job. `deploy-web.yml`, `deploy-android.yml` and `deploy-sim.yml`
+that to any new job. `deploy-wasm.yml`, `deploy-android.yml` and `deploy-sim.yml`
 (all three `workflow_dispatch` only) and `release.yml` are separate workflows.
 
 Every deploy lane in *this* repo is manual, because publishing is either

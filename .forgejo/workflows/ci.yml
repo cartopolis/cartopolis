@@ -624,7 +624,7 @@ jobs:
         # `deploy-*.yml` lanes still mount the `test` job's registry … they are
         # rare and manual, and four registries to keep warm is a worse trade
         # than an occasional re-run". That trade was wrong, and it was called on
-        # 2026-08-21: `deploy-web`, `deploy-sim` and `deploy-android` were
+        # 2026-08-21: `deploy-wasm`, `deploy-sim` and `deploy-android` were
         # dispatched within twenty seconds of each other after a merge, all three
         # mounted this job's registry, and the web deploy died on a
         # half-extracted `toml_datetime 0.7.3` — the exact signature above. A
@@ -678,7 +678,7 @@ jobs:
       # `RUSTFLAGS` is not a detail here, it is *which web build this checks*.
       #
       # Without it, cargo falls back to `.cargo/config.toml`'s per-target entry
-      # (`+simd128` and the web-sys cfg, no threads) — and `deploy-web.yml` sets
+      # (`+simd128` and the web-sys cfg, no threads) — and `deploy-wasm.yml` sets
       # `RUSTFLAGS` explicitly, which **replaces** that entry rather than adding
       # to it, with `+atomics,+bulk-memory,+mutable-globals`. So the two differed
       # in the one dimension that changes which code exists: threads. This lane

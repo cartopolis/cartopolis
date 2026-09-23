@@ -1,6 +1,6 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, deploy-admin.yml, deploy-web.yml, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
+triggers: [deploy-sim.yml, deploy-admin.yml, deploy-wasm.yml, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
 updated: 2026-08-13
 ---
 
@@ -19,7 +19,7 @@ Two more paths on `cartopolis.org` are Caddy routes rather than services, and bo
 belong to place links ([place-links.md](place-links.md)): `/go` is rewritten to
 `index.html` so a shared link has something to open, and
 `/.well-known/assetlinks.json` is what an Android phone reads to decide the app
-may handle it. The second is published by `deploy-web.yml` out of the trunk dist —
+may handle it. The second is published by `deploy-wasm.yml` out of the trunk dist —
 `rsync --delete` removes anything under the web root that the build did not
 produce, so a file placed there by hand survives exactly until the next deploy.
 

@@ -37,7 +37,7 @@ jobs:
       # `/data/cartopolis/sim` is where the systemd unit reads the binary from,
       # and it has to be in the runner's `valid_volumes` or this mount is refused.
       #
-      # Its own registry copy rather than the `test` job's — deploy-web.yml has
+      # Its own registry copy rather than the `test` job's — deploy-wasm.yml has
       # the long version. Short: a bind mount of `registry/` excludes cargo's
       # lock (`$CARGO_HOME/.package-cache`, one level above it), so two
       # concurrent containers corrupt one registry, and on 2026-08-21 the three

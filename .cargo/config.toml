@@ -63,7 +63,7 @@ rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]
 # Two consequences, one per lane. `ci.yml` sets `CARGO_INCREMENTAL: "0"` in its
 # env and was unaffected — and its own comment explains why it must: "sccache
 # cannot cache an incremental compilation and silently declines to". The three
-# workflows that ship artifacts (`release.yml`, `deploy-web.yml`,
+# workflows that ship artifacts (`release.yml`, `deploy-wasm.yml`,
 # `deploy-android.yml`) set neither, so every shipped binary, wasm module and APK
 # was built incrementally on top of thin LTO: slower, more fragmented, and
 # uncacheable by any sccache added later.

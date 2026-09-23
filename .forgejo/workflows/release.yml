@@ -55,7 +55,7 @@ jobs:
       image: cartopolis-ci:latest
       # The compilation cache is the same host directory ci.yml mounts —
       # sccache is keyed on the compiler invocation and is safe to share. The
-      # download cache is **this workflow's own copy**, and deploy-web.yml has
+      # download cache is **this workflow's own copy**, and deploy-wasm.yml has
       # the long version: a bind mount of `registry/` excludes cargo's lock,
       # which lives one level above it at `$CARGO_HOME/.package-cache`, so two
       # concurrent containers write one registry with nothing serialising them.
@@ -160,7 +160,7 @@ jobs:
       image: cartopolis-ci:latest
       # The compilation cache is the same host directory ci.yml mounts —
       # sccache is keyed on the compiler invocation and is safe to share. The
-      # download cache is **this workflow's own copy**, and deploy-web.yml has
+      # download cache is **this workflow's own copy**, and deploy-wasm.yml has
       # the long version: a bind mount of `registry/` excludes cargo's lock,
       # which lives one level above it at `$CARGO_HOME/.package-cache`, so two
       # concurrent containers write one registry with nothing serialising them.

@@ -3,7 +3,7 @@ name: Deploy Android
 # Build the arm64 APK and publish it to https://cartopolis.org/apk/, so a
 # phone can install it by tapping a link.
 #
-# Separate from ci.yml for the reason deploy-web.yml is: this is a *link*, thin
+# Separate from ci.yml for the reason deploy-wasm.yml is: this is a *link*, thin
 # LTO over the whole Bevy stack, tens of minutes cold against a runner with
 # capacity 3. ci.yml's android lane stays a `cargo check` and remains the gate on
 # every push; this runs only when `main` moves, plus on demand.
@@ -138,7 +138,7 @@ jobs:
     container:
       image: cartopolis-ci:latest
       # Four mounts, all listed in the runner's `valid_volumes`:
-      #   /publish — the same web root deploy-web.yml writes, so serving the APK
+      #   /publish — the same web root deploy-wasm.yml writes, so serving the APK
       #              needs no Caddy site, no DNS record and no second file_server.
       #              That job's `rsync --delete` excludes `/apk/`; without the
       #              exclude the next web deploy would silently delete this.
@@ -150,12 +150,12 @@ jobs:
       #              mounts. sccache is keyed on the compiler invocation and is
       #              safe to share; the registry below is not.
       #   /root/.cargo/registry — the download cache, and **this lane's own
-      #              copy**. deploy-web.yml has the long version: a bind mount
+      #              copy**. deploy-wasm.yml has the long version: a bind mount
       #              of `registry/` excludes cargo's lock, which lives one level
       #              above it at `$CARGO_HOME/.package-cache`, so two concurrent
       #              containers write one registry with nothing serialising
       #              them. The three `deploy-*` lanes dispatched together on
-      #              2026-08-21 half-extracted a crate and failed deploy-web.
+      #              2026-08-21 half-extracted a crate and failed deploy-wasm.
       options: >-
         --volume /data/cartopolis/site:/publish
         --volume /data/cartopolis/android-key:/signing:ro

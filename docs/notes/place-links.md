@@ -65,7 +65,7 @@ fingerprint in `crates/cartopolis/assetlinks.json` is the *deploy host's*
 `cartopolis.x509.pem`, so **rotating the release key means editing that file**, or
 every install after the rotation silently stops handling links.
 
-**The file has to ride in the trunk dist.** `deploy-web.yml` publishes with
+**The file has to ride in the trunk dist.** `deploy-wasm.yml` publishes with
 `rsync --delete`, so anything under the web root that trunk did not produce is
 removed on the next deploy. `assetlinks.json` is therefore a `data-trunk
 rel="copy-file"` in `index.html` rather than a file placed on the host — a file

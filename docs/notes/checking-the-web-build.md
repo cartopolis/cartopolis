@@ -1,6 +1,6 @@
 ---
 topic: checking-the-web-build
-triggers: [wasm32, "web build", trunk, deploy-web.yml, build-std, wasm_thread, web_sys_unstable_apis, libsqlite3-sys, "cargo check --target", rustup target, "no wasm toolchain", cdp_probe, "headless chromium", SwiftShader]
+triggers: [wasm32, "web build", trunk, deploy-wasm.yml, build-std, wasm_thread, web_sys_unstable_apis, libsqlite3-sys, "cargo check --target", rustup target, "no wasm toolchain", cdp_probe, "headless chromium", SwiftShader]
 updated: 2026-08-23
 ---
 
@@ -44,12 +44,12 @@ ship with no soundscape at all ([audio-off-platform.md](audio-off-platform.md)).
 - **`--cfg=web_sys_unstable_apis`.** web-sys gates the Geolocation family behind
   it, and without it `platform::location` cannot see `GeolocationPosition`,
   cascading into ~99 errors across driver mode that name none of this.
-  `deploy-web.yml` failed on every push until 2026-08-06 for exactly this.
+  `deploy-wasm.yml` failed on every push until 2026-08-06 for exactly this.
 - **A separate `CARGO_TARGET_DIR`.** These RUSTFLAGS differ from the native
   build's, so sharing the default target dir invalidates every other agent's
   cache on this box — several sessions build into one directory here.
 
-The link-arg group in `deploy-web.yml` (`--shared-memory`, the `__tls_*`
+The link-arg group in `deploy-wasm.yml` (`--shared-memory`, the `__tls_*`
 exports) is only needed to *link*; `cargo check` does not need it.
 
 ## Two standing gotchas

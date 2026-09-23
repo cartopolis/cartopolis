@@ -36,7 +36,7 @@ use super::geo_nav::{parse_location, LocationFix};
 /// The custom scheme, registered by `AndroidManifest.xml`.
 pub const APP_SCHEME: &str = "cartopolis";
 
-/// The origin the web client is published to (`deploy-web.yml`).
+/// The origin the web client is published to (`deploy-wasm.yml`).
 pub const WEB_ORIGIN: &str = "https://cartopolis.org";
 
 /// The one path that opens the app. See the module note for why it is not `/`.

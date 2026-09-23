@@ -451,7 +451,7 @@ image lives in another repo. Reproducing that lane in the agent container needs
 two more steps that CI gets for free —
 [container-android-toolchain.md](container-android-toolchain.md).
 
-The APK is a *separate* workflow, not a step here, for deploy-web.yml's reason:
+The APK is a *separate* workflow, not a step here, for deploy-wasm.yml's reason:
 this lane must stay the fast gate on every push, and a link of the whole Bevy
 stack against a runner with capacity 3 is not that.
 
@@ -483,7 +483,7 @@ which is what buys the whole serving story for free: Caddy already has that
 directory mounted and `file_server`'d, so there is no second site block, no DNS
 record and no compose edit. The phone install path is
 `https://cartopolis.org/apk/`. The cost is a coupling that is invisible from
-either file alone — `deploy-web.yml`'s `rsync --delete` would remove `apk/` on the
+either file alone — `deploy-wasm.yml`'s `rsync --delete` would remove `apk/` on the
 next web deploy, so it carries an `--exclude '/apk/'`.
 
 The filenames are **fixed** (`cartopolis.apk`, its `.sha256`, an `index.html`), so a

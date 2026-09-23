@@ -318,7 +318,7 @@
          (docs/notes/place-links.md).
 
          It rides in the trunk dist rather than being placed on the host by hand
-         for one reason: deploy-web.yml publishes with `rsync --delete`, so
+         for one reason: deploy-wasm.yml publishes with `rsync --delete`, so
          anything under the web root that trunk did not produce is removed on the
          next deploy. A file the site needs and the build does not know about is a
          file that works until the next push. -->
