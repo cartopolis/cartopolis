@@ -506,9 +506,21 @@ impl TerrainField {
     /// would be half a metre under its own canal.
     #[must_use]
     pub fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
-        self.water
-            .level_near(wx, wz, crate::systems::water_levels::JOIN_TOLERANCE_M)
-            .map(|nap| nap - self.datum_m)
+        water_surface_near(&self.water, self.datum_m, wx, wz)
+    }
+
+    /// Everything a mesh needs to be stood on this ground, by value, for a worker —
+    /// or `None` while there is no field to stand on.
+    ///
+    /// The coarse samples and the water rings are both behind `Arc`s, so this is a
+    /// handful of reference counts rather than a copy of the field.
+    #[must_use]
+    pub fn placement(&self) -> Option<GroundPlacement> {
+        self.is_ready().then(|| GroundPlacement {
+            ground: self.ground.clone(),
+            water: self.water.clone(),
+            datum_m: self.datum_m,
+        })
     }
 
     /// Whether any registered water is loaded at all.
@@ -592,6 +604,62 @@ impl std::ops::Deref for TerrainField {
     type Target = TerrainSnapshot;
     fn deref(&self) -> &Self::Target {
         &self.ground
+    }
+}
+
+fn water_surface_near(
+    water: &crate::systems::water_levels::WaterLevelField,
+    datum_m: f32,
+    wx: f32,
+    wz: f32,
+) -> Option<f32> {
+    water
+        .level_near(wx, wz, crate::systems::water_levels::JOIN_TOLERANCE_M)
+        .map(|nap| nap - datum_m)
+}
+
+/// What standing a mesh on the measured ground asks of the terrain: the coarse field
+/// through `Deref`, plus the registered water levels a canal's surface is drawn at.
+///
+/// Two implementors because the same placement runs in two places — on the main
+/// thread against the live [`TerrainField`] (the bridge decks, which wait there for
+/// their height), and on the surface worker against a [`GroundPlacement`].
+pub trait MeasuredGround: std::ops::Deref<Target = TerrainSnapshot> {
+    fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32>;
+    fn has_water_levels(&self) -> bool;
+}
+
+impl MeasuredGround for TerrainField {
+    fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
+        TerrainField::water_surface_at(self, wx, wz)
+    }
+    fn has_water_levels(&self) -> bool {
+        TerrainField::has_water_levels(self)
+    }
+}
+
+/// [`TerrainField::placement`]: the ground a surface cell is stood on, carried onto
+/// the worker that tessellates the cell.
+#[derive(Clone)]
+pub struct GroundPlacement {
+    ground: TerrainSnapshot,
+    water: crate::systems::water_levels::WaterLevelField,
+    datum_m: f32,
+}
+
+impl std::ops::Deref for GroundPlacement {
+    type Target = TerrainSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.ground
+    }
+}
+
+impl MeasuredGround for GroundPlacement {
+    fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
+        water_surface_near(&self.water, self.datum_m, wx, wz)
+    }
+    fn has_water_levels(&self) -> bool {
+        !self.water.is_empty()
     }
 }
 
@@ -851,6 +919,7 @@ impl RoadMask {
     ///
     /// `origin` is the cell's north-west corner in world metres — the same origin
     /// its tile-local mesh coordinates are relative to.
+    #[cfg(test)]
     pub fn mark_cell(
         &mut self,
         gen: u32,
@@ -858,6 +927,21 @@ impl RoadMask {
         cell: (i64, i64),
         origin: Vec2,
         meshes: &[crate::systems::vector_tiles::SurfaceMesh],
+    ) {
+        self.mark_triangles(gen, grid, cell, origin, &road_triangles(meshes));
+    }
+
+    /// Mark one cell's road ribbons, given the triangles already picked out by
+    /// [`road_triangles`] — which the surface worker does, so that the main thread
+    /// neither walks the cell's meshes nor sees the extra triangles the terrain
+    /// refinement adds to them afterwards.
+    pub fn mark_triangles(
+        &mut self,
+        gen: u32,
+        grid: usize,
+        cell: (i64, i64),
+        origin: Vec2,
+        local: &[[[f32; 2]; 3]],
     ) {
         if grid == 0 {
             return;
@@ -873,32 +957,13 @@ impl RoadMask {
         if !self.marked.insert(cell) {
             return;
         }
-        // **The ribbons, not the tunnels.** A tunnel's carriageway is metres below
-        // this surface and grading the ground down to meet it would dig a trench
-        // over every bore.
-        let tris: Vec<[[f32; 2]; 3]> = meshes
-            .iter()
-            .filter(|m| {
-                matches!(
-                    m.group,
-                    crate::systems::vector_tiles::SurfaceGroup::Road(_)
-                        | crate::systems::vector_tiles::SurfaceGroup::RoadCasing(_)
-                )
-            })
-            .flat_map(|m| {
-                m.indices.chunks_exact(3).filter_map(move |t| {
-                    let q = |i: u32| {
-                        m.positions
-                            .get(i as usize)
-                            .map(|v| [origin.x + v[0], origin.y + v[2]])
-                    };
-                    Some([q(t[0])?, q(t[1])?, q(t[2])?])
-                })
-            })
-            .collect();
-        if tris.is_empty() {
+        if local.is_empty() {
             return;
         }
+        let tris: Vec<[[f32; 2]; 3]> = local
+            .iter()
+            .map(|t| t.map(|v| [origin.x + v[0], origin.y + v[1]]))
+            .collect();
         #[allow(clippy::cast_precision_loss)]
         let step_m = TERRAIN_HALF_M * 2.0 / (grid - 1).max(1) as f32;
         // **Marking only.** The margin is applied once, to the finished mask, on
@@ -944,6 +1009,31 @@ impl RoadMask {
     pub fn marked_samples(&self) -> usize {
         self.marks.iter().filter(|m| **m).count()
     }
+}
+
+/// A cell's road-sheet triangles in its own tile-local XZ, for [`RoadMask`].
+///
+/// **The ribbons, not the tunnels.** A tunnel's carriageway is metres below the
+/// surface and grading the ground down to meet it would dig a trench over every
+/// bore.
+#[must_use]
+pub fn road_triangles(meshes: &[crate::systems::vector_tiles::SurfaceMesh]) -> Vec<[[f32; 2]; 3]> {
+    meshes
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.group,
+                crate::systems::vector_tiles::SurfaceGroup::Road(_)
+                    | crate::systems::vector_tiles::SurfaceGroup::RoadCasing(_)
+            )
+        })
+        .flat_map(|m| {
+            m.indices.chunks_exact(3).filter_map(move |t| {
+                let q = |i: u32| m.positions.get(i as usize).map(|v| [v[0], v[2]]);
+                Some([q(t[0])?, q(t[1])?, q(t[2])?])
+            })
+        })
+        .collect()
 }
 
 /// How long the road mask must stop growing before the field is baked again.

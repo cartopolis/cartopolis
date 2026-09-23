@@ -52,7 +52,7 @@ use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::scatter;
 use crate::systems::street_furniture::FurnitureLod;
 use crate::systems::street_labels::StreetLabelStore;
-use crate::systems::terrain::TerrainField;
+use crate::systems::terrain::{MeasuredGround, TerrainField, TerrainSnapshot};
 use crate::systems::tile_loader::load_tile_image;
 use crate::systems::tunnels::CellTunnels;
 use crate::systems::turf::GrassArea;
@@ -159,6 +159,12 @@ type Tessellated = (
     // (`cartopolis_geo::tunnels`), which are places rather than triangles and so
     // do not travel with the meshes above.
     CellTunnels,
+    // The road sheet's triangles in tile-local XZ, taken before the meshes above
+    // were refined against the terrain, for `terrain::RoadMask`.
+    Vec<[[f32; 2]; 3]>,
+    // Whether the meshes above were already stood on the measured ground by the
+    // worker — see `spawn_geometry_task`'s `ground`.
+    bool,
 );
 
 /// The per-cell stores that live and die with a surface cell: the street names
@@ -690,6 +696,23 @@ fn spawn_geometry_task(
     tile_m: f32,
     template: String,
     wants: DetailWants,
+    // The measured ground and this cell's north-west corner in world metres, when
+    // there is a field to stand the cell on.
+    //
+    // **Placing a cell on the terrain used to be the main thread's job, and it was
+    // the longest thing the main thread did.** Refining every ground surface against
+    // the field, displacing it and recomputing its normals is pure buffer work, done
+    // on arrival two cells a frame. Measured cold over Groningen on `deck-1`
+    // (2026-09-23): each terrain bake retears the nine-cell ring, and the rebuilt
+    // cells then froze the main loop for 3–4 s a frame, five frames in a row, twice
+    // per fill. A frozen loop also dispatches nothing, which is why the worker pool
+    // read 20 % busy over the same fill.
+    //
+    // It can happen here because the retear is what guarantees the field this job
+    // was handed is still the live one: a terrain revision moving resets the stream,
+    // which orphans this job's sink, so a cell placed on a superseded field is never
+    // delivered.
+    ground: Option<(crate::systems::terrain::GroundPlacement, Vec2)>,
     results: Arc<Mutex<Vec<(Cell, Tessellated)>>>,
 ) {
     // Fetch on the task pool, tessellate on the worker pool (ADR-033). The
@@ -1354,6 +1377,43 @@ fn spawn_geometry_task(
                         None
                     }
                 };
+                let mut outcome = outcome;
+                // Before the refinement below multiplies them.
+                let road_tris = outcome
+                    .as_deref()
+                    .map(crate::systems::terrain::road_triangles)
+                    .unwrap_or_default();
+                let mut placed = false;
+                if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground.as_ref()) {
+                    // Only this cell's own tunnels, where the main thread would have
+                    // seen whichever neighbours had happened to land first. A tile
+                    // carries a buffer past its edge, so a bore near the boundary is
+                    // in both cells' features.
+                    let mut tunnels = crate::systems::tunnels::Tunnels::default();
+                    tunnels.insert_cell(
+                        cell,
+                        *origin,
+                        CellTunnels {
+                            tunnels: cell_tunnels.clone(),
+                            openings: cell_openings.clone(),
+                        },
+                    );
+                    for sm in meshes.iter_mut() {
+                        stand_on_terrain(
+                            sm.group,
+                            &mut sm.positions,
+                            &mut sm.indices,
+                            &mut sm.uvs,
+                            &mut sm.normals,
+                            &mut sm.colors,
+                            &mut sm.rungs,
+                            *origin,
+                            ground,
+                            &tunnels,
+                        );
+                    }
+                    placed = true;
+                }
                 if let Ok(mut g) = results.lock() {
                     g.push((
                         cell,
@@ -1370,6 +1430,8 @@ fn spawn_geometry_task(
                                 tunnels: cell_tunnels,
                                 openings: cell_openings,
                             },
+                            road_tris,
+                            placed,
                         ),
                     ));
                 }
@@ -1683,8 +1745,16 @@ pub fn update_map_surfaces(
     // Dispatch under SURFACE_MAX_IN_FLIGHT; whatever doesn't fit stays queued and
     // starts on a later frame as slots free, so nothing is dropped.
     let sink = surfaces.stream.sink();
+    let placement = terrain.placement();
     while let Some(c) = surfaces.stream.next_job(now) {
-        spawn_geometry_task(c, tile_m, template.clone(), wants, sink.clone());
+        // The same origin the arrival below computes, so the worker stands the cell
+        // exactly where it will be spawned.
+        let ground = placement.clone().map(|g| {
+            let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
+            let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
+            (g, Vec2::new(wx, wz))
+        });
+        spawn_geometry_task(c, tile_m, template.clone(), wants, ground, sink.clone());
     }
 
     // 3. Upload finished tessellations, capped per frame and byte-bounded by the
@@ -1731,6 +1801,8 @@ pub fn update_map_surfaces(
             mut cell_places,
             grass,
             tunnels,
+            road_tris,
+            placed,
         ),
     ) in ready
     {
@@ -1771,14 +1843,14 @@ pub fn update_map_surfaces(
         // road for its whole length (`systems::terrain::RoadMask`). Marked from the
         // drawn ribbons rather than from centre lines, because at a junction the
         // drawn surface is the junction's actual shape.
-        stores.road_mask.mark_cell(
+        stores.road_mask.mark_triangles(
             stream.anchor_generation,
             crate::quality::budget()
                 .terrain_grid
                 .clamp(65, crate::systems::terrain::TERRAIN_GRID),
             c,
             Vec2::new(wx, wz),
-            &surface_meshes,
+            &road_tris,
         );
         // Whatever this server draws with a model of its own is queued to be stood
         // up (`systems::placeholder_models`). The worker has already left those
@@ -1864,7 +1936,12 @@ pub fn update_map_surfaces(
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
-            let mesh = meshes.add(build_mesh(&sm, wx, wz, &terrain, &stores.tunnels, None));
+            let stand = if placed {
+                Stand::Placed
+            } else {
+                Stand::Terrain(&terrain, &stores.tunnels)
+            };
+            let mesh = meshes.add(build_mesh(&sm, wx, wz, stand));
             let world = Vec3::new(wx, sm.group.y_offset(), wz);
             let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                 .translation_to_grid(world.as_dvec3());
@@ -2139,9 +2216,7 @@ pub fn resolve_bridge_decks(
                             &mesh,
                             cell_world.x,
                             cell_world.y,
-                            &terrain,
-                            &tunnels,
-                            None,
+                            Stand::Terrain(&terrain, &tunnels),
                         ))),
                         MeshMaterial3d(material),
                         placement(),
@@ -2174,9 +2249,7 @@ pub fn resolve_bridge_decks(
                             sm,
                             cell_world.x,
                             cell_world.y,
-                            &terrain,
-                            &tunnels,
-                            Some(deck_level + h),
+                            Stand::Lifted(deck_level + h),
                         ))),
                         MeshMaterial3d(material),
                         placement(),
@@ -2631,19 +2704,21 @@ pub fn apply_road_texture(
 /// * **Roads** carry their own UVs from `tessellate_roads` (across × along the
 ///   carriageway) and keep them: those are what register the lane markings with
 ///   the ribbon, and a positional UV would smear the paint across the map.
-fn build_mesh(
-    sm: &SurfaceMesh,
-    wx: f32,
-    wz: f32,
-    terrain: &TerrainField,
-    tunnels: &crate::systems::tunnels::Tunnels,
-    // A ready-made height for the whole mesh, in place of the terrain. This is how
-    // a carriageway riding a bridge deck follows the *deck* — the deck's own
-    // single level, plus its measured lift — instead of asking the field again
-    // over its own slightly different footprint and landing a few centimetres off
-    // the slab it was cut out of.
-    lift: Option<f32>,
-) -> Mesh {
+/// How [`build_mesh`] gets a surface off the flat plane it was tessellated on.
+enum Stand<'a> {
+    /// Onto the measured ground, here and now.
+    Terrain(&'a TerrainField, &'a crate::systems::tunnels::Tunnels),
+    /// A ready-made height for the whole mesh, in place of the terrain. This is how
+    /// a carriageway riding a bridge deck follows the *deck* — the deck's own
+    /// single level, plus its measured lift — instead of asking the field again
+    /// over its own slightly different footprint and landing a few centimetres off
+    /// the slab it was cut out of.
+    Lifted(f32),
+    /// Already stood on the ground by the surface worker (`spawn_geometry_task`).
+    Placed,
+}
+
+fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
 
@@ -2676,23 +2751,30 @@ fn build_mesh(
         Vec::new()
     };
 
-    if let Some(y) = lift {
-        for p in &mut positions {
-            p[1] += y;
+    let mut on_terrain = matches!(stand, Stand::Placed);
+    match stand {
+        Stand::Placed => {}
+        Stand::Lifted(y) => {
+            for p in &mut positions {
+                p[1] += y;
+            }
         }
-    } else if terrain.is_ready() {
-        stand_on_terrain(
-            sm.group,
-            &mut positions,
-            &mut indices,
-            &mut uvs,
-            &mut normals,
-            &mut colors,
-            &mut rungs,
-            Vec2::new(wx, wz),
-            terrain,
-            tunnels,
-        );
+        Stand::Terrain(terrain, _) if !terrain.is_ready() => {}
+        Stand::Terrain(terrain, tunnels) => {
+            on_terrain = true;
+            stand_on_terrain(
+                sm.group,
+                &mut positions,
+                &mut indices,
+                &mut uvs,
+                &mut normals,
+                &mut colors,
+                &mut rungs,
+                Vec2::new(wx, wz),
+                terrain,
+                tunnels,
+            );
+        }
     }
 
     if normals.is_empty() {
@@ -2773,7 +2855,7 @@ fn build_mesh(
                 cap_kb = cap / 1024,
                 vertices = positions.len(),
                 indices = index_count,
-                terrain_ready = terrain.is_ready(),
+                terrain_ready = on_terrain,
                 "a finished surface is over the cell mesh cap — the cap is applied \
                  where the mesh is cut and this group grew past it afterwards"
             );
@@ -2832,7 +2914,7 @@ fn build_mesh(
 /// with no interior vertices the clamp could only ever be evaluated at the banks,
 /// where it is the ground level, and every body would be flat at quay height again.
 #[allow(clippy::too_many_arguments)]
-fn water_surface(
+fn water_surface<G: MeasuredGround>(
     positions: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
     uvs: &mut Vec<[f32; 2]>,
@@ -2840,7 +2922,7 @@ fn water_surface(
     colors: &mut Vec<[f32; 4]>,
     rungs: &mut Vec<f32>,
     origin: Vec2,
-    terrain: &TerrainField,
+    terrain: &G,
 ) {
     let fallback = terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
     if !terrain.has_water_levels() {
@@ -2893,7 +2975,7 @@ fn water_surface(
 pub use cartopolis_geo::tunnels::DATUM_M as TUNNEL_DATUM_M;
 
 /// What [`cartopolis_geo::tunnels`] asks of the streamed height field.
-struct FieldSurvey<'a>(&'a TerrainField);
+struct FieldSurvey<'a>(&'a TerrainSnapshot);
 
 impl cartopolis_geo::tunnels::Survey for FieldSurvey<'_> {
     fn here(&self, x: f32, z: f32) -> f32 {
@@ -2904,7 +2986,7 @@ impl cartopolis_geo::tunnels::Survey for FieldSurvey<'_> {
     }
 }
 
-fn stand_on_terrain(
+fn stand_on_terrain<G: MeasuredGround>(
     group: SurfaceGroup,
     positions: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
@@ -2913,7 +2995,7 @@ fn stand_on_terrain(
     colors: &mut Vec<[f32; 4]>,
     rungs: &mut Vec<f32>,
     origin: Vec2,
-    terrain: &TerrainField,
+    terrain: &G,
     tunnels: &crate::systems::tunnels::Tunnels,
 ) {
     // A tunnel belongs here for the same reason a tree does, in both halves of what
@@ -2972,7 +3054,7 @@ fn stand_on_terrain(
         cartopolis_geo::tunnels::stand_tunnel_on(
             positions,
             origin.to_array(),
-            &FieldSurvey(terrain),
+            &FieldSurvey(&**terrain),
             &|p| tunnels.convention_depth(Vec2::from_array(p)),
         );
         return;

@@ -1,7 +1,7 @@
 ---
 topic: performance
 triggers: [tessellate_roads, road_stitch, cut_under_roads, stitch_some, print_tile_pipeline_time, perf_budgets.rs, "tile is slow", "map is slow", "streaming is slow", "vector tile performance", Buckets, SPANS_PER_TRI, MIN_BUCKET_M, covered_weight, RoadMask, dilate_mask]
-updated: 2026-09-21
+updated: 2026-09-23
 ---
 
 # What one tile costs, stage by stage — and where the instrument does not reach
@@ -219,12 +219,21 @@ viberfox-agent …"`, with `RUSTUP_HOME=/usr/local/rustup`.
 Tile-stage timings above are worker time. These are not, and no hatch here
 measures them:
 
-- **`build_mesh`, called from `update_map_surfaces`** — the terrain
-  refinement, the height displacement and a full normal recomputation, for
-  every surface of every cell, two cells a frame. Pure buffer work; it is on
-  the main thread only because the height field arrives after the worker job
-  has returned flat meshes. Moving it wants a second worker stage gated on the
-  field. **The largest main-thread item in the map pipeline.**
+- ~~**`build_mesh`, called from `update_map_surfaces`**~~ — **moved to the
+  surface worker 2026-09-23.** It needed no second stage: a terrain bake retears
+  the ring and resets the stream, so a job handed the field at dispatch can never
+  deliver a cell placed on a superseded one. Measured cold over Groningen at
+  600 m on `deck-1`: before, each retear froze the main loop at 3–4 s a frame
+  for five frames running (8 watchdog stalls, 12 slow frames, **92 s** launch to
+  settled); after, 0 stalls, 1 slow frame (the startup one), **58 s and 56 s**
+  over two runs, identical capture. The work did not get cheaper — `surfaces`
+  worker time went 26 s → 95 s in the dev profile — it stopped blocking
+  everything else. Two consequences: the worker places a cell against *its own*
+  tunnels only (the main thread saw whichever neighbours happened to have
+  landed), and `RoadMask` is fed the road triangles picked out **before**
+  refinement, or marking would pay for every vertex the refinement adds. Decks
+  still stand on the ground on the main thread, since their height arrives
+  there.
 - `RoadMask::mark_cell` still rasterises road triangles into the grid there
   (the dilation moved to the worker on 2026-09-21, the marking did not).
 - `RoadMask::for_gen` clones the whole 4.2 MB mask per bake; an `Arc` removes

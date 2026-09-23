@@ -1,7 +1,7 @@
 ---
 topic: one-pass-cells
 triggers: [CoverageSlot, coverage_revision, fetch_optional, "surface ring retear", "lod22 ring retear", "terrain field bake queued", ROAD_SETTLE_S, WATER_SETTLE_S, terrain_revision, bgt_revision, bag_revision, "rebuilt", "retear", "slow start", "map loads slowly"]
-updated: 2026-09-21
+updated: 2026-09-23
 ---
 
 # A cell should be tessellated once, and was being tessellated three or four times
@@ -119,3 +119,8 @@ Not attempted here. It means holding a cell's CPU-side geometry until the field
 settles, which is the cost `map_geometry`'s own comment rejected when the rebuild
 was believed to happen once — and it happens once now, which is exactly when that
 judgement becomes worth re-testing rather than assuming.
+
+**What a retear costs changed on 2026-09-23**, which moves this trade: the
+placement onto the terrain now runs on the surface worker, so a retear is worker
+time rather than a frozen main loop (`tile-pipeline-stage-costs.md` has the
+before/after). The rebuilds themselves still happen, once per bake.
