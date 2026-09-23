@@ -2585,6 +2585,8 @@ fn run_client() {
         );
 
     app.add_systems(Update, systems::window_icon::set_window_icon);
+    // `CARTO_DBG_HIDE`: a bisecting switch that hides whole layers by name.
+    app.add_systems(PostUpdate, systems::map_geometry::debug_hide_layers);
 
     // Swap bevy_pbr's atmosphere functions module for the patched copy as soon
     // as its async load lands (Adreno 840 black-sky hardening — see

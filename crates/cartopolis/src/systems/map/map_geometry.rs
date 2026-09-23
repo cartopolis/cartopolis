@@ -2369,6 +2369,9 @@ pub fn update_map_surfaces(
             ) {
                 commands.entity(id).insert(crate::components::TunnelSurface);
             }
+            if !debug_hide_tokens().is_empty() {
+                commands.entity(id).insert(DebugSurfaceGroup(sm.group));
+            }
             entities.push(id);
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
@@ -2395,6 +2398,69 @@ pub fn update_map_surfaces(
                     known,
                 },
             );
+        }
+    }
+}
+
+/// The words in `CARTO_DBG_HIDE` (comma-separated, lower-case), read once.
+///
+/// **A bisecting switch for "what is that?"**, built after four guesses in a row
+/// about one pale block in a tunnel mouth — a building, the lid fill, a bridge
+/// deck, a surveyed wall — were each disproved by a capture (2026-09-23). A word
+/// hides a whole layer: `osm` (OSM buildings), `lod22` (3DBAG buildings),
+/// `basemap` (clipmap tiles), `tunnel` (tunnel decks and walls), `surface`
+/// (every vector ground mesh), or any fragment of a ground group's name as
+/// `{:?}` prints it (`grass`, `road`, `built`, `furniture` …). Unset, it
+/// costs one empty check a frame.
+fn debug_hide_tokens() -> &'static [String] {
+    static TOKENS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    TOKENS.get_or_init(|| {
+        std::env::var("CARTO_DBG_HIDE")
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_ascii_lowercase())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Which ground group a surface entity was built from — only attached while
+/// `CARTO_DBG_HIDE` is set.
+#[derive(Component)]
+pub struct DebugSurfaceGroup(SurfaceGroup);
+
+/// Hide every layer `CARTO_DBG_HIDE` names (see [`debug_hide_tokens`]).
+#[allow(clippy::type_complexity)]
+pub fn debug_hide_layers(
+    mut vis: Query<(
+        &mut Visibility,
+        Option<&DebugSurfaceGroup>,
+        Has<MapSurface>,
+        Has<crate::components::OsmBuildingMesh>,
+        Has<crate::systems::lod22::Lod22Mesh>,
+        Has<crate::systems::map_stream::StreamTile>,
+        Has<crate::components::TunnelSurface>,
+    )>,
+) {
+    let tokens = debug_hide_tokens();
+    if tokens.is_empty() {
+        return;
+    }
+    let has = |w: &str| tokens.iter().any(|t| t == w);
+    for (mut v, group, surface, osm, lod22, tile, tunnel) in &mut vis {
+        let hide = (osm && has("osm"))
+            || (lod22 && has("lod22"))
+            || (tile && has("basemap"))
+            || (tunnel && has("tunnel"))
+            || (surface && has("surface"))
+            || group.is_some_and(|g| {
+                let name = format!("{:?}", g.0).to_ascii_lowercase();
+                tokens.iter().any(|t| name.contains(t.as_str()))
+            });
+        if hide && *v != Visibility::Hidden {
+            *v = Visibility::Hidden;
         }
     }
 }
