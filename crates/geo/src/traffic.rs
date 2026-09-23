@@ -260,9 +260,18 @@ pub fn extract_drive_lines(
                 .filter(|c| c.x.abs() < extent * 8.0 && c.y.abs() < extent * 8.0)
                 .map(|c| [c.x * scale, c.y * scale])
                 .collect();
-            let points = simplify(&raw, DRIVE_SIMPLIFY_M);
+            let mut points = simplify(&raw, DRIVE_SIMPLIFY_M);
             if points.len() < 2 {
                 continue;
+            }
+            // **A sunken road bends in the vertical where its line does not.** A
+            // portal's ramp now runs down an ordinary way beyond the tag, which is
+            // routinely one straight segment hundreds of metres long; sampled at
+            // its two ends the car's depth would fall from -7 m to 0 over the whole
+            // way while the drawn ramp reaches the surface after 117 m, and the car
+            // would drive through the ground under it.
+            if !mine.is_empty() {
+                points = densify(&points, DRIVE_DECK_STEP_M);
             }
             // **After the simplify, never before it.** The two arrays have to be
             // parallel, and the cheap way to guarantee that is to derive one from
@@ -321,6 +330,31 @@ fn flow_of(feature: &Feature) -> Flow {
         crate::vector_tiles::flag_of(feature, "oneway"),
         crate::vector_tiles::flag_of(feature, "oneway_reverse"),
     )
+}
+
+/// Longest step along a line with a sunken corridor on it, metres — short enough
+/// that a linearly interpolated deck follows a ramp's two bends to within a few
+/// centimetres, and never shorter than [`DRIVE_SIMPLIFY_M`].
+const DRIVE_DECK_STEP_M: f32 = 12.0;
+
+/// Split every segment longer than `max_m` into equal steps no longer than it.
+fn densify(points: &[[f32; 2]], max_m: f32) -> Vec<[f32; 2]> {
+    let mut out = Vec::with_capacity(points.len());
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (len / max_m).ceil().max(1.0) as usize;
+        for k in 0..steps {
+            #[allow(clippy::cast_precision_loss)]
+            let t = k as f32 / steps as f32;
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    if let Some(&end) = points.last() {
+        out.push(end);
+    }
+    out
 }
 
 /// Drop vertices closer together than `min_m`, keeping both ends.
