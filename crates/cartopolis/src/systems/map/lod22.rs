@@ -688,6 +688,7 @@ pub fn update_lod22(
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
     mut osm: ResMut<crate::systems::osm_buildings::OsmBuildings>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    tile_url: Res<crate::resources::OsmTileUrlTemplate>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -995,7 +996,14 @@ pub fn update_lod22(
     // Graded ground on its way: one build per cell, on it (`TerrainField::holds_builds`).
     // The jobs fetch meanwhile; only the parse and mesh wait for the ground.
     let held = terrain.holds_builds(stream.anchor_generation);
+    // The street tile, for the tunnels under a cell's buildings (see
+    // `over_a_lid`). Only a vector source has streets to read.
+    let street_template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
+    let street_template = (cartopolis_core::tile_source_kind(&street_template)
+        == cartopolis_core::TileSourceKind::Vector)
+        .then_some(street_template);
     while let Some((cx, cy)) = lod.stream.next_job(now) {
+        let street_template = street_template.clone();
         let results = results.clone();
         // Resolved at dispatch, not inside the worker: the worker has no camera,
         // and recording what a cell was *built* with is what makes the promotion
@@ -1044,6 +1052,19 @@ pub fn update_lod22(
                 if !live.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
+                // …and the street tile, shared with the surfaces streamer's parse
+                // of the same z14 body, so a building standing in a tunnel's mouth
+                // can be recognised on the worker that would draw it.
+                let streets = match street_template {
+                    Some(t) => {
+                        let key = cartopolis_core::world::TileKey::new(cx, cy, LOD22_ZOOM);
+                        crate::systems::tile_loader::load_tile_image(&key, &t)
+                            .await
+                            .ok()
+                            .and_then(|b| crate::systems::tile_loader::parse_shared(key, &b).ok())
+                    }
+                    None => None,
+                };
                 crate::platform::workers::submit_heavy(
                     "lod22",
                     Box::new(move || {
@@ -1059,6 +1080,7 @@ pub fn update_lod22(
                             &facts,
                             lod3.as_deref(),
                             detail,
+                            streets.as_deref(),
                         );
                         if let Ok(mut g) = results.lock() {
                             g.push(((cx, cy), (built, built_rev)));
@@ -1321,6 +1343,45 @@ pub fn update_lod22(
 /// megabyte of CityJSON and meshing it costs a frame.
 ///
 /// [`platform::workers`]: crate::platform::workers
+/// Whether a building stands **in the trench of a tunnel that has a lid on it
+/// now** — the survey's old cut, under a covered stretch or in a mouth.
+///
+/// Such a thing is the tunnel's own works, registered as a pand while the road
+/// was being built: over Groningen's ring the BAG holds a 2019 building
+/// (`0014100040019318`) right at a mouth, and drawn on the ground it stands on —
+/// the trench floor the height survey measured before the lid went on — it was a
+/// pale block filling the tunnel mouth from the deck to above the lid
+/// (2026-09-23). Two tests, and both must hold: the footprint's centre is over a
+/// covered corridor or an opening, **and** the ground under it is more than two
+/// metres below the land around. The second is what keeps an ordinary building
+/// that stands *on* a lid, at street level, drawn.
+fn over_a_lid(
+    t: &cartopolis_geo::tunnels::TunnelTessellation,
+    world_xz: &[Vec2],
+    cell_nw: Vec2,
+    ground: &crate::systems::terrain::TerrainSnapshot,
+) -> bool {
+    if t.tunnels.is_empty() || world_xz.is_empty() {
+        return false;
+    }
+    let c = world_xz.iter().copied().sum::<Vec2>() / world_xz.len() as f32;
+    let p = [c.x - cell_nw.x, c.y - cell_nw.y];
+    let over =
+        t.tunnels.iter().any(|tu| {
+            tu.covered_weight(p, 0.0) >= 1.0 && tu.road_under(p).is_some_and(|y| y < -2.0)
+        }) || cartopolis_geo::tunnels::in_an_opening(&t.openings, p);
+    if !over {
+        return false;
+    }
+    let dug = ground.surrounding(c.x, c.y, cartopolis_geo::tunnels::DATUM_M) - ground.at(c.x, c.y);
+    dug > TRENCH_DUG_M
+}
+
+/// How far below the land around it a building's ground must be to count as
+/// standing in a tunnel's old trench — well past the half metre of an ordinary
+/// Dutch street's camber and kerb, well short of a seven-metre cut.
+const TRENCH_DUG_M: f32 = 2.0;
+
 fn build_lod22_from_text(
     text: &str,
     cx: i64,
@@ -1333,6 +1394,7 @@ fn build_lod22_from_text(
     facts: &crate::systems::building_facts::BagCell,
     lod3_text: Option<&str>,
     detail: load_control::Detail,
+    streets: Option<&cartopolis_geo::vector_tiles::TileData>,
 ) -> Result<Option<Lod22Build>, String> {
     let shell = parse_lod22(text)?;
     // An imported-model cell, when the host serves one. A failure to parse it is
@@ -1354,6 +1416,11 @@ fn build_lod22_from_text(
     let (north, west) = tile_to_lat_lng(cx, cy, LOD22_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LOD22_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
+    // The cell's tunnels, in the cell's own tile-local metres, when it has any.
+    let cell_m = tile_to_meters(LOD22_ZOOM, lat) as f32;
+    let cell_nw = lat_lng_to_local(north, west, ax, ay, z, tile_m);
+    let tunnels = streets.map(|t| cartopolis_geo::tunnels::build_tunnels(t, cell_m, None));
+    let mut in_a_mouth = 0usize;
 
     // Anchor vertices to the BigSpace cell at the cell centre.
     let c_world = lat_lng_to_local(
@@ -1450,6 +1517,12 @@ fn build_lod22_from_text(
             b.p.iter()
                 .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
                 .collect();
+        if let Some(t) = &tunnels {
+            if over_a_lid(t, &world_xz, cell_nw, ground) {
+                in_a_mouth += 1;
+                continue;
+            }
+        }
         // Only a shell is worth measuring. An imported model is many elements and
         // brings its own floors (`systems::lod3`), so measuring one would report
         // the height of a wall panel as the height of a building — and its volume
@@ -1593,6 +1666,14 @@ fn build_lod22_from_text(
             cy,
             struck,
             "BAG: skipped buildings the register has struck off"
+        );
+    }
+    if in_a_mouth > 0 {
+        tracing::info!(
+            cx,
+            cy,
+            in_a_mouth,
+            "lod22: skipped buildings standing in a covered tunnel's trench"
         );
     }
     // …and now the models, element by element. They share the palette and the
