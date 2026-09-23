@@ -1355,14 +1355,14 @@ fn over_a_lid(
     if t.tunnels.is_empty() || world_xz.is_empty() {
         return false;
     }
-    let c = world_xz.iter().copied().sum::<Vec2>() / world_xz.len() as f32;
-    let dug = ground.surrounding(c.x, c.y, cartopolis_geo::tunnels::DATUM_M) - ground.at(c.x, c.y);
-    cartopolis_geo::tunnels::stands_in_a_covered_trench(
-        &t.tunnels,
-        &t.openings,
-        [c.x - cell_nw.x, c.y - cell_nw.y],
-        dug,
-    )
+    let ring: Vec<[f32; 2]> = world_xz
+        .iter()
+        .map(|p| [p.x - cell_nw.x, p.y - cell_nw.y])
+        .collect();
+    cartopolis_geo::tunnels::footprint_in_a_covered_trench(&t.tunnels, &t.openings, &ring, &|p| {
+        let (x, z) = (p[0] + cell_nw.x, p[1] + cell_nw.y);
+        ground.surrounding(x, z, cartopolis_geo::tunnels::DATUM_M) - ground.at(x, z)
+    })
 }
 
 fn build_lod22_from_text(

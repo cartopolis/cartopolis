@@ -745,6 +745,37 @@ pub fn stands_in_a_covered_trench(
         || in_an_opening(openings, p)
 }
 
+/// [`stands_in_a_covered_trench`] for a whole footprint: true when any of its
+/// corners, the middle of any of its edges, or its centre qualifies, each with
+/// `dug` asked at that point.
+///
+/// The centre alone is a weak question for the shapes this is for: the building
+/// in the ring's eastern mouth (pand 0014100040019318) is a strip about five
+/// metres wide arched across both carriageways — the portal's own frame — and a
+/// shape like that can have its centre anywhere relative to what it spans.
+#[must_use]
+pub fn footprint_in_a_covered_trench(
+    tunnels: &[Tunnel],
+    openings: &[Vec<[f32; 2]>],
+    ring: &[[f32; 2]],
+    dug: &dyn Fn([f32; 2]) -> f32,
+) -> bool {
+    if ring.is_empty() || (tunnels.is_empty() && openings.is_empty()) {
+        return false;
+    }
+    let n = ring.len() as f32;
+    let centre = ring
+        .iter()
+        .fold([0.0f32; 2], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n]);
+    let mids = ring
+        .windows(2)
+        .map(|w| [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5]);
+    std::iter::once(centre)
+        .chain(ring.iter().copied())
+        .chain(mids)
+        .any(|p| stands_in_a_covered_trench(tunnels, openings, p, dug(p)))
+}
+
 /// How far below the land around it a building's ground must be to count as
 /// standing in a tunnel's old trench — well past the half metre of an ordinary
 /// Dutch street's camber and kerb, well short of a seven-metre cut.
@@ -3326,6 +3357,29 @@ mod tests {
     /// under it being well below the land around.
     #[test]
     fn a_building_in_a_covered_trench_is_told_from_one_on_the_lid() {
+        // The portal frame in the eastern mouth, pand 0014100040019318, in this
+        // tile's metres (from OSM way 1157021132): an arch across both
+        // carriageways.
+        let frame: Vec<[f32; 2]> = vec![
+            [759.1, 465.8],
+            [774.4, 460.5],
+            [788.3, 476.0],
+            [790.1, 481.0],
+            [786.3, 486.3],
+            [782.7, 492.4],
+            [781.3, 484.7],
+            [764.8, 466.6],
+            [759.1, 465.8],
+        ];
+        let lidded = build_tunnels(&crate::testdata::groningen_ring(), ring_tile_m(), None);
+        assert!(
+            footprint_in_a_covered_trench(&lidded.tunnels, &lidded.openings, &frame, &|_| 7.0),
+            "the portal frame in the eastern mouth is not recognised"
+        );
+        assert!(
+            !footprint_in_a_covered_trench(&lidded.tunnels, &lidded.openings, &frame, &|_| 0.5),
+            "a building on the lid at street level is taken out"
+        );
         let out = build_tunnels(&crate::testdata::groningen_ring(), ring_tile_m(), None);
         // The middle of the ring's covered stretch under the Oude Winschoterdiep.
         let t = out

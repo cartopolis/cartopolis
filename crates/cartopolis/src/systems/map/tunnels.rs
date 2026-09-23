@@ -82,14 +82,15 @@ impl LidSnapshot {
         if (self.tunnels.is_empty() && self.openings.is_empty()) || footprint.is_empty() {
             return false;
         }
-        let c = footprint.iter().copied().sum::<Vec2>() / footprint.len() as f32;
-        let dug =
-            ground.surrounding(c.x, c.y, cartopolis_geo::tunnels::DATUM_M) - ground.at(c.x, c.y);
-        cartopolis_geo::tunnels::stands_in_a_covered_trench(
+        let ring: Vec<[f32; 2]> = footprint.iter().map(|p| [p.x, p.y]).collect();
+        cartopolis_geo::tunnels::footprint_in_a_covered_trench(
             &self.tunnels,
             &self.openings,
-            [c.x, c.y],
-            dug,
+            &ring,
+            &|p| {
+                ground.surrounding(p[0], p[1], cartopolis_geo::tunnels::DATUM_M)
+                    - ground.at(p[0], p[1])
+            },
         )
     }
 }
