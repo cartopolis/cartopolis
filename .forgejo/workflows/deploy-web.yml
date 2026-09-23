@@ -148,9 +148,13 @@ jobs:
         # --enable-bulk-memory` to match. The size win is real but it is not free
         # to get right, and `web-release` already carries opt-level 3 + thin LTO.
         # Revisit as a deliberate change with the feature flags spelled out.
+        # `--public-url /viewer/`: the client is served at cartopolis.org/viewer/,
+        # and the site root belongs to atlas (docs/notes/atlas.md). Trunk writes the
+        # module and loader URLs absolute from this; everything the app fetches at
+        # run time (`assets/…`) is relative to the page, so it follows the page.
         run: |
           cd crates/cartopolis
-          trunk build --cargo-profile web-release --dist dist
+          trunk build --cargo-profile web-release --dist dist --public-url /viewer/
 
       # Verify what was produced rather than assuming the flags took. Both of
       # these have silently regressed before: shared memory is what makes the
@@ -219,16 +223,20 @@ jobs:
           for f in *.wasm *.js; do [ -f "$f" ] && gzip -9 -k -f "$f"; done
           ls -la *.wasm* *.js* | awk '{print $5, $9}'
 
-      # `--delete` so files from a previous deploy (old content-hashed modules)
-      # do not accumulate 70 MB at a time. Written last, after every check above
-      # has passed, so a failed build leaves the live site untouched.
+      # Into `viewer/` under the site root, which is where Caddy serves
+      # cartopolis.org/viewer/ from. `--delete` so files from a previous deploy
+      # (old content-hashed modules) do not accumulate 70 MB at a time, and it is
+      # scoped to `viewer/`, so it cannot reach `/apk/` (deploy-android.yml's) or
+      # anything else beside it. Written last, after every check above has passed,
+      # so a failed build leaves the live site untouched.
       #
-      # `/apk/` is the one thing under this root that trunk does not produce:
-      # deploy-android.yml publishes the phone build there so it needs no Caddy
-      # site of its own. Without the exclude, `--delete` removes it on the next
-      # web deploy and the download 404s until the next push to main.
+      # `.well-known/assetlinks.json` has to stay at the *site* root: Android reads
+      # it from https://cartopolis.org/.well-known/ to verify App Links, whatever
+      # path the web build lives under, so it is copied up a level.
       - name: Publish
         run: |
           apt-get update -qq && apt-get install -y -qq rsync >/dev/null
-          rsync -a --delete --exclude '/apk/' crates/cartopolis/dist/ /publish/
-          echo "published $(du -sh /publish | cut -f1) to /data/cartopolis/site"
+          mkdir -p /publish/viewer /publish/.well-known
+          rsync -a --delete crates/cartopolis/dist/ /publish/viewer/
+          cp crates/cartopolis/dist/.well-known/assetlinks.json /publish/.well-known/assetlinks.json
+          echo "published $(du -sh /publish/viewer | cut -f1) to /data/cartopolis/site/viewer"
