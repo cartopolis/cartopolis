@@ -667,6 +667,11 @@ pub struct OsmBuildings {
     /// Spawned far-cell mesh entities (buildings + windows), despawned when out
     /// of range.
     far_cells: HashMap<(i64, i64), Vec<Entity>>,
+    /// The lids under each far cell when it was dispatched
+    /// ([`Tunnels::lid_digest`](crate::systems::tunnels::Tunnels::lid_digest)):
+    /// a tunnel cell streaming in afterwards changes which of its buildings stand
+    /// in a covered trench, and a changed digest evicts the cell to be rebuilt.
+    far_lids: HashMap<(i64, i64), u64>,
     /// Shared material for every building mesh this module spawns — far cells
     /// **and** the detail patch.
     ///
@@ -798,6 +803,7 @@ impl Default for OsmBuildings {
             }),
             terrain_revision: 0,
             far_cells: HashMap::new(),
+            far_lids: HashMap::new(),
             building_material: None,
             far_building_material: None,
             far_window_materials: None,
@@ -1381,6 +1387,15 @@ pub fn update_buildings(
             };
             // The ground travels with the job — footprints only exist in there.
             let ground = terrain.snapshot();
+            // …and the lids under the cell, for the same rule the detail patch
+            // applies: the far tier draws every building over 30 m² near the
+            // camera too, as the fallback under the patch, and it was drawing the
+            // ring's portal frame there after the patch had left it out
+            // (`LidSnapshot::holds`, 2026-09-23).
+            let (cell_centre, cell_half) = far_cell_square(cx, cy, ax, ay, z, lat);
+            let lids = tunnels.lids_near(cell_centre, cell_half);
+            osm.far_lids
+                .insert((cx, cy), tunnels.lid_digest(cell_centre, cell_half));
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
             // on wasm `IoTaskPool` is the main thread, so this whole thing used to
             // run on the frame loop.
@@ -1391,8 +1406,9 @@ pub fn update_buildings(
                             crate::platform::workers::submit(
                                 "osm_buildings",
                                 Box::new(move || {
-                                    let built =
-                                        build_far_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
+                                    let built = build_far_from_text(
+                                        &text, cx, cy, ax, ay, z, lat, &ground, &lids,
+                                    );
                                     if let Ok(mut g) = results.lock() {
                                         g.push(((cx, cy), built));
                                     }
@@ -1572,7 +1588,27 @@ pub fn update_buildings(
             })
             .copied()
             .collect();
+        // A far cell whose lids changed since it was built is evicted and so
+        // re-requested (from the disk cache), taking the new lids with it.
+        if tunnels.is_changed() {
+            let moved: Vec<(i64, i64)> = osm
+                .far_lids
+                .iter()
+                .filter(|(cell, digest)| {
+                    let (c, h) = far_cell_square(cell.0, cell.1, ax, ay, z, lat);
+                    tunnels.lid_digest(c, h) != **digest
+                })
+                .map(|(cell, _)| *cell)
+                .collect();
+            for cell in moved {
+                osm.far_lids.remove(&cell);
+                if osm.far_cells.contains_key(&cell) {
+                    osm.evict_far_cell(cell);
+                }
+            }
+        }
         for cell in stale {
+            osm.far_lids.remove(&cell);
             let entities = osm.far_cells.remove(&cell).unwrap_or_default();
             // Retiring is lane-agnostic (the `far` lane owns the queue); forgetting
             // is not, so both are asked — only the owning lane has anything to drop.
@@ -1707,6 +1743,7 @@ fn build_far_from_text(
     z: u32,
     lat: f64,
     ground: &crate::systems::terrain::TerrainSnapshot,
+    lids: &crate::systems::tunnels::LidSnapshot,
 ) -> Result<Option<FarCellBuild>, String> {
     let buildings = parse_buildings(text)?;
     let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
@@ -1761,6 +1798,10 @@ fn build_far_from_text(
         if polygon_area(&ring) < 30.0 {
             continue;
         }
+        let world: Vec<Vec2> = ring.iter().map(|p| Vec2::new(p.x + ox, p.y + oz)).collect();
+        if lids.holds(&world, ground) {
+            continue;
+        }
         // Cap the LOD box at the detail mesh's eaves (its roof's lowest point) so
         // the far volume sits *under* its detailed twin in the overlap region,
         // instead of a flat slab poking up through the pitched roof (Stage 1).
@@ -1781,6 +1822,24 @@ fn build_far_from_text(
     Ok(buf
         .into_mesh()
         .map(|m| (grid_cell, m, wins.map(MeshData::into_mesh))))
+}
+
+/// A far cell's centre in the anchored world frame and half its side, grown by
+/// the lid taper, for asking `Tunnels` what lies under it.
+fn far_cell_square(cx: i64, cy: i64, ax: i64, ay: i64, z: u32, lat: f64) -> (Vec2, f32) {
+    let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
+    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, CACHE_ZOOM);
+    let tile_m = tile_to_meters(z, lat) as f32;
+    let centre = lat_lng_to_local(
+        (north + south) / 2.0,
+        (west + east) / 2.0,
+        ax,
+        ay,
+        z,
+        tile_m,
+    );
+    let half = tile_to_meters(CACHE_ZOOM, lat) as f32 * 0.5 + cartopolis_geo::tunnels::DATUM_M;
+    (Vec2::new(centre.x, centre.y), half)
 }
 
 /// Spawn the detail-ring meshes (buildings + per-bucket windows) for a completed
