@@ -2225,6 +2225,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cartopolis_atlas"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "cartopolis_core",
+ "cartopolis_geo",
+ "clap",
+ "figment",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+]
+
+[[package]]
 name = "cartopolis_core"
 version = "1.0.0"
 dependencies = [

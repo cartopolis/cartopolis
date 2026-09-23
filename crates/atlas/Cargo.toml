@@ -1,0 +1,40 @@
+# `cartopolis_atlas` — everything around the world that is not the simulation:
+# the map data pipelines (moving over from `jeroen/cartopy`), the terrain tiles,
+# and later registration and accounts. `docs/notes/atlas.md` has the design and
+# the rules; the one that shaped this file is that it is its own process and
+# never shares a runtime with the simulator's tick.
+[package]
+name = "cartopolis_atlas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_atlas"
+path = "src/lib.rs"
+doctest = false
+
+# The binary is a shim over the lib, as the simulator's is; no tests of its own.
+[[bin]]
+name = "atlas"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+figment = { workspace = true, features = ["toml", "env"] }
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ureq.workspace = true
+cartopolis_core = { path = "../core" }
+cartopolis_geo = { path = "../geo" }
+
+[dev-dependencies]
+tempfile = "3.0"
+
+[lints]
+workspace = true

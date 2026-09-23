@@ -110,6 +110,7 @@ pub mod traffic;
 // `cartopolis`, and bending unrefined triangles drew cracks that were the
 // instrument, not the map.
 pub mod terrain_refine;
+pub mod terrain_tile;
 pub mod tunnels;
 pub mod turf;
 pub mod vector_tiles;
