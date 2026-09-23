@@ -715,6 +715,41 @@ pub fn in_an_opening(openings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
     openings.iter().any(|ring| point_in_ring(p, ring))
 }
 
+/// Whether a building whose footprint centres on `p` stands **in the trench of
+/// a tunnel that has a lid on it now** — the survey's old cut, under a covered
+/// stretch or in a mouth.
+///
+/// Such a thing is the tunnel's own works, registered while the road was being
+/// built: over Groningen's ring there is a 2019 building right at a mouth, and
+/// drawn on the ground under it — the trench floor the height survey measured
+/// before the lid went on — it was a pale block filling the tunnel mouth from the
+/// deck to above the lid (2026-09-23). Both tests must hold: `p` is over a
+/// covered corridor or an opening, **and** `dug`, how far the ground at `p` is
+/// below the land around it, exceeds [`TRENCH_DUG_M`]. The second keeps an
+/// ordinary building that stands *on* a lid, at street level, drawn.
+///
+/// Frame-agnostic: `p`, the tunnels and the openings only have to share one.
+#[must_use]
+pub fn stands_in_a_covered_trench(
+    tunnels: &[Tunnel],
+    openings: &[Vec<[f32; 2]>],
+    p: [f32; 2],
+    dug: f32,
+) -> bool {
+    if dug <= TRENCH_DUG_M {
+        return false;
+    }
+    tunnels
+        .iter()
+        .any(|t| t.covered_weight(p, 0.0) >= 1.0 && t.road_under(p).is_some_and(|y| y < -2.0))
+        || in_an_opening(openings, p)
+}
+
+/// How far below the land around it a building's ground must be to count as
+/// standing in a tunnel's old trench — well past the half metre of an ordinary
+/// Dutch street's camber and kerb, well short of a seven-metre cut.
+pub const TRENCH_DUG_M: f32 = 2.0;
+
 /// [`in_an_opening`], for something with a footprint: true when `p` is inside
 /// an opening or within `r` of its edge.
 ///
@@ -3284,6 +3319,41 @@ mod tests {
             }
         }
         assert!(checked > 0, "no structure under a lid was checked");
+    }
+
+    /// **A building in a covered tunnel's old trench is the tunnel's, and one on
+    /// the lid is not.** The rule needs both halves: the place, and the ground
+    /// under it being well below the land around.
+    #[test]
+    fn a_building_in_a_covered_trench_is_told_from_one_on_the_lid() {
+        let out = build_tunnels(&crate::testdata::groningen_ring(), ring_tile_m(), None);
+        // The middle of the ring's covered stretch under the Oude Winschoterdiep.
+        let t = out
+            .tunnels
+            .iter()
+            .find(|t| t.half_w >= 3.0 && t.covered.iter().all(|c| *c) && t.centre.len() >= 3)
+            .expect("the ring has a lid");
+        let (a, b) = (t.centre[1], t.centre[2]);
+        let over = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+        assert!(stands_in_a_covered_trench(
+            &out.tunnels,
+            &out.openings,
+            over,
+            7.0
+        ));
+        assert!(!stands_in_a_covered_trench(
+            &out.tunnels,
+            &out.openings,
+            over,
+            0.5
+        ));
+        let beside = [over[0] + 40.0, over[1] + 40.0];
+        assert!(!stands_in_a_covered_trench(
+            &out.tunnels,
+            &out.openings,
+            beside,
+            7.0
+        ));
     }
 
     /// **No road leaves a sunken deck at street level.** At the ring's eastern

@@ -1343,18 +1343,9 @@ pub fn update_lod22(
 /// megabyte of CityJSON and meshing it costs a frame.
 ///
 /// [`platform::workers`]: crate::platform::workers
-/// Whether a building stands **in the trench of a tunnel that has a lid on it
-/// now** — the survey's old cut, under a covered stretch or in a mouth.
-///
-/// Such a thing is the tunnel's own works, registered as a pand while the road
-/// was being built: over Groningen's ring the BAG holds a 2019 building
-/// (`0014100040019318`) right at a mouth, and drawn on the ground it stands on —
-/// the trench floor the height survey measured before the lid went on — it was a
-/// pale block filling the tunnel mouth from the deck to above the lid
-/// (2026-09-23). Two tests, and both must hold: the footprint's centre is over a
-/// covered corridor or an opening, **and** the ground under it is more than two
-/// metres below the land around. The second is what keeps an ordinary building
-/// that stands *on* a lid, at street level, drawn.
+/// [`cartopolis_geo::tunnels::stands_in_a_covered_trench`] for a building of
+/// this cell, from the cell's own street tile, whose frame is the cell's
+/// north-west corner.
 fn over_a_lid(
     t: &cartopolis_geo::tunnels::TunnelTessellation,
     world_xz: &[Vec2],
@@ -1365,22 +1356,14 @@ fn over_a_lid(
         return false;
     }
     let c = world_xz.iter().copied().sum::<Vec2>() / world_xz.len() as f32;
-    let p = [c.x - cell_nw.x, c.y - cell_nw.y];
-    let over =
-        t.tunnels.iter().any(|tu| {
-            tu.covered_weight(p, 0.0) >= 1.0 && tu.road_under(p).is_some_and(|y| y < -2.0)
-        }) || cartopolis_geo::tunnels::in_an_opening(&t.openings, p);
-    if !over {
-        return false;
-    }
     let dug = ground.surrounding(c.x, c.y, cartopolis_geo::tunnels::DATUM_M) - ground.at(c.x, c.y);
-    dug > TRENCH_DUG_M
+    cartopolis_geo::tunnels::stands_in_a_covered_trench(
+        &t.tunnels,
+        &t.openings,
+        [c.x - cell_nw.x, c.y - cell_nw.y],
+        dug,
+    )
 }
-
-/// How far below the land around it a building's ground must be to count as
-/// standing in a tunnel's old trench — well past the half metre of an ordinary
-/// Dutch street's camber and kerb, well short of a seven-metre cut.
-const TRENCH_DUG_M: f32 = 2.0;
 
 fn build_lod22_from_text(
     text: &str,

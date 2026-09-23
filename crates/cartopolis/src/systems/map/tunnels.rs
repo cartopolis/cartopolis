@@ -61,6 +61,39 @@ pub struct CellTunnels {
     pub openings: Vec<Vec<[f32; 2]>>,
 }
 
+/// Covered tunnels and openings copied out of [`Tunnels`] for a worker job, in the
+/// anchored world-XZ frame.
+#[derive(Clone, Default)]
+pub struct LidSnapshot {
+    tunnels: Vec<Tunnel>,
+    openings: Vec<Vec<[f32; 2]>>,
+}
+
+impl LidSnapshot {
+    /// Whether a building with this footprint (world XZ) stands in a covered
+    /// tunnel's old trench and so is not to be drawn —
+    /// [`cartopolis_geo::tunnels::stands_in_a_covered_trench`].
+    #[must_use]
+    pub fn holds(
+        &self,
+        footprint: &[Vec2],
+        ground: &crate::systems::terrain::TerrainSnapshot,
+    ) -> bool {
+        if (self.tunnels.is_empty() && self.openings.is_empty()) || footprint.is_empty() {
+            return false;
+        }
+        let c = footprint.iter().copied().sum::<Vec2>() / footprint.len() as f32;
+        let dug =
+            ground.surrounding(c.x, c.y, cartopolis_geo::tunnels::DATUM_M) - ground.at(c.x, c.y);
+        cartopolis_geo::tunnels::stands_in_a_covered_trench(
+            &self.tunnels,
+            &self.openings,
+            [c.x, c.y],
+            dug,
+        )
+    }
+}
+
 /// One cell's tunnels in the anchored world-XZ frame.
 struct Cell {
     tunnels: Vec<Tunnel>,
@@ -249,6 +282,25 @@ impl Tunnels {
             }
         }
         sum
+    }
+
+    /// The lids and openings within `half` of `centre`, copied so a worker job
+    /// can ask [`LidSnapshot::holds`] of its buildings without the resource.
+    #[must_use]
+    pub fn lids_near(&self, centre: Vec2, half: f32) -> LidSnapshot {
+        let (lo, hi) = (centre - half, centre + half);
+        let mut out = LidSnapshot::default();
+        for c in self.cells.values() {
+            for (t, b) in c.tunnels.iter().zip(&c.covered) {
+                if let Some(b) = b {
+                    if b[0] <= hi.x && lo.x <= b[2] && b[1] <= hi.y && lo.y <= b[3] {
+                        out.tunnels.push(t.clone());
+                    }
+                }
+            }
+        }
+        self.each_opening_near(centre, half, |m| out.openings.push(m.ring.clone()));
+        out
     }
 
     fn each_opening_near(&self, centre: Vec2, half: f32, mut f: impl FnMut(&Mouth)) {

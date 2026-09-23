@@ -636,6 +636,11 @@ pub struct OsmBuildings {
     tdbag_was: Option<(bool, bool)>,
     /// When the last detail fetch was kicked off (`DETAIL_REFETCH_COOLDOWN`).
     last_fetch: Option<Instant>,
+    /// The lids under the current patch when it was fetched, and where the patch
+    /// is: a tunnel cell streaming in after the patch changes which buildings it
+    /// leaves out, so a changed digest there is a reason to refetch.
+    lid_digest: u64,
+    lid_centre: Vec2,
     in_flight: bool,
     /// Latest completed detail fetch+build, consumed on the main thread.
     fetch: Arc<Mutex<Option<Result<BuiltPatch, String>>>>,
@@ -754,6 +759,8 @@ impl Default for OsmBuildings {
             last_center: None,
             tdbag_was: None,
             last_fetch: None,
+            lid_digest: 0,
+            lid_centre: Vec2::ZERO,
             in_flight: false,
             fetch: Arc::default(),
             detail_entities: Vec::new(),
@@ -1006,6 +1013,7 @@ pub fn update_buildings(
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    tunnels: Res<crate::systems::tunnels::Tunnels>,
 ) {
     // Fire the 3DBAG coverage prefetch once (async, off the main thread) — the
     // coverage predicates report "uncovered" until it lands, then upgrade.
@@ -1121,10 +1129,14 @@ pub fn update_buildings(
     // rebuild storm that triggered is what hung the GPU — see the const), and
     // never inside the cooldown window. The existing patch stays up while
     // frozen; descending below the threshold refreshes it at the new spot.
-    let need = match osm.last_center {
-        None => true,
-        Some((lx, ly)) => (center.0 - lx).abs() + (center.1 - ly).abs() >= REFETCH_TILES,
-    };
+    let patch_half_m = tile_m * (building_patch_radius() as f32 + 1.5);
+    let lids_moved = osm.last_center.is_some()
+        && tunnels.lid_digest(osm.lid_centre, patch_half_m) != osm.lid_digest;
+    let need = lids_moved
+        || match osm.last_center {
+            None => true,
+            Some((lx, ly)) => (center.0 - lx).abs() + (center.1 - ly).abs() >= REFETCH_TILES,
+        };
     let cooled = osm
         .last_fetch
         .map(|t| t.elapsed() >= DETAIL_REFETCH_COOLDOWN)
@@ -1188,6 +1200,11 @@ pub fn update_buildings(
             .translation_to_grid(Vec3::new(world_x, 0.0, world_z).as_dvec3());
         // The ground travels with the job (see `MeshData::set_base`).
         let ground = terrain.snapshot();
+        // …and so do the lids under the patch, so a building standing in a
+        // covered tunnel's old trench is left out (`LidSnapshot::holds`).
+        let lids = tunnels.lids_near(Vec2::new(world_x, world_z), patch_half_m);
+        osm.lid_digest = tunnels.lid_digest(Vec2::new(world_x, world_z), patch_half_m);
+        osm.lid_centre = Vec2::new(world_x, world_z);
         IoTaskPool::get()
             .spawn(async move {
                 let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
@@ -1215,6 +1232,25 @@ pub fn update_buildings(
                                     });
                                     // Simple 3D Buildings: parts replace covered outlines.
                                     resolve_parts(&mut buildings);
+                                    // Not a building in a tunnel's mouth — see
+                                    // `cartopolis_geo::tunnels::stands_in_a_covered_trench`.
+                                    let before = buildings.len();
+                                    buildings.retain(|b| {
+                                        let ring: Vec<Vec2> = b
+                                            .ring
+                                            .iter()
+                                            .map(|&(la, lo)| {
+                                                lat_lng_to_local(la, lo, ax, ay, z, tile_m)
+                                            })
+                                            .collect();
+                                        !lids.holds(&ring, &ground)
+                                    });
+                                    if buildings.len() < before {
+                                        tracing::info!(
+                                            skipped = before - buildings.len(),
+                                            "osm buildings: skipped buildings standing in a covered tunnel's trench"
+                                        );
+                                    }
                                     // Deduped: with consistent windings the fan-triangulated flat caps
                                     // and shared footprint corners collapse to one vertex each.
                                     let mut bld = MeshData::with_dedup();
