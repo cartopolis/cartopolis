@@ -1,0 +1,42 @@
+# Cartopolis atlas — map data, terrain tiles and (later) accounts, as it runs on
+# code.garage44.eu. `docs/notes/atlas.md` has the design.
+#
+# Installed at /etc/systemd/system/cartopolis-atlas.service. A native binary under
+# systemd, for the reason the simulator is one (see cartopolis-sim.service): the
+# Forgejo runner and this host are the same machine, so a deploy is a file copy.
+#
+# **Its own process and its own user**, never the simulator's: pipeline work and
+# terrain cutting are seconds of CPU, and the simulator's runtime is shared with
+# the 20 Hz tick. The only thing it writes is its data directory.
+#
+# Listens on the docker0 gateway only, like the simulator's HTTP listener, so it
+# is reachable from off the machine through Caddy and nothing else.
+# `/data/cartopolis/atlas/atlas.toml`:
+#
+#   listen = "172.17.0.1:4749"
+#   data_dir = "/data/cartopolis/atlas/data"
+#   upstream_concurrency = 3
+[Unit]
+Description=Cartopolis atlas
+Documentation=https://code.garage44.eu/jeroen/cartopolis
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cartoatlas
+Group=cartoatlas
+WorkingDirectory=/data/cartopolis/atlas
+ExecStart=/data/cartopolis/atlas/atlas --config /data/cartopolis/atlas/atlas.toml
+Restart=always
+RestartSec=3s
+Environment=RUST_LOG=info
+
+ReadWritePaths=/data/cartopolis/atlas/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

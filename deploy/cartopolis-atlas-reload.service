@@ -1,0 +1,10 @@
+# The action half of cartopolis-atlas-reload.path.
+#
+# Installed at /etc/systemd/system/cartopolis-atlas-reload.service. Never enabled
+# directly — the `.path` unit is what starts it.
+[Unit]
+Description=Restart the Cartopolis atlas after a deploy
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart cartopolis-atlas.service

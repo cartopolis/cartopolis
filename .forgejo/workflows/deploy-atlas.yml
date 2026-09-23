@@ -1,0 +1,82 @@
+name: Deploy atlas
+
+# Build `cartopolis_atlas` and publish it to the host that runs it
+# (docs/notes/atlas.md). The same shape as deploy-sim.yml, for the same reasons:
+# the Forgejo runner and the host are one machine, so publishing is a file copy
+# into the directory the systemd unit reads from, and a restart stamp that a
+# `.path` unit on the host acts on (deploy/cartopolis-atlas-reload.*). The job
+# never holds the host's init system.
+#
+# **Manual.** Atlas serves cartopolis.org's front page and the terrain tiles, and
+# publishing restarts it; a README typo on `main` is not a reason for that.
+#
+#   curl -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+#     -d '{"ref":"main"}' \
+#     "$FORGEJO_API/repos/$FORGEJO_REPO/actions/workflows/deploy-atlas.yml/dispatches"
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+  CARGO_INCREMENTAL: "0"
+  # deploy-sim.yml's reasoning: capacity 3 on a box shared with nominatim,
+  # overpass and the agent containers, and on the command line rather than as
+  # `CARGO_BUILD_JOBS` because rust-cache hashes every `CARGO*` variable.
+  JOBS: "2"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_DIR: /sccache
+  SCCACHE_CACHE_SIZE: 20G
+
+jobs:
+  deploy-atlas:
+    name: build & publish atlas
+    runs-on: ubuntu-latest
+    container:
+      image: cartopolis-ci:latest
+      # `/data/cartopolis/atlas` has to be in the runner's `valid_volumes` or this
+      # mount is refused. Its own registry copy, for the reason deploy-web.yml
+      # gives at length: a shared `registry/` bind mount excludes cargo's lock.
+      options: >-
+        --volume /data/cartopolis/atlas:/publish
+        --volume /data/ci-cache/sccache:/sccache
+        --volume /data/ci-cache/cargo-registry-atlas:/root/.cargo/registry
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          key: atlas-release
+
+      - name: Build
+        run: cargo build --locked -j "$JOBS" -p cartopolis_atlas --bin atlas --release
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || echo "sccache could not report its stats — the build above is unaffected"
+
+      # Start it and ask it something before it replaces the running one. The
+      # config is written here rather than read from the host, so a smoke test can
+      # never touch the live data directory.
+      - name: Smoke-test the binary
+        run: |
+          mkdir -p /tmp/smoke
+          printf 'listen = "127.0.0.1:47490"\ndata_dir = "/tmp/smoke/data"\n' > /tmp/smoke/atlas.toml
+          ./target/release/atlas --config /tmp/smoke/atlas.toml &
+          pid=$!
+          for i in $(seq 1 50); do
+            curl -sf http://127.0.0.1:47490/health && break
+            sleep 0.2
+          done
+          curl -sf http://127.0.0.1:47490/ | grep -q '/viewer/'
+          kill "$pid"
+          echo "startup + front page ok"
+
+      # A rename, not a copy over the running binary: `install` straight onto it
+      # would truncate a file a live process is executing.
+      - name: Publish
+        run: |
+          install -m 0755 target/release/atlas /publish/atlas.new
+          mv /publish/atlas.new /publish/atlas
+          date -u +%FT%TZ > /publish/restart.stamp
+          echo "published $(du -h /publish/atlas | cut -f1) — restart requested"
