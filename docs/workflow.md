@@ -132,11 +132,11 @@ and none of it needs a restart:
   for a person, which is where this lane stopped before.
 - `focus` / `focusPlan` — the second queue, below.
 
-Nobody edits that file by hand any more: cartopy's **Autopilot tab**
-(`web.cartopolis.org`) is the control surface, and the file is how it reaches
+Nobody edits that file by hand any more: the atlas console's **Autopilot tab**
+(`https://cartopolis.org/console/`) is the control surface, and the file is how it reaches
 this process. It is a hand-synced seam — a field added to `Config` here has to be
-added to `server/autopilot.ts` over there, or the console strips it on the next
-save.
+added to `crates/atlas/src/autopilot.rs` too, or the console strips it on the
+next save.
 
 #### The queue: the frontier, or a focus
 

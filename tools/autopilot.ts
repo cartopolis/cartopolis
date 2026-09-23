@@ -86,8 +86,8 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //
 // Read on every tick, never cached: this file IS the control surface, and the
 // point of it is that changing it takes effect without restarting anything.
-// Since 2026-08-30 the admin console writes it too — cartopy's
-// `server/autopilot.ts` (the Autopilot tab's sliders) — which makes this Config
+// Since 2026-08-30 the admin console writes it too — atlas's
+// `crates/atlas/src/autopilot.rs` (the Autopilot tab's sliders) — which makes this Config
 // a hand-synced seam like `AccountRow`: add a field here and add it there, or
 // the console silently strips it on the next save.
 //
@@ -231,7 +231,7 @@ async function saveState(s: State) {
  * stamped onto a plan item when it is filed.
  *
  * Merged into the file as it stands at that instant and written through a temp
- * file and a rename, because cartopy's `server/autopilot.ts` may be saving an
+ * file and a rename, because atlas's `src/autopilot.rs` may be saving an
  * operator's edit in the same second — and a torn parse over here falls back to
  * DEFAULTS, i.e. reads as the whole lane switching itself off. Neither write
  * ever reorders the plan or rewrites a title: those belong to the person editing

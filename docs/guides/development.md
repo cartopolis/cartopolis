@@ -231,13 +231,15 @@ loopback-only, so there is nothing plaintext to reach.
 [`docs/notes/hosted-simulator.md`](../notes/hosted-simulator.md) has the shape and
 what is still open.
 
-**The admin GUI is a separate repository.**
-[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) — Preact + deepsignal, Bun, no Rust — manages
-accounts on the hosted simulator and deploys itself to
-[web.cartopolis.org](https://web.cartopolis.org) on every push to its `main`. It
-depends on this repo only through the simulator's `/api/admin` responses; its
-README has the dev loop, and its `bun run dev` proxies to a local simulator so it
-runs against the real API rather than a mock.
+**The admin GUI is the atlas console, `crates/atlas/console`.** Preact +
+deepsignal, Bun, no Rust — it manages accounts on the hosted simulator and drives
+atlas's map data pipelines, and `deploy-console.yml` publishes it to
+[cartopolis.org/console/](https://cartopolis.org/console/) on every push to
+`main` that touches it. It was its own repository, `jeroen/cartopy`, on its own
+hostname (`web.cartopolis.org`, retired), until 2026-09. It talks
+to the rest of the tree only through the simulator's `/api/admin` and atlas's
+`/api/pipeline/*` responses; its README has the dev loop, and its `bun run dev`
+proxies to a local simulator so it runs against the real API rather than a mock.
 
 Platform differences live behind one API in `platform/` — native and wasm
 implementations of `http`, `storage`, `location`, `stream`, `work`, `workers`.
@@ -375,14 +377,13 @@ Both jobs use the prebuilt `cartopolis-ci` image and check out with `lfs: true` 
 that to any new job. `deploy-wasm.yml`, `deploy-android.yml` and `deploy-sim.yml`
 (all three `workflow_dispatch` only) and `release.yml` are separate workflows.
 
-Every deploy lane in *this* repo is manual, because publishing is either
+Every other deploy lane in this repo is manual, because publishing is either
 expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
 (`deploy-sim.yml` restarts the live simulator, dropping every connected session).
-The admin GUI's lane is the opposite — seconds, and it interrupts nobody — so it
-runs on every push; it lives in the `cartopy` repo along with the app. The runner
-is instance-wide and `/data/cartopolis/admin` is already in its `valid_volumes`,
-so a workflow in another repo publishes to the same host directory with no runner
-change.
+The admin console's lane, `deploy-console.yml`, is the opposite — seconds, and it
+interrupts nobody — so it runs on every push to `main` that touches
+`crates/atlas/console`. It publishes to `/data/cartopolis/admin`, which has been
+in the runner's `valid_volumes` since the console was its own repository.
 
 **A step may only use a tool the image already has.** The image is built by hand on
 the VPS (`~/build/cartopolis-ci-image/Dockerfile`, then `docker build -t

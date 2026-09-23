@@ -120,4 +120,4 @@ saturated colour left to fall back on. The assertion is not "the ring clears
 mid-load, so its five tones are the five constants and drift there is invisible
 from Rust. Only one pair is unit-tested (the wordmark orange,
 `the_wordmark_is_one_orange_on_both_splashes`); the rest is a person. The account
-GUI in `jeroen/cartopy` carries the wordmark too.
+GUI, the atlas console in `crates/atlas/console`, carries the wordmark too.

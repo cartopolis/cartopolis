@@ -9,8 +9,8 @@
 //!
 //! **The roof area and the volume are measured here, not fetched.** 3DBAG
 //! publishes both as attributes, so the obvious way to put them on this card is to
-//! ship them from cartopy's extractor — a change in a second repository, a
-//! pipeline re-run per city and a cache-key bump, to carry two numbers that are
+//! ship them from atlas's extractor (`pipeline/lod22.rs`) — a wire-format change
+//! on both sides of a hand-synced seam, a pipeline re-run per city and a cache-key bump, to carry two numbers that are
 //! functions of triangles the client already holds. `lod22::shell_stats` measures
 //! them instead, in the pass that was already walking the soup. Nothing on this
 //! card needs a new request, a new field on the wire or a re-run of anything.

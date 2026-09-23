@@ -5,11 +5,11 @@ everywhere this has not been run. That is expensive and it is the *same* answer
 on every device: measured on one capture over Groningen, cutting the ground
 surfaces into shape was 45.9 seconds of the client's 78 seconds of map work.
 
-`carto-pipeline` does that work once, on a server. It lives in this repository
-rather than in [`cartopy`](https://code.garage44.eu/jeroen/cartopy) because it
-calls `cartopolis_geo` — the client's own code — so what the server builds and
-what the client would have built come out of the same functions and cannot drift.
-cartopy keeps the operator console and runs this as a command.
+`carto-pipeline` does that work once, on a server. It is Rust in this workspace
+because it calls `cartopolis_geo` — the client's own code — so what the server
+builds and what the client would have built come out of the same functions and
+cannot drift. The operator console is atlas's (`crates/atlas/console`); this is
+meant to be run as a command beside atlas's own extractors (`atlas run`).
 
 ## Building it
 
@@ -163,8 +163,9 @@ Serve the directory as static files. It needs no application in front of it.
 
 The ground stage is the first and the largest. Still to move off the client:
 
-* The surveyed pavements, the building records and the crop parcels, which are
-  TypeScript in cartopy today.
+* The surveyed pavements and the building records, which atlas's extractors
+  (`crates/atlas/src/pipeline/bgt.rs`, `bag.rs`) serve as raw per-cell records for
+  the client to mesh, and the crop parcels, whose extractor is not written yet.
 * **Buildings**, which are deliberately *not* here yet: the Dutch 3D building data
   is already per-cell and already on our own host, so it fits, but a merged mesh
   cannot be clicked and the client needs per-building identity for selection, facade

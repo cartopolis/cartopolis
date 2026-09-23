@@ -2,7 +2,7 @@
 //! paths, parking bays, driveways, verges and traffic islands.
 //!
 //! No Bevy: rings in, [`SurfaceMesh`]es out. The extraction is
-//! cartopy's `bgt.ts` and the streaming is `systems::surveyed`.
+//! atlas's `pipeline/bgt.rs` and the streaming is `systems::surveyed`.
 //!
 //! # Why this does not draw the road
 //!
@@ -55,7 +55,7 @@ pub struct PavedArea {
     pub rings: Vec<Vec<[f32; 2]>>,
 }
 
-/// The paved forms. Mirrors `SURFACE_KINDS` in cartopy's `bgt.ts` —
+/// The paved forms. Mirrors `SURFACE_KINDS` in atlas's `pipeline/bgt.rs` —
 /// **append, never renumber**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PavingKind {
@@ -129,7 +129,7 @@ impl PavingKind {
 }
 
 /// What a surveyed surface is made of. Mirrors `SURFACE_MATERIALS` in
-/// cartopy's `bgt.ts` — **append, never renumber**.
+/// atlas's `pipeline/bgt.rs` — **append, never renumber**.
 ///
 /// # Why this is a second axis and not more kinds
 ///

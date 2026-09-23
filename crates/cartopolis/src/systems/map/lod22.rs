@@ -3,7 +3,7 @@
 //! Where the OSM/LoD1.2 path (`osm_buildings.rs`) extrudes footprints and *guesses*
 //! roofs, this streams the actual triangulated BAG roof geometry (sloped, hipped,
 //! complex roofs) preprocessed server-side into per-cell meshes
-//! (cartopy's `lod22.ts` → `https://3dbag.cartopolis.org/lod22/…`). Each cell file is
+//! (atlas's `pipeline/lod22.rs` →`https://3dbag.cartopolis.org/lod22/…`). Each cell file is
 //! `{"elements":[{id, p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}` — deduped vertices
 //! and triangles tagged roof/wall.
 //!
@@ -1398,7 +1398,7 @@ fn build_lod22_from_text(
         // The hull is what a triangle soup can give and it is wrong for every
         // building that is not convex: an L-shaped block's hull fills in the inner
         // corner, so the yard between its wings is a place the avatar cannot walk
-        // and nothing is drawn. Now that cartopy's `bag.ts` ships the ring, that
+        // and nothing is drawn. Now that atlas's `pipeline/bag.rs` ships the ring, that
         // approximation is only the fallback.
         let ring: Vec<Vec2> = fact
             .map(|f| f.footprint.as_slice())
@@ -1606,8 +1606,8 @@ fn build_lod22_from_text(
 /// **All three are read off the geometry the client already has, and that is the
 /// point.** 3DBAG publishes `b3_h_dak_70p`, `b3_opp_dak_plat + b3_opp_dak_schuin`
 /// and `b3_volume_lod22` as attributes, so the obvious way to put a roof area and
-/// a volume on the building card is to ship them from cartopy's extractor — a
-/// change in a second repository, a pipeline re-run for every city and a cache-key
+/// a volume on the building card is to ship them from atlas's extractor — a
+/// format change on both sides of a hand-synced seam, a pipeline re-run for every city and a cache-key
 /// bump, all to carry numbers *derived from the very triangles already in this
 /// buffer*. Measuring them here costs one pass over a soup this function was
 /// walking anyway, needs no wire change, and works on any cell already cached.

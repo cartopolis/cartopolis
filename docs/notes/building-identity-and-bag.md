@@ -101,7 +101,7 @@ The mesh pipeline bins a building by the first vertex of its 3D solid. The
 attribute pipeline has only a 2D footprint and cannot reproduce that rule, and a
 building whose attributes landed one cell over from its mesh would never join —
 silently, and only for buildings near a cell edge, which is the worst possible
-distribution for noticing. So cartopy's `bag.ts` writes each pand into every z14
+distribution for noticing. So atlas's `pipeline/bag.rs` writes each pand into every z14
 cell its footprint bbox touches. The duplication is a few bytes on a handful of
 buildings; the alternative is a bug that reproduces on a tenth of a percent of
 the city.

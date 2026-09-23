@@ -169,8 +169,8 @@ square — the isometric map-tower cluster of `assets/icon/cartopolis.svg`, seve
 towers clad in map paper on a gridded plinth with the place pin planted on the
 tallest — and
 `theme::paint_wordmark` splits the name in two tones (cream `carto`, accent
-`polis`), which is how the account GUI writes it (`jeroen/cartopy`'s
-`.app-header .wordmark`). Three reasons it is not a PNG:
+`polis`), which is how the account GUI writes it (the atlas console's
+`.app-header .wordmark`, in `crates/atlas/console`). Three reasons it is not a PNG:
 
 - It is wanted at 84 pt on the splash and 20 pt on a dock disc. egui has no mip
   chain, so a 256 px image sampled down to a 20 pt button shimmers as the window

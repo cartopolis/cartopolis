@@ -891,7 +891,7 @@ fn height_band_m(band: &str) -> Option<f32> {
 ///
 /// A prop's kind is a **name**, not an index into a table. An index would be a
 /// second wire order to keep append-only forever (`surveyed::PROP_KINDS` already
-/// is one, and it is pinned to cartopy's extractor); a name costs six bytes, and
+/// is one, and it is pinned to atlas's `pipeline/bgt.rs`); a name costs six bytes, and
 /// a kind this build no longer knows simply drops out on the next read.
 ///
 /// Built with one `String` and `write!` rather than a `format!` per object: a

@@ -5,7 +5,7 @@
 //! carries canopy *areas*, so "the trees here are scattered, not surveyed" — and
 //! `furniture.rs` reads a `pois` layer that has no street lighting in it at all.
 //! The BGT registers both, object by object, for the whole country, and
-//! cartopy's `bgt.ts` bins them into the same z14 cells everything else here
+//! atlas's `pipeline/bgt.rs` bins them into the same z14 cells everything else here
 //! is streamed in.
 //!
 //! **Added to the generated layers, never replacing them.** Two reasons, and the
@@ -72,7 +72,7 @@ pub fn bgt_attribution() -> Option<String> {
 }
 
 /// The forms the extractor can name, in wire order. Mirrors `PROP_KINDS` in
-/// cartopy's `bgt.ts` — **append, never renumber**.
+/// atlas's `pipeline/bgt.rs` —**append, never renumber**.
 ///
 /// An index past the end is dropped rather than clamped: a host running a newer
 /// extractor than this client should lose the objects it has no form for, not
@@ -81,8 +81,8 @@ pub fn bgt_attribution() -> Option<String> {
 /// Positions 7–9 are claimed by the second round of collections
 /// (`docs/notes/surveyed-street-objects.md`, "The other forty-two"): the `bord`,
 /// `kast` and `bak` registers. `Cabinet` was already here for `straatmeubilair`,
-/// so `kast` needs no position of its own. Nothing emits 7–9 yet — the extractor
-/// half lives in cartopy — and a client that can name a form the host never sends
+/// so `kast` needs no position of its own. Nothing emits 7–9 yet — atlas's
+/// `pipeline/bgt.rs` has not caught up — and a client that can name a form the host never sends
 /// is the harmless direction of this seam. The reverse is not: an extractor that
 /// sends a position no client has is silently dropped content, so the client goes
 /// first.
@@ -100,11 +100,11 @@ const PROP_KINDS: [FurnitureKind; 10] = [
 ];
 
 /// The linear forms, in wire order. Mirrors `LINE_KINDS` in
-/// cartopy's `bgt.ts` — **append, never renumber**.
+/// atlas's `pipeline/bgt.rs` — **append, never renumber**.
 const LINE_KINDS: [LineKind; 3] = [LineKind::Fence, LineKind::Wall, LineKind::Hedge];
 
 /// The paved forms, in wire order. Mirrors `SURFACE_KINDS` in
-/// cartopy's `bgt.ts` — **append, never renumber**.
+/// atlas's `pipeline/bgt.rs` — **append, never renumber**.
 const SURFACE_KINDS: [PavingKind; 8] = [
     PavingKind::Footway,
     PavingKind::Cycleway,
@@ -117,7 +117,7 @@ const SURFACE_KINDS: [PavingKind; 8] = [
 ];
 
 /// The surveyed materials, in wire order. Mirrors `SURFACE_MATERIALS` in
-/// cartopy's `bgt.ts` — **append, never renumber**.
+/// atlas's `pipeline/bgt.rs` — **append, never renumber**.
 const SURFACE_MATERIALS: [PavingMaterial; 12] = [
     PavingMaterial::Asphalt,
     PavingMaterial::Concrete,

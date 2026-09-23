@@ -1,6 +1,6 @@
 ---
 topic: autopilot-focus
-triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", "qa-gap", "the queue", cartopy, "Autopilot tab"]
+triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", "qa-gap", "the queue", cartopy, atlas, autopilot.rs, "Autopilot tab"]
 updated: 2026-09-09
 ---
 
@@ -13,7 +13,7 @@ usually not a row in that table and often not a data source at all. "Get this
 solid on the Steam Deck runner" is the case that prompted the feature.
 
 So there is a second queue. `focus` is a sentence in the admin console
-(cartopy's Autopilot tab); `focusPlan` is an **ordered list of pieces of work**
+(the atlas console's Autopilot tab); `focusPlan` is an **ordered list of pieces of work**
 that the console reorders, rewrites, extends and deletes. While it holds a row
 nobody has started, it *replaces* the frontier — the two are not blended,
 because a frontier ticket with "…and by the way, the Steam Deck" appended to it
@@ -21,27 +21,27 @@ is a ticket about neither thing.
 
 The field is called `focusPlan` and the list is no longer only the focus's: see
 *A finding is not a ticket* below. The name stayed because it is a hand-synced
-seam — cartopy's `server/autopilot.ts`, the live file on the pipeline host and
+seam — atlas's `crates/atlas/src/autopilot.rs`, the live file on the pipeline host and
 this parser all have to agree — and renaming it buys nothing a comment does not.
 
 ## Who turns a sentence into a plan
 
 Not the autopilot: it holds the merge token and still runs no language model,
 which is the whole reason it is a separate container from the watcher. Not
-cartopy either — it has no model, no key, and nothing else in it needs one.
+the console's server either (atlas now, cartopy when this was built) — it has no model, no key, and nothing else in it needs one.
 
 It is a **planning ticket**, which is the same trick the QA and retrospective
 lanes already use: a session does the judging, on a ticket, and answers in a
 form a script can read. It posts a fenced ` ```autopilot-plan ` block of JSON
 and the autopilot stores it. The alternatives that lost:
 
-- **cartopy calls an API model directly.** A key on the pipeline host, a cost
+- **The console's server calls an API model directly.** A key on the pipeline host, a cost
   centre, and a second place that knows how to talk to a model — to reproduce
   something a session already does with the whole repository checked out beside
   it.
 - **The plan lives in the repository** (`docs/focus.md`, read over the API like
   the frontier is). Nothing new to write, no second writer of the control file —
-  and no way for the console to reorder it, since cartopy has no Forgejo token
+  and no way for the console to reorder it, since atlas has no Forgejo token
   and giving it one puts repository write access behind the admin GUI.
 
 ## Two writers on one file, and what each owns
@@ -51,7 +51,7 @@ that keeps that safe is ownership, not locking:
 
 | | Ordering, wording, membership of an **unfiled** row | A **filed** row | `issue` |
 |---|---|---|---|
-| cartopy (`server/autopilot.ts`) | writes | refuses the edit | ignores what is sent |
+| the console, via atlas (`crates/atlas/src/autopilot.rs`) | writes | refuses the edit | ignores what is sent |
 | autopilot (`tools/autopilot.ts`) | appends only, never reorders or rewords | leaves it | writes |
 
 Both do read-merge-rename through a temp file in the same directory. A collision

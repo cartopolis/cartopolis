@@ -79,7 +79,7 @@ workstation call — colour is not evidence on the container's software rasteris
 
 ## Why there is no extractor, and no mirror
 
-The five surveyed layers each have a pipeline stage in [`jeroen/cartopy`][cartopy]
+The surveyed layers each have a pipeline stage in atlas (`crates/atlas/src/pipeline/`)
 because their sources are WFS/GML needing RD→WGS84 reprojection and tessellation
 (`where-the-map-data-is-built.md`). Imagery needs none of that: already tiled,
 already Web Mercator, already CDN-cached, already CORS-open. The in-tree
@@ -91,8 +91,6 @@ Mirroring is not affordable either: the Netherlands at z20 is on the order of
 78 million tiles at ~20 KB, i.e. **~1.5 TB**, on a VPS that also hosts nominatim,
 overpass and the tile server. `systems::coverage`'s `CoverageSlot` therefore
 gains no slot.
-
-[cartopy]: https://code.garage44.eu/jeroen/cartopy
 
 ## What is still unjudged
 

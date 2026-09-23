@@ -18,7 +18,7 @@
 //! is 3,917 points behind a keyless `bbox` query answering
 //! `Access-Control-Allow-Origin: *` with an hour of cache control on it; there is
 //! nothing to reproject, nothing to triangulate and nothing to page nationally,
-//! so a cartopy extractor and a [`CoverageSlot`](crate::systems::coverage::CoverageSlot)
+//! so an atlas extractor and a [`CoverageSlot`](crate::systems::coverage::CoverageSlot)
 //! would both be machinery around a `GET`.
 //!
 //! # Three gates before a request is made

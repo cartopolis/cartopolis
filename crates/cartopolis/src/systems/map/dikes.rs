@@ -7,7 +7,7 @@
 //! missing is that the ridge has a name, a type and a job.
 //!
 //! The water boards register every defence and PDOK republishes their registers
-//! together as IMWA; cartopy's `dikes.ts` bins the `waterkering` lines into the same
+//! together as IMWA; atlas's `pipeline/dikes.rs` bins the `waterkering` lines into the same
 //! z14 cells everything else here streams in, and this module streams them,
 //! measures where their crest actually is, and hands them to
 //! `systems::street_labels` to be written along.
@@ -92,7 +92,7 @@ pub fn dike_attribution() -> Option<String> {
     COVERAGE.attribution()
 }
 
-/// What kind of defence it is. Mirrors `DIKE_KINDS` in cartopy's `dikes.ts` —
+/// What kind of defence it is. Mirrors `DIKE_KINDS` in atlas's `pipeline/dikes.rs` —
 /// **append, never renumber**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DikeKind {
@@ -131,7 +131,7 @@ impl DikeKind {
 }
 
 /// How much country stands behind it. Mirrors `DIKE_CATEGORIES` in
-/// cartopy's `dikes.ts`.
+/// atlas's `pipeline/dikes.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DikeCategory {
     /// A primary defence: the line between the country and the sea or the great

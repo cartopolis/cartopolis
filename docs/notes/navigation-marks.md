@@ -121,10 +121,10 @@ written down once, in
 
 ## Two rejected alternatives
 
-**A cartopy extractor.** The four other Dutch registers are extracted by
-[cartopy](https://code.garage44.eu/jeroen/cartopy) and served per cell by our own
-host, and `where-the-map-data-is-built.md` is explicit that nothing but a person
-keeps the two repositories in step. That seam is worth its cost for a
+**An atlas extractor.** The other Dutch registers are extracted by atlas
+(`crates/atlas/src/pipeline/`; cartopy when this was decided) and served per cell
+by our own host, and `where-the-map-data-is-built.md` is explicit that each
+format is still hand-synced between the extractor and its client parser. That seam is worth its cost for a
 2 MB-per-cell dataset needing reprojection and triangulation; it is not worth it
 for 18,474 points behind a keyless `bbox` query with CORS `*` and an hour of
 cache control. The in-tree precedent for reaching PDOK from the client is

@@ -14,7 +14,7 @@ is in the height model `systems::height` already fetches, and `systems::terrain`
 renders it as a ridge like any other ground. What was missing is that the ridge
 has a name, a type and a job.
 
-cartopy's `dikes.ts` reads the water boards' own registers — republished together by
+Atlas's `pipeline/dikes.rs` reads the water boards' own registers — republished together by
 PDOK as IMWA — and `systems::dikes` streams them and hands the named ones to
 `systems::street_labels`.
 

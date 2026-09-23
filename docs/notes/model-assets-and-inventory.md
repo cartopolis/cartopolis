@@ -36,7 +36,7 @@ is it called" and "is it shared" cannot be columns on the file, and
 | `assets` | the bytes. Immutable, no owner, no name |
 | `asset_claims` | one row per uploader: what licence they said it was under |
 | `inventory_items` | a person's named reference to a file — renameable, disposable |
-| `library_entries` | the catalogue: one row per file, what cartopy curates |
+| `library_entries` | the catalogue: one row per file, what the atlas console curates |
 
 Folding any two together breaks a case that happens on the first day: Bob deleting
 his copy must not blank Alice's, and must not lose the category a curator set.
@@ -166,9 +166,10 @@ Added to the Caddy block on 2026-09-05. Alongside `/ws`, the host now proxies
 the same upstream, `172.17.0.1:4748`.
 
 **Not `/api/*`,** and that is the point: the same prefix carries `/api/admin/*` —
-accounts, reports, claims, curation — which belongs on `web.cartopolis.org` where
-the operator GUI is, and has no business being reachable from the page every
-player loads. Anything else under `/api` on this host falls through to the file
+accounts, reports, claims, curation — which belonged on `web.cartopolis.org`
+while the operator GUI lived there, and had no business being reachable from the
+page every player loads. (That hostname is retired: the console is at
+`cartopolis.org/console/` since 2026-09, on this same host.) Anything else under `/api` on this host falls through to the file
 server and 404s.
 
 The two 404s are worth telling apart when checking it. A path that reached the
@@ -205,18 +206,21 @@ the procedural shapes use.
 
 ## Curating it
 
-The operator half is a **Models tab in cartopy** (`src/components/pages/library`),
-talking to `/api/admin/library` and `/api/admin/assets`. It lists the catalogue
+The operator half is a **Models tab in the atlas console**
+(`crates/atlas/console/src/components/pages/library`), talking to
+`/api/admin/library` and `/api/admin/assets`. It lists the catalogue
 with the unreviewed entries first, edits a name, a category and a credit line,
 takes a model down, and shows the stored files with what still refers to each.
 
-That is a **sixth hand-synced seam** between the two repositories, alongside the
-five in [where-the-map-data-is-built.md](where-the-map-data-is-built.md):
-cartopy's `LibraryEntry` and `StoredAsset` in `src/types.ts` describe what
-`library::CuratorEntry` and `library::StoredAsset` serialise here, and nothing but
-a person keeps them in step.
+That is a **hand-synced seam**, like the map data formats in
+[where-the-map-data-is-built.md](where-the-map-data-is-built.md): the console's
+`LibraryEntry` and `StoredAsset` in `crates/atlas/console/src/types.ts` are
+hand-written TypeScript describing what `library::CuratorEntry` and
+`library::StoredAsset` serialise here, and nothing but a person keeps them in
+step — the console being in this repository (it was `jeroen/cartopy` until
+2026-09) does not change that.
 
-Categories are a fixed list on the cartopy side because the in-world picker groups
+Categories are a fixed list on the console side because the in-world picker groups
 by them, and a curator typing `furniture ` once makes a second category nobody can
 find. They are stored as free text on the server, which is the looser of the two —
 worth knowing before relying on the set being closed.
@@ -226,7 +230,7 @@ worth knowing before relying on the set being closed.
 - **No thumbnails.** The simulator cannot render — no GPU, and deliberately no
   Bevy — so a picture has to come from somewhere else: the uploading client (which
   has a renderer and an offscreen path already, in the shot harness), or a curator
-  attaching one from cartopy. Either is a second asset kind to store, serve and
+  attaching one from the atlas console. Either is a second asset kind to store, serve and
   moderate, which is why neither was done with the first version. The picker lists
   a name, a category and a triangle count and is usable without.
 - **No collider — but no prim has one.** A model prim is picked against its unit

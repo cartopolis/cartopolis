@@ -14,7 +14,7 @@
 //!
 //! # Why the client fetches this itself
 //!
-//! The other four Dutch registers are extracted by cartopy and served per cell by
+//! The other Dutch registers are extracted by atlas and served per cell by
 //! our own host (`docs/notes/where-the-map-data-is-built.md`), and that seam is
 //! worth its cost for a 2 MB-per-cell dataset that needs reprojection and
 //! triangulation. It is not worth it for 18,474 points behind a keyless `bbox`

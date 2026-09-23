@@ -93,7 +93,7 @@ Same shape as NWB — **rejected on content, not on terms.**
 
 ## And it would cost a national re-slice every minute
 
-Every surveyed layer here is a static per-cell file built once by cartopy's
+Every surveyed layer here is a static per-cell file built once by atlas's
 pipeline ([where-the-map-data-is-built.md](where-the-map-data-is-built.md)). The
 one live feed that exists, OVapi transit, is polled by the client directly
 because it answers a batched query by stop code

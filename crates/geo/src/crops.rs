@@ -2,7 +2,8 @@
 //! RVO's Basisregistratie Gewaspercelen (BRP).
 //!
 //! No Bevy: parcels in, [`SurfaceMesh`]es out. The streaming half is
-//! `systems::crops`, the extraction is cartopy's `brp.ts`, and
+//! `systems::crops`, the extraction is not written yet (it belongs in atlas's
+//! `pipeline/`), and
 //! `docs/notes/crop-parcels.md` has the endpoint, the licence and the
 //! measurements.
 //!
@@ -53,8 +54,9 @@ pub struct CropParcel {
     pub rings: Vec<Vec<[f32; 2]>>,
 }
 
-/// What the register calls the *use* of a parcel. Mirrors `CATEGORIES` in
-/// cartopy's `brp.ts` — **append, never renumber**.
+/// What the register calls the *use* of a parcel. The BRP extractor, when it is
+/// written in atlas's `pipeline/`, must mirror this order — **append, never
+/// renumber**.
 ///
 /// There is no `Landschapselement`: see the module note. `Overige` is the
 /// register's own residual category (permanent woodland with a replanting

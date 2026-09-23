@@ -250,8 +250,8 @@ on `/data` and 37 GB on `/`, ~13 GB came back:
 
 Two things that look reclaimable and are not. `catthehacker/ubuntu:act-latest`
 (2.3 GB) is the default image for a job with no `container:`, which is every job
-in `jeroen/codebrew` — this repo's workflows all name `cartopolis-ci` and cartopy
-does too, so it is easy to conclude wrongly that nothing uses it. And the Android
+in `jeroen/codebrew` — this repo's workflows all name `cartopolis-ci`, the
+console's deploy included, so it is easy to conclude wrongly that nothing uses it. And the Android
 emulator's SDK under `/data/agent` (5.5 GB) is a standing fixture for testing
 Android behaviour, not a leftover; its cost is RAM, not disk.
 

@@ -26,7 +26,7 @@ the wrong object.
 client's collider pass.
 
 A second kind was the obvious shape and is wrong three times over. The vocabulary
-is **closed**, pinned by a test, hand-synced with cartopy's dropdown, and — the
+is **closed**, pinned by a test, hand-synced with the atlas console's dropdown, and — the
 one that decides it — reachable by an operator through
 `FurnitureKind::slug`: somebody who uploads a fountain model and hangs it on the
 `fountain` slug means *the fountains*, not the ones that happen to be on paving.

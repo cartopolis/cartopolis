@@ -1,6 +1,6 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, deploy-admin.yml, deploy-wasm.yml, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
+triggers: [deploy-sim.yml, deploy-admin.yml, deploy-console.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
 updated: 2026-09-23
 ---
 
@@ -15,7 +15,7 @@ and each has a different audience:
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
 | `https://cartopolis.org/` | everyone | **`cartopolis_atlas`** since 2026-09-23 — the front page, `/terrain/{z}/{x}/{y}`, and the account pages as they move over (`atlas.md`) |
 | `https://cartopolis.org/viewer/` | players in a browser | the wasm client, published by `deploy-wasm.yml` into `site/viewer/` |
-| `https://web.cartopolis.org` | operators | the account admin GUI — [`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy), a separate repo |
+| `https://cartopolis.org/console/` | operators | the account admin GUI — the atlas console, `crates/atlas/console`, static files published by `deploy-console.yml`; atlas's front page has a "Sign in" button to it. It was `web.cartopolis.org` and the separate `jeroen/cartopy` until 2026-09; that hostname is retired, with no redirect |
 
 Everything Caddy does not route elsewhere goes to atlas (`172.17.0.1:4749`), which
 is why the site root is not a file directory any more. Two things stay files at
@@ -123,19 +123,22 @@ holding credentials, in order to serve 35 KB of static files and forward JSON to
 a Rust process that was already answering HTTP. What was worth borrowing from
 codebrew is its *front end*: the deepsignal store with its persistent/volatile
 split, and the `App.init` + `components/{pages,elements}` layout. Those are in
-[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) and the backend is nowhere — the GUI is static
-files Caddy serves, and Caddy proxies `/api/*` to this simulator.
+`crates/atlas/console` and the GUI has no backend of its own — it is static files
+Caddy serves, and its API calls go to this simulator (`/api/admin/*`) and to
+atlas (`/api/pipeline/*`), which was already answering HTTP too.
 
-The GUI lives in its own repository because it shares nothing with this one but
-an HTTP contract: no crate, no build, no lockfile, no CI lane. The cost is the
-one seam worth naming — its `src/types.ts` describes what `auth::AccountRow`
-serialises, and with the two apart nothing but a person keeps them in step.
+The GUI lived in its own repository, `jeroen/cartopy`, until 2026-09, because it
+shared nothing with this one but an HTTP contract. It moved in with atlas, but it
+is still TypeScript beside Rust, so the one seam worth naming is unchanged:
+`crates/atlas/console/src/types.ts` describes what `auth::AccountRow` serialises,
+and nothing but a person keeps the two in step.
 
 ## Rejected: CORS on the simulator
 
-The GUI is on `web.cartopolis.org` and the API is on the simulator, so the obvious
-move is an `Access-Control-Allow-Origin` layer. Caddy proxies `/api/*` on the
-admin hostname to the simulator instead, which makes every request same-origin —
+The GUI is static files (at `cartopolis.org/console/` now; it was
+`web.cartopolis.org`) and the API is on the simulator, so the obvious move is an
+`Access-Control-Allow-Origin` layer. Caddy proxies the API on the GUI's own
+hostname to the simulator instead, which makes every request same-origin —
 there is then no preflight, no origin allowlist to keep in step with the
 deployment, and no CORS misconfiguration that could expose the admin API to a
 page the operator was reading. Same trick as `/up/nomads/` for NOAA and for the
@@ -143,10 +146,10 @@ same reason (ADR-034 calls one origin the fix).
 
 ## Still open
 
-- **`web.cartopolis.org` needs an A record.** `cartopolis.org` has no wildcard —
-  verified 2026-08-13, `sim.` and a random subdomain both NXDOMAIN — and DNS for
-  this zone is not self-serve from this container. Until the record exists, Caddy
-  retries the certificate with backoff and the rest of the file is unaffected.
+- **`web.cartopolis.org` is retired, with no redirect.** The console moved to
+  `cartopolis.org/console/` in 2026-09. Its A record can go whenever somebody
+  with access to the zone gets to it; DNS for `cartopolis.org` is not self-serve
+  from this container.
 
 ## The CI registry cache could not be shared, and said so in three voices
 

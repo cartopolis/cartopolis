@@ -110,9 +110,9 @@ frames, so no amount of clicking here could reproduce it.
 
 The obvious way to put "Totale Dakoppervlak" and "Volume" on the card is the way
 3DBAG offers them: `b3_opp_dak_plat + b3_opp_dak_schuin` and `b3_volume_lod22`
-are attributes on the WFS, so ship them from cartopy's extractor. That is a
-change in a second repository, a pipeline re-run for every city, a wire-format
-change and a `cell_cache_key` bump — to carry two numbers that are **functions of
+are attributes on the WFS, so ship them from atlas's extractor. That is a
+change on both sides of a hand-synced format, a pipeline re-run for every city,
+and a `cell_cache_key` bump — to carry two numbers that are **functions of
 triangles the client already holds**.
 
 `lod22::shell_stats` measures them in the pass that was already walking the soup

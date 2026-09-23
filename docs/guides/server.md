@@ -477,10 +477,11 @@ ourselves. Unlike Overpass it is **static, download-once** data: no database, no
 diffs, just preprocessed files behind Caddy. Currently the **city of Groningen**
 is covered.
 
-Five datasets, all landing in one tree and all served by the same Caddy site:
+Six datasets, all landing in one tree and all served by the same Caddy site:
 
 | Path | Source | What the client does with it |
 |---|---|---|
+| `water/` | Kadaster 3D basisvoorziening `Waterdeel_vlak` | the level each canal, river and pond stands at (`water_levels.rs`) |
 | `buildings/` | 3DBAG WFS `BAG3D:lod12` | footprints + heights, Overpass-shaped — the fallback tier (`osm_buildings.rs`) |
 | `lod22/` | 3DBAG CityJSON LoD2.2 | real roof and wall geometry, as triangles (`lod22.rs`) |
 | `bag/` | PDOK BAG WFS + the RCE heritage layers | year, use, floor areas, addresses, entrance points, monuments (`building_facts.rs`) |
@@ -489,24 +490,34 @@ Five datasets, all landing in one tree and all served by the same Caddy site:
 
 ### Where the extractors live
 
-**Not in this repository.** They were Python scripts under `tools/`, run by hand
-over ssh, and since 2026-08 they are TypeScript in
-[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) under `server/`,
-driven by the **Data** tab of the admin GUI at
-[web.cartopolis.org](https://web.cartopolis.org). An operator picks an area,
+**In atlas**, `crates/atlas/src/pipeline/`. They were Python scripts under
+`tools/`, run by hand over ssh; from 2026-08 they were TypeScript in
+`jeroen/cartopy`; since 2026-09 they are Rust in the `cartopolis_atlas` crate.
+Two ways in, one code path. The **Data** tab of the atlas console at
+[cartopolis.org/console/](https://cartopolis.org/console/): an operator picks an area,
 picks datasets, presses Start and watches the log; the coverage panel says what
-the tree currently holds before anything is run.
+the tree currently holds before anything is run. Or a shell, with no console and
+no simulator:
 
-The reason they moved is the console. The reason to know they moved is the other
-direction: **their output formats are parsed here** — `lod22.rs`,
-`building_facts.rs`, `surveyed.rs`, `osm_buildings.rs` and `dikes.rs` each read
-one of these shapes, and nothing but a person keeps the two repositories in step. cartopy's
-`server/pipeline/format.test.ts` pins each format against captures of a real run,
-so a change there fails a test rather than reaching a client as an empty layer.
-Change a wire format here and change it there.
+```bash
+atlas run --out /tmp/site --area groningen --datasets buildings,bag
+atlas run --out /tmp/site --name delfzijl --bbox 253000 592000 258000 597000 --datasets bgt
+```
 
-`docs/notes/where-the-map-data-is-built.md` has the move, the equivalence check
-against the Python it replaced, and what is still done by hand.
+`--bbox` is RD New (EPSG:28992) as `xmin ymin xmax ymax`, not degrees; `--name`
+is the coverage name stamped into every manifest; leaving out `--datasets` runs
+all six.
+
+The reason to know where they live is the other direction: **their output
+formats are parsed in the client** — `lod22.rs`, `building_facts.rs`,
+`surveyed.rs`, `osm_buildings.rs`, `dikes.rs` and `water_levels.rs` each read one
+of these shapes. Writer and reader are in one repository now but in different
+crates, with no shared type: atlas writes through `serde_json::Value`, so a
+renamed key still compiles on both sides and reaches a client as an empty layer.
+Change a wire format in atlas and its parser in the same commit.
+
+`docs/notes/where-the-map-data-is-built.md` has both moves, the equivalence
+checks against the code each replaced, and what is still done by hand.
 
 ### The tree on the box
 
@@ -516,8 +527,12 @@ against the Python it replaced, and what is still done by hand.
 ├── buildings/14/{x}/{y}.json  # per-cell Overpass-shaped buildings
 ├── lod22/14/{x}/{y}.json      # per-cell LoD2.2 triangle meshes
 ├── bag/14/{x}/{y}.json        # per-cell building facts  (+ .places.json)
-└── bgt/14/{x}/{y}.json        # per-cell street objects  (+ .surfaces.json)
+├── bgt/14/{x}/{y}.json        # per-cell street objects  (+ .surfaces.json)
+├── dikes/14/{x}/{y}.json      # per-cell flood defences
+└── water/14/{x}/{y}.json      # per-cell water levels
 ```
+
+(Every dataset but `buildings` keeps its own `<dataset>/coverage.json`.)
 
 Two of the datasets write **two files per cell**, and it is the same reason both
 times: the heavy half is wanted by a different consumer from the light half.
@@ -527,7 +542,7 @@ fetches the buildings file inside its own mesh job. `bgt/{y}.surfaces.json` hold
 the paving, which is the second-heaviest thing the client streams.
 
 The old `/data/3dbag/venv` and `/data/3dbag/bin` are the retired Python. They can
-go once the pipeline service has run a full city; keeping them costs nothing and
+go once atlas has run a full city; keeping them costs nothing and
 is the fallback until then.
 
 **Serving** — the `caddy` service bind-mounts `/data/3dbag/site:/srv/3dbag:ro`
@@ -558,18 +573,37 @@ Smoke test: `curl --compressed https://3dbag.cartopolis.org/coverage.json`.
 
 ### The pipeline service
 
-`cartopolis-pipeline.service` runs cartopy's `server/index.ts` under Bun as a
-systemd unit, the same shape as `cartopolis-sim.service`: CI publishes the files
-into `/data/cartopolis/pipeline` and touches `restart.stamp`, and a `.path` unit
-on the host does the restart. It listens on the docker0 gateway and Caddy reaches
-it at `/api/pipeline/*` on `web.cartopolis.org` — **before** the `/api/*` block,
-or every call lands on the simulator and 404s.
+The pipelines are served by atlas: `/api/pipeline/*` routes
+(`crates/atlas/src/console.rs`) inside `cartopolis-atlas.service`, which replaced
+the Bun `cartopolis-pipeline.service` in 2026-09. It is a native binary under
+systemd, the same shape as `cartopolis-sim.service`: `deploy-atlas.yml`
+(manual) publishes it into `/data/cartopolis/atlas` and touches
+`restart.stamp`, and `cartopolis-atlas-reload.path` on the host does the restart.
+It runs as its own user, `cartoatlas`, in group `ubuntu` with umask 0002, because
+the site tree and the autopilot's control file belong to `ubuntu`. Its
+configuration is `/data/cartopolis/atlas/atlas.toml`; unknown keys are refused:
+
+```toml
+listen = "172.17.0.1:4749"
+data_dir = "/data/cartopolis/atlas/data"
+upstream_concurrency = 3
+site_dir = "/data/3dbag/site"                           # the tree the pipelines write
+admin_api = "http://172.17.0.1:4748"                    # the simulator, asked who is an admin
+autopilot_config = "/data/agent/state/autopilot.json"   # the file the Autopilot tab steers
+```
+
+It listens on the docker0 gateway (`172.17.0.1:4749`), and Caddy sends the
+console's `/api/pipeline/*` calls there — matched **before** any `/api/*` block
+that goes to the simulator, or every call lands on the simulator and 404s. The
+console itself is static files at `https://cartopolis.org/console/`. The pipeline
+runs one job at a time.
 
 It authorises nothing itself: each request's bearer goes to the simulator's
-`/api/admin/me`, so there is one list of operators and revoking somebody there
-revokes them here.
+`/api/admin/me` (`admin_api`, `crates/atlas/src/auth.rs`), so there is one list
+of operators and revoking somebody there revokes them here.
 
-The unit files and the Caddy block are in cartopy's `deploy/` and README.
+The unit files are in `deploy/` (`cartopolis-atlas.service` and its reload
+pair), and `docs/notes/atlas.md` has the design.
 
 **A refresh replaces a dataset's coverage, it does not add to it.** Each
 extractor rewrites the whole manifest for its dataset, so extracting a second

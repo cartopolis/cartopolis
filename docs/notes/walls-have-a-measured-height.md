@@ -42,7 +42,7 @@ tolerance to tune. Measured over the study box: 60 of the 65 current
 Every table in that file ends in `_vlak`. There is **no `Scheiding_lijn`**, so a
 boundary surveyed as a line has no counterpart and can get no height.
 
-The rule that follows is in `bgt.ts` as `MEASURED_ONLY_TYPES`: the retaining
+The rule that follows is in atlas's `pipeline/bgt.rs` as `MEASURED_ONLY_TYPES`: the retaining
 structures at the water's edge are emitted *only* when a measurement was found.
 In practice they therefore still do not come through `scheiding_lijn` — which is
 the old behaviour, now derived from a principle instead of from a hand-maintained
@@ -77,8 +77,9 @@ street.
 ## Rejected
 
 * **Deriving a height for the `scheiding_lijn` walls from AHN in the extractor.**
-  It is the only way to measure those, and it needs a WCS GeoTIFF sampler in
-  cartopy, which has no AHN access at all today. Worth doing; not worth blocking
+  It is the only way to measure those, and it needs an AHN sampler in atlas's
+  `pipeline/bgt.rs`, which reads no AHN today (atlas's terrain tiles cut AHN, so
+  the source is in the same crate now). Worth doing; not worth blocking
   the walls that *can* be measured on.
 * **Matching a line to a nearby measured polygon.** A tolerance where an exact key
   already exists for the objects that matter. The same rule the rest of this

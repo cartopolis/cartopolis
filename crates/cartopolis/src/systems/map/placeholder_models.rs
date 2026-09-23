@@ -207,7 +207,7 @@ pub fn poll_placeholders(mut models: ResMut<PlaceholderModels>) {
 
 /// `[{kind, asset, scale, yaw_offset}]` → the rows this module holds.
 ///
-/// The angle arrives in degrees, which is what a person types into cartopy, and
+/// The angle arrives in degrees, which is what a person types into the atlas console, and
 /// is kept in radians here, which is what a `Transform` wants. Converting at the
 /// boundary is the only place both units are visible at once.
 fn parse_placeholders(body: &str) -> Vec<(String, Placeholder)> {

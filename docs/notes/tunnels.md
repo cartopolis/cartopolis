@@ -443,8 +443,8 @@ giving the layer ordering the tiles lack. Seven live polygons over the Groningen
 ring box, all at level −1; one is 183 × 103 m centred on 53.20536, 6.57503, which
 is the DUO cut. That replaces `under_a_building` — a heuristic standing in for a
 surveyed fact — with the fact. `overbruggingsdeel` beside it is the same answer
-for [bridge-heights.md](bridge-heights.md). It needs a fetch in cartopy's
-pipeline, i.e. another hand-synced seam
+for [bridge-heights.md](bridge-heights.md). It needs a fetch in atlas's
+pipeline, i.e. another hand-synced format
 ([where-the-map-data-is-built.md](where-the-map-data-is-built.md)).
 
 **AHN measures the trench, at half a metre.** `dtm_05m` over that same polygon,

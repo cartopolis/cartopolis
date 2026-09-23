@@ -20,7 +20,7 @@ reads the `pois` layer, which has no street lighting in it at all — so until n
 the map had no lampposts anywhere.
 
 The BGT — the Netherlands' large-scale topography, ~20 cm — registers both,
-object by object. cartopy's `server/pipeline/bgt.ts` reads it and `systems::surveyed` streams
+object by object. Atlas's `pipeline/bgt.rs` reads it and `systems::surveyed` streams
 it.
 
 ## The API behaves nothing like the BAG WFS next door
@@ -51,8 +51,9 @@ cosmetic:
   A feature is current only when **both** fields are empty; exactly one version
   per `lokaal_id` then survives (measured 2026-08-29: 990 `ondersteunendwegdeel`
   features → 302 current, all ids distinct, and the remaining overlap between
-  current surfaces is *zero* — BGT is a true partition). Fixed in cartopy's
-  `items()` (every collection walks through it); `parse_surveyed_paving` /
+  current surfaces is *zero* — BGT is a true partition). Fixed in the
+  extractor's `items()`, which every collection walks through (cartopy's
+  TypeScript then, atlas's `pipeline/bgt.rs` now); `parse_surveyed_paving` /
   `parse_surveyed_cell` also drop exact repeats, because a cell cached with the
   ghosts in it is never refetched — which is also why the client's cache keys
   moved to `bgt/v2/`. The `datetime` parameter looks like the right filter and
@@ -352,7 +353,7 @@ forms `bord` and `bak` need, `kast` reusing position 6 `Cabinet`, and
 `Hedge`, so `LINE_KINDS` did not move. Nothing emits 7–9 yet. That order is
 deliberate and is the only safe one across this seam: a client naming a form no
 host sends costs nothing, while a host sending a position no client has is
-content that vanishes with no error anywhere. cartopy's `bgt.ts` must match those
+content that vanishes with no error anywhere. Atlas's `pipeline/bgt.rs` must match those
 positions exactly when the walk is added there.
 
 ### Not worth reading: the rest

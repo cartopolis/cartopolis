@@ -778,7 +778,7 @@ fn spawn_geometry_task(
             // cell's meshes, so they have to be in hand on the worker that builds
             // them rather than arriving later on a stream of their own. Empty
             // outside the coverage, which is everywhere the host has not run
-            // cartopy's `bgt.ts`.
+            // atlas's `pipeline/bgt.rs`.
             let surveyed = crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1).await;
             // …and, where the city this cell falls in publishes a tree register
             // of its own, that register — which supersedes the BGT's trees below
@@ -800,8 +800,8 @@ fn spawn_geometry_task(
             // …and the cell's registered crop parcels, which ride along for the
             // same reason: they are merged into this cell's meshes, and the
             // arable ones are a keep-out the grass area is built against. Empty
-            // outside the coverage, which is everywhere the host has not run
-            // cartopy's `brp.ts`.
+            // outside the coverage, which is everywhere until the BRP extractor
+            // (not yet written; it belongs in atlas's `pipeline/`) has run.
             let crop_cell = crate::systems::crops::load_crop_cell(cell.0, cell.1).await;
             // …and the cell's navigation marks, on the same terms and with two
             // gates of their own (`systems::nav_marks`). The water one reads the

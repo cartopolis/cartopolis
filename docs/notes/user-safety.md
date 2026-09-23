@@ -70,8 +70,8 @@ reason.
 - **Nobody is watching the queue.** `/api/health` reports `open_reports` so
   existing monitoring can, and the wire handler logs each report at `warn` — but
   "timely responses to concerns" is a commitment a person makes, not a table.
-- **The admin GUI has no reports screen.** The endpoints exist; `jeroen/cartopy`
-  (a separate repo — see `hosted-simulator.md`) has not been taught about them.
+- **The admin GUI has no reports screen.** The endpoints exist; the atlas console
+  (`crates/atlas/console` — see `hosted-simulator.md`) has not been taught about them.
 - **Voice is blocked but not filtered**, which is unavoidable: the payload is an
   opaque codec frame the sim never decodes. Reports are the only recourse there,
   and that is worth saying out loud if a reviewer asks.

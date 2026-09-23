@@ -1226,8 +1226,8 @@ fn paint_facade(
 
 /// The wordmark, in two tones: **cream `carto`, accent `polis`**, lower case.
 ///
-/// Not a decoration — it is the account GUI's wordmark
-/// (`jeroen/cartopy`'s `.app-header .wordmark`, `carto<b>polis</b>`), and that
+/// Not a decoration — it is the atlas console's wordmark
+/// (`crates/atlas/console`'s `.app-header .wordmark`, `carto<b>polis</b>`), and that
 /// app talks to this simulator's admin surface. Two products that share a palette
 /// and a backend should not write their own name two different ways, so the split
 /// and the colours are copied from there rather than re-invented, and
