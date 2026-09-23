@@ -959,6 +959,34 @@ fn render_rows(
         let mut batch = PathBuilder::new();
         let mut batch_key: Option<BatchKey> = None;
         let mut batch_points: usize = 0;
+        // Where a street runs into a tunnel mouth, in tile units. The tunnel is
+        // not painted (above), so a round cap there is a half-disc of road lying
+        // on the ground over the lid, just past the mouth — it showed as an
+        // orange semicircle at every portal once the ground over a lid was put
+        // back at street level (2026-09-23). A street ending there is butt-capped.
+        let portals: Vec<(f32, f32)> = if matches!(draw, Draw::Streets { .. }) {
+            portal_points(&features)
+        } else {
+            Vec::new()
+        };
+        let mut butt_capped: Vec<(BatchKey, &Feature)> =
+            Vec::with_capacity(if portals.is_empty() { 0 } else { 64 });
+        let near_portal = |geom: &Geometry<f32>| -> bool {
+            let tol = extent * PORTAL_CAP_FRAC;
+            let hit = |c: Option<&geo_types::Coord<f32>>| {
+                c.is_some_and(|c| {
+                    portals
+                        .iter()
+                        .any(|p| (p.0 - c.x).abs() <= tol && (p.1 - c.y).abs() <= tol)
+                })
+            };
+            let ends = |ls: &geo_types::LineString<f32>| hit(ls.0.first()) || hit(ls.0.last());
+            match geom {
+                Geometry::LineString(ls) => ends(ls),
+                Geometry::MultiLineString(mls) => mls.iter().any(ends),
+                _ => false,
+            }
+        };
 
         let ordered: Vec<&Feature> = match street_order {
             Some(list) => list,
@@ -1042,7 +1070,15 @@ fn render_rows(
             if width.is_some_and(|w| w <= 0.0) {
                 continue;
             }
-            let key = (rgb, width.map(f32::to_bits));
+            let butt = width.is_some() && !portals.is_empty() && near_portal(&feature.geometry);
+            let key = (rgb, width.map(f32::to_bits), butt);
+            // Painted after the pass rather than where it falls: a run broken
+            // three ways at every street touching a tunnel end (building
+            // passages included) cost the paint a quarter more allocations.
+            if butt {
+                butt_capped.push((key, feature));
+                continue;
+            }
             let cap = if width.is_some() {
                 STROKE_BATCH_POINTS
             } else {
@@ -1083,6 +1119,18 @@ fn render_rows(
             batch_points += points;
         }
         flush_batch(&mut pixmap, &mut paint, &mut batch, batch_key, &transform);
+        // Grouped by style so each gets one submission; within one style the
+        // order cannot matter, as for any batch. Unstable, so it allocates nothing.
+        butt_capped.sort_unstable_by_key(|(k, _)| *k);
+        let mut last: Option<BatchKey> = None;
+        for (key, feature) in butt_capped {
+            if last != Some(key) {
+                flush_batch(&mut pixmap, &mut paint, &mut batch, last, &transform);
+                last = Some(key);
+            }
+            append_lines(&mut batch, &feature.geometry);
+        }
+        flush_batch(&mut pixmap, &mut paint, &mut batch, last, &transform);
         #[cfg(test)]
         crate::perf::passes::record(pass_label, pass_t0.elapsed());
     }
@@ -1131,7 +1179,63 @@ fn geometry_bounds(geom: &Geometry<f32>) -> Option<(f32, f32, f32, f32)> {
 /// Append a ring/line to a path builder. Returns false if it was too short to draw.
 /// A paint-loop run's identity: colour, plus the stroke width's bit pattern for
 /// line work (`None` = fill). Bits rather than the float so the key is `Eq`.
-type BatchKey = (u32, Option<u32>);
+/// The flag asks for butt caps: a street ending at a tunnel mouth.
+type BatchKey = (u32, Option<u32>, bool);
+
+/// How close to a tunnel's end a street's end must be to be the same node, as a
+/// fraction of the tile extent — a metre and a half on a z14 tile.
+const PORTAL_CAP_FRAC: f32 = 0.001;
+
+/// Every end of every tunnel-flagged **carriageway**, in tile units.
+///
+/// Not the paths: most flagged paths are passages through a building, where a
+/// round end lies under the building anyway, and giving each of them a batch of
+/// its own cost the paint a fifth more allocations for nothing anybody sees.
+fn portal_points(features: &[Feature]) -> Vec<(f32, f32)> {
+    let carriageway = |f: &&Feature| {
+        crate::tunnels::underground(f)
+            && !matches!(
+                kind_of(f),
+                None | Some(
+                    "footway"
+                        | "path"
+                        | "cycleway"
+                        | "steps"
+                        | "pedestrian"
+                        | "service"
+                        | "track"
+                        | "bridleway"
+                )
+            )
+    };
+    let tunnels = features
+        .iter()
+        .filter(carriageway)
+        .map(|f| match &f.geometry {
+            Geometry::MultiLineString(mls) => mls.0.len(),
+            _ => 1,
+        })
+        .sum::<usize>();
+    if tunnels == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(tunnels * 2);
+    for f in features.iter().filter(carriageway) {
+        let mut push = |ls: &geo_types::LineString<f32>| {
+            for c in [ls.0.first(), ls.0.last()].into_iter().flatten() {
+                if c.x.is_finite() && c.y.is_finite() {
+                    out.push((c.x, c.y));
+                }
+            }
+        };
+        match &f.geometry {
+            Geometry::LineString(ls) => push(ls),
+            Geometry::MultiLineString(mls) => mls.iter().for_each(&mut push),
+            _ => {}
+        }
+    }
+    out
+}
 
 /// Cap on points per batched fill submission. Unbounded fill batches lose what
 /// they won: one path holding every building makes tiny-skia's active-edge
@@ -1155,7 +1259,7 @@ fn flush_batch(
     key: Option<BatchKey>,
     t: &Transform,
 ) {
-    let Some((rgb, width_bits)) = key else {
+    let Some((rgb, width_bits, butt)) = key else {
         return;
     };
     let Some(path) = std::mem::replace(pb, PathBuilder::new()).finish() else {
@@ -1181,7 +1285,7 @@ fn flush_batch(
         Some(bits) => {
             let stroke = Stroke {
                 width: f32::from_bits(bits),
-                line_cap: LineCap::Round,
+                line_cap: if butt { LineCap::Butt } else { LineCap::Round },
                 line_join: LineJoin::Round,
                 ..Stroke::default()
             };
@@ -5615,6 +5719,58 @@ mod bytes {
 #[cfg(test)]
 mod tests {
 
+    /// **The painted road stops square at a tunnel mouth.** The painter does not
+    /// draw tunnels, so a round cap on the road that runs into one is a half-disc
+    /// of road on the ground over the lid; once the ground over a lid was put back
+    /// at street level it showed as an orange semicircle past every portal of
+    /// Groningen's ring (2026-09-23). Measured four metres either side of the
+    /// eastbound portal: on the road it is road, on the lid it must not be.
+    #[test]
+    fn a_road_is_painted_square_at_a_tunnel_mouth() {
+        let tile = crate::testdata::groningen_ring();
+        let (_, y) = crate::testdata::GRONINGEN_RING_TILE;
+        let n = 2f64.powi(14);
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n))
+            .sinh()
+            .atan();
+        #[allow(clippy::cast_possible_truncation)]
+        let tile_m = (40_075_016.686 * lat.cos() / n) as f32;
+        // Painted as the finest clipmap level paints it, an eighth of the tile
+        // at 512 px, where a road is drawn to scale and its cap is metres wide.
+        // At the whole-tile scale a trunk road is two pixels and the cap is lost
+        // in one of them, which is how this test first passed without the fix.
+        let size = 512u32;
+        let sub = SubTile {
+            factor: 8,
+            x: 5,
+            y: 1,
+        };
+        let rgba = render_mvt_culled(&tile, sub, size, tile_m, false).expect("renders");
+        let px = |p: [f32; 2]| -> [u8; 3] {
+            let f = sub.factor as f32;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let (x, y) = (
+                ((p[0] / tile_m * f - sub.x as f32) * size as f32) as usize,
+                ((p[1] / tile_m * f - sub.y as f32) * size as f32) as usize,
+            );
+            let i = (y * size as usize + x) * 4;
+            [rgba[i], rgba[i + 1], rgba[i + 2]]
+        };
+        // The eastbound portal and the way its lid runs, from
+        // `tunnels::tests::dump_the_fixture_bores` on this tile.
+        let portal = [959.0f32, 338.0];
+        let inward = [878.0f32, 395.0];
+        let (dx, dy) = (inward[0] - portal[0], inward[1] - portal[1]);
+        let l = dx.hypot(dy);
+        let at = |m: f32| [portal[0] + dx / l * m, portal[1] + dy / l * m];
+        let (on_road, on_lid) = (px(at(-4.0)), px(at(4.0)));
+        assert_ne!(
+            on_road, on_lid,
+            "the ground four metres over the lid is painted the colour of the road \
+             that runs into the tunnel — a round cap past the mouth"
+        );
+    }
+
     /// Where every bridge deck in a tile is, **on Earth**.
     ///
     /// The sibling of `tunnels::tests::dump_the_fixture_bores`, and it exists for
@@ -6573,7 +6729,9 @@ mod tests {
                 let mut batch_points = 0usize;
                 let flush =
                     |ctx: &mut RenderContext, batch: &mut BezPath, key: Option<BatchKey>| {
-                        let Some((rgb, width_bits)) = key else { return };
+                        let Some((rgb, width_bits, _)) = key else {
+                            return;
+                        };
                         if batch.elements().is_empty() {
                             return;
                         }
@@ -6612,7 +6770,7 @@ mod tests {
                         }
                     };
                     let Some((rgb, width)) = style else { continue };
-                    let key = (rgb, width.map(f32::to_bits));
+                    let key = (rgb, width.map(f32::to_bits), false);
                     let cap = if width.is_some() {
                         STROKE_BATCH_POINTS
                     } else {

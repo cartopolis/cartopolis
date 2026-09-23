@@ -271,7 +271,15 @@ const MEMO_REREAD_ALLOCS: u64 = 0;
 /// Two allocations for a railway yard that no longer paints as a meadow is the
 /// trade, and this is exactly the per-flush cost the batching comment above
 /// describes, not a new per-feature one.
-const RENDER_DENSE_ALLOCS: u64 = 1_170;
+///
+/// Raised 1,170 → 1,200 on 2026-09-23, measured at 1,190 against 1,138 with the
+/// change switched off: a street that ends at a car tunnel's mouth is painted
+/// butt-capped, so a round cap does not lie on the ground over the lid past the
+/// mouth, and a cap style is a batch of its own. Those are deferred to one
+/// extra submission per style at the end of each streets pass rather than
+/// splitting runs where they fall (which measured 1,420), and paths are left
+/// round (1,246 with them). What remains is per flush, as above.
+const RENDER_DENSE_ALLOCS: u64 = 1_200;
 
 /// Heap a parsed-but-undecoded Groningen z14 retains. Measured 3,299 KiB
 /// (bit-identical across runs, 2026-08-24) from a 495 KiB body — the protobuf
