@@ -1392,8 +1392,8 @@ fn find_approaches(
     lines: &[Vec<[f32; 2]>],
     entrances: &[OpenEnds],
     classes: &[Option<RoadClass>],
-) -> Vec<[Option<Approach>; 2]> {
-    let mut out: Vec<[Option<Approach>; 2]> = lines.iter().map(|_| [None, None]).collect();
+) -> Vec<[Vec<Approach>; 2]> {
+    let mut out: Vec<[Vec<Approach>; 2]> = lines.iter().map(|_| [Vec::new(), Vec::new()]).collect();
     if !entrances.iter().any(|e| e[0] || e[1]) {
         return out;
     }
@@ -1445,120 +1445,132 @@ fn find_approaches(
             };
             let (dx, dy) = (portal[0] - inward[0], portal[1] - inward[1]);
             let len = dx.hypot(dy).max(1e-6);
-            let mut heading = [dx / len, dy / len];
-
-            let mut used: Vec<usize> = Vec::new();
-            let mut pieces: Vec<(usize, Vec<[f32; 2]>)> = Vec::new();
-            let mut here = portal;
-            // The first way may be chosen among several (a slip road can leave at
-            // the portal); after that, a fork is a junction and ends the walk.
-            for step in 0..APPROACH_MAX_WAYS {
-                let candidates: Vec<(usize, usize, f32)> = ends_at(here)
+            let outward = [dx / len, dy / len];
+            let leaves = |here: [f32; 2], heading: [f32; 2], used: &[usize]| {
+                ends_at(here)
                     .into_iter()
                     .filter(|(i, _)| !used.contains(i))
                     .filter_map(|(i, k)| {
-                        let pts = oriented(i, k);
-                        let d = leaving(&pts)?;
+                        let d = leaving(&oriented(i, k))?;
                         Some((i, k, d[0] * heading[0] + d[1] * heading[1]))
                     })
+                    .collect::<Vec<(usize, usize, f32)>>()
+            };
+
+            // **Every road out of a portal is a ramp, not only the straightest.**
+            // A slip road that leaves at the portal leaves from seven metres
+            // down just as the carriageway does: at the ring's eastern portal the
+            // exit to the Europaweg was drawn at street level beside the trench,
+            // on top of the sunken road the height survey still measures there
+            // (2026-09-23). So each way that leaves within `JOIN_COS` is walked.
+            for first in leaves(portal, outward, &[]) {
+                let mut heading = outward;
+                let mut used: Vec<usize> = Vec::new();
+                let mut pieces: Vec<(usize, Vec<[f32; 2]>)> = Vec::new();
+                let mut here = portal;
+                // After the first way, a fork is a junction and ends the walk.
+                for step in 0..APPROACH_MAX_WAYS {
+                    let candidates = if step == 0 {
+                        vec![first]
+                    } else {
+                        leaves(here, heading, &used)
+                    };
+                    if candidates.len() != 1 {
+                        break;
+                    }
+                    let (i, k, cos) = candidates[0];
+                    if cos < JOIN_COS || surface[i].bridge {
+                        break;
+                    }
+                    let flags = StreetFlags {
+                        oneway: flag_of(&features[surface[i].feature], "oneway")
+                            || flag_of(&features[surface[i].feature], "oneway_reverse"),
+                        oneway_reverse: flag_of(&features[surface[i].feature], "oneway_reverse"),
+                        link: flag_of(&features[surface[i].feature], "link"),
+                    };
+                    if road_class(kind_of(&features[surface[i].feature]).unwrap_or(""), flags)
+                        .is_none()
+                    {
+                        break;
+                    }
+                    let mut pts = oriented(i, k);
+                    // Snapped to the portal, or the deck parts at the join.
+                    pts[0] = here;
+                    used.push(i);
+                    let far = pts[pts.len() - 1];
+                    if pts.len() >= 2 {
+                        let (a, b) = (pts[pts.len() - 2], far);
+                        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+                        let l = ex.hypot(ey).max(1e-6);
+                        heading = [ex / l, ey / l];
+                    }
+                    pieces.push((surface[i].feature, pts));
+                    if !surface[i].own[1 - k] {
+                        break;
+                    }
+                    let so_far: f32 = pieces.iter().map(|(_, p)| polyline_len(p)).sum();
+                    if so_far >= wanted {
+                        break;
+                    }
+                    here = far;
+                }
+                if pieces.is_empty() {
+                    continue;
+                }
+
+                // How far the ramp may run: to the first street that meets it, less a
+                // little level road, or to the end of what was walked.
+                let whole: Vec<[f32; 2]> = pieces
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(n, (_, p))| p.iter().skip(usize::from(n > 0)).copied())
                     .collect();
-                if step > 0 && candidates.len() != 1 {
-                    break;
+                let total = polyline_len(&whole);
+                let mut usable = total;
+                for (j, other) in surface.iter().enumerate() {
+                    if used.contains(&j) || other.bridge {
+                        continue;
+                    }
+                    if let Some(at) = first_meeting(&whole, &other.pts, SAME_POINT_M) {
+                        usable = usable.min(at - APPROACH_CLEAR_M);
+                    }
                 }
-                let Some(&(i, k, cos)) = candidates.iter().max_by(|a, b| a.2.total_cmp(&b.2))
-                else {
-                    break;
-                };
-                if cos < JOIN_COS || surface[i].bridge {
-                    break;
+                // The other tunnels too, bar this one: two portals side by side are a
+                // dual carriageway, but a tunnel *crossing* the approach is a road
+                // passing under it, and the ramp must not dig into its lid.
+                for (j, other) in lines.iter().enumerate() {
+                    if j == ri {
+                        continue;
+                    }
+                    if let Some(at) = first_meeting(&whole, other, SAME_POINT_M) {
+                        usable = usable.min(at - APPROACH_CLEAR_M);
+                    }
                 }
+                // A walk the tile border stopped is fine as it is: the ramp then
+                // reaches the surface by the border, where the neighbour draws the
+                // same road at grade.
+                if usable < APPROACH_CLEAR_M {
+                    continue;
+                }
+                let usable = usable.min(wanted);
+
+                let first = &features[pieces[0].0];
                 let flags = StreetFlags {
-                    oneway: flag_of(&features[surface[i].feature], "oneway")
-                        || flag_of(&features[surface[i].feature], "oneway_reverse"),
-                    oneway_reverse: flag_of(&features[surface[i].feature], "oneway_reverse"),
-                    link: flag_of(&features[surface[i].feature], "link"),
+                    oneway: flag_of(first, "oneway") || flag_of(first, "oneway_reverse"),
+                    oneway_reverse: flag_of(first, "oneway_reverse"),
+                    link: flag_of(first, "link"),
                 };
-                if road_class(kind_of(&features[surface[i].feature]).unwrap_or(""), flags).is_none()
-                {
-                    break;
-                }
-                let mut pts = oriented(i, k);
-                // Snapped to the portal, or the deck parts at the join.
-                pts[0] = here;
-                used.push(i);
-                let far = pts[pts.len() - 1];
-                if pts.len() >= 2 {
-                    let (a, b) = (pts[pts.len() - 2], far);
-                    let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
-                    let l = ex.hypot(ey).max(1e-6);
-                    heading = [ex / l, ey / l];
-                }
-                pieces.push((surface[i].feature, pts));
-                if !surface[i].own[1 - k] {
-                    break;
-                }
-                let so_far: f32 = pieces.iter().map(|(_, p)| polyline_len(p)).sum();
-                if so_far >= wanted {
-                    break;
-                }
-                here = far;
-            }
-            if pieces.is_empty() {
-                continue;
-            }
-
-            // How far the ramp may run: to the first street that meets it, less a
-            // little level road, or to the end of what was walked.
-            let whole: Vec<[f32; 2]> = pieces
-                .iter()
-                .enumerate()
-                .flat_map(|(n, (_, p))| p.iter().skip(usize::from(n > 0)).copied())
-                .collect();
-            let total = polyline_len(&whole);
-            let mut usable = total;
-            for (j, other) in surface.iter().enumerate() {
-                if used.contains(&j) || other.bridge {
+                let kind = kind_of(first).unwrap_or("");
+                let Some(class) = road_class(kind, flags) else {
                     continue;
-                }
-                if let Some(at) = first_meeting(&whole, &other.pts, SAME_POINT_M) {
-                    usable = usable.min(at - APPROACH_CLEAR_M);
-                }
+                };
+                out[ri][end].push(Approach {
+                    pieces,
+                    usable,
+                    class,
+                    half: road_width_m(kind, flags) * 0.5,
+                });
             }
-            // The other tunnels too, bar this one: two portals side by side are a
-            // dual carriageway, but a tunnel *crossing* the approach is a road
-            // passing under it, and the ramp must not dig into its lid.
-            for (j, other) in lines.iter().enumerate() {
-                if j == ri {
-                    continue;
-                }
-                if let Some(at) = first_meeting(&whole, other, SAME_POINT_M) {
-                    usable = usable.min(at - APPROACH_CLEAR_M);
-                }
-            }
-            // A walk the tile border stopped is fine as it is: the ramp then
-            // reaches the surface by the border, where the neighbour draws the
-            // same road at grade.
-            if usable < APPROACH_CLEAR_M {
-                continue;
-            }
-            let usable = usable.min(wanted);
-
-            let first = &features[pieces[0].0];
-            let flags = StreetFlags {
-                oneway: flag_of(first, "oneway") || flag_of(first, "oneway_reverse"),
-                oneway_reverse: flag_of(first, "oneway_reverse"),
-                link: flag_of(first, "link"),
-            };
-            let kind = kind_of(first).unwrap_or("");
-            let Some(class) = road_class(kind, flags) else {
-                continue;
-            };
-            out[ri][end] = Some(Approach {
-                pieces,
-                usable,
-                class,
-                half: road_width_m(kind, flags) * 0.5,
-            });
         }
     }
     out
@@ -1825,7 +1837,15 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             .windows(2)
             .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
             .sum();
-        let outside = [0, 1].map(|k| approaches[idx][k].as_ref().map_or(0.0, |a| a.usable));
+        // The longest road out decides how much of the ramp the run can shed —
+        // the carriageway, normally; a slip road that meets a junction sooner
+        // is steepened to fit rather than allowed to hold the tunnel shallow.
+        let outside = [0, 1].map(|k| {
+            approaches[idx][k]
+                .iter()
+                .map(|a| a.usable)
+                .fold(0.0f32, f32::max)
+        });
         let (depth, grade) = depth_for_run(class, run_len, entrances, outside);
         let entry = entry_depths(depth, grade, entrances, outside);
 
@@ -2021,10 +2041,11 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         let Some(run) = planned.get(idx).and_then(Option::as_ref) else {
             continue;
         };
-        for (end, approach) in ends.iter().enumerate() {
-            let Some(approach) = approach else {
-                continue;
-            };
+        for (end, approach) in ends
+            .iter()
+            .enumerate()
+            .flat_map(|(end, list)| list.iter().map(move |a| (end, a)))
+        {
             let e = -if end == 0 {
                 run.road_y[0]
             } else {
@@ -3207,6 +3228,67 @@ mod tests {
         assert!(
             checked[0] > 0 && checked[1] > 0,
             "no tunnel faces to check: {checked:?}"
+        );
+    }
+
+    /// **No road leaves a sunken deck at street level.** At the ring's eastern
+    /// portal both the carriageway and the slip road to the Europaweg come out of
+    /// the tunnel; only the carriageway was given a ramp, so the slip road began
+    /// at grade beside a trench seven metres deep (2026-09-23). Every surface way
+    /// that carries on from a deck end more than a metre down must be sunken too.
+    #[test]
+    fn every_road_out_of_a_deck_is_a_ramp() {
+        let tile_m = ring_tile_m();
+        let tile = crate::testdata::groningen_ring();
+        let out = build_tunnels(&tile, tile_m, None);
+        let surface = surface_lines(&tile, tile_m);
+        let mut checked = 0usize;
+        // Carriageways, as `the_ring_road_never_steps_…` takes them: the
+        // fixture's paths include a garage's service loop whose own tagging
+        // holds one end a metre down, which is not a portal.
+        for t in out.tunnels.iter().filter(|t| t.half_w >= 3.0) {
+            let n = t.centre.len();
+            for (p, inward, y) in [
+                (t.centre[0], t.centre[1], t.road_y[0]),
+                (t.centre[n - 1], t.centre[n - 2], t.road_y[n - 1]),
+            ] {
+                if y > -1.0 {
+                    continue;
+                }
+                let (dx, dy) = (p[0] - inward[0], p[1] - inward[1]);
+                let len = dx.hypot(dy).max(1e-6);
+                for l in &surface {
+                    for k in 0..2 {
+                        let q = if k == 0 {
+                            l.pts[0]
+                        } else {
+                            l.pts[l.pts.len() - 1]
+                        };
+                        if !l.own[k] || (q[0] - p[0]).hypot(q[1] - p[1]) > SAME_POINT_M {
+                            continue;
+                        }
+                        let mut pts = l.pts.clone();
+                        if k == 1 {
+                            pts.reverse();
+                        }
+                        let Some(d) = leaving(&pts) else { continue };
+                        if (d[0] * dx + d[1] * dy) / len < JOIN_COS || l.bridge {
+                            continue;
+                        }
+                        checked += 1;
+                        assert!(
+                            out.sunken.iter().any(|s| s.feature == l.feature),
+                            "street feature {} leaves a deck {:.1} m down at {p:?} at grade",
+                            l.feature,
+                            -y
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            checked >= 2,
+            "only {checked} roads out of a deck — the portals are not being looked at"
         );
     }
 
