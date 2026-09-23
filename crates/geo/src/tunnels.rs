@@ -1235,6 +1235,12 @@ impl Build {
     }
 }
 
+/// Whether the plan triangle `a b c` comes out facing up once lifted into the
+/// mesh frame (x east, z = tile y south) — the orientation the deck is wound in.
+fn faces_up(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < -1e-6
+}
+
 /// Upward normal, for the deck.
 const UP: [f32; 3] = [0.0, 1.0, 0.0];
 /// Downward, for the ceiling.
@@ -1606,103 +1612,112 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
 
             // Walls, inward-facing: the outer face is buried in the ground the
             // tunnel is cut into and no camera can reach it.
+            //
+            // **Inward in the winding, not only in the normal.** The material
+            // culls back faces, and both walls were wound outward while their
+            // normals said inward — so from the deck, the one place a wall is
+            // ever seen from, there were none, and the ground's own culled
+            // underside left the city showing through
+            // (`every_tunnel_face_is_wound_toward_its_normal`).
             let n_left = wall_normal(l0, l1, true);
             shell.quad(
                 [
-                    [l0[0], y0, l0[1]],
                     [l1[0], y1, l1[1]],
-                    [l1[0], WALL_TOP_Y, l1[1]],
+                    [l0[0], y0, l0[1]],
                     [l0[0], WALL_TOP_Y, l0[1]],
+                    [l1[0], WALL_TOP_Y, l1[1]],
                 ],
-                [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
+                [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
                 n_left,
                 0.0,
             );
             let n_right = wall_normal(r0, r1, false);
             shell.quad(
                 [
-                    [r1[0], y1, r1[1]],
                     [r0[0], y0, r0[1]],
-                    [r0[0], WALL_TOP_Y, r0[1]],
+                    [r1[0], y1, r1[1]],
                     [r1[0], WALL_TOP_Y, r1[1]],
+                    [r0[0], WALL_TOP_Y, r0[1]],
                 ],
-                [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
+                [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
                 n_right,
                 0.0,
             );
 
             // Roof, where one fits under the ground. Absent over the approach,
-            // which is what opens the opening — see the module note.
+            // which is what opens the opening — see the module note. Wound the
+            // other way round from the deck, so it faces *down*: it was wound
+            // like the deck, faced the earth above it, and was culled from
+            // underneath — a lid you could see the sky through.
             let (c0, c1) = (y0 + clearance, y1 + clearance);
             if roofed[i] && roofed[i + 1] {
                 shell.quad(
                     [
                         [l0[0], c0, l0[1]],
-                        [l1[0], c1, l1[1]],
-                        [r1[0], c1, r1[1]],
                         [r0[0], c0, r0[1]],
+                        [r1[0], c1, r1[1]],
+                        [l1[0], c1, l1[1]],
                     ],
-                    [[0.0, v0], [0.0, v1], [1.0, v1], [1.0, v0]],
+                    [[0.0, v0], [1.0, v0], [1.0, v1], [0.0, v1]],
                     DOWN,
                     0.0,
                 );
             }
 
-            // The notch on the outside of a bend, in the deck and in both walls.
+            // The notch on the outside of a bend, in the deck, the wall on that
+            // side and the roof.
+            //
+            // **Only on the outside.** Both sides used to be emitted on the
+            // reasoning that the inner one is "degenerate to a hair", and it is
+            // not: on the inside of a bend the two offset edges *cross*, so its
+            // triangle is a real one wound backwards and its wall quad stands
+            // inside the carriageway facing the wrong way. The side is the one
+            // whose triangle comes out facing up — the same orientation test the
+            // deck is held to — so the rule cannot disagree with the winding.
             if i + 1 < sides.left.len() {
                 let p = centre[i + 1];
                 let y = road_y[i + 1];
+                let c = y + clearance;
                 let v = v1;
                 let next_l = sides.left[i + 1][0];
                 let next_r = sides.right[i + 1][0];
-                // Which way the corner turns decides which side has the gap; the
-                // other side's triangle is degenerate to a hair and costs three
-                // vertices to keep the code one case.
-                deck.tri(
-                    [
-                        [p[0], y, p[1]],
-                        [l1[0], y, l1[1]],
-                        [next_l[0], y, next_l[1]],
-                    ],
-                    [[0.5, v], [0.0, v], [0.0, v]],
-                    UP,
-                    rung,
-                );
-                deck.tri(
-                    [
-                        [p[0], y, p[1]],
-                        [next_r[0], y, next_r[1]],
-                        [r1[0], y, r1[1]],
-                    ],
-                    [[0.5, v], [1.0, v], [1.0, v]],
-                    UP,
-                    rung,
-                );
-                // Walls: a vertical quad closing the gap between the two offset
-                // points. Without it a bend is a slot you can see the void
-                // through from inside the tunnel.
-                shell.quad(
-                    [
-                        [l1[0], y, l1[1]],
-                        [next_l[0], y, next_l[1]],
-                        [next_l[0], WALL_TOP_Y, next_l[1]],
-                        [l1[0], WALL_TOP_Y, l1[1]],
-                    ],
-                    [[v, 0.0], [v, 0.0], [v, 1.0], [v, 1.0]],
-                    n_left,
-                    0.0,
-                );
-                shell.quad(
-                    [
-                        [next_r[0], y, next_r[1]],
-                        [r1[0], y, r1[1]],
-                        [r1[0], WALL_TOP_Y, r1[1]],
-                        [next_r[0], WALL_TOP_Y, next_r[1]],
-                    ],
-                    [[v, 0.0], [v, 0.0], [v, 1.0], [v, 1.0]],
-                    n_right,
-                    0.0,
-                );
+                let roof = roofed[i + 1];
+                for (a, b, u) in [(l1, next_l, 0.0), (next_r, r1, 1.0)] {
+                    if !faces_up(p, a, b) {
+                        continue;
+                    }
+                    deck.tri(
+                        [[p[0], y, p[1]], [a[0], y, a[1]], [b[0], y, b[1]]],
+                        [[0.5, v], [u, v], [u, v]],
+                        UP,
+                        rung,
+                    );
+                    if roof {
+                        shell.tri(
+                            [[p[0], c, p[1]], [b[0], c, b[1]], [a[0], c, a[1]]],
+                            [[0.5, v], [u, v], [u, v]],
+                            DOWN,
+                            0.0,
+                        );
+                    }
+                    // A vertical quad closing the gap between the two offset
+                    // points. Without it a bend is a slot you can see the void
+                    // through from inside the tunnel. Faces back toward the
+                    // centre of the bend, which is inward.
+                    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                    let len = dx.hypot(dz).max(1e-6);
+                    shell.quad(
+                        [
+                            [b[0], y, b[1]],
+                            [a[0], y, a[1]],
+                            [a[0], WALL_TOP_Y, a[1]],
+                            [b[0], WALL_TOP_Y, b[1]],
+                        ],
+                        [[v, 0.0], [v, 0.0], [v, 1.0], [v, 1.0]],
+                        [dz / len, 0.0, -dx / len],
+                        0.0,
+                    );
+                }
             }
         }
 
@@ -2512,6 +2527,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **Every face of a tunnel is wound toward the side its normal says**, which
+    /// for the roof and the walls is the *inside*.
+    ///
+    /// The tunnel material culls back faces, so a winding that disagrees with the
+    /// normal is not a lighting fault, it is a surface that is not there from the
+    /// only side anybody sees it from. The roof was wound like the deck — facing
+    /// up, into the earth — and both walls faced outward, so from inside a lid the
+    /// tunnel had no ceiling and no sides: the underside of the ground is culled
+    /// too, and a phone on the deck saw sky, the far city and the lawn's grass
+    /// hanging overhead (2026-09-23). `a_tunnel_deck_faces_up` only ever checked
+    /// the deck.
+    #[test]
+    fn every_tunnel_face_is_wound_toward_its_normal() {
+        let tile_m = ring_tile_m();
+        let mut checked = [0usize; 2];
+        for out in [
+            build_tunnels(&crate::testdata::groningen(), 1471.0, None),
+            build_tunnels(&crate::testdata::groningen_ring(), tile_m, None),
+        ] {
+            for m in &out.meshes {
+                let slot = match m.group {
+                    SurfaceGroup::TunnelRoad(_) => 0,
+                    SurfaceGroup::TunnelStructure => 1,
+                    _ => continue,
+                };
+                for t in m.indices.chunks_exact(3) {
+                    let [a, b, c] = [0, 1, 2].map(|k| m.positions[t[k] as usize]);
+                    let (u, v) = (
+                        [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                        [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+                    );
+                    let g = [
+                        u[1] * v[2] - u[2] * v[1],
+                        u[2] * v[0] - u[0] * v[2],
+                        u[0] * v[1] - u[1] * v[0],
+                    ];
+                    let len = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+                    // The notch triangles on the inside of a bend collapse to a
+                    // hair and have no winding worth asking about.
+                    if len < 1e-3 {
+                        continue;
+                    }
+                    let n = m.normals[t[0] as usize];
+                    let dot = (g[0] * n[0] + g[1] * n[1] + g[2] * n[2]) / len;
+                    assert!(
+                        dot > 0.5,
+                        "a {:?} triangle is wound away from its normal {n:?} and is \
+                         culled from the side it is meant to be seen from: {a:?} {b:?} {c:?}",
+                        m.group
+                    );
+                    checked[slot] += 1;
+                }
+            }
+        }
+        assert!(
+            checked[0] > 0 && checked[1] > 0,
+            "no tunnel faces to check: {checked:?}"
+        );
     }
 
     /// **The ground may not be cut away over a roofed stretch.**
