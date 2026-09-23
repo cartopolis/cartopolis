@@ -1,6 +1,6 @@
 ---
 topic: self-service-accounts
-triggers: [registration.rs, houses.rs, mail.rs, "register", "sign up", "verification", "verify email", "smtp", "claim a house", "nummeraanduiding", "Locatieserver", "PDOK", V11__account_email, V12__house_claims, cartopy]
+triggers: [registration.rs, houses.rs, mail.rs, "register", "sign up", "verification", "verify email", "smtp", "claim a house", "nummeraanduiding", "Locatieserver", "PDOK", V11__account_email, V12__house_claims]
 updated: 2026-08-29
 ---
 

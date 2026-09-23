@@ -1,5 +1,5 @@
 //! The areas the console offers, as RD (EPSG:28992) bounding boxes, and the check
-//! a typed bbox must pass. Ported from cartopy's `server/areas.ts`.
+//! a typed bbox must pass. Ported from the earlier TypeScript server (`areas.ts`).
 //!
 //! A short built-in table rather than something an operator manages: the hard part
 //! of adding a city is knowing which four numbers, in a projection nobody reads off

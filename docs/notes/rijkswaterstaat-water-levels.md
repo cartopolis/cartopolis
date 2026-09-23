@@ -13,8 +13,8 @@ updated: 2026-09-16
 > that streamed `/water/{z}/{x}/{y}.json` and a data source that could fill it —
 > and nothing ever did. The route answered **404 on the deployed host**, so the
 > layer shipped with no rings at all and every canal stayed at quay height for
-> three days while the notes said the problem was solved. cartopy's
-> `server/pipeline/water.ts` wrote the tree from then, and atlas's
+> three days while the notes said the problem was solved. The TypeScript
+> pipeline's `water.ts` wrote the tree from then, and atlas's
 > `pipeline/water.rs` (its 2026-09 port) writes it now, out of the same 2 km blocks the
 > wall heights come from ([walls-have-a-measured-height.md](walls-have-a-measured-height.md)).
 > Measured over the study pond in Groningen: **−0.95 m NAP** from the 3D
@@ -367,6 +367,6 @@ The `WaterBody` z values come from that CityJSON directly: every object of
 
 **The extractor was not written when this was.** These cells were produced by a throwaway script
 against a loopback host to develop the client side; the real one landed beside the
-others in cartopy on 2026-09-16 and is atlas's `pipeline/water.rs` now
+others in the TypeScript pipeline on 2026-09-16 and is atlas's `pipeline/water.rs` now
 ([where-the-map-data-is-built.md](where-the-map-data-is-built.md)). Where it has not
 run, `water_levels` finds no coverage and every consumer behaves exactly as it did before.

@@ -1,9 +1,9 @@
 //! `cartopolis_atlas`: everything around the world that is not the simulation.
 //!
-//! `docs/notes/atlas.md` has the design and the rules it keeps. So far it serves
-//! one thing, the terrain tiles the screen-driven tile tree stands on
-//! (`docs/notes/level-of-detail-tile-tree.md`); the map data pipelines from
-//! `jeroen/cartopy` and the accounts arrive here later, one at a time.
+//! `docs/notes/atlas.md` has the design and the rules it keeps. It serves the
+//! terrain tiles the screen-driven tile tree stands on
+//! (`docs/notes/level-of-detail-tile-tree.md`) and runs the map data pipelines
+//! (`pipeline`, driven through `console`); the accounts arrive here later.
 
 pub mod areas;
 pub mod auth;

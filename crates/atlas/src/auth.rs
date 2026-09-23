@@ -1,5 +1,5 @@
 //! Who may drive the pipeline: whoever the **simulator** says is an admin. Ported
-//! from cartopy's `server/auth.ts`.
+//! from the earlier TypeScript server (`auth.ts`).
 //!
 //! Atlas mints nothing and stores no credential — yet. The console already holds
 //! an admin bearer from the simulator's `/api/admin/login`, so the check is to hand

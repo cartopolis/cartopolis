@@ -1,5 +1,5 @@
 //! `/api/pipeline/*`: what the admin console drives the map data pipelines
-//! through. Ported from cartopy's `server/index.ts`, route for route and refusal
+//! through. Ported from the earlier TypeScript server (`index.ts`), route for route and refusal
 //! for refusal, so the console needed no change to talk to atlas instead.
 //!
 //! Every route but `/health` asks the simulator whether the caller is an admin
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_console_surface_answers_as_cartopy_did() {
+    async fn the_console_surface_answers_as_before() {
         let (base, dir) = serve().await;
 
         assert_eq!(call("GET", format!("{base}/health"), "", None).await.0, 200);

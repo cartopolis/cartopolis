@@ -1,5 +1,5 @@
-//! Geometry more than one extractor uses. Ported from cartopy's
-//! `shared/geom.ts`, with its behaviour — including its edge cases — kept.
+//! Geometry more than one extractor uses. Ported from the earlier
+//! TypeScript pipeline (`geom.ts`), with its behaviour — including its edge cases — kept.
 
 use serde_json::Value;
 

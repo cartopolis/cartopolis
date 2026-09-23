@@ -9,7 +9,7 @@
 # terrain cutting are seconds of CPU, and the simulator's runtime is shared with
 # the 20 Hz tick. It writes three places: its data directory, the map data tree
 # Caddy serves as 3dbag.cartopolis.org, and the autopilot's control file. The
-# last two belong to `ubuntu` (cartopy's pipeline wrote them as that user), so
+# last two belong to `ubuntu` (the TypeScript pipeline wrote them as that user), so
 # the service runs with group `ubuntu` and umask 0002: what it creates stays
 # writable by the other writers, and the directories it writes into need g+w.
 #

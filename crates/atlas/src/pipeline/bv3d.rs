@@ -1,7 +1,7 @@
 //! The Kadaster's **3D basisvoorziening**: the same BGT, draped and extruded
 //! against AHN by 3dfier and published as CityJSON. Two answers come out of it —
 //! measured heights for the BGT's boundaries (`bgt`) and the level each water body
-//! stands at (`water`). Ported from cartopy's `server/pipeline/bv3d.ts`.
+//! stands at (`water`). Ported from the earlier TypeScript pipeline (`bv3d.ts`).
 //!
 //! Objects carry `gml_id`, the flat BGT API's `lokaal_id` verbatim, so the join is
 //! an exact string match — no geometry matching, no tolerance. **Polygons only**:

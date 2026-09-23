@@ -1,4 +1,4 @@
-//! RD New (Amersfoort, EPSG:28992) → WGS84, exactly as cartopy's pipeline did it.
+//! RD New (Amersfoort, EPSG:28992) → WGS84, exactly as the TypeScript pipeline did it.
 //!
 //! **A line-for-line port of proj4js, not a fresh implementation of the
 //! projection.** Every coordinate in every file the pipelines write goes through
@@ -8,7 +8,7 @@
 //! that differed in the last digits would change every coordinate in every
 //! served cell for no gain, and a diff against the old output could no longer
 //! tell a porting mistake from a rounding one. The reference points in the tests
-//! were produced by cartopy's own proj4 on the VPS.
+//! were produced by the TypeScript pipeline's proj4js on the VPS.
 //!
 //! The chain is proj4js's: oblique stereographic inverse onto the conformal
 //! (Gauss) sphere, back to Bessel 1841 latitude, then geodetic → geocentric,
@@ -236,7 +236,7 @@ pub fn wgs84_bbox(bbox: [f64; 4]) -> [f64; 4] {
 mod tests {
     use super::*;
 
-    /// `[x, y, lat, lng]` from cartopy's proj4 (proj4js, the library that produced
+    /// `[x, y, lat, lng]` from the TypeScript pipeline's proj4js (the library that produced
     /// the served tiles), over a 7×7 grid spanning the whole of RD's extent.
     const REFERENCE: [[f64; 4]; 49] = [
         [13000.123, 306000.456, 50.72645541800996, 3.37610376001428],

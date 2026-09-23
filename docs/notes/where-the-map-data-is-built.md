@@ -1,6 +1,6 @@
 ---
 topic: pipeline
-triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, cartopy, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
+triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
 updated: 2026-09-23
 ---
 
@@ -14,7 +14,7 @@ basisvoorziening, which `water` and `bgt` both read). They write
 `/data/3dbag/site`, which Caddy serves as `3dbag.cartopolis.org`.
 
 They have been ported twice. They started as Python in `tools/`, run by four ssh
-commands per city. In 2026-08 they became TypeScript in `jeroen/cartopy`, behind
+commands per city. In 2026-08 they became TypeScript in a separate repository, behind
 an admin console, because an operator wants to see what a box is serving, press a
 button and watch a log. In 2026-09 they became Rust in atlas
 (`atlas.md`), and the console moved with them to `crates/atlas/console`. The
@@ -51,14 +51,14 @@ that one commit can now change both sides, and one gate tests both. Moving each
 format onto a shared type in `cartopolis_geo` is the obvious next step and has
 not been taken.
 
-cartopy pinned the formats with `server/pipeline/format.test.ts` against captures
+The TypeScript pipeline pinned the formats with `server/pipeline/format.test.ts` against captures
 of a real run. That test was not ported: it existed because the parsers were in
 another repository, and each client module already pins its shape in its own
 tests. **Change a wire format in atlas and change its parser in the same
 commit.**
 
 **The seam runs in the other direction too.** `systems::crops` parses a format
-whose producer does not exist: cartopy never had a BRP extractor, so the crop
+whose producer does not exist: the TypeScript pipeline never had a BRP extractor, so the crop
 layer draws nothing anywhere until somebody writes one in `pipeline/`
 (`crop-parcels.md`). That is the *safe* direction — a client that can read a form
 the host never sends is inert, while an extractor that emits a form no client

@@ -1,7 +1,7 @@
 //! The **BAG** — what the buildings *are*, as opposed to what shape they are
 //! (`building_facts.rs` and the places readout in the client read it).
 //!
-//! Ported from cartopy's `server/pipeline/bag.ts` (itself from
+//! Ported from the earlier TypeScript pipeline (`bag.ts`, itself from
 //! `tools/bag_attributes.py`). Year, use, floor areas, addresses, entrance points
 //! and heritage status, every record keyed on the BAG **identificatie** — the
 //! string `lod22` writes as each mesh's `id` — so the join needs no geometry.

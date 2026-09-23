@@ -492,7 +492,7 @@ Six datasets, all landing in one tree and all served by the same Caddy site:
 
 **In atlas**, `crates/atlas/src/pipeline/`. They were Python scripts under
 `tools/`, run by hand over ssh; from 2026-08 they were TypeScript in
-`jeroen/cartopy`; since 2026-09 they are Rust in the `cartopolis_atlas` crate.
+a separate repository; since 2026-09 they are Rust in the `cartopolis_atlas` crate.
 Two ways in, one code path. The **Data** tab of the atlas console at
 [cartopolis.org/console/](https://cartopolis.org/console/): an operator picks an area,
 picks datasets, presses Start and watches the log; the coverage panel says what

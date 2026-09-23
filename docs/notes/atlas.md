@@ -1,6 +1,6 @@
 ---
 topic: atlas
-triggers: [cartopolis_atlas, crates/atlas, atlas, cartopy, "terrain tile", "/terrain/", pipeline, "user management", registration, accounts, "ROBUST", OpenSim, "service design"]
+triggers: [cartopolis_atlas, crates/atlas, atlas, "terrain tile", "/terrain/", pipeline, "user management", registration, accounts, "ROBUST", OpenSim, "service design"]
 updated: 2026-09-23
 ---
 
@@ -8,13 +8,13 @@ updated: 2026-09-23
 
 Agreed 2026-09-23. A separate crate and binary in this workspace (`crates/atlas`),
 an axum/tokio service depending on `cartopolis_core` and `cartopolis_geo`. It
-owns the map data pipelines (ported from `jeroen/cartopy`), the terrain tiles
+owns the map data pipelines (ported from a separate TypeScript repository), the terrain tiles
 that `level-of-detail-tile-tree.md` needs, and later registration and user
 management.
 
 ## Why it exists
 
-The pipelines were TypeScript in cartopy while their readers (`lod22.rs`,
+The pipelines were TypeScript in a separate repository while their readers (`lod22.rs`,
 `building_facts.rs`, `surveyed.rs`, `osm_buildings.rs`, `dikes.rs`, `crops.rs`)
 are Rust here, and nothing checked that the two agreed
 (`where-the-map-data-is-built.md`). In one workspace one commit changes both
@@ -59,11 +59,11 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
    live PDOK from the VPS (2026-09-23): a first cut takes 0.2–0.3 s and a repeat
    is ~1 ms from disk. North Groningen (`14/8490/5318`) spans −1.0 to +10.6 m
    NAP. A tile over the Markermeer is a remembered 404, not a flat tile.
-2. Port the cartopy pipelines. **Done 2026-09-23, all at once rather than one at
-   a time**, because the goal became retiring cartopy altogether. All six datasets
+2. Port the TypeScript pipelines. **Done 2026-09-23, all at once rather than one at
+   a time**, because the goal became retiring that repository altogether. All six datasets
    (`crates/atlas/src/pipeline/`), each diffed against the TypeScript output for
    the same square (`where-the-map-data-is-built.md` has the results), and
-   cartopy's server surface route for route: the one-job runner (`jobs.rs`), the
+   the TypeScript server's surface route for route: the one-job runner (`jobs.rs`), the
    admin check against the simulator (`auth.rs`), coverage (`coverage.rs`), the
    autopilot control file (`autopilot.rs`), all under `/api/pipeline/*`
    (`console.rs`). The admin GUI moved into `crates/atlas/console` unchanged
@@ -87,9 +87,9 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   Caddy serves live.
 - **A panicking dataset is a failed step, not a dead runner** (`catch_unwind`).
   There is one runner thread and every later job would otherwise queue behind it
-  forever. cartopy's Bun server had no equivalent failure to guard.
+  forever. The TypeScript server it replaced had no equivalent failure to guard.
 - **The log cursor is lines ever written, not lines held.** Each job keeps the
-  last 2,000 lines. cartopy's console asked for `since = lines it held`, and its
+  last 2,000 lines. The console used to ask for `since = lines it held`, and its
   server read that as an index into the buffer, so once a long BAG run filled the
   buffer the followed log stopped updating. The console now keeps the server's
   `total` as its cursor.
@@ -107,7 +107,7 @@ it silently (reported by the tunnel/bridge work, 2026-09-23):
   `status` and the footprint are read per building, and `lod22` also reads the
   cell's street tile on the worker to skip buildings standing in a covered
   tunnel's trench.
-- The z14 `streets` layer is **not** a cartopy product. It is the VersaTiles
+- The z14 `streets` layer is **not** a pipeline product. It is the VersaTiles
   planet mirror at `tiles.cartopolis.org`, so a pipeline port does not touch it.
   The tunnel code relies on its `kind`, `tunnel`, `bridge`, `link` and `oneway`
   attributes, and on way endpoints shared at tunnel portal nodes (within 1.5 m).

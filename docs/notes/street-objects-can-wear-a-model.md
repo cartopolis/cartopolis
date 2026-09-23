@@ -87,7 +87,7 @@ manifest and `--expect` follow, and for the same reason: a setting that quietly
 does nothing is worse than one that was refused. The atlas console holds a third copy for
 its dropdown — TypeScript in `crates/atlas/console`, so still hand-synced now that
 it is in this repository (it was the **seventh** such seam when the console was
-the separate `jeroen/cartopy`).
+a separate repository).
 
 ## Unverified
 

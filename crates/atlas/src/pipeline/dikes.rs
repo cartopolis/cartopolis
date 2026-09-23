@@ -1,7 +1,7 @@
 //! The **flood defences** — dikes, dunes and dams — as per-cell lines the client
 //! can name (`dikes.rs` in the client reads them).
 //!
-//! Ported from cartopy's `server/pipeline/dikes.ts` (itself from `tools/dikes.py`).
+//! Ported from the earlier TypeScript pipeline (`dikes.ts`, itself from `tools/dikes.py`).
 //! The relief is already in the height model; what this adds is the *knowing* —
 //! that the ridge is the Lauwersmeerdijk and what it holds back. The water boards
 //! register every defence and PDOK republishes them as IMWA; the `waterkering`

@@ -1,5 +1,5 @@
 # `cartopolis_atlas` — everything around the world that is not the simulation:
-# the map data pipelines (moving over from `jeroen/cartopy`), the terrain tiles,
+# the map data pipelines (ported from an earlier TypeScript repository), the terrain tiles,
 # and later registration and accounts. `docs/notes/atlas.md` has the design and
 # the rules; the one that shaped this file is that it is its own process and
 # never shares a runtime with the simulator's tick.

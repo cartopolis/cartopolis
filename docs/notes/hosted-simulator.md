@@ -15,7 +15,7 @@ and each has a different audience:
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
 | `https://cartopolis.org/` | everyone | **`cartopolis_atlas`** since 2026-09-23 — the front page, `/terrain/{z}/{x}/{y}`, and the account pages as they move over (`atlas.md`) |
 | `https://cartopolis.org/viewer/` | players in a browser | the wasm client, published by `deploy-wasm.yml` into `site/viewer/` |
-| `https://cartopolis.org/console/` | operators | the account admin GUI — the atlas console, `crates/atlas/console`, static files published by `deploy-console.yml`; atlas's front page has a "Sign in" button to it. It was `web.cartopolis.org` and the separate `jeroen/cartopy` until 2026-09; that hostname is retired, with no redirect |
+| `https://cartopolis.org/console/` | operators | the account admin GUI — the atlas console, `crates/atlas/console`, static files published by `deploy-console.yml`; atlas's front page has a "Sign in" button to it. It was `web.cartopolis.org` and a separate repository until 2026-09; that hostname is retired, with no redirect |
 
 Everything Caddy does not route elsewhere goes to atlas (`172.17.0.1:4749`), which
 is why the site root is not a file directory any more. Two things stay files at
@@ -127,7 +127,7 @@ split, and the `App.init` + `components/{pages,elements}` layout. Those are in
 Caddy serves, and its API calls go to this simulator (`/api/admin/*`) and to
 atlas (`/api/pipeline/*`), which was already answering HTTP too.
 
-The GUI lived in its own repository, `jeroen/cartopy`, until 2026-09, because it
+The GUI lived in a separate repository until 2026-09, because it
 shared nothing with this one but an HTTP contract. It moved in with atlas, but it
 is still TypeScript beside Rust, so the one seam worth naming is unchanged:
 `crates/atlas/console/src/types.ts` describes what `auth::AccountRow` serialises,

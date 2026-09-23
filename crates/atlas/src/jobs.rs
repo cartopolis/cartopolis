@@ -1,4 +1,4 @@
-//! The pipeline runner the console drives. Ported from cartopy's `server/jobs.ts`.
+//! The pipeline runner the console drives. Ported from the earlier TypeScript server (`jobs.ts`).
 //!
 //! **One job at a time, and one dataset at a time inside it.** Not a concurrency
 //! limit that happens to be 1: these extractors page somebody else's open-data

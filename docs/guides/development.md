@@ -235,7 +235,7 @@ what is still open.
 deepsignal, Bun, no Rust — it manages accounts on the hosted simulator and drives
 atlas's map data pipelines, and `deploy-console.yml` publishes it to
 [cartopolis.org/console/](https://cartopolis.org/console/) on every push to
-`main` that touches it. It was its own repository, `jeroen/cartopy`, on its own
+`main` that touches it. It was a separate repository, on its own
 hostname (`web.cartopolis.org`, retired), until 2026-09. It talks
 to the rest of the tree only through the simulator's `/api/admin` and atlas's
 `/api/pipeline/*` responses; its README has the dev loop, and its `bun run dev`

@@ -1,6 +1,6 @@
 ---
 topic: autopilot-focus
-triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", "qa-gap", "the queue", cartopy, atlas, autopilot.rs, "Autopilot tab"]
+triggers: [autopilot.ts, "focus", "focusPlan", "planRevision", "autopilot-plan", "planning ticket", "qa-gap", "the queue", atlas, autopilot.rs, "Autopilot tab"]
 updated: 2026-09-09
 ---
 
@@ -28,7 +28,7 @@ this parser all have to agree — and renaming it buys nothing a comment does no
 
 Not the autopilot: it holds the merge token and still runs no language model,
 which is the whole reason it is a separate container from the watcher. Not
-the console's server either (atlas now, cartopy when this was built) — it has no model, no key, and nothing else in it needs one.
+the console's server either (atlas now, a separate TypeScript server when this was built) — it has no model, no key, and nothing else in it needs one.
 
 It is a **planning ticket**, which is the same trick the QA and retrospective
 lanes already use: a session does the judging, on a ticket, and answers in a

@@ -9,8 +9,8 @@ updated: 2026-08-30
 Every agricultural field in the Netherlands with the crop grown on it that year,
 from the RVO's Basisregistratie Gewaspercelen. `cartopolis_geo::crops` is the
 pure half, `systems::crops` the streaming half, and the extractor is not written
-yet — it belongs in atlas's `crates/atlas/src/pipeline/` (cartopy, where it was
-meant to go, never had one), so the layer draws nothing anywhere until it is.
+yet — it belongs in atlas's `crates/atlas/src/pipeline/` (the TypeScript
+pipeline, where it was meant to go, never had one), so the layer draws nothing anywhere until it is.
 
 ## The interface, and what it costs
 

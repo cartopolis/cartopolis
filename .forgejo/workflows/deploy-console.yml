@@ -1,7 +1,7 @@
 name: Deploy console
 
 # Build the admin console (crates/atlas/console) and publish it to
-# https://cartopolis.org/console/. It was `jeroen/cartopy`'s deploy, to
+# https://cartopolis.org/console/. It was a separate repository's deploy, to
 # web.cartopolis.org, until 2026-09.
 #
 # On every push to `main` that touches it, as it always was: the build is Bun
@@ -27,7 +27,7 @@ jobs:
       # The image carries Bun already (`tools/*.ts` are Bun scripts).
       image: cartopolis-ci:latest
       # Caddy serves this directory as cartopolis.org/console/. It is in the runner's
-      # `valid_volumes` from when cartopy published it.
+      # `valid_volumes` from when the separate repository published it.
       options: >-
         --volume /data/cartopolis/admin:/publish
     defaults:

@@ -217,7 +217,7 @@ That is a **hand-synced seam**, like the map data formats in
 `LibraryEntry` and `StoredAsset` in `crates/atlas/console/src/types.ts` are
 hand-written TypeScript describing what `library::CuratorEntry` and
 `library::StoredAsset` serialise here, and nothing but a person keeps them in
-step — the console being in this repository (it was `jeroen/cartopy` until
+step — the console being in this repository (it was a separate repository until
 2026-09) does not change that.
 
 Categories are a fixed list on the console side because the in-world picker groups

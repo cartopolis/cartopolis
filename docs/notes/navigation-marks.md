@@ -122,7 +122,7 @@ written down once, in
 ## Two rejected alternatives
 
 **An atlas extractor.** The other Dutch registers are extracted by atlas
-(`crates/atlas/src/pipeline/`; cartopy when this was decided) and served per cell
+(`crates/atlas/src/pipeline/`; a separate TypeScript repository when this was decided) and served per cell
 by our own host, and `where-the-map-data-is-built.md` is explicit that each
 format is still hand-synced between the extractor and its client parser. That seam is worth its cost for a
 2 MB-per-cell dataset needing reprojection and triangulation; it is not worth it

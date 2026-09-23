@@ -2,7 +2,7 @@
 //! per-cell files the client streams (`<dataset>/14/{x}/{y}.json` plus a
 //! `coverage.json` per dataset, served as `3dbag.cartopolis.org`).
 //!
-//! Ported from cartopy's `server/pipeline/` (TypeScript), which was itself ported
+//! Ported from the earlier TypeScript pipeline (in a separate repository), which was itself ported
 //! from the Python scripts that used to live in `tools/`. The formats are unchanged
 //! byte for byte in meaning — the client's parsers (`lod22.rs`,
 //! `building_facts.rs`, `surveyed.rs`, `osm_buildings.rs`, `dikes.rs`,

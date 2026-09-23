@@ -1,5 +1,5 @@
 //! Water surfaces at the height they actually stand at (`water_levels.rs` in the
-//! client reads them). Ported from cartopy's `server/pipeline/water.ts`.
+//! client reads them). Ported from the earlier TypeScript pipeline (`water.ts`).
 //!
 //! The ground under water is no-data in AHN and the banks are dilated inward to
 //! fill it, so without this a canal is drawn level with the quay beside it. The 3D

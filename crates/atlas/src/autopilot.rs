@@ -1,5 +1,5 @@
 //! The autonomous lane's throttle, read and written for the console. Ported from
-//! cartopy's `server/autopilot.ts`.
+//! the earlier TypeScript server (`autopilot.ts`).
 //!
 //! The autopilot (`tools/autopilot.ts`, in a container on this host) re-reads its
 //! JSON config on every tick — the file *is* its control surface, so steering it

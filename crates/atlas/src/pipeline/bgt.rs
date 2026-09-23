@@ -1,7 +1,7 @@
 //! The **BGT** — the Netherlands' large-scale topography, ~20 cm — as the
 //! surveyed street objects the client would otherwise have to invent
-//! (`surveyed.rs` in the client reads them). Ported from cartopy's
-//! `server/pipeline/bgt.ts` (itself from `tools/bgt_objects.py`).
+//! (`surveyed.rs` in the client reads them). Ported from the earlier
+//! TypeScript pipeline (`bgt.ts`, itself from `tools/bgt_objects.py`).
 //!
 //! The API pages by opaque **cursor** (no 50,000-row wall, but no total either, so
 //! a page ceiling is the guard), and it returns **every historical version of

@@ -52,8 +52,8 @@ cosmetic:
   per `lokaal_id` then survives (measured 2026-08-29: 990 `ondersteunendwegdeel`
   features → 302 current, all ids distinct, and the remaining overlap between
   current surfaces is *zero* — BGT is a true partition). Fixed in the
-  extractor's `items()`, which every collection walks through (cartopy's
-  TypeScript then, atlas's `pipeline/bgt.rs` now); `parse_surveyed_paving` /
+  extractor's `items()`, which every collection walks through (the
+  TypeScript pipeline then, atlas's `pipeline/bgt.rs` now); `parse_surveyed_paving` /
   `parse_surveyed_cell` also drop exact repeats, because a cell cached with the
   ghosts in it is never refetched — which is also why the client's cache keys
   moved to `bgt/v2/`. The `datetime` parameter looks like the right filter and

@@ -1,7 +1,7 @@
 //! 3DBAG **LoD1.2** buildings — a footprint plus a height per building, shaped so
 //! the client's Overpass parser (`osm_buildings.rs`) consumes it unchanged.
 //!
-//! Ported from cartopy's `server/pipeline/buildings.ts` (itself from
+//! Ported from the earlier TypeScript pipeline (`buildings.ts`, itself from
 //! `tools/3dbag_extract.py`):
 //!
 //!   1. Page the 3DBAG WFS `BAG3D:lod12` layer over an RD bbox — a footprint

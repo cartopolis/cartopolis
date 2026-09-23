@@ -6,8 +6,8 @@ app, static files behind Caddy at
 page's *Sign in*. It had its own hostname, web.cartopolis.org, until 2026-09.
 Every path goes through `src/lib/base.ts`. It talks to the
 simulator's `/api/admin` surface (`crates/simulator/src/http.rs`) and to atlas's
-`/api/pipeline` surface (`crates/atlas/src/console.rs`). It lived in its own
-repository, `jeroen/cartopy`, until 2026-09.
+`/api/pipeline` surface (`crates/atlas/src/console.rs`). It lived in a separate
+repository until 2026-09.
 
 Sign in with a Cartopolis account carrying the `admin` flag — the same account
 signs into the world itself, and atlas checks the bearer against the simulator
@@ -62,8 +62,8 @@ refusal — so the sign-in page only draws one when the server says `open`.
 ## The data pipeline
 
 The Data tab drives atlas's map data pipelines (`crates/atlas/src/pipeline/`)
-through `/api/pipeline/*` (`crates/atlas/src/console.rs`). They were cartopy's
-`server/` until 2026-09, and the Python scripts in `tools/` before that; the
+through `/api/pipeline/*` (`crates/atlas/src/console.rs`). They were a
+TypeScript server until 2026-09, and the Python scripts in `tools/` before that; the
 formats they write, the routes and the refusals are unchanged, so this page
 needed no change beyond where the dev proxy points. `docs/notes/atlas.md` has
 the datasets, the port and how it was checked.

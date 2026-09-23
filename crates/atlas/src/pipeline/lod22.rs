@@ -1,7 +1,7 @@
 //! 3DBAG **LoD2.2** buildings — the real roof geometry, as per-cell triangle
 //! meshes (`lod22.rs` in the client reads them).
 //!
-//! Ported from cartopy's `server/pipeline/lod22.ts` (itself from
+//! Ported from the earlier TypeScript pipeline (`lod22.ts`, itself from
 //! `tools/3dbag_lod22.py`):
 //!
 //!   1. Ask the `BAG3D:tiles` WFS which CityJSON tiles cover the RD bbox.

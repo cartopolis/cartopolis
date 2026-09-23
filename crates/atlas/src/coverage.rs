@@ -1,5 +1,5 @@
 //! What the served tree holds, read from the manifests rather than remembered.
-//! Ported from cartopy's `server/coverage.ts`.
+//! Ported from the earlier TypeScript server (`coverage.ts`).
 //!
 //! The output directory is the authority, not this process: the tiles outlive
 //! every restart and an operator may have rsynced them, so "what is covered" has a
