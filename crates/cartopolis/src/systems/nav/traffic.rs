@@ -1166,7 +1166,18 @@ pub fn drive_traffic(
         // to a measured nine would put the car nine metres under its own road.
         // Two places computing one number is the failure this whole area keeps
         // having, so they compute it with one function.
-        let ground = terrain.ground_at(pos.x, pos.y);
+        // **And the base is `at` too, on a sunken line.** The drawn deck stands on
+        // the coarse field (`stand_tunnel_on`), and the half-metre `ground_at`
+        // differs from it by metres exactly where a trench is — measured at the
+        // ring's east portal 2026-09-23: −14.9 against −10.8 under the lid, and
+        // −4.0 against −7.0 at the mouth, so cars drove 4 m inside the earth and
+        // queued 3 m above the deck, on the trench lip. A car on its own deck
+        // must ask the field its deck was drawn on.
+        let ground = if deck < 0.0 {
+            terrain.at(pos.x, pos.y)
+        } else {
+            terrain.ground_at(pos.x, pos.y)
+        };
         let sunk = if deck < 0.0 {
             // `at`, not `ground_at`, on both sides of the subtraction: this is
             // the same difference `stand_tunnel_on` takes for the drawn deck, so
