@@ -231,6 +231,26 @@ impl Tunnels {
         sum
     }
 
+    /// What a clipmap tile stores to know its lid fill is still the right fill:
+    /// a digest of the covered stretches within `half` of `centre`, the same
+    /// per-tile shape as [`Self::opening_digest`] and for the same reason.
+    #[must_use]
+    pub fn lid_digest(&self, centre: Vec2, half: f32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let (lo, hi) = (centre - half, centre + half);
+        let mut sum: u64 = 0;
+        for c in self.cells.values() {
+            for b in c.covered.iter().flatten() {
+                if b[0] <= hi.x && lo.x <= b[2] && b[1] <= hi.y && lo.y <= b[3] {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    b.map(f32::to_bits).hash(&mut h);
+                    sum = sum.wrapping_add(h.finish());
+                }
+            }
+        }
+        sum
+    }
+
     fn each_opening_near(&self, centre: Vec2, half: f32, mut f: impl FnMut(&Mouth)) {
         let (lo, hi) = (centre - half, centre + half);
         for m in self.cells.values().flat_map(|c| c.openings.iter()) {

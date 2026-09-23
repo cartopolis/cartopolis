@@ -2349,6 +2349,12 @@ pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
 /// surface that is everywhere at or under the measured ground — which is what allows
 /// a distant level to be coarse at all (see [`build_floors`]). At the finest levels
 /// the quad is the sample and the floor is the measurement.
+/// `lid` answers, for a world XZ, how far the ground there is lifted back over a
+/// tunnel's lid and how much of a lid it is (0..1, for the shading) — the same
+/// fill the vector ground takes (`tunnels::Lidded`). **Without it the basemap under
+/// a lid stayed at the surveyed trench floor**, which is *inside* the tunnel: from a
+/// cutting, every mouth was filled by a sloping sheet of map (2026-09-23).
+///
 /// `openings` are the tunnel openings the sheet has to be missing over, in this
 /// grid's own local XZ. Cutting here rather than at the call site is what lets a
 /// tile that needs no relief and no curve still get a hole in it: it is the only
@@ -2360,6 +2366,7 @@ pub fn displaced_grid(
     size: f32,
     divisions: usize,
     openings: &[Vec<[f32; 2]>],
+    lid: &dyn Fn(f32, f32) -> (f32, f32),
 ) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -2383,13 +2390,18 @@ pub fn displaced_grid(
             let lx = -half + i as f32 * step;
             let (wx, wz) = (centre.x + lx, centre.y + lz);
             let curve = globe.drop_at(Vec2::new(wx, wz).length()) - centre_drop;
-            positions.push([lx, field.floor_at(wx, wz, step) - curve, lz]);
+            let (lift, lidded) = lid(wx, wz);
+            positions.push([lx, field.floor_at(wx, wz, step) + lift - curve, lz]);
             // Relief tilts the ground against the surface; curvature tilts the
             // surface itself. Composed by rotating the field's normal into the
             // sphere's frame — outside the field `normal_at` is +Y, so this
             // degrades to the plain sphere normal with no special case.
             let up = globe.surface_normal(wx, wz);
-            let n = Quat::from_rotation_arc(Vec3::Y, up) * field.floor_normal_at(wx, wz, step);
+            let n = Quat::from_rotation_arc(Vec3::Y, up)
+                * field
+                    .floor_normal_at(wx, wz, step)
+                    .lerp(Vec3::Y, lidded)
+                    .normalize_or(Vec3::Y);
             normals.push(n.to_array());
             uvs.push([(lx + half) / size, (lz + half) / size]);
         }

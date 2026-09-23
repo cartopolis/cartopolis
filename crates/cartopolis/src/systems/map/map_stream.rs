@@ -869,6 +869,9 @@ pub struct TileRelief {
     /// ([`Tunnels::opening_digest`](crate::systems::tunnels::Tunnels::opening_digest)),
     /// kept apart from `revision` because it is the one input that is per tile.
     openings: u64,
+    /// The lids this tile's relief was filled over
+    /// ([`Tunnels::lid_digest`](crate::systems::tunnels::Tunnels::lid_digest)).
+    lids: u64,
 }
 
 /// Subdivisions per side for a relief tile of `tile_m` metres: a constant count,
@@ -1043,6 +1046,13 @@ pub fn apply_terrain_to_tiles(
         // above a seven-metre carriageway. Cut only the finest and the tunnel opens
         // onto z10 imagery instead of onto z17 imagery.
         let openings = tunnels.opening_digest(centre, gs * 0.5);
+        // Only a relieved tile is displaced by the field at all, so only one of
+        // those can have a trench under a lid to fill.
+        let lids = if relieved {
+            tunnels.lid_digest(centre, gs * 0.5 + cartopolis_geo::tunnels::DATUM_M)
+        } else {
+            0
+        };
         let shaped = relieved || divisions > 1 || openings != 0;
 
         if !shaped {
@@ -1066,7 +1076,9 @@ pub fn apply_terrain_to_tiles(
         if relief.is_some_and(|r| r.openings != 0) {
             holes.0 += 1;
         }
-        if relief.is_some_and(|r| r.revision == revision && r.openings == openings) {
+        if relief
+            .is_some_and(|r| r.revision == revision && r.openings == openings && r.lids == lids)
+        {
             continue;
         }
         // Counted before the per-frame cap turns it away, because this is the number
@@ -1094,12 +1106,32 @@ pub fn apply_terrain_to_tiles(
         } else {
             tunnels.openings_near(centre, gs * 0.5)
         };
-        let mesh =
-            crate::systems::terrain::displaced_grid(&field, &globe, centre, gs, divisions, &rings);
+        // The lift the vector ground over a lid takes (`tunnels::Lidded`), added
+        // to this sheet's own floor rather than replacing it, so the basemap stays
+        // at or under the vector ground as `floor_at` promises.
+        let lid = |wx: f32, wz: f32| -> (f32, f32) {
+            if lids == 0 {
+                return (0.0, 0.0);
+            }
+            let w = tunnels.covered_weight(Vec2::new(wx, wz), cartopolis_geo::tunnels::DATUM_M);
+            if w <= 0.0 {
+                return (0.0, 0.0);
+            }
+            let here = field.at(wx, wz);
+            let around = field.surrounding(wx, wz, cartopolis_geo::tunnels::DATUM_M);
+            (w * (around - here).max(0.0), w)
+        };
+        let mesh = crate::systems::terrain::displaced_grid(
+            &field, &globe, centre, gs, divisions, &rings, &lid,
+        );
         commands
             .entity(entity)
             .insert(Mesh3d(meshes.add(mesh)))
-            .insert(TileRelief { revision, openings });
+            .insert(TileRelief {
+                revision,
+                openings,
+                lids,
+            });
         // No `NotShadowCaster` here any more — every `StreamTile` carries it from
         // spawn (see the comment at the spawn site). The reasoning this comment
         // used to hold is still the reasoning, and is worth keeping: four clipmap
