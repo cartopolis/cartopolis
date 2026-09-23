@@ -460,6 +460,8 @@ mod tests {
             sim_id: 7,
             net_position: Vec3::ZERO,
             net_yaw: 0.0,
+            net_velocity: Vec3::ZERO,
+            net_age: 0.0,
             pending_emote: None,
             last_emote_sequence: None,
             seated: None,

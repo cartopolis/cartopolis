@@ -81,6 +81,13 @@ pub struct RemoteAvatar {
     pub sim_id: u64,
     pub net_position: Vec3,
     pub net_yaw: f32,
+    /// Replicated world velocity (`AvatarStateDto::velocity`) at the snapshot
+    /// that set `net_position`. Both the extrapolation and the gait read it.
+    pub net_velocity: Vec3,
+    /// Seconds since that snapshot arrived: reset by the snapshot apply,
+    /// advanced by `avatar::smooth_remote_avatars`, and what turns
+    /// `net_position` into where the avatar is *now*.
+    pub net_age: f32,
     /// An emote this avatar started that we have not played yet — set for one
     /// frame by the snapshot apply and consumed by
     /// `avatar::update_remote_avatar_animation`.
@@ -99,14 +106,6 @@ pub struct RemoteAvatar {
     /// sits down over the same fraction of a second the sitter does without
     /// twenty offsets a second on the wire to say so.
     pub seat_blend: f32,
-}
-
-/// Horizontal speed (m/s) from visual motion, used for remote run vs idle animation.
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct RemoteAvatarMotionHint {
-    pub last_translation: Vec3,
-    pub horizontal_speed: f32,
-    pub initialized: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

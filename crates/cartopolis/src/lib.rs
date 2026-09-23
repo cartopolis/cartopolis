@@ -3000,7 +3000,6 @@ fn run_client() {
                 .after(avatar::handle_avatar_movement)
                 .after(network::send_network_intent),
             avatar::smooth_remote_avatars.after(avatar::smooth_online_avatar_display),
-            avatar::tick_remote_avatar_motion_hint.after(avatar::smooth_remote_avatars),
             // Keep the avatar out of buildings: block walking into them, and
             // eject one that lands inside (teleport / a building streaming over
             // it). Runs after movement and before the camera follows the
@@ -3029,7 +3028,7 @@ fn run_client() {
             avatar::update_avatar_model_pose
                 .after(avatar::handle_avatar_movement)
                 .after(avatar::spawn_avatar),
-            avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
+            avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
             avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
             avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
         ),

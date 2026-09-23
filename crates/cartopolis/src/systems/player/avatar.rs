@@ -1,5 +1,5 @@
 use crate::components::AvatarModelLoaded;
-use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
+use crate::components::{Avatar, RemoteAvatar};
 use crate::resources::AvatarState;
 use crate::systems::locomotion;
 use crate::systems::sit_pose;
@@ -499,7 +499,8 @@ fn is_stalled(snapshot_age: f32) -> bool {
 }
 /// Remote rotation should feel a bit snappier than position.
 const REMOTE_ROT_SMOOTHING: f32 = 18.0;
-/// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
+/// Replicated ground speed (m/s) above which a remote avatar counts as moving:
+/// it walks rather than idles, and an emote in progress is cut short.
 const REMOTE_RUN_SPEED_THRESH: f32 = 0.12;
 
 /// How long Space must be held to take off, rather than jump.
@@ -1534,64 +1535,106 @@ pub fn sync_avatar_animations(
     }
 }
 
-/// Interpolate remote entities toward `RemoteAvatar::net_*` so motion matches the local smoothed feel.
+/// How far past its last snapshot a remote avatar is carried on its replicated
+/// velocity. Five snapshots at the sim's 20 Hz: enough to ride out jitter and a
+/// dropped frame or two, short enough that a link which has really gone quiet
+/// leaves a stranger standing a metre or so on rather than walking off down the
+/// street on a velocity nobody is confirming.
+const REMOTE_MAX_EXTRAPOLATION: f32 = 0.25;
+
+/// One frame of a remote avatar's drawn position, given the snapshot it is
+/// following. `age` is the snapshot's age *after* this frame.
+///
+/// Two halves, and the first is what the old follower lacked. The display is
+/// **carried** by the replicated velocity, then **corrected** toward the
+/// snapshot extrapolated to the present. An exponential follow of the raw
+/// snapshot — which is what this was — tracks a moving target a constant
+/// `speed / rate` behind (13 cm at a walk, 43 cm at a run) plus a whole
+/// snapshot interval of staleness, and can never catch up. Carrying first makes
+/// that steady-state error zero, so the correction only ever works on jitter and
+/// on genuine changes of course.
+///
+/// Past [`REMOTE_MAX_EXTRAPOLATION`] both halves stop advancing and the avatar
+/// settles where the extrapolation left it. Nothing is carried below the floor:
+/// the sim clamps its own `y` there, and extrapolating the tail of a jump would
+/// otherwise sink the feet for a frame before the landing snapshot arrives.
+#[must_use]
+fn remote_display_step(
+    display: Vec3,
+    net_position: Vec3,
+    net_velocity: Vec3,
+    age: f32,
+    dt: f32,
+) -> Vec3 {
+    let horizon = age.min(REMOTE_MAX_EXTRAPOLATION);
+    let mut target = net_position + net_velocity * horizon;
+    let mut carried = if age <= REMOTE_MAX_EXTRAPOLATION {
+        display + net_velocity * dt
+    } else {
+        display
+    };
+    target.y = target
+        .y
+        .max(cartopolis_core::motion::GROUND_Y.min(net_position.y));
+    carried.y = carried
+        .y
+        .max(cartopolis_core::motion::GROUND_Y.min(net_position.y));
+    let a = 1.0 - (-ONLINE_DISPLAY_SMOOTHING * dt).exp();
+    carried.lerp(target, a)
+}
+
+/// Draw other players' avatars where they are now, not where the last snapshot
+/// said they were — see [`remote_display_step`].
 pub fn smooth_remote_avatars(
     online: Option<Res<crate::resources::OnlineSession>>,
     time: Res<Time>,
-    mut q: Query<(&RemoteAvatar, &mut Transform), (With<RemoteAvatar>, Without<Avatar>)>,
+    mut q: Query<(&mut RemoteAvatar, &mut Transform), Without<Avatar>>,
 ) {
     if online.is_none() {
         return;
     }
     let dt = time.delta_secs();
-    let a_pos = 1.0 - (-ONLINE_DISPLAY_SMOOTHING * dt).exp();
     let a_rot = 1.0 - (-REMOTE_ROT_SMOOTHING * dt).exp();
-    for (remote, mut tf) in q.iter_mut() {
-        tf.translation = tf.translation.lerp(remote.net_position, a_pos);
+    for (mut remote, mut tf) in q.iter_mut() {
+        remote.net_age += dt;
+        tf.translation = remote_display_step(
+            tf.translation,
+            remote.net_position,
+            remote.net_velocity,
+            remote.net_age,
+            dt,
+        );
         // Replicated world yaw from each client’s camera-facing convention.
         let target_rot = Quat::from_rotation_y(wrap_angle_pi(remote.net_yaw));
         tf.rotation = tf.rotation.slerp(target_rot, a_rot);
     }
 }
 
-/// Derive horizontal speed from smoothed remote motion for animation blending.
-pub fn tick_remote_avatar_motion_hint(
-    online: Option<Res<crate::resources::OnlineSession>>,
-    time: Res<Time>,
-    mut q: Query<(&Transform, &mut RemoteAvatarMotionHint), With<RemoteAvatar>>,
-) {
-    if online.is_none() {
-        return;
+/// Ground speed a remote avatar's gait is chosen from: the replicated
+/// horizontal velocity, and zero once the snapshot is too old to vouch for it.
+#[must_use]
+fn remote_ground_speed(remote: &RemoteAvatar) -> f32 {
+    if remote.net_age > REMOTE_MAX_EXTRAPOLATION {
+        return 0.0;
     }
-    let dt = time.delta_secs().max(1e-4);
-    for (tf, mut hint) in q.iter_mut() {
-        if !hint.initialized {
-            hint.last_translation = tf.translation;
-            hint.initialized = true;
-            hint.horizontal_speed = 0.0;
-            continue;
-        }
-        let dx = tf.translation.x - hint.last_translation.x;
-        let dz = tf.translation.z - hint.last_translation.z;
-        hint.horizontal_speed = (dx * dx + dz * dz).sqrt() / dt;
-        hint.last_translation = tf.translation;
-    }
+    Vec2::new(remote.net_velocity.x, remote.net_velocity.z).length()
 }
 
 /// Walk / run / idle / emote for other players' avatars.
 ///
-/// Their speed is *measured* from the smoothed motion rather than replicated
-/// (`RemoteAvatarMotionHint::horizontal_speed`), which is enough to pick the clip
-/// and its rate — so a remote avatar strolling looks like it is strolling, by the
-/// same rule the local one follows. Flight is still not replicated, so a remote
-/// never takes the fly pose.
+/// The gait is chosen from the **replicated** velocity (protocol 24) by the
+/// same rule the local avatar follows, so a remote strolling looks like it is
+/// strolling. It used to be measured by differencing the smoothed transform,
+/// which lags the truth by the smoothing itself and was therefore wrong at
+/// exactly the moments the gait changes — a start and a stop — which is where
+/// the feet slid. Flight is still not replicated, so a remote never takes the
+/// fly pose.
 pub fn update_remote_avatar_animation(
     mut commands: Commands,
     online: Option<Res<crate::resources::OnlineSession>>,
     time: Res<Time>,
     children: Query<&Children>,
     animations_to_play: Query<&AvatarAnimations, With<RemoteAvatar>>,
-    hints: Query<&RemoteAvatarMotionHint, With<RemoteAvatar>>,
     mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
     mut remote_roots: Query<
         (Entity, &RemoteAvatar, Option<&mut EmotePlayback>),
@@ -1612,12 +1655,7 @@ pub fn update_remote_avatar_animation(
         let Ok(anim) = animations_to_play.get(avatar_entity) else {
             continue;
         };
-        let speed = hints
-            .get(avatar_entity)
-            .map_or(0.0, |h| h.horizontal_speed)
-            // Below the old run threshold the measurement is mostly interpolation
-            // noise, so treat it as standing rather than as a very slow walk.
-            .max(0.0);
+        let speed = remote_ground_speed(remote);
         let moving = speed > REMOTE_RUN_SPEED_THRESH;
 
         // `RemoteAvatar::pending_emote` is set by the snapshot apply when it sees a
@@ -2305,6 +2343,81 @@ pub fn log_avatar_draw_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Follow a remote avatar walking a straight line at `speed`, with snapshots
+    /// every 50 ms rendered at 60 Hz, and return how far the drawn avatar ends
+    /// up from where it truly is.
+    fn remote_follow_error(speed: f32, velocity_known: bool) -> f32 {
+        let v = Vec3::new(speed, 0.0, 0.0);
+        let dt = 1.0 / 60.0;
+        let (mut t, mut next_snapshot) = (0.0_f32, 0.0_f32);
+        let (mut net_pos, mut age) = (Vec3::ZERO, 0.0_f32);
+        let mut display = Vec3::ZERO;
+        for _ in 0..240 {
+            t += dt;
+            age += dt;
+            if t >= next_snapshot {
+                net_pos = v * next_snapshot;
+                age = t - next_snapshot;
+                next_snapshot += 0.05;
+            }
+            let net_v = if velocity_known { v } else { Vec3::ZERO };
+            display = remote_display_step(display, net_pos, net_v, age, dt);
+        }
+        display.distance(v * t)
+    }
+
+    /// The whole point of replicating velocity: a remote at a steady run is
+    /// drawn where it is, not a fixed distance behind it.
+    #[test]
+    fn a_remote_at_a_steady_run_is_drawn_where_it_is() {
+        let run = 6.0;
+        let with = remote_follow_error(run, true);
+        let without = remote_follow_error(run, false);
+        assert!(with < 0.05, "{with} m behind with the velocity");
+        assert!(
+            without > 0.3,
+            "the position-only follower should trail a run ({without} m) — the test is not \
+             measuring what it claims"
+        );
+    }
+
+    /// A link that goes quiet leaves the avatar where the extrapolation stopped
+    /// rather than carrying it on down the street.
+    #[test]
+    fn a_stale_remote_stops_being_carried() {
+        let v = Vec3::new(6.0, 0.0, 0.0);
+        let dt = 1.0 / 60.0;
+        let mut display = Vec3::ZERO;
+        let mut age = 0.0;
+        for _ in 0..600 {
+            age += dt;
+            display = remote_display_step(display, Vec3::ZERO, v, age, dt);
+        }
+        let limit = v.x * REMOTE_MAX_EXTRAPOLATION;
+        assert!(
+            display.x <= limit + 0.3,
+            "carried {} m on a snapshot 10 s old (cap {limit} m)",
+            display.x
+        );
+        assert!(display.is_finite());
+    }
+
+    /// Extrapolating the fall at the end of a jump must not push the feet
+    /// under the floor the sim clamps them to.
+    #[test]
+    fn a_falling_remote_is_not_carried_through_the_floor() {
+        let net = Vec3::new(0.0, 0.1, 0.0);
+        let v = Vec3::new(0.0, -8.0, 0.0);
+        let mut display = net;
+        let dt = 1.0 / 60.0;
+        let mut age = 0.0;
+        for _ in 0..30 {
+            age += dt;
+            display = remote_display_step(display, net, v, age, dt);
+            assert!(display.y >= -1e-5, "sank to {}", display.y);
+        }
+    }
 
     /// Turn `yaw` back into the direction the model then faces (+Z rotated by it).
     fn facing(yaw: f32) -> Vec3 {

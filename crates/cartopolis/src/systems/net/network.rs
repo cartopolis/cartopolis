@@ -7,7 +7,6 @@
 
 use crate::components::{
     Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, RemoteAvatar,
-    RemoteAvatarMotionHint,
 };
 use crate::resources::{
     AuthIdentity, AvatarState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId,
@@ -1083,6 +1082,8 @@ fn sync_remote_avatar_entities(
         if let Some(&entity) = by_id.get(&a.id) {
             if let Ok((_, mut r)) = remote_query.get_mut(entity) {
                 r.net_position = a.position;
+                r.net_velocity = a.velocity;
+                r.net_age = 0.0;
                 r.net_yaw = snap_yaw_continuation(r.net_yaw, a.yaw);
                 // A level, not an edge: the sim re-sends it in every snapshot for
                 // as long as the sit lasts, and the *blend* onto it is this
@@ -1107,6 +1108,8 @@ fn sync_remote_avatar_entities(
                     sim_id: a.id,
                     net_position: a.position,
                     net_yaw: y,
+                    net_velocity: a.velocity,
+                    net_age: 0.0,
                     // An avatar that comes into view mid-emote plays it: that is
                     // the whole reason the sim holds it on the wire.
                     pending_emote: a.emote.map(|e| e.emote),
@@ -1118,7 +1121,6 @@ fn sync_remote_avatar_entities(
                     seated: a.seated.map(Vec2::from),
                     seat_blend: 0.0,
                 },
-                RemoteAvatarMotionHint::default(),
                 Transform::from_translation(a.position)
                     .with_rotation(Quat::from_rotation_y(wrap_angle_pi(y)))
                     .with_scale(Vec3::splat(0.02)),

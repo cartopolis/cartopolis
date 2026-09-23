@@ -108,6 +108,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "regions retired — RegionDto and WorldSnapshot.regions gone, PrimDto/CreatePrim lose region_id, RegionCapacity becomes the world-wide WorldCapacity, and ObserverUpdate goes with the AoI filter it fed",
     },
+    ProtocolRevision {
+        version: 24,
+        adr: "",
+        summary: "AvatarStateDto.velocity — the world velocity the sim integrated this tick, so a receiver can extrapolate another avatar to the present and pick its gait from a speed rather than differencing smoothed positions",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -419,6 +424,17 @@ pub struct AvatarStateDto {
     /// The facing needs no field of its own: a sitter turns to face out of the
     /// seat, and that is already [`Self::yaw`].
     pub seated: Option<[f32; 2]>,
+    /// World velocity (m/s) the sim integrated this avatar with on the tick the
+    /// snapshot was taken: horizontal travel including the flight lift, plus
+    /// the vertical rate of a jump, a fall or a climb. Zero while seated.
+    ///
+    /// Replicated rather than derived because a receiver cannot derive it
+    /// well. Differencing two snapshots is a tick late and noisy at the tick
+    /// rate, and differencing the *smoothed* position — which is what the
+    /// client did — gets it wrong exactly at a start or a stop, the moments
+    /// the gait changes. With it, a receiver draws another avatar where it is
+    /// now (`position + velocity × age`) instead of trailing where it was.
+    pub velocity: Vec3,
 }
 
 /// How far a seat may draw an avatar from the position the sim holds for it.
@@ -1192,6 +1208,7 @@ mod tests {
                     yaw: 1.25,
                     emote: None,
                     seated,
+                    velocity: Vec3::new(1.8, 0.0, -0.5),
                 }],
             };
             let b = encode_app_frame(&m).unwrap();

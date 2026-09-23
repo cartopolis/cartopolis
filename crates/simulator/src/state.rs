@@ -45,6 +45,13 @@ struct AvatarSim {
     /// Monotonic per-avatar counter. The same emote twice running is two events,
     /// and a receiver that diffed on the emote alone would play only the first.
     emote_sequence: u32,
+    /// What [`SimWorld::step`] actually moved this avatar by, per second, on its
+    /// last tick — replicated as `AvatarStateDto::velocity`. Measured from the
+    /// position change rather than assembled from `velocity`, `fly_vertical` and
+    /// `vertical_velocity`, so the flight lift and the ground clamp are already
+    /// in it: an avatar landing from a jump reports zero, not the fall rate it
+    /// had before the floor stopped it.
+    moved: Vec3,
     /// The account this avatar is signed in as, for anything that has to *name*
     /// it — today that is `vfSensor`, which hands a script the name so a prim can
     /// greet whoever walked up. Set once at the handshake; "Someone" until then,
@@ -195,6 +202,7 @@ impl SimWorld {
                 emote: None,
                 emote_age: 0.0,
                 emote_sequence: 0,
+                moved: Vec3::ZERO,
                 name: "Someone".to_string(),
                 geo: None,
                 seated: None,
@@ -242,6 +250,9 @@ impl SimWorld {
         av.velocity = Vec3::ZERO;
         av.vertical_velocity = 0.0;
         av.jump_requested = false;
+        // A placement is not travel: a receiver extrapolating the pre-jump walk
+        // would draw the avatar strolling on from where it landed.
+        av.moved = Vec3::ZERO;
         // `debug`, not `info`: this stopped being one message per deliberate jump
         // when device tracking started sending a placement per GNSS fix, i.e. at
         // ~1 Hz for as long as somebody is driving or has the locate button lit.
@@ -400,6 +411,7 @@ impl SimWorld {
 
     pub fn step(&mut self, dt: f32) {
         for av in self.avatars.values_mut() {
+            let before = av.position;
             // Flight rides altitude (`motion::fly_altitude_factor`), applied here
             // at integration rather than to the stored velocity: the factor moves
             // with `y` between intents, and the wire's wish encoding saturates at
@@ -440,6 +452,9 @@ impl SimWorld {
                     motion::step_fall(av.position.y, av.vertical_velocity, motion::GROUND_Y, dt);
                 av.position.y = s.y;
                 av.vertical_velocity = s.vertical_velocity;
+            }
+            if dt > 0.0 {
+                av.moved = (av.position - before) / dt;
             }
             // Age out the replicated emote so it stops being re-broadcast (and
             // re-played by anyone who arrives) long after it finished.
@@ -523,6 +538,7 @@ impl SimWorld {
                 yaw: a.yaw,
                 emote: a.emote,
                 seated: a.seated,
+                velocity: a.moved,
             })
             .collect()
     }
@@ -1227,6 +1243,47 @@ mod tests {
         world.teleport_avatar(id, Vec3::new(0.0, -50.0, 0.0));
         let sunk = world.avatar_position(id).expect("still there");
         assert!(sunk.y >= 0.0, "teleported underground: {sunk:?}");
+    }
+
+    /// The replicated velocity is what the tick actually moved the avatar by —
+    /// so it matches the walk, is zero once a teleport has placed it, and never
+    /// reports travel into the floor.
+    #[test]
+    fn the_snapshot_carries_the_velocity_the_tick_moved_the_avatar_by() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        let velocity = |world: &SimWorld| match world.avatar_snapshot(0) {
+            NetMessage::WorldSnapshot { avatars, .. } => {
+                avatars
+                    .iter()
+                    .find(|a| a.id == id)
+                    .expect("in the snapshot")
+                    .velocity
+            }
+            other => panic!("not a snapshot: {other:?}"),
+        };
+        assert_eq!(velocity(&world), Vec3::ZERO, "a fresh avatar is at rest");
+
+        world.apply_intent(
+            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
+        );
+        let before = world.avatar_position(id).expect("spawned");
+        world.step(0.05);
+        let after = world.avatar_position(id).expect("spawned");
+        let v = velocity(&world);
+        assert!(v.length() > 0.5, "walking but reported {v:?}");
+        assert!(
+            ((after - before) / 0.05 - v).length() < 1e-3,
+            "reported {v:?} for a move of {:?} in 50 ms",
+            after - before
+        );
+        assert!(
+            v.y.abs() < 1e-6,
+            "standing on the floor, yet vertical {v:?}"
+        );
+
+        world.teleport_avatar(id, Vec3::new(500.0, 0.0, 500.0));
+        assert_eq!(velocity(&world), Vec3::ZERO, "a placement is not travel");
     }
 }
 
