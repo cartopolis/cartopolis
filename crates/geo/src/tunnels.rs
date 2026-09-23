@@ -2189,13 +2189,26 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             // ever seen from, there were none, and the ground's own culled
             // underside left the city showing through
             // (`every_tunnel_face_is_wound_toward_its_normal`).
+            //
+            // **Up to the ceiling under a lid, and to the ground only where it is
+            // open.** Between a roof and the ground over it is earth, which has
+            // no mesh; a wall carried on up to street level stood out of anything
+            // lower than the street — along the ring's lid under the Oude
+            // Winschoterdiep the two wall tops ran out of the canal as long thin
+            // slivers (2026-09-23).
+            let covered = roofed[i] && roofed[i + 1];
+            let (t0, t1) = if covered {
+                (y0 + clearance, y1 + clearance)
+            } else {
+                (WALL_TOP_Y, WALL_TOP_Y)
+            };
             let n_left = wall_normal(l0, l1, true);
             shell.quad(
                 [
                     [l1[0], y1, l1[1]],
                     [l0[0], y0, l0[1]],
-                    [l0[0], WALL_TOP_Y, l0[1]],
-                    [l1[0], WALL_TOP_Y, l1[1]],
+                    [l0[0], t0, l0[1]],
+                    [l1[0], t1, l1[1]],
                 ],
                 [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
                 n_left,
@@ -2206,8 +2219,8 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                 [
                     [r0[0], y0, r0[1]],
                     [r1[0], y1, r1[1]],
-                    [r1[0], WALL_TOP_Y, r1[1]],
-                    [r0[0], WALL_TOP_Y, r0[1]],
+                    [r1[0], t1, r1[1]],
+                    [r0[0], t0, r0[1]],
                 ],
                 [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
                 n_right,
@@ -2276,12 +2289,13 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                     // centre of the bend, which is inward.
                     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
                     let len = dx.hypot(dz).max(1e-6);
+                    let top = if roof { c } else { WALL_TOP_Y };
                     shell.quad(
                         [
                             [b[0], y, b[1]],
                             [a[0], y, a[1]],
-                            [a[0], WALL_TOP_Y, a[1]],
-                            [b[0], WALL_TOP_Y, b[1]],
+                            [a[0], top, a[1]],
+                            [b[0], top, b[1]],
                         ],
                         [[v, 0.0], [v, 0.0], [v, 1.0], [v, 1.0]],
                         [dz / len, 0.0, -dx / len],
@@ -3229,6 +3243,47 @@ mod tests {
             checked[0] > 0 && checked[1] > 0,
             "no tunnel faces to check: {checked:?}"
         );
+    }
+
+    /// **Under a lid the walls stop at the ceiling.** Above it is earth, and a
+    /// wall carried on to street level stood out of the Oude Winschoterdiep as
+    /// two long slivers along the lid under it (2026-09-23).
+    #[test]
+    fn no_wall_rises_through_a_lid() {
+        let tile_m = ring_tile_m();
+        let out = build_tunnels(&crate::testdata::groningen_ring(), tile_m, None);
+        let mut checked = 0usize;
+        for m in out
+            .meshes
+            .iter()
+            .filter(|m| m.group == SurfaceGroup::TunnelStructure)
+        {
+            for p in &m.positions {
+                // Carriageways: the fixture's garage loop overlaps two path
+                // tunnels, which is its own tagging, not a lid.
+                for t in out.tunnels.iter().filter(|t| t.half_w >= 3.0) {
+                    // A wall's corners stand at the centre line's vertices, so
+                    // ask at the vertices with a lid on both sides of them.
+                    for k in 1..t.centre.len().saturating_sub(1) {
+                        if !(t.covered[k - 1] && t.covered[k] && t.covered[k + 1]) {
+                            continue;
+                        }
+                        let c = t.centre[k];
+                        if (p[0] - c[0]).hypot(p[2] - c[1]) > t.half_w + 0.05 {
+                            continue;
+                        }
+                        let ceiling = t.road_y[k] + t.clearance;
+                        checked += 1;
+                        assert!(
+                            p[1] <= ceiling + 0.01,
+                            "a tunnel wall reaches {:.2} m under a lid whose ceiling is {ceiling:.2} m",
+                            p[1]
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no structure under a lid was checked");
     }
 
     /// **No road leaves a sunken deck at street level.** At the ring's eastern
