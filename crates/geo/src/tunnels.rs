@@ -59,12 +59,13 @@
 //! a deck with abrupt ends still reads as a deck. A tunnel cannot accept it: the
 //! step *is* the way in.
 //!
-//! So the ramp is built inside the tagged tunnel: the deck rises to meet the
-//! ground over [`ramp_m`] at each genuine entrance, at [`MAX_GRADE`]. Two
-//! consequences follow and both are deliberate. A tunnel shorter than two ramps
-//! never reaches full depth — which is honest for an underpass and wrong for a
-//! tunnel under a hill, and the tiles cannot tell those apart. And the opening sits
-//! *inside* the tagged length rather than at its end.
+//! So the deck rises to meet the ground over [`ramp_m`] at each genuine
+//! entrance, at [`MAX_GRADE`] — **on the road beyond the portal** where there is
+//! one to build it on ([`find_approaches`]), because the tag marks the covered
+//! part and the ramp is not covered. Only what does not fit out there is spent
+//! inside the tagged run, and a run too short for that never reaches full depth —
+//! honest for an underpass, wrong for a tunnel under a hill, and the tiles cannot
+//! tell those apart.
 //!
 //! An end is a entrance only when the line genuinely ends there. A run cut by the
 //! tile border continues in the next tile and is held at full depth, so the two
@@ -1583,6 +1584,10 @@ struct Plan {
     /// network can key a car's depth to its own road rather than to whatever
     /// happens to be under it ([`SunkenWay`]).
     feature: usize,
+    /// Whether each end of the run opens onto sky — an entrance, or a cutting —
+    /// so a lid that reaches it needs a headwall. False where the run carries on
+    /// under the same lid: across a tile border, or into a split of its own way.
+    mouth: [bool; 2],
 }
 
 /// A corridor's two offset sides, per segment.
@@ -1872,6 +1877,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             half,
             clearance,
             feature: *fi,
+            mouth: entrances,
         }));
     }
 
@@ -1882,7 +1888,9 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     // full depth would step wherever a lid had to settle for less
     // ([`depth_for_run`]), which is the fault this is fixing, moved along by one
     // road. Never roofed — the tile says the lid stops here.
-    let mut plans: Vec<Plan> = planned.iter().flatten().cloned().collect();
+    let mut plans: Vec<Plan> = Vec::new();
+    // The lid ends a cutting opens, for their headwalls.
+    let mut open_joins: Vec<(usize, usize)> = Vec::new();
     for cut in &cuttings {
         let end_depth = |(run, end): (usize, usize)| -> Option<f32> {
             let p = planned.get(run)?.as_ref()?;
@@ -1956,6 +1964,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                 .map(|&y| y + clearance <= CEILING_MAX_Y)
                 .collect()
         } else {
+            open_joins.extend(cut.joins);
             vec![false; centre.len()]
         };
         plans.push(Plan {
@@ -1972,7 +1981,18 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                 .max(planned[cut.joins[0].0].as_ref().map_or(0.0, |p| p.half)),
             clearance,
             feature: cut.feature,
+            mouth: [false; 2],
         });
+    }
+    for (idx, plan) in planned.iter().enumerate() {
+        let Some(plan) = plan else {
+            continue;
+        };
+        let mut plan = plan.clone();
+        for (k, mouth) in plan.mouth.iter_mut().enumerate() {
+            *mouth |= open_joins.contains(&(idx, k));
+        }
+        plans.push(plan);
     }
 
     // The ramps outside the portals, now that each run's depth at its ends is
@@ -2035,6 +2055,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                     half: approach.half.max(run.half),
                     clearance,
                     feature: *feature,
+                    mouth: [false; 2],
                 });
             }
         }
@@ -2049,6 +2070,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             class,
             half,
             clearance,
+            mouth,
             ..
         } = plan;
         let (class, half, clearance) = (*class, *half, *clearance);
@@ -2225,6 +2247,60 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                         0.0,
                     );
                 }
+            }
+        }
+
+        // **A headwall over every mouth.** Where a lid stops, the ground over it
+        // stops too — it is cut away over the open stretch beyond — and between
+        // the roof's edge and the ground there was nothing: the earth has no
+        // mesh, so from the cutting the mouth showed the lid's culled underside
+        // and the grass on top of it (2026-09-23). A vertical face across the
+        // corridor from the ceiling up to the wall tops closes it, facing out of
+        // the tunnel toward the open side.
+        let n = centre.len();
+        for k in 0..n {
+            if !roofed[k] {
+                continue;
+            }
+            // (roofed side of the mouth, left and right corner, facing).
+            let mut faces: Vec<([f32; 2], [f32; 2], [f32; 2])> = Vec::new();
+            let back_open = if k == 0 { mouth[0] } else { !roofed[k - 1] };
+            if back_open && k + 1 < n && roofed[k + 1] {
+                let (a, b) = (centre[k], centre[k + 1]);
+                faces.push((
+                    sides.left[k][0],
+                    sides.right[k][0],
+                    [a[0] - b[0], a[1] - b[1]],
+                ));
+            }
+            let ahead_open = if k + 1 == n { mouth[1] } else { !roofed[k + 1] };
+            if ahead_open && k > 0 && roofed[k - 1] {
+                let (a, b) = (centre[k - 1], centre[k]);
+                faces.push((
+                    sides.left[k - 1][1],
+                    sides.right[k - 1][1],
+                    [b[0] - a[0], b[1] - a[1]],
+                ));
+            }
+            let c = road_y[k] + clearance;
+            for (l, r, d) in faces {
+                let len = d[0].hypot(d[1]).max(1e-6);
+                let out = [d[0] / len, 0.0, d[1] / len];
+                // Wound to face `out`, whichever way round the corners lie
+                // against it — a mouth faces forward at one end and back at the other.
+                let forward = (r[0] - l[0]) * d[1] - (r[1] - l[1]) * d[0] > 0.0;
+                let (p, q) = if forward { (l, r) } else { (r, l) };
+                shell.quad(
+                    [
+                        [p[0], c, p[1]],
+                        [q[0], c, q[1]],
+                        [q[0], WALL_TOP_Y, q[1]],
+                        [p[0], WALL_TOP_Y, p[1]],
+                    ],
+                    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                    out,
+                    0.0,
+                );
             }
         }
 

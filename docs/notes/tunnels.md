@@ -1,7 +1,7 @@
 ---
 topic: roads
 triggers: [tunnels.rs, tunnel, tunnel, entrance, cut_sheet, opening_digest, clipmap hole, basemap over a tunnel, building_passage, underground, drawn_street, street_shape, TunnelRoad, TunnelStructure, Tunnels, cut_ground, opening, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
-updated: 2026-09-16
+updated: 2026-09-23
 ---
 
 # Tunnels: what the tiles know, and everything they do not
@@ -61,17 +61,64 @@ level with a vertical step between them — a hole in the road.
 
 [bridge-heights.md](bridge-heights.md) hits the same constraint from the other
 side and **accepts** the step: a deck with abrupt ends still reads as a deck. A
-tunnel cannot, because the step is the way in. So the ramp is built inside the
-tagged tunnel at `MAX_GRADE` (6 %), which puts a 7 m descent inside 120 m.
+tunnel cannot, because the step is the way in. So a ramp is built at `MAX_GRADE`
+(6 %), which puts a 7 m descent inside 120 m — **on the road beyond the portal**,
+not inside the tag (below).
 
-Three things follow:
+An end is a entrance only if the line genuinely ends there: a run the tile border
+cut is held at full depth (so the two halves meet flush at the border), and an end
+another tunnel run also ends on is a tagging split, not a opening.
 
-- A tunnel shorter than two ramps never reaches full depth. Honest for an
-  underpass, wrong for a tunnel under a hill, and the tiles cannot tell those apart.
-- The opening sits *inside* the tagged length rather than at its end.
-- An end is a entrance only if the line genuinely ends there: a run the tile border
-  cut is held at full depth (so the two halves meet flush at the border), and an
-  end another tunnel run also ends on is a tagging split, not a opening.
+### The ramp is outside the tag, because the tag is the lid
+
+**Settled 2026-09-23.** Until then the ramp was built *inside* the tagged run,
+which assumed OSM tags the whole descent. It tags the covered part. Groningen's
+ring under the Oude Winschoterdiep is the case that showed it: the tagged way runs
+from the last lid to about 35 m past the canal, and in the world the road climbs
+out on roughly 300 m of open ramp beyond that, tagged as ordinary road. With the
+ramp inside the tag, the carriageway under the canal was 2 m down and roofless —
+the phone showed the ring crossing the water at grade.
+
+So `find_approaches` looks, at each entrance, for the way that carries on from the
+portal (an end within `SAME_POINT_M`, leaving within `JOIN_COS` of the tunnel's
+heading), follows it through further ways while exactly one continues, and builds
+the ramp there as an open cutting keyed to that street. Four rules, each a failure
+it avoids:
+
+- **A ramp stops short of anything that meets it at grade** (`APPROACH_CLEAR_M`
+  before the first crossing street, T-junction or other tunnel). A node where a
+  third road joins ends the walk for the same reason. Otherwise the cut digs a
+  hole under a crossroads. Bridges do not stop it — they go over.
+- **Whatever does not fit outside is still spent inside**, so a portal with no
+  approach, or a short one, behaves exactly as before. The run's depth is solved
+  with the outside share known (`depth_for_run`'s `outside`), so a short
+  underpass whose approaches take both ramps now reaches full depth and is covered
+  end to end instead of sagging.
+- **The opening merge is "beside, not beyond".** A short tunnel can now open at one
+  end outside and the other inside; the two corridors are parallel, near, the same
+  road and the same width, and hulling them as a dual carriageway cut the ground
+  away over the lid between them. They must overlap along the road now.
+- **Traffic samples the deck every 12 m on a sunken line** (`DRIVE_DECK_STEP_M`).
+  An approach is routinely one straight segment; sampled at its ends, a car sank
+  from −7 m to 0 over the whole way while the drawn ramp surfaced after 117 m.
+
+`a_road_under_water_has_a_lid_over_it` pins it: no open, sunken stretch of deck
+may lie inside a water polygon, and the ring's must lie under one covered.
+What is still wrong: an approach that leaves the tile is cut at the border and
+gets only the ramp that fits this side of it; and a portal that sits exactly on
+the border, with its approach in the neighbour, has no tunnel in the neighbour's
+tile at all, so the neighbour draws that road at grade.
+
+### The roof and walls face in
+
+Also 2026-09-23, from the same phone session. The tunnel material culls back
+faces, and the roof was wound like the deck — facing up into the earth — while
+both walls faced outward. From inside a lid there was no ceiling and no sides;
+with the ground's underside culled as well, the deck looked out on sky, the far
+city and the lawn's grass hanging overhead. The inner notch at a bend was also a
+real triangle wound backwards, not the "degenerate" one the code assumed.
+`every_tunnel_face_is_wound_toward_its_normal` checks every triangle against its
+declared normal.
 
 ## The corridor is the chain, not the tagged run
 
