@@ -768,26 +768,35 @@ impl TerrainSnapshot {
         hi
     }
 
-    /// The level ground over a lid, or beside a cutting, is put back to: the
-    /// **middle** of the ring of samples [`surrounding`](Self::surrounding) takes
-    /// the highest of.
+    /// The level ground over a lid, or beside a cutting, is put back to: the 80th
+    /// percentile of sixteen survey samples, eight at `radius_m` and eight at twice
+    /// it.
     ///
-    /// The highest is right for "how much has the survey dug here" and wrong for
-    /// "how high is the land": it is taken afresh at every point, so anything raised
-    /// within thirty metres makes it jump. Beside the Europaweg over the ring's
-    /// east lid it caught ground 30 m north, lifted the lid 4–5 m above the street
-    /// with 1.7 m steps between 3 m samples, and the basemap stood up through the
-    /// road in shards (measured 2026-09-23). The middle of the ring ignores the
-    /// sample or two on a ramp *and* the two that fall in the trench along its axis.
+    /// **Both obvious answers were measured and both fail** (the ring's portals,
+    /// 2026-09-23). The *highest* sample of one ring, which [`surrounding`](Self::surrounding)
+    /// still takes for how much the survey dug, jumps whenever anything raised is
+    /// within reach: beside the Europaweg it lifted a lid 4–5 m above the street. The
+    /// *middle* sample fails the other way wherever the survey caught a pit wider
+    /// than the ring: around the north cutting's mouth it came back at −5.4 m against
+    /// a street at +0.2, so the ground beside the cutting was filled only to trench
+    /// depth and the lid stood five metres above it as a wall across the mouth. The
+    /// outer ring reaches past such a pit, and the 80th percentile ignores the top
+    /// three samples, which is where a ramp or an embankment lands.
     #[must_use]
     pub fn lid_level(&self, wx: f32, wz: f32, radius_m: f32) -> f32 {
-        let mut ring = [0.0f32; 8];
+        let mut ring = [0.0f32; 16];
         for (k, h) in ring.iter_mut().enumerate() {
-            let a = std::f32::consts::TAU * k as f32 / 8.0;
-            *h = self.at(wx + radius_m * a.cos(), wz + radius_m * a.sin());
+            let a = std::f32::consts::TAU * (k % 8) as f32 / 8.0
+                + if k >= 8 {
+                    std::f32::consts::PI / 8.0
+                } else {
+                    0.0
+                };
+            let r = if k >= 8 { radius_m * 2.0 } else { radius_m };
+            *h = self.at(wx + r * a.cos(), wz + r * a.sin());
         }
         ring.sort_by(f32::total_cmp);
-        0.5 * (ring[3] + ring[4])
+        ring[12]
     }
 
     /// Longest ground edge to leave unsplit before displacement, for *this* field.

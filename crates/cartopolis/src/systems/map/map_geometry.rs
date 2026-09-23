@@ -3435,7 +3435,15 @@ fn stand_on_terrain<G: MeasuredGround>(
             for (p, top) in positions.iter_mut().zip(tops) {
                 if top {
                     let (x, z) = (origin.x + p[0], origin.y + p[2]);
-                    p[1] = p[1].max(terrain.lid_level(x, z, TUNNEL_DATUM_M));
+                    // The ground as drawn there — the same blend `tunnels::Lidded`
+                    // takes — not the fill's target: toward the shallow top of a
+                    // ramp the fill has faded out, and a top raised to the target
+                    // stood four metres proud of the unfilled ground beside it, a
+                    // dark wedge along every ramp (measured 2026-09-23).
+                    let here = terrain.at(x, z);
+                    let w = tunnels.fill_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
+                    let ground = here + w * (fill_target(terrain, tunnels, x, z) - here);
+                    p[1] = p[1].max(ground);
                 }
             }
         }
@@ -3466,7 +3474,7 @@ fn stand_on_terrain<G: MeasuredGround>(
     // the taper, and the ground tore open along the buried road.
     let lidded = cartopolis_geo::tunnels::Lidded {
         ground: &**terrain,
-        around: &|x, z| terrain.lid_level(x, z, TUNNEL_DATUM_M),
+        around: &|x, z| fill_target(terrain, tunnels, x, z),
         weight: &|p| tunnels.fill_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
     let t0 = bevy::platform::time::Instant::now();
@@ -3525,6 +3533,25 @@ thread_local! {
     /// Where `stand_on_terrain`'s time goes on this worker, µs: refine, displace,
     /// normals, and the vertex count out. Read and reset per cell job.
     static GROUND_SPLIT: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+/// The level the ground at `(x, z)` is filled to where it is filled at all: the
+/// middle of the land around (`TerrainField::lid_level`), and never below a
+/// lid's roof plus its slab (`Tunnels::cover_over`). One function, because the
+/// ground and the wall tops that meet it must agree.
+fn fill_target(
+    terrain: &TerrainField,
+    tunnels: &crate::systems::tunnels::Tunnels,
+    x: f32,
+    z: f32,
+) -> f32 {
+    let level = terrain.lid_level(x, z, TUNNEL_DATUM_M);
+    let here = terrain.at(x, z);
+    let dug = terrain.surrounding(x, z, TUNNEL_DATUM_M) - here;
+    match tunnels.cover_over(Vec2::new(x, z), dug) {
+        Some(cover) => level.max(here + cover),
+        None => level,
+    }
 }
 
 /// Seed for a cell's tree scatter. Stable for the cell's absolute tile coordinate,

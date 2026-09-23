@@ -1137,7 +1137,7 @@ pub fn update_buildings(
     // frozen; descending below the threshold refreshes it at the new spot.
     let patch_half_m = tile_m * (building_patch_radius() as f32 + 1.5);
     let lids_moved = osm.last_center.is_some()
-        && tunnels.lid_digest(osm.lid_centre, patch_half_m) != osm.lid_digest;
+        && lid_key(&tunnels, &terrain, osm.lid_centre, patch_half_m) != osm.lid_digest;
     let need = lids_moved
         || match osm.last_center {
             None => true,
@@ -1209,7 +1209,12 @@ pub fn update_buildings(
         // …and so do the lids under the patch, so a building standing in a
         // covered tunnel's old trench is left out (`LidSnapshot::holds`).
         let lids = tunnels.lids_near(Vec2::new(world_x, world_z), patch_half_m);
-        osm.lid_digest = tunnels.lid_digest(Vec2::new(world_x, world_z), patch_half_m);
+        osm.lid_digest = lid_key(
+            &tunnels,
+            &terrain,
+            Vec2::new(world_x, world_z),
+            patch_half_m,
+        );
         osm.lid_centre = Vec2::new(world_x, world_z);
         IoTaskPool::get()
             .spawn(async move {
@@ -1394,8 +1399,10 @@ pub fn update_buildings(
             // (`LidSnapshot::holds`, 2026-09-23).
             let (cell_centre, cell_half) = far_cell_square(cx, cy, ax, ay, z, lat);
             let lids = tunnels.lids_near(cell_centre, cell_half);
-            osm.far_lids
-                .insert((cx, cy), tunnels.lid_digest(cell_centre, cell_half));
+            osm.far_lids.insert(
+                (cx, cy),
+                lid_key(&tunnels, &terrain, cell_centre, cell_half),
+            );
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
             // on wasm `IoTaskPool` is the main thread, so this whole thing used to
             // run on the frame loop.
@@ -1590,13 +1597,13 @@ pub fn update_buildings(
             .collect();
         // A far cell whose lids changed since it was built is evicted and so
         // re-requested (from the disk cache), taking the new lids with it.
-        if tunnels.is_changed() {
+        if tunnels.is_changed() || terrain.is_changed() {
             let moved: Vec<(i64, i64)> = osm
                 .far_lids
                 .iter()
                 .filter(|(cell, digest)| {
                     let (c, h) = far_cell_square(cell.0, cell.1, ax, ay, z, lat);
-                    tunnels.lid_digest(c, h) != **digest
+                    lid_key(&tunnels, &terrain, c, h) != **digest
                 })
                 .map(|(cell, _)| *cell)
                 .collect();
@@ -1822,6 +1829,26 @@ fn build_far_from_text(
     Ok(buf
         .into_mesh()
         .map(|m| (grid_cell, m, wins.map(MeshData::into_mesh))))
+}
+
+/// What decides which buildings of a square stand in a covered trench: the lids
+/// under it **and the terrain they are judged against**, because the rule measures
+/// how far below the land around each footprint stands (`LidSnapshot::holds`). A
+/// cell built before the field landed judged every footprint undug, kept the
+/// ring's portal frame, and was never rebuilt — the block in the mouth came and
+/// went between captures with nothing but streaming order to explain it
+/// (2026-09-23). Zero where there is no lid, so the terrain moving under a square
+/// with no tunnel rebuilds nothing.
+fn lid_key(
+    tunnels: &crate::systems::tunnels::Tunnels,
+    terrain: &crate::systems::terrain::TerrainField,
+    centre: Vec2,
+    half: f32,
+) -> u64 {
+    match tunnels.lid_digest(centre, half) {
+        0 => 0,
+        d => d ^ u64::from(terrain.revision).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+    }
 }
 
 /// A far cell's centre in the anchored world frame and half its side, grown by

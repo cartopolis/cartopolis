@@ -425,6 +425,32 @@ impl Tunnels {
             .min_by(f32::total_cmp)
     }
 
+    /// The least height the ground at `p` may have over a lid, relative to the
+    /// survey's ground there (`here`, the frame `dug` is measured in): the drawn
+    /// roof plus a slab. `None` where `p` is over no covered stretch.
+    ///
+    /// **The fill's target is a guess about the land and the roof is not**, so the
+    /// roof wins. The fill goes to the middle of a ring of survey samples 30 m out,
+    /// and at a mouth part of that ring lies in the open trench beyond it; the
+    /// target came out below the roof, so the lid's ground sagged into the mouth
+    /// under the headwall and the roof's edges showed through the street and the
+    /// canal as thin lines (Deck captures of the ring's east portal, 2026-09-23).
+    #[must_use]
+    pub fn cover_over(&self, p: Vec2, dug: f32) -> Option<f32> {
+        let at = [p.x, p.y];
+        self.cells
+            .values()
+            .filter(|c| c.filled_bbox.is_some_and(|b| within(at, b, 0.0)))
+            .flat_map(|c| c.tunnels.iter())
+            .filter(|t| t.covered_weight(at, 0.0) >= 1.0)
+            .filter_map(|t| {
+                t.road_under(at).map(|y| {
+                    y + lift_for(-y, dug) + t.clearance - cartopolis_geo::tunnels::CEILING_MAX_Y
+                })
+            })
+            .reduce(f32::max)
+    }
+
     /// How deep the tessellator put a carriageway under `p`, as a positive number
     /// of metres, before the height survey is allowed to account for any of it.
     /// `None` where no tunnel's corridor covers `p`.
