@@ -407,11 +407,15 @@ pub struct Lod22Buildings {
     anchor: Option<(i64, i64, u32, f64)>,
     /// Requested/failed bookkeeping, the results sink, the concurrency bound, the
     /// bounded despawn queue and the anchor generation (`platform::stream`).
-    stream: CellStream<(i64, i64), Result<Option<Lod22Build>, String>>,
+    /// Each result carries the terrain revision its cell was built on.
+    stream: CellStream<(i64, i64), (Result<Option<Lod22Build>, String>, u32)>,
     /// Spawned cell entities, despawned when out of range — one per mesh piece a
     /// cell was cut into ([`MAX_CELL_MESH_BYTES`]), which for most cells is still
     /// exactly one.
     cells: HashMap<(i64, i64), Vec<Entity>>,
+    /// The terrain revision each live cell stands on: a new field rebuilds only
+    /// the cells built on an older one (`MapSurfaces::built_rev` is the same).
+    built_rev: HashMap<(i64, i64), u32>,
     /// Cells currently marked `NotShadowCaster` (beyond `SHADOW_RADIUS`), so the
     /// shadow-LOD pass only issues a command when a cell actually crosses the
     /// boundary rather than every frame.
@@ -569,6 +573,7 @@ impl Default for Lod22Buildings {
                 despawns_per_frame: MAX_DESPAWNS_PER_FRAME,
             }),
             cells: HashMap::new(),
+            built_rev: HashMap::new(),
             dated: HashMap::new(),
             doors: HashMap::new(),
             built_detail: HashMap::new(),
@@ -637,6 +642,38 @@ fn cell_materials(
     (material, interior_material)
 }
 
+/// Retire one live cell so that it is built again: its detail was promoted, or
+/// the ground under it changed.
+fn rebuild_cell(
+    lod: &mut Lod22Buildings,
+    colliders: &mut crate::systems::collision::BuildingColliders,
+    c: (i64, i64),
+) {
+    lod.dated.remove(&c);
+    lod.doors.remove(&c);
+    lod.built_detail.remove(&c);
+    lod.heights.remove(&c);
+    lod.built_rev.remove(&c);
+    // Dropped, not retained: a rebuild exists *because* this mesh is the wrong
+    // one, so keeping it would only give the restore path something to hand back
+    // that would be rebuilt again.
+    lod.live.remove(&c);
+    if let Some(entities) = lod.cells.remove(&c) {
+        for e in entities {
+            lod.stream.retire(e);
+        }
+    }
+    if lod.partial.as_ref().is_some_and(|p| p.cell == c) {
+        lod.partial = None;
+    }
+    colliders.remove_cell(c);
+    lod.no_shadow.remove(&c);
+    // `forget`, not `retire`: the cell has to become requestable again, and
+    // `forget` is what drops it from the stream's `requested` set and hands its
+    // slots back. The re-fetch is a disk-cache read.
+    lod.stream.forget(&c);
+}
+
 /// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
 pub fn update_lod22(
     mut commands: Commands,
@@ -682,6 +719,31 @@ pub fn update_lod22(
     let bag_revision = crate::systems::building_facts::coverage_revision()
         | (crate::systems::lod3::coverage_revision() << 1);
     let reanchored = lod.stream.sync(stream.anchor_generation);
+    // **A new field alone rebuilds only the cells built on an older one**, as the
+    // ground cells do (`MapSurfaces::built_rev`). Over graded ground the cells were
+    // waiting for this very field (`TerrainField::ground_later`), and tearing the
+    // ring down threw them away and built every one twice.
+    if !reanchored && lod.bag_revision == bag_revision && lod.terrain_revision != terrain.revision {
+        let old: Vec<(i64, i64)> = lod
+            .built_rev
+            .iter()
+            .filter(|(_, rev)| **rev != terrain.revision)
+            .map(|(c, _)| *c)
+            .collect();
+        tracing::info!(
+            cells = old.len(),
+            of = lod.cells.len(),
+            terrain_rev = terrain.revision,
+            was_terrain_rev = lod.terrain_revision,
+            "lod22 cells retear"
+        );
+        lod.terrain_revision = terrain.revision;
+        for c in old {
+            rebuild_cell(&mut lod, &mut colliders, c);
+        }
+        // The held cells stand on the old ground, and nothing records which.
+        lod.retained.clear();
+    }
     if reanchored || lod.terrain_revision != terrain.revision || lod.bag_revision != bag_revision {
         // The same line `map_geometry` logs, for the same reason: a ring rebuilt
         // once because the ground arrived and a ring rebuilt four times because
@@ -699,6 +761,7 @@ pub fn update_lod22(
         lod.terrain_revision = terrain.revision;
         lod.bag_revision = bag_revision;
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
+        lod.built_rev.clear();
         lod.dated.clear();
         lod.doors.clear();
         lod.built_detail.clear();
@@ -731,6 +794,7 @@ pub fn update_lod22(
         && crate::systems::osm_buildings::tdbag_user_enabled();
     if lod.enabled_was && !enabled {
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
+        lod.built_rev.clear();
         lod.dated.clear();
         lod.doors.clear();
         lod.built_detail.clear();
@@ -819,28 +883,7 @@ pub fn update_lod22(
         .map(|(c, _)| *c)
         .min_by_key(|c| ring_distance(*c, ccx, ccy));
     if let Some(c) = promoted {
-        lod.dated.remove(&c);
-        lod.doors.remove(&c);
-        lod.built_detail.remove(&c);
-        lod.heights.remove(&c);
-        // Dropped, not retained: a promotion exists *because* this mesh is the
-        // wrong one, so keeping it would only give the restore path something to
-        // hand back that the ring would promote again.
-        lod.live.remove(&c);
-        if let Some(entities) = lod.cells.remove(&c) {
-            for e in entities {
-                lod.stream.retire(e);
-            }
-        }
-        if lod.partial.as_ref().is_some_and(|p| p.cell == c) {
-            lod.partial = None;
-        }
-        colliders.remove_cell(c);
-        lod.no_shadow.remove(&c);
-        // `forget`, not `retire`: the cell has to become requestable again, and
-        // `forget` is what drops it from the stream's `requested` set and hands
-        // its slots back. The re-fetch is a disk-cache read.
-        lod.stream.forget(&c);
+        rebuild_cell(&mut lod, &mut colliders, c);
     }
 
     // The controller has asked for room, and this pool is the cheapest place to
@@ -921,6 +964,9 @@ pub fn update_lod22(
             lod.heights.insert(c, warm.heights);
             lod.built_detail.insert(c, warm.detail);
             lod.live.insert(c, warm.meshes);
+            // The pool is emptied whenever the field changes, so what it holds
+            // stands on the current one.
+            lod.built_rev.insert(c, terrain.revision);
             colliders.set_cell(c, warm.footprints);
             // The far tier may have taken this cell over while we were away, the
             // same case the freshly-built path handles once its last piece is up.
@@ -947,8 +993,9 @@ pub fn update_lod22(
     // fetch+mesh task (ADR-033 seam) pushing to the sink — no OS thread.
     let results = lod.stream.sink();
     // Graded ground on its way: one build per cell, on it (`TerrainField::holds_builds`).
+    // The jobs fetch meanwhile; only the parse and mesh wait for the ground.
     let held = terrain.holds_builds(stream.anchor_generation);
-    while let Some((cx, cy)) = (!held).then(|| lod.stream.next_job(now)).flatten() {
+    while let Some((cx, cy)) = lod.stream.next_job(now) {
         let results = results.clone();
         // Resolved at dispatch, not inside the worker: the worker has no camera,
         // and recording what a cell was *built* with is what makes the promotion
@@ -957,7 +1004,8 @@ pub fn update_lod22(
         lod.built_detail.insert((cx, cy), detail);
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
-        let ground = terrain.snapshot();
+        let mut ground_now = (!held).then(|| (terrain.snapshot(), terrain.revision));
+        let ground_later = held.then(|| terrain.ground_later());
         let live = lod.stream.live();
         // Two halves on two executors, matching the tile path (ADR-033): the fetch
         // is awaited here — free on wasm, where this is the main thread but the
@@ -970,7 +1018,7 @@ pub fn update_lod22(
                     Ok(t) => t,
                     Err(e) => {
                         if let Ok(mut g) = results.lock() {
-                            g.push(((cx, cy), Err(e)));
+                            g.push(((cx, cy), (Err(e), 0)));
                         }
                         return;
                     }
@@ -986,6 +1034,12 @@ pub fn update_lod22(
                 let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
                 // …and the imported models for the same cell, on the same terms.
                 let lod3 = crate::systems::lod3::load_lod3_text(cx, cy).await;
+                // The ground last, after every fetch.
+                if let Some(rx) = ground_later {
+                    let (placement, rev) = rx.await.unwrap_or((None, 0));
+                    ground_now = Some((placement.map(|p| (*p).clone()).unwrap_or_default(), rev));
+                }
+                let (ground, built_rev) = ground_now.unwrap_or_default();
                 // Torn down while it fetched (`CellStream::live`): no parse, no mesh.
                 if !live.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
@@ -1007,7 +1061,7 @@ pub fn update_lod22(
                             detail,
                         );
                         if let Ok(mut g) = results.lock() {
-                            g.push(((cx, cy), built));
+                            g.push(((cx, cy), (built, built_rev)));
                         }
                     }),
                 );
@@ -1035,9 +1089,15 @@ pub fn update_lod22(
         let mut done = lod.stream.take_results();
         let deferred = done.split_off(done.len().min(MAX_BUILDS_PER_FRAME));
         lod.stream.defer(deferred);
-        for (c, built) in done {
+        for (c, (built, built_rev)) in done {
+            // Built on a field that has since been replaced: ask again, on this one.
+            if built.is_ok() && built_rev != terrain.revision {
+                lod.stream.forget(&c);
+                continue;
+            }
             match built {
                 Ok(Some((grid_cell, pieces, footprints, dated, doors, heights))) => {
+                    lod.built_rev.insert(c, built_rev);
                     // The whole cell's bookkeeping lands with its first frame:
                     // colliders are cheap CPU state (an avatar can bump into a
                     // building a frame before it is drawn, which beats walking
