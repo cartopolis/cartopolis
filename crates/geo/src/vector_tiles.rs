@@ -3528,8 +3528,161 @@ pub fn tessellate_roads(
             )
             .collect(),
         on_deck,
-        approaches,
+        approaches: extend_approaches(tile, tile_m, decks, approaches),
     })
+}
+
+/// Longest an approach is followed from its abutment, metres: a tall viaduct's
+/// clearance over the steepest grade an approach takes
+/// (`road_grade::MAX_APPROACH_GRADE`) with room to spare. Past where the
+/// embankment meets the ground the ramp raises nothing, so the extra is free.
+const APPROACH_REACH_M: f32 = 160.0;
+
+/// The approaches, carried on along the roads beyond the structure.
+///
+/// **OSM's bridge way stops at the abutment**, so the only approach
+/// `split_by_deck` could find was the sliver of the same way that happened to
+/// overhang the deck outline — measured over four Groningen tiles on
+/// 2026-09-23, every one 0.0–0.3 m long, and many decks (Laan 1940's real
+/// abutments, the Beneluxweg's, the Emmaviaduct's north end) had none at all. So
+/// the embankment ended at its grading's six-sample dilation, about twenty metres
+/// out, in a cliff: 8.7 m of it at Laan 1940.
+///
+/// Each approach, and each bridge-flagged street's own end at a deck that no
+/// approach starts from, is followed along the street that carries on from it
+/// (the same walk `tunnels::find_approaches` does for a tunnel's ramp): through
+/// further ways while exactly one continues, up to [`APPROACH_REACH_M`].
+fn extend_approaches(
+    tile: &TileData,
+    tile_m: f32,
+    decks: &[BridgeDeck],
+    mut approaches: Vec<Approach>,
+) -> Vec<Approach> {
+    if decks.is_empty() {
+        return approaches;
+    }
+    let lines = crate::tunnels::surface_lines(tile, tile_m);
+    let near = |a: [f32; 2], b: [f32; 2], r: f32| (a[0] - b[0]).hypot(a[1] - b[1]) <= r;
+    // The bridge ends at a deck that no approach starts from.
+    let mut seeds: Vec<(u32, Vec<[f32; 2]>)> = Vec::new();
+    for l in lines.iter().filter(|l| l.bridge) {
+        for k in 0..2 {
+            if !l.own[k] || l.pts.len() < 2 {
+                continue;
+            }
+            let (p, inner) = if k == 0 {
+                (l.pts[0], l.pts[1])
+            } else {
+                (l.pts[l.pts.len() - 1], l.pts[l.pts.len() - 2])
+            };
+            // On the deck, or just inside it along the way.
+            let (dx, dz) = (inner[0] - p[0], inner[1] - p[1]);
+            let len = dx.hypot(dz).max(1e-6);
+            let probe = [p[0] + dx / len * 2.0, p[1] + dz / len * 2.0];
+            let Some(d) = decks
+                .iter()
+                .position(|deck| deck.contains(p) || deck.contains(probe))
+            else {
+                continue;
+            };
+            if approaches
+                .iter()
+                .any(|a| a.points.first().is_some_and(|q| near(*q, p, 3.0)))
+            {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            seeds.push((d as u32, vec![inner, p]));
+        }
+    }
+    // Seeds go after the approaches the tile already had, and are kept only if
+    // the walk found a road: each carries one segment pointing out of the deck,
+    // whose inner vertex is dropped once it has served as a direction.
+    let first_seed = approaches.len();
+    for (deck, pts) in seeds {
+        approaches.push(Approach { deck, points: pts });
+    }
+    let mut keep = vec![true; approaches.len()];
+
+    for (ai, a) in approaches.iter_mut().enumerate() {
+        let n = a.points.len();
+        if n < 2 {
+            continue;
+        }
+        let (tail, before) = (a.points[n - 1], a.points[n - 2]);
+        let (dx, dz) = (tail[0] - before[0], tail[1] - before[1]);
+        let len = dx.hypot(dz);
+        if len < 1e-3 {
+            continue;
+        }
+        let mut heading = [dx / len, dz / len];
+        let mut here = tail;
+        let mut used: Vec<usize> = Vec::new();
+        let mut walked = 0.0f32;
+        let mut extra: Vec<[f32; 2]> = Vec::new();
+        for _ in 0..6 {
+            let candidates: Vec<(usize, Vec<[f32; 2]>, f32)> = lines
+                .iter()
+                .enumerate()
+                .filter(|(i, l)| !l.bridge && !used.contains(i))
+                .flat_map(|(i, l)| {
+                    [0usize, 1].into_iter().filter_map(move |k| {
+                        let end = if k == 0 {
+                            l.pts[0]
+                        } else {
+                            l.pts[l.pts.len() - 1]
+                        };
+                        if !l.own[k] || !near(end, here, 1.5) {
+                            return None;
+                        }
+                        let mut pts = l.pts.clone();
+                        if k == 1 {
+                            pts.reverse();
+                        }
+                        Some((i, pts))
+                    })
+                })
+                .filter_map(|(i, pts)| {
+                    let d = crate::tunnels::leaving(&pts)?;
+                    Some((i, pts, d[0] * heading[0] + d[1] * heading[1]))
+                })
+                .filter(|(_, _, cos)| *cos >= 0.82)
+                .collect();
+            if candidates.len() != 1 {
+                break;
+            }
+            let (i, mut pts, _) = candidates.into_iter().next().expect("one");
+            used.push(i);
+            pts[0] = here;
+            let room = APPROACH_REACH_M - walked;
+            let pts = crate::tunnels::cut_at(&pts, room);
+            walked += crate::tunnels::polyline_len(&pts);
+            let m = pts.len();
+            if m >= 2 {
+                let (ex, ez) = (pts[m - 1][0] - pts[m - 2][0], pts[m - 1][1] - pts[m - 2][1]);
+                let el = ex.hypot(ez).max(1e-6);
+                heading = [ex / el, ez / el];
+            }
+            here = pts[m - 1];
+            extra.extend(pts.into_iter().skip(1));
+            if walked >= APPROACH_REACH_M - 0.5 || !lines[i].own[0] || !lines[i].own[1] {
+                break;
+            }
+        }
+        let seeded = ai >= first_seed;
+        if extra.is_empty() {
+            // A seed that found no road to follow is not an approach.
+            keep[ai] = !seeded;
+            continue;
+        }
+        if seeded {
+            a.points.remove(0);
+        }
+        a.points.extend(extra);
+    }
+    let mut k = keep.into_iter();
+    approaches.retain(|_| k.next().unwrap_or(true));
+    approaches
 }
 
 /// What [`tessellate_roads`] hands back: the road sheet that lies on the ground,
@@ -5769,6 +5922,41 @@ mod tests {
             "the ground four metres over the lid is painted the colour of the road \
              that runs into the tunnel — a round cap past the mouth"
         );
+    }
+
+    /// **A bridge's approach runs along the road beyond its abutment**, not only
+    /// along the sliver of the bridge way that overhangs the deck: OSM's bridge
+    /// way stops at the abutment, and every approach found that way over four
+    /// Groningen tiles was 0.0–0.3 m long (2026-09-23), so each embankment ended
+    /// in a cliff. Over the fixture at least one approach must now reach well
+    /// past the grading's own twenty-metre dilation.
+    #[test]
+    fn a_bridge_approach_follows_the_road_past_the_abutment() {
+        let tile = crate::testdata::groningen();
+        let tile_m = 1471.0;
+        let mut decks = super::tessellate_bridges(&tile, tile_m).expect("bridges tessellate");
+        assert!(
+            !decks.is_empty(),
+            "the fixture has no bridge deck to approach"
+        );
+        let roads = super::tessellate_roads(&tile, tile_m, &mut decks, None, false)
+            .expect("roads tessellate");
+        let longest = roads
+            .approaches
+            .iter()
+            .map(|a| crate::tunnels::polyline_len(&a.points))
+            .fold(0.0f32, f32::max);
+        assert!(
+            longest >= 40.0,
+            "the longest approach is {longest:.1} m — still the overhanging sliver"
+        );
+        for a in &roads.approaches {
+            assert!((a.deck as usize) < decks.len());
+            assert!(
+                crate::tunnels::polyline_len(&a.points) <= APPROACH_REACH_M + 1.0,
+                "an approach ran past the reach"
+            );
+        }
     }
 
     /// Where every bridge deck in a tile is, **on Earth**.

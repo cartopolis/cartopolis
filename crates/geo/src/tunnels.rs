@@ -1402,15 +1402,15 @@ const APPROACH_CLEAR_M: f32 = 5.0;
 
 /// A surface street line: its feature, its geometry in tile-local metres, and
 /// whether each end is the line's own (as against a cut by the tile border).
-struct SurfaceLine {
-    feature: usize,
-    pts: Vec<[f32; 2]>,
-    own: [bool; 2],
+pub(crate) struct SurfaceLine {
+    pub(crate) feature: usize,
+    pub(crate) pts: Vec<[f32; 2]>,
+    pub(crate) own: [bool; 2],
     /// Carried over everything at grade, so it cannot stop a ramp under it.
-    bridge: bool,
+    pub(crate) bridge: bool,
 }
 
-fn surface_lines(tile: &TileData, tile_m: f32) -> Vec<SurfaceLine> {
+pub(crate) fn surface_lines(tile: &TileData, tile_m: f32) -> Vec<SurfaceLine> {
     let mut out = Vec::new();
     let Some(meta) = tile.layer("streets") else {
         return out;
@@ -1457,7 +1457,7 @@ fn surface_lines(tile: &TileData, tile_m: f32) -> Vec<SurfaceLine> {
 /// Unit direction leaving `pts[0]`, measured to the first point far enough away
 /// to have one — a generalised line often starts with a vertex a hair from the
 /// node.
-fn leaving(pts: &[[f32; 2]]) -> Option<[f32; 2]> {
+pub(crate) fn leaving(pts: &[[f32; 2]]) -> Option<[f32; 2]> {
     let a = pts[0];
     pts.iter().skip(1).find_map(|b| {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -1466,7 +1466,7 @@ fn leaving(pts: &[[f32; 2]]) -> Option<[f32; 2]> {
     })
 }
 
-fn polyline_len(pts: &[[f32; 2]]) -> f32 {
+pub(crate) fn polyline_len(pts: &[[f32; 2]]) -> f32 {
     pts.windows(2)
         .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
         .sum()
@@ -1518,7 +1518,7 @@ fn first_meeting(line: &[[f32; 2]], other: &[[f32; 2]], skip: f32) -> Option<f32
 }
 
 /// Truncate a polyline at distance `at` along it.
-fn cut_at(pts: &[[f32; 2]], at: f32) -> Vec<[f32; 2]> {
+pub(crate) fn cut_at(pts: &[[f32; 2]], at: f32) -> Vec<[f32; 2]> {
     let mut out = vec![pts[0]];
     let mut walked = 0.0f32;
     for w in pts.windows(2) {
