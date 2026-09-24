@@ -71,6 +71,38 @@ use cartopolis_core::{tile_source_kind, TileSourceKind};
 /// streamers agree on what a "cell" is.
 const GEOMETRY_ZOOM: u32 = vector_tiles::MAX_SOURCE_ZOOM;
 
+/// Whether the flat vector ground is drawn as meshes at all.
+///
+/// `CARTO_NO_GROUND_MESHES=1` drops them — the land fills, the roads, the paving,
+/// the water — and leaves the basemap image under the camera to stand for them,
+/// keeping everything else a cell produces: the extracted data (labels, places,
+/// collision, drive lines), trees, street furniture, tunnels and bridges. The
+/// comparison step 5 of `level-of-detail-tile-tree.md` asked for, kept so the
+/// image-only ground can still be seen at any altitude.
+#[must_use]
+pub fn ground_meshes_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("CARTO_NO_GROUND_MESHES").as_deref(),
+            Ok("1") | Ok("true")
+        )
+    })
+}
+
+/// A group that lies flat on the ground, which the basemap image already shows.
+fn is_flat_ground(group: SurfaceGroup) -> bool {
+    !matches!(
+        group,
+        SurfaceGroup::Canopy
+            | SurfaceGroup::Trunk
+            | SurfaceGroup::Furniture
+            | SurfaceGroup::TunnelRoad(_)
+            | SurfaceGroup::TunnelStructure
+            | SurfaceGroup::BridgeDeck
+    )
+}
+
 /// Stage stopwatch for one cell job: which of a dozen passes a cell's second
 /// and a half actually goes on, logged once per cell as `surface cell stages`.
 struct Lap {
@@ -548,6 +580,9 @@ pub struct MapSurfaces {
     /// first use and held so every group that takes it gets the same image rather
     /// than its own copy of identical texels.
     ground_finish: Option<Handle<Image>>,
+    /// When this anchor began waiting for the BGT and crop coverage answers
+    /// before dispatching (`COVERAGE_WAIT_S`).
+    coverage_wait: Option<(u32, bevy::platform::time::Instant)>,
 }
 
 impl Default for MapSurfaces {
@@ -574,6 +609,7 @@ impl Default for MapSurfaces {
             pending_decks: HashMap::new(),
             detail_wants: None,
             ground_finish: None,
+            coverage_wait: None,
         }
     }
 }
@@ -749,7 +785,28 @@ struct DetailWants {
     /// above do: the geometry is decided on the worker, so a change has to retear
     /// the live cells, and this struct's comparison is what does that.
     modelled: FurnitureMask,
+    /// Mesh the flat ground — land fills, roads, paving, water — rather than
+    /// leave it to the basemap image (`FLAT_GROUND_ON_M`). The data they carry is
+    /// extracted either way.
+    flat_ground: bool,
 }
+
+/// Below this camera altitude the flat ground is drawn as meshes; above
+/// [`FLAT_GROUND_OFF_M`] it is left to the basemap image under it.
+///
+/// **Measured on the Deck (2026-09-24, step 5 of `level-of-detail-tile-tree.md`),
+/// Grote Markt, warm:** at 600 m the two pictures are the same to the eye (the
+/// image is marginally softer, and the water is its flat colour rather than the
+/// wave shader) and dropping the meshes settles in 5.6 s against 7.3 s at 12.0 ms
+/// a frame against 15.7. At walking height the meshes are the picture — the
+/// carriageway, the surveyed paving, the kerbs — and the image is a soft beige
+/// blur with no road in it. So near the ground, meshes; above it, the image.
+const FLAT_GROUND_ON_M: f32 = 250.0;
+
+/// Longest the ground cells wait for the BGT and crop coverage before they are
+/// dispatched without them (see the dispatch loop).
+const COVERAGE_WAIT_S: f32 = 3.0;
+const FLAT_GROUND_OFF_M: f32 = 500.0;
 
 impl DetailWants {
     /// Everything on — what a desktop tier asks for, and what the tessellation
@@ -761,6 +818,7 @@ impl DetailWants {
         shore: true,
         grass: true,
         modelled: FurnitureMask::NONE,
+        flat_ground: true,
     };
 }
 
@@ -1484,6 +1542,14 @@ fn spawn_geometry_task(
                     .as_deref()
                     .map(crate::systems::terrain::road_triangles)
                     .unwrap_or_default();
+                // Above `FLAT_GROUND_OFF_M` the basemap image stands for the flat
+                // ground; everything else — the data, the volumes — as it was.
+                // Dropped before the drape, which is most of their cost.
+                if !wants.flat_ground {
+                    if let Some(meshes) = outcome.as_mut() {
+                        meshes.retain(|m| !is_flat_ground(m.group));
+                    }
+                }
                 let mut placed = false;
                 if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground.as_ref()) {
                     // Only this cell's own tunnels, where the main thread would have
@@ -1830,12 +1896,22 @@ pub fn update_map_surfaces(
     // Turning one *off* retears too. That is a frame of work to avoid holding
     // meshes the user just said they did not want, on a device where that memory
     // is the constraint.
+    // The flat ground as meshes near the ground, as the basemap image above it
+    // (`FLAT_GROUND_ON_M`), with the gap between the two thresholds so a camera
+    // hovering at one does not retear the ring every few frames.
+    let alt = globe.altitude_m(cell, tf) as f32;
+    let flat_ground = match surfaces.detail_wants {
+        Some(w) if w.flat_ground => alt < FLAT_GROUND_OFF_M,
+        Some(_) => alt < FLAT_GROUND_ON_M,
+        None => alt < FLAT_GROUND_OFF_M,
+    };
     let wants = DetailWants {
         trees: veg_lod.enabled,
         furniture: furniture_lod.enabled,
         shore: sea_state.shading,
         grass: stores.grass.enabled,
         modelled: stores.placeholders.mask(),
+        flat_ground: flat_ground && ground_meshes_enabled(),
     };
     if surfaces.detail_wants != Some(wants) {
         surfaces.detail_wants = Some(wants);
@@ -1898,7 +1974,25 @@ pub fn update_map_surfaces(
     // then again (`TerrainField::holds_builds`). The jobs start now and fetch; only
     // the meshing waits for the ground.
     let held = terrain.holds_builds(stream.anchor_generation);
-    while let Some(c) = surfaces.stream.next_job(now) {
+    // **Not before the BGT and crop coverage have answered**, both baked into the
+    // cell's meshes: a cell dispatched before an answer is torn down by it (the
+    // retear above), and one of them arrives a second in on a warm start — the
+    // Deck (2026-09-24) built every street-level cell twice that way. Bounded,
+    // because a host that never answers costs a moment and not the ground.
+    let gen = stream.anchor_generation;
+    let since = match surfaces.coverage_wait {
+        Some((g, t)) if g == gen => t,
+        _ => {
+            let t = bevy::platform::time::Instant::now();
+            surfaces.coverage_wait = Some((gen, t));
+            t
+        }
+    };
+    let coverage_known = bgt_revision == 0b11 || since.elapsed().as_secs_f32() > COVERAGE_WAIT_S;
+    while let Some(c) = coverage_known
+        .then(|| surfaces.stream.next_job(now))
+        .flatten()
+    {
         // The same origin the arrival below computes, so the worker stands the cell
         // exactly where it will be spawned.
         let origin = Vec2::new(
@@ -3622,6 +3716,13 @@ mod tests {
                 "shore",
                 DetailWants {
                     shore: false,
+                    ..all
+                },
+            ),
+            (
+                "flat_ground",
+                DetailWants {
+                    flat_ground: false,
                     ..all
                 },
             ),

@@ -142,7 +142,24 @@ seen.
    cell; any coarser merged level is built by atlas, which runs the building
    pipeline (`crates/atlas/src/pipeline/`).
 5. A switch that stops drawing flat features as meshes while keeping the data
-   extraction; compare 600 m and walking height before deciding.
+   extraction; compare 600 m and walking height before deciding. **Done
+   2026-09-24** (`CARTO_NO_GROUND_MESHES`, Deck, Grote Markt, warm). At 600 m
+   the two pictures are the same to the eye — the image is marginally softer and
+   the water is its flat colour rather than the wave shader — and the image-only
+   ground settles in 5.6 s against 7.3 s at 12.0 ms a frame against 15.7. At
+   walking height the meshes are the picture (the carriageway, the surveyed
+   paving, the kerbs) and the image is a beige blur with no road in it. So it is
+   a level of detail, not a switch: `map_geometry::FLAT_GROUND_ON_M` meshes the
+   flat ground below 250 m and leaves it to the image above 500 m, with every
+   cell's data, trees, furniture, tunnels and bridges built either way.
+
+   Measuring it turned up a start-up race worth more than the switch: the BGT
+   and crop coverage answers arrive after the first ground cells are dispatched
+   (0.1 s and ~1 s in on a warm start), and each retore the ring. The cells now
+   wait for both (`COVERAGE_WAIT_S`, 3 s at most) and are built once. With both,
+   600 m settles in **9.1 s cold and 5.3 s warm**, walking height 13.0 / 7.1 s,
+   and the street view keeps the city-registered trees and parked cars the
+   rebuilds used to lose.
 
 Each step is judged on time to first image and time to sharp at orbit, 3 km,
 600 m and street level, cold and warm, **wall-clock on a real GPU**. The
