@@ -119,16 +119,25 @@ seen.
      patch was dropped after each bake and a re-bake downloaded the 12 MB
      again — and every revisit. The wall-clock effect on a real GPU is still
      to be measured.
-   - **2c. Retear per cell, not per ring.** **Partly built** (2026-09-24): the
-     ground cells record the field revision they stand on
-     (`MapSurfaces::built_rev`) and a new field retires only the older ones, and
-     over graded ground (2d) the first build waits for its ground instead of
-     building flat — the cells fetch meanwhile and are handed the field when it
-     lands (`TerrainField::ground_later`). Still whole-ring: the building cells
-     (`lod22`), which hold their dispatch rather than their meshing.
+   - **2c. Retear per cell, not per ring.** **Built** (2026-09-24) for the
+     ground and building cells: each records the field revision it stands on
+     (`MapSurfaces::built_rev`, `Lod22Buildings::built_rev`) and a new field
+     rebuilds only the older ones; over graded ground (2d) the first build waits
+     for its ground instead of building flat — the cells fetch meanwhile and are
+     handed the field when it lands (`TerrainField::ground_later`). A warm start
+     now builds each of the 9 ground and 25 building cells once.
    - **2d. Grade on atlas.** **Built** (2026-09-24), in place of grading in
      windows on the client. See "Atlas grades" below.
 3. Fold the globe into the tree, which retires the 50 km switch and the re-anchor.
+   **Mapped 2026-09-24, one piece built.** The flat tier is already bent onto the
+   globe's sphere (`two-tiers-one-sphere.md`), so the tiers meet without a step;
+   what remains is that everything in the near field — terrain field, buildings,
+   surfaces, avatar, collision, routes, pins — lives in the flat tangent frame of
+   the map anchor, ~35 anchor-generation readers in 17 files and ~100 calls to the
+   anchored-frame helpers, which is the rewrite ADR-025 declined. Built: the
+   globe keeps its finished tiles on the device like the flat tier
+   (`tile_loader::globe_cache_key`) — at 2,000 km on the Deck, a warm start reads
+   all 267 back and spends 3.8 s of worker time instead of 6.5 s.
 4. Building levels of detail per tile. The LoD1.2 blocks already exist per z14
    cell; any coarser merged level is built by atlas, which runs the building
    pipeline (`crates/atlas/src/pipeline/`).
@@ -271,6 +280,13 @@ Cold PDOK requests fell 183 → 61 (the rest are dike crests, which only feed a
 label, and the half-metre tier). The map image is complete at ~2.4 s warm and
 ~9 s cold. The picture is the same; relief differs by 2.4 m at the box's extremes
 and the client's approach counters read 0, because that grading happens on atlas.
+
+The dike crests went to atlas next (`pipeline/dikes.rs` writes `crests` beside
+`lines`; 460 over Groningen in 311 requests, 24 s): cold PDOK requests 61 → 2.
+With the building cells done per cell and the fine tier's own bug fixed (it
+cancelled its first bake every frame, harmless only while the patch came from
+PDOK slowly), the same view settles in **13.5 s cold and 7.1 s warm** with the
+half-metre tier baked once — the 13.6 / 7.4 above had it missing.
 
 ## Rejected
 
