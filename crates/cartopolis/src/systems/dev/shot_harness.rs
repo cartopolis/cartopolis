@@ -1007,6 +1007,11 @@ pub struct ShotMetrics {
     pub decks_unapproached: usize,
     pub deck_step_max_m: f32,
     pub deck_step_mean_m: f32,
+    /// Of those decks, how many stand along a measured profile rather than at
+    /// one height (`cartopolis_geo::deck_profile`), and how many surveyed piers
+    /// were stood under them.
+    pub deck_profiled: usize,
+    pub deck_piers: usize,
     /// Whether the half-metre tier under the camera has baked
     /// (`terrain::update_fine_terrain`), and what it actually samples at.
     ///
@@ -1206,7 +1211,7 @@ traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,terrain_sample_m,terrain_graded_samples,\
-approach_abutments,approach_raised,deck_count,decks_unapproached,deck_step_max_m,deck_step_mean_m,\
+approach_abutments,approach_raised,deck_count,decks_unapproached,deck_step_max_m,deck_step_mean_m,deck_profiled,deck_piers,\
 fine_terrain_ready,fine_terrain_sample_m,\
 ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
@@ -3714,6 +3719,8 @@ pub fn drive_capture(
             decks_unapproached: deck_steps.1,
             deck_step_max_m: deck_steps.2,
             deck_step_mean_m: deck_steps.3,
+            deck_profiled: readouts.decks.profiled(),
+            deck_piers: readouts.decks.piers(),
             ground_detail_ready: readouts.ground_detail.slope.is_some(),
             ground_detail_sample_m: readouts.ground_detail.sample_m,
             fine_terrain_ready: readouts.terrain.fine_ready(),
@@ -4453,6 +4460,8 @@ mod tests {
             decks_unapproached: 0,
             deck_step_max_m: 0.0,
             deck_step_mean_m: 0.0,
+            deck_profiled: 0,
+            deck_piers: 0,
             upload_peak_kb: 0,
             upload_peak_asset_kb: 0,
             gpu_resident_kb: 0,

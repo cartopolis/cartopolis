@@ -248,7 +248,34 @@ pub struct SurveyedCell {
     /// as, with their form and, where the register measured one, their height in
     /// metres (see [`cartopolis_geo::furniture::SurveyedLine::height_m`]).
     pub lines: Vec<(LineKind, Option<f32>, Vec<(f64, f64)>)>,
+    /// The parts bridges are surveyed as — decks, piers, abutments — with their
+    /// outlines, outer ring first.
+    pub bridges: Vec<SurveyedBridgePart>,
 }
+
+/// One part of a bridge as the BGT surveys it (`overbruggingsdeel`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurveyedBridgePart {
+    pub part: BridgePart,
+    /// The BGT's relative level: 1 for a deck over something, 0 for what stands
+    /// on the ground.
+    pub level: i8,
+    /// Whether the span opens — a bascule, swing or lift bridge.
+    pub movable: bool,
+    /// `(lat, lng)` rings, outer first.
+    pub rings: Vec<Vec<(f64, f64)>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgePart {
+    Deck,
+    Pier,
+    Abutment,
+}
+
+/// Wire order of the bridge parts — atlas's `BRIDGE_PARTS`; **append, never
+/// renumber**.
+const BRIDGE_PARTS: [BridgePart; 3] = [BridgePart::Deck, BridgePart::Pier, BridgePart::Abutment];
 
 /// Parse a cell file: `{"trees":[[lat,lng],…],"props":[[lat,lng,kind],…]}`.
 pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
@@ -260,6 +287,8 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
         props: Vec<(f64, f64, usize)>,
         #[serde(default)]
         lines: Vec<WireLine>,
+        #[serde(default)]
+        bridges: Vec<(usize, i8, bool, Vec<Vec<(f64, f64)>>)>,
     }
     /// One boundary on the wire: its form, its points, and — only where the 3D
     /// product has one — its measured height in metres.
@@ -316,6 +345,19 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
                 Some((kind, height, pts))
             })
             .collect(),
+        bridges: wire
+            .bridges
+            .into_iter()
+            .filter(|(_, _, _, rings)| rings.first().is_some_and(|r| r.len() >= 3))
+            .filter_map(|(k, level, movable, rings)| {
+                Some(SurveyedBridgePart {
+                    part: *BRIDGE_PARTS.get(k)?,
+                    level,
+                    movable,
+                    rings,
+                })
+            })
+            .collect(),
     })
 }
 
@@ -337,7 +379,9 @@ pub(crate) fn covers(cx: i64, cy: i64) -> bool {
 }
 
 pub(crate) fn objects_cache_key(cx: i64, cy: i64) -> String {
-    format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.json")
+    // `v3`: the objects file gained the bridge parts, and a cell cached before
+    // would otherwise never show a pier.
+    format!("bgt/v3/{BGT_ZOOM}/{cx}/{cy}.json")
 }
 
 /// The paving half's key. Public for the same reason [`objects_cache_key`] is:
@@ -384,6 +428,29 @@ const OBJECTS: CellSource<SurveyedCell> = CellSource {
     timeout: None,
     parse: |text| parse_surveyed_cell(text).ok(),
 };
+
+/// This cell's surveyed piers as outer rings in the tile-local metre frame.
+///
+/// Kept whole even where a ring leaves the cell — a pier is a few metres across
+/// and the cell whose first vertex it is draws it.
+#[must_use]
+pub fn surveyed_piers(cell: &SurveyedCell, cx: i64, cy: i64, tile_m: f32) -> Vec<Vec<[f32; 2]>> {
+    cell.bridges
+        .iter()
+        .filter(|b| b.part == BridgePart::Pier)
+        .filter_map(|b| {
+            let ring = b.rings.first()?;
+            Some(
+                ring.iter()
+                    .map(|&(lat, lng)| {
+                        let (x, z) = cell_local_unclamped(lat, lng, cx, cy, BGT_ZOOM, tile_m);
+                        [x, z]
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
 
 pub(crate) async fn load_surveyed_cell(cx: i64, cy: i64) -> SurveyedCell {
     OBJECTS.load(cx, cy).await
@@ -604,6 +671,25 @@ mod tests {
     /// A boundary is kept only if every vertex is inside the cell. Joining the
     /// survivors of one that leaves would run a fence straight across whatever
     /// lies between them.
+    /// Bridge parts read back in the extractor's order; an unknown part is
+    /// dropped, and a cell file from before bridges still parses.
+    #[test]
+    fn bridge_parts_are_read_and_unknown_ones_dropped() {
+        let ring = "[[53.2,6.5],[53.2,6.5001],[53.2001,6.5001],[53.2,6.5]]";
+        let text = format!(
+            r#"{{"trees":[],"bridges":[[1,0,false,[{ring}]],[0,1,true,[{ring}]],[9,0,false,[{ring}]]]}}"#
+        );
+        let cell = parse_surveyed_cell(&text).unwrap();
+        assert_eq!(cell.bridges.len(), 2);
+        assert_eq!(cell.bridges[0].part, BridgePart::Pier);
+        assert_eq!(cell.bridges[0].level, 0);
+        assert!(cell.bridges[1].movable && cell.bridges[1].part == BridgePart::Deck);
+        assert!(parse_surveyed_cell(r#"{"trees":[]}"#)
+            .unwrap()
+            .bridges
+            .is_empty());
+    }
+
     #[test]
     fn a_line_leaving_the_cell_is_dropped_whole() {
         let (cx, cy) = (8490, 5320);

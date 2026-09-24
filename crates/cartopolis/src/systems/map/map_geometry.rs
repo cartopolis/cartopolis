@@ -206,6 +206,9 @@ type Tessellated = (
     // decks because it is indexed by them and waits on the same measurement — see
     // `Plate::approaches`.
     Vec<cartopolis_geo::vector_tiles::Approach>,
+    // The surveyed piers, outer rings tile-local: stood from the ground up to the
+    // deck they hold, so they too wait on the deck's height.
+    Vec<Vec<[f32; 2]>>,
     Vec<StreetLabelLine>,
     // What the cell holds that a player can walk up to: the furniture standing in
     // its streets (which is also what makes those props solid) and its named
@@ -313,6 +316,9 @@ pub struct DeckPlates {
     /// re-tessellated and publishes the same decks does not move the revision —
     /// see [`set_cell`](Self::set_cell).
     digests: HashMap<Cell, u64>,
+    /// Surveyed piers each cell stood — a count for `--dump-state`, nothing reads
+    /// it to place anything.
+    piers: HashMap<Cell, usize>,
     /// Bumped on every change, so a consumer that caches geometry can tell it has
     /// gone stale. The decks land some frames *after* the cell they belong to —
     /// their height is a measurement — so "the route was drawn before the viaduct
@@ -516,8 +522,34 @@ impl DeckPlates {
         h
     }
 
+    /// How many surveyed piers a cell stood under its decks (`add_piers`).
+    fn set_cell_piers(&mut self, cell: Cell, piers: usize) {
+        if piers == 0 {
+            self.piers.remove(&cell);
+        } else {
+            self.piers.insert(cell, piers);
+        }
+    }
+
+    /// Decks standing along a measured profile rather than at one height.
+    #[must_use]
+    pub fn profiled(&self) -> usize {
+        self.plates
+            .values()
+            .flatten()
+            .filter(|p| p.shape.is_some())
+            .count()
+    }
+
+    /// Surveyed piers stood under the streamed decks.
+    #[must_use]
+    pub fn piers(&self) -> usize {
+        self.piers.values().sum()
+    }
+
     /// Drop one cell's decks (cell retired).
     pub fn remove_cell(&mut self, cell: &Cell) {
+        self.piers.remove(cell);
         self.digests.remove(cell);
         if self.plates.remove(cell).is_some() {
             self.revision = self.revision.wrapping_add(1);
@@ -526,6 +558,7 @@ impl DeckPlates {
 
     /// Drop every deck (re-anchor, or the source stopped being a vector one).
     pub fn clear(&mut self) {
+        self.piers.clear();
         if !self.plates.is_empty() {
             self.plates.clear();
             self.revision = self.revision.wrapping_add(1);
@@ -798,6 +831,8 @@ struct PendingDecks {
     /// `(deck index, mesh)` — the road surfaces those decks carry, waiting on the
     /// same heights.
     roads: Vec<(u32, SurfaceMesh)>,
+    /// The cell's surveyed piers, outer rings tile-local.
+    piers: Vec<Vec<[f32; 2]>>,
     /// Cell origin in world metres — the same north-west corner the cell's other
     /// meshes are placed at.
     world: Vec2,
@@ -1182,6 +1217,10 @@ fn spawn_geometry_task(
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
                 let mut approaches = Vec::new();
+                // Needs no tile: the piers are the register's, and only become
+                // anything once a deck over them is measured.
+                let piers =
+                    crate::systems::surveyed::surveyed_piers(&surveyed, cell.0, cell.1, tile_m);
                 let mut cell_tunnels = Vec::new();
                 let mut cell_openings = Vec::new();
                 let sunken_ways: Vec<cartopolis_geo::tunnels::SunkenWay>;
@@ -1841,6 +1880,7 @@ fn spawn_geometry_task(
                             decks,
                             deck_roads,
                             approaches,
+                            piers,
                             labels,
                             cell_places,
                             grass,
@@ -2296,6 +2336,7 @@ pub fn update_map_surfaces(
             decks,
             deck_roads,
             approaches,
+            piers,
             street_names,
             mut cell_places,
             grass,
@@ -2578,6 +2619,7 @@ pub fn update_map_surfaces(
                     decks,
                     approaches,
                     roads: deck_roads,
+                    piers,
                     world: Vec2::new(wx, wz),
                     clusters,
                     boxes,
@@ -2681,7 +2723,6 @@ pub fn resolve_bridge_decks(
     mut mats: SurfaceMaterials,
     bigspace: Query<Entity, With<BigSpace>>,
     terrain: Res<TerrainField>,
-    tunnels: Res<crate::systems::tunnels::Tunnels>,
     mut plates: ResMut<DeckPlates>,
 ) {
     if surfaces.pending_decks.is_empty() {
@@ -2785,7 +2826,22 @@ pub fn resolve_bridge_decks(
                 _ => h,
             })
             .collect();
-        let mesh = build_deck_mesh(&pending.decks, &levels, &heights, &shapes, deck_level);
+        let mut mesh = build_deck_mesh(&pending.decks, &levels, &heights, &shapes, deck_level);
+        let piers = if terrain.is_ready() {
+            add_piers(
+                &mut mesh,
+                &pending.piers,
+                &pending.decks,
+                &levels,
+                &heights,
+                &shapes,
+                deck_level,
+                |p| terrain.at(cell_world.x + p[0], cell_world.y + p[1]),
+            )
+        } else {
+            0
+        };
+        plates.set_cell_piers(c, piers);
         // Publish before the mesh is spawned rather than after, so the two cannot
         // disagree about a cell: this is the same `heights` the vertices were built
         // from, and a deck that reached the screen but not the resource is a route
@@ -2857,11 +2913,16 @@ pub fn resolve_bridge_decks(
             spawned.push(
                 commands
                     .spawn((
+                        // On `deck_level` itself rather than on the field again: the
+                        // field's answer is a function of the points it is asked
+                        // over, and this mesh's (fascia, and a profiled deck's
+                        // subdivision) are not the outline's that `deck_level` and
+                        // the carriageways on the slab were placed with.
                         Mesh3d(meshes.add(build_mesh(
                             &mesh,
                             cell_world.x,
                             cell_world.y,
-                            Stand::Terrain(&terrain, &tunnels),
+                            Stand::Lifted(deck_level),
                         ))),
                         MeshMaterial3d(material),
                         placement(),
@@ -3059,6 +3120,97 @@ fn build_deck_mesh(
         out.indices.extend(slab.indices.iter().map(|i| base + i));
     }
     out
+}
+
+/// How far a pier is sunk below the ground it stands on, so a slope under it or
+/// a few centimetres of disagreement between the field and the deck's own level
+/// never shows a gap at its foot.
+const PIER_FOOTING_M: f32 = 0.3;
+
+/// **The piers under the decks**, as walls from the ground to the deck's
+/// underside, appended to the cell's deck mesh — in its frame, i.e. relative to
+/// `deck_level`.
+///
+/// A viaduct used to be a slab with a fascia and nothing under it. The BGT
+/// surveys the piers (`overbruggingsdeel` of type `pijler`) as footprints on the
+/// ground, and what they lack — how tall — is exactly what the deck over them
+/// already knows. A pier is paired with the lowest lifted deck its centre is
+/// under: at a stacked interchange that is the deck it holds up, the upper one
+/// standing on piers of its own. A pier under no lifted deck of this cell is
+/// left out rather than guessed at. `ground` is world `y` at a tile-local point.
+///
+/// Returns how many piers were stood.
+#[allow(clippy::too_many_arguments)]
+fn add_piers(
+    mesh: &mut SurfaceMesh,
+    piers: &[Vec<[f32; 2]>],
+    decks: &[BridgeDeck],
+    levels: &[f32],
+    clearance: &[f32],
+    shapes: &[Option<Arc<DeckShape>>],
+    deck_level: f32,
+    ground: impl Fn([f32; 2]) -> f32,
+) -> usize {
+    let mut stood = 0;
+    for ring in piers {
+        if ring.len() < 3 {
+            continue;
+        }
+        let n = ring.len() as f32;
+        let c = [
+            ring.iter().map(|p| p[0]).sum::<f32>() / n,
+            ring.iter().map(|p| p[1]).sum::<f32>() / n,
+        ];
+        let top_at = |i: usize| -> f32 {
+            match shapes.get(i).and_then(Option::as_deref) {
+                Some(shape) => shape.world_y(c),
+                None => deck_level + levels[i],
+            }
+        };
+        let Some(top) = decks
+            .iter()
+            .enumerate()
+            .filter(|(i, d)| clearance.get(*i).is_some_and(|&h| h >= FASCIA_MIN_M) && d.contains(c))
+            .map(|(i, _)| top_at(i))
+            .reduce(f32::min)
+        else {
+            continue;
+        };
+        let underside = top - DECK_THICKNESS_M;
+        let foot = ring
+            .iter()
+            .map(|p| ground(*p))
+            .fold(f32::INFINITY, f32::min)
+            - PIER_FOOTING_M;
+        if !(underside - foot > PIER_FOOTING_M + 0.2) {
+            continue;
+        }
+        let (y0, y1) = (foot - deck_level, underside - deck_level);
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dz);
+            if len < 1e-3 {
+                continue;
+            }
+            // Outward from the pier's own centre, as the fascia is oriented:
+            // cheaper and surer than trusting a surveyed ring's winding.
+            let (mut nx, mut nz) = (-dz / len, dx / len);
+            let mid = [(a[0] + b[0]) * 0.5 - c[0], (a[1] + b[1]) * 0.5 - c[1]];
+            if nx * mid[0] + nz * mid[1] < 0.0 {
+                (nx, nz) = (-nx, -nz);
+            }
+            let base = mesh.positions.len() as u32;
+            for (p, y) in [(a, y1), (b, y1), (b, y0), (a, y0)] {
+                mesh.positions.push([p[0], y, p[1]]);
+                mesh.normals.push([nx, 0.0, nz]);
+            }
+            mesh.indices
+                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        stood += 1;
+    }
+    stood
 }
 
 /// Longest edge a profiled deck's mesh keeps: under a station
@@ -4042,6 +4194,36 @@ mod tests {
         let high = plates.top_at(Vec2::new(110.0, 6.0)).unwrap();
         assert!((low - rise(10.0)).abs() < 0.12, "{low}");
         assert!((high - rise(110.0)).abs() < 0.12, "{high}");
+    }
+
+    /// **A pier stands from below the ground to the underside of the deck over
+    /// it**, and a pier under no lifted deck is not stood at all.
+    #[test]
+    fn a_pier_holds_up_the_deck_over_it_and_nothing_else() {
+        let deck = deck_at(40.0, 0.0, 0.0);
+        let under = vec![[18.0, 18.0], [22.0, 18.0], [22.0, 22.0], [18.0, 22.0]];
+        let away = vec![[80.0, 80.0], [84.0, 80.0], [84.0, 84.0], [80.0, 84.0]];
+        let mut mesh = build_deck_mesh(std::slice::from_ref(&deck), &[6.0], &[6.0], &[None], 1.0);
+        let before = mesh.positions.len();
+        let stood = add_piers(
+            &mut mesh,
+            &[under, away],
+            std::slice::from_ref(&deck),
+            &[6.0],
+            &[6.0],
+            &[None],
+            1.0,
+            |_| 1.5,
+        );
+        assert_eq!(stood, 1);
+        let pier = &mesh.positions[before..];
+        assert_eq!(pier.len(), 16, "four walls of four corners");
+        // Relative to `deck_level` (1.0): the deck's top is at 1 + 6 = 7 world,
+        // its underside a slab lower; the foot sunk below the ground at 1.5.
+        let top = pier.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+        let foot = pier.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+        assert!((top - (6.0 - DECK_THICKNESS_M)).abs() < 1e-4, "{top}");
+        assert!((foot - (1.5 - PIER_FOOTING_M - 1.0)).abs() < 1e-4, "{foot}");
     }
 
     /// **Neighbouring decks share their patches; distant ones do not; and every

@@ -49,6 +49,22 @@ const PROP_KINDS: [&str; 7] = [
 ];
 /// Linear forms in wire order, mirrored by `LINE_KINDS`.
 const LINE_KINDS: [&str; 3] = ["fence", "wall", "hedge"];
+/// Bridge parts in wire order, mirrored by `BRIDGE_PARTS` in the client.
+///
+/// The BGT's `type_overbruggingsdeel` is `dek`, `pijler` (a pier) or `landhoofd`
+/// (an abutment); a part it leaves untyped at level 1 is a deck.
+const BRIDGE_PARTS: [&str; 3] = ["deck", "pier", "abutment"];
+
+fn bridge_part(props: &Value) -> Option<&'static str> {
+    match js_str(&props["type_overbruggingsdeel"]).as_str() {
+        "dek" => Some("deck"),
+        "pijler" => Some("pier"),
+        "landhoofd" => Some("abutment"),
+        "" if props["relatieve_hoogteligging"].as_i64() == Some(1) => Some("deck"),
+        _ => None,
+    }
+}
+
 /// Paved forms in wire order, mirrored by `SURFACE_KINDS`.
 const SURFACE_KINDS: [&str; 8] = [
     "footway", "cycleway", "parking", "drive", "verge", "island", "paved", "steps",
@@ -158,6 +174,47 @@ pub fn surface_material(props: &Value) -> Option<usize> {
 const SIMPLIFY_M: f64 = 0.1;
 /// Below this a polygon is an invisible sliver that still costs a triangle.
 const MIN_AREA_M2: f64 = 1.0;
+
+/// A GeoJSON polygon (`[lng, lat]` rings) as `[lat, lng]` rings simplified to
+/// [`SIMPLIFY_M`], holes after the outer ring. Empty when the outer ring is a
+/// sliver under [`MIN_AREA_M2`].
+fn simplified_rings(poly: &[Vec<Pt>]) -> Vec<Vec<[f64; 2]>> {
+    let Some(&[lng0, lat0]) = poly.first().and_then(|r| r.first()) else {
+        return Vec::new();
+    };
+    let scale = lat0.to_radians().cos();
+    let mut out_rings: Vec<Vec<[f64; 2]>> = Vec::new();
+    for (ri, ring) in poly.iter().enumerate() {
+        // Local metres, for both the simplification and the area test.
+        let mut m: Vec<Pt> = ring
+            .iter()
+            .map(|p| [(p[0] - lng0) * scale * M_PER_DEG, (p[1] - lat0) * M_PER_DEG])
+            .collect();
+        // A GeoJSON ring repeats its first point; simplify the open form so the
+        // closing vertex cannot anchor a corner that is not there.
+        if m.len() > 1 && m[0] == m[m.len() - 1] {
+            m.pop();
+        }
+        let kept = simplify(&m, SIMPLIFY_M);
+        if kept.len() < 3 {
+            continue;
+        }
+        if ri == 0 && ring_area(&kept) < MIN_AREA_M2 {
+            break;
+        }
+        out_rings.push(
+            kept.iter()
+                .map(|&[x, y]| {
+                    [
+                        round(lat0 + y / M_PER_DEG, 7),
+                        round(lng0 + x / (scale * M_PER_DEG), 7),
+                    ]
+                })
+                .collect(),
+        );
+    }
+    out_rings
+}
 
 /// BGT `plus_type` → our point form. Unlisted objects are dropped rather than
 /// given a nearest-looking shape.
@@ -379,6 +436,9 @@ struct CellData {
     props: Vec<Value>,
     lines: Vec<Value>,
     surfaces: Vec<Value>,
+    /// `[part, level, movable, [ring, …]]`, rings `[lat, lng]` — see
+    /// [`BRIDGE_PARTS`].
+    bridges: Vec<Value>,
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
@@ -482,6 +542,32 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         "{n_lines} scheidingen, waarvan {n_measured} met gemeten hoogte"
     ));
 
+    // The parts a bridge is surveyed as: its decks, and — what nothing else in
+    // the map carries — the piers under them and the abutments at their ends.
+    // The client stands a pier from the ground to the deck it holds up.
+    ctx.log("brugdelen…");
+    let mut n_bridges = 0usize;
+    items(ctx, "overbruggingsdeel", bbox, |feat| {
+        let props = &feat["properties"];
+        let Some(part) = bridge_part(props) else {
+            return;
+        };
+        let level = props["relatieve_hoogteligging"].as_i64().unwrap_or(0);
+        let movable = js_str(&props["overbrugging_is_beweegbaar"]) == "true";
+        for poly in polygon_rings(&feat["geometry"]) {
+            let rings = simplified_rings(&poly);
+            let Some(first) = rings.first().and_then(|r| r.first()).copied() else {
+                continue;
+            };
+            cells
+                .entry(lat_lng_to_cell(first[0], first[1]))
+                .or_default()
+                .bridges
+                .push(json!([ix(&BRIDGE_PARTS, part), level, movable, rings]));
+            n_bridges += 1;
+        }
+    })?;
+
     let n_surf = collect_surfaces(ctx, bbox, &mut cells)?;
 
     let written: Vec<(&Cell, &CellData)> = cells
@@ -491,15 +577,25 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 || !c.props.is_empty()
                 || !c.lines.is_empty()
                 || !c.surfaces.is_empty()
+                || !c.bridges.is_empty()
         })
         .collect();
     for (cell, data) in &written {
         let (cx, cy) = **cell;
         // Two files, as the BAG splits its own: the paving is the heavy part.
-        if !data.trees.is_empty() || !data.props.is_empty() || !data.lines.is_empty() {
+        if !data.trees.is_empty()
+            || !data.props.is_empty()
+            || !data.lines.is_empty()
+            || !data.bridges.is_empty()
+        {
             ctx.write_json(
                 &cell_path("bgt", **cell),
-                &json!({"trees": data.trees, "props": data.props, "lines": data.lines}),
+                &json!({
+                    "trees": data.trees,
+                    "props": data.props,
+                    "lines": data.lines,
+                    "bridges": data.bridges,
+                }),
             )?;
         }
         if !data.surfaces.is_empty() {
@@ -521,6 +617,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             "line_kinds": LINE_KINDS,
             "surface_kinds": SURFACE_KINDS,
             "surface_materials": SURFACE_MATERIALS,
+            "bridge_parts": BRIDGE_PARTS,
             "cells": sorted_cells(written.iter().map(|(c, _)| **c)),
             "tree_count": n_trees,
             "prop_count": n_props,
@@ -529,6 +626,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             // walls look wrong" has a number attached.
             "measured_line_count": n_measured,
             "surface_count": n_surf,
+            "bridge_count": n_bridges,
         }),
     )?;
     ctx.log(format!(
@@ -543,6 +641,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             Count::new("props", n_props),
             Count::new("lines", n_lines),
             Count::new("surfaces", n_surf),
+            Count::new("bridges", n_bridges),
         ],
     })
 }
@@ -568,40 +667,7 @@ fn collect_surfaces(
                 return;
             }
             for poly in polygon_rings(&feat["geometry"]) {
-                let Some(&[lng0, lat0]) = poly.first().and_then(|r| r.first()) else {
-                    continue;
-                };
-                let scale = lat0.to_radians().cos();
-                let mut out_rings: Vec<Vec<[f64; 2]>> = Vec::new();
-                for (ri, ring) in poly.iter().enumerate() {
-                    // Local metres, for both the simplification and the area test.
-                    let mut m: Vec<Pt> = ring
-                        .iter()
-                        .map(|p| [(p[0] - lng0) * scale * M_PER_DEG, (p[1] - lat0) * M_PER_DEG])
-                        .collect();
-                    // A GeoJSON ring repeats its first point; simplify the open form
-                    // so the closing vertex cannot anchor a corner that is not there.
-                    if m.len() > 1 && m[0] == m[m.len() - 1] {
-                        m.pop();
-                    }
-                    let kept = simplify(&m, SIMPLIFY_M);
-                    if kept.len() < 3 {
-                        continue;
-                    }
-                    if ri == 0 && ring_area(&kept) < MIN_AREA_M2 {
-                        break;
-                    }
-                    out_rings.push(
-                        kept.iter()
-                            .map(|&[x, y]| {
-                                [
-                                    round(lat0 + y / M_PER_DEG, 7),
-                                    round(lng0 + x / (scale * M_PER_DEG), 7),
-                                ]
-                            })
-                            .collect(),
-                    );
-                }
+                let out_rings = simplified_rings(&poly);
                 let Some(first) = out_rings.first().and_then(|r| r.first()).copied() else {
                     continue;
                 };
@@ -637,6 +703,45 @@ fn collect_surfaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The register's part types, as the API answered them over the Emmaviaduct
+    /// (2026-09-24): a deck, a pier, an abutment, an untyped part over something,
+    /// and an untyped part on the ground — which is not guessed at.
+    #[test]
+    fn bridge_parts_are_named_as_the_register_types_them() {
+        let part = |t: Value, level: i64| {
+            bridge_part(&json!({"type_overbruggingsdeel": t, "relatieve_hoogteligging": level}))
+        };
+        assert_eq!(part(json!("dek"), 1), Some("deck"));
+        assert_eq!(part(json!("pijler"), 0), Some("pier"));
+        assert_eq!(part(json!("landhoofd"), 0), Some("abutment"));
+        assert_eq!(part(Value::Null, 1), Some("deck"));
+        assert_eq!(part(Value::Null, 0), None);
+        assert_eq!(part(json!("brugleuning"), 1), None);
+        for p in ["deck", "pier", "abutment"] {
+            assert!(BRIDGE_PARTS.contains(&p));
+        }
+    }
+
+    /// A polygon comes back as `[lat, lng]` rings, its closing vertex dropped, and
+    /// a sliver not at all.
+    #[test]
+    fn a_polygon_is_simplified_into_lat_lng_rings() {
+        let square = |d: f64| {
+            vec![vec![
+                [6.56, 53.21],
+                [6.56 + d, 53.21],
+                [6.56 + d, 53.21 + d],
+                [6.56, 53.21 + d],
+                [6.56, 53.21],
+            ]]
+        };
+        let rings = simplified_rings(&square(0.0002));
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].len(), 4);
+        assert_eq!(rings[0][0], [53.21, 6.56]);
+        assert!(simplified_rings(&square(0.000_001)).is_empty());
+    }
 
     #[test]
     fn the_fine_material_wins_and_constructions_are_not_substances() {

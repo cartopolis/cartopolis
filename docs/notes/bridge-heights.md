@@ -156,12 +156,38 @@ it the deck's height once AHN answers. Three things make that safe.
   bisects on `BridgeDeck::contains` — a hole, a self-touching outline and two
   abutting decks are then all one case.
 - **One height for the road and the slab.** `resolve_bridge_decks` reads
-  `TerrainField::level_over` across the whole deck mesh once and hands that number
-  to both, rather than letting the ribbon ask the field again over its own narrower
-  footprint and land a few centimetres off the thing it was cut out of.
+  `TerrainField::level_over` across the deck outlines once and hands that number
+  to both — the slab through `Stand::Lifted`, not the field again: the field's
+  answer depends on the points it is asked over, and the slab's (its fascia, a
+  profiled deck's subdivision) are not the outline's.
 
 There is no kerb casing on a deck: what lies beside the carriageway up there is the
 structure, and that is the part of the slab the road was cut out of.
+
+## A deck has a slope, and piers
+
+**One median height per deck was wrong for every viaduct that is not level**, and
+most are not: the 3D basisvoorziening's drape of the old Emmaviaduct fell from
+7.3 m NAP to 1.9 m over 221 m, and the rebuilt one in AHN6 rises 6.4 → 9.5 → 8.0
+from end to end. The surface samples already fetched for the median carry the
+slope, so `cartopolis_geo::deck_profile` takes their median per 4 m of the deck's
+long axis — median, because parapets, lamp posts and lorries are in the samples;
+along the axis, because a deck is level across itself. The slab is subdivided to
+3 m edges for it (an OSM outline is often four corners), and the carriageway, the
+cars (`top_at`), the route line (`lift_at`) and the approach grading all read it.
+
+**The piers are the BGT's** (`overbruggingsdeel`, type `pijler`, level 0): a
+footprint on the ground and nothing else. Their height is what the deck over them
+already knows, so each is stood from the ground to the underside of the lowest
+lifted deck its centre is under. The same collection gives the abutments
+(`landhoofd`) and which spans open (`overbrugging_is_beweegbaar`); neither is drawn
+yet. Rijkswaterstaat's Vaarweginformatie WFS (`app:Opening`) adds the mechanism of
+each opening span and its clearance, for when they are.
+
+The 3D basisvoorziening's own bridge objects were checked for this and not taken:
+LoD1.2 drapes of the same BGT polygons, dated (one new deck came out 2.83 m against
+a DSM of 9.03), and on small viaducts over the ring the drape pulls outline corners
+down to the trench floor.
 
 ## Storage, if the raster is ever baked instead of proxied
 
