@@ -67,11 +67,11 @@ const MAX_REFINE_PASSES: usize = 5;
 /// The hasher for the refinement's two edge maps: a multiply-rotate over the
 /// key's words (rustc's `FxHasher`), written out because it is ten lines.
 ///
-/// **The default hasher was most of the refinement.** SipHash is built to resist
-/// a hostile key set, and these keys are vertex indices and millimetre
-/// coordinates from our own mesh: a city cell asks the two maps a few million
-/// questions, and the ground lookups themselves were ~10 % of the time (Deck,
-/// 2026-09-24).
+/// **The default hasher was a third of the refinement.** SipHash is built to
+/// resist a hostile key set, and these keys are vertex indices and millimetre
+/// coordinates from our own mesh. On the Deck (2026-09-24) a city cell's
+/// refinement took 0.8–1.8 s, of which the ground lookups were ~10 %; swapping
+/// the hasher took `refine_a_cell` from 790 ms to 522 ms.
 #[derive(Default, Clone, Copy)]
 struct EdgeHasher(u64);
 
