@@ -221,9 +221,44 @@ use std::sync::Mutex;
 
 /// While set, [`submit`] parks jobs in [`PARKED`] instead of dispatching them.
 static PAUSED: AtomicBool = AtomicBool::new(false);
-/// Jobs submitted while paused (with their stream label), released in order by
-/// `set_paused(false)`.
-static PARKED: Mutex<Vec<(&'static str, Job)>> = Mutex::new(Vec::new());
+/// Jobs submitted while paused (with their stream label and whether they are
+/// [heavy](submit_heavy)), released in order by `set_paused(false)`.
+static PARKED: Mutex<Vec<(&'static str, bool, Job)>> = Mutex::new(Vec::new());
+
+/// Heavy jobs running on the pool, and heavy jobs waiting for one of their lane's
+/// threads — see [`submit_heavy`]. One lock for both, so a finishing job's "start
+/// the next one" and a new submission's "is there room" cannot both see a free
+/// thread.
+struct HeavyLane {
+    running: usize,
+    waiting: std::collections::VecDeque<(&'static str, Instant, Job)>,
+}
+
+static HEAVY: Mutex<HeavyLane> = Mutex::new(HeavyLane {
+    running: 0,
+    waiting: std::collections::VecDeque::new(),
+});
+
+#[cfg(not(target_arch = "wasm32"))]
+type Instant = std::time::Instant;
+/// `std::time::Instant::now` panics on wasm, and nothing there reads the wait.
+#[cfg(target_arch = "wasm32")]
+type Instant = ();
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now() -> Instant {
+    std::time::Instant::now()
+}
+#[cfg(target_arch = "wasm32")]
+fn now() -> Instant {}
+
+/// How many threads heavy jobs may hold at once: all but a reserve, which is what
+/// keeps a short job from ever queueing behind them.
+#[must_use]
+pub fn heavy_lane_width(workers: usize) -> usize {
+    let reserve = if workers >= 6 { 2 } else { 1 };
+    workers.saturating_sub(reserve).max(1)
+}
 /// Jobs handed to the pool and not yet finished — queued *or* running. Read by
 /// [`outstanding`].
 static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
@@ -306,33 +341,92 @@ pub mod stats {
 /// name the shot harness's settle list uses for that streamer, so a `busy`
 /// entry and a stats row about one stream read as one stream.
 pub fn submit(label: &'static str, job: Job) {
+    enter(label, false, job);
+}
+
+/// [`submit`] for a job that holds its thread for **seconds** — a whole map cell,
+/// a building cell, a terrain bake.
+///
+/// **The pool is first come, first served, and a running job cannot be
+/// preempted**, so without this a burst of heavy jobs takes every thread and a
+/// 50 ms basemap tile waits behind them. Measured cold over Groningen on `deck-1`
+/// (2026-09-23): 367 of 375 basemap tiles made no progress for eight seconds
+/// while seven threads held map cells, and the basemap — the part of the world
+/// that should arrive like an ordinary image tile map — took 45 s to finish.
+///
+/// Heavy jobs therefore share at most [`heavy_lane_width`] threads and queue here,
+/// outside the pool, for the rest. Nothing reorders ordinary jobs; this only
+/// guarantees them a thread. What it costs is heavy throughput while the reserve
+/// sits idle, which is the right way round: a cell that lands a little later is
+/// hidden by the basemap under it, and a missing basemap is not hidden by
+/// anything.
+pub fn submit_heavy(label: &'static str, job: Job) {
+    enter(label, true, job);
+}
+
+fn enter(label: &'static str, heavy: bool, job: Job) {
     // Acquire/Release against `set_paused`: a job admitted here must be visible
     // to the drain, and a job parked here must be visible to whoever unparks.
     if PAUSED.load(Ordering::Acquire) {
         PARKED
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((label, job));
+            .push((label, heavy, job));
         return;
     }
-    dispatch(label, job);
+    // Counted from here, not from when a heavy job reaches a thread: one waiting
+    // in the lane is still work the pool owes, and `outstanding()` is what the
+    // shot harness quiesces on.
+    OUTSTANDING.fetch_add(1, Ordering::AcqRel);
+    if heavy {
+        let mut lane = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+        if lane.running >= heavy_lane_width(imp::worker_count().max(1)) {
+            lane.waiting.push_back((label, now(), job));
+            return;
+        }
+        lane.running += 1;
+    }
+    dispatch(label, heavy, now(), job);
 }
 
-fn dispatch(label: &'static str, job: Job) {
-    OUTSTANDING.fetch_add(1, Ordering::AcqRel);
-    #[cfg(not(target_arch = "wasm32"))]
-    let queued = std::time::Instant::now();
+/// A heavy job finished: hand its thread to the next one waiting, if any.
+fn heavy_done() {
+    let next = {
+        let mut lane = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+        match lane.waiting.pop_front() {
+            Some(next) => Some(next),
+            None => {
+                lane.running -= 1;
+                None
+            }
+        }
+    };
+    if let Some((label, queued, job)) = next {
+        dispatch(label, true, queued, job);
+    }
+}
+
+fn dispatch(label: &'static str, heavy: bool, queued: Instant, job: Job) {
+    #[cfg(target_arch = "wasm32")]
+    let () = queued;
     imp::submit(Box::new(move || {
         // A guard rather than a decrement after `job()`: a panicking job would
         // otherwise leak a count forever and `outstanding()` would never reach
         // zero again, which is precisely the condition a caller waits on.
-        struct Done;
+        struct Done(bool);
         impl Drop for Done {
             fn drop(&mut self) {
+                // The lane before the count: a harness that sees `outstanding()`
+                // reach zero must not find a heavy job still waiting for this
+                // thread. And in the guard for the same reason the count is — a
+                // panicking heavy job must still give its lane slot back.
+                if self.0 {
+                    heavy_done();
+                }
                 OUTSTANDING.fetch_sub(1, Ordering::AcqRel);
             }
         }
-        let _done = Done;
+        let _done = Done(heavy);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let started = std::time::Instant::now();
@@ -395,8 +489,8 @@ pub fn set_paused(paused: bool) {
         if batch.is_empty() {
             break;
         }
-        for (label, job) in batch {
-            dispatch(label, job);
+        for (label, heavy, job) in batch {
+            enter(label, heavy, job);
         }
     }
 }
@@ -412,6 +506,46 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    /// The reserve exists on every pool that can spare a thread, and a pool of one
+    /// still runs heavy work rather than none.
+    #[test]
+    fn the_heavy_lane_leaves_a_thread_for_everything_else() {
+        assert_eq!(heavy_lane_width(1), 1);
+        assert_eq!(heavy_lane_width(2), 1);
+        assert_eq!(heavy_lane_width(3), 2);
+        assert_eq!(heavy_lane_width(7), 5);
+        for n in 2..=16 {
+            assert!(heavy_lane_width(n) < n, "{n} threads left no reserve");
+        }
+    }
+
+    /// More heavy jobs than the lane is wide must all still run: the ones that
+    /// queue outside the pool are started by the jobs finishing ahead of them, and
+    /// a slot that was never handed back would strand every one behind it.
+    #[test]
+    fn heavy_jobs_beyond_the_lane_all_run() {
+        let (tx, rx) = mpsc::channel();
+        let n = 3 * heavy_lane_width(imp::worker_count().max(1)) + 2;
+        for i in 0..n {
+            let tx = tx.clone();
+            submit_heavy(
+                "heavy_test",
+                Box::new(move || {
+                    std::thread::sleep(Duration::from_millis(2));
+                    let _ = tx.send(i);
+                }),
+            );
+        }
+        let mut seen: Vec<usize> = (0..n)
+            .map(|_| {
+                rx.recv_timeout(Duration::from_secs(10))
+                    .expect("heavy job ran")
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..n).collect::<Vec<_>>());
+    }
 
     /// The accounting is what the shot harness's `worker_*` columns are built
     /// on; a counter that silently stays zero would make every one of them read

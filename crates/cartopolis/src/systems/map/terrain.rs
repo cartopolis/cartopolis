@@ -433,6 +433,11 @@ pub struct TerrainField {
     /// and the route line. The fine tier re-centres every ~96 m of walking, so folding
     /// it into `revision` would retear the whole city about every minute on foot.
     pub fine_revision: u32,
+    /// The inputs have moved past the last bake and a new one has not been queued
+    /// yet — held for the surface ring, or waiting on the download. Part of
+    /// [`streaming_busy`](Self::streaming_busy), because every bake retears the
+    /// ground and a capture taken before it would show the ground it replaces.
+    bake_owed: bool,
 }
 
 impl TerrainField {
@@ -446,7 +451,7 @@ impl TerrainField {
     pub fn streaming_busy(&self) -> bool {
         match self.wanted_gen {
             None => false,
-            Some(g) => self.answered_gen != Some(g) || self.coarse_job.is_some(),
+            Some(g) => self.answered_gen != Some(g) || self.coarse_job.is_some() || self.bake_owed,
         }
     }
 
@@ -1061,6 +1066,10 @@ const ROAD_SETTLE_S: f32 = 0.75;
 /// against a rebuild of the whole ring.
 const WATER_SETTLE_S: f32 = 2.0;
 
+/// Longest a ready bake waits for the surface ring to finish arriving — see the
+/// hold in [`update_terrain_field`].
+const RING_HOLD_MAX_S: f32 = 10.0;
+
 /// Keep [`TerrainField`] in step with the map anchor: request the box once, bake it
 /// when it lands, and drop it whenever the layer is off or out of coverage.
 pub fn update_terrain_field(
@@ -1070,10 +1079,13 @@ pub fn update_terrain_field(
     levels: Res<crate::systems::water_levels::WaterLevels>,
     roads: Res<RoadMask>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
+    surfaces: Res<crate::systems::map_geometry::MapSurfaces>,
     time: Res<Time>,
     mut settled: Local<(u32, f32)>,
     mut water_settled: Local<(u32, f32)>,
     mut deck_settled: Local<(u64, f32)>,
+    // When a bake that is ready to run started waiting for the surface ring.
+    mut hold: Local<Option<f32>>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1090,6 +1102,8 @@ pub fn update_terrain_field(
         field.answered_road_rev = None;
         field.answered_deck_rev = None;
         field.wanted_gen = None;
+        field.bake_owed = false;
+        *hold = None;
         field.abandon_coarse_job();
         return;
     }
@@ -1141,8 +1155,12 @@ pub fn update_terrain_field(
         && field.answered_road_rev == Some(road_rev)
         && field.answered_deck_rev == Some(deck_rev)
     {
+        *hold = None;
         return;
     }
+    // Owed from here until it is queued, including while it is held below — a
+    // capture must not settle on a field that is about to be replaced.
+    field.bake_owed = true;
     // **A bake records what it used, not what asked for it.** The settled revisions
     // above decide *whether* to bake; the data handed to the worker below is always
     // the live mask and the live levels. Recording the settled numbers instead —
@@ -1169,6 +1187,25 @@ pub fn update_terrain_field(
     let Some(patch) = height.patch(req) else {
         return;
     };
+    // **Not while the surface ring is still arriving.** Everything the bake grades
+    // against — the road outlines, the bridge decks — is published by those cells
+    // as each one finishes, and the nine of a ring finish over ten seconds or more,
+    // so the debounces above end in a gap between two cells rather than at the end
+    // of the burst. Every bake retears every cell standing on the ground, so a bake
+    // against a partial set is a whole rebuild spent on a field that is replaced a
+    // few seconds later. Measured cold over Groningen (2026-09-23): three bakes per
+    // fill — the field's arrival, then 8 of 9 cells' roads, then the decks — each a
+    // retear of the ring.
+    //
+    // After the download, not before it: the 12 MB fetch is the long pole and must
+    // start at once. And bounded, because a camera that keeps moving keeps a ring
+    // busy, and hills a little late beat hills never.
+    let held_since = *hold.get_or_insert(now);
+    if surfaces.streaming_busy() && now - held_since < RING_HOLD_MAX_S {
+        return;
+    }
+    *hold = None;
+    field.bake_owed = false;
     // 17 MB cloned onto the worker, once per anchor. Holding the layer's cache
     // borrowed across a job is not an option, and keeping the patch after the bake
     // would double the field's resident cost for a request that is never re-read.
@@ -1197,7 +1234,7 @@ pub fn update_terrain_field(
     let (ramp, deck_lift) = decks.grade_masks(grid, TERRAIN_HALF_M);
     let sink = field.coarse_sink.clone();
     field.coarse_job = Some(gen);
-    crate::platform::workers::submit(
+    crate::platform::workers::submit_heavy(
         "terrain_field",
         Box::new(move || {
             let (baked, approach) = bake(

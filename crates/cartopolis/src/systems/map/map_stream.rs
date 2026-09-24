@@ -663,8 +663,36 @@ fn spawn_map_tile(
             let tile_px = crate::quality::budget().tile_px;
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
                 Ok(payload) => {
+                    // A tile drawn on an earlier visit is read here, where the
+                    // storage read can be awaited, and decoded on the worker below
+                    // in place of drawing it again (`tile_loader::rendered_cache_key`).
+                    let cache_key =
+                        crate::systems::tile_loader::rendered_cache_key(&key, &payload, tile_px);
+                    let stored = match &cache_key {
+                        Some(k) => {
+                            crate::platform::storage::get(
+                                crate::platform::storage::Namespace::Cache,
+                                k,
+                            )
+                            .await
+                        }
+                        None => None,
+                    };
                     crate::platform::workers::submit("map_tiles", Box::new(move || {
-                        let decoded = match payload.decode(tile_px) {
+                        let reused = stored.and_then(|png| {
+                            crate::systems::tile_loader::decode_rendered(&png, tile_px)
+                        });
+                        let drawn = match reused {
+                            Some(img) => Ok(img),
+                            None => {
+                                let drawn = payload.decode(tile_px);
+                                if let (Ok(img), Some(k)) = (&drawn, &cache_key) {
+                                    crate::systems::tile_loader::store_rendered(k, img);
+                                }
+                                drawn
+                            }
+                        };
+                        let decoded = match drawn {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
                                 let (data, mip_count) =

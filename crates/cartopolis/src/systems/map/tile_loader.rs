@@ -169,6 +169,87 @@ impl TilePayload {
     }
 }
 
+/// Where a finished basemap tile is kept on disk, or `None` when it is not kept.
+///
+/// **The basemap is drawn on this machine, and drawing it is the whole cost of a
+/// warm start.** An image tile map downloads pixels; this one downloads vector
+/// tiles and rasterises them, ~30–70 ms a tile, and a warm *byte* cache buys 2 s of
+/// a 27.8 s fill because the bytes were never what was slow
+/// (`docs/notes/keeping-what-was-expensive.md`). So the finished pixels are kept
+/// too, as a PNG, and a return visit decodes one instead of drawing it.
+///
+/// The key carries everything the pixels depend on, so a hit can never be a stale
+/// picture: the renderer's fingerprint (`build.rs` hashes `cartopolis_geo`'s
+/// sources and `Cargo.lock`), the raster size, the tile, and a hash of the vector
+/// body it was drawn from — a server that re-publishes the tile publishes a
+/// different body, and the old entry is simply never asked for again.
+///
+/// Native only: the web's storage is IndexedDB behind the main thread, and the
+/// write happens on a worker.
+#[must_use]
+pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Option<String> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let TilePayload::Vector { bytes, .. } = payload else {
+        return None;
+    };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    Some(format!(
+        "rendered/{}/{size}/{}/{}/{}-{:016x}.png",
+        env!("CARTO_RENDER_FINGERPRINT"),
+        key.z,
+        key.x,
+        key.y,
+        h.finish()
+    ))
+}
+
+/// A stored tile back to pixels, if it decodes to the size that was asked for.
+/// Anything else — a torn file, a stray entry — is a miss, and the tile is drawn.
+#[must_use]
+pub fn decode_rendered(bytes: &[u8], size: u32) -> Option<image::RgbaImage> {
+    decode_tile_image(bytes)
+        .ok()
+        .filter(|img| img.width() == size && img.height() == size)
+}
+
+/// Keep a freshly drawn tile under `cache_key`. Best-effort, like every cache
+/// write: a failure is a future miss.
+///
+/// PNG at the fastest setting, because the encode is paid on the cold path: a
+/// basemap tile is large areas of flat colour, which that setting still packs
+/// well, and a slower one would tax the fill it is meant to speed up later.
+pub fn store_rendered(cache_key: &str, img: &image::RgbaImage) {
+    if let Some(png) = encode_rendered(img) {
+        let _ = crate::platform::storage::write_now(
+            crate::platform::storage::Namespace::Cache,
+            cache_key,
+            &png,
+        );
+    }
+}
+
+fn encode_rendered(img: &image::RgbaImage) -> Option<Vec<u8>> {
+    use image::ImageEncoder;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Adaptive,
+    )
+    .write_image(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+        image::ExtendedColorType::Rgba8,
+    )
+    .ok()?;
+    Some(png)
+}
+
 /// Largest edge a served tile image may declare before we refuse to decode it.
 ///
 /// Every basemap this client speaks to serves 256² or 512²; a satellite source
@@ -368,6 +449,58 @@ mod tests {
             "/../geo/tests/fixtures/groningen_z14.mvt"
         ))
         .expect("fixture")
+    }
+
+    /// A stored tile must come back as exactly the pixels that were drawn — the
+    /// cache stands in for the renderer, so any drift would be a different map on
+    /// a warm start than on a cold one.
+    #[test]
+    fn a_stored_tile_comes_back_pixel_for_pixel() {
+        let key = TileKey::new(8431, 5374, 14);
+        let payload = TilePayload::Vector {
+            bytes: Arc::new(fixture()),
+            sub: crate::systems::vector_tiles::SubTile::WHOLE,
+            source: key,
+        };
+        let size = 256;
+        let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
+        assert!(cache_key.contains(env!("CARTO_RENDER_FINGERPRINT")));
+        let drawn = payload.decode(size).expect("fixture draws");
+        let png = encode_rendered(&drawn).expect("encodes");
+        let back = decode_rendered(&png, size).expect("decodes");
+        assert!(
+            drawn.as_raw() == back.as_raw(),
+            "the stored tile is not the drawn one"
+        );
+        // …and at the wrong size it is a miss, not a stretched picture.
+        assert!(decode_rendered(&png, size * 2).is_none());
+    }
+
+    /// Two bodies for one tile are two entries: a re-published tile must not be
+    /// answered with the picture of the old one.
+    #[test]
+    fn a_changed_body_is_a_different_entry() {
+        let key = TileKey::new(8431, 5374, 14);
+        let mut other = fixture();
+        other.push(0);
+        let a = TilePayload::Vector {
+            bytes: Arc::new(fixture()),
+            sub: crate::systems::vector_tiles::SubTile::WHOLE,
+            source: key,
+        };
+        let b = TilePayload::Vector {
+            bytes: Arc::new(other),
+            sub: crate::systems::vector_tiles::SubTile::WHOLE,
+            source: key,
+        };
+        assert_ne!(
+            rendered_cache_key(&key, &a, 256),
+            rendered_cache_key(&key, &b, 256)
+        );
+        assert_ne!(
+            rendered_cache_key(&key, &a, 256),
+            rendered_cache_key(&key, &a, 512)
+        );
     }
 
     /// Two asks for the same source share one parse; a different source does not.

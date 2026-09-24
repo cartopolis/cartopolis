@@ -842,7 +842,7 @@ fn spawn_geometry_task(
                     crate::systems::crossings::CrossingCell::default(),
                 )
             };
-            crate::platform::workers::submit("surfaces", Box::new(move || {
+            crate::platform::workers::submit_heavy("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
                 let mut decks = Vec::new();

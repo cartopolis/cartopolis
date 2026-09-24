@@ -983,7 +983,7 @@ pub fn update_lod22(
                 let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
                 // …and the imported models for the same cell, on the same terms.
                 let lod3 = crate::systems::lod3::load_lod3_text(cx, cy).await;
-                crate::platform::workers::submit(
+                crate::platform::workers::submit_heavy(
                     "lod22",
                     Box::new(move || {
                         let built = build_lod22_from_text(
