@@ -2,17 +2,21 @@
 //!
 //! Blocking (`ureq`), because a dataset runs on a blocking thread and pages one
 //! request at a time on purpose: these are somebody else's servers under a run
-//! that makes thousands of requests.
+//! that makes thousands of requests. Where a service offers one bulk download
+//! instead of those thousands, prefer it (`bgt_extract.rs`).
 //!
 //! **Kept for a month** (`cached`). A re-run after a change to the pipeline's own
 //! code wants the pipeline to run again, not the sources fetched again: the BGT
-//! is hundreds of pages from PDOK — fifteen of the sixteen minutes of a 4 km
-//! square, measured 2026-09-24 — and the 3D basisvoorziening ~22 MB a 2 km
-//! sheet, both of which change on a scale of weeks to a year. A run asked to be
-//! fresh (`Ctx::with_fresh`, `atlas run --fresh`, the console's option) fetches
-//! everything anew and writes it back.
+//! was hundreds of pages from PDOK — fifteen of the sixteen minutes of a 4 km
+//! square, measured 2026-09-24, before it moved to one extract — and the 3D
+//! basisvoorziening ~22 MB a 2 km sheet, both of which change on a scale of
+//! weeks to a year. A run asked to be fresh (`Ctx::with_fresh`, `atlas run
+//! --fresh`, the console's option) fetches everything anew and writes it back.
+//! A request whose answer is a *state* rather than a source — a job's status —
+//! must not go through it ([`get_json_live`]).
 
 use std::io::Read;
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -185,6 +189,97 @@ pub fn get_json_with(
                 evict(ctx, url);
                 last = e;
                 if attempt + 1 == attempts {
+                    break;
+                }
+                ctx.log(format!("{label}: {last} (retry {})", attempt + 1));
+                ctx.sleep(Duration::from_secs(3))?;
+            }
+        }
+    }
+    Err(PipelineError::Failed(format!("{label}: {last}")))
+}
+
+/// A JSON GET that never goes through the source cache — for an answer that is
+/// a state, like an extract's build status. Cached, the first "RUNNING" would be
+/// served back to every later poll and the build would never be seen to finish.
+/// Retried as [`get_json`] is.
+pub fn get_json_live(ctx: &Ctx, url: &str, label: &str) -> Outcome<Value> {
+    let mut last = String::new();
+    for attempt in 0..4 {
+        ctx.check()?;
+        match fetch(url, Duration::from_secs(60))
+            .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+        {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                ctx.check()?;
+                last = e;
+                if attempt == 3 {
+                    break;
+                }
+                ctx.log(format!("{label}: {last} (retry {})", attempt + 1));
+                ctx.sleep(Duration::from_secs(3))?;
+            }
+        }
+    }
+    Err(PipelineError::Failed(format!("{label}: {last}")))
+}
+
+/// A JSON POST answered with JSON — asking PDOK to build an extract. Retried as
+/// [`get_json`] is: a request that failed in transit built nothing, and one that
+/// did build something only costs PDOK a second extract.
+pub fn post_json(ctx: &Ctx, url: &str, body: &Value, label: &str) -> Outcome<Value> {
+    let body = body.to_string();
+    let mut last = String::new();
+    for attempt in 0..4 {
+        ctx.check()?;
+        let answer = agent()
+            .post(url)
+            .timeout(Duration::from_secs(120))
+            .set("content-type", "application/json")
+            .send_string(&body)
+            .map_err(|e| e.to_string())
+            .and_then(|r| {
+                serde_json::from_reader::<_, Value>(r.into_reader().take(MAX_BODY))
+                    .map_err(|e| e.to_string())
+            });
+        match answer {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                ctx.check()?;
+                last = e;
+                if attempt == 3 {
+                    break;
+                }
+                ctx.log(format!("{label}: {last} (retry {})", attempt + 1));
+                ctx.sleep(Duration::from_secs(3))?;
+            }
+        }
+    }
+    Err(PipelineError::Failed(format!("{label}: {last}")))
+}
+
+/// A GET streamed into a file rather than into memory, for an archive that can
+/// run to gigabytes. Retried from the start. Answers the bytes written.
+pub fn download_to(ctx: &Ctx, url: &str, path: &Path, label: &str) -> Outcome<u64> {
+    let mut last = String::new();
+    for attempt in 0..4 {
+        ctx.check()?;
+        let written = agent()
+            .get(url)
+            .timeout(Duration::from_secs(30 * 60))
+            .call()
+            .map_err(|e| e.to_string())
+            .and_then(|r| {
+                let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+                std::io::copy(&mut r.into_reader(), &mut file).map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(n) => return Ok(n),
+            Err(e) => {
+                ctx.check()?;
+                last = e;
+                if attempt == 3 {
                     break;
                 }
                 ctx.log(format!("{label}: {last} (retry {})", attempt + 1));

@@ -3,14 +3,20 @@
 //! (`surveyed.rs` in the client reads them). Ported from the earlier
 //! TypeScript pipeline (`bgt.ts`, itself from `tools/bgt_objects.py`).
 //!
-//! The API pages by opaque **cursor** (no 50,000-row wall, but no total either, so
-//! a page ceiling is the guard), and it returns **every historical version of
-//! every object**, all with an ordinary `status: bestaand`. An object removed from
-//! reality has a `termination_date`; a version a later edit replaced has only
-//! `eind_registratie`. A feature is current only when **both** are empty — the
-//! first filter alone kept seven copies of one footway and covered 79 % of a
-//! Groningen cell's paving twice, which the client draws as a z-fight down every
-//! street. `datetime` looks like the right filter and returns nothing.
+//! The objects come from **one PDOK extract** of the area (`bgt_extract.rs`), not
+//! from the OGC feature API it was first written against — paging that API was
+//! ~13 of the ~15 minutes a Groningen import took, and the extract is ~20 s. The
+//! extract is handed on in that API's shape and names, so the code below is
+//! unchanged by the switch, and the collection names it asks for are the API's.
+//!
+//! The register keeps **every historical version of every object**, all with an
+//! ordinary `status: bestaand`. An object removed from reality has an end date
+//! (`objectEindTijd`, the OGC API's `termination_date`); a version a later edit
+//! replaced has only an end of registration (`eindRegistratie`). A feature is
+//! current only when **both** are empty — the first filter alone kept seven
+//! copies of one footway and covered 79 % of a Groningen cell's paving twice,
+//! which the client draws as a z-fight down every street. The extract applies
+//! the filter (`bgt_extract::is_historical`); `items` still counts duplicate ids.
 //!
 //! These objects are **added** to the generated layers, never substituted: the
 //! BGT's tree points are optional content, and Groningen's own centre has none.
@@ -21,18 +27,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
+use super::bgt_extract::Extract;
 use super::bv3d::separation_heights_for;
 use super::geom::{polygon_rings, ring_area, round, simplify, Pt, M_PER_DEG};
-use super::http::{get_json, query};
-use super::rd::wgs84_bbox;
 use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
-use super::{Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
-
-const OGC_BASE: &str = "https://api.pdok.nl/lv/bgt/ogc/v1";
-const PAGE: usize = 1_000;
-/// Pages per collection before the walk gives up — the guard for a cursor that
-/// stops advancing, which would otherwise spin against someone else's server.
-const MAX_PAGES: usize = 400;
+use super::{Count, Ctx, DatasetResult, Outcome, Progress};
 
 const ATTRIBUTION: &str = "Street objects © Kadaster BGT via PDOK (open data)";
 
@@ -242,89 +241,73 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
-/// Every **current** feature of a BGT collection over a WGS84 bbox. A kept id
-/// seen twice is a loud warning: it means the current-version filter no longer
-/// matches the API's lifecycle model, which would otherwise surface months later
-/// as a shimmering pavement.
+/// The object types the extract is asked for.
+const FEATURETYPES: [&str; 7] = [
+    "vegetatieobject",
+    "paal",
+    "straatmeubilair",
+    "scheiding",
+    "overbruggingsdeel",
+    "wegdeel",
+    "ondersteunendwegdeel",
+];
+
+/// The OGC API collection names this module was written against, as an object
+/// type of the extract and the geometry types that collection held: the API
+/// split `vegetatieobject` and `scheiding` by geometry, the extract does not.
+fn source(collection: &str) -> (&str, &'static [&'static str]) {
+    const POINTS: &[&str] = &["Point", "MultiPoint"];
+    const LINES: &[&str] = &["LineString", "MultiLineString"];
+    const AREAS: &[&str] = &["Polygon", "MultiPolygon"];
+    match collection {
+        "vegetatieobject_punt" => ("vegetatieobject", POINTS),
+        "vegetatieobject_vlak" => ("vegetatieobject", AREAS),
+        "scheiding_lijn" => ("scheiding", LINES),
+        "scheiding_vlak" => ("scheiding", AREAS),
+        other => (other, &[]),
+    }
+}
+
+/// Every **current** feature of a BGT collection over the area. A kept id seen
+/// twice is a loud warning: it means the current-version filter no longer matches
+/// the register's lifecycle model, which would otherwise surface months later as
+/// a shimmering pavement.
 fn items(
     ctx: &Ctx,
+    extract: &Extract,
     collection: &str,
-    bbox: [f64; 4],
     mut visit: impl FnMut(&Value),
 ) -> Outcome<()> {
-    let mut url = Some(format!(
-        "{OGC_BASE}/collections/{collection}/items?{}",
-        query(&[
-            ("limit", &PAGE.to_string()),
-            (
-                "bbox",
-                &bbox
-                    .iter()
-                    .map(|v| format!("{v:.6}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            ("f", "json"),
-        ])
-    ));
-    let (mut pages, mut kept, mut total) = (0usize, 0usize, 0usize);
+    let (featuretype, geometries) = source(collection);
+    let mut kept = 0usize;
     let mut kept_ids: HashSet<String> = HashSet::new();
     let mut duplicates = 0usize;
     let mut first_duplicate: Option<String> = None;
-    let result = (|| -> Outcome<()> {
-        while let Some(u) = url.take() {
-            if pages >= MAX_PAGES {
-                ctx.log(format!("WARNING: {collection} hit the {MAX_PAGES}-page guard; this area is incomplete."));
-                break;
-            }
-            ctx.check()?;
-            let page = match get_json(ctx, &u, collection) {
-                Ok(p) => p,
-                Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
-                Err(e) => {
-                    ctx.log(format!("{collection}: giving up ({e})"));
-                    return Ok(());
-                }
-            };
-            let feats = page["features"].as_array().cloned().unwrap_or_default();
-            if feats.is_empty() {
-                return Ok(());
-            }
-            for feat in &feats {
-                total += 1;
-                let p = &feat["properties"];
-                // Removed from reality, or a version a later edit replaced.
-                if truthy(&p["termination_date"]) || truthy(&p["eind_registratie"]) {
-                    continue;
-                }
-                let id = js_str(&p["lokaal_id"]);
-                if !id.is_empty() && !kept_ids.insert(id.clone()) {
-                    duplicates += 1;
-                    first_duplicate.get_or_insert(id);
-                }
-                kept += 1;
-                visit(feat);
-            }
-            pages += 1;
-            ctx.log(format!("{collection}: {kept} current of {total} seen"));
-            ctx.progress(Progress {
-                phase: Some(collection.into()),
-                done: Some(kept as u64),
-                total: Some(None),
-            });
-            url = page["links"]
-                .as_array()
-                .and_then(|ls| ls.iter().find(|l| l["rel"] == "next"))
-                .and_then(|l| l["href"].as_str())
-                .map(str::to_string);
+    // The old versions are already gone (`bgt_extract::is_historical`).
+    let result = extract.features(ctx, featuretype, |feat| {
+        let kind = feat["geometry"]["type"].as_str().unwrap_or_default();
+        if !geometries.is_empty() && !geometries.contains(&kind) {
+            return;
         }
-        Ok(())
-    })();
+        let id = js_str(&feat["properties"]["lokaal_id"]);
+        if !id.is_empty() && !kept_ids.insert(id.clone()) {
+            duplicates += 1;
+            first_duplicate.get_or_insert(id);
+        }
+        kept += 1;
+        visit(feat);
+    });
+    ctx.log(format!("{collection}: {kept} current"));
+    ctx.progress(Progress {
+        phase: Some(collection.into()),
+        done: Some(kept as u64),
+        total: Some(None),
+    });
     if duplicates > 0 {
         ctx.log(format!(
             "WARNING: {collection} kept {duplicates} features whose lokaal_id was already kept (e.g. {}) — the \
-             current-version filter no longer matches the API's lifecycle model, and every duplicate is a \
-             coplanar z-fight on the client. See the module note on termination_date vs eind_registratie.",
+             current-version filter (bgt_extract::is_historical) no longer matches the register's lifecycle \
+             model, and every duplicate is a coplanar z-fight on the client.",
             first_duplicate.unwrap_or_default()
         ));
     }
@@ -442,13 +425,14 @@ struct CellData {
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
-    let bbox = wgs84_bbox(ctx.bbox);
+    ctx.log("extract aanvragen…");
+    let extract = &Extract::fetch(ctx, &FEATURETYPES)?;
     let mut cells: HashMap<Cell, CellData> = HashMap::new();
     let cell_of = |at: Pt| -> Cell { lat_lng_to_cell(at[0], at[1]) };
 
     ctx.log("bomen…");
     let mut n_trees = 0;
-    items(ctx, "vegetatieobject_punt", bbox, |feat| {
+    items(ctx, extract, "vegetatieobject_punt", |feat| {
         if feat["properties"]["plus_type"] != "boom" {
             return;
         }
@@ -461,7 +445,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let mut n_props = 0;
     for collection in ["paal", "straatmeubilair"] {
         ctx.log(format!("{collection}…"));
-        items(ctx, collection, bbox, |feat| {
+        items(ctx, extract, collection, |feat| {
             let Some(form) = prop_form(&js_str(&feat["properties"]["plus_type"])) else {
                 return;
             };
@@ -501,7 +485,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         };
 
     ctx.log("hekken, muren en hagen…");
-    items(ctx, "scheiding_lijn", bbox, |feat| {
+    items(ctx, extract, "scheiding_lijn", |feat| {
         let t = js_str(&feat["properties"]["type"]);
         let Some(form) = line_form(&t) else {
             return;
@@ -515,7 +499,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     // product covers, so where a measured wall comes from, reduced to its
     // centreline for the reason a hedge is.
     ctx.log("muren als vlak…");
-    items(ctx, "scheiding_vlak", bbox, |feat| {
+    items(ctx, extract, "scheiding_vlak", |feat| {
         let t = js_str(&feat["properties"]["type"]);
         let Some(form) = line_form(&t) else {
             return;
@@ -525,7 +509,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             push_line(&mut cells, form, &t, &id, &pts);
         }
     })?;
-    items(ctx, "vegetatieobject_vlak", bbox, |feat| {
+    items(ctx, extract, "vegetatieobject_vlak", |feat| {
         if feat["properties"]["plus_type"] != "haag" {
             return;
         }
@@ -547,7 +531,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     // The client stands a pier from the ground to the deck it holds up.
     ctx.log("brugdelen…");
     let mut n_bridges = 0usize;
-    items(ctx, "overbruggingsdeel", bbox, |feat| {
+    items(ctx, extract, "overbruggingsdeel", |feat| {
         let props = &feat["properties"];
         let Some(part) = bridge_part(props) else {
             return;
@@ -568,7 +552,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         }
     })?;
 
-    let n_surf = collect_surfaces(ctx, bbox, &mut cells)?;
+    let n_surf = collect_surfaces(ctx, extract, &mut cells)?;
 
     let written: Vec<(&Cell, &CellData)> = cells
         .iter()
@@ -611,7 +595,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             "name": ctx.name,
             "zoom": CACHE_ZOOM,
             "attribution": ATTRIBUTION,
-            "source": "Kadaster BGT via PDOK OGC API",
+            "source": "Kadaster BGT via PDOK download API",
             "bbox_rd": ctx.bbox,
             "kinds": PROP_KINDS,
             "line_kinds": LINE_KINDS,
@@ -649,13 +633,13 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 /// `wegdeel` + `ondersteunendwegdeel` → the paving beside the carriageway.
 fn collect_surfaces(
     ctx: &Ctx,
-    bbox: [f64; 4],
+    extract: &Extract,
     cells: &mut HashMap<Cell, CellData>,
 ) -> Outcome<usize> {
     let (mut n, mut dropped_level, mut n_material) = (0usize, 0usize, 0usize);
     for collection in ["wegdeel", "ondersteunendwegdeel"] {
         ctx.log(format!("{collection}…"));
-        items(ctx, collection, bbox, |feat| {
+        items(ctx, extract, collection, |feat| {
             let props = &feat["properties"];
             let Some(form) = surface_form(&js_str(&props["functie"])) else {
                 return;

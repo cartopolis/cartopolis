@@ -18,6 +18,7 @@
 
 pub mod bag;
 pub mod bgt;
+pub mod bgt_extract;
 pub mod buildings;
 pub mod bv3d;
 pub mod dikes;
@@ -320,7 +321,7 @@ pub const DATASETS: &[Dataset] = &[
         description: "Surveyed trees, lampposts, benches, fences, hedges and the paving beside \
                       the carriageway, from the BGT.",
         coverage: "bgt/coverage.json",
-        typical_minutes: 12,
+        typical_minutes: 1,
         run: bgt::run,
     },
     Dataset {

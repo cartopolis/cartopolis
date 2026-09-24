@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [surveyed.rs, bgt_objects.py, bgt.ts, scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
-updated: 2026-09-16
+triggers: [surveyed.rs, bgt_objects.py, bgt.ts, bgt_extract.rs, "download API", scatter.rs, furniture.rs, BGT, trees, lampposts, street lighting, PDOK, plus_type, niet-bgt, scheiding_vlak]
+updated: 2026-09-24
 ---
 
 # Streets that were actually surveyed
@@ -58,6 +58,45 @@ cosmetic:
   ghosts in it is never refetched — which is also why the client's cache keys
   moved to `bgt/v2/`. The `datetime` parameter looks like the right filter and
   returns nothing at all.
+
+## The extractor no longer pages this API — it takes one extract (2026-09-24)
+
+Paging the API above was **~13 minutes of a ~15-minute Groningen import**: one
+request at a time, 1–5 s a page, ~12 MB per `wegdeel` page. Four parallel
+requests measured only 1.5× faster. PDOK's **download API** does the same
+job in one request: `POST https://api.pdok.nl/lv/bgt/download/v1_0/full/custom`
+with the object types, `"format": "gmllight"` and an RD polygon, then poll the
+status and download a zip. For Groningen (9 × 9 km, seven types) PDOK built it
+in 12–16 s and the 64 MB download took ~5 s. The whole `bgt` step is now
+**98 s**, and most of that is the wall heights from the 3D basisvoorziening,
+not the BGT itself (`pipeline/bgt_extract.rs`).
+
+The output was compared against the files the old code served for Groningen.
+Every count is the same: 2,283 trees, 1,735 street objects, 14,285 walls,
+fences and hedges, 42,667 surfaces, 823 bridge parts and 2,810 measured walls,
+with the same vertex counts. Positions differ by at most 9 cm for surfaces;
+4 of 14,285 walls moved more than 25 cm, the largest by 35 cm. Four things
+about the extract had to be handled to get there, and none is in its API
+description:
+
+- **It is cut by PDOK's own 4 km tiles, not by the polygon you send.** A
+  1.5 km square came back as the whole tile around it, with five times the
+  features. The extractor applies the old API's `bbox` test itself: does the
+  feature's WGS84 extent meet the area's WGS84 envelope?
+- **It also contains every historical version**, as `objectEindTijd` /
+  `eindRegistratie`. That is two thirds of the features. They are dropped
+  *before* their coordinates are converted, because converting them was most of
+  the parse time (21 s → 3 s for one square's `wegdeel`).
+- **Outlines contain true arcs** (`gml:Arc`), which the API had already
+  straightened. The API cut **every arc into 100 points**, whatever its size.
+  The extractor does the same, because walls are not simplified afterwards and
+  the centreline of a wall surveyed as an area depends on its vertices. Cutting
+  arcs to a 2 cm tolerance instead moved some of those centrelines by up to 23 m.
+- **The zip has data descriptors**, so the entry sizes are only in its central
+  directory; `bv3d.rs`'s local-header reader cannot read it.
+
+Coordinates did not move: the API's WGS84 and atlas's own RD → WGS84 conversion
+(`rd.rs`) agree to the 7th decimal.
 
 ## Added to the generated layers, never replacing them
 

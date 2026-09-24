@@ -35,6 +35,9 @@ ureq.workspace = true
 flate2 = "1.1"
 earcutr.workspace = true
 url = "2.5"
+# Already in the lockfile through winit; streams the BGT extract's GML, which is
+# hundreds of megabytes and never held whole.
+quick-xml = "0.41"
 serde_json.workspace = true
 # The same decoder the geo crate reads PDOK with, for AHN6's tiled sheets, and
 # its encoder for `/height`'s answers.

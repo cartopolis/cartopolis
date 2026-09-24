@@ -2236,6 +2236,7 @@ dependencies = [
  "earcutr",
  "figment",
  "flate2",
+ "quick-xml",
  "serde",
  "serde_json",
  "tempfile",
