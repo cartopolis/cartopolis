@@ -397,6 +397,38 @@ impl WaterLevelField {
         Self::from_rings(vec![(level_nap_m, ring.to_vec(), bb)])
     }
 
+    /// The water bodies over a world box, as one number: two fields agree on it
+    /// exactly when the same rings at the same levels reach into the box. Summed,
+    /// so the order the rings were loaded in does not matter.
+    #[must_use]
+    pub fn digest_over(&self, min: [f32; 2], max: [f32; 2]) -> u64 {
+        // A set, not a sum over the list: a body that spans several cells arrives
+        // once per cell file, and a camera that loads the next cell of a canal must
+        // not change the answer for every cell the canal reaches.
+        let bodies: std::collections::BTreeSet<u64> = self
+            .rings
+            .iter()
+            .filter(|(_, _, bb)| {
+                bb[0] <= max[0] && bb[2] >= min[0] && bb[1] <= max[1] && bb[3] >= min[1]
+            })
+            .map(|(level, pts, bb)| {
+                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                for v in [
+                    level.to_bits(),
+                    bb[0].to_bits(),
+                    bb[1].to_bits(),
+                    bb[2].to_bits(),
+                    bb[3].to_bits(),
+                ] {
+                    h ^= u64::from(v);
+                    h = h.wrapping_mul(0x100_0000_01b3);
+                }
+                h ^ pts.len() as u64
+            })
+            .collect();
+        bodies.iter().fold(0u64, |acc, h| acc.wrapping_add(*h))
+    }
+
     /// The lowest surface among the loaded bodies, in metres above NAP.
     #[must_use]
     pub fn lowest_nap(&self) -> Option<f32> {

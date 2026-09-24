@@ -747,6 +747,9 @@ pub struct MapSurfaces {
     /// the cells built on an older one** — the ring used to be torn down whole,
     /// which also threw away cells still waiting for the very field that landed.
     built_rev: HashMap<Cell, u32>,
+    /// What each live cell's ground was when it was built
+    /// (`TerrainField::cell_digest`).
+    built_digest: HashMap<Cell, u64>,
     /// Requested/failed/in-flight bookkeeping, the results sink, the despawn queue
     /// and the anchor generation (`platform::stream`).
     stream: CellStream<Cell, Tessellated>,
@@ -791,6 +794,7 @@ impl Default for MapSurfaces {
         Self {
             loaded: HashMap::new(),
             built_rev: HashMap::new(),
+            built_digest: HashMap::new(),
             stream: CellStream::new(Policy {
                 max_in_flight: SURFACE_MAX_IN_FLIGHT,
                 min_interval_secs: 0.0,
@@ -2000,6 +2004,7 @@ impl MapSurfaces {
             self.stream.retire_all(entities);
         }
         self.built_rev.clear();
+        self.built_digest.clear();
         self.pending_decks.clear();
         // Drops the requested/failed bookkeeping and orphans the results sink, so
         // in-flight tasks cannot deliver a cell placed in the old origin's frame.
@@ -2014,6 +2019,7 @@ fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
         surfaces.stream.retire_all(entities);
     }
     surfaces.built_rev.remove(&c);
+    surfaces.built_digest.remove(&c);
     surfaces.pending_decks.remove(&c);
     surfaces.stream.forget(&c);
     stores.labels.remove_cell(&c);
@@ -2110,13 +2116,32 @@ pub fn update_map_surfaces(
     // away the in-flight cells waiting for this very field and built them twice.
     // A cell arriving later on an old field is dropped at arrival for the same
     // reason (`built_rev`).
+    //
+    // **And only the cells whose ground the new field changed.** A field that
+    // follows the camera (`terrain::FOLLOW_M`) is a new revision every time it
+    // moves, over ground most of the ring already stands on unchanged; the cell's
+    // digest of the ground and water under it says which (`TerrainField::cell_digest`).
     if surfaces.bgt_revision == bgt_revision && surfaces.terrain_revision != terrain.revision {
-        let old: Vec<Cell> = surfaces
+        let tile_m = tile_to_meters(GEOMETRY_ZOOM, clat) as f32;
+        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, GEOMETRY_ZOOM);
+        let stale: Vec<Cell> = surfaces
             .built_rev
             .iter()
             .filter(|(_, rev)| **rev != terrain.revision)
             .map(|(c, _)| *c)
             .collect();
+        let mut old = Vec::new();
+        for c in stale {
+            let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
+            let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
+            let now =
+                terrain.cell_digest(Vec2::new(wx, wz), Vec2::new(wx + tile_m, wz + tile_m), true);
+            if surfaces.built_digest.get(&c) == Some(&now) {
+                surfaces.built_rev.insert(c, terrain.revision);
+            } else {
+                old.push(c);
+            }
+        }
         tracing::info!(
             cells = old.len(),
             of = surfaces.loaded.len(),
@@ -2365,6 +2390,10 @@ pub fn update_map_surfaces(
         // tile-local coordinates are relative to.
         let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
         let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
+        surfaces.built_digest.insert(
+            c,
+            terrain.cell_digest(Vec2::new(wx, wz), Vec2::new(wx + tile_m, wz + tile_m), true),
+        );
 
         // The street names go in at the same origin as the meshes, and come back
         // out with them below — a label whose cell has been retired points at a

@@ -43,6 +43,12 @@ use cartopolis_core::world::tile_to_meters;
 /// `CARTO_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
 const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.cartopolis.org";
 
+/// A teleport this close to the map anchor moves the camera in the frame it is
+/// in rather than re-anchoring (`apply_teleport`). The near field is flat around
+/// the anchor while the basemap follows the Earth's curve, and at the far edge of
+/// the ground ring from a camera this far out they part by ~2 m (d²/2R at ~5 km).
+pub const SHORT_JUMP_M: f64 = 3_000.0;
+
 /// Resolve the Nominatim base URL (no trailing slash) from `CARTO_NOMINATIM_URL`,
 /// falling back to the self-hosted default. Callers append `/search`, `/reverse`, …
 pub(crate) fn nominatim_base_url() -> String {
@@ -2000,13 +2006,30 @@ pub fn apply_teleport(
     // (the anchor-less model — no fixed region). The anchor snaps to the
     // destination's tile centre (the convention all placement math assumes), so
     // the arrival point is the destination's small offset within that frame.
-    stream.request_reanchor(lat, lng);
-    let base_zoom = stream
-        .geo_anchor()
-        .map(|(_, _, z)| z)
-        .unwrap_or(cartopolis_core::world::DEFAULT_TILE_ZOOM);
-    let snapped = crate::systems::map_stream::snap_anchor(lat, lng, base_zoom);
-    let (wx, wz) = lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng);
+    // **A short jump keeps the frame.** A re-anchor rebuilds the world — every
+    // ground and building cell, the terrain field, the stores — and a jump across
+    // a city lands on ground most of which is already built. Within
+    // `SHORT_JUMP_M` of the anchor the camera and the avatar are simply moved in
+    // the frame they are in (step 3 of `level-of-detail-tile-tree.md`); past it the
+    // flat near field and the curved basemap disagree by more than a couple of
+    // metres at the ring's edge, and the frame is re-centred as before.
+    let current = stream.geo_anchor();
+    let short = !space_target
+        && current.is_some_and(|a| {
+            let (dx, dz) = lat_lng_to_world(a, lat, lng);
+            dx.hypot(dz) < SHORT_JUMP_M
+        });
+    let (wx, wz) = match current {
+        Some(a) if short => lat_lng_to_world(a, lat, lng),
+        _ => {
+            stream.request_reanchor(lat, lng);
+            let base_zoom = current
+                .map(|(_, _, z)| z)
+                .unwrap_or(cartopolis_core::world::DEFAULT_TILE_ZOOM);
+            let snapped = crate::systems::map_stream::snap_anchor(lat, lng, base_zoom);
+            lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng)
+        }
+    };
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
 
     let (avatar_cell, avatar_local) = grid.translation_to_grid(DVec3::new(wx, AVATAR_GROUND_Y, wz));

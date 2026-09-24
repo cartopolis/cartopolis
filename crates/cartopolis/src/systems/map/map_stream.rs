@@ -1012,8 +1012,10 @@ pub fn apply_terrain_to_tiles(
         let relieved = field.is_ready() && gs <= RELIEF_MAX_TILE_M && {
             // Tiles wholly outside the field are flat ground as far as relief
             // is concerned; they may still need the curve.
-            let reach = crate::systems::terrain::TERRAIN_HALF_M + gs * 0.5;
-            centre.x.abs() <= reach && centre.y.abs() <= reach
+            let (field_centre, half) = field.extent();
+            let reach = half + gs * 0.5;
+            let d = (centre - field_centre).abs();
+            d.x <= reach && d.y <= reach
         };
         // **The whole pyramid drops together.** Every level takes the curve at its
         // own centre, so the 0.4 m that separates them is preserved exactly and a

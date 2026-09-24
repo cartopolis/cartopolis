@@ -138,6 +138,38 @@ seen.
    globe keeps its finished tiles on the device like the flat tier
    (`tile_loader::globe_cache_key`) — at 2,000 km on the Deck, a warm start reads
    all 267 back and spends 3.8 s of worker time instead of 6.5 s.
+
+   Also built, two things that loosen the anchor without removing it:
+
+   - **Graded ground follows the camera.** The field was a 6.4 km box on the
+     anchor and nothing moved it but a re-anchor, so three kilometres from where
+     a session started the ground went flat. Over graded ground (no road mask to
+     keep anchor-centred, and a bake is a resample) it re-centres once the camera
+     is `terrain::FOLLOW_M` (1.6 km) out, by whole 800 m lattice steps so the
+     samples two fields share come out identical, keeping the anchor's datum.
+     A followed field is 9.6 km (`GRADED_HALF_M`) so it covers the building
+     ring wherever the camera is inside the follow distance; the first field of
+     an anchor stays 6.4 km, because a cold start pays for every tile under it.
+     Its fade to flat is the outer 5 % rather than 18 %, since it moves.
+   - **A new field rebuilds only the cells whose ground it changed.** Each
+     ground and building cell records a digest of the heights under it (and, for
+     ground cells, the water over it — each body once, because a canal arrives
+     once per cell file) (`TerrainField::cell_digest`).
+   - **A teleport within 3 km of the anchor keeps the frame**
+     (`geo_nav::SHORT_JUMP_M`): the camera and avatar move, nothing is
+     re-anchored. Past it the flat near field and the curved basemap part by more
+     than ~2 m at the ring's edge.
+
+   Measured on the Deck, two viewpoints 2.5 km apart in one run, graded ground,
+   warm: `main` re-anchors and settles the second in 6.0 s; here the field
+   follows, 3 of 9 ground and 20 of 30 building cells rebuild once the field is
+   the large one, and it settles in 4.8 s. The first move from the small field
+   rebuilds nearly the whole building ring, which is the price of the smaller
+   cold start. Cold and warm starts are unchanged (11.8 / 5.1 s).
+
+   Found on the way: graded ground had stopped waiting for the water levels,
+   so a cold start could draw every canal at its bank. It waits again, 3 s at
+   most (`GRADED_WATER_HOLD_S`), and a later level re-bakes it.
 4. Building levels of detail per tile. The LoD1.2 blocks already exist per z14
    cell; any coarser merged level is built by atlas, which runs the building
    pipeline (`crates/atlas/src/pipeline/`).

@@ -416,6 +416,8 @@ pub struct Lod22Buildings {
     /// The terrain revision each live cell stands on: a new field rebuilds only
     /// the cells built on an older one (`MapSurfaces::built_rev` is the same).
     built_rev: HashMap<(i64, i64), u32>,
+    /// What each live cell's ground was when it was built.
+    built_digest: HashMap<(i64, i64), u64>,
     /// Cells currently marked `NotShadowCaster` (beyond `SHADOW_RADIUS`), so the
     /// shadow-LOD pass only issues a command when a cell actually crosses the
     /// boundary rather than every frame.
@@ -574,6 +576,7 @@ impl Default for Lod22Buildings {
             }),
             cells: HashMap::new(),
             built_rev: HashMap::new(),
+            built_digest: HashMap::new(),
             dated: HashMap::new(),
             doors: HashMap::new(),
             built_detail: HashMap::new(),
@@ -642,6 +645,19 @@ fn cell_materials(
     (material, interior_material)
 }
 
+/// A building cell's box in the anchored world-XZ frame.
+fn cell_box(clat: f64, clng: f64, zoom: u32, c: (i64, i64)) -> (Vec2, Vec2) {
+    let anchor = (clat, clng, zoom);
+    let (north, west) = tile_to_lat_lng(c.0, c.1, LOD22_ZOOM);
+    let (south, east) = tile_to_lat_lng(c.0 + 1, c.1 + 1, LOD22_ZOOM);
+    let (x0, z0) = crate::systems::geo_nav::lat_lng_to_world(anchor, north, west);
+    let (x1, z1) = crate::systems::geo_nav::lat_lng_to_world(anchor, south, east);
+    (
+        Vec2::new(x0.min(x1) as f32, z0.min(z1) as f32),
+        Vec2::new(x0.max(x1) as f32, z0.max(z1) as f32),
+    )
+}
+
 /// Retire one live cell so that it is built again: its detail was promoted, or
 /// the ground under it changed.
 fn rebuild_cell(
@@ -654,6 +670,7 @@ fn rebuild_cell(
     lod.built_detail.remove(&c);
     lod.heights.remove(&c);
     lod.built_rev.remove(&c);
+    lod.built_digest.remove(&c);
     // Dropped, not retained: a rebuild exists *because* this mesh is the wrong
     // one, so keeping it would only give the restore path something to hand back
     // that would be rebuilt again.
@@ -724,13 +741,35 @@ pub fn update_lod22(
     // ground cells do (`MapSurfaces::built_rev`). Over graded ground the cells were
     // waiting for this very field (`TerrainField::ground_later`), and tearing the
     // ring down threw them away and built every one twice.
+    //
+    // And only those whose ground the new field changed, as the ground cells do
+    // (`TerrainField::cell_digest`): a field that follows the camera is a new
+    // revision over ground most of the ring already stands on.
     if !reanchored && lod.bag_revision == bag_revision && lod.terrain_revision != terrain.revision {
-        let old: Vec<(i64, i64)> = lod
+        let stale: Vec<(i64, i64)> = lod
             .built_rev
             .iter()
             .filter(|(_, rev)| **rev != terrain.revision)
             .map(|(c, _)| *c)
             .collect();
+        let mut old = Vec::new();
+        for c in stale {
+            let (lo, hi) = cell_box(clat, clng, base_zoom, c);
+            let now = terrain.cell_digest(lo, hi, false);
+            if lod.built_digest.get(&c) == Some(&now) {
+                lod.built_rev.insert(c, terrain.revision);
+            } else {
+                tracing::debug!(
+                    cell = ?c,
+                    had = ?lod.built_digest.get(&c),
+                    now,
+                    lo_x = lo.x,
+                    lo_z = lo.y,
+                    "lod22 cell ground changed"
+                );
+                old.push(c);
+            }
+        }
         tracing::info!(
             cells = old.len(),
             of = lod.cells.len(),
@@ -763,6 +802,7 @@ pub fn update_lod22(
         lod.bag_revision = bag_revision;
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.built_rev.clear();
+        lod.built_digest.clear();
         lod.dated.clear();
         lod.doors.clear();
         lod.built_detail.clear();
@@ -796,6 +836,7 @@ pub fn update_lod22(
     if lod.enabled_was && !enabled {
         let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.built_rev.clear();
+        lod.built_digest.clear();
         lod.dated.clear();
         lod.doors.clear();
         lod.built_detail.clear();
@@ -968,6 +1009,9 @@ pub fn update_lod22(
             // The pool is emptied whenever the field changes, so what it holds
             // stands on the current one.
             lod.built_rev.insert(c, terrain.revision);
+            let (lo, hi) = cell_box(clat, clng, base_zoom, c);
+            lod.built_digest
+                .insert(c, terrain.cell_digest(lo, hi, false));
             colliders.set_cell(c, warm.footprints);
             // The far tier may have taken this cell over while we were away, the
             // same case the freshly-built path handles once its last piece is up.
@@ -1120,6 +1164,9 @@ pub fn update_lod22(
             match built {
                 Ok(Some((grid_cell, pieces, footprints, dated, doors, heights))) => {
                     lod.built_rev.insert(c, built_rev);
+                    let (lo, hi) = cell_box(clat, clng, base_zoom, c);
+                    lod.built_digest
+                        .insert(c, terrain.cell_digest(lo, hi, false));
                     // The whole cell's bookkeeping lands with its first frame:
                     // colliders are cheap CPU state (an avatar can bump into a
                     // building a frame before it is drawn, which beats walking

@@ -136,6 +136,13 @@ const FINE_BLEND_M: f32 = 24.0;
 /// Fraction of the half-extent held at full strength before the edge taper begins.
 const TAPER_START: f32 = 0.82;
 
+/// The same for a field over graded ground, which follows the camera: the taper
+/// moves with the field, so every cell standing in it is rebuilt each time the
+/// field does. At 0.82 that was every building cell of the ring (Deck,
+/// 2026-09-24, 29 of 29 after a 2.4 km move); at 0.95 the fade is 160 m wide and
+/// three kilometres from the camera, which a following field keeps it.
+const GRADED_TAPER_START: f32 = 0.95;
+
 /// How far the no-data fill reaches from the nearest measurement, in **metres**.
 /// Covers a cut-out viaduct or a building footprint and stops well short of smearing
 /// a coastline across the North Sea; past it the ground stays unknown and settles at
@@ -273,7 +280,50 @@ fn build_floors(base: &[f32], n: usize, sample_m: f32) -> Vec<FloorLevel> {
 ///
 /// `baked` is `None` for a box AHN has no measurement anywhere in — an answer, and
 /// one the field has to remember rather than re-ask.
+/// The clock and the camera, as one system parameter: `update_terrain_field` is at
+/// Bevy's sixteen.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct FieldClock<'w, 's> {
+    time: Res<'w, Time>,
+    camera: Query<
+        'w,
+        's,
+        (&'static big_space::prelude::GridCell, &'static Transform),
+        With<FreeCamera>,
+    >,
+}
+
+impl FieldClock<'_, '_> {
+    /// The camera in the anchored world-XZ frame.
+    fn camera_xz(&self) -> Option<Vec2> {
+        let (cell, tf) = self.camera.single().ok()?;
+        Some(Vec2::new(
+            cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x,
+            cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z,
+        ))
+    }
+}
+
+/// How far the camera may get from the field's centre before the field follows
+/// it, and the lattice the centre snaps to — a whole number of samples at every
+/// grid a budget picks, so the samples two fields share sit at the same places
+/// and come out the same. Graded ground only: see `update_terrain_field`.
+const FOLLOW_M: f32 = 1_600.0;
+
+/// Half-extent of a field over graded ground: 4.8 km, half as wide again as
+/// [`TERRAIN_HALF_M`], at the same spacing, so the grid is `(grid − 1)·3/2 + 1`
+/// (3073² on the desktop, ~38 MB). See `update_terrain_field`.
+const GRADED_HALF_M: f32 = TERRAIN_HALF_M * 1.5;
+
+/// Margin around a cell whose ground its build reads beyond its own edge: the
+/// tunnel lids' reach (`tunnels::DATUM_M`, 30 m) with room.
+const CELL_DIGEST_PAD_M: f32 = 50.0;
+const FOLLOW_LATTICE_M: f32 = 800.0;
+
 struct CoarseBake {
+    /// The field's centre in the anchored frame, and its half-extent.
+    centre: Vec2,
+    half: f32,
     gen: u32,
     /// Samples per side this bake used — `quality::Budget::terrain_grid`, which a
     /// handset lowers, so the snapshot cannot read it off [`TERRAIN_GRID`].
@@ -442,6 +492,13 @@ pub struct TerrainField {
     /// The anchor generation whose ground is graded on atlas and on its way, and
     /// when the wait for it began — see [`Self::holds_builds`].
     build_hold: Option<(u32, f32)>,
+    /// Where the installed field is centred, in the anchored frame. The origin, or
+    /// over graded ground the camera's lattice point ([`FOLLOW_M`]).
+    answered_centre: Option<Vec2>,
+    /// The datum this anchor's fields are relative to, fixed at its first bake: a
+    /// field that follows the camera must not move the zero every other height in
+    /// the world is measured from.
+    gen_datum: Option<(u32, f32)>,
     /// Cell jobs that have fetched their inputs and are waiting for that ground
     /// ([`Self::ground_later`]). Answered with whatever is in place once the hold
     /// ends, however it ends.
@@ -452,6 +509,10 @@ pub struct TerrainField {
 /// field revision it is, which the cell records so that only cells standing on an
 /// older revision are rebuilt when the field changes.
 pub type GroundArrival = (Option<GroundPlacement>, u32);
+
+/// Longest graded ground waits for the water levels before it is baked without
+/// them. They are a few dozen small files from our own host.
+const GRADED_WATER_HOLD_S: f32 = 3.0;
 
 /// Longest the ground and building cells wait for graded ground before building
 /// flat anyway. It lands in ~3 s warm and ~5 s cold on the Deck (2026-09-24).
@@ -569,6 +630,25 @@ impl TerrainField {
     #[must_use]
     pub fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
         water_surface_near(&self.water, self.datum_m, wx, wz)
+    }
+
+    /// What a cell over this world box was built on — the heights under it (with a
+    /// margin, for the drape's and the tunnels' reach) and the water over it — as
+    /// one number. A new field that gives a cell the same number leaves it
+    /// standing (`MapSurfaces::built_rev`, `Lod22Buildings::built_rev`).
+    #[must_use]
+    pub fn cell_digest(&self, min: Vec2, max: Vec2, with_water: bool) -> u64 {
+        let pad = Vec2::splat(CELL_DIGEST_PAD_M);
+        let (lo, hi) = (min - pad, max + pad);
+        // Only for a consumer that draws water: the buildings stand on the ground
+        // and nothing else, and every water cell the ring loads as the camera moves
+        // would otherwise rebuild them.
+        let water = if with_water && self.is_ready() {
+            self.water.digest_over(lo.to_array(), hi.to_array())
+        } else {
+            0
+        };
+        self.ground.digest_over(lo, hi) ^ water.rotate_left(17) ^ self.datum_m.to_bits() as u64
     }
 
     /// Everything a mesh needs to be stood on this ground, by value, for a worker —
@@ -731,6 +811,58 @@ impl TerrainSnapshot {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         !self.samples.is_empty()
+    }
+
+    /// Where the field is: its centre in the anchored frame and its half-extent.
+    /// Not the anchor and not [`TERRAIN_HALF_M`] once the field follows the camera
+    /// (`FOLLOW_M`).
+    #[must_use]
+    pub fn extent(&self) -> (Vec2, f32) {
+        (self.centre, self.half_m)
+    }
+
+    /// Every sample over a world box, as one number that two fields agree on
+    /// exactly when they agree about that ground — whatever their centres, since a
+    /// field re-centres by whole samples (`FOLLOW_LATTICE_M`) and a sample at one
+    /// world place resamples to the same value. The cells use it to rebuild only
+    /// what a new field changed.
+    #[must_use]
+    pub fn digest_over(&self, min: Vec2, max: Vec2) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |v: u64| {
+            h ^= v;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        if self.samples.is_empty() || self.grid < 2 {
+            eat(0);
+            return h;
+        }
+        let n = self.grid;
+        #[allow(clippy::cast_precision_loss)]
+        let step = self.half_m * 2.0 / (n - 1) as f32;
+        let (ox, oz) = (self.centre.x - self.half_m, self.centre.y - self.half_m);
+        let idx = |v: f32, o: f32| ((v - o) / step).floor();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let clamp = |f: f32| f.clamp(0.0, (n - 1) as f32) as usize;
+        let (x0, x1) = (clamp(idx(min.x, ox)), clamp(idx(max.x, ox) + 1.0));
+        let (z0, z1) = (clamp(idx(min.y, oz)), clamp(idx(max.y, oz) + 1.0));
+        // Where the box starts on the world lattice, so two fields that cover
+        // different parts of it cannot collide.
+        #[allow(clippy::cast_possible_truncation)]
+        let (gx, gz) = (
+            (ox / step).round() as i64 + x0 as i64,
+            (oz / step).round() as i64 + z0 as i64,
+        );
+        eat(gx as u64);
+        eat(gz as u64);
+        eat((x1 - x0) as u64);
+        eat((z1 - z0) as u64);
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                eat(u64::from(self.samples[z * n + x].to_bits()));
+            }
+        }
+        h
     }
 
     /// Ground height at a point in the anchored world-XZ frame, metres relative to
@@ -1158,7 +1290,7 @@ pub fn update_terrain_field(
     roads: Res<RoadMask>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
     surfaces: Res<crate::systems::map_geometry::MapSurfaces>,
-    time: Res<Time>,
+    clock: FieldClock,
     mut settled: Local<(u32, f32)>,
     mut water_settled: Local<(u32, f32)>,
     mut deck_settled: Local<(u64, f32)>,
@@ -1175,6 +1307,7 @@ pub fn update_terrain_field(
     // When this anchor started waiting for the atlas coverage answer.
     mut coverage_wait: Local<Option<(u32, f32)>>,
 ) {
+    let time = &clock.time;
     // The cells' wait for graded ground ends when it lands (`apply_coarse_terrain`),
     // when the anchor moves on, or at `GRADED_HOLD_S` — hills a little late beat a
     // map that is not drawn.
@@ -1210,6 +1343,7 @@ pub fn update_terrain_field(
         // Both halves of the answer, or switching the layer back on would find the
         // water half still satisfied.
         field.answered_gen = None;
+        field.answered_centre = None;
         field.answered_water_rev = None;
         field.answered_road_rev = None;
         field.answered_deck_rev = None;
@@ -1262,17 +1396,35 @@ pub fn update_terrain_field(
         // has asked for.
         field.answered_road_rev.unwrap_or(0)
     };
-    // **Graded ground owes nothing to the roads, the water or the decks.** Atlas
-    // graded it against all three (`cartopolis_geo::terrain_grade`), so once it is
-    // baked for this anchor, nothing that lands afterwards is a reason to bake again.
+    // **Graded ground owes nothing to the roads or the decks.** Atlas graded it
+    // against both (`cartopolis_geo::terrain_grade`). It still owes the water: the
+    // heights are carved already, but the water surfaces are drawn against the
+    // levels the field hands out (`GroundPlacement`), and a field baked before they
+    // arrived drew every canal at its bank.
     let graded = matches!(
         *source,
         Some((g, FieldSource::Graded(_))) if g == stream.anchor_generation
     );
+    // **Graded ground follows the camera** (step 3 of `level-of-detail-tile-tree.md`).
+    // A field fixed on the anchor left the ground flat three kilometres from where a
+    // session started; nothing moved it but a re-anchor, and a re-anchor rebuilds
+    // the world. It needs no road mask, which is anchor-centred, and a re-bake is a
+    // resample — so only over graded ground, and the centre moves by whole lattice
+    // steps once the camera is `FOLLOW_M` out.
+    let centre_now = field.answered_centre.unwrap_or(Vec2::ZERO);
+    let want_centre = match clock.camera_xz() {
+        Some(cam) if graded && (cam - centre_now).abs().max_element() > FOLLOW_M => Vec2::new(
+            (cam.x / FOLLOW_LATTICE_M).round() * FOLLOW_LATTICE_M,
+            (cam.y / FOLLOW_LATTICE_M).round() * FOLLOW_LATTICE_M,
+        ),
+        _ if graded => centre_now,
+        _ => Vec2::ZERO,
+    };
     if field.answered_gen == Some(stream.anchor_generation)
+        && field.answered_centre == Some(want_centre)
+        && field.answered_water_rev == Some(water_rev)
         && (graded
-            || (field.answered_water_rev == Some(water_rev)
-                && field.answered_road_rev == Some(road_rev)
+            || (field.answered_road_rev == Some(road_rev)
                 && field.answered_deck_rev == Some(deck_rev)))
     {
         *hold = None;
@@ -1343,6 +1495,7 @@ pub fn update_terrain_field(
                 match crate::systems::terrain_tiles::graded_stamp(&field_tiles(
                     anchor,
                     TERRAIN_HALF_M,
+                    Vec2::ZERO,
                 )) {
                     Some(stamp) => FieldSource::Graded(stamp),
                     None => FieldSource::Tiles,
@@ -1365,8 +1518,21 @@ pub fn update_terrain_field(
         FieldSource::Tiles => Some(0),
         FieldSource::Wcs => None,
     };
+    // A following field is larger, at the same spacing: it has to cover the
+    // building ring (`lod22::lod22_radius`, ±3.7 km) wherever inside `FOLLOW_M`
+    // the camera is, or every move of the field changes the ground under the ring's
+    // outer cells and they are all rebuilt (Deck, 2026-09-24: 26 of 26 at 6.4 km).
+    //
+    // Only once it has moved: the first field of an anchor stays the 6.4 km one,
+    // because a cold start pays for every tile under it — ~30 against ~49 — and
+    // most sessions never fly far enough to need the rest.
+    let (half, n) = if matches!(chosen, FieldSource::Graded(_)) && want_centre != Vec2::ZERO {
+        (GRADED_HALF_M, (grid - 1) * 3 / 2 + 1)
+    } else {
+        (TERRAIN_HALF_M, grid)
+    };
     let mosaic = if let Some(stamp) = stamp {
-        let want = field_tiles(anchor, TERRAIN_HALF_M);
+        let want = field_tiles(anchor, half, want_centre);
         match tiles.mosaic(&want, stamp) {
             crate::systems::terrain_tiles::Mosaic::Ready(m) => Some(m),
             crate::systems::terrain_tiles::Mosaic::Waiting => {
@@ -1419,12 +1585,18 @@ pub fn update_terrain_field(
     // second bake and a second retear of everything (Deck, 2026-09-24: warm 25 s →
     // 38 s). The debounce above cannot see this: it ends in any two-second gap.
     //
-    // **None of this holds graded ground**, which is the point of grading it on
-    // atlas: nothing the ring or the water register publishes changes it.
+    // **Graded ground is not held for the ring**, which is the point of grading it
+    // on atlas: nothing the ring publishes changes it. It is held for the water
+    // levels, briefly — see `graded` above — and they come from our own host.
     let pre_graded = matches!(chosen, FieldSource::Graded(_));
     let held_since = *hold.get_or_insert(now);
-    if !pre_graded && now - held_since < RING_HOLD_MAX_S {
-        if surfaces.streaming_busy() {
+    let bound = if pre_graded {
+        GRADED_WATER_HOLD_S
+    } else {
+        RING_HOLD_MAX_S
+    };
+    if now - held_since < bound {
+        if !pre_graded && surfaces.streaming_busy() {
             wait("the surface ring", &field);
             return;
         }
@@ -1487,6 +1659,7 @@ pub fn update_terrain_field(
         top: deck_top,
     } = decks.grade_masks(grid, TERRAIN_HALF_M);
     let sink = field.coarse_sink.clone();
+    let datum = field.gen_datum.filter(|(g, _)| *g == gen).map(|(_, d)| d);
     field.coarse_job = Some(gen);
     crate::platform::workers::submit_heavy(
         "terrain_field",
@@ -1494,8 +1667,10 @@ pub fn update_terrain_field(
             let (baked, approach) = bake(
                 job.as_ref(),
                 anchor,
-                TERRAIN_HALF_M,
-                grid,
+                want_centre,
+                datum,
+                half,
+                n,
                 // Graded on atlas: no carve, no fill, no grading here.
                 (!pre_graded).then_some(Grading {
                     water: &water,
@@ -1507,8 +1682,10 @@ pub fn update_terrain_field(
             );
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
+                    centre: want_centre,
+                    half,
                     gen,
-                    grid,
+                    grid: n,
                     water_rev: baked_water_rev,
                     road_rev: baked_road_rev,
                     deck_rev: baked_deck_rev,
@@ -1547,6 +1724,8 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
     field.answered_deck_rev = Some(done.deck_rev);
     field.approach_samples = done.approach;
     field.water = done.water;
+    // Before the empty case, which is an answer for this centre too.
+    field.answered_centre = Some(done.centre);
     let Some((samples, datum, carved)) = done.baked else {
         field.clear();
         return;
@@ -1554,15 +1733,16 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
 
     let lo = samples.iter().copied().fold(f32::MAX, f32::min);
     let hi = samples.iter().copied().fold(f32::MIN, f32::max);
-    let sample_m = TERRAIN_HALF_M * 2.0 / (done.grid - 1) as f32;
+    let sample_m = done.half * 2.0 / (done.grid - 1) as f32;
     let floors = build_floors(&samples, done.grid, sample_m);
     field.ground = TerrainSnapshot {
         samples: std::sync::Arc::new(samples),
-        half_m: TERRAIN_HALF_M,
+        half_m: done.half,
         grid: done.grid,
-        centre: Vec2::ZERO,
+        centre: done.centre,
         floors: std::sync::Arc::new(floors),
     };
+    field.gen_datum = Some((done.gen, datum));
     field.carved_coarse = carved;
     field.datum_m = datum;
     field.range_m = (lo, hi);
@@ -1573,6 +1753,8 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
         high_m = hi,
         sample_m,
         carved,
+        centre_x = done.centre.x,
+        centre_z = done.centre.y,
         "terrain field baked"
     );
 }
@@ -1605,11 +1787,12 @@ fn field_request(anchor: (f64, f64, u32), half: f32, grid: usize) -> HeightReque
 }
 
 /// The atlas tiles under the same world box [`field_request`] measures.
-fn field_tiles(anchor: (f64, f64, u32), half: f32) -> Vec<(i64, i64)> {
+fn field_tiles(anchor: (f64, f64, u32), half: f32, centre: Vec2) -> Vec<(i64, i64)> {
     let h = f64::from(half) + REQUEST_PAD_M;
+    let (cx, cz) = (f64::from(centre.x), f64::from(centre.y));
     let (mut south, mut west, mut north, mut east) = (90.0f64, 180.0f64, -90.0f64, -180.0f64);
-    for wz in [-h, h] {
-        for wx in [-h, h] {
+    for wz in [cz - h, cz + h] {
+        for wx in [cx - h, cx + h] {
             let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
             south = south.min(lat);
             north = north.max(lat);
@@ -1678,6 +1861,10 @@ struct Grading<'a> {
 fn bake(
     patch: &dyn GroundSource,
     anchor: (f64, f64, u32),
+    // The field's centre in the anchored frame (`FOLLOW_M`).
+    centre: Vec2,
+    // This anchor's datum when an earlier field fixed it; `None` for the first.
+    datum: Option<f32>,
     half: f32,
     n: usize,
     // `None` for ground atlas has already graded.
@@ -1690,8 +1877,14 @@ fn bake(
     // `atan` per *sample*, on the main thread, once per map anchor.
     let frame = WorldFrame::new(anchor);
     let axis: Vec<f64> = (0..n).map(|i| -half as f64 + i as f64 * step).collect();
-    let lngs: Vec<f64> = axis.iter().map(|&wx| frame.lng_at(wx)).collect();
-    let lats: Vec<f64> = axis.iter().map(|&wz| frame.lat_at(wz)).collect();
+    let lngs: Vec<f64> = axis
+        .iter()
+        .map(|&wx| frame.lng_at(f64::from(centre.x) + wx))
+        .collect();
+    let lats: Vec<f64> = axis
+        .iter()
+        .map(|&wz| frame.lat_at(f64::from(centre.y) + wz))
+        .collect();
 
     let mut raw = vec![f32::NAN; n * n];
     for (z, &lat) in lats.iter().enumerate() {
@@ -1708,9 +1901,13 @@ fn bake(
     // The datum is the ground at the anchor — the field's own centre — so the
     // world's existing `y = 0` keeps meaning "here". Falling back to the median
     // covers an anchor that happens to sit on a bridge (a hole in the DTM).
-    let centre = raw[(n / 2) * n + n / 2];
-    let datum = if centre.is_finite() {
-        centre
+    // A field that followed the camera keeps the anchor's datum, which the first
+    // field fixed.
+    let middle = raw[(n / 2) * n + n / 2];
+    let datum = if let Some(d) = datum {
+        d
+    } else if middle.is_finite() {
+        middle
     } else {
         // Before the grading below, so there is nothing to report about it.
         let Some(m) = median_finite(&raw) else {
@@ -1725,9 +1922,14 @@ fn bake(
     // clipmap is displaced by (`map_stream::apply_terrain_to_tiles`), so without it
     // the ground runs flat across a canal the water sheet has just dropped into.
     // Coarse: resampled, so a finite sample inside a ring is not evidence.
+    let taper_start = if grading.is_none() {
+        GRADED_TAPER_START
+    } else {
+        TAPER_START
+    };
     let (mut carved, mut approach) = (0, (0, 0));
     if let Some(g) = grading {
-        let lattice = field_lattice(n, half, Vec2::ZERO);
+        let lattice = field_lattice(n, half, centre);
         let road = if g.road.len() == n * n {
             g.road
         } else {
@@ -1755,7 +1957,7 @@ fn bake(
         for x in 0..n {
             let v = raw[z * n + x];
             let h = if v.is_finite() { v - datum } else { 0.0 };
-            samples[z * n + x] = h * edge_taper(x, z, n);
+            samples[z * n + x] = h * edge_taper_from(x, z, n, taper_start);
         }
     }
     (Some((samples, datum, carved)), approach)
@@ -2142,13 +2344,19 @@ pub fn update_fine_terrain(
 
 /// Strength of the field at a grid position: 1 through the middle, easing to 0 at
 /// the boundary so the measured ground meets the flat world outside it seamlessly.
+#[cfg(test)]
 fn edge_taper(x: usize, z: usize, n: usize) -> f32 {
+    edge_taper_from(x, z, n, TAPER_START)
+}
+
+/// [`edge_taper`] starting at `start` of the half-extent.
+fn edge_taper_from(x: usize, z: usize, n: usize, start: f32) -> f32 {
     let norm = |i: usize| ((i as f32 / (n - 1) as f32) * 2.0 - 1.0).abs();
     let d = norm(x).max(norm(z));
-    if d <= TAPER_START {
+    if d <= start {
         return 1.0;
     }
-    let t = ((d - TAPER_START) / (1.0 - TAPER_START)).clamp(0.0, 1.0);
+    let t = ((d - start) / (1.0 - start)).clamp(0.0, 1.0);
     // Smoothstep, so the field flattens without a crease where the taper starts.
     let s = t * t * (3.0 - 2.0 * t);
     1.0 - s
@@ -2501,6 +2709,49 @@ fn median_finite(grid: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
     use cartopolis_geo::ahn::FILL_REACH_M;
+
+    /// A field of `n`² samples centred at `centre`, each the height of a fixed
+    /// function at its own world place — what two bakes over the same tiles give.
+    fn field_at(centre: Vec2, n: usize, bump: Option<Vec2>) -> TerrainSnapshot {
+        let half = TERRAIN_HALF_M;
+        let step = half * 2.0 / (n - 1) as f32;
+        let mut samples = Vec::with_capacity(n * n);
+        for z in 0..n {
+            for x in 0..n {
+                let (wx, wz) = (
+                    centre.x - half + x as f32 * step,
+                    centre.y - half + z as f32 * step,
+                );
+                let mut h = (wx * 0.013).sin() * 3.0 + (wz * 0.007).cos() * 2.0;
+                if bump.is_some_and(|b| (b.x - wx).abs() < 60.0 && (b.y - wz).abs() < 60.0) {
+                    h += 1.0;
+                }
+                samples.push(h);
+            }
+        }
+        TerrainSnapshot {
+            samples: std::sync::Arc::new(samples),
+            half_m: half,
+            grid: n,
+            centre,
+            floors: std::sync::Arc::default(),
+        }
+    }
+
+    #[test]
+    fn a_field_that_moved_by_whole_samples_agrees_about_the_ground_it_shares() {
+        let (lo, hi) = (Vec2::new(0.0, 0.0), Vec2::new(1_400.0, 1_400.0));
+        let a = field_at(Vec2::ZERO, 129, None);
+        let b = field_at(Vec2::new(FOLLOW_LATTICE_M, -FOLLOW_LATTICE_M), 129, None);
+        assert_eq!(a.digest_over(lo, hi), b.digest_over(lo, hi));
+        // …and not about ground that is different.
+        let c = field_at(
+            Vec2::new(FOLLOW_LATTICE_M, 0.0),
+            129,
+            Some(Vec2::new(700.0, 700.0)),
+        );
+        assert_ne!(a.digest_over(lo, hi), c.digest_over(lo, hi));
+    }
 
     /// Build a coarse-shaped snapshot out of a height function, for the refinement
     /// tests below. Small on purpose — 6.4 km at the real spacing is four million
@@ -3664,6 +3915,8 @@ mod tests {
         let (baked, approach) = bake(
             &patch,
             anchor,
+            Vec2::ZERO,
+            None,
             TERRAIN_HALF_M,
             n,
             Some(Grading {
@@ -3739,6 +3992,8 @@ mod tests {
         let (baked, approach) = bake(
             &patch,
             anchor,
+            Vec2::ZERO,
+            None,
             TERRAIN_HALF_M,
             n,
             Some(Grading {
