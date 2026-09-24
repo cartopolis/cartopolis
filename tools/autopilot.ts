@@ -23,7 +23,7 @@
 // token that can push to `main`. This process holds it instead and can only do
 // the fixed sequence below.
 //
-// It does read one piece of free text now: `focus`, typed into the admin console
+// It does read one piece of free text now: `focus`, typed into the atlas web UI
 // by a signed-in operator and quoted into the tickets it files. That is not a
 // way in — the text reaches a *session's* prompt, which is somewhere anyone who
 // can open an issue already reaches, and it reaches nothing here but a string
@@ -86,10 +86,10 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //
 // Read on every tick, never cached: this file IS the control surface, and the
 // point of it is that changing it takes effect without restarting anything.
-// Since 2026-08-30 the admin console writes it too — atlas's
+// Since 2026-08-30 the atlas web UI writes it too — atlas's
 // `crates/atlas/src/autopilot.rs` (the Autopilot tab's sliders) — which makes this Config
 // a hand-synced seam like `AccountRow`: add a field here and add it there, or
-// the console silently strips it on the next save.
+// the web UI silently strips it on the next save.
 //
 //   { "enabled": false,        // file tickets at all
 //     "ticketsPerDay": 1,      // how many new feature tickets a day
@@ -99,7 +99,7 @@ const FILED_BY_AUTOPILOT = "autopilot";
 //     "ship": false,           // merge and deploy finished ones, or stop at review
 //     "focus": "",             // an area to work in; empty means the frontier
 //     "focusPlan": [],         // the ordered queue under that focus (see below)
-//     "planRevision": 0 }      // bumped by the console to ask for a fresh plan
+//     "planRevision": 0 }      // bumped by the web UI to ask for a fresh plan
 
 type PlanItem = {
   /** Stable key, and the ticket's dedupe marker (`autopilot:focus-<id>`). */
@@ -146,7 +146,7 @@ const MAX_PLAN_ITEMS = 20;
 /**
  * Whatever is in the file, as a plan.
  *
- * Applied to the console's list and to a session's posted block alike — the
+ * Applied to the web UI's list and to a session's posted block alike — the
  * second is JSON a language model wrote, so nothing here may assume a field is
  * present, a string, or short.
  */
@@ -224,10 +224,10 @@ async function saveState(s: State) {
 /**
  * Change named fields of the control file, keeping everything else in it.
  *
- * This process is a *reader* of that file everywhere else — it is the console's
+ * This process is a *reader* of that file everywhere else — it is the web UI's
  * knob, not this lane's state, which is why there are two files at all. There
  * are exactly two things it writes back, and both are answers to a question the
- * console asked: the plan a planning session posted, and the issue number
+ * web UI asked: the plan a planning session posted, and the issue number
  * stamped onto a plan item when it is filed.
  *
  * Merged into the file as it stands at that instant and written through a temp
@@ -243,7 +243,7 @@ async function saveState(s: State) {
  */
 async function writeConfig(edit: (raw: Record<string, unknown>) => boolean): Promise<boolean> {
   // Re-read rather than reuse the tick's Config: that one is normalised, and
-  // writing it back would silently delete any field the console has that this
+  // writing it back would silently delete any field the web UI has that this
   // version has not heard of.
   const raw = JSON.parse(await Bun.file(CONFIG_PATH).text()) as Record<string, unknown>;
   if (!edit(raw)) return false;
@@ -801,7 +801,7 @@ async function generate(cfg: Config) {
     return log(`${mine.length} autopilot ticket(s) open including ${parked.length} parked — filing nothing until some are dealt with`);
   }
 
-  // The console's queue comes first, whoever wrote the row: the maintainer's
+  // The web UI's queue comes first, whoever wrote the row: the maintainer's
   // plan under a focus, a gap a QA pass walked into, a machinery problem the
   // retrospective named. The frontier answers "what is the next source nobody
   // has wired in?", which is a fine standing question and the wrong one to
@@ -809,7 +809,7 @@ async function generate(cfg: Config) {
   // worth doing.
   if (cfg.focusPlan.some((i) => !i.issue)) return await generateFromQueue(cfg, state);
   if (cfg.focus) {
-    return log(`the queue under the focus is fully filed (${cfg.focusPlan.length} row(s)) — extend it in the console, or clear the focus`);
+    return log(`the queue under the focus is fully filed (${cfg.focusPlan.length} row(s)) — extend it in the web UI, or clear the focus`);
   }
 
   let rows: { key: string; source: string; adds: string }[];
@@ -936,7 +936,7 @@ async function generate(cfg: Config) {
 // fortnight on X" — the maintainer's own priority, which is usually not a row in
 // that table at all ("get this solid on the Steam Deck runner" is not a data
 // source). So there is a second queue, and the difference that matters is that a
-// **person orders it**: the console holds a list, this lane files it top down,
+// **person orders it**: the web UI holds a list, this lane files it top down,
 // and the frontier stands down while there is anything in it.
 //
 // **Three kinds of session write to that list and none of them files a ticket.**
@@ -980,7 +980,7 @@ function textKey(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-// Keyed on the focus text *and* a revision the console bumps: editing the focus
+// Keyed on the focus text *and* a revision the web UI bumps: editing the focus
 // asks a new question, and pressing "plan again" asks the same one twice, and
 // alreadyFiled has to be able to tell those from a tick that already ran.
 const planKey = (cfg: Config) => `focus-plan-${textKey(cfg.focus)}-${cfg.planRevision}`;
@@ -1082,7 +1082,7 @@ async function filePlanningTicket(cfg: Config, key: string) {
     quoted(cfg.focus),
     "",
     "**This is a planning pass, not a build.** Change no code and open no branch. What comes",
-    "back is a list, which the maintainer reorders and edits in the console before any of it",
+    "back is a list, which the maintainer reorders and edits in the web UI before any of it",
     "is filed — so propose the work, do not start it.",
     "",
     "1. **Read before proposing.** `docs/direction.md` for the goal and the seven values,",
@@ -1140,7 +1140,7 @@ async function filePlanTicket(cfg: Config, item: PlanItem, position: string): Pr
     ...(item.note ? ["", item.note] : []),
     "",
     `This is ${position} of the lane's queue. It is ordered by a person in the`,
-    "admin console, so build this one rather than the one you would have picked — and keep it",
+    "atlas web UI, so build this one rather than the one you would have picked — and keep it",
     "the size it is. A ticket that turns out to be three tickets is one ticket: finish this",
     "part and say on it what the other two are.",
     "",
@@ -1178,7 +1178,7 @@ async function filePlanTicket(cfg: Config, item: PlanItem, position: string): Pr
  * being built*: a red `main` every new branch would inherit, a daily quota, one
  * ticket at a time. Nothing here files a branch or writes code, and behind those
  * gates it was unreachable in exactly the state that produces it — a focus set
- * on a busy board answered "no plan yet" in the console for as long as the
+ * on a busy board answered "no plan yet" in the web UI for as long as the
  * board stayed busy, with nothing said anywhere about why.
  *
  * Two halves. It asks for a plan when the focus has none, and it harvests what
@@ -1202,7 +1202,7 @@ async function planFocus(cfg: Config, state: State): Promise<void> {
  * is a ticket somebody is building and the sessions on those are past this
  * list, so a plan with nothing unfiled left in it is spent. Asking twice for
  * one answer is what the key prevents — it carries the focus text and the
- * console's `planRevision`, so editing the focus asks a new question and
+ * web UI's `planRevision`, so editing the focus asks a new question and
  * pressing "ask for a new plan" asks the same one again on purpose.
  */
 async function askForAPlan(cfg: Config, state: State): Promise<void> {
@@ -1230,7 +1230,7 @@ const harvestKey = (n: number) => `plan-from-${n}`;
  * per machinery problem and per direction proposal: 39 of them by 2026-09-09,
  * none labelled for the build lane, none closed, all of them counting against a
  * board a person has to read. A finding is not work until somebody decides it
- * is, and the console's list is where that decision is made — so a session
+ * is, and the web UI's list is where that decision is made — so a session
  * posts rows and only a row the lane reaches becomes a ticket.
  *
  * Each ticket is harvested once, keyed in the lane's own state: a session may
@@ -1288,7 +1288,7 @@ async function generateFromQueue(cfg: Config, state: State): Promise<void> {
   const next = plan.find((i) => !i.issue);
   if (!next) return;
 
-  // Filed on an earlier tick whose stamp did not land (the console saved over it,
+  // Filed on an earlier tick whose stamp did not land (the web UI saved over it,
   // or the control file is not writable from here). The marker is the authority,
   // not the stamp: filing it twice is the one mistake this lane cannot take back.
   const already = await filedIssue(`focus-${next.id}`);
@@ -1398,7 +1398,7 @@ async function fileQaTicket(state: State, key: string, name: string, intro: stri
     "",
     "   Gaps used to be filed as `qa-gap` issues: 30 of them were open and none had ever been",
     "   closed, because a finding is not work until somebody decides it is. The queue is where",
-    "   that decision is made — the maintainer reorders and deletes it in the console, and a",
+    "   that decision is made — the maintainer reorders and deletes it in the web UI, and a",
     "   row becomes a ticket only when the lane reaches it.",
     "4. **Report and close.** Your final message: what you exercised, what held, what you",
     "   posted. Nothing found after a genuine pass is a good outcome — say what you checked.",
@@ -1515,7 +1515,7 @@ async function sweepMergedBranches() {
 // days one session reads the whole period — what shipped, what stalled, what
 // the QA passes found — and steers, inside hard bounds. What it may do is put
 // work on the queue: ordered rows the maintainer reorders and deletes in the
-// console, which is the loop QA opened (a gap is found, judged against the
+// web UI, which is the loop QA opened (a gap is found, judged against the
 // values, and built) with a person deciding only the order. Direction itself
 // stays out of reach — docs/direction.md's own rule is that a session proposes
 // a change and never rewrites it — and a proposal is a paragraph in the report

@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- An admin surface has no business in a search index. -->
-    <meta name="robots" content="noindex" />
-    <title>Cartopolis — accounts</title>
+    <!-- No robots tag: this page is also the front page. Caddy sends
+         `X-Robots-Tag: noindex` on the operator's and players' paths instead. -->
+    <title>Cartopolis</title>
     <!-- Slate `#1b2830` is `theme::SURFACE`; painting it here rather than
          waiting for the stylesheet keeps a phone from flashing white first. -->
     <meta name="theme-color" content="#1b2830" />
@@ -14,8 +14,8 @@
         background: #1b2830;
       }
     </style>
-    <link rel="stylesheet" href="/console/app.css" />
-    <script type="module" src="/console/app.js"></script>
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/app.js"></script>
   </head>
   <body></body>
 </html>

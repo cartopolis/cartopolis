@@ -125,7 +125,7 @@ export const Autopilot = () => {
      *
      * Sending an empty list is not the same as emptying it — the server hands
      * back every row that has become a ticket, because those are being built and
-     * are not the console's to withdraw. So this discards the unfiled tail, and
+     * are not the web UI's to withdraw. So this discards the unfiled tail, and
      * the new plan arrives underneath what is already in flight.
      */
     const replan = () => {

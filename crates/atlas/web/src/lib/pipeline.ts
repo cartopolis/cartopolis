@@ -9,7 +9,7 @@ import {$s, api, notifier} from '@/app'
 import {ApiError} from '@/lib/api'
 
 /**
- * Everything the pipeline console can ask the server to do.
+ * Everything the Data tab can ask the server to do.
  *
  * Same split as `accounts.ts` and for the same reason: each of these writes the
  * store, says something to the user and decides what a refusal means, and a
@@ -62,7 +62,7 @@ export async function loadJobs(): Promise<void> {
  * currently stamped with a *different* area name. That matters because each
  * extractor rewrites the whole manifest for its dataset: extracting Amsterdam
  * does not add to Groningen, it takes its place, and the Groningen tiles stay on
- * disk while the client stops being told they are there. The console reports it
+ * disk while the client stops being told they are there. The web UI reports it
  * as a warning that outlives a toast, because it is the one irreversible thing
  * this page can do.
  */
@@ -127,7 +127,7 @@ export function follow(id: string): void {
 /**
  * One poll of the followed run.
  *
- * `since` is a line count, not a timestamp: the console keeps what it has drawn
+ * `since` is a line count, not a timestamp: the web UI keeps what it has drawn
  * and asks for the rest, so a run that logs nothing costs an empty array rather
  * than re-sending the last two thousand lines every second. Returns whether the
  * run is still going, which is what stops the timer.

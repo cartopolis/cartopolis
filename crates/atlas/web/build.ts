@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Build the admin GUI into `dist/`, and optionally serve it.
+ * Build the atlas web UI into `dist/`, and optionally serve it.
  *
  * Deliberately `Bun.build` and a handful of file copies rather than a bundler
  * with a config file: the output is three files, and the deploy is an rsync of a
@@ -24,7 +24,7 @@ const API = process.env.CARTO_ADMIN_API || 'http://127.0.0.1:4748'
  * cartopolis_atlas`), which runs the map data pipelines.
  *
  * Two upstreams behind one path prefix, which is exactly what Caddy does in
- * production: the console has to see one origin, or the bearer it already holds
+ * production: the web UI has to see one origin, or the bearer it already holds
  * would need CORS and a second address to send it to.
  */
 const PIPELINE = process.env.CARTO_PIPELINE_API || 'http://127.0.0.1:4749'
@@ -83,18 +83,8 @@ if (serve) {
                 } as RequestInit)
             }
 
-            // Mounted as in production (`src/lib/base.ts`): the player pages at
-            // the root, everything else under /console/.
-            if (['/register', '/verify', '/house'].includes(url.pathname)) {
-                return new Response(Bun.file(path.join(dist, 'index.html')), {
-                    headers: {'Content-Type': 'text/html'},
-                })
-            }
-            if (!url.pathname.startsWith('/console/')) {
-                return Response.redirect(`${url.origin}/console/`, 302)
-            }
-            const rest = url.pathname.slice('/console'.length)
-            const file = rest === '/' ? '/index.html' : rest
+            // Mounted as in production (`src/lib/base.ts`): at the site root.
+            const file = url.pathname === '/' ? '/index.html' : url.pathname
             const candidate = Bun.file(path.join(dist, file))
             if (await candidate.exists()) {
                 return new Response(candidate)
@@ -105,5 +95,5 @@ if (serve) {
             })
         },
     })
-    console.log(`console on http://localhost:${PORT}/console/ (api → ${API})`)
+    console.log(`web UI on http://localhost:${PORT}/ (api → ${API})`)
 }

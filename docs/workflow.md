@@ -132,21 +132,21 @@ and none of it needs a restart:
   for a person, which is where this lane stopped before.
 - `focus` / `focusPlan` — the second queue, below.
 
-Nobody edits that file by hand any more: the atlas console's **Autopilot tab**
-(`https://cartopolis.org/console/`) is the control surface, and the file is how it reaches
+Nobody edits that file by hand any more: the atlas web UI's **Autopilot tab**
+(`https://cartopolis.org/admin`) is the control surface, and the file is how it reaches
 this process. It is a hand-synced seam — a field added to `Config` here has to be
-added to `crates/atlas/src/autopilot.rs` too, or the console strips it on the
+added to `crates/atlas/src/autopilot.rs` too, or the web UI strips it on the
 next save.
 
 #### The queue: the frontier, or a focus
 
 By default the work comes from the frontier table in
 [`direction.md`](direction.md), one row at a time, for ever. That answers "what
-next?" and cannot answer "spend the next fortnight on X", so the console also
+next?" and cannot answer "spend the next fortnight on X", so the web UI also
 carries a **focus** — a sentence in the maintainer's own words — and while it
 says something it *replaces* the frontier.
 
-What gets built under it is an ordered **plan**, which the console reorders,
+What gets built under it is an ordered **plan**, which the web UI reorders,
 rewrites, extends and deletes. The autopilot does not write that plan (it still
 runs no model): when the focus is set and the plan is empty it files one
 **planning ticket**, and ③'s session answers with a fenced `autopilot-plan` block

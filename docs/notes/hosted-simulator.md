@@ -1,6 +1,6 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, deploy-admin.yml, deploy-console.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
+triggers: [deploy-sim.yml, deploy-admin.yml, deploy-web.yml, deploy-wasm.yml, "/console/", atlas, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
 updated: 2026-09-23
 ---
 
@@ -13,13 +13,15 @@ and each has a different audience:
 | Address | Who | What |
 |---|---|---|
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
-| `https://cartopolis.org/` | everyone | **`cartopolis_atlas`** since 2026-09-23 — the front page, `/terrain/{z}/{x}/{y}`, and the account pages as they move over (`atlas.md`) |
+| `https://cartopolis.org/` | everyone | **the atlas web UI** (`crates/atlas/web`, static files published by `deploy-web.yml`) since 2026-09-24 — the front page, the operator's pages at `/admin` (accounts, houses, models, the Data and Autopilot tabs) and the players' `/register`, `/verify` and `/house`. Caddy's fallback, with `index.html` for any path that is not a file |
+| `https://cartopolis.org/terrain/`, `/height`, `/api/pipeline/` | the client, the web UI | **`cartopolis_atlas`** (`atlas.md`), on `172.17.0.1:4749` |
 | `https://cartopolis.org/viewer/` | players in a browser | the wasm client, published by `deploy-wasm.yml` into `site/viewer/` |
-| `https://cartopolis.org/console/` | operators | the account admin GUI — the atlas console, `crates/atlas/console`, static files published by `deploy-console.yml`; atlas's front page has a "Sign in" button to it. It was `web.cartopolis.org` and a separate repository until 2026-09; that hostname is retired, with no redirect |
+| `https://cartopolis.org/console/` | nobody | redirects to `/admin`. The operator's pages lived here, beside a front page atlas served itself, until 2026-09-24; before that they were `web.cartopolis.org` and a separate repository, a hostname retired with no redirect |
 
-Everything Caddy does not route elsewhere goes to atlas (`172.17.0.1:4749`), which
-is why the site root is not a file directory any more. Two things stay files at
-the root, served from `site/`: `/apk/` (deploy-android.yml), and
+Everything Caddy does not route elsewhere is the web UI (from
+`/data/cartopolis/admin`, the directory name kept from when it was admin-only),
+which is why the site root is not the viewer's file directory any more. Two
+things stay files at the root, served from `site/`: `/apk/` (deploy-android.yml), and
 `/.well-known/assetlinks.json`, which an Android phone reads from exactly that URL
 to decide the app may handle a place link ([place-links.md](place-links.md)) and
 which `deploy-wasm.yml` copies up out of the trunk dist. `/go` is a **redirect**
@@ -123,19 +125,19 @@ holding credentials, in order to serve 35 KB of static files and forward JSON to
 a Rust process that was already answering HTTP. What was worth borrowing from
 codebrew is its *front end*: the deepsignal store with its persistent/volatile
 split, and the `App.init` + `components/{pages,elements}` layout. Those are in
-`crates/atlas/console` and the GUI has no backend of its own — it is static files
+`crates/atlas/web` and the GUI has no backend of its own — it is static files
 Caddy serves, and its API calls go to this simulator (`/api/admin/*`) and to
 atlas (`/api/pipeline/*`), which was already answering HTTP too.
 
 The GUI lived in a separate repository until 2026-09, because it
 shared nothing with this one but an HTTP contract. It moved in with atlas, but it
 is still TypeScript beside Rust, so the one seam worth naming is unchanged:
-`crates/atlas/console/src/types.ts` describes what `auth::AccountRow` serialises,
+`crates/atlas/web/src/types.ts` describes what `auth::AccountRow` serialises,
 and nothing but a person keeps the two in step.
 
 ## Rejected: CORS on the simulator
 
-The GUI is static files (at `cartopolis.org/console/` now; it was
+The GUI is static files (the site root of `cartopolis.org` now; it was
 `web.cartopolis.org`) and the API is on the simulator, so the obvious move is an
 `Access-Control-Allow-Origin` layer. Caddy proxies the API on the GUI's own
 hostname to the simulator instead, which makes every request same-origin —
@@ -146,8 +148,8 @@ same reason (ADR-034 calls one origin the fix).
 
 ## Still open
 
-- **`web.cartopolis.org` is retired, with no redirect.** The console moved to
-  `cartopolis.org/console/` in 2026-09. Its A record can go whenever somebody
+- **`web.cartopolis.org` is retired, with no redirect.** The web UI moved to
+  `cartopolis.org` in 2026-09. Its A record can go whenever somebody
   with access to the zone gets to it; DNS for `cartopolis.org` is not self-serve
   from this container.
 

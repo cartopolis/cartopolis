@@ -11,7 +11,7 @@
 //! square, measured 2026-09-24, before it moved to one extract — and the 3D
 //! basisvoorziening ~22 MB a 2 km sheet, both of which change on a scale of
 //! weeks to a year. A run asked to be fresh (`Ctx::with_fresh`, `atlas run
-//! --fresh`, the console's option) fetches everything anew and writes it back.
+//! --fresh`, the web UI's option) fetches everything anew and writes it back.
 //! A request whose answer is a *state* rather than a source — a job's status —
 //! must not go through it ([`get_json_live`]).
 

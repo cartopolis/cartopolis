@@ -1,7 +1,7 @@
 //! Who may drive the pipeline: whoever the **simulator** says is an admin. Ported
 //! from the earlier TypeScript server (`auth.ts`).
 //!
-//! Atlas mints nothing and stores no credential — yet. The console already holds
+//! Atlas mints nothing and stores no credential — yet. The web UI already holds
 //! an admin bearer from the simulator's `/api/admin/login`, so the check is to hand
 //! that token back to the simulator's `/api/admin/me` and believe the answer; that
 //! route answers 200 only for an admin, so a 200 is the whole decision. A second
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use axum::http::{header, HeaderMap};
 use serde::Deserialize;
 
-/// How long an answer is believed. A console left open against an expired
+/// How long an answer is believed. A web UI left open against an expired
 /// session polls the job log every second; without this each poll would be a
 /// round trip to the simulator. The staleness it buys is the staleness the
 /// simulator already has: `disabled = 1` gates the next handshake, not a live

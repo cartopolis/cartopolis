@@ -1,13 +1,17 @@
-# The atlas console
+# The atlas web UI
 
-The admin interface for [cartopolis.org](https://cartopolis.org): a small Preact
-app, static files behind Caddy at
-**[cartopolis.org/console/](https://cartopolis.org/console/)** — the front
-page's *Sign in*. It had its own hostname, web.cartopolis.org, until 2026-09.
-Every path goes through `src/lib/base.ts`. It talks to the
-simulator's `/api/admin` surface (`crates/simulator/src/http.rs`) and to atlas's
-`/api/pipeline` surface (`crates/atlas/src/console.rs`). It lived in a separate
-repository until 2026-09.
+**[cartopolis.org](https://cartopolis.org)** itself: a small Preact app, static
+files behind Caddy at the site root. It is the front page (`/`), the operator's
+pages (`/admin`) and the players' pages (`/register`, `/verify`, `/house`);
+Caddy sends everything else — the viewer at `/viewer/`, the APK, the simulator's
+`/api` and `/ws`, atlas's tiles and `/api/pipeline` — where it belongs. Every
+path goes through `src/lib/base.ts`. It talks to the simulator's `/api/admin`
+surface (`crates/simulator/src/http.rs`) and to atlas's `/api/pipeline` surface
+(`crates/atlas/src/api.rs`).
+
+It was called the *console*, lived at `/console/` beside a front page atlas
+served from a string, had its own hostname (web.cartopolis.org) before that, and
+a repository of its own until 2026-09. Caddy redirects `/console/` to `/admin`.
 
 Sign in with a Cartopolis account carrying the `admin` flag — the same account
 signs into the world itself, and atlas checks the bearer against the simulator
@@ -15,7 +19,7 @@ rather than keeping a list of its own.
 
 ## What it does
 
-**For the operator** (everything under `/`): list accounts, create them,
+**For the operator** (`/admin`): list accounts, create them,
 enable/disable, promote/demote to admin, reset a password, delete — and a
 *Houses* tab listing who holds which address. Two rules are enforced by the
 *server* and simply reported here, which is why its error text is passed through
@@ -62,7 +66,7 @@ refusal — so the sign-in page only draws one when the server says `open`.
 ## The data pipeline
 
 The Data tab drives atlas's map data pipelines (`crates/atlas/src/pipeline/`)
-through `/api/pipeline/*` (`crates/atlas/src/console.rs`). They were a
+through `/api/pipeline/*` (`crates/atlas/src/api.rs`). They were a
 TypeScript server until 2026-09, and the Python scripts in `tools/` before that; the
 formats they write, the routes and the refusals are unchanged, so this page
 needed no change beyond where the dev proxy points. `docs/notes/atlas.md` has
@@ -92,7 +96,7 @@ Colours come from the Cartopolis client's own theme constants
 
 ```bash
 bun install
-bun run dev          # http://localhost:3100/console/, proxying /api to a local simulator
+bun run dev          # http://localhost:3100/, proxying /api to a local simulator
 bun run build        # → dist/
 bun test             # store rules, API errors, sign-up
 bunx tsc --noEmit
@@ -101,17 +105,18 @@ bunx tsc --noEmit
 `bun run dev` proxies `/api/*` to `$CARTO_ADMIN_API` (default
 `http://127.0.0.1:4748`) and `/api/pipeline/*` to `$CARTO_PIPELINE_API` (default
 atlas, `http://127.0.0.1:4749`) — two upstreams behind one prefix, exactly as
-Caddy does in production, so the console sees one origin and needs no CORS.
+Caddy does in production, so the web UI sees one origin and needs no CORS.
 
 ## Deployment
 
-`.forgejo/workflows/deploy-console.yml` builds `dist/` and publishes it to
-`/data/cartopolis/admin`. Caddy serves it on cartopolis.org as the operator's
-pages under `/console/` and the players' pages at `/register`, `/verify` and
-`/house` (`src/lib/base.ts`). The simulator's routes the console calls
+`.forgejo/workflows/deploy-web.yml` builds `dist/` and publishes it to
+`/data/cartopolis/admin` (the directory kept its old name so Caddy's mount did
+not have to move). Caddy serves it as the fallback for every path on
+cartopolis.org it routes nowhere else, with `index.html` for any path that is
+not a file (`src/lib/base.ts`). The simulator's routes the web UI calls
 (`/api/admin`, `/api/login`, `/api/logout`, `/api/register`, `/api/houses`)
-are proxied to it on that hostname, and `/api/pipeline/*` falls
-through to atlas with everything else. The simulator's `CARTO_PUBLIC_BASE_URL`
+are proxied to it on that hostname, and atlas gets `/api/pipeline/*`,
+`/terrain/*`, `/height` and `/health`. The simulator's `CARTO_PUBLIC_BASE_URL`
 is just the site, `https://cartopolis.org`: it builds
 `{base}/verify?token=…`, which lands on the player page.
 

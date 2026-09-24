@@ -231,10 +231,10 @@ loopback-only, so there is nothing plaintext to reach.
 [`docs/notes/hosted-simulator.md`](../notes/hosted-simulator.md) has the shape and
 what is still open.
 
-**The admin GUI is the atlas console, `crates/atlas/console`.** Preact +
+**cartopolis.org is the atlas web UI, `crates/atlas/web`.** Preact +
 deepsignal, Bun, no Rust — it manages accounts on the hosted simulator and drives
-atlas's map data pipelines, and `deploy-console.yml` publishes it to
-[cartopolis.org/console/](https://cartopolis.org/console/) on every push to
+atlas's map data pipelines, and `deploy-web.yml` publishes it to
+[cartopolis.org](https://cartopolis.org/) (operator pages at `/admin`) on every push to
 `main` that touches it. It was a separate repository, on its own
 hostname (`web.cartopolis.org`, retired), until 2026-09. It talks
 to the rest of the tree only through the simulator's `/api/admin` and atlas's
@@ -380,10 +380,10 @@ that to any new job. `deploy-wasm.yml`, `deploy-android.yml` and `deploy-sim.yml
 Every other deploy lane in this repo is manual, because publishing is either
 expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
 (`deploy-sim.yml` restarts the live simulator, dropping every connected session).
-The admin console's lane, `deploy-console.yml`, is the opposite — seconds, and it
+The web UI's lane, `deploy-web.yml`, is the opposite — seconds, and it
 interrupts nobody — so it runs on every push to `main` that touches
-`crates/atlas/console`. It publishes to `/data/cartopolis/admin`, which has been
-in the runner's `valid_volumes` since the console was its own repository.
+`crates/atlas/web`. It publishes to `/data/cartopolis/admin`, which has been
+in the runner's `valid_volumes` since the web UI was its own repository.
 
 **A step may only use a tool the image already has.** The image is built by hand on
 the VPS (`~/build/cartopolis-ci-image/Dockerfile`, then `docker build -t

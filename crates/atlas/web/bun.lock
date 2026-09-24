@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "cartopolis-admin",
+      "name": "cartopolis-atlas-web",
       "dependencies": {
         "@preact/signals": "^2.0.2",
         "classnames": "^2.5.1",

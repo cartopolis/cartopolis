@@ -3,14 +3,14 @@
 //! `docs/notes/atlas.md` has the design and the rules it keeps. It serves the
 //! terrain tiles the screen-driven tile tree stands on
 //! (`docs/notes/level-of-detail-tile-tree.md`) and runs the map data pipelines
-//! (`pipeline`, driven through `console`); the accounts arrive here later.
+//! (`pipeline`, driven through `api`); the accounts arrive here later.
 
 pub mod ahn6;
+pub mod api;
 pub mod areas;
 pub mod auth;
 pub mod autopilot;
 pub mod config;
-pub mod console;
 pub mod coverage;
 pub mod http;
 pub mod jobs;
@@ -33,7 +33,7 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
         &config.data_dir,
         config.upstream_concurrency,
     );
-    let console = console::ConsoleState {
+    let api = api::ApiState {
         auth: Arc::new(auth::Auth::new(Box::new(auth::Simulator {
             api: config.admin_api.clone(),
         }))),
@@ -48,7 +48,7 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             heights,
             config.upstream_concurrency,
         )),
-        console,
+        api,
     };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, data_dir = %config.data_dir.display(), "atlas serving");

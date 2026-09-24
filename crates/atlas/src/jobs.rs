@@ -1,4 +1,4 @@
-//! The pipeline runner the console drives. Ported from the earlier TypeScript server (`jobs.ts`).
+//! The pipeline runner the web UI drives. Ported from the earlier TypeScript server (`jobs.ts`).
 //!
 //! **One job at a time, and one dataset at a time inside it.** Not a concurrency
 //! limit that happens to be 1: these extractors page somebody else's open-data
@@ -21,7 +21,7 @@ use crate::pipeline::{Count, Ctx, DatasetResult, Outcome, PipelineError, Progres
 
 /// How many log lines a job keeps. A BAG run prints a line per page and a city is
 /// tens of thousands of pages, so the log is unbounded in principle and this is
-/// what stops one run from being the process's memory profile. The console shows
+/// what stops one run from being the process's memory profile. The web UI shows
 /// the tail; the warnings and the totals are at the end by construction.
 pub const LOG_LIMIT: usize = 2_000;
 
@@ -44,7 +44,7 @@ impl JobStatus {
 #[derive(Clone, Debug, Serialize)]
 pub struct LogLine {
     pub at: u64,
-    /// Which dataset said it — a job runs several and the console interleaves them.
+    /// Which dataset said it — a job runs several and the web UI interleaves them.
     pub dataset: String,
     pub text: String,
 }
@@ -208,7 +208,7 @@ impl Runner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Newest first — the console's history is read from the top.
+    /// Newest first — the web UI's history is read from the top.
     #[must_use]
     pub fn list(&self) -> Vec<Job> {
         self.lock()
@@ -225,7 +225,7 @@ impl Runner {
     }
 
     /// Everything after the first `since` lines, and how many lines there have
-    /// been in all. `since` is a line count, not a timestamp: the console holds what
+    /// been in all. `since` is a line count, not a timestamp: the web UI holds what
     /// it has drawn and asks for the rest, so a quiet minute costs an empty array.
     #[must_use]
     pub fn log(&self, id: &str, since: usize) -> Option<(Vec<LogLine>, usize)> {
@@ -521,7 +521,7 @@ mod tests {
         let job = runner.get(&second.id).unwrap();
         assert_eq!(job.status, JobStatus::Cancelled);
         assert_eq!(job.steps[0].status, JobStatus::Cancelled);
-        // Cancelling it twice is not an error the console has to explain.
+        // Cancelling it twice is not an error the web UI has to explain.
         assert!(!runner.cancel(&second.id));
 
         // And a running one unwinds at its next check.

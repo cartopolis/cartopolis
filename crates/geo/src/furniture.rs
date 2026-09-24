@@ -112,7 +112,7 @@ pub struct FurnitureInstance {
     /// waterline of the study pond in Groningen, with a solid collider and an
     /// offer to walk up to it, 40 m out into the pond. A flag rather than a second
     /// [`FurnitureKind`] on purpose: the vocabulary is closed, hand-synced with
-    /// the atlas console and reachable by an operator's placeholder model through
+    /// the atlas web UI and reachable by an operator's placeholder model through
     /// [`FurnitureKind::slug`], and a jet and a basin should still both be "the
     /// fountain" to all three of those.
     pub over_water: bool,
@@ -189,7 +189,7 @@ impl FurnitureKind {
     /// model (`cartopolis_core::placeholders`).
     ///
     /// Spelled out rather than derived from the variant name: these strings are
-    /// in a server's database and in the atlas console, so renaming a variant here
+    /// in a server's database and in the atlas web UI, so renaming a variant here
     /// must not silently re-point every row that used to match it.
     #[must_use]
     pub fn slug(self) -> &'static str {

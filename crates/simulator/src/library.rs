@@ -48,7 +48,7 @@ use crate::http::{internal, require_admin, require_session, ApiError, ApiResult,
 /// required nor sufficient. Only curation is an operator action.
 ///
 /// And note what nothing here may be called: `/api/pipeline/*` belongs to
-/// atlas (`crates/atlas/src/console.rs`), and the reverse proxy in front of both matches it first,
+/// atlas (`crates/atlas/src/api.rs`), and the reverse proxy in front of both matches it first,
 /// so a route named under that prefix would never be reached.
 pub fn routes() -> Router<HttpState> {
     Router::new()
@@ -166,7 +166,7 @@ impl Licence {
 ///
 /// A sequence rather than a hierarchy: `Shared` the moment somebody publishes it,
 /// because a library that waits for review never fills; `Curated` once an
-/// operator has given it a category and a tidy name in the atlas console; `Hidden` when one
+/// operator has given it a category and a tidy name in the atlas web UI; `Hidden` when one
 /// has decided it does not belong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -918,7 +918,7 @@ async fn take_from_library(
 }
 
 // ---------------------------------------------------------------------------
-// Curation, from the atlas console
+// Curation, from the atlas web UI
 // ---------------------------------------------------------------------------
 
 /// `GET /api/admin/library` — every entry including the hidden ones, with who

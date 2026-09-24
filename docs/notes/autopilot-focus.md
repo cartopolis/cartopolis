@@ -12,9 +12,9 @@ filed a row at a time for ever. That answers *"what next?"* and it cannot answer
 usually not a row in that table and often not a data source at all. "Get this
 solid on the Steam Deck runner" is the case that prompted the feature.
 
-So there is a second queue. `focus` is a sentence in the admin console
-(the atlas console's Autopilot tab); `focusPlan` is an **ordered list of pieces of work**
-that the console reorders, rewrites, extends and deletes. While it holds a row
+So there is a second queue. `focus` is a sentence in the atlas web UI
+(the atlas web UI's Autopilot tab); `focusPlan` is an **ordered list of pieces of work**
+that the web UI reorders, rewrites, extends and deletes. While it holds a row
 nobody has started, it *replaces* the frontier — the two are not blended,
 because a frontier ticket with "…and by the way, the Steam Deck" appended to it
 is a ticket about neither thing.
@@ -28,20 +28,20 @@ this parser all have to agree — and renaming it buys nothing a comment does no
 
 Not the autopilot: it holds the merge token and still runs no language model,
 which is the whole reason it is a separate container from the watcher. Not
-the console's server either (atlas now, a separate TypeScript server when this was built) — it has no model, no key, and nothing else in it needs one.
+the web UI's server either (atlas now, a separate TypeScript server when this was built) — it has no model, no key, and nothing else in it needs one.
 
 It is a **planning ticket**, which is the same trick the QA and retrospective
 lanes already use: a session does the judging, on a ticket, and answers in a
 form a script can read. It posts a fenced ` ```autopilot-plan ` block of JSON
 and the autopilot stores it. The alternatives that lost:
 
-- **The console's server calls an API model directly.** A key on the pipeline host, a cost
+- **The web UI's server calls an API model directly.** A key on the pipeline host, a cost
   centre, and a second place that knows how to talk to a model — to reproduce
   something a session already does with the whole repository checked out beside
   it.
 - **The plan lives in the repository** (`docs/focus.md`, read over the API like
   the frontier is). Nothing new to write, no second writer of the control file —
-  and no way for the console to reorder it, since atlas has no Forgejo token
+  and no way for the web UI to reorder it, since atlas has no Forgejo token
   and giving it one puts repository write access behind the admin GUI.
 
 ## Two writers on one file, and what each owns
@@ -51,7 +51,7 @@ that keeps that safe is ownership, not locking:
 
 | | Ordering, wording, membership of an **unfiled** row | A **filed** row | `issue` |
 |---|---|---|---|
-| the console, via atlas (`crates/atlas/src/autopilot.rs`) | writes | refuses the edit | ignores what is sent |
+| the web UI, via atlas (`crates/atlas/src/autopilot.rs`) | writes | refuses the edit | ignores what is sent |
 | autopilot (`tools/autopilot.ts`) | appends only, never reorders or rewords | leaves it | writes |
 
 Both do read-merge-rename through a temp file in the same directory. A collision
@@ -73,7 +73,7 @@ reorders it and never rewords a row: it adds rows to the end, drops any whose
 title slugs to an id already there, and stops at twenty. That is what lets three
 kinds of session write to one list without a lock and without an argument about
 whose ordering wins — there is no ordering to lose. Two earlier rules are gone
-with it: "stored only while the list is empty" (the console's lock on filed rows
+with it: "stored only while the list is empty" (the web UI's lock on filed rows
 made the list never empty again, so a new plan could never be answered) and its
 successor "only while nothing is unfiled" (appending cannot overwrite, so there
 is nothing to protect).
@@ -98,7 +98,7 @@ nothing at all.
 The rule now is that **a ticket exists only for work that is about to be built**.
 A finding is a row on the queue: the session posts the same `autopilot-plan`
 block the planning session posts, on its own ticket, and the autopilot appends
-it. The maintainer reorders and deletes rows in the console, and a row becomes a
+it. The maintainer reorders and deletes rows in the web UI, and a row becomes a
 ticket only when the lane reaches it. A direction proposal is not even a row —
 it is a paragraph in the retrospective's report, posted on the long-lived
 `Autopilot log` issue, because a row is a promise that something gets built.
@@ -110,14 +110,14 @@ why the report goes to the log thread, which is the copy that survives.
 
 An item stops being a plan the moment it becomes a ticket: a session is building
 it against the wording that was filed, so rewriting the row afterwards describes
-the work as something nobody was asked to do. The console renders a filed row as
+the work as something nobody was asked to do. The web UI renders a filed row as
 static text with a link to its ticket and no remove button, and
 `writeAutopilotConfig` enforces the same thing rather than trusting it — a stale
 tab is a second writer too. What is enforced is *membership and wording*, not
 position: where a row sits is only how the queue reads, and the autopilot keys
 everything on the id and the marker in the ticket body.
 
-`issue` moved with it. The console used to echo back whatever it last read,
+`issue` moved with it. The web UI used to echo back whatever it last read,
 which is a lost stamp whenever the autopilot files something between that read
 and the save; the server now takes the number from the file by id and ignores
 what was sent, so the field is the autopilot's alone in fact and not only by
@@ -144,7 +144,7 @@ front of the feature lane — a red `main`, the daily quota, `maxOpen`. All thre
 are about *code being built*, and this builds none: it opens no branch and files
 one ticket that answers in a comment. Behind them it was unreachable in the one
 state that reliably produces it — a focus typed while the board is busy — and
-the console said "no plan yet" for as long as that lasted, with nothing anywhere
+the web UI said "no plan yet" for as long as that lasted, with nothing anywhere
 saying why. Measured 2026-09-09: nine open tickets against a limit of two and a
 red `main`, a focus and four `planRevision` bumps, and not one planning ticket
 filed.

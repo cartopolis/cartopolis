@@ -23,7 +23,7 @@
 //!
 //! What that costs is that the checks must be *decidable from the file*, which is
 //! why they are counts and dimensions rather than judgements. Whether a model
-//! looks good is a curator's question, in the atlas console.
+//! looks good is a curator's question, in the atlas web UI.
 //!
 //! # The refusals are on parsed facts, never on an estimate
 //!

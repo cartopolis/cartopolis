@@ -92,7 +92,7 @@ export interface Notification {
 }
 
 /**
- * The data pipeline, as atlas exposes it (`crates/atlas/src/console.rs`,
+ * The data pipeline, as atlas exposes it (`crates/atlas/src/api.rs`,
  * `jobs.rs`, `coverage.rs`).
  *
  * Hand-synced like the account types above: these describe Rust structs, and no
@@ -109,7 +109,7 @@ export interface PipelineDataset {
     description: string
     id: string
     label: string
-    /** Roughly how long a city-sized area takes, so the console can say so. */
+    /** Roughly how long a city-sized area takes, so the web UI can say so. */
     typicalMinutes: number
 }
 
@@ -195,7 +195,7 @@ export interface AutopilotConfig {
     planRevision: number
 }
 
-/** One piece of work under the focus, as the console orders and the lane files it. */
+/** One piece of work under the focus, as the web UI orders and the lane files it. */
 export interface AutopilotPlanItem {
     /** Stable key. The lane's ticket marker is `autopilot:focus-<id>`. */
     id: string
@@ -308,7 +308,7 @@ export interface AdminState extends Record<string, unknown> {
     pipelineCoverage: PipelineCoverage[]
     /** Every run this process remembers, newest first. */
     pipelineJobs: PipelineJob[]
-    /** The run the console is following, or `''`. */
+    /** The run the web UI is following, or `''`. */
     pipelineFollowing: string
     /** The followed run's log, as far as it has been fetched. */
     pipelineLog: PipelineLogLine[]

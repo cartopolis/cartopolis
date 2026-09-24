@@ -6,7 +6,7 @@
 //! The HTTP route cuts on demand and keeps the result; this fills the same store
 //! ahead of time. It does not write per-cell files into the site tree like the
 //! other datasets, because atlas serves these tiles itself — only the coverage
-//! manifest goes there, so the console can say what is covered.
+//! manifest goes there, so the web UI can say what is covered.
 //!
 //! **One PDOK request at a time.** A dense z14 tile is one WCS call of a second or
 //! two, and a city is some dozens of them; running them in parallel would buy a

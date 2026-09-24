@@ -17,11 +17,11 @@ They have been ported twice. They started as Python in `tools/`, run by four ssh
 commands per city. In 2026-08 they became TypeScript in a separate repository, behind
 an admin console, because an operator wants to see what a box is serving, press a
 button and watch a log. In 2026-09 they became Rust in atlas
-(`atlas.md`), and the console moved with them to `crates/atlas/console`. The
+(`atlas.md`), and the web UI moved with them to `crates/atlas/web`. The
 formats did not change either time.
 
-Two ways in, one code path: the console's Data tab (`/api/pipeline/*`,
-`crates/atlas/src/console.rs`, one job at a time) and a shell:
+Two ways in, one code path: the web UI's Data tab (`/api/pipeline/*`,
+`crates/atlas/src/api.rs`, one job at a time) and a shell:
 
 ```bash
 atlas run --out /tmp/site --area groningen --datasets buildings,bag
@@ -111,7 +111,7 @@ the map would look wrong.
 Each extractor rewrites the whole `coverage.json` for its dataset from the run
 that just happened, so extracting a second city **replaces** the first rather than
 adding to it — the first city's cell files stay on disk and the client stops being
-told they are there. The console warns before doing it, and `POST
+told they are there. The web UI warns before doing it, and `POST
 /api/pipeline/jobs` answers with the datasets it would displace (`replaces`).
 Merging coverage across areas is the obvious fix and has not been made: the
 manifests would have to be read back and unioned, and a cell listed in a manifest

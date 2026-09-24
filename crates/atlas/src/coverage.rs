@@ -54,7 +54,7 @@ fn plural(stem: &str) -> &str {
     }
 }
 
-/// A JSON object's entries in the order the file has them. The console prints the
+/// A JSON object's entries in the order the file has them. The web UI prints the
 /// totals in the manifest's own order, and `serde_json`'s map sorts its keys
 /// unless the workspace-wide `preserve_order` feature is on — which it is not,
 /// and turning it on would change the map type under every crate that uses it.
@@ -126,7 +126,7 @@ pub fn coverage(out_root: &Path) -> Vec<CoverageEntry> {
                 updated_at: None,
             };
             // No manifest is the ordinary state of a dataset nobody has run yet,
-            // and it is what the console draws as "not extracted".
+            // and it is what the web UI draws as "not extracted".
             let _ = read(&out_root.join(dataset.coverage), &mut entry);
             entry
         })

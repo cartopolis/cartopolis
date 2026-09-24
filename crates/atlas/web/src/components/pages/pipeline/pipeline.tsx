@@ -44,7 +44,7 @@ function counts(list?: readonly PipelineCount[]): string {
 }
 
 /**
- * The data-processing console.
+ * The Data tab: the map data pipelines.
  *
  * Three things, in the order an operator needs them: what the served tree covers
  * now, a form to refresh or extend it, and the log of the run that is going.
@@ -68,7 +68,7 @@ export const Pipeline = () => {
     }, [])
 
     // Follow whatever is already running when the page opens, so an operator who
-    // reloads mid-run is not shown an idle console over a live job.
+    // reloads mid-run is not shown an idle Data tab over a live job.
     useEffect(() => {
         if (!$s.pipelineFollowing) {
             const live = $s.pipelineJobs.find((job) => job.status === 'running' || job.status === 'queued')

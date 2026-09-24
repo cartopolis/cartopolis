@@ -19,8 +19,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run datasets from a shell, with no console and no simulator — the same code
-    /// path the console drives, with the log on stderr. For a first extraction on
+    /// Run datasets from a shell, with no web UI and no simulator — the same code
+    /// path the web UI drives, with the log on stderr. For a first extraction on
     /// a fresh box, a cron job, and diffing a port against what it replaced.
     Run {
         /// Output root: the tree Caddy serves as 3dbag.cartopolis.org.

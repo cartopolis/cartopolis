@@ -5,7 +5,7 @@ import {useEffect, useState} from 'preact/hooks'
 
 import {$s} from '@/app'
 import {HousePicker} from '@/components/elements/house/house'
-import {at} from '@/lib/base'
+import {ADMIN} from '@/lib/base'
 import {resend, tokenFromLocation, verify} from '@/lib/signup'
 
 type Phase = 'confirmed' | 'failed' | 'working'
@@ -84,7 +84,7 @@ export const Verify = (_props: RoutableProps) => {
             >
                 Send another link
             </button>
-            <button class="ghost" onClick={() => route(at('/'))} type="button">
+            <button class="ghost" onClick={() => route(ADMIN)} type="button">
                 Back to sign in
             </button>
         </div>

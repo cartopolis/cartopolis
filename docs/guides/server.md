@@ -493,10 +493,10 @@ Six datasets, all landing in one tree and all served by the same Caddy site:
 **In atlas**, `crates/atlas/src/pipeline/`. They were Python scripts under
 `tools/`, run by hand over ssh; from 2026-08 they were TypeScript in
 a separate repository; since 2026-09 they are Rust in the `cartopolis_atlas` crate.
-Two ways in, one code path. The **Data** tab of the atlas console at
-[cartopolis.org/console/](https://cartopolis.org/console/): an operator picks an area,
+Two ways in, one code path. The **Data** tab of the atlas web UI at
+[cartopolis.org/admin](https://cartopolis.org/admin): an operator picks an area,
 picks datasets, presses Start and watches the log; the coverage panel says what
-the tree currently holds before anything is run. Or a shell, with no console and
+the tree currently holds before anything is run. Or a shell, with no web UI and
 no simulator:
 
 ```bash
@@ -574,7 +574,7 @@ Smoke test: `curl --compressed https://3dbag.cartopolis.org/coverage.json`.
 ### The pipeline service
 
 The pipelines are served by atlas: `/api/pipeline/*` routes
-(`crates/atlas/src/console.rs`) inside `cartopolis-atlas.service`, which replaced
+(`crates/atlas/src/api.rs`) inside `cartopolis-atlas.service`, which replaced
 the Bun `cartopolis-pipeline.service` in 2026-09. It is a native binary under
 systemd, the same shape as `cartopolis-sim.service`: `deploy-atlas.yml`
 (manual) publishes it into `/data/cartopolis/atlas` and touches
@@ -593,9 +593,9 @@ autopilot_config = "/data/agent/state/autopilot.json"   # the file the Autopilot
 ```
 
 It listens on the docker0 gateway (`172.17.0.1:4749`), and Caddy sends the
-console's `/api/pipeline/*` calls there — matched **before** any `/api/*` block
+web UI's `/api/pipeline/*` calls there — matched **before** any `/api/*` block
 that goes to the simulator, or every call lands on the simulator and 404s. The
-console itself is static files at `https://cartopolis.org/console/`. The pipeline
+web UI itself is static files at the site root, `https://cartopolis.org/`. The pipeline
 runs one job at a time.
 
 It authorises nothing itself: each request's bearer goes to the simulator's
@@ -608,7 +608,7 @@ pair), and `docs/notes/atlas.md` has the design.
 **A refresh replaces a dataset's coverage, it does not add to it.** Each
 extractor rewrites the whole manifest for its dataset, so extracting a second
 city takes the first one's place — the first city's cell files stay on disk and
-the client simply stops being told about them. The console warns before doing it.
+the client simply stops being told about them. The web UI warns before doing it.
 Until that is fixed, one covered area per dataset is the rule.
 
 **Client wiring:** the client fetches covered z14 cells from `CARTO_3DBAG_URL`

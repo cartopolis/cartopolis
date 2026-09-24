@@ -25,11 +25,11 @@ pub struct AtlasConfig {
     /// service and we are a guest on it; the client's own height layer uses 3.
     pub upstream_concurrency: usize,
     /// The tree the map data pipelines write, which Caddy serves as
-    /// `3dbag.cartopolis.org` and the console reads coverage from.
+    /// `3dbag.cartopolis.org` and the web UI reads coverage from.
     pub site_dir: PathBuf,
-    /// The simulator's HTTP surface, asked whether a console bearer is an admin.
+    /// The simulator's HTTP surface, asked whether a web UI bearer is an admin.
     pub admin_api: String,
-    /// The autopilot's control file, which the console steers.
+    /// The autopilot's control file, which the web UI steers.
     pub autopilot_config: PathBuf,
 }
 

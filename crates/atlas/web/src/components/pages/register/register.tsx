@@ -4,7 +4,7 @@ import {route} from 'preact-router'
 import {useState} from 'preact/hooks'
 
 import {$s} from '@/app'
-import {at} from '@/lib/base'
+import {ADMIN} from '@/lib/base'
 import {register, whatIsMissing} from '@/lib/signup'
 
 /**
@@ -43,7 +43,7 @@ export const Register = (_props: RoutableProps) => {
                 <p class="hint">
                     This server does not take registrations — accounts on it are made by its operator.
                 </p>
-                <button class="ghost" onClick={() => route(at('/'))} type="button">
+                <button class="ghost" onClick={() => route(ADMIN)} type="button">
                     Back to sign in
                 </button>
             </div>
@@ -142,7 +142,7 @@ export const Register = (_props: RoutableProps) => {
             <button class="primary" disabled={!!missing || busy} type="submit">
                 {busy ? 'Sending…' : 'Sign up'}
             </button>
-            <button class="ghost" disabled={busy} onClick={() => route(at('/'))} type="button">
+            <button class="ghost" disabled={busy} onClick={() => route(ADMIN)} type="button">
                 I already have an account
             </button>
         </form>

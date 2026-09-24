@@ -279,7 +279,7 @@ fn uploaded_item_id(body: &str) -> Option<i64> {
 ///
 /// The name travels and the **category does not**: nothing in this panel picks
 /// one, and sending a constant would put "other" on every entry as though somebody
-/// had chosen it. Categorising is a curator's job, in the atlas console, and the server
+/// had chosen it. Categorising is a curator's job, in the atlas web UI, and the server
 /// defaults the field for exactly that reason.
 fn share(inbox: Inbox, id: i64, name: String) {
     IoTaskPool::get()

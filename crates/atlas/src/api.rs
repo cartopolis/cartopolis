@@ -1,9 +1,9 @@
-//! `/api/pipeline/*`: what the admin console drives the map data pipelines
+//! `/api/pipeline/*`: what the web UI drives the map data pipelines
 //! through. Ported from the earlier TypeScript server (`index.ts`), route for route and refusal
-//! for refusal, so the console needed no change to talk to atlas instead.
+//! for refusal, so the web UI needed no change to talk to atlas instead.
 //!
 //! Every route but `/health` asks the simulator whether the caller is an admin
-//! ([`crate::auth`]). Every refusal is `{"error": "…"}`, the shape the console's
+//! ([`crate::auth`]). Every refusal is `{"error": "…"}`, the shape the web UI's
 //! `lib/api.ts` unwraps.
 
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ use crate::jobs::Runner;
 use crate::pipeline::DATASETS;
 
 #[derive(Clone)]
-pub struct ConsoleState {
+pub struct ApiState {
     pub auth: Arc<Auth>,
     pub runner: Runner,
     /// The tree the pipelines write and Caddy serves.
@@ -37,7 +37,7 @@ fn fail(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error": message}))).into_response()
 }
 
-async fn admin(state: &ConsoleState, headers: &HeaderMap) -> Result<Principal, Response> {
+async fn admin(state: &ApiState, headers: &HeaderMap) -> Result<Principal, Response> {
     state.auth.admin(headers).await.ok_or_else(|| {
         fail(
             StatusCode::UNAUTHORIZED,
@@ -53,7 +53,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
         .expect("a blocking pipeline read panicked")
 }
 
-pub fn router(state: ConsoleState) -> Router {
+pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
@@ -67,11 +67,11 @@ pub fn router(state: ConsoleState) -> Router {
 }
 
 /// Unauthenticated and deliberately says nothing: what a supervisor polls.
-async fn health(State(state): State<ConsoleState>) -> Json<Value> {
+async fn health(State(state): State<ApiState>) -> Json<Value> {
     Json(json!({"ok": true, "out": state.out_root}))
 }
 
-async fn config(State(state): State<ConsoleState>, headers: HeaderMap) -> Response {
+async fn config(State(state): State<ApiState>, headers: HeaderMap) -> Response {
     if let Err(r) = admin(&state, &headers).await {
         return r;
     }
@@ -92,7 +92,7 @@ async fn config(State(state): State<ConsoleState>, headers: HeaderMap) -> Respon
     Json(json!({"areas": areas, "datasets": datasets, "out": state.out_root})).into_response()
 }
 
-async fn get_coverage(State(state): State<ConsoleState>, headers: HeaderMap) -> Response {
+async fn get_coverage(State(state): State<ApiState>, headers: HeaderMap) -> Response {
     if let Err(r) = admin(&state, &headers).await {
         return r;
     }
@@ -103,8 +103,8 @@ async fn get_coverage(State(state): State<ConsoleState>, headers: HeaderMap) -> 
 const NO_AUTOPILOT: &str = "The autopilot does not run beside this server";
 
 /// On a host without the lane the file is absent and both verbs say so, so the
-/// console explains itself instead of drawing dead sliders.
-async fn get_autopilot(State(state): State<ConsoleState>, headers: HeaderMap) -> Response {
+/// web UI explains itself instead of drawing dead sliders.
+async fn get_autopilot(State(state): State<ApiState>, headers: HeaderMap) -> Response {
     if let Err(r) = admin(&state, &headers).await {
         return r;
     }
@@ -116,7 +116,7 @@ async fn get_autopilot(State(state): State<ConsoleState>, headers: HeaderMap) ->
 }
 
 async fn patch_autopilot(
-    State(state): State<ConsoleState>,
+    State(state): State<ApiState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -142,7 +142,7 @@ async fn patch_autopilot(
     }
 }
 
-async fn list_jobs(State(state): State<ConsoleState>, headers: HeaderMap) -> Response {
+async fn list_jobs(State(state): State<ApiState>, headers: HeaderMap) -> Response {
     if let Err(r) = admin(&state, &headers).await {
         return r;
     }
@@ -155,7 +155,7 @@ struct Since {
 }
 
 async fn job_log(
-    State(state): State<ConsoleState>,
+    State(state): State<ApiState>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Query(q): Query<Since>,
@@ -172,7 +172,7 @@ async fn job_log(
 }
 
 async fn cancel_job(
-    State(state): State<ConsoleState>,
+    State(state): State<ApiState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
@@ -195,7 +195,7 @@ fn valid_name(name: &str) -> bool {
 }
 
 async fn start_job(
-    State(state): State<ConsoleState>,
+    State(state): State<ApiState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -329,7 +329,7 @@ mod tests {
             r#"{"name":"groningen","cells":[[1,2]],"tree_count":3}"#,
         )
         .unwrap();
-        let state = ConsoleState {
+        let state = ApiState {
             auth: Arc::new(Auth::new(Box::new(Tokens))),
             runner: Runner::new(&site, registry),
             out_root: site,
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_console_surface_answers_as_before() {
+    async fn the_pipeline_surface_answers_as_before() {
         let (base, dir) = serve().await;
 
         assert_eq!(call("GET", format!("{base}/health"), "", None).await.0, 200);

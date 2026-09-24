@@ -1,6 +1,6 @@
 {
-  "name": "cartopolis-admin",
-  "description": "Account administration for a Cartopolis simulator",
+  "name": "cartopolis-atlas-web",
+  "description": "The atlas web UI: cartopolis.org, its operator pages and its player pages",
   "version": "1.0.0",
   "private": true,
   "type": "module",

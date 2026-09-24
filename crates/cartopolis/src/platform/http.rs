@@ -96,7 +96,7 @@ pub enum Method {
     /// library, throwing an inventory item away.
     ///
     /// Here rather than modelled as a `Post` to a `/delete` path because the API
-    /// on the other side is an ordinary REST surface that the atlas console also talks to,
+    /// on the other side is an ordinary REST surface that the atlas web UI also talks to,
     /// and inventing a second spelling for one of its two callers is how the two
     /// stop matching.
     Delete,

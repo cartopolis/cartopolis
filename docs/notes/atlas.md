@@ -76,14 +76,16 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
    the TypeScript server's surface route for route: the one-job runner (`jobs.rs`), the
    admin check against the simulator (`auth.rs`), coverage (`coverage.rs`), the
    autopilot control file (`autopilot.rs`), all under `/api/pipeline/*`
-   (`console.rs`). The admin GUI moved into `crates/atlas/console` unchanged
-   except for the log cursor (below) and its address: it is static files behind
-   Caddy at `cartopolis.org/console/`, the front page's *Sign in*, published by
-   `deploy-console.yml`. web.cartopolis.org, its old hostname, was dropped
-   rather than redirected — one site, not two. The same build serves the
-   players' pages (`/register`, `/verify`, `/house`) at the site root, so the
-   simulator's `CARTO_PUBLIC_BASE_URL` is just `https://cartopolis.org` and
-   carries no console path.
+   (`api.rs`). The admin GUI moved into atlas unchanged except for the log
+   cursor (below) and its address, and is now **the atlas web UI**
+   (`crates/atlas/web`): static files behind Caddy at the site root of
+   cartopolis.org, published by `deploy-web.yml`. It is the front page (which
+   atlas served from a string until 2026-09-24), the operator's pages at
+   `/admin` (they were `/console/`, which redirects) and the players' pages
+   (`/register`, `/verify`, `/house`), so the simulator's
+   `CARTO_PUBLIC_BASE_URL` is just `https://cartopolis.org`.
+   web.cartopolis.org, its old hostname, was dropped rather than redirected —
+   one site, not two.
 3. Move accounts once the token design is agreed. The in-world player actions
    (block, report, delete my account) stay on the wire, with the simulator
    passing them on.
@@ -99,9 +101,9 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   There is one runner thread and every later job would otherwise queue behind it
   forever. The TypeScript server it replaced had no equivalent failure to guard.
 - **The log cursor is lines ever written, not lines held.** Each job keeps the
-  last 2,000 lines. The console used to ask for `since = lines it held`, and its
+  last 2,000 lines. The web UI used to ask for `since = lines it held`, and its
   server read that as an index into the buffer, so once a long BAG run filled the
-  buffer the followed log stopped updating. The console now keeps the server's
+  buffer the followed log stopped updating. The web UI now keeps the server's
   `total` as its cursor.
 - **Source answers are kept a month** in `<data_dir>/source-cache/`
   (`pipeline/http.rs`), so a re-run after a pipeline change does not page the BGT
@@ -109,7 +111,7 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   went from 14 s to 3 s with identical output (2026-09-24), and a whole city's
   run is dominated by that paging. Every run first deletes what has expired, so
   the cache holds at most a month of what runs actually fetched — Groningen's
-  3D sheets alone are ~550 MB. `atlas run --fresh` and the console's *Fetch
+  3D sheets alone are ~550 MB. `atlas run --fresh` and the web UI's *Fetch
   fresh source data* ask everything anew. A 200 whose body does not parse is
   evicted rather than served back.
 - **It writes as `cartoatlas` in group `ubuntu`, umask 0002**

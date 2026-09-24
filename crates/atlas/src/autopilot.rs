@@ -1,4 +1,4 @@
-//! The autonomous lane's throttle, read and written for the console. Ported from
+//! The autonomous lane's throttle, read and written for the web UI. Ported from
 //! the earlier TypeScript server (`autopilot.ts`).
 //!
 //! The autopilot (`tools/autopilot.ts`, in a container on this host) re-reads its
@@ -10,7 +10,7 @@
 //! **Two writers.** The autopilot writes this file too — the plan a planning session
 //! posted, and the issue number stamped onto a plan item once filed — through the
 //! same read-merge-rename. The plan's ordering, wording and membership are the
-//! console's; `issue` is the autopilot's.
+//! web UI's; `issue` is the autopilot's.
 //!
 //! A hand-synced seam: the fields below must match `Config` in `tools/autopilot.ts`.
 
@@ -65,7 +65,7 @@ pub struct PlanItem {
     pub title: String,
 }
 
-// ---- JavaScript coercions, because the other writer and the console are JS ----
+// ---- JavaScript coercions, because the other writer and the web UI are JS ----
 
 /// `Number(value)`.
 fn js_number(value: &Value) -> f64 {
@@ -158,7 +158,7 @@ fn fresh_id(title: &str, seen: &HashSet<String>) -> String {
     id
 }
 
-/// Whatever is in the file, as a plan. An untitled row is dropped (the console
+/// Whatever is in the file, as a plan. An untitled row is dropped (the web UI
 /// adds one on Add and a title is what becomes a ticket); an id is assigned when
 /// missing or repeated, because two rows sharing one would be one ticket filed for
 /// two pieces of work.
@@ -229,8 +229,8 @@ fn normalise(raw: &Map<String, Value>) -> AutopilotConfig {
 
 /// The incoming plan with every row that has already become a ticket held to what
 /// the file says. A filed item is being built against the wording that was filed,
-/// so it cannot be reworded or removed here — not as a check on the console but on
-/// *a* console: a tab left open all evening saves the list as it was before any of
+/// so it cannot be reworded or removed here — not as a check on the web UI but on
+/// *a* web UI: a tab left open all evening saves the list as it was before any of
 /// it was filed. Position is not held. `issue` always comes from the file by id.
 fn hold_filed_items(current: &[PlanItem], incoming: Vec<PlanItem>) -> Vec<PlanItem> {
     let filed: HashMap<&str, &PlanItem> = current
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stamp_comes_from_the_file_not_from_the_console() {
+    fn the_stamp_comes_from_the_file_not_from_the_web_ui() {
         let dir = tempfile::tempdir().unwrap();
         let f = file(&dir, "a.json", json!({"enabled": true}));
         write(

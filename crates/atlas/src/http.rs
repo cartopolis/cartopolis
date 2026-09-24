@@ -23,53 +23,21 @@ pub struct AtlasState {
     pub terrain: Arc<TerrainService>,
     /// `/height`.
     pub heights: Arc<crate::terrain::HeightPatches>,
-    /// The admin console's pipeline surface, `/api/pipeline/*`.
-    pub console: crate::console::ConsoleState,
+    /// The pipeline surface the web UI drives, `/api/pipeline/*`.
+    pub api: crate::api::ApiState,
 }
 
-/// `cartopolis.org` itself. Atlas owns the site root; the browser build of the
-/// client lives at `/viewer/`, and Caddy routes that, `/ws` and the other client
-/// paths before anything reaches here. *Sign in* is the console at `/console/`
-/// (`crates/atlas/console`), which Caddy serves as static files: the operator's
-/// pages and the players' registration, verification and house claim.
-const FRONT_PAGE: &str = r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cartopolis</title>
-<style>
-  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-         background: #1B2830; color: #F2EFEA; font-family: system-ui, sans-serif; }
-  main { text-align: center; padding: 2rem; }
-  h1 { font-weight: 600; letter-spacing: 0.02em; margin: 0 0 0.5rem; }
-  p { opacity: 0.8; margin: 0 0 2rem; }
-  a.button { display: inline-block; margin: 0.4rem; padding: 0.8rem 1.4rem; border-radius: 0.5rem;
-             background: #FD6012; color: #F2EFEA; text-decoration: none; font-weight: 600; }
-  a.quiet { background: #2e424e; }
-</style>
-</head>
-<body>
-<main>
-  <h1>Cartopolis</h1>
-  <p>A shared 3D world on the real map.</p>
-  <a class="button" href="/viewer/">Open the map</a>
-  <a class="button quiet" href="/apk/">Android app</a>
-  <a class="button quiet" href="/console/">Sign in</a>
-</main>
-</body>
-</html>
-"#;
-
+/// Only the paths Caddy sends here. The site root — the front page, the
+/// operator's pages and the players' — is the web UI (`crates/atlas/web`),
+/// static files Caddy serves itself.
 pub fn router(state: AtlasState) -> Router {
-    let console = crate::console::router(state.console.clone());
+    let api = crate::api::router(state.api.clone());
     Router::new()
-        .route("/", get(|| async { axum::response::Html(FRONT_PAGE) }))
         .route("/health", get(|| async { "ok" }))
         .route("/terrain/{z}/{x}/{y}", get(terrain_tile))
         .route("/height", get(height_patch))
         .with_state(state)
-        .nest("/api/pipeline", console)
+        .nest("/api/pipeline", api)
 }
 
 /// `/height?coverage=dtm_05m&bbox=x0,y0,x1,y1&grid=n`: PDOK's `GetCoverage`
@@ -219,7 +187,7 @@ mod tests {
         let state = AtlasState {
             terrain: Arc::new(TerrainService::new(source.clone(), dir.path(), 2)),
             heights: Arc::new(crate::terrain::HeightPatches::new(source, 2)),
-            console: crate::console::ConsoleState {
+            api: crate::api::ApiState {
                 auth: Arc::new(crate::auth::Auth::new(Box::new(Nobody))),
                 runner: crate::jobs::Runner::new(dir.path(), crate::jobs::Registry::new()),
                 out_root: dir.path().to_path_buf(),
@@ -272,11 +240,6 @@ mod tests {
         assert_eq!(get(format!("{base}/terrain/14/{x}/{y}")).await.0, 404);
         assert_eq!(get(format!("{base}/terrain/25/0/0")).await.0, 400);
         assert_eq!(get(format!("{base}/health")).await.0, 200);
-        let (status, media, body) = get(format!("{base}/")).await;
-        assert_eq!(status, 200);
-        assert!(media.starts_with("text/html"));
-        let page = String::from_utf8_lossy(&body);
-        assert!(page.contains("href=\"/viewer/\"") && page.contains("href=\"/console/\""));
     }
 
     /// A graded tile is served at the grid the pipeline wrote and, thinned, at the

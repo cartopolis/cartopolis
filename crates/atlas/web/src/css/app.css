@@ -136,7 +136,7 @@ a {
 /* ── Cards, forms, controls ──────────────────────────────────────────────── */
 
 /*
- * 18px of padding either side is 9 per cent of a 412px phone, and this console
+ * 18px of padding either side is 9 per cent of a 412px phone, and this web UI
  * is read on one — a card holding a paragraph of queued work gave it about two
  * thirds of the screen. Narrower here, and the desk gets its 18 back below.
  */
@@ -549,7 +549,7 @@ a.wordmark {
     font-size: 0.8rem;
 }
 
-/* ---- The data-processing console ------------------------------------- */
+/* ---- The Data tab ------------------------------------- */
 
 /*
  * `select` is deliberately not folded into the `input[type=…]` list above. That
@@ -801,7 +801,7 @@ select {
 
 /*
  * A filed row's two lines are text, not fields — the item is a ticket now and
- * the console may not rewrite it. Padded to the fields' own metrics so a locked
+ * the web UI may not rewrite it. Padded to the fields' own metrics so a locked
  * row and an editable one line up down the list instead of reading as two lists.
  */
 .plan-body.is-filed {
@@ -885,4 +885,57 @@ a.tag:hover {
         flex: 0 0 5.5rem;
         margin-left: 0;
     }
+}
+
+/* ── Front page ──────────────────────────────────────────────────────────── */
+
+.home {
+    margin: 14vh auto 0;
+    max-width: 32rem;
+    text-align: center;
+}
+
+.home h1 {
+    font-size: 2rem;
+    letter-spacing: 0.02em;
+    margin-bottom: 6px;
+}
+
+.home .hint {
+    margin-bottom: 28px;
+}
+
+.home-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gap);
+    justify-content: center;
+}
+
+/* A link that leaves for another build (`/viewer/`, `/apk/`), dressed as the
+   buttons above so the front page reads as one row of choices. */
+a.button {
+    background: var(--surface-hover);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--text);
+    display: inline-block;
+    font-weight: 500;
+    min-height: 38px;
+    padding: 8px 18px;
+    text-decoration: none;
+}
+
+a.button:hover {
+    background: var(--line);
+}
+
+a.button.primary {
+    background: var(--accent);
+    border-color: var(--accent-bright);
+    color: var(--ink);
+}
+
+a.button.primary:hover {
+    background: var(--accent-bright);
 }

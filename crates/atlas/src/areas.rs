@@ -1,4 +1,4 @@
-//! The areas the console offers, as RD (EPSG:28992) bounding boxes, and the check
+//! The areas the web UI offers, as RD (EPSG:28992) bounding boxes, and the check
 //! a typed bbox must pass. Ported from the earlier TypeScript server (`areas.ts`).
 //!
 //! A short built-in table rather than something an operator manages: the hard part
@@ -65,7 +65,7 @@ pub fn area(id: &str) -> Option<&'static Area> {
     AREAS.iter().find(|a| a.id == id)
 }
 
-/// Square kilometres, so the console can say how a custom box compares.
+/// Square kilometres, so the web UI can say how a custom box compares.
 #[must_use]
 pub fn area_km2(bbox: [f64; 4]) -> f64 {
     (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) / 1_000_000.0

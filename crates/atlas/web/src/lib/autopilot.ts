@@ -4,7 +4,7 @@ import {$s, api, notifier} from '@/app'
 import {ApiError} from '@/lib/api'
 
 /**
- * The development lane's throttle, as the console reads and writes it.
+ * The development lane's throttle, as the web UI reads and writes it.
  *
  * Same split as `pipeline.ts` and for the same reason: each of these writes the
  * store and decides what a refusal means, and the component that lays out the

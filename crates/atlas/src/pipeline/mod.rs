@@ -13,7 +13,7 @@
 //! open-data service a few thousand times, so it runs on a blocking thread with a
 //! blocking HTTP client; the async runtime only owns the queue and the HTTP API.
 //! The `Ctx` is the only way a dataset reaches the world, which is what lets a
-//! console drive it: the log is a stream somebody watches, the progress is a bar,
+//! web UI drive it: the log is a stream somebody watches, the progress is a bar,
 //! and the cancel is a button checked inside every paging loop.
 
 pub mod bag;
@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-/// How far along a dataset is, for the console's progress bar.
+/// How far along a dataset is, for the web UI's progress bar.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Progress {
     /// What it is doing now, in the words the log uses ("panden", "wegdeel").
@@ -54,7 +54,7 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// Fold an update in, field by field, as the console's `{...old, ...new}` did.
+    /// Fold an update in, field by field, as the web UI's `{...old, ...new}` did.
     pub fn merge(&mut self, update: Progress) {
         if update.phase.is_some() {
             self.phase = update.phase;
@@ -88,14 +88,14 @@ impl Count {
 /// What a dataset reports when it finishes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DatasetResult {
-    /// Cells written, for the console's coverage view.
+    /// Cells written, for the web UI's coverage view.
     pub cells: usize,
     pub counts: Vec<Count>,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum PipelineError {
-    /// Stopped from the console. Reported as *cancelled*, not as a failure.
+    /// Stopped from the web UI. Reported as *cancelled*, not as a failure.
     Cancelled,
     Failed(String),
 }
@@ -250,14 +250,14 @@ impl Ctx {
     }
 }
 
-/// One extractor, as the console lists it.
+/// One extractor, as the web UI lists it.
 pub struct Dataset {
     pub id: &'static str,
     pub label: &'static str,
     pub description: &'static str,
     /// Where its `coverage.json` lives under the output root.
     pub coverage: &'static str,
-    /// Roughly how long a city takes, for the console to set expectations.
+    /// Roughly how long a city takes, for the web UI to set expectations.
     pub typical_minutes: u32,
     pub run: fn(&Ctx) -> Outcome<DatasetResult>,
 }

@@ -8,7 +8,7 @@ surfaces into shape was 45.9 seconds of the client's 78 seconds of map work.
 `carto-pipeline` does that work once, on a server. It is Rust in this workspace
 because it calls `cartopolis_geo` — the client's own code — so what the server
 builds and what the client would have built come out of the same functions and
-cannot drift. The operator console is atlas's (`crates/atlas/console`); this is
+cannot drift. The operator's web UI is atlas's (`crates/atlas/web`); this is
 meant to be run as a command beside atlas's own extractors (`atlas run`).
 
 ## Building it

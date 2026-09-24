@@ -1,7 +1,7 @@
-name: Deploy console
+name: Deploy web UI
 
-# Build the admin console (crates/atlas/console) and publish it to
-# https://cartopolis.org/console/. It was a separate repository's deploy, to
+# Build the atlas web UI (crates/atlas/web) and publish it as
+# https://cartopolis.org/ — the site root. It was a separate repository's deploy, to
 # web.cartopolis.org, until 2026-09.
 #
 # On every push to `main` that touches it, as it always was: the build is Bun
@@ -11,28 +11,28 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/atlas/console/**"
-      - ".forgejo/workflows/deploy-console.yml"
+      - "crates/atlas/web/**"
+      - ".forgejo/workflows/deploy-web.yml"
   workflow_dispatch:
 
 concurrency:
-  group: deploy-console
+  group: deploy-web
   cancel-in-progress: true
 
 jobs:
   deploy:
-    name: build & publish the console
+    name: build & publish the web UI
     runs-on: ubuntu-latest
     container:
       # The image carries Bun already (`tools/*.ts` are Bun scripts).
       image: cartopolis-ci:latest
-      # Caddy serves this directory as cartopolis.org/console/. It is in the runner's
+      # Caddy serves this directory as cartopolis.org/. It is in the runner's
       # `valid_volumes` from when the separate repository published it.
       options: >-
         --volume /data/cartopolis/admin:/publish
     defaults:
       run:
-        working-directory: crates/atlas/console
+        working-directory: crates/atlas/web
     steps:
       - uses: actions/checkout@v4
 

@@ -8,6 +8,7 @@ import {Notifications} from '@/components/elements/notifications/notifications'
 import {Accounts} from '@/components/pages/accounts/accounts'
 import {Autopilot} from '@/components/pages/autopilot/autopilot'
 import {Claims} from '@/components/pages/claims/claims'
+import {Home} from '@/components/pages/home/home'
 import {House} from '@/components/pages/house/house'
 import {Library} from '@/components/pages/library/library'
 import {Login} from '@/components/pages/login/login'
@@ -15,7 +16,7 @@ import {Pipeline} from '@/components/pages/pipeline/pipeline'
 import {Register} from '@/components/pages/register/register'
 import {Verify} from '@/components/pages/verify/verify'
 import {loadAccounts, signOut} from '@/lib/accounts'
-import {PLAYER_PATHS, at} from '@/lib/base'
+import {ADMIN, PLAYER_PATHS} from '@/lib/base'
 
 /**
  * The operator's half: sign in, then one of two lists.
@@ -104,15 +105,14 @@ const AdminView = (_props: RoutableProps) => {
 }
 
 /**
- * Two audiences on one origin, told apart by the path.
+ * The whole site, told apart by the path (`lib/base.ts`).
  *
- * `/register` and `/verify` are for people who have no account, `/house` is for
- * players who do, and all three are at the site root; everything under
- * `/console/` is the operator's (`lib/base.ts`). They share this build because
- * they share an API, and because the verification link has to point *somewhere*
- * the simulator's `/api` is same-origin with. Caddy serves `index.html` for the
- * three player paths and for any path under `/console/`, so each is a route
- * rather than a 404.
+ * `/` is the front page. `/register` and `/verify` are for people who have no
+ * account, `/house` is for players who do, and `/admin` is the operator's. They
+ * share this build because they share an API, and because the verification
+ * link has to point *somewhere* the simulator's `/api` is same-origin with.
+ * Caddy serves `index.html` for every path it does not route elsewhere, so each
+ * is a route rather than a 404 — and an unknown one lands on the front page.
  *
  * The header's sign-out button is deliberately absent on the player routes: the
  * session it would end is the operator's, and the person following a link out of
@@ -124,9 +124,9 @@ export const Main = () => {
     return (
         <div class="app">
             <header class="app-header">
-                <a class="wordmark" href={at('/')} onClick={(e) => {
+                <a class="wordmark" href="/" onClick={(e) => {
                     e.preventDefault()
-                    route(at('/'))
+                    route('/')
                 }}>
                     carto<b>polis</b>
                 </a>
@@ -146,7 +146,8 @@ export const Main = () => {
                     <Register path="/register" />
                     <Verify path="/verify" />
                     <House path="/house" />
-                    <AdminView default />
+                    <AdminView path={ADMIN} />
+                    <Home default />
                 </Router>
             </main>
 

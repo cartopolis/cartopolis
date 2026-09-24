@@ -84,8 +84,8 @@ business tinting them.
 is the list, `FurnitureKind::slug` maps onto it, and a test in `cartopolis_geo`
 pins the two equal. The server refuses an unknown slug — the same rule the shot
 manifest and `--expect` follow, and for the same reason: a setting that quietly
-does nothing is worse than one that was refused. The atlas console holds a third copy for
-its dropdown — TypeScript in `crates/atlas/console`, so still hand-synced now that
+does nothing is worse than one that was refused. The atlas web UI holds a third copy for
+its dropdown — TypeScript in `crates/atlas/web`, so still hand-synced now that
 it is in this repository (it was the **seventh** such seam when the console was
 a separate repository).
 
