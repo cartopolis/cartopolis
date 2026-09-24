@@ -22,6 +22,11 @@ pub const STATION_M: f64 = 4.0;
 /// half metre would be four times the work for a median that does not move.
 pub const SAMPLE_M: f32 = 1.0;
 
+/// How far an end station may sit off the line through its two neighbours before
+/// it is taken for something beside the deck rather than the deck. A metre is
+/// four times the rise the steepest approach grade makes over one station.
+const END_OUTLIER_M: f32 = 1.0;
+
 /// Fewest samples a stretch needs to count. At the 1 m the decks are measured at,
 /// a stretch across a two-lane deck holds ~40; one holding a handful is a sliver
 /// of the outline past the end of the road.
@@ -102,6 +107,23 @@ impl DeckProfile {
                 let mut w = [raw[i - 1], raw[i], raw[i + 1]];
                 w.sort_by(f32::total_cmp);
                 stations[i].1 = w[1];
+            }
+            // **The ends too**, which the running median cannot reach: an end
+            // stretch is where an outline catches what stands beside the
+            // abutment, and one there is the height the approach is graded to.
+            // Over Groningen (2026-09-24) two of 44 decks ended on one — 22.1 m
+            // against a 6.2 m deck, and 5.9 m against a 10.2 m one — each
+            // grading its approach metres wrong. An end more than
+            // `END_OUTLIER_M` off the line through its two inward neighbours
+            // takes that line's value; a real slope to the end stays on it.
+            let n = stations.len();
+            for (end, a, b) in [(0, 1, 2), (n - 1, n - 2, n - 3)] {
+                let (sa, sb) = (stations[a], stations[b]);
+                let t = ((stations[end].0 - sa.0) / (sa.0 - sb.0)) as f32;
+                let line = sa.1 + (sa.1 - sb.1) * t;
+                if (stations[end].1 - line).abs() > END_OUTLIER_M {
+                    stations[end].1 = line;
+                }
             }
         }
         Some(Self {
@@ -327,6 +349,37 @@ mod tests {
 
     /// One stretch the survey read wrong — the ground beside an abutment caught
     /// in the outline — is voted down by its neighbours.
+    /// An end stretch that caught something beside the abutment is not the deck —
+    /// the two Groningen cases, one high and one low — and a real ramp to the
+    /// end is left alone.
+    #[test]
+    fn an_outlier_at_either_end_is_not_the_deck() {
+        let (outline, at) = deck();
+        let p = DeckProfile::fit(
+            &outline,
+            samples(&at, |u, _| match u {
+                u if u < 4.0 => 22.1,
+                u if u > 196.0 => 1.0,
+                _ => 6.2,
+            }),
+        )
+        .unwrap();
+        assert!(
+            (p.at(at(1.0, 0.0)) - 6.2).abs() < 0.05,
+            "{}",
+            p.at(at(1.0, 0.0))
+        );
+        assert!(
+            (p.at(at(199.0, 0.0)) - 6.2).abs() < 0.05,
+            "{}",
+            p.at(at(199.0, 0.0))
+        );
+        let ramp = |u: f64, _| (7.3 - 5.4 * u / 200.0) as f32;
+        let r = DeckProfile::fit(&outline, samples(&at, ramp)).unwrap();
+        assert!((r.at(at(2.0, 0.0)) - ramp(2.0, 0.0)).abs() < 0.1);
+        assert!((r.at(at(198.0, 0.0)) - ramp(198.0, 0.0)).abs() < 0.1);
+    }
+
     #[test]
     fn a_single_bad_stretch_is_not_a_dip() {
         let (outline, at) = deck();
