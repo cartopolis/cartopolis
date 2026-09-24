@@ -2239,6 +2239,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tiff",
  "tokio",
  "tracing",
  "tracing-subscriber",

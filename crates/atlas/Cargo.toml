@@ -36,6 +36,9 @@ flate2 = "1.1"
 earcutr.workspace = true
 url = "2.5"
 serde_json.workspace = true
+# The same decoder the geo crate reads PDOK with, for AHN6's tiled sheets, and
+# its encoder for `/height`'s answers.
+tiff.workspace = true
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
 

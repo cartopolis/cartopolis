@@ -35,6 +35,50 @@ pub trait HeightSource: Send + Sync + 'static {
     /// The heights over an RD box, `n × n`, north row first, `NaN`
     /// where nothing was measured. Blocking.
     fn raster(&self, min: [f64; 2], max: [f64; 2], n: usize) -> Result<Vec<f32>, String>;
+
+    /// [`Self::raster`] for either model. The surface model is what the client's
+    /// bridge decks are measured against (`/height`); a source that only knows
+    /// the ground says so.
+    fn raster_of(
+        &self,
+        model: Model,
+        min: [f64; 2],
+        max: [f64; 2],
+        n: usize,
+    ) -> Result<Vec<f32>, String> {
+        match model {
+            Model::Terrain => self.raster(min, max, n),
+            Model::Surface => Err("this source has no surface model".into()),
+        }
+    }
+}
+
+/// Which of AHN's two rasters: the bare ground, with buildings and bridge decks
+/// cut out, or everything the laser hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    Terrain,
+    Surface,
+}
+
+impl Model {
+    /// PDOK's coverage name, and the `model=` value `/height` takes.
+    #[must_use]
+    pub fn coverage(self) -> &'static str {
+        match self {
+            Model::Terrain => "dtm_05m",
+            Model::Surface => "dsm_05m",
+        }
+    }
+
+    #[must_use]
+    pub fn from_coverage(name: &str) -> Option<Self> {
+        match name {
+            "dtm_05m" => Some(Model::Terrain),
+            "dsm_05m" => Some(Model::Surface),
+            _ => None,
+        }
+    }
 }
 
 /// PDOK's WCS, the same service and request the client's height layer uses
@@ -77,9 +121,33 @@ impl Default for Pdok {
 }
 
 impl HeightSource for Pdok {
+    /// The coverage this source was built for ([`Pdok::new`], [`Pdok::surface`]).
     fn raster(&self, min: [f64; 2], max: [f64; 2], n: usize) -> Result<Vec<f32>, String> {
+        self.coverage_raster(self.coverage, min, max, n)
+    }
+
+    /// The named model, whichever this source was built for.
+    fn raster_of(
+        &self,
+        model: Model,
+        min: [f64; 2],
+        max: [f64; 2],
+        n: usize,
+    ) -> Result<Vec<f32>, String> {
+        self.coverage_raster(model.coverage(), min, max, n)
+    }
+}
+
+impl Pdok {
+    fn coverage_raster(
+        &self,
+        coverage: &str,
+        min: [f64; 2],
+        max: [f64; 2],
+        n: usize,
+    ) -> Result<Vec<f32>, String> {
         use std::io::Read;
-        let url = ahn::coverage_url_of(self.coverage, min, max, n as u32);
+        let url = ahn::coverage_url_of(coverage, min, max, n as u32);
         let response = self.agent.get(&url).call().map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         // A float32 raster is 4 bytes a sample; anything much larger is not one.
@@ -90,6 +158,79 @@ impl HeightSource for Pdok {
             .map_err(|e| e.to_string())?;
         ahn::decode_float_tiff(&bytes, n)
     }
+}
+
+/// Largest grid `/height` answers: the client's own ceiling (`height::MAX_GRID`),
+/// which its 2049² terrain field needs.
+pub const MAX_PATCH_GRID: usize = 4096;
+
+/// Largest box `/height` answers, RD metres a side: the client's terrain field is
+/// 6.4 km, and nothing it asks is bigger.
+pub const MAX_PATCH_SPAN_M: f64 = 10_000.0;
+
+/// `/height`: a box of either model at a chosen grid, the question the client's
+/// height layer used to put to PDOK directly — answered from the same source as
+/// the terrain tiles, so a deck and the ground it stands over come from one
+/// flight.
+pub struct HeightPatches {
+    source: Arc<dyn HeightSource>,
+    upstream: Semaphore,
+}
+
+impl HeightPatches {
+    pub fn new(source: Arc<dyn HeightSource>, upstream_concurrency: usize) -> Self {
+        Self {
+            source,
+            upstream: Semaphore::new(upstream_concurrency.max(1)),
+        }
+    }
+
+    /// `n × n` heights over the box, north row first, `NaN` where nothing was
+    /// measured. `Err(None)` for a request outside what is served.
+    pub async fn patch(
+        &self,
+        model: Model,
+        min: [f64; 2],
+        max: [f64; 2],
+        n: usize,
+    ) -> Result<Vec<f32>, Option<String>> {
+        let span = (max[0] - min[0]).max(max[1] - min[1]);
+        if !(2..=MAX_PATCH_GRID).contains(&n)
+            || !(max[0] > min[0] && max[1] > min[1])
+            || span > MAX_PATCH_SPAN_M
+            || ![min[0], min[1], max[0], max[1]]
+                .iter()
+                .all(|v| v.is_finite())
+        {
+            return Err(None);
+        }
+        let _permit = self
+            .upstream
+            .acquire()
+            .await
+            .map_err(|e| Some(e.to_string()))?;
+        let source = self.source.clone();
+        tokio::task::spawn_blocking(move || source.raster_of(model, min, max, n))
+            .await
+            .map_err(|e| Some(e.to_string()))?
+            .map_err(Some)
+    }
+}
+
+/// A float32 GeoTIFF of `n × n` samples, deflated — the shape PDOK's WCS answers
+/// in, so the client's decoder (`cartopolis_geo::ahn::decode_float_tiff`) reads
+/// either without knowing which it asked.
+pub fn encode_float_tiff(samples: &[f32], n: usize) -> Result<Vec<u8>, String> {
+    use tiff::encoder::{
+        colortype::Gray32Float, compression::DeflateLevel, Compression, TiffEncoder,
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    TiffEncoder::new(&mut out)
+        .map_err(|e| e.to_string())?
+        .with_compression(Compression::Deflate(DeflateLevel::Fast))
+        .write_image::<Gray32Float>(n as u32, n as u32, samples)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 /// What a request for a tile comes to.
@@ -239,15 +380,38 @@ impl TerrainService {
     }
 }
 
-/// Where tiles are kept under the data directory. **`terrain-v2`, because the
-/// tiles changed meaning**: `terrain/` holds tiles cut with their holes already
-/// filled, and a client that carves water into a filled tile carves into ground
-/// the fill has already smeared across the banks
-/// (`docs/notes/level-of-detail-tile-tree.md`, step 2a). A new directory rather
-/// than a purge, so an old tile can never be served as a new one.
+/// Where tiles are kept under the data directory. **A new directory whenever the
+/// tiles change meaning**, rather than a purge, so an old tile can never be
+/// served as a new one: `terrain/` held tiles cut with their holes already filled
+/// (a client that carves water into a filled tile carves into ground the fill has
+/// already smeared across the banks, `docs/notes/level-of-detail-tile-tree.md`,
+/// step 2a), and `terrain-v2` holds tiles cut from AHN4 alone — which over
+/// Groningen's southern ring is a trench that has since been roofed over
+/// (`ahn6`).
 #[must_use]
 pub fn store_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("terrain-v2")
+    data_dir.join("terrain-v3")
+}
+
+/// Any source's **surface** model as a source of its own: what a caller that asks
+/// [`HeightSource::raster`] of a DSM expects (`pipeline::terrain_grade`'s deck
+/// measurement), over a source that serves both models.
+pub struct SurfaceOf(pub Arc<dyn HeightSource>);
+
+impl HeightSource for SurfaceOf {
+    fn raster(&self, min: [f64; 2], max: [f64; 2], n: usize) -> Result<Vec<f32>, String> {
+        self.0.raster_of(Model::Surface, min, max, n)
+    }
+
+    fn raster_of(
+        &self,
+        model: Model,
+        min: [f64; 2],
+        max: [f64; 2],
+        n: usize,
+    ) -> Result<Vec<f32>, String> {
+        self.0.raster_of(model, min, max, n)
+    }
 }
 
 /// Where the **graded** tiles are kept (`pipeline::terrain_grade`): the same

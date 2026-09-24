@@ -21,6 +21,8 @@ pub const TERRAIN_MEDIA_TYPE: &str = "application/vnd.cartopolis.terrain";
 #[derive(Clone)]
 pub struct AtlasState {
     pub terrain: Arc<TerrainService>,
+    /// `/height`.
+    pub heights: Arc<crate::terrain::HeightPatches>,
     /// The admin console's pipeline surface, `/api/pipeline/*`.
     pub console: crate::console::ConsoleState,
 }
@@ -65,8 +67,64 @@ pub fn router(state: AtlasState) -> Router {
         .route("/", get(|| async { axum::response::Html(FRONT_PAGE) }))
         .route("/health", get(|| async { "ok" }))
         .route("/terrain/{z}/{x}/{y}", get(terrain_tile))
+        .route("/height", get(height_patch))
         .with_state(state)
         .nest("/api/pipeline", console)
+}
+
+/// `/height?coverage=dtm_05m&bbox=x0,y0,x1,y1&grid=n`: PDOK's `GetCoverage`
+/// question in the client's own words — RD metres, pixel-edge box, north row
+/// first — answered from AHN6 where it is published (`crate::ahn6`).
+#[derive(serde::Deserialize)]
+struct HeightQuery {
+    coverage: String,
+    bbox: String,
+    grid: usize,
+}
+
+async fn height_patch(
+    State(state): State<AtlasState>,
+    axum::extract::Query(q): axum::extract::Query<HeightQuery>,
+) -> Response {
+    let cors = || (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    let bad = |why: &'static str| (StatusCode::BAD_REQUEST, [cors()], why).into_response();
+    let Some(model) = crate::terrain::Model::from_coverage(&q.coverage) else {
+        return bad("coverage is dtm_05m or dsm_05m");
+    };
+    let b: Vec<f64> = q
+        .bbox
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+    let [x0, y0, x1, y1] = b[..] else {
+        return bad("bbox is x0,y0,x1,y1 in RD metres");
+    };
+    match state.heights.patch(model, [x0, y0], [x1, y1], q.grid).await {
+        Ok(samples) => match crate::terrain::encode_float_tiff(&samples, q.grid) {
+            Ok(tiff) => (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, "image/tiff"),
+                    // A day: the answer changes only when a new sheet is published.
+                    (header::CACHE_CONTROL, "public, max-age=86400"),
+                    cors(),
+                ],
+                tiff,
+            )
+                .into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, [cors()], e).into_response(),
+        },
+        Err(None) => bad("grid 2..=4096 over a box up to 10 km a side"),
+        Err(Some(e)) => {
+            tracing::warn!(error = %e, "height patch failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                [cors()],
+                "the height source did not answer",
+            )
+                .into_response()
+        }
+    }
 }
 
 /// `?grid=513` asks for the dense cut the client's terrain field is assembled from
@@ -159,7 +217,8 @@ mod tests {
             }
         }
         let state = AtlasState {
-            terrain: Arc::new(TerrainService::new(source, dir.path(), 2)),
+            terrain: Arc::new(TerrainService::new(source.clone(), dir.path(), 2)),
+            heights: Arc::new(crate::terrain::HeightPatches::new(source, 2)),
             console: crate::console::ConsoleState {
                 auth: Arc::new(crate::auth::Auth::new(Box::new(Nobody))),
                 runner: crate::jobs::Runner::new(dir.path(), crate::jobs::Registry::new()),
@@ -218,6 +277,39 @@ mod tests {
         assert!(media.starts_with("text/html"));
         let page = String::from_utf8_lossy(&body);
         assert!(page.contains("href=\"/viewer/\"") && page.contains("href=\"/console/\""));
+    }
+
+    /// `/height` answers in the shape PDOK's WCS did, so the client's decoder
+    /// reads it unchanged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_height_route_answers_what_the_client_decodes() {
+        let (base, _dir) = serve(Arc::new(Flat)).await;
+        let q = "bbox=234000,580000,234100,580100&grid=16";
+        let (status, media, body) = get(format!("{base}/height?coverage=dtm_05m&{q}")).await;
+        assert_eq!(status, 200);
+        assert_eq!(media, "image/tiff");
+        let samples = cartopolis_geo::ahn::decode_float_tiff(&body, 16).unwrap();
+        assert!(samples.iter().all(|h| (h - 1.5).abs() < 1e-6));
+        // A source with no surface model says so as a failure, not as ground.
+        assert_eq!(
+            get(format!("{base}/height?coverage=dsm_05m&{q}")).await.0,
+            502
+        );
+        assert_eq!(get(format!("{base}/height?coverage=ahn&{q}")).await.0, 400);
+        assert_eq!(
+            get(format!("{base}/height?coverage=dtm_05m&bbox=1,2,3&grid=16"))
+                .await
+                .0,
+            400
+        );
+        assert_eq!(
+            get(format!(
+                "{base}/height?coverage=dtm_05m&bbox=0,0,50000,50000&grid=16"
+            ))
+            .await
+            .0,
+            400
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

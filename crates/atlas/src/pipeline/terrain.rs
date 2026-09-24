@@ -29,8 +29,14 @@ const ATTRIBUTION: &str = "AHN (Rijkswaterstaat / Het Waterschapshuis), CC0";
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let vector = super::terrain_grade::HttpTiles::from_env();
-    let surface = Pdok::surface();
-    run_graded(ctx, &Pdok::new(), Some((&vector, &surface)))
+    // The same source the HTTP route cuts from — AHN6 where it is published —
+    // for the ground and the decks alike, or a pre-cut tile and one cut on
+    // demand would be two different flights.
+    let source: std::sync::Arc<dyn HeightSource> = std::sync::Arc::new(
+        crate::ahn6::Ahn6::new(ctx.data_dir()?, std::sync::Arc::new(Pdok::new())),
+    );
+    let surface = crate::terrain::SurfaceOf(source.clone());
+    run_graded(ctx, source.as_ref(), Some((&vector, &surface)))
 }
 
 /// Every z14 tile an RD bbox touches, nearest the centre first — so a cancelled

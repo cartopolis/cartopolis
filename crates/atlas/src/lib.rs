@@ -5,6 +5,7 @@
 //! (`docs/notes/level-of-detail-tile-tree.md`) and runs the map data pipelines
 //! (`pipeline`, driven through `console`); the accounts arrive here later.
 
+pub mod ahn6;
 pub mod areas;
 pub mod auth;
 pub mod autopilot;
@@ -20,8 +21,15 @@ use std::sync::Arc;
 
 /// Serve until the process is told to stop.
 pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
-    let terrain = terrain::TerrainService::new(
+    // AHN6 where it has been published, AHN4 from PDOK everywhere else — for the
+    // terrain tiles and the `/height` patches alike, so the ground and the decks
+    // standing on it are measured by the same flight.
+    let heights: Arc<dyn terrain::HeightSource> = Arc::new(ahn6::Ahn6::new(
+        &config.data_dir,
         Arc::new(terrain::Pdok::new()),
+    ));
+    let terrain = terrain::TerrainService::new(
+        heights.clone(),
         &config.data_dir,
         config.upstream_concurrency,
     );
@@ -36,6 +44,10 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
     };
     let state = http::AtlasState {
         terrain: Arc::new(terrain),
+        heights: Arc::new(terrain::HeightPatches::new(
+            heights,
+            config.upstream_concurrency,
+        )),
         console,
     };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
