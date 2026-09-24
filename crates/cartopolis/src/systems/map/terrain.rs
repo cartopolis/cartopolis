@@ -1091,9 +1091,25 @@ pub fn update_terrain_field(
     // Latched per anchor, so a coverage manifest landing mid-fetch does not start a
     // second download of the same ground.
     mut source: Local<Option<(u32, bool)>>,
+    // What an owed bake is waiting on, logged when it changes: a field that never
+    // finishes owing a bake keeps a capture from settling, and nothing else says why.
+    mut waiting: Local<&'static str>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
+    };
+    let mut wait = |why: &'static str, field: &TerrainField| {
+        if *waiting != why {
+            *waiting = why;
+            tracing::info!(
+                why,
+                answered_gen = ?field.answered_gen,
+                answered_water_rev = ?field.answered_water_rev,
+                answered_road_rev = ?field.answered_road_rev,
+                answered_deck_rev = ?field.answered_deck_rev,
+                "terrain field bake waiting"
+            );
+        }
     };
     if !HeightLayer::covers(anchor.0, anchor.1) {
         field.clear();
@@ -1161,6 +1177,13 @@ pub fn update_terrain_field(
         && field.answered_deck_rev == Some(deck_rev)
     {
         *hold = None;
+        // An input that moved and then moved back — the deck digest does exactly
+        // that while a ring republishes its plates — leaves nothing to bake, and
+        // the flag it raised on the way has to come down here or the field reports
+        // a bake owed for ever and no capture settles (measured on the Deck,
+        // 2026-09-24: every run of this branch sat at `busy="terrain"` for 180 s).
+        field.bake_owed = false;
+        wait("nothing owed", &field);
         return;
     }
     // Owed from here until it is queued, including while it is held below — a
@@ -1179,6 +1202,7 @@ pub fn update_terrain_field(
     // One bake at a time. A re-anchor that lands while one is out would otherwise
     // queue a second over the same worker pool, and the first is already worthless.
     if field.coarse_job.is_some() {
+        wait("a bake is running", &field);
         return;
     }
 
@@ -1208,7 +1232,10 @@ pub fn update_terrain_field(
         let want = field_tiles(anchor, TERRAIN_HALF_M);
         match tiles.mosaic(&want) {
             crate::systems::terrain_tiles::Mosaic::Ready(m) => Some(m),
-            crate::systems::terrain_tiles::Mosaic::Waiting => return,
+            crate::systems::terrain_tiles::Mosaic::Waiting => {
+                wait("atlas tiles", &field);
+                return;
+            }
             // A tile atlas would not give: this anchor goes back to WCS.
             crate::systems::terrain_tiles::Mosaic::Failed => {
                 tracing::warn!(
@@ -1222,6 +1249,7 @@ pub fn update_terrain_field(
         }
     } else {
         if height.patch(req).is_none() {
+            wait("the WCS patch", &field);
             return;
         }
         None
@@ -1241,10 +1269,12 @@ pub fn update_terrain_field(
     // busy, and hills a little late beat hills never.
     let held_since = *hold.get_or_insert(now);
     if surfaces.streaming_busy() && now - held_since < RING_HOLD_MAX_S {
+        wait("the surface ring", &field);
         return;
     }
     *hold = None;
     field.bake_owed = false;
+    wait("queued", &field);
     let job: Box<dyn GroundSource> = match mosaic {
         // The tiles are shared, not copied; the layer forgets them and a re-bake
         // reads them back from the device cache rather than the network.
