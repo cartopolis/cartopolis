@@ -184,6 +184,21 @@ lifted deck its centre is under. The same collection gives the abutments
 yet. Rijkswaterstaat's Vaarweginformatie WFS (`app:Opening`) adds the mechanism of
 each opening span and its clearance, for when they are.
 
+**Atlas and the client measure a deck the same way** (`DeckMeasure`,
+`DeckProfile::fit_over`: the surface every metre inside the outline, at the deck's
+own tile-local points), and atlas publishes the result so a client standing on its
+graded ground asks nothing. **`carto-view --atlas URL --site URL` draws exactly
+that** — the graded ground, each deck on its profile, the piers — and prints each
+approach's step from the deck's top to the surface three metres out (another
+deck's top where the road runs straight onto one, in any loaded cell). Measured
+over 20 cells of Groningen (2026-09-24, AHN6, RD 230000–236500 × 578500–583000
+graded): 36 lifted decks, all profiled; 146 approaches, mean step 0.26 m, 140 of
+them within 0.61 m — where the flat median had left the Emmaviaduct view at 1.98 m
+mean. **The six left over 2 m are at interchange arms that fork at the abutment**
+(Laan 1940–1945 north, 7.75 m): `extend_approaches` stops following a street at a
+fork, so such an arm gets a few metres of ramp — 1.1 → 6.5 m in 14 m — and then
+ground. Following the fork's continuation is the next step there.
+
 The 3D basisvoorziening's own bridge objects were checked for this and not taken:
 LoD1.2 drapes of the same BGT polygons, dated (one new deck came out 2.83 m against
 a DSM of 9.03), and on small viaducts over the ring the drape pulls outline corners

@@ -60,8 +60,11 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
    heights it measured to `decks/14/x/y.json`
    (`level-of-detail-tile-tree.md`, "Atlas grades"). It reads the vector tiles
    from `ATLAS_VECTOR_TILES` (default `tiles.cartopolis.org`), the water dataset's
-   own output from the site tree — so run `water` before `terrain` — and PDOK's
-   surface model for the decks. **Built** (`crates/atlas`, format
+   own output from the site tree — so run `water` before `terrain` — and the
+   surface model for the decks, from AHN6 where it is published and PDOK's AHN4
+   elsewhere (`ahn6.rs`, `ahn-editions.md`). Each deck record is `[x, y, height,
+   top, profile]` — the profile is `DeckProfile::to_wire`, trailing so an older
+   client still reads the height. **Built** (`crates/atlas`, format
    `cartopolis_geo::terrain_tile`): z8–z17, 129² samples, 33 KB a tile. Against
    live PDOK from the VPS (2026-09-23): a first cut takes 0.2–0.3 s and a repeat
    is ~1 ms from disk. North Groningen (`14/8490/5318`) spans −1.0 to +10.6 m

@@ -251,10 +251,44 @@ pub fn report(
                 let Some(top) = top_at(m, edge) else {
                     continue;
                 };
-                let ground = field.at(origin[0] + out[0], origin[1] + out[1]) + field.datum;
+                // The surface drawn there: another deck's top where the approach
+                // runs straight onto one — an interchange's ramps chain decks —
+                // and the ground otherwise. The ground *under* the next deck is
+                // not where the road is, and reads as a cliff that is not there.
+                // In any loaded cell: a deck is cut at its tile's edge, so the
+                // structure an approach runs onto is as often the neighbour's.
+                let world = [origin[0] + out[0], origin[1] + out[1]];
+                let onto = loaded
+                    .cells
+                    .iter()
+                    .zip(bridges)
+                    .flat_map(|(oc, ob)| {
+                        #[allow(clippy::cast_precision_loss)]
+                        let local = [
+                            world[0] - (oc.x - loaded.origin.0) as f32 * oc.tile_m,
+                            world[1] - (oc.y - loaded.origin.1) as f32 * oc.tile_m,
+                        ];
+                        let same = std::ptr::eq(oc, cell);
+                        oc.decks
+                            .iter()
+                            .zip(&ob.decks)
+                            .enumerate()
+                            .filter(move |(j, (d, _))| !(same && *j == i) && d.contains(local))
+                            .filter_map(move |(_, (_, m))| top_at(m.as_ref()?, local))
+                    })
+                    .min_by(|a, b| (a - top).abs().total_cmp(&(b - top).abs()));
+                let ground = onto.unwrap_or_else(|| {
+                    field.at(origin[0] + out[0], origin[1] + out[1]) + field.datum
+                });
                 let step = (top - ground).abs();
+                let (lat, lng) = cartopolis_core::world::tile_frac_to_lat_lng(
+                    cell.x as f64 + f64::from(out[0] / cell.tile_m),
+                    cell.y as f64 + f64::from(out[1] / cell.tile_m),
+                    cell.z,
+                );
                 println!(
-                    "  deck {}/{} #{i}: top at approach {top:.2} m NAP, ground 3 m out {ground:.2}, step {step:.2} m{}",
+                    "  deck {}/{} #{i}: top at approach {top:.2} m NAP, ground 3 m out {ground:.2}, \
+                     step {step:.2} m{} — probe at {lat:.6},{lng:.6}",
                     cell.x,
                     cell.y,
                     if m.profile.is_some() { " (profiled)" } else { "" }

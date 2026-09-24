@@ -267,8 +267,8 @@ Atlas now does it once per city with the same code (`cartopolis_geo::terrain_gra
 which the client's own bake also calls where atlas has not graded), and serves
 the result: `/terrain/14/x/y?grid=513&graded=1&v=<stamp>`, listed in
 `terrain/coverage.json` as `graded` with the run's `graded_stamp`. It also
-publishes the deck heights it measured (`decks/14/x/y.json`), which the ground
-cells use instead of asking PDOK.
+publishes the decks it measured (`decks/14/x/y.json`: height, top and profile —
+`bridge-heights.md`), which the ground cells use instead of asking PDOK.
 
 **Heights only.** Atlas reads the roads, decks and water to decide where the
 ground goes, and sends nothing but heights. Every road, bridge and building still
