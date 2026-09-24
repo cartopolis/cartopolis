@@ -337,7 +337,7 @@ pub(crate) fn coverage_resolved() -> bool {
 /// True if the 3DBAG host serves this cell's LoD1.2 footprints. `false` until the
 /// coverage manifest has loaded (see [`ensure_coverage_prefetch`]), and while the
 /// Layers panel's 3DBAG toggle is off.
-fn tdbag_covers(cx: i64, cy: i64) -> bool {
+pub(crate) fn tdbag_covers(cx: i64, cy: i64) -> bool {
     tdbag_user_enabled()
         && COVERAGE
             .get()
@@ -1020,6 +1020,7 @@ pub fn update_buildings(
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     tunnels: Res<crate::systems::tunnels::Tunnels>,
+    lod22: Res<crate::systems::lod22::Lod22Buildings>,
 ) {
     // Fire the 3DBAG coverage prefetch once (async, off the main thread) — the
     // coverage predicates report "uncovered" until it lands, then upgrade.
@@ -1353,9 +1354,19 @@ pub fn update_buildings(
                 // `LOD22_RADIUS + 1` owned by both: lod22 still held its mesh
                 // there while this tier fetched an extrusion under it — doubled
                 // buildings all along the boundary as cells drifted through.
+                //
+                // Where atlas has cut this cell's blocks, the shells stop at the
+                // nearer `lod22_ring` and ownership is by presence instead: blocks
+                // wherever the shells are not standing, and not fetched for a
+                // cell the shells are about to load.
+                let d = (cell.0 - ccx).abs().max((cell.1 - ccy).abs());
+                let ring = crate::systems::lod22::lod22_ring(cell.0, cell.1);
                 let lod22_near = lod22_covers(cell.0, cell.1)
-                    && (cell.0 - ccx).abs().max((cell.1 - ccy).abs())
-                        <= crate::systems::lod22::lod22_radius() + 1;
+                    && if tdbag_covers(cell.0, cell.1) {
+                        d <= ring || lod22.holds(cell)
+                    } else {
+                        d <= ring + 1
+                    };
                 if !lod22_near {
                     to_request.push(cell);
                 }
@@ -1590,8 +1601,15 @@ pub fn update_buildings(
             .keys()
             .filter(|(cx2, cy2)| {
                 let d = (cx2 - ccx).abs().max((cy2 - ccy).abs());
-                d > far_cell_radius() + 1
-                    || (d <= crate::systems::lod22::lod22_radius() + 1 && lod22_covers(*cx2, *cy2))
+                let owned_by_shells = lod22_covers(*cx2, *cy2)
+                    && if tdbag_covers(*cx2, *cy2) {
+                        // Kept until the shells stand, so a cell moving inwards
+                        // is never empty; the block nests inside the shell.
+                        lod22.holds((*cx2, *cy2))
+                    } else {
+                        d <= crate::systems::lod22::lod22_ring(*cx2, *cy2) + 1
+                    };
+                d > far_cell_radius() + 1 || owned_by_shells
             })
             .copied()
             .collect();

@@ -87,6 +87,26 @@ pub fn lod22_radius() -> i64 {
     load_control::radius(LOD22_RADIUS)
 }
 
+/// The LoD2.2 ring where atlas also serves the cell as LoD1.2 blocks: 1 (3×3,
+/// ~±2.2 km). Past it those blocks stand in, out to `far_cell_radius()`
+/// (`level-of-detail-tile-tree.md`, step 4). A LoD2.2 cell is the heaviest thing
+/// streamed — up to 63 MB for Groningen's densest (`upload-bursts.md`) — and at
+/// 2–3.5 km its shells and the blocks cover the same pixels.
+const LOD22_NEAR_RADIUS: i64 = 1;
+
+/// How far out this cell is drawn as LoD2.2: [`LOD22_NEAR_RADIUS`] where the
+/// blocks can take over from it, and the whole [`lod22_radius`] where they
+/// cannot. The rest of that ring would then be a hole or, where atlas has not cut
+/// blocks, an Overpass fetch for the same buildings.
+#[must_use]
+pub fn lod22_ring(cx: i64, cy: i64) -> i64 {
+    if crate::systems::osm_buildings::tdbag_covers(cx, cy) {
+        load_control::radius(LOD22_NEAR_RADIUS).min(lod22_radius())
+    } else {
+        lod22_radius()
+    }
+}
+
 /// The last ring whose cells are built with door panels on their facades.
 ///
 /// One inside the ring's edge, so only the outermost ring goes without. That
@@ -493,6 +513,14 @@ impl Lod22Buildings {
         // succeeded — without this term a capture could photograph a city with
         // three quarters of its densest cell missing and call itself settled.
         self.stream.busy() || self.partial.is_some()
+    }
+
+    /// Whether this cell's LoD2.2 shells are standing. The far blocks stand in for
+    /// a cell until they are, so moving it inwards swaps one for the other
+    /// rather than opening a hole while the shells load (`osm_buildings`).
+    #[must_use]
+    pub fn holds(&self, cell: (i64, i64)) -> bool {
+        self.cells.contains_key(&cell)
     }
 }
 
@@ -949,7 +977,7 @@ pub fn update_lod22(
     for dy in -radius..=radius {
         for dx in -radius..=radius {
             let c = (ccx + dx, ccy + dy);
-            if lod22_covers(c.0, c.1) {
+            if lod22_covers(c.0, c.1) && dx.abs().max(dy.abs()) <= lod22_ring(c.0, c.1) {
                 to_request.push(c);
             }
         }
@@ -1279,7 +1307,7 @@ pub fn update_lod22(
     let stale: Vec<(i64, i64)> = lod
         .cells
         .keys()
-        .filter(|(x, y)| (x - ccx).abs().max((y - ccy).abs()) > lod22_radius() + 1)
+        .filter(|(x, y)| (x - ccx).abs().max((y - ccy).abs()) > lod22_ring(*x, *y) + 1)
         .copied()
         .collect();
     for c in stale {

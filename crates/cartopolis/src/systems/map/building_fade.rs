@@ -1,7 +1,7 @@
 //! **The city used to stop at a square line, and this is how it stops doing that.**
 //!
 //! Three tiers draw the buildings and the outermost one just ended. `lod22` draws
-//! real LoD2.2 shells out to `lod22::lod22_radius()`, `osm_buildings` draws a
+//! real LoD2.2 shells out to `lod22::lod22_ring()`, `osm_buildings` draws a
 //! simplified extrusion from there to `far_cell_radius()` — about 5 km — and
 //! beyond that the ground is the flat drawn map with the buildings *printed on
 //! it*. Those two do not look alike, and the boundary between them was a cell

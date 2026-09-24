@@ -172,7 +172,20 @@ seen.
    most (`GRADED_WATER_HOLD_S`), and a later level re-bakes it.
 4. Building levels of detail per tile. The LoD1.2 blocks already exist per z14
    cell; any coarser merged level is built by atlas, which runs the building
-   pipeline (`crates/atlas/src/pipeline/`).
+   pipeline (`crates/atlas/src/pipeline/`). **First part built 2026-09-24.**
+   Inside the Netherlands the blocks were never drawn at all: the LoD2.2 ring
+   (radius 2, kept to 3) covered the whole 7×7 far ring, so a city was 25–49
+   cells of the heaviest thing the client streams. Now a cell atlas has blocks
+   for is LoD2.2 only within one cell of the camera (`lod22::lod22_ring`,
+   ~±2.2 km) and blocks from there to ~5 km; a cell without blocks keeps the old
+   ring. Which one draws a cell is decided by presence, not by ring: the block
+   stays until the shells stand, so a cell moving inwards is never empty.
+   Measured on `deck-1` over the Grote Markt, graded ground: graphics memory
+   830 → 747 MB at 600 m and 805 → 716 MB at 3 km, LoD2.2 quiet 12.4 → 11.0 s
+   cold and 4.7 → 4.1 s warm, and the picture is the same at 600 m. At 3 km the
+   city now reaches further, because the blocks go a ring past where the shells
+   stopped. A move 2.5 km east left no hole. Atlas cuts blocks for 47 cells of
+   Groningen against 112 of LoD2.2, so outside those 47 nothing changes.
 5. A switch that stops drawing flat features as meshes while keeping the data
    extraction; compare 600 m and walking height before deciding. **Done
    2026-09-24** (`CARTO_NO_GROUND_MESHES`, Deck, Grote Markt, warm). At 600 m
