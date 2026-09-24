@@ -1,7 +1,7 @@
 ---
 topic: level-of-detail-tile-tree
 triggers: [LOAD_RADIUS, COARSE_RADIUS, MIN_ZOOM, CELL_RADIUS, LOD22_RADIUS, FAR_CELL_RADIUS, TERRAIN_HALF_M, GLOBE_SHOW_ALT, REANCHOR_DISTANCE, "screen-space error", "tile tree", "level of detail", "LOD", "Google Earth", "ring retear", "loads slowly", "time to first image"]
-updated: 2026-09-23
+updated: 2026-09-24
 ---
 
 # The world streams as one screen-driven tile tree
@@ -189,6 +189,49 @@ the 12 MB field patch to two PDOK timeouts, after which `HeightLayer` never asks
 again: `main` settles with flat ground there, this branch reports the field as
 owed. Atlas tiles (2b) are the fix for that, being thirty small requests instead
 of one large one.
+
+## What was still slow once the queue was fixed (Deck, 2026-09-24, later)
+
+Same view and method, release build. A capture now logs three things that make
+this readable without guessing: `streamer quiet … wall_s` as each layer finishes
+(wall clock, unlike `settled_in`), `fetch route` per host and first path segment,
+and `cache reads` per cache-key kind.
+
+| | morning | now |
+|---|---|---|
+| 600 m, cold | 39 s (map image 11.7 s) | **32 s** (map image 8.6 s) |
+| 600 m, warm | 30 s | **15 s** (map image 3.8 s) |
+
+The device cache was already doing its job for everything drawn: on a warm start
+all 213 finished basemap tiles, all 145 vector tiles, the buildings, the BGT, the
+water and the dikes were read back, 0 misses. Four things were not:
+
+- **The height patches were never kept on the device.** A warm start re-asked
+  PDOK for ~170 deck and crest boxes (15 MB, 25 s of requests), and the surface
+  ring waited 13.5 s on the decks before the terrain could bake. They are kept
+  now, fetched on whole-metre boxes so a launch asks for the same file as the
+  last, and read *before* the spaced queue, which would otherwise make 170 disk
+  reads take as long as 170 requests. The cache fills over several launches:
+  the dike crests are the lowest rank, and a capture ends before all are asked.
+- **A cold start never used atlas's terrain tiles.** The anchor landed before
+  the coverage manifest and latched the WCS patch. The field now waits for the
+  manifest's answer, up to 5 s.
+- **An early bake meant two bakes.** With the decks off the disk the ring
+  finished in 3 s, and the bake ran with 20 of 50 water levels in; the rest
+  cost a second bake and a second rebuild of everything. The bake now also
+  holds while the levels are loading. The half-metre tier had the same fault
+  worse: it re-baked its box for every level that landed, 28 times and 143 s of
+  worker time in one start, because its patch now came off the disk.
+- **Four io threads on an 8-core machine.** Network calls block their thread
+  and the cache is read on the same threads; a cold fill held them for ~117 s
+  inside ~40 s. Sixteen now.
+
+What is left is structural, and it is step 2c/2d. On a warm start the ring is
+drawn flat at ~2 s, baked at ~8 s and then **rebuilt**, surfaces and buildings,
+until ~14 s. Laying a surface cell onto the field is 1.1–1.8 s of a worker, of
+which 0.8–1.5 s is `refine_for_terrain` (ground lookups ~10 % of that; the
+default hasher was a third, and is replaced). Cold, the long pole is still the
+~185 PDOK deck and crest requests the ring waits for.
 
 ## Rejected
 
