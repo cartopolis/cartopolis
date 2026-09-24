@@ -64,6 +64,47 @@ pub const CREASE_VERTEX_BUDGET: usize = 48_000;
 /// Refinement passes. Five takes a cell-spanning 1.5 km triangle down to ~46 m.
 const MAX_REFINE_PASSES: usize = 5;
 
+/// The hasher for the refinement's two edge maps: a multiply-rotate over the
+/// key's words (rustc's `FxHasher`), written out because it is ten lines.
+///
+/// **The default hasher was most of the refinement.** SipHash is built to resist
+/// a hostile key set, and these keys are vertex indices and millimetre
+/// coordinates from our own mesh: a city cell asks the two maps a few million
+/// questions, and the ground lookups themselves were ~10 % of the time (Deck,
+/// 2026-09-24).
+#[derive(Default, Clone, Copy)]
+struct EdgeHasher(u64);
+
+impl std::hash::Hasher for EdgeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(4) {
+            let mut w = [0u8; 4];
+            w[..chunk.len()].copy_from_slice(chunk);
+            self.write_u32(u32::from_le_bytes(w));
+        }
+    }
+
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(u64::from(v));
+    }
+
+    fn write_i32(&mut self, v: i32) {
+        self.write_u64(u64::from(v as u32));
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
+}
+
 /// Split every triangle edge longer than `max_edge`, repeatedly, so a flat polygon
 /// has vertices to be displaced *by*.
 ///
@@ -99,7 +140,7 @@ pub fn refine_for_terrain(
     max_edge: f32,
     crease: Option<Crease<'_>>,
 ) {
-    use std::collections::HashMap;
+    type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<EdgeHasher>>;
 
     let limit = max_edge.max(1.0);
     let limit_sq = limit * limit;
@@ -119,9 +160,10 @@ pub fn refine_for_terrain(
     // A refusal charged to an exhausted budget survives too, and must: `spent`
     // only ever grows, so the later pass would refuse it anyway, and answering it
     // consistently is what the per-edge key exists for.
-    let mut decided: HashMap<[i32; 6], bool> = HashMap::new();
+    let mut decided: HashMap<[i32; 6], bool> = HashMap::default();
     for _ in 0..MAX_REFINE_PASSES {
-        let mut midpoints: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut midpoints: HashMap<(u32, u32), u32> =
+            HashMap::with_capacity_and_hasher(indices.len() / 2, Default::default());
         // **Whether an edge splits is a property of where it is, not of which
         // vertices happen to name it.**
         //
