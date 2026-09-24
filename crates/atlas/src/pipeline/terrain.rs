@@ -8,16 +8,18 @@
 //! other datasets, because atlas serves these tiles itself — only the coverage
 //! manifest goes there, so the web UI can say what is covered.
 //!
-//! **One PDOK request at a time.** A dense z14 tile is one WCS call of a second or
-//! two, and a city is some dozens of them; running them in parallel would buy a
-//! minute on a job nobody watches, at the price of hitting a shared public service
-//! harder.
+//! **Three tiles at a time** (`Ctx::upstream`), visited in order. It
+//! was one, when a tile was one WCS call of a second or two; since AHN6 a tile is
+//! also the download of the ~9 MB sheets under it, static files off a download
+//! server, and one at a time was most of the 43 s Groningen's 49 tiles took
+//! (2026-09-24). Two tiles wanting the same sheet share one download
+//! (`crate::ahn6`).
 
 use cartopolis_geo::terrain_tile::DENSE_GRID;
 use serde_json::json;
 
 use super::rd::wgs84_bbox;
-use super::{Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
+use super::{in_order, Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
 use crate::terrain::{precut, HeightSource, Pdok, Precut};
 
 /// The tiles the client assembles its field from: z14 at the dense grid, ~1.47 km
@@ -75,46 +77,52 @@ pub fn run_graded(
     ctx.log(format!("{} tegels op z{ZOOM}…", tiles.len()));
     let (mut stored, mut cut, mut nothing, mut failed) = (0usize, 0usize, 0usize, 0usize);
     let mut measured = Vec::new();
-    for (i, &(x, y)) in tiles.iter().enumerate() {
-        ctx.check()?;
-        if i % 25 == 0 {
-            ctx.progress(Progress {
-                phase: Some("tegels".into()),
-                done: Some(i as u64),
-                total: Some(Some(tiles.len() as u64)),
-            });
-        }
-        match precut(source, &data_dir, ZOOM, x, y, DENSE_GRID) {
-            Ok(Precut::Stored) => {
-                stored += 1;
-                measured.push([x, y]);
+    let mut i = 0usize;
+    in_order(
+        ctx,
+        &tiles,
+        ctx.upstream(),
+        |&(x, y)| precut(source, &data_dir, ZOOM, x, y, DENSE_GRID),
+        |&(x, y), answer| {
+            if i % 25 == 0 {
+                ctx.progress(Progress {
+                    phase: Some("tegels".into()),
+                    done: Some(i as u64),
+                    total: Some(Some(tiles.len() as u64)),
+                });
             }
-            Ok(Precut::Cut) => {
-                cut += 1;
-                measured.push([x, y]);
-            }
-            Ok(Precut::Nothing) => nothing += 1,
-            // One tile PDOK would not answer is a tile cut on demand later, not a
-            // failed run; a run where most fail is PDOK being down.
-            Err(e) => {
-                failed += 1;
-                ctx.log(format!("tegel {ZOOM}/{x}/{y} overgeslagen: {e}"));
-                if failed > 20 && failed * 2 > i + 1 {
-                    return Err(PipelineError::Failed(format!(
-                        "PDOK answered {failed} of {} tiles with an error; stopping",
-                        i + 1
-                    )));
+            i += 1;
+            match answer {
+                Ok(Precut::Stored) => {
+                    stored += 1;
+                    measured.push([x, y]);
+                }
+                Ok(Precut::Cut) => {
+                    cut += 1;
+                    measured.push([x, y]);
+                }
+                Ok(Precut::Nothing) => nothing += 1,
+                // One tile PDOK would not answer is a tile cut on demand later, not
+                // a failed run; a run where most fail is PDOK being down.
+                Err(e) => {
+                    failed += 1;
+                    ctx.log(format!("tegel {ZOOM}/{x}/{y} overgeslagen: {e}"));
+                    if failed > 20 && failed * 2 > i {
+                        return Err(PipelineError::Failed(format!(
+                            "PDOK answered {failed} of {i} tiles with an error; stopping"
+                        )));
+                    }
                 }
             }
-        }
-        if (i + 1) % 100 == 0 {
-            ctx.log(format!(
-                "{} / {} tegels ({cut} gesneden, {stored} al aanwezig)",
-                i + 1,
-                tiles.len()
-            ));
-        }
-    }
+            if i % 100 == 0 {
+                ctx.log(format!(
+                    "{i} / {} tegels ({cut} gesneden, {stored} al aanwezig)",
+                    tiles.len()
+                ));
+            }
+            Ok(())
+        },
+    )?;
     ctx.log(format!(
         "{cut} gesneden, {stored} al aanwezig, {nothing} zonder meting, {failed} mislukt"
     ));

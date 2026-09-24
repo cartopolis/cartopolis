@@ -136,6 +136,9 @@ pub struct Ctx {
     /// Ask every source again rather than reusing what was fetched within
     /// [`http::SOURCE_CACHE_TTL`] — what was fetched is still written back.
     fresh: bool,
+    /// Requests kept in flight to one upstream ([`UPSTREAM_FETCHES`] unless
+    /// the configuration says otherwise).
+    upstream: usize,
     cancel: Arc<AtomicBool>,
     sink: Arc<dyn Sink>,
 }
@@ -154,9 +157,24 @@ impl Ctx {
             out_root: out_root.to_path_buf(),
             data_dir: None,
             fresh: false,
+            upstream: UPSTREAM_FETCHES,
             cancel,
             sink,
         }
+    }
+
+    /// `AtlasConfig::upstream_concurrency`, at least one.
+    #[must_use]
+    pub fn with_upstream(mut self, n: usize) -> Self {
+        self.upstream = n.max(1);
+        self
+    }
+
+    /// How many requests a dataset may keep in flight to one upstream — the
+    /// `threads` every [`in_order`] walk is given.
+    #[must_use]
+    pub fn upstream(&self) -> usize {
+        self.upstream
     }
 
     /// Fetch every source anew this run (`http::cached`).
@@ -250,6 +268,130 @@ impl Ctx {
     }
 }
 
+/// Requests one dataset keeps in flight to one upstream — atlas's default
+/// `upstream_concurrency`. Every source here is somebody else's public service,
+/// so this is a courtesy ceiling as much as a speed: three is where a Groningen
+/// run stopped being bound by one request's latency (2026-09-24) without
+/// hammering anybody.
+pub const UPSTREAM_FETCHES: usize = 3;
+
+/// Run `work` over `items` on up to `threads` threads, and hand each answer to
+/// `visit` on the calling thread **in item order**.
+///
+/// Order is the point. Every dataset was written as a serial walk — page after
+/// page, block after block — and its output (which duplicate wins, the order
+/// features land in a cell file) follows from that order, so a parallel fetch
+/// that visited in arrival order would change files nobody meant to change.
+/// Here only the waiting and the parsing overlap; `visit` sees exactly the
+/// sequence the serial walk gave it.
+///
+/// A worker runs at most `threads` items ahead of `visit`, which bounds what is
+/// held at once: a 3D basisvoorziening block is a few hundred MB parsed. A
+/// cancel stops workers taking new items and ends the walk with
+/// [`PipelineError::Cancelled`]; an `Err` from `visit` stops it with that error;
+/// a panicking `work` is re-raised here once the others have stopped.
+pub fn in_order<I, T>(
+    ctx: &Ctx,
+    items: &[I],
+    threads: usize,
+    work: impl Fn(&I) -> T + Sync,
+    mut visit: impl FnMut(&I, T) -> Outcome<()>,
+) -> Outcome<()>
+where
+    I: Sync,
+    T: Send,
+{
+    use std::collections::BTreeMap;
+    use std::sync::{mpsc, Condvar, Mutex, PoisonError};
+
+    struct Gate {
+        /// The next item a worker may take.
+        next: usize,
+        /// Items `visit` has had.
+        visited: usize,
+        stop: bool,
+    }
+    let threads = threads.clamp(1, items.len().max(1));
+    let gate = Mutex::new(Gate {
+        next: 0,
+        visited: 0,
+        stop: false,
+    });
+    let turn = Condvar::new();
+    let halt = |gate: &Mutex<Gate>| {
+        gate.lock().unwrap_or_else(PoisonError::into_inner).stop = true;
+        turn.notify_all();
+    };
+
+    std::thread::scope(|s| {
+        let (tx, rx) = mpsc::channel::<(usize, T)>();
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let (gate, turn, work, halt) = (&gate, &turn, &work, &halt);
+            s.spawn(move || loop {
+                let i = {
+                    let mut g = gate.lock().unwrap_or_else(PoisonError::into_inner);
+                    while !g.stop && g.next < items.len() && g.next >= g.visited + threads {
+                        g = turn.wait(g).unwrap_or_else(PoisonError::into_inner);
+                    }
+                    if g.stop || g.next >= items.len() {
+                        return;
+                    }
+                    g.next += 1;
+                    g.next - 1
+                };
+                if ctx.check().is_err() {
+                    halt(gate);
+                    return;
+                }
+                let answer = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    work(&items[i])
+                })) {
+                    Ok(answer) => answer,
+                    // Stop the others first: they would otherwise wait for
+                    // this item to be visited, and never exit.
+                    Err(panic) => {
+                        halt(gate);
+                        std::panic::resume_unwind(panic);
+                    }
+                };
+                if tx.send((i, answer)).is_err() {
+                    return;
+                }
+            });
+        }
+        drop(tx);
+
+        let mut pending = BTreeMap::new();
+        let mut visited = 0usize;
+        let mut result = Ok(());
+        for (i, answer) in rx.iter() {
+            pending.insert(i, answer);
+            while let Some(answer) = pending.remove(&visited) {
+                result = ctx.check().and_then(|()| visit(&items[visited], answer));
+                visited += 1;
+                gate.lock().unwrap_or_else(PoisonError::into_inner).visited = visited;
+                turn.notify_all();
+                if result.is_err() {
+                    break;
+                }
+            }
+            if result.is_err() {
+                break;
+            }
+        }
+        halt(&gate);
+        drop(rx);
+        // Every worker has exited when the channel closes; one that stopped
+        // early did so because of a cancel (a panic is re-raised by the scope).
+        if result.is_ok() && visited < items.len() {
+            ctx.check()?;
+            return Err(PipelineError::Failed("a fetch worker stopped early".into()));
+        }
+        result
+    })
+}
+
 /// One extractor, as the web UI lists it.
 pub struct Dataset {
     pub id: &'static str,
@@ -275,7 +417,7 @@ pub const DATASETS: &[Dataset] = &[
                       Kadaster 3D basisvoorziening. Without it the client draws water level \
                       with the quay beside it, because AHN has no reading over water.",
         coverage: "water/coverage.json",
-        typical_minutes: 2,
+        typical_minutes: 1,
         run: water::run,
     },
     Dataset {
@@ -293,7 +435,7 @@ pub const DATASETS: &[Dataset] = &[
         description: "Real roof and wall geometry, triangulated from 3DBAG CityJSON. The \
                       heaviest output by far — Groningen is ~115 MB.",
         coverage: "lod22/coverage.json",
-        typical_minutes: 4,
+        typical_minutes: 1,
         run: lod22::run,
     },
     Dataset {
@@ -302,7 +444,7 @@ pub const DATASETS: &[Dataset] = &[
         description: "Year built, use, floor areas, addresses, entrance points, houseboat \
                       berths, and the national monuments and protected districts joined onto them.",
         coverage: "bag/coverage.json",
-        typical_minutes: 10,
+        typical_minutes: 1,
         run: bag::run,
     },
     Dataset {
@@ -332,7 +474,7 @@ pub const DATASETS: &[Dataset] = &[
                       ramped — so the client only samples it, and publishes the bridge deck \
                       heights it measured. Reads the water levels, so it runs after them.",
         coverage: "terrain/coverage.json",
-        typical_minutes: 4,
+        typical_minutes: 1,
         run: terrain::run,
     },
 ];
@@ -340,4 +482,125 @@ pub const DATASETS: &[Dataset] = &[
 #[must_use]
 pub fn dataset(id: &str) -> Option<&'static Dataset> {
     DATASETS.iter().find(|d| d.id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Quiet;
+    impl Sink for Quiet {
+        fn log(&self, _: String) {}
+        fn progress(&self, _: Progress) {}
+    }
+
+    fn ctx(cancel: Arc<AtomicBool>) -> Ctx {
+        Ctx::new(
+            [0.0; 4],
+            "t",
+            std::path::Path::new("."),
+            cancel,
+            Arc::new(Quiet),
+        )
+    }
+
+    /// The later items finish first, and are still visited last.
+    #[test]
+    fn answers_are_visited_in_item_order() {
+        let items: Vec<u64> = (0..40).collect();
+        let mut seen = Vec::new();
+        in_order(
+            &ctx(Arc::new(AtomicBool::new(false))),
+            &items,
+            4,
+            |&i| {
+                std::thread::sleep(Duration::from_millis((40 - i) % 7));
+                i * 10
+            },
+            |&i, answer| {
+                assert_eq!(answer, i * 10);
+                seen.push(i);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, items);
+    }
+
+    /// Nothing is started far ahead of what has been visited.
+    #[test]
+    fn workers_stay_within_the_window() {
+        let started = AtomicUsize::new(0);
+        let items: Vec<usize> = (0..30).collect();
+        in_order(
+            &ctx(Arc::new(AtomicBool::new(false))),
+            &items,
+            3,
+            |_| started.fetch_add(1, Ordering::SeqCst),
+            |&i, _| {
+                assert!(started.load(Ordering::SeqCst) <= i + 1 + 3);
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_failed_visit_stops_the_walk() {
+        let worked = AtomicUsize::new(0);
+        let items: Vec<usize> = (0..100).collect();
+        let err = in_order(
+            &ctx(Arc::new(AtomicBool::new(false))),
+            &items,
+            3,
+            |_| worked.fetch_add(1, Ordering::SeqCst),
+            |&i, _| {
+                if i == 5 {
+                    Err(PipelineError::Failed("disk full".into()))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, PipelineError::Failed("disk full".into()));
+        assert!(worked.load(Ordering::SeqCst) < 20);
+    }
+
+    #[test]
+    fn a_cancel_ends_it_as_cancelled() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let items: Vec<usize> = (0..100).collect();
+        let err = in_order(
+            &ctx(cancel.clone()),
+            &items,
+            3,
+            |&i| {
+                if i == 10 {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            },
+            |_, ()| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(err, PipelineError::Cancelled);
+    }
+
+    /// A panic reaches the caller rather than leaving the others waiting on an
+    /// item that will never be visited.
+    #[test]
+    fn a_panicking_worker_does_not_hang_the_rest() {
+        let items: Vec<usize> = (0..50).collect();
+        let panicked = std::panic::catch_unwind(|| {
+            in_order(
+                &ctx(Arc::new(AtomicBool::new(false))),
+                &items,
+                3,
+                |&i| assert!(i != 7, "item 7"),
+                |_, ()| Ok(()),
+            )
+        });
+        assert!(panicked.is_err());
+    }
 }

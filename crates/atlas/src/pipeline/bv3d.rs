@@ -22,16 +22,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::http::{get_bytes_optional, head_ok};
-use super::{Ctx, Outcome, PipelineError, Progress};
+use super::{in_order, Ctx, Outcome, PipelineError, Progress};
 
 /// Edge of one published sheet, RD metres.
 const BLOCK_M: f64 = 2000.0;
-
-/// Blocks downloaded at once — atlas's default `upstream_concurrency`. These
-/// are static files off a download server, not API pages, and a block is ~5 s
-/// of download against ~2 s of parse (2026-09-24), so one at a time left
-/// Groningen's 30 blocks at ~3.5 minutes, paid by both `water` and `bgt`.
-const BLOCK_FETCHES: usize = 3;
 
 const DOWNLOAD_ROOT: &str = "https://download.pdok.nl/kadaster/basisvoorziening-3d/v1_0";
 
@@ -62,12 +56,65 @@ pub struct Geometry {
     pub boundaries: Value,
 }
 
-#[derive(Deserialize)]
+/// The two tables anything reads geometry from: walls (`bgt`) and water
+/// (`water`). Every other object keeps its attributes and drops its geometry.
+const KEPT_TABLES: [&str; 2] = [SEPARATION_TABLE, super::water::WATER_TABLE];
+
 pub struct CityObject {
-    #[serde(default)]
     pub attributes: Option<Attributes>,
-    #[serde(default)]
+    /// Empty for an object outside [`KEPT_TABLES`] — when its attributes came
+    /// first, which is how 3dfier writes them; otherwise parsed, just as before.
     pub geometry: Vec<Geometry>,
+}
+
+/// **Skips the geometry nobody reads.** Buildings, roads, terrain and
+/// vegetation are most of a block, and parsed into a JSON tree their
+/// boundaries were most of its memory: with three blocks in hand at once
+/// (`Ctx::upstream`) a Groningen run peaked at 4.5 GB where one block at a
+/// time had held 1.6 GB (2026-09-24).
+impl<'de> Deserialize<'de> for CityObject {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{IgnoredAny, MapAccess, Visitor};
+
+        struct Object;
+        impl<'de> Visitor<'de> for Object {
+            type Value = CityObject;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a CityJSON city object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<CityObject, A::Error> {
+                let mut attributes: Option<Attributes> = None;
+                let mut geometry = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "attributes" => attributes = map.next_value()?,
+                        "geometry" => {
+                            let unread = attributes.as_ref().is_some_and(|a| {
+                                !a.tabelnaam
+                                    .as_deref()
+                                    .is_some_and(|t| KEPT_TABLES.contains(&t))
+                            });
+                            if unread {
+                                map.next_value::<IgnoredAny>()?;
+                            } else {
+                                geometry = map.next_value()?;
+                            }
+                        }
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(CityObject {
+                    attributes,
+                    geometry,
+                })
+            }
+        }
+        d.deserialize_map(Object)
+    }
 }
 
 /// Only what the two readers need, typed: a block is ~130 MB of JSON and an
@@ -200,16 +247,30 @@ pub fn separation_heights(cj: &CityJson) -> HashMap<String, f64> {
     out
 }
 
-/// Every published 2 km block over `ctx.bbox`, parsed and handed to `visit`.
+/// Every published 2 km block over `ctx.bbox`: downloaded, parsed and `read`
+/// on a worker, and the answer handed to `visit` in block order.
+///
+/// **The parse is the worker's, not the caller's.** A block is ~5 s of
+/// download and ~1–2 s of JSON, and with the download already overlapped the
+/// parse was what was left: Groningen's 30 blocks cost `water` ~50 s and the
+/// BGT's heights 32 s *from the source cache* (2026-09-24), one core busy and
+/// the rest idle. So `read` reduces a block to what the caller keeps — a few
+/// thousand heights or rings — where it was parsed, and only that crosses back.
+///
+/// **A cold run is bound by the download**, and by the connection count rather
+/// than the link: the download server gives each connection ~5 MB/s and six at
+/// once got six times that (2026-09-24), so `upstream_concurrency` is the knob
+/// for a first extraction. Each worker holds one parsed block.
 ///
 /// **Never fails the caller** for a missing edition, an unreachable host or a
 /// block that is all water: for both callers that means yesterday's map —
 /// nominal wall heights, water at the quay — and failing a whole dataset over a
 /// refinement would be the wrong trade. Only a cancel propagates.
-pub fn for_each_block(
+pub fn for_each_block<T: Send>(
     ctx: &Ctx,
     what: &str,
-    mut visit: impl FnMut(&CityJson, i64, i64),
+    read: impl Fn(&CityJson) -> T + Sync,
+    mut visit: impl FnMut(T),
 ) -> Outcome<()> {
     let blocks = blocks_for(ctx.bbox);
     let Some(&[bx, by]) = blocks.first() else {
@@ -233,64 +294,45 @@ pub fn for_each_block(
         blocks.len()
     ));
     let mut failed = 0;
-    // Download a batch while the one before it is parsed, in block order, so the
-    // callers see exactly the sequence a serial walk gave them. Only the raw zips
-    // are held in flight (~26 MB each); a parsed block is several times that.
-    let fetch = |&[x, y]: &[i64; 2]| {
-        get_bytes_optional(ctx, &block_url(year, x, y), Duration::from_secs(300))
-    };
-    std::thread::scope(|s| -> Outcome<()> {
-        let fetch = &fetch;
-        let spawn = |batch| {
-            let handles: Vec<_> = <[[i64; 2]]>::iter(batch)
-                .map(|&b| s.spawn(move || fetch(&b)))
-                .collect();
-            (batch, handles)
-        };
-        let mut batches = blocks.chunks(BLOCK_FETCHES);
-        let mut in_flight = batches.next().map(spawn);
-        let mut index = 0usize;
-        while let Some((batch, handles)) = in_flight.take() {
-            ctx.check()?;
-            let raws: Vec<Outcome<Option<Vec<u8>>>> = handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err(PipelineError::Failed("download panicked".into())))
+    let mut index = 0usize;
+    in_order(
+        ctx,
+        &blocks,
+        ctx.upstream(),
+        |&[x, y]| -> Outcome<Option<T>> {
+            // A block outside the published area (the sea, over the border) is a
+            // 404: a block with nothing in it, not a failure.
+            let Some(raw) =
+                get_bytes_optional(ctx, &block_url(year, x, y), Duration::from_secs(300))?
+            else {
+                return Ok(None);
+            };
+            let cj = single_zip_entry(&raw)
+                .and_then(|json| {
+                    serde_json::from_slice::<CityJson>(&json).map_err(|e| e.to_string())
                 })
-                .collect();
-            in_flight = batches.next().map(spawn);
-            for (raw, &[x, y]) in raws.into_iter().zip(batch) {
-                ctx.progress(Progress {
-                    phase: Some(what.to_string()),
-                    done: Some(index as u64),
-                    total: Some(Some(blocks.len() as u64)),
-                });
-                index += 1;
-                // A block outside the published area (the sea, over the border) is
-                // a 404: a block with nothing in it, not a failure.
-                let parsed = raw.and_then(|b| match b {
-                    None => Ok(None),
-                    Some(raw) => single_zip_entry(&raw)
-                        .and_then(|json| {
-                            serde_json::from_slice::<CityJson>(&json).map_err(|e| e.to_string())
-                        })
-                        .map(Some)
-                        .map_err(PipelineError::Failed),
-                });
-                match parsed {
-                    Ok(Some(cj)) => visit(&cj, x, y),
-                    Ok(None) => {}
-                    Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
-                    Err(e) => {
-                        failed += 1;
-                        ctx.log(format!("{what}: blok {x},{y} overgeslagen ({e})"));
-                    }
+                .map_err(PipelineError::Failed)?;
+            Ok(Some(read(&cj)))
+        },
+        |&[x, y], answer| {
+            index += 1;
+            ctx.progress(Progress {
+                phase: Some(what.to_string()),
+                done: Some(index as u64),
+                total: Some(Some(blocks.len() as u64)),
+            });
+            match answer {
+                Ok(Some(t)) => visit(t),
+                Ok(None) => {}
+                Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
+                Err(e) => {
+                    failed += 1;
+                    ctx.log(format!("{what}: blok {x},{y} overgeslagen ({e})"));
                 }
             }
-        }
-        Ok(())
-    })?;
+            Ok(())
+        },
+    )?;
     if failed > 0 {
         ctx.log(format!("{what}: {failed} blokken mislukt"));
     }
@@ -301,9 +343,7 @@ pub fn for_each_block(
 /// identificatie the flat BGT API returns as `lokaal_id`.
 pub fn separation_heights_for(ctx: &Ctx) -> Outcome<HashMap<String, f64>> {
     let mut heights = HashMap::new();
-    for_each_block(ctx, "hoogtes", |cj, _, _| {
-        heights.extend(separation_heights(cj))
-    })?;
+    for_each_block(ctx, "hoogtes", separation_heights, |h| heights.extend(h))?;
     ctx.log(format!("hoogtes: {} gemeten scheidingen", heights.len()));
     Ok(heights)
 }
@@ -332,6 +372,28 @@ mod tests {
     fn the_year_is_plausible() {
         let y = this_year();
         assert!((2025..2100).contains(&y), "{y}");
+    }
+
+    #[test]
+    fn only_walls_and_water_keep_their_geometry() {
+        let cj: CityJson = serde_json::from_str(
+            r#"{"transform": {"scale": [1, 1, 1], "translate": [0, 0, 0]},
+                "vertices": [[0, 0, 0], [0, 0, 2]],
+                "CityObjects": {
+                  "a": {"type": "Road", "attributes": {"tabelnaam": "Wegdeel_vlak"},
+                        "geometry": [{"boundaries": [[[0, 1]]]}]},
+                  "b": {"attributes": {"tabelnaam": "Scheiding_vlak", "gml_id": "w"},
+                        "geometry": [{"boundaries": [[[0, 1]]]}]},
+                  "c": {"geometry": [{"boundaries": [[[0, 1]]]}],
+                        "attributes": {"tabelnaam": "Wegdeel_vlak"}}
+                }}"#,
+        )
+        .unwrap();
+        assert!(cj.city_objects["a"].geometry.is_empty());
+        assert_eq!(cj.city_objects["b"].geometry.len(), 1);
+        // Geometry before the attributes cannot be judged, so it is kept.
+        assert_eq!(cj.city_objects["c"].geometry.len(), 1);
+        assert_eq!(separation_heights(&cj).get("w"), Some(&2.0));
     }
 
     #[test]

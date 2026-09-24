@@ -425,8 +425,21 @@ struct CellData {
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
-    ctx.log("extract aanvragen…");
-    let extract = &Extract::fetch(ctx, &FEATURETYPES)?;
+    // The wall heights come from the 3D basisvoorziening and owe the extract
+    // nothing, so they are measured while PDOK builds it and it downloads —
+    // ~20 s for Groningen that the run otherwise spent waiting (2026-09-24).
+    // Never fatal: with no measurements every wall falls back to its nominal form.
+    let (extract, heights) = std::thread::scope(|s| {
+        let heights = s.spawn(|| separation_heights_for(ctx));
+        ctx.log("extract aanvragen…");
+        let extract = Extract::fetch(ctx, &FEATURETYPES);
+        let heights = heights
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (extract, heights)
+    });
+    let extract = &extract?;
+    let heights = heights?;
     let mut cells: HashMap<Cell, CellData> = HashMap::new();
     let cell_of = |at: Pt| -> Cell { lat_lng_to_cell(at[0], at[1]) };
 
@@ -459,10 +472,6 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             }
         })?;
     }
-
-    // Before the boundaries that consume it, and never fatal: with no
-    // measurements every wall falls back to its nominal form.
-    let heights = separation_heights_for(ctx)?;
 
     // A measured height rides as a **trailing** third element, like the paving's
     // material: unknown costs no bytes, and every cached cell keeps parsing.

@@ -29,7 +29,7 @@ use super::geom::{
 use super::http::{get_json, get_json_with, get_text, query};
 use super::rd::rd_to_lat_lng;
 use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
-use super::{Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
+use super::{in_order, Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
 
 const WFS_BASE: &str = "https://service.pdok.nl/lv/bag/wfs/v2_0";
 /// The heritage register: not on PDOK, but the RCE's own WFS, with English layer
@@ -287,6 +287,52 @@ fn pages(ctx: &Ctx, layer: &str, mut visit: impl FnMut(&Value)) -> Outcome<()> {
     let grand: u64 = pieces.iter().map(|(_, n)| n.unwrap_or(0)).sum();
     let mut seen_total = 0u64;
     for (piece, total) in pieces {
+        // **With the count known, every page's `startIndex` is too**, so the
+        // pages are fetched a few at a time and visited in order. One at a time,
+        // Groningen's ~225 pages were 62 of the dataset's 67 s (2026-09-24), each
+        // page mostly the server's latency. A page that comes back short no longer
+        // ends the walk early: the pages after it are asked for anyway, so a
+        // server that truncates one page loses that page rather than the rest.
+        if let Some(t) = total {
+            let reachable = usize::try_from(t)
+                .unwrap_or(usize::MAX)
+                .min(MAX_START_INDEX);
+            let starts: Vec<usize> = (0..reachable).step_by(PAGE).collect();
+            let mut got = 0usize;
+            in_order(
+                ctx,
+                &starts,
+                ctx.upstream(),
+                |&start| {
+                    get_json(
+                        ctx,
+                        &feature_url(WFS_BASE, layer, piece, start),
+                        &format!("{layer} page {start}"),
+                    )
+                },
+                |_, page| {
+                    let page = page?;
+                    let feats = page["features"].as_array().map_or(&[][..], Vec::as_slice);
+                    feats.iter().for_each(&mut visit);
+                    got += feats.len();
+                    seen_total += feats.len() as u64;
+                    ctx.progress(Progress {
+                        phase: Some(layer.into()),
+                        done: Some(seen_total),
+                        total: Some((grand > 0).then_some(grand)),
+                    });
+                    Ok(())
+                },
+            )?;
+            if (got as u64) < t {
+                ctx.log(format!(
+                    "WARNING: {layer} yielded {got} of {t} features for [{}] — that piece is incomplete.",
+                    piece.map(js_num_str).join(",")
+                ));
+            }
+            continue;
+        }
+        // No count: walk until a short page, the only end there is to see.
         let mut start = 0usize;
         loop {
             ctx.check()?;
@@ -295,7 +341,7 @@ fn pages(ctx: &Ctx, layer: &str, mut visit: impl FnMut(&Value)) -> Outcome<()> {
                 &feature_url(WFS_BASE, layer, piece, start),
                 &format!("{layer} page {start}"),
             )?;
-            let feats = page["features"].as_array().cloned().unwrap_or_default();
+            let feats = page["features"].as_array().map_or(&[][..], Vec::as_slice);
             if feats.is_empty() {
                 break;
             }
@@ -308,15 +354,9 @@ fn pages(ctx: &Ctx, layer: &str, mut visit: impl FnMut(&Value)) -> Outcome<()> {
                 done: Some(seen_total),
                 total: Some((grand > 0).then_some(grand)),
             });
-            if total.is_some_and(|t| start as u64 >= t) || got < PAGE || start >= MAX_START_INDEX {
+            if got < PAGE || start >= MAX_START_INDEX {
                 break;
             }
-        }
-        if let Some(t) = total.filter(|t| (start as u64) < *t) {
-            ctx.log(format!(
-                "WARNING: {layer} yielded {start} of {t} features for [{}] — that piece is incomplete.",
-                piece.map(js_num_str).join(",")
-            ));
         }
     }
     Ok(())

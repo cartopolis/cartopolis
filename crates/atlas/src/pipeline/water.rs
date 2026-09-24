@@ -26,7 +26,7 @@ use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
 use super::{Count, Ctx, DatasetResult, Outcome};
 
 const ATTRIBUTION: &str = "Water levels © Kadaster 3D basisvoorziening (CC BY 4.0)";
-const WATER_TABLE: &str = "Waterdeel_vlak";
+pub(super) const WATER_TABLE: &str = "Waterdeel_vlak";
 /// Metres, in RD before projecting: the client uses these for a point-in-polygon
 /// test and to carve the ground, neither of which can see a decimetre.
 const SIMPLIFY_M: f64 = 0.25;
@@ -164,8 +164,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let mut cells: HashMap<Cell, Vec<Value>> = HashMap::new();
     let (mut n_rings, mut n_placements) = (0usize, 0usize);
 
-    for_each_block(ctx, "waterpeilen", |cj, _, _| {
-        for (level, ring) in water_rings(cj) {
+    for_each_block(ctx, "waterpeilen", water_rings, |rings| {
+        for (level, ring) in rings {
             n_rings += 1;
             // Into **every** cell the ring's extent touches: the client tests each
             // sample against the rings it holds, so a canal filed under one end is

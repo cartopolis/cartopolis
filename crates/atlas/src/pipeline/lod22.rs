@@ -33,7 +33,7 @@ use super::geom::round;
 use super::http::{get_json_with, get_maybe_gzipped_json, get_text, query};
 use super::rd::rd_to_lat_lng;
 use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
-use super::{Count, Ctx, DatasetResult, Outcome, Progress};
+use super::{in_order, Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
 
 const WFS_BASE: &str = "https://data.3dbag.nl/api/BAG3D/wfs";
 
@@ -352,6 +352,41 @@ fn v3(v: &Value) -> Option<V3> {
     ])
 }
 
+/// One building part's LoD2.2 shell, triangulated.
+struct Solid {
+    pand: String,
+    part: u32,
+    p: Vec<[f64; 3]>,
+    t: Vec<[u32; 4]>,
+}
+
+/// Every LoD2.2 solid in one CityJSON tile, in the tile's own object order —
+/// the work of a tile, done where it was downloaded.
+fn solids(cj: &Value) -> Result<Vec<Solid>, String> {
+    let (Some(scale), Some(translate)) = (
+        v3(&cj["transform"]["scale"]),
+        v3(&cj["transform"]["translate"]),
+    ) else {
+        return Err("no transform".into());
+    };
+    let verts = cj["vertices"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut out = Vec::new();
+    for (oid, obj) in cj["CityObjects"].as_object().into_iter().flatten() {
+        let Some(g22) = obj["geometry"].as_array().and_then(|gs| {
+            gs.iter()
+                .find(|g| g["lod"] == "2.2" && g["type"] == "Solid")
+        }) else {
+            continue;
+        };
+        let Some((p, t)) = process_object(g22, verts, scale, translate) else {
+            continue;
+        };
+        let (pand, part) = object_id(oid);
+        out.push(Solid { pand, part, p, t });
+    }
+    Ok(out)
+}
+
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let urls = tile_urls(ctx)?;
     ctx.log(format!("{} CityJSON tiles cover the bbox", urls.len()));
@@ -366,66 +401,54 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 
     let mut cells: HashMap<Cell, Vec<Value>> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut total = 0usize;
+    let (mut total, mut tiles_done) = (0usize, 0usize);
 
-    for (ti, url) in urls.iter().enumerate() {
-        ctx.check()?;
-        let cj = match get_maybe_gzipped_json(ctx, url, &format!("tile {}", ti + 1)) {
-            Ok(cj) => cj,
-            Err(super::PipelineError::Cancelled) => return Err(super::PipelineError::Cancelled),
-            Err(e) => {
+    // Downloaded and triangulated a few tiles at a time, deduplicated and binned
+    // in tile order — the order decides which tile's copy of a building on a
+    // tile edge is kept, so it must be the serial walk's.
+    in_order(
+        ctx,
+        &urls,
+        ctx.upstream(),
+        |url| -> Outcome<Result<Vec<Solid>, String>> {
+            match get_maybe_gzipped_json(ctx, url, "tile") {
+                Ok(cj) => Ok(solids(&cj)),
+                Err(PipelineError::Cancelled) => Err(PipelineError::Cancelled),
+                Err(e) => Ok(Err(e.to_string())),
+            }
+        },
+        |url, answer| {
+            let n_before = total;
+            tiles_done += 1;
+            match answer? {
                 // One unreadable tile is a hole in the coverage, not a failed run.
-                ctx.log(format!("tile {url}: {e}"));
-                progress(ti + 1);
-                continue;
-            }
-        };
-        let (Some(scale), Some(translate)) = (
-            v3(&cj["transform"]["scale"]),
-            v3(&cj["transform"]["translate"]),
-        ) else {
-            ctx.log(format!("tile {url}: no transform"));
-            progress(ti + 1);
-            continue;
-        };
-        let verts = cj["vertices"].as_array().cloned().unwrap_or_default();
-        let mut n_tile = 0;
-        if let Some(objects) = cj["CityObjects"].as_object() {
-            for (oid, obj) in objects {
-                let Some(g22) = obj["geometry"].as_array().and_then(|gs| {
-                    gs.iter()
-                        .find(|g| g["lod"] == "2.2" && g["type"] == "Solid")
-                }) else {
-                    continue;
-                };
-                let (pand, part) = object_id(oid);
-                let key = format!("{pand}-{part}");
-                if seen.contains(&key) {
-                    continue;
+                Err(e) => ctx.log(format!("tile {url}: {e}")),
+                Ok(found) => {
+                    for Solid { pand, part, p, t } in found {
+                        if !seen.insert(format!("{pand}-{part}")) {
+                            continue;
+                        }
+                        let cell = lat_lng_to_cell(p[0][0], p[0][1]);
+                        let mut el = json!({"id": pand, "p": p, "t": t});
+                        if part != 0 {
+                            el["part"] = json!(part);
+                        }
+                        cells.entry(cell).or_default().push(el);
+                        total += 1;
+                    }
+                    ctx.log(format!(
+                        "[{tiles_done}/{}] {}: {} buildings ({total} total, {} cells)",
+                        urls.len(),
+                        url.rsplit('/').next().unwrap_or(url),
+                        total - n_before,
+                        cells.len()
+                    ));
                 }
-                let Some((p, t)) = process_object(g22, &verts, scale, translate) else {
-                    continue;
-                };
-                seen.insert(key);
-                let cell = lat_lng_to_cell(p[0][0], p[0][1]);
-                let mut el = json!({"id": pand, "p": p, "t": t});
-                if part != 0 {
-                    el["part"] = json!(part);
-                }
-                cells.entry(cell).or_default().push(el);
-                n_tile += 1;
-                total += 1;
             }
-        }
-        ctx.log(format!(
-            "[{}/{}] {}: {n_tile} buildings ({total} total, {} cells)",
-            ti + 1,
-            urls.len(),
-            url.rsplit('/').next().unwrap_or(url),
-            cells.len()
-        ));
-        progress(ti + 1);
-    }
+            progress(tiles_done);
+            Ok(())
+        },
+    )?;
 
     for (cell, elements) in &cells {
         ctx.write_json(&cell_path("lod22", *cell), &json!({"elements": elements}))?;

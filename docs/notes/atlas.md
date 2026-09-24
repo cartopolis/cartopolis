@@ -1,7 +1,7 @@
 ---
 topic: atlas
 triggers: [cartopolis_atlas, crates/atlas, atlas, "terrain tile", "/terrain/", pipeline, "user management", registration, accounts, "ROBUST", OpenSim, "service design"]
-updated: 2026-09-23
+updated: 2026-09-24
 ---
 
 # `cartopolis_atlas`: everything around the world that is not the simulation
@@ -114,6 +114,14 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   3D sheets alone are ~550 MB. `atlas run --fresh` and the web UI's *Fetch
   fresh source data* ask everything anew. A 200 whose body does not parse is
   evicted rather than served back.
+- **Fetches overlap, visits do not** (`pipeline::in_order`). Every dataset
+  was written as a serial walk and its output follows from that order — which
+  duplicate wins, the order features land in a cell file — so the parallel
+  parts (BAG pages, LoD2.2 tiles, 3D basisvoorziening blocks, terrain tiles,
+  dike crests) fetch and parse up to `UPSTREAM_FETCHES` (3) items at once and
+  hand the answers back in item order. Three is a courtesy ceiling as much as a
+  speed: every source is somebody else's public service. The BGT additionally
+  measures its wall heights while PDOK builds its extract.
 - **It writes as `cartoatlas` in group `ubuntu`, umask 0002**
   (`deploy/cartopolis-atlas.service`). The site tree and the autopilot's control
   file belong to `ubuntu`, and the autopilot writes that file too, so anything

@@ -38,7 +38,8 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             api: config.admin_api.clone(),
         }))),
         runner: jobs::Runner::new(&config.site_dir, jobs::default_registry())
-            .with_data_dir(&config.data_dir),
+            .with_data_dir(&config.data_dir)
+            .with_upstream(config.upstream_concurrency),
         out_root: config.site_dir.clone(),
         autopilot: config.autopilot_config.clone(),
     };

@@ -27,7 +27,7 @@ use super::geom::{round, Pt, M_PER_DEG};
 use super::http::{get_json, query};
 use super::rd::wgs84_bbox;
 use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
-use super::{Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
+use super::{in_order, Count, Ctx, DatasetResult, Outcome, PipelineError, Progress};
 
 const OGC_BASE: &str = "https://api.pdok.nl/hwh/waterschappen-keringen-imwa/ogc/v1";
 const COLLECTION: &str = "waterkering";
@@ -232,58 +232,79 @@ fn measure_crests(
             }
         }
     }
+    // A few clusters at a time: each is one WCS request of well under a second,
+    // and 311 of them one after another were all of Groningen's 23 s (2026-09-24).
+    let groups: Vec<_> = groups.into_values().collect();
     let (mut asked, mut measured) = (0usize, 0usize);
-    for members in groups.values() {
-        ctx.check()?;
-        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
-        for (_, _, m) in members {
-            lo = [
-                lo[0].min(m[0] - CREST_HALF_M),
-                lo[1].min(m[1] - CREST_HALF_M),
-            ];
-            hi = [
-                hi[0].max(m[0] + CREST_HALF_M),
-                hi[1].max(m[1] + CREST_HALF_M),
-            ];
-        }
-        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
-        let n = ((span / CREST_SAMPLE_M).ceil() as usize + 1).clamp(2, CREST_RASTER_MAX);
-        let max = [lo[0] + span, lo[1] + span];
-        let px = span / n as f64;
-        asked += 1;
-        let raster = match ground.raster(lo, max, n) {
-            Ok(r) => r,
-            // A cluster PDOK would not answer is labels the client measures itself.
-            Err(e) => {
-                ctx.log(format!("kruin niet gemeten: {e}"));
-                continue;
-            }
-        };
-        for (cell, i, m) in members {
-            let mut top = f32::NEG_INFINITY;
-            for r in 0..n {
-                // North row first.
-                let y = max[1] - (r as f64 + 0.5) * px;
-                if (y - m[1]).abs() > CREST_HALF_M {
-                    continue;
-                }
-                for c in 0..n {
-                    let x = lo[0] + (c as f64 + 0.5) * px;
-                    let v = raster[r * n + c];
-                    if (x - m[0]).abs() <= CREST_HALF_M && v.is_finite() {
-                        top = top.max(v);
+    in_order(
+        ctx,
+        &groups,
+        ctx.upstream(),
+        |members| cluster_crests(members, ground),
+        |_, tops| {
+            asked += 1;
+            match tops {
+                // A cluster PDOK would not answer is labels the client measures itself.
+                Err(e) => ctx.log(format!("kruin niet gemeten: {e}")),
+                Ok(tops) => {
+                    for (cell, i, top) in tops {
+                        if let Some(data) = cells.get_mut(&cell) {
+                            data.crests[i] = Some(top);
+                            measured += 1;
+                        }
                     }
                 }
             }
-            if top.is_finite() {
-                if let Some(data) = cells.get_mut(cell) {
-                    data.crests[*i] = Some(top);
-                    measured += 1;
+            Ok(())
+        },
+    )?;
+    Ok((asked, measured))
+}
+
+/// The crest of every line in one cluster: the highest measured ground within
+/// `CREST_HALF_M` of its midpoint, from one raster over the whole cluster.
+fn cluster_crests(
+    members: &[(Cell, usize, [f64; 2])],
+    ground: &dyn crate::terrain::HeightSource,
+) -> Result<Vec<(Cell, usize, f32)>, String> {
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for (_, _, m) in members {
+        lo = [
+            lo[0].min(m[0] - CREST_HALF_M),
+            lo[1].min(m[1] - CREST_HALF_M),
+        ];
+        hi = [
+            hi[0].max(m[0] + CREST_HALF_M),
+            hi[1].max(m[1] + CREST_HALF_M),
+        ];
+    }
+    let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+    let n = ((span / CREST_SAMPLE_M).ceil() as usize + 1).clamp(2, CREST_RASTER_MAX);
+    let max = [lo[0] + span, lo[1] + span];
+    let px = span / n as f64;
+    let raster = ground.raster(lo, max, n)?;
+    let mut out = Vec::new();
+    for &(cell, i, m) in members {
+        let mut top = f32::NEG_INFINITY;
+        for r in 0..n {
+            // North row first.
+            let y = max[1] - (r as f64 + 0.5) * px;
+            if (y - m[1]).abs() > CREST_HALF_M {
+                continue;
+            }
+            for c in 0..n {
+                let x = lo[0] + (c as f64 + 0.5) * px;
+                let v = raster[r * n + c];
+                if (x - m[0]).abs() <= CREST_HALF_M && v.is_finite() {
+                    top = top.max(v);
                 }
             }
         }
+        if top.is_finite() {
+            out.push((cell, i, top));
+        }
     }
-    Ok((asked, measured))
+    Ok(out)
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {

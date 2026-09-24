@@ -163,6 +163,8 @@ struct Shared {
     out_root: PathBuf,
     /// Atlas's own store, handed to every `Ctx` (`Ctx::with_data_dir`).
     data_dir: std::sync::OnceLock<PathBuf>,
+    /// `upstream_concurrency`, handed to every `Ctx` (`Ctx::with_upstream`).
+    upstream: std::sync::OnceLock<usize>,
     registry: Registry,
 }
 
@@ -184,6 +186,7 @@ impl Runner {
             wake: Condvar::new(),
             out_root: out_root.to_path_buf(),
             data_dir: std::sync::OnceLock::new(),
+            upstream: std::sync::OnceLock::new(),
             registry,
         });
         let worker = Arc::clone(&shared);
@@ -198,6 +201,14 @@ impl Runner {
     #[must_use]
     pub fn with_data_dir(self, data_dir: &Path) -> Self {
         let _ = self.shared.data_dir.set(data_dir.to_path_buf());
+        self
+    }
+
+    /// How many requests a dataset keeps in flight to one upstream
+    /// (`AtlasConfig::upstream_concurrency`). Set once, before any job.
+    #[must_use]
+    pub fn with_upstream(self, n: usize) -> Self {
+        let _ = self.shared.upstream.set(n);
         self
     }
 
@@ -427,6 +438,10 @@ fn run_job(shared: &Arc<Shared>, id: &str) {
             None => ctx,
         }
         .with_fresh(fresh);
+        let ctx = match shared.upstream.get() {
+            Some(&n) => ctx.with_upstream(n),
+            None => ctx,
+        };
         // A panic in an extractor is a failed step, not a dead runner: the thread
         // is the only one and every later job would queue behind it forever.
         let outcome =

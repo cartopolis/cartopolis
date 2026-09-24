@@ -23,6 +23,8 @@ pub struct AtlasConfig {
     pub data_dir: PathBuf,
     /// Requests to PDOK allowed in flight at once. PDOK is a shared public
     /// service and we are a guest on it; the client's own height layer uses 3.
+    /// The pipelines take the same number as their per-dataset ceiling
+    /// (`pipeline::Ctx::upstream`): pages, tiles and 3D blocks fetched at once.
     pub upstream_concurrency: usize,
     /// The tree the map data pipelines write, which Caddy serves as
     /// `3dbag.cartopolis.org` and the web UI reads coverage from.
