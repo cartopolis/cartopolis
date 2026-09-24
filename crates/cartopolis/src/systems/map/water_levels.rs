@@ -202,6 +202,13 @@ impl WaterLevels {
         self.cells.values().map(|c| c.rings.len()).sum()
     }
 
+    /// Are cells still being fetched? The terrain bake holds for this beside the
+    /// surface ring: every level that lands after a bake is another bake.
+    #[must_use]
+    pub fn loading(&self) -> bool {
+        self.stream.busy()
+    }
+
     fn clear(&mut self) {
         self.cells.clear();
         self.revision = self.revision.wrapping_add(1);

@@ -1666,14 +1666,27 @@ fn run_client() {
                     // the small-machine case and the large one was measured. Safe
                     // for the same reason the paragraph above gives: these threads
                     // block on a socket rather than burning a core.
-                    min_threads: 4,
-                    max_threads: 8,
+                    //
+                    // Eight since 2026-09-24. The device cache is read on these
+                    // same threads, so on a warm start a file read that takes a
+                    // millisecond waits behind whichever four requests are parked
+                    // on a slow host: on the Deck (8 cores, io=4) 49 water cells
+                    // that were all on the disk had not finished loading 3 s in,
+                    // while the terrain was ready to bake. Every streamer still
+                    // caps its own requests in flight, so this widens the queue
+                    // for reads, not the load on any server.
+                    min_threads: 8,
+                    max_threads: 12,
                     percent: 0.30,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
                 },
                 async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
-                    min_threads: 2,
+                    // Four, which is what an 8-core device already got here while
+                    // io was four: the pools are sized in order out of what is
+                    // left, so io's floor of eight would otherwise leave this at
+                    // two — and pipeline compilation runs here (below).
+                    min_threads: 4,
                     // Bevy's own default width, and no longer ours to cap.
                     //
                     // `Budget::worker_cap` used to be enforced here, because

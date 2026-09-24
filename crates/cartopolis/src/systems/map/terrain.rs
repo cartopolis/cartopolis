@@ -1301,10 +1301,22 @@ pub fn update_terrain_field(
     // After the download, not before it: the 12 MB fetch is the long pole and must
     // start at once. And bounded, because a camera that keeps moving keeps a ring
     // busy, and hills a little late beat hills never.
+    //
+    // **And not while the water levels are still arriving**, for the same reason.
+    // Once the height patches came off the device the ring finished in three
+    // seconds, the first bake ran while 20 of 50 levels were in, and the rest cost a
+    // second bake and a second retear of everything (Deck, 2026-09-24: warm 25 s →
+    // 38 s). The debounce above cannot see this: it ends in any two-second gap.
     let held_since = *hold.get_or_insert(now);
-    if surfaces.streaming_busy() && now - held_since < RING_HOLD_MAX_S {
-        wait("the surface ring", &field);
-        return;
+    if now - held_since < RING_HOLD_MAX_S {
+        if surfaces.streaming_busy() {
+            wait("the surface ring", &field);
+            return;
+        }
+        if levels.loading() {
+            wait("the water levels", &field);
+            return;
+        }
     }
     *hold = None;
     field.bake_owed = false;
@@ -1986,6 +1998,14 @@ pub fn update_fine_terrain(
     if (field.fine_wanted == Some(want) && field.fine_water_rev == Some(levels.revision))
         || field.fine_job.is_some()
     {
+        return;
+    }
+    // **Levels still arriving re-centre nothing.** Each one that lands is a new
+    // revision, and this box was re-baked for every one: ~5 s of a worker each, 28
+    // of them in one warm start on the Deck (2026-09-24, 143 s of the pool's time)
+    // once the patch came off the device instead of from PDOK. One bake after the
+    // burst takes all of them.
+    if field.fine_wanted == Some(want) && levels.loading() {
         return;
     }
     if !HeightLayer::covers(anchor.0, anchor.1) {

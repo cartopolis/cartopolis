@@ -73,9 +73,10 @@ pub const ANY: Rank = Rank::MAX;
 
 /// Slots kept back for [`NEAR`] work.
 ///
-/// Four, which is the narrowest the `IoTaskPool` ever is (its `min_threads`), so
-/// on the machine with the least headroom the near ring can still saturate the
-/// pool by itself while every distant streamer is held off.
+/// Four, which was the narrowest the `IoTaskPool` ever was (its `min_threads`)
+/// when this was chosen, so on the machine with the least headroom the near ring
+/// could saturate the pool by itself while every distant streamer was held off.
+/// The floor is eight since 2026-09-24; four kept back of it is still a reserve.
 const RESERVED_FOR_NEAR: usize = 4;
 
 /// Outstanding jobs allowed at once, absent a pool to size it against.
