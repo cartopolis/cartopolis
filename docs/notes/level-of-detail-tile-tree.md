@@ -64,10 +64,17 @@ seen.
 
 ## Steps
 
-1. Screen-driven selection for the flat image tiles only.
-2. Per-tile terrain, which retires the global field and the ring retears.
+1. Screen-driven selection for the flat image tiles only. **Built**
+   (`map_stream::select_tiles`), with the old ring count as its ceiling (424
+   desktop, 224 phone) so no view can ask for more than the rings did. Over
+   Groningen at 600 m, pitched 35° down: **375 → 213 tiles, 1.02 → 0.80 GB of
+   graphics memory**, the same picture (2026-09-23, `--dump-state`).
+2. Per-tile terrain from `cartopolis_atlas`'s `/terrain/{z}/{x}/{y}` (`atlas.md`,
+   its first step), which retires the global field and the ring retears.
 3. Fold the globe into the tree, which retires the 50 km switch and the re-anchor.
-4. Building levels of detail per tile.
+4. Building levels of detail per tile. The LoD1.2 blocks already exist per z14
+   cell; any coarser merged level is built by atlas, which runs the building
+   pipeline (`crates/atlas/src/pipeline/`).
 5. A switch that stops drawing flat features as meshes while keeping the data
    extraction; compare 600 m and walking height before deciding.
 

@@ -118,8 +118,6 @@ const TILE_MAX_IN_FLIGHT: usize = 8;
 /// one command buffer overran a weak GPU's timeout. Retired tiles are queued and
 /// freed at this rate.
 const MAX_TILE_DESPAWNS_PER_FRAME: usize = 12;
-/// Altitude margin a zoom boundary must be crossed by before switching (anti-thrash).
-const ZOOM_HYSTERESIS_M: f32 = 60.0;
 
 /// Altitude above which the streamer stops entirely (see the freeze in
 /// [`update_map_stream`]).
@@ -132,41 +130,13 @@ const ZOOM_HYSTERESIS_M: f32 = 60.0;
 /// the two altitudes buys that fill a head start while the tiles are still hidden
 /// by `data_layers::apply_feature_toggles`.
 ///
-/// It costs one ring, not a pyramid: [`zoom_for_altitude`] clamps to [`MIN_ZOOM`]
-/// far below this, so anywhere in the prefetch band the desired set is a single
-/// 7×7 level — 49 tiles, not the 424 of a full clipmap. That is load-bearing
-/// enough to be a test (`prefetch_band_is_one_coarse_ring`), because a future edit
-/// to the zoom ladder could quietly turn this into a 424-tile fetch for every
-/// place the camera drifts over in orbit. The original freeze exists to stop
-/// exactly that.
+/// It costs the roots and nothing more: above `globe::GLOBE_SHOW_ALT`
+/// `update_map_stream` caps the selection at [`MIN_ZOOM`], so anywhere in the
+/// prefetch band the desired set is the one 9×9 coarse ring — 81 tiles. That is
+/// load-bearing enough to be a test (`prefetch_band_is_one_coarse_ring`), because
+/// refining here would fetch fine ground for every place an orbiting camera drifts
+/// over. The original freeze exists to stop exactly that.
 const MAP_PREFETCH_ALT: f32 = 250_000.0;
-
-/// Pick a map zoom from camera altitude: detailed near the ground, coarser high up
-/// so a wide area is visible cheaply. Capped at the region's base zoom.
-fn zoom_for_altitude(altitude_m: f32, base_zoom: u32) -> u32 {
-    // Above the globe threshold nothing here is on screen — the globe is
-    // (`data_layers::apply_feature_toggles` hides every `StreamTile` in space), and
-    // the streamer is only still running to warm the descent (`MAP_PREFETCH_ALT`).
-    // Warm one coarse ring and no more. The ladder below bottoms out at
-    // `base_zoom - 4`, which for a z17 anchor is z13 and a four-level, 228-tile
-    // pyramid — affordable to *hold* while you are standing in it, not to fetch
-    // speculatively for every patch of ground an orbiting camera drifts across.
-    if altitude_m > crate::systems::globe::GLOBE_SHOW_ALT {
-        return MIN_ZOOM;
-    }
-    let z = if altitude_m < 200.0 {
-        base_zoom
-    } else if altitude_m < 700.0 {
-        base_zoom.saturating_sub(1)
-    } else if altitude_m < 2_000.0 {
-        base_zoom.saturating_sub(2)
-    } else if altitude_m < 6_000.0 {
-        base_zoom.saturating_sub(3)
-    } else {
-        base_zoom.saturating_sub(4)
-    };
-    z.max(MIN_ZOOM)
-}
 
 /// Marker for a streamed ground tile, carrying its key.
 ///
@@ -316,19 +286,22 @@ pub struct MapStream {
     aerial_ready: HashSet<TileKey>,
 }
 
-/// The clipmap's desired set, cached against the centres that produced it.
+/// What decides the desired set — see [`DesiredTiles::key`].
+type DesiredKey = (Vec<(u32, i64, i64)>, u32, i64, [i32; 5]);
+
+/// The basemap's desired set, cached against the camera pose that produced it.
 ///
-/// Keyed on **every level's** centre tile, not just the finest. The centres are
-/// `round()`ed, so the levels' step points are not nested — a coarse ring can cross
-/// its own centre line on a frame the finest ring does not, and keying on the
-/// finest alone would leave that level's set one tile stale. Computing 8 centres is
-/// a handful of flops; it is the 424 hash inserts behind them that were the cost.
+/// Keyed on **every level's** centre tile as well as the pose. The centres are
+/// `round()`ed, so the levels' step points are not nested — a coarse level can
+/// cross its own centre line on a frame the finest does not — and the rank and the
+/// cross-fade are measured from them.
 #[derive(Default)]
 struct DesiredTiles {
-    /// `(zoom, centre x, centre y)` per clipmap level, the anchor generation, and
-    /// the radius bias `systems::load_control` currently holds — all three decide
-    /// which tiles are wanted, so all three have to invalidate the set.
-    key: Option<(Vec<(u32, i64, i64)>, u32, i64)>,
+    /// `(zoom, centre x, centre y)` per level, the anchor generation, the radius
+    /// bias `systems::load_control` currently holds, and the camera pose quantised
+    /// (position, altitude, yaw, pitch) — all four decide which tiles are wanted,
+    /// so all four have to invalidate the set.
+    key: Option<DesiredKey>,
     /// Wanted tile → its spawn height.
     wanted: HashMap<TileKey, f32>,
     /// Spawn/fetch order: coarsest zoom first, so a fresh anchor gets full — if
@@ -795,21 +768,32 @@ pub fn refresh_tile_lod_blend(
         ),
         With<StreamTileReady>,
     >,
-    mut applied: Local<Option<(Vec<(u32, i64, i64)>, Vec2, usize)>>,
+    mut applied: Local<Option<(DesiredKey, Vec2, usize)>>,
 ) {
     let Some((clat, clng, _)) = stream.anchor else {
         return;
     };
-    let Some((centres, _, ring_bias)) = stream.desired.key.clone() else {
+    let Some(key) = stream.desired.key.clone() else {
         return;
     };
-    let want = (centres, origin.0, tiles.iter().len());
+    let want = (key, origin.0, tiles.iter().len());
     if applied.as_ref() == Some(&want) {
         return;
     }
-    let centres = &want.0;
-    let budget = crate::quality::budget();
-    let finest = stream.current_zoom;
+    let centres = &want.0 .0;
+    // Each level's reach from its own centre, in tiles, measured off what is
+    // actually selected. With the rings this was the ring radius by construction;
+    // a screen-driven selection is not square, so this is the smallest square
+    // around the centre that holds the level, and the fade still lands on the
+    // level's outermost tiles.
+    let mut reach: HashMap<u32, i64> = HashMap::new();
+    for t in stream.desired.wanted.keys() {
+        if let Some(&(_, ctx, cty)) = centres.iter().find(|(z, _, _)| *z == t.z) {
+            let r = (t.x - ctx).abs().max((t.y - cty).abs());
+            let e = reach.entry(t.z).or_insert(0);
+            *e = (*e).max(r);
+        }
+    }
     let bias = if lod_blend_enabled() {
         LOD_BLEND_BIAS
     } else {
@@ -829,12 +813,7 @@ pub fn refresh_tile_lod_blend(
             material.extension.lod = Vec4::ZERO;
             continue;
         }
-        let radius = (budget.radius(if tile.key.z == finest {
-            LOAD_RADIUS
-        } else {
-            COARSE_RADIUS
-        }) - ring_bias)
-            .max(1);
+        let radius = reach.get(&tile.key.z).copied().unwrap_or(1).max(1);
         let gs = tile_to_meters(tile.key.z, clat) as f32;
         let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
         // The ring's centre in the anchored world frame is its centre *tile's* centre,
@@ -1145,56 +1124,234 @@ pub fn apply_terrain_to_tiles(
     }
 }
 
-/// The clipmap's desired tiles: every level's ring around its own centre, with the
-/// spawn height each tile takes, plus the coarse-first order to fetch them in.
+/// How many tiles the old ring pyramid held for this tier, down from `finest` —
+/// the ceiling [`select_tiles`] works under, so no view asks for more than the
+/// rings did: a `LOAD_RADIUS` ring at the finest zoom and a `COARSE_RADIUS` ring at
+/// every coarser one, 424 on a desktop from z17.
 ///
-/// Split out of [`update_map_stream`] because this is the arithmetic that decides
-/// the fan-out — 424 tiles for a z10–z17 pyramid — and the number is worth being
-/// able to assert (see the tests).
+/// `budget` is a parameter rather than a `quality::budget()` read so a test can
+/// state the number for a tier it is not running on.
+fn ring_budget(finest: u32, budget: &crate::quality::Budget, ring_bias: i64) -> usize {
+    (MIN_ZOOM..=finest.max(MIN_ZOOM))
+        .map(|z| {
+            let r = (budget.radius(if z == finest {
+                LOAD_RADIUS
+            } else {
+                COARSE_RADIUS
+            }) - ring_bias)
+                .max(1);
+            ((2 * r + 1) * (2 * r + 1)) as usize
+        })
+        .sum()
+}
+
+/// Texels per tile edge the screen-space error is measured against, whatever the
+/// tier rasterises at.
 ///
-/// `budget` is a parameter rather than a `quality::budget()` read for exactly that
-/// reason: the fan-out is now a function of the tier, and a test that could only
-/// see the tier of whichever machine ran it could not state either number.
-fn clipmap(
-    centres: &[(u32, i64, i64)],
-    base_zoom: u32,
-    finest_zoom: u32,
-    budget: &crate::quality::Budget,
-    ring_bias: i64,
-) -> (HashMap<TileKey, f32>, Vec<TileKey>) {
-    let mut wanted: HashMap<TileKey, f32> = HashMap::new();
-    let mut spawn_order: Vec<TileKey> = Vec::new();
-    for &(zoom, ctx, cty) in centres {
-        // `budget.radius` and not `load_control::radius`, because `budget` is a
-        // parameter here precisely so a test can state the fan-out for a tier it
-        // is not running on. The controller's bias is folded in by the caller
-        // (`ring_bias`), which keeps this function a pure function of its
-        // arguments.
-        let radius = (budget.radius(if zoom == finest_zoom {
-            LOAD_RADIUS
-        } else {
-            COARSE_RADIUS
-        }) - ring_bias)
-            .max(1);
-        let y = level_y(base_zoom, zoom);
-        // Within a level, nearest-first. The fetches are queued in this order and
-        // the pools drain it roughly FIFO, so the ground under the camera is the
-        // first thing to sharpen; row-major from a corner instead put the tile you
-        // are standing on ~40th of 81 at the finest zoom, which is most of a fill
-        // spent watching the periphery resolve.
-        let mut level: Vec<(i64, TileKey)> =
-            Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
-        for b in -radius..=radius {
-            for a in -radius..=radius {
-                let tile = TileKey::new(ctx + a, cty + b, zoom);
-                wanted.insert(tile, y);
-                level.push((a * a + b * b, tile));
-            }
+/// **Not `Budget::tile_px`.** The phone tier draws 256² tiles to save memory; if
+/// the error were measured at that raster it would ask for a zoom deeper to make
+/// up the difference — four times the tiles, which is the memory the smaller
+/// raster was there to save. A tier's raster is a deliberate quality choice, not
+/// an error for the selection to correct.
+const SSE_TILE_PX: f32 = 512.0;
+
+/// Screen height the error is measured in, whatever the device's actually is.
+///
+/// For the same reason as [`SSE_TILE_PX`]: a 2,400-pixel phone must not select
+/// more ground than a 1080p desktop does, or its tile count — which the phone
+/// budget exists to bound — would grow with its display.
+const SSE_SCREEN_PX: f32 = 1080.0;
+
+/// How many screen pixels one texel may cover before a tile is split.
+///
+/// 2.0 keeps the ground under the camera about as sharp as the old altitude ladder
+/// kept it: at the 45° field of view, straight down from 600 m it selects z16, as
+/// the ladder did (the ladder ran from ~2 to ~4.7 pixels per texel under the camera
+/// across its bands). Everything further away goes coarser, which is where the
+/// saving is — the rings held a whole 7×7 of each level whatever its distance.
+const SSE_THRESHOLD: f32 = 2.0;
+
+/// A tile whose children are already selected keeps them until its error falls
+/// this far below the threshold, so a camera hovering at a boundary cannot flip a
+/// block of tiles back and forth.
+const SSE_HYSTERESIS: f32 = 0.8;
+
+/// Widening of the field of view the visibility test uses, so a small turn does not
+/// reveal tiles that were never refined.
+const VIEW_MARGIN: f32 = 1.3;
+
+/// What [`select_tiles`] needs to know about the camera, in the anchored flat frame.
+#[derive(Clone, Copy, Debug)]
+struct TileView {
+    /// Camera position: world X, altitude above the ground plane, world Z.
+    eye: Vec3,
+    /// Clip-space transform for the visibility test, widened by [`VIEW_MARGIN`].
+    /// `None` skips the test (the prefetch band, and tests that only care about
+    /// distance).
+    view_proj: Option<Mat4>,
+    /// Metres one screen pixel spans per metre of distance.
+    pixel_per_m: f32,
+}
+
+impl TileView {
+    fn new(eye: Vec3, rotation: Quat, fov_y: f32, aspect: f32) -> Self {
+        let view = Mat4::from_rotation_translation(rotation, eye).inverse();
+        let proj =
+            Mat4::perspective_rh((fov_y * VIEW_MARGIN).min(3.0), aspect.max(0.1), 1.0, 1.0e8);
+        Self {
+            eye,
+            view_proj: Some(proj * view),
+            pixel_per_m: 2.0 * (fov_y * 0.5).tan() / SSE_SCREEN_PX,
         }
-        level.sort_by_key(|(d2, _)| *d2);
-        spawn_order.extend(level.into_iter().map(|(_, tile)| tile));
     }
-    (wanted, spawn_order)
+
+    /// Whether any part of an axis-aligned box can be on screen. Conservative: a
+    /// box straddling the camera plane counts as visible.
+    fn sees(&self, min: Vec3, max: Vec3) -> bool {
+        let Some(vp) = self.view_proj else {
+            return true;
+        };
+        let corners = [
+            Vec3::new(min.x, min.y, min.z),
+            Vec3::new(max.x, min.y, min.z),
+            Vec3::new(min.x, max.y, min.z),
+            Vec3::new(max.x, max.y, min.z),
+            Vec3::new(min.x, min.y, max.z),
+            Vec3::new(max.x, min.y, max.z),
+            Vec3::new(min.x, max.y, max.z),
+            Vec3::new(max.x, max.y, max.z),
+        ];
+        let clip = corners.map(|c| vp * c.extend(1.0));
+        if clip.iter().all(|c| c.w <= 0.0) {
+            return false;
+        }
+        if clip.iter().any(|c| c.w <= 0.0) {
+            return true;
+        }
+        let all = |f: &dyn Fn(&Vec4) -> bool| clip.iter().all(f);
+        !(all(&|c| c.x > c.w)
+            || all(&|c| c.x < -c.w)
+            || all(&|c| c.y > c.w)
+            || all(&|c| c.y < -c.w))
+    }
+}
+
+/// The basemap tiles to hold for this view: refined by **screen-space error**
+/// rather than by a ring per zoom (`docs/notes/level-of-detail-tile-tree.md`).
+///
+/// The roots are the coarsest level's ring around the camera, which is what
+/// reaches the horizon and is never culled — it is the ground under everything.
+/// From there the tile whose texels are largest on screen is split first, and only
+/// if it can be seen, until nothing needs splitting or `cap` tiles are held. So
+/// the ground under the camera is as fine as the old altitude ladder made it,
+/// ground far off is coarser, and ground behind the camera stays at whatever level
+/// covers it.
+///
+/// **Every selected tile's parent is selected too.** That is what the old rings
+/// gave for free — each level sat under the one above it — and it is what lets
+/// [`occluded_by_finer`] hide a parent only once all four children are ready, so a
+/// refinement never opens a hole. It costs about a third more tiles than the
+/// leaves alone, all of them coarse.
+///
+/// `cap` bounds the total, ancestors included. It is the old ring pyramid's own
+/// count for the tier ([`ring_budget`]), so no view can ask for more than the rings
+/// did. `held` is what the previous selection chose, for the hysteresis.
+///
+/// Spawn order is coarse-first and nearest-first within a level, as the rings'
+/// was: a blurry whole ground beats a sharp patch of it.
+#[allow(clippy::too_many_arguments)]
+fn select_tiles(
+    view: &TileView,
+    anchor: (f64, f64),
+    roots: (i64, i64, i64),
+    base_zoom: u32,
+    max_zoom: u32,
+    cap: usize,
+    held: &HashMap<TileKey, f32>,
+) -> (HashMap<TileKey, f32>, Vec<TileKey>) {
+    let (clat, clng) = anchor;
+    // Per zoom: tile edge in metres and the anchor's fractional tile coordinate, so a
+    // tile's extent in the flat frame is ((x - fcx) * gs .. (x + 1 - fcx) * gs).
+    let frames: HashMap<u32, (f64, f64, f64)> = (MIN_ZOOM..=max_zoom.max(MIN_ZOOM))
+        .map(|z| {
+            let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, z);
+            (z, (tile_to_meters(z, clat), fcx, fcy))
+        })
+        .collect();
+    let bounds = |t: TileKey| -> (Vec3, Vec3) {
+        let (gs, fcx, fcy) = frames[&t.z];
+        let x0 = ((t.x as f64 - fcx) * gs) as f32;
+        let z0 = ((t.y as f64 - fcy) * gs) as f32;
+        let e = gs as f32;
+        (
+            Vec3::new(x0, -TILE_AABB_Y_MARGIN_M, z0),
+            Vec3::new(x0 + e, TILE_AABB_Y_MARGIN_M, z0 + e),
+        )
+    };
+    // Screen pixels one texel of this tile covers at its nearest point.
+    let error = |t: TileKey| -> f32 {
+        let (min, max) = bounds(t);
+        let dx = (min.x - view.eye.x).max(view.eye.x - max.x).max(0.0);
+        let dz = (min.z - view.eye.z).max(view.eye.z - max.z).max(0.0);
+        let d = (dx * dx + dz * dz + view.eye.y * view.eye.y)
+            .sqrt()
+            .max(1.0);
+        let texel = (max.x - min.x) / SSE_TILE_PX;
+        texel / (d * view.pixel_per_m)
+    };
+
+    let mut wanted: HashMap<TileKey, f32> = HashMap::new();
+    // Max-heap on the error, as integer millipixels so the key is `Ord`.
+    let mut open: std::collections::BinaryHeap<(u64, i64, i64, u32)> =
+        std::collections::BinaryHeap::new();
+    let (r, cx, cy) = roots;
+    for b in -r..=r {
+        for a in -r..=r {
+            let t = TileKey::new(cx + a, cy + b, MIN_ZOOM);
+            wanted.insert(t, level_y(base_zoom, MIN_ZOOM));
+            open.push(((error(t) * 1000.0) as u64, t.x, t.y, t.z));
+        }
+    }
+    while let Some((e_milli, x, y, z)) = open.pop() {
+        if z >= max_zoom || wanted.len() + 4 > cap {
+            continue;
+        }
+        let t = TileKey::new(x, y, z);
+        let children = [
+            TileKey::new(2 * x, 2 * y, z + 1),
+            TileKey::new(2 * x + 1, 2 * y, z + 1),
+            TileKey::new(2 * x, 2 * y + 1, z + 1),
+            TileKey::new(2 * x + 1, 2 * y + 1, z + 1),
+        ];
+        let threshold = if children.iter().all(|c| held.contains_key(c)) {
+            SSE_THRESHOLD * SSE_HYSTERESIS
+        } else {
+            SSE_THRESHOLD
+        };
+        if (e_milli as f32 / 1000.0) <= threshold {
+            continue;
+        }
+        let (min, max) = bounds(t);
+        if !view.sees(min, max) {
+            continue;
+        }
+        for c in children {
+            wanted.insert(c, level_y(base_zoom, c.z));
+            open.push(((error(c) * 1000.0) as u64, c.x, c.y, c.z));
+        }
+    }
+
+    let mut order: Vec<(u32, u64, TileKey)> = wanted
+        .keys()
+        .map(|t| {
+            let (min, max) = bounds(*t);
+            let c = (min + max) * 0.5;
+            let d2 = (c.x - view.eye.x).powi(2) + (c.z - view.eye.z).powi(2);
+            (t.z, d2 as u64, *t)
+        })
+        .collect();
+    order.sort_unstable_by_key(|(z, d2, t)| (*z, *d2, t.x, t.y));
+    (wanted, order.into_iter().map(|(_, _, t)| t).collect())
 }
 
 /// [`fetch_gate::NEAR`] for a tile in the 3×3 around its own level's centre, and
@@ -1309,7 +1466,7 @@ pub fn update_map_stream(
     mut stream: ResMut<MapStream>,
     mut meshes: ResMut<Assets<Mesh>>,
     tile_url: Res<OsmTileUrlTemplate>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     time: Res<Time>,
@@ -1321,7 +1478,7 @@ pub fn update_map_stream(
         return;
     };
     let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
-    let Ok((cell, tf)) = camera.single() else {
+    let Ok((cell, tf, projection)) = camera.single() else {
         return;
     };
     let Ok(root) = bigspace.single() else {
@@ -1351,36 +1508,29 @@ pub fn update_map_stream(
         return;
     }
 
-    // LOD: choose zoom from camera altitude; rebuild the patch when it changes.
-    // Hysteresis: the boundary must be crossed by a margin so hovering can't thrash.
-    let cur = stream.current_zoom;
-    let desired = zoom_for_altitude(altitude, base_zoom);
-    let confirmed = if desired < cur {
-        zoom_for_altitude(altitude - ZOOM_HYSTERESIS_M, base_zoom) <= desired
-    } else if desired > cur {
-        zoom_for_altitude(altitude + ZOOM_HYSTERESIS_M, base_zoom) >= desired
+    // Above the globe threshold nothing here is on screen — the globe is
+    // (`data_layers::apply_feature_toggles` hides every `StreamTile` in space), and
+    // the streamer only runs to warm the descent (`MAP_PREFETCH_ALT`). Warm the
+    // roots and no more: refining for an orbiting camera would fetch fine ground
+    // for every patch it drifts across.
+    let max_zoom = if altitude > crate::systems::globe::GLOBE_SHOW_ALT {
+        MIN_ZOOM
     } else {
-        false
+        base_zoom.max(MIN_ZOOM)
     };
-    if confirmed {
-        tracing::info!(from = cur, to = desired, altitude, "map LOD zoom changed");
-        stream.current_zoom = desired;
-    }
 
     // Camera world position (tile centres are derived from it at every zoom).
     let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
     let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
 
-    // Desired tiles: a clipmap pyramid. Level 0 is the finest (altitude-driven)
-    // ring around the camera; each level beneath halves the zoom, doubling the
-    // covered extent, down to MIN_ZOOM whose ring reaches the horizon (~20 km).
-    // Coarser levels sit slightly lower so finer tiles draw on top — no seams or
-    // hole-cutting, and part-loaded levels are backstopped by the level beneath.
-    // A tile (tx,ty) centre sits at world ((tx+0.5 - fcx)*gs, (ty+0.5 - fcy)*gs)
-    // relative to the fixed anchor, so the map never shifts across zoom changes.
-    // Cheap every frame: each level's centre tile, plus its shared quad mesh.
+    // Each level's centre tile under the camera — no longer what decides the
+    // desired set (`select_tiles` does), but still what the fetch rank's near band
+    // and the level cross-fade are measured from. Plus each zoom's shared quad
+    // mesh. A tile (tx,ty) centre sits at world ((tx+0.5 - fcx)*gs, (ty+0.5 -
+    // fcy)*gs) relative to the fixed anchor, so the map never shifts across zooms;
+    // coarser zooms sit slightly lower so finer tiles draw on top.
     let mut centres: Vec<(u32, i64, i64)> = Vec::with_capacity(8);
-    for zoom in MIN_ZOOM..=stream.current_zoom {
+    for zoom in MIN_ZOOM..=max_zoom {
         let gs = tile_to_meters(zoom, clat) as f32;
         let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
         let ctx = (world_x as f64 / gs as f64 + fcx - 0.5).round() as i64;
@@ -1400,15 +1550,56 @@ pub fn update_map_stream(
     // exactly as a re-anchor does. Left out, the ring would narrow only the next
     // time the camera crossed a cell boundary.
     let ring_bias = crate::systems::load_control::bias();
-    let key = (centres, stream.fetch_generation, ring_bias);
+    // The pose, coarsely: the selection depends on the camera continuously, and
+    // re-deriving it every frame would re-derive it for sub-pixel moves. A step of
+    // 5 % of the altitude is well under the error one zoom level makes, and three
+    // degrees of turn is well inside `VIEW_MARGIN`.
+    let pose = {
+        let step = (altitude * 0.05).max(5.0);
+        let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+        [
+            (world_x / step).floor() as i32,
+            (world_z / step).floor() as i32,
+            (altitude.max(1.0).log2() * 16.0).floor() as i32,
+            (yaw.to_degrees() / 3.0).floor() as i32,
+            (pitch.to_degrees() / 3.0).floor() as i32,
+        ]
+    };
+    let key = (centres, stream.fetch_generation, ring_bias, pose);
     if stream.desired.key.as_ref() != Some(&key) {
-        let (wanted, spawn_order) = clipmap(
-            &key.0,
+        let budget = crate::quality::budget();
+        let (fov, aspect) = match projection {
+            Projection::Perspective(p) => (p.fov, p.aspect_ratio),
+            _ => (std::f32::consts::FRAC_PI_4, 16.0 / 9.0),
+        };
+        let eye = Vec3::new(world_x, altitude, world_z);
+        let view = TileView::new(eye, tf.rotation, fov, aspect);
+        let roots_radius = (budget.radius(if max_zoom == MIN_ZOOM {
+            LOAD_RADIUS
+        } else {
+            COARSE_RADIUS
+        }) - ring_bias)
+            .max(1);
+        let (_, rx, ry) = key.0[0];
+        let (wanted, spawn_order) = select_tiles(
+            &view,
+            (clat, clng),
+            (roots_radius, rx, ry),
             base_zoom,
-            stream.current_zoom,
-            crate::quality::budget(),
-            ring_bias,
+            max_zoom,
+            ring_budget(max_zoom, budget, ring_bias),
+            &stream.desired.wanted,
         );
+        let finest = wanted.keys().map(|t| t.z).max().unwrap_or(MIN_ZOOM);
+        if finest != stream.current_zoom {
+            tracing::debug!(
+                from = stream.current_zoom,
+                to = finest,
+                altitude,
+                "finest map zoom changed"
+            );
+            stream.current_zoom = finest;
+        }
         stream.desired = DesiredTiles {
             key: Some(key),
             wanted,
@@ -1433,7 +1624,7 @@ pub fn update_map_stream(
         .desired
         .key
         .as_ref()
-        .map(|(centres, _, _)| centres.clone())
+        .map(|(centres, _, _, _)| centres.clone())
         .unwrap_or_default();
     for i in 0..stream.desired.spawn_order.len() {
         let key = stream.desired.spawn_order[i];
@@ -1975,155 +2166,163 @@ mod tests {
 
     use crate::systems::vector_tiles::SubTile;
 
-    /// Each clipmap level's centre tile for a camera sitting on the anchor — the
-    /// same arithmetic `update_map_stream` runs every frame.
+    /// Each level's centre tile for a camera sitting on the anchor — the same
+    /// arithmetic `update_map_stream` runs every frame.
     fn centres(lat: f64, lng: f64, finest_zoom: u32) -> Vec<(u32, i64, i64)> {
         (MIN_ZOOM..=finest_zoom)
             .map(|zoom| {
                 let (fcx, fcy) = lat_lng_to_tile_frac(lat, lng, zoom);
-                (
-                    (zoom),
-                    (fcx - 0.5).round() as i64,
-                    (fcy - 0.5).round() as i64,
-                )
+                (zoom, (fcx - 0.5).round() as i64, (fcy - 0.5).round() as i64)
             })
             .collect()
     }
 
-    /// The fan-out, stated so a change to a radius or a zoom has to restate it.
-    ///
-    /// A fresh anchor opens at [`DEFAULT_ANCHOR_ZOOM`] and the pyramid runs
-    /// `MIN_ZOOM..=17`: the finest ring is `LOAD_RADIUS` (9×9 = 81) and the seven
-    /// coarser ones are `COARSE_RADIUS` (7×7 = 49 each), so **424** tiles are
-    /// wanted at once. That burst is what `TILE_MAX_IN_FLIGHT` now meters out and
-    /// what used to be released in a single frame.
+    /// A camera over the default anchor at `altitude`, pitched `pitch_deg` below
+    /// the horizon and facing north (−Z), selected at the desktop tier.
+    fn select_at(altitude: f32, pitch_deg: f32) -> (HashMap<TileKey, f32>, Vec<TileKey>) {
+        let eye = Vec3::new(0.0, altitude, 0.0);
+        let rotation = Quat::from_rotation_x(-pitch_deg.to_radians());
+        let view = TileView::new(eye, rotation, std::f32::consts::FRAC_PI_4, 16.0 / 9.0);
+        let c = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
+        let (_, rx, ry) = c[0];
+        select_tiles(
+            &view,
+            (DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG),
+            (COARSE_RADIUS, rx, ry),
+            DEFAULT_ANCHOR_ZOOM,
+            DEFAULT_ANCHOR_ZOOM,
+            ring_budget(DEFAULT_ANCHOR_ZOOM, &desktop(), 0),
+            &HashMap::new(),
+        )
+    }
+
+    /// The ceiling, stated so a change to a radius or a zoom has to restate it:
+    /// what the old rings held, 9×9 at z17 plus 7×7 at each of z10–z16.
     #[test]
-    fn a_fresh_anchor_wants_424_tiles() {
-        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
-        let (wanted, order) = clipmap(
-            &centres,
-            DEFAULT_ANCHOR_ZOOM,
-            DEFAULT_ANCHOR_ZOOM,
-            &desktop(),
-            0,
-        );
-        assert_eq!(order.len(), 424, "the clipmap fan-out changed");
+    fn the_desktop_ceiling_is_424_and_the_phone_224() {
+        assert_eq!(ring_budget(DEFAULT_ANCHOR_ZOOM, &desktop(), 0), 424);
         assert_eq!(
-            wanted.len(),
-            order.len(),
-            "a tile was wanted twice in one pass"
+            ring_budget(DEFAULT_ANCHOR_ZOOM, &crate::quality::Budget::phone(), 0),
+            224
         );
-
-        // Coarsest first: a fresh anchor gets full, blurry coverage from a handful
-        // of fetches before the finer rings refine it.
-        assert_eq!(order.first().unwrap().z, MIN_ZOOM);
-        assert_eq!(order.last().unwrap().z, DEFAULT_ANCHOR_ZOOM);
+        // The load controller's lever is still a lever.
+        assert!(ring_budget(DEFAULT_ANCHOR_ZOOM, &desktop(), 1) < 424);
     }
 
-    /// …and what the phone tier asks for instead.
-    ///
-    /// One step off each radius: the finest ring is 7×7 = 49 and the seven coarser
-    /// ones are 5×5 = 25 each, so **224**. Stated because it is the single largest
-    /// item in the phone budget — a bit over half the ground draw list, and the
-    /// same fraction off the tile fetches, MVT decodes and rasterisations behind
-    /// it. If this number ever creeps back up, the frame budget on the device goes
-    /// with it.
+    /// Straight down from 600 m: the ground under the camera is z16, as the old
+    /// altitude ladder made it, and the whole selection is well under the rings'.
     #[test]
-    fn the_phone_tier_wants_224() {
-        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
-        let (wanted, order) = clipmap(
-            &centres,
-            DEFAULT_ANCHOR_ZOOM,
-            DEFAULT_ANCHOR_ZOOM,
-            &crate::quality::Budget::phone(),
-            0,
-        );
-        assert_eq!(order.len(), 224, "the phone-tier clipmap fan-out changed");
+    fn straight_down_from_600_m_is_z16_underfoot_and_fewer_tiles() {
+        let (wanted, order) = select_at(600.0, 90.0);
         assert_eq!(wanted.len(), order.len());
-
-        // The ordering guarantee is a property of the clipmap, not of the tier:
-        // coarse-first still has to hold, or a phone gets the slowest possible
-        // fill on top of the smallest one.
-        assert_eq!(order.first().unwrap().z, MIN_ZOOM);
-        assert_eq!(order.last().unwrap().z, DEFAULT_ANCHOR_ZOOM);
+        assert!(wanted.len() < 424, "selected {} tiles", wanted.len());
+        let (fx, fy) = lat_lng_to_tile_frac(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, 16);
+        assert!(
+            wanted.contains_key(&TileKey::new(fx.floor() as i64, fy.floor() as i64, 16)),
+            "the tile under the camera is not z16"
+        );
+        assert!(
+            !wanted.keys().any(|t| t.z > 16),
+            "600 m straight down asked for z17"
+        );
+        assert_eq!(order.first().unwrap().z, MIN_ZOOM, "not coarse-first");
     }
 
-    /// The prefetch band must stay one coarse ring, whatever the zoom ladder does.
-    ///
-    /// `MAP_PREFETCH_ALT` unfreezes the streamer well above the globe threshold so
-    /// a descent lands on warm tiles. That is only affordable because
-    /// `zoom_for_altitude` has bottomed out at `MIN_ZOOM` long before, making the
-    /// desired set a single 7×7 level. Re-band the ladder so it hasn't, and the
-    /// same code silently fetches a whole 424-tile pyramid for every patch of
-    /// ground an orbiting camera drifts across — which is the load the freeze was
-    /// put there to prevent.
+    /// Every selected tile's parent is selected, so a refinement can never open a
+    /// hole — `occluded_by_finer` only hides a parent once all four children cover
+    /// it, and that needs the parent to be there.
     #[test]
-    fn prefetch_band_is_one_coarse_ring() {
-        for base_zoom in [MIN_ZOOM, 14, DEFAULT_ANCHOR_ZOOM] {
-            for altitude in [
-                crate::systems::globe::GLOBE_SHOW_ALT + 1.0,
-                MAP_PREFETCH_ALT * 0.5,
-                MAP_PREFETCH_ALT,
-            ] {
-                assert_eq!(
-                    zoom_for_altitude(altitude, base_zoom),
-                    MIN_ZOOM,
-                    "at {altitude} m with base zoom {base_zoom} the prefetch band \
-                     is no longer clamped to the coarsest level"
+    fn every_selected_tile_has_its_parent() {
+        for (alt, pitch) in [(600.0, 90.0), (300.0, 20.0), (40.0, 5.0), (8_000.0, 45.0)] {
+            let (wanted, _) = select_at(alt, pitch);
+            for t in wanted.keys().filter(|t| t.z > MIN_ZOOM) {
+                let parent = TileKey::new(t.x.div_euclid(2), t.y.div_euclid(2), t.z - 1);
+                assert!(
+                    wanted.contains_key(&parent),
+                    "{t:?} is selected without its parent at {alt} m, {pitch}°"
                 );
             }
+            assert!(
+                wanted.len() <= 424,
+                "{} tiles at {alt} m, {pitch}°",
+                wanted.len()
+            );
         }
-
-        // …and that one level really is a single ring, not a pyramid. It is the
-        // finest level in this band as well as the coarsest, so it gets
-        // `LOAD_RADIUS`: 9×9 = 81 tiles against a full clipmap's 424.
-        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, MIN_ZOOM);
-        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, MIN_ZOOM, &desktop(), 0);
-        assert_eq!(order.len(), 81, "the prefetch ring changed size");
     }
 
-    /// …and how few *bodies* those 424 requests actually are.
-    ///
-    /// Shortbread stops at `vector_tiles::MAX_SOURCE_ZOOM` = 14, so every request
-    /// above it resolves to a z14 ancestor. The 179 requests at z15/z16/z17 land
-    /// entirely inside the z14 ring the same pass is already asking for, which
-    /// leaves **245** distinct source tiles — 49 per zoom for z10–z14 and nothing
-    /// new above. Those 179 duplicates were 179 independent disk reads (or, on the
-    /// web build, network fetches) and 179 independent MVT parses before
-    /// `tile_source` coalesced them.
+    /// Ground behind the camera is not refined: looking north, the finest tile to
+    /// the south is coarser than the finest to the north.
     #[test]
-    fn the_overzoomed_requests_collapse_onto_a_few_dozen_source_tiles() {
-        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
-        let (_, order) = clipmap(
-            &centres,
-            DEFAULT_ANCHOR_ZOOM,
-            DEFAULT_ANCHOR_ZOOM,
-            &desktop(),
-            0,
+    fn ground_behind_the_camera_stays_coarse() {
+        let (wanted, _) = select_at(300.0, 20.0);
+        let (_, fcy) = lat_lng_to_tile_frac(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, 17);
+        let finest = |south: bool| {
+            wanted
+                .keys()
+                .filter(|t| {
+                    let y17 = (t.y as f64 + 0.5) * f64::from(1u32 << (17 - t.z));
+                    if south {
+                        y17 > fcy + 20.0
+                    } else {
+                        y17 < fcy - 20.0
+                    }
+                })
+                .map(|t| t.z)
+                .max()
+                .unwrap_or(MIN_ZOOM)
+        };
+        assert!(
+            finest(true) < finest(false),
+            "behind the camera reached z{} against z{} ahead",
+            finest(true),
+            finest(false)
         );
+    }
 
+    /// The prefetch band must stay one coarse ring. `MAP_PREFETCH_ALT` unfreezes
+    /// the streamer well above the globe threshold so a descent lands on warm
+    /// tiles; that is only affordable because the selection there is capped at
+    /// `MIN_ZOOM` — the roots and nothing else, 9×9 = 81.
+    #[test]
+    fn prefetch_band_is_one_coarse_ring() {
+        let view = TileView {
+            eye: Vec3::new(0.0, MAP_PREFETCH_ALT, 0.0),
+            view_proj: None,
+            pixel_per_m: 2.0 * (std::f32::consts::FRAC_PI_8).tan() / SSE_SCREEN_PX,
+        };
+        let c = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, MIN_ZOOM);
+        let (_, rx, ry) = c[0];
+        let (wanted, _) = select_tiles(
+            &view,
+            (DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG),
+            (LOAD_RADIUS, rx, ry),
+            DEFAULT_ANCHOR_ZOOM,
+            MIN_ZOOM,
+            ring_budget(MIN_ZOOM, &desktop(), 0),
+            &HashMap::new(),
+        );
+        assert_eq!(wanted.len(), 81, "the prefetch ring changed size");
+        assert!(wanted.keys().all(|t| t.z == MIN_ZOOM));
+    }
+
+    /// Overzoomed requests add no source tile: Shortbread stops at z14, and every
+    /// z15+ tile's z14 ancestor is already selected (parents always are), so the
+    /// fetches collapse onto bodies the same pass is asking for anyway.
+    #[test]
+    fn the_overzoomed_requests_collapse_onto_selected_source_tiles() {
+        let (_, order) = select_at(150.0, 30.0);
         let sources: std::collections::HashSet<(u32, i64, i64)> = order
             .iter()
             .map(|k| SubTile::resolve(k.z, k.x, k.y).0)
             .collect();
-        assert!(sources.len() < order.len(), "no requests were deduplicated");
-        assert_eq!(sources.len(), 245, "the source-tile fan-in changed");
-
-        let overzoomed = order
-            .iter()
-            .filter(|k| k.z > crate::systems::vector_tiles::MAX_SOURCE_ZOOM)
-            .count();
-        assert_eq!(
-            overzoomed, 179,
-            "the overzoomed share of the pyramid changed"
-        );
-        // Every one of them resolves onto a tile the z14 ring already wants, so
-        // they add no distinct body at all.
         let below: std::collections::HashSet<(u32, i64, i64)> = order
             .iter()
             .filter(|k| k.z <= crate::systems::vector_tiles::MAX_SOURCE_ZOOM)
             .map(|k| (k.z, k.x, k.y))
             .collect();
+        assert!(order
+            .iter()
+            .any(|k| k.z > crate::systems::vector_tiles::MAX_SOURCE_ZOOM));
         assert_eq!(
             sources, below,
             "an overzoomed request needed a new source tile"
