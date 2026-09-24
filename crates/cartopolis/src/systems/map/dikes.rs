@@ -84,6 +84,19 @@ pub const CREST_HALF_M: f64 = 30.0;
 /// model's own grid. Asking for finer would resample, not measure.
 pub const CREST_GRID: u32 = 120;
 
+/// **Crests are measured in clusters, not one line at a time.** One box per named
+/// line was ~450 requests over Groningen — most of every request the client makes
+/// to the height service, three in flight and 0.15 s apart, and the map could not
+/// settle until they had all landed (counted on the Deck, 2026-09-24: 446 of 553
+/// patches). Lines whose midpoints fall within this many metres of each other share
+/// one patch at the same half metre, and each takes the highest sample in its own
+/// box of it.
+const CREST_CLUSTER_M: f64 = 120.0;
+
+/// Bound on a cluster patch's grid: the cluster's span plus a crest box, at half
+/// a metre.
+const CREST_GRID_MAX: u32 = 400;
+
 /// Which cells the host serves defences for.
 static COVERAGE: CoverageSlot = CoverageSlot::new("dikes", "/dikes/coverage.json", DIKE_ZOOM);
 
@@ -430,16 +443,68 @@ pub fn update_dikes(
 /// Only *named* lines are measured, because only a named one can be labelled and
 /// the label is the only consumer that needs an answer the coarse field cannot
 /// give — and only lines whose crest is ground (see [`DikeKind::has_crest`]).
+/// Crest midpoints that share one height patch.
+struct CrestCluster {
+    min: [f64; 2],
+    max: [f64; 2],
+    /// `(line index, midpoint in RD)`.
+    members: Vec<(usize, [f64; 2])>,
+}
+
+impl CrestCluster {
+    fn request(&self) -> HeightRequest {
+        let min = [self.min[0] - CREST_HALF_M, self.min[1] - CREST_HALF_M];
+        let max = [self.max[0] + CREST_HALF_M, self.max[1] + CREST_HALF_M];
+        let span = (max[0] - min[0]).max(max[1] - min[1]);
+        // The same half metre a single crest box is sampled at.
+        let step = CREST_HALF_M * 2.0 / f64::from(CREST_GRID);
+        let grid = ((span / step).ceil() as u32).clamp(CREST_GRID, CREST_GRID_MAX);
+        HeightRequest {
+            model: HeightModel::Terrain,
+            min,
+            max,
+            grid,
+        }
+    }
+}
+
+/// Greedy: each midpoint joins the first cluster it keeps within
+/// [`CREST_CLUSTER_M`], else starts one.
+fn crest_clusters(points: &[(usize, [f64; 2])]) -> Vec<CrestCluster> {
+    let mut clusters: Vec<CrestCluster> = Vec::new();
+    for &(i, p) in points {
+        let joined = clusters.iter_mut().find(|c| {
+            let lo = [c.min[0].min(p[0]), c.min[1].min(p[1])];
+            let hi = [c.max[0].max(p[0]), c.max[1].max(p[1])];
+            hi[0] - lo[0] <= CREST_CLUSTER_M && hi[1] - lo[1] <= CREST_CLUSTER_M
+        });
+        match joined {
+            Some(c) => {
+                c.min = [c.min[0].min(p[0]), c.min[1].min(p[1])];
+                c.max = [c.max[0].max(p[0]), c.max[1].max(p[1])];
+                c.members.push((i, p));
+            }
+            None => clusters.push(CrestCluster {
+                min: p,
+                max: p,
+                members: vec![(i, p)],
+            }),
+        }
+    }
+    clusters
+}
+
 pub fn measure_dike_crests(mut dikes: ResMut<Dikes>, mut height: ResMut<HeightLayer>) {
     if dikes.cells.is_empty() {
         return;
     }
     let mut changed = false;
     for cell in dikes.cells.values_mut() {
-        for line in &mut cell.lines {
-            // Only named lines, because only a named one can be labelled and the
-            // label is the only consumer that needs an answer the coarse field
-            // cannot give — and only the ones whose crest is ground.
+        // Only named lines, because only a named one can be labelled and the label
+        // is the only consumer that needs an answer the coarse field cannot give —
+        // and only the ones whose crest is ground.
+        let mut waiting: Vec<(usize, [f64; 2])> = Vec::new();
+        for (i, line) in cell.lines.iter_mut().enumerate() {
             if line.crest_settled || line.name.is_none() || !line.kind.has_crest() {
                 continue;
             }
@@ -448,29 +513,29 @@ pub fn measure_dike_crests(mut dikes: ResMut<Dikes>, mut height: ResMut<HeightLa
                 line.crest_settled = true; // outside the model; never ask again
                 continue;
             }
-            let req = HeightRequest::around(
-                HeightModel::Terrain,
-                wgs84_to_rd(mid.0, mid.1),
-                CREST_HALF_M,
-                CREST_GRID,
-            );
+            waiting.push((i, wgs84_to_rd(mid.0, mid.1)));
+        }
+        for cluster in crest_clusters(&waiting) {
+            let req = cluster.request();
             let settled = height.settled(&req);
             if let Some(patch) = height.patch(req) {
-                let top = patch
-                    .samples
-                    .iter()
-                    .copied()
-                    .filter(|v| v.is_finite())
-                    .fold(f32::NEG_INFINITY, f32::max);
-                if top.is_finite() {
-                    line.crest_nap_m = Some(top);
-                    changed = true;
+                for &(i, mid) in &cluster.members {
+                    let top = patch.max_in(
+                        [mid[0] - CREST_HALF_M, mid[1] - CREST_HALF_M],
+                        [mid[0] + CREST_HALF_M, mid[1] + CREST_HALF_M],
+                    );
+                    if let Some(top) = top {
+                        cell.lines[i].crest_nap_m = Some(top);
+                        changed = true;
+                    }
+                    cell.lines[i].crest_settled = true;
                 }
-                line.crest_settled = true;
             } else if settled {
                 // Asked, answered with nothing, and will not be answered later:
                 // stop asking rather than re-queueing it every frame.
-                line.crest_settled = true;
+                for &(i, _) in &cluster.members {
+                    cell.lines[i].crest_settled = true;
+                }
             }
         }
     }
@@ -553,6 +618,27 @@ pub fn feed_dike_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Midpoints along one quay share a patch; a line across town does not; and a
+    /// cluster's patch keeps the half metre a single crest box was sampled at.
+    #[test]
+    fn crests_are_measured_in_clusters() {
+        let points = [
+            (0, [233_000.0, 582_000.0]),
+            (1, [233_050.0, 582_030.0]),
+            (2, [233_110.0, 582_010.0]),
+            (3, [234_500.0, 581_000.0]),
+        ];
+        let clusters = crest_clusters(&points);
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].members.len(), 3);
+        for c in &clusters {
+            let req = c.request();
+            let step = (req.max[0] - req.min[0]) / f64::from(req.grid);
+            assert!(step <= 0.5 + 1e-9, "{step}");
+            assert!(req.grid <= CREST_GRID_MAX);
+        }
+    }
 
     #[test]
     fn parses_a_cell_and_maps_its_forms() {

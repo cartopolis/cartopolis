@@ -73,6 +73,11 @@ const AHN_LAT: (f64, f64) = (50.72, 53.56);
 const HEIGHT_CONCURRENCY: usize = 3;
 const HEIGHT_MIN_INTERVAL_S: f64 = 0.15;
 
+/// Queue ranks for [`HeightLayer::patch_ranked`]: the terrain field first, then
+/// the bridge decks — the two a map waits on before it settles.
+pub const RANK_FIELD: crate::platform::fetch_gate::Rank = 0;
+pub const RANK_DECKS: crate::platform::fetch_gate::Rank = 1;
+
 /// Give up on a request after this many failures, so a box that AHN genuinely has
 /// nothing for is not re-asked every frame for the rest of the session.
 const MAX_ATTEMPTS: u32 = 2;
@@ -268,6 +273,34 @@ impl HeightPatch {
         Some(vals[vals.len() / 2])
     }
 
+    /// The highest valid sample inside an RD box — a crest, measured from a patch
+    /// that covers several (`dikes::measure_dike_crests`).
+    #[must_use]
+    pub fn max_in(&self, lo: [f64; 2], hi: [f64; 2]) -> Option<f32> {
+        let (dx, dy) = (self.max[0] - self.min[0], self.max[1] - self.min[1]);
+        if dx <= 0.0 || dy <= 0.0 {
+            return None;
+        }
+        // Only the rows and columns the box covers, not the whole patch.
+        let span = |a: f64, b: f64, lo: f64, n: usize, d: f64| {
+            let f = |v: f64| (((v - lo) / d) * n as f64).floor().clamp(0.0, n as f64) as usize;
+            (f(a.min(b)), f(a.max(b)).min(n.saturating_sub(1)) + 1)
+        };
+        let (c0, c1) = span(lo[0], hi[0], self.min[0], self.w, dx);
+        // Rows run north to south.
+        let (r0, r1) = span(self.max[1] - hi[1], self.max[1] - lo[1], 0.0, self.h, dy);
+        let mut best = f32::NEG_INFINITY;
+        for row in r0..r1.min(self.h) {
+            for col in c0..c1.min(self.w) {
+                let v = self.samples[row * self.w + col];
+                if v.is_finite() && v > best {
+                    best = v;
+                }
+            }
+        }
+        best.is_finite().then_some(best)
+    }
+
     /// The median of every valid sample in the patch.
     #[must_use]
     pub fn median(&self) -> Option<f32> {
@@ -343,6 +376,22 @@ impl HeightLayer {
     /// have a fallback for "never arrives". Re-asking is free; the key deduplicates
     /// against both the cache and the in-flight set.
     pub fn patch(&mut self, req: HeightRequest) -> Option<&HeightPatch> {
+        self.patch_ranked(req, crate::platform::fetch_gate::ANY)
+    }
+
+    /// [`Self::patch`], queued ahead of everything with a higher rank.
+    ///
+    /// **One queue serves every caller**, three requests in flight, so the order
+    /// is the load time: the terrain field and the bridge decks gate a map
+    /// settling, while the dike crests only feed a label. Queued first-come, the
+    /// field's patch waited behind a couple of hundred crest boxes (measured on the
+    /// Deck, 2026-09-24). [`RANK_FIELD`] and [`RANK_DECKS`] go first; everything
+    /// else keeps its arrival order behind them.
+    pub fn patch_ranked(
+        &mut self,
+        req: HeightRequest,
+        rank: crate::platform::fetch_gate::Rank,
+    ) -> Option<&HeightPatch> {
         if !req.valid() {
             return None;
         }
@@ -352,7 +401,7 @@ impl HeightLayer {
         }
         if !self.requested.contains(&key) && *self.failed.get(&key).unwrap_or(&0) < MAX_ATTEMPTS {
             self.requested.insert(key);
-            self.dispatch.queue(req);
+            self.dispatch.queue_ranked(req, rank);
         }
         None
     }
@@ -370,6 +419,13 @@ impl HeightLayer {
     /// which is a different key.
     pub fn drop_patch(&mut self, req: &HeightRequest) {
         self.patches.remove(&req.key());
+    }
+
+    /// A patch that has already landed, without asking for it — for a caller that
+    /// has queued several with [`Self::patch`] and now reads them together.
+    #[must_use]
+    pub fn get(&self, req: &HeightRequest) -> Option<&HeightPatch> {
+        self.patches.get(&req.key())
     }
 
     /// Whether a request has been answered — by a patch or by giving up on it. Lets
@@ -669,6 +725,24 @@ mod tests {
             h: samples.len() / w,
             samples,
         }
+    }
+
+    /// A box reads only its own samples, north row first like the rest.
+    #[test]
+    fn the_highest_sample_in_a_box_is_that_boxes_own() {
+        // 4×4 over 100 m: row 0 (north) holds the peak at its west end, and one
+        // more high sample sits in the south-east corner.
+        let mut s = vec![1.0; 16];
+        s[0] = 9.0;
+        s[15] = 5.0;
+        s[5] = f32::NAN;
+        let p = patch(s, 4);
+        // The north-west quarter: RD x 0..50, y 50..100.
+        assert_eq!(p.max_in([0.0, 50.0], [49.0, 100.0]), Some(9.0));
+        // The south-east quarter.
+        assert_eq!(p.max_in([50.0, 0.0], [100.0, 49.0]), Some(5.0));
+        // Outside the patch entirely.
+        assert_eq!(p.max_in([200.0, 200.0], [300.0, 300.0]), None);
     }
 
     /// Row 0 is the *north* edge, which is the order a GeoTIFF arrives in and the

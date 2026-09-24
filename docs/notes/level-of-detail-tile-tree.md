@@ -143,6 +143,47 @@ container's lavapipe cannot measure load time: it is frame-bound at seconds per
 frame, and `settled_in` counts virtual seconds, so it hides exactly the freezes
 this is about.
 
+## What the load was actually waiting on (Deck, 2026-09-24)
+
+Measured on `deck-1` over the Grote Markt, 1600×900, `--wait 180` and the
+wall-clock time from the first log line to the capture. **Pass `--wait`**: the
+default is 15 s, and a first round of this A/B captured every run at 15 s with the
+map still loading, which looks like a result and is not one.
+
+| | main | this branch |
+|---|---|---|
+| 600 m, 35° down, cold | 155 s | **67 s** |
+| 600 m, warm | 125 s | **40 s** |
+| 3 km, 60° down, cold | 120 s | **52 s** |
+| 3 km, warm | 145 s | **48 s** |
+
+The steps above were not what moved it. With them alone the branch settled in
+the same ~130 s as `main`: the field arrived 25–30 s in instead of 36–116 s, and
+nothing else changed. **The long pole was the height service's queue**, which
+`--dump-state` shows as `height_patches` (~600 on `main`) and `worker_util` (0.2 —
+the workers were idle 80 % of the time):
+
+- **One request per object, one at a time.** Each bridge deck asked for its own
+  surface and ground patch, each cell waited for one deck's answer before asking
+  about the next, and every named dike asked for its own crest box — 446 of 553
+  requests. They now share patches per ~120–256 m cluster
+  (`map_geometry::cluster_decks`, `dikes::crest_clusters`).
+- **One first-come queue for all of it**, three in flight and 0.15 s apart, so the
+  terrain field's patch waited behind a couple of hundred crest boxes that only
+  feed a label. The field and the decks now go first
+  (`HeightLayer::patch_ranked`); that alone was 101 s → 67 s cold.
+- Lifting the throttle instead (8 in flight, no spacing) took `main` from 155 s
+  to 72 s, which is what pointed here. It was not kept: PDOK is a shared public
+  service, and fewer requests is the same win without the load.
+
+Two things the A/B also caught. The branch's `bake_owed` never cleared when an
+input moved and then moved back (the deck digest does, while a ring republishes),
+so no capture on it settled at all until that was fixed. And one warm run lost
+the 12 MB field patch to two PDOK timeouts, after which `HeightLayer` never asks
+again: `main` settles with flat ground there, this branch reports the field as
+owed. Atlas tiles (2b) are the fix for that, being thirty small requests instead
+of one large one.
+
 ## Rejected
 
 - **A world raster tile set on the server.** The server serves the vector map

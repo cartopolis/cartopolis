@@ -540,12 +540,24 @@ const MAX_DECK_M: f32 = 25.0;
 /// structure and its abutments, narrow enough to stay in the same terrain.
 const GROUND_RING_M: f64 = 30.0;
 
-/// Target sample spacing across a deck, in metres, and the bounds on the grid that
-/// comes out of it. A 20 m canal bridge wants a fine grid; a 180 m viaduct does not
-/// need one to know how high it is.
-const DECK_SAMPLE_M: f32 = 1.5;
-const DECK_GRID_MIN: u32 = 16;
-const DECK_GRID_MAX: u32 = 64;
+/// **Decks are measured in clusters, not one by one.** Every deck used to ask for
+/// its own surface patch and its own ground patch, and a cell asked for them one
+/// deck at a time, waiting for each answer before the next request: ~600 requests
+/// over Groningen, three in flight and 0.15 s apart at best, and the map could not
+/// settle until the last one landed. Measured on the Deck (2026-09-24, Grote Markt
+/// at 600 m): lifting that throttle alone took a cold load from 155 s to 72 s.
+/// Instead, decks within [`DECK_CLUSTER_M`] of each other share one pair of patches
+/// at [`DECK_SAMPLE_M`], and every cluster of a cell is asked for at once.
+const DECK_CLUSTER_M: f64 = 256.0;
+
+/// Sample spacing of a cluster's patches, in metres. Finer than the 1.5 m a deck
+/// used to be measured at when it was large, so a 10 m canal bridge still has
+/// dozens of samples on its deck.
+const DECK_SAMPLE_M: f64 = 1.0;
+
+/// Bound on a cluster patch's grid: the cluster's span plus the ground ring on
+/// both sides, at `DECK_SAMPLE_M`, with room to spare.
+const DECK_GRID_MAX: u32 = 384;
 
 /// Streaming state for the vector surface meshes.
 #[derive(Resource)]
@@ -626,7 +638,113 @@ struct PendingDecks {
     /// Cell origin in world metres — the same north-west corner the cell's other
     /// meshes are placed at.
     world: Vec2,
+    /// Where each deck is in RD, and which pair of patches measures it.
+    clusters: Vec<DeckCluster>,
+    boxes: Vec<DeckBox>,
+}
+
+/// One deck's footprint in RD: its outline, and the box around it the ground
+/// level is read from.
+struct DeckBox {
+    rings: Vec<Vec<[f64; 2]>>,
+    min: [f64; 2],
+    max: [f64; 2],
+    /// The cluster that measures it; `None` outside AHN, where a deck is settled
+    /// at street level without asking.
+    cluster: Option<usize>,
+}
+
+/// Decks that share a surface patch and a ground patch.
+struct DeckCluster {
+    min: [f64; 2],
+    max: [f64; 2],
+}
+
+impl DeckCluster {
+    fn requests(&self) -> (HeightRequest, HeightRequest) {
+        let (min, max) = (
+            [self.min[0] - GROUND_RING_M, self.min[1] - GROUND_RING_M],
+            [self.max[0] + GROUND_RING_M, self.max[1] + GROUND_RING_M],
+        );
+        let span = (max[0] - min[0]).max(max[1] - min[1]);
+        let grid = ((span / DECK_SAMPLE_M).ceil() as u32 + 1).clamp(16, DECK_GRID_MAX);
+        let req = |model| HeightRequest {
+            model,
+            min,
+            max,
+            grid,
+        };
+        (req(HeightModel::Surface), req(HeightModel::Terrain))
+    }
+}
+
+/// Every deck of a cell in RD, and the clusters that measure them. Greedy: each
+/// deck joins the first cluster it keeps within `DECK_CLUSTER_M`, else starts one.
+fn cluster_decks(
+    decks: &[BridgeDeck],
+    cell: Cell,
     tile_m: f32,
+) -> (Vec<DeckBox>, Vec<DeckCluster>) {
+    let to_rd = |p: [f32; 2]| -> [f64; 2] {
+        let (lat, lng) = tile_frac_to_lat_lng(
+            cell.0 as f64 + f64::from(p[0]) / f64::from(tile_m),
+            cell.1 as f64 + f64::from(p[1]) / f64::from(tile_m),
+        );
+        wgs84_to_rd(lat, lng)
+    };
+    let mut boxes = Vec::with_capacity(decks.len());
+    let mut clusters: Vec<DeckCluster> = Vec::new();
+    for deck in decks {
+        let rings: Vec<Vec<[f64; 2]>> = deck
+            .rings
+            .iter()
+            .map(|r| r.iter().map(|p| to_rd(*p)).collect())
+            .collect();
+        let corners = [
+            to_rd(deck.min),
+            to_rd([deck.min[0], deck.max[1]]),
+            to_rd([deck.max[0], deck.min[1]]),
+            to_rd(deck.max),
+        ];
+        let min = [
+            corners.iter().map(|c| c[0]).fold(f64::MAX, f64::min),
+            corners.iter().map(|c| c[1]).fold(f64::MAX, f64::min),
+        ];
+        let max = [
+            corners.iter().map(|c| c[0]).fold(f64::MIN, f64::max),
+            corners.iter().map(|c| c[1]).fold(f64::MIN, f64::max),
+        ];
+        let (lat, lng) = tile_frac_to_lat_lng(
+            cell.0 as f64 + f64::from(deck.min[0] + deck.max[0]) * 0.5 / f64::from(tile_m),
+            cell.1 as f64 + f64::from(deck.min[1] + deck.max[1]) * 0.5 / f64::from(tile_m),
+        );
+        let cluster = HeightLayer::covers(lat, lng).then(|| {
+            let joined = clusters.iter().position(|c| {
+                let lo = [c.min[0].min(min[0]), c.min[1].min(min[1])];
+                let hi = [c.max[0].max(max[0]), c.max[1].max(max[1])];
+                hi[0] - lo[0] <= DECK_CLUSTER_M && hi[1] - lo[1] <= DECK_CLUSTER_M
+            });
+            match joined {
+                Some(i) => {
+                    let c = &mut clusters[i];
+                    c.min = [c.min[0].min(min[0]), c.min[1].min(min[1])];
+                    c.max = [c.max[0].max(max[0]), c.max[1].max(max[1])];
+                    i
+                }
+                None => {
+                    clusters.push(DeckCluster { min, max });
+                    clusters.len() - 1
+                }
+            }
+        });
+        boxes.push(DeckBox {
+            rings,
+            min,
+            max,
+            cluster,
+        });
+    }
+    (boxes, clusters)
 }
 
 /// Spawn one surface-tessellation task (ADR-033 seam): fetch the MVT body (shared
@@ -2051,6 +2169,7 @@ pub fn update_map_surfaces(
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
         if !decks.is_empty() {
+            let (boxes, clusters) = cluster_decks(&decks, c, tile_m);
             surfaces.pending_decks.insert(
                 c,
                 PendingDecks {
@@ -2058,7 +2177,8 @@ pub fn update_map_surfaces(
                     approaches,
                     roads: deck_roads,
                     world: Vec2::new(wx, wz),
-                    tile_m,
+                    clusters,
+                    boxes,
                 },
             );
         }
@@ -2110,21 +2230,29 @@ pub fn resolve_bridge_decks(
             continue;
         }
 
-        let tile_m = pending.tile_m;
-        let mut heights = Vec::with_capacity(pending.decks.len());
-        let mut settled = true;
-        for deck in &pending.decks {
-            match deck_height(&mut height, deck, c, tile_m) {
-                Some(h) => heights.push(h),
-                None => {
-                    settled = false;
-                    break;
+        // Every cluster is asked for at once, and nothing is measured until all
+        // have answered — a patch, or a settled "nothing here".
+        let mut ready = true;
+        for cluster in &pending.clusters {
+            let (surface, ground) = cluster.requests();
+            for req in [surface, ground] {
+                if height
+                    .patch_ranked(req, crate::systems::height::RANK_DECKS)
+                    .is_none()
+                    && !height.settled(&req)
+                {
+                    ready = false;
                 }
             }
         }
-        if !settled {
+        if !ready {
             continue;
         }
+        let heights: Vec<f32> = pending
+            .boxes
+            .iter()
+            .map(|b| deck_height(&height, &pending.clusters, b))
+            .collect();
 
         let Some(pending) = surfaces.pending_decks.remove(&c) else {
             continue;
@@ -2271,83 +2399,41 @@ pub fn resolve_bridge_decks(
     }
 }
 
-/// How high one deck stands above the ground it crosses, in metres.
+/// How high one deck stands above the ground it crosses, in metres, read from its
+/// cluster's two patches (`cluster_decks`).
 ///
-/// `None` while the height layer is still working; `Some(0.0)` is the settled
-/// answer for "no data here" as much as for a bridge that really is at street
-/// level — a Dutch canal bridge is exactly that, and telling the two apart would
-/// buy nothing, because both want a flat deck.
-fn deck_height(layer: &mut HeightLayer, deck: &BridgeDeck, cell: Cell, tile_m: f32) -> Option<f32> {
-    let to_rd = |p: [f32; 2]| -> [f64; 2] {
-        let (lat, lng) = tile_frac_to_lat_lng(
-            cell.0 as f64 + f64::from(p[0]) / f64::from(tile_m),
-            cell.1 as f64 + f64::from(p[1]) / f64::from(tile_m),
-        );
-        wgs84_to_rd(lat, lng)
+/// `0.0` is the answer for "no data here" as much as for a bridge that really is
+/// at street level — a Dutch canal bridge is exactly that, and telling the two
+/// apart would buy nothing, because both want a flat deck.
+fn deck_height(layer: &HeightLayer, clusters: &[DeckCluster], deck: &DeckBox) -> f32 {
+    let Some(cluster) = deck.cluster.and_then(|i| clusters.get(i)) else {
+        return 0.0;
     };
-    // The deck's own outline in RD, which is what says whether a height sample is
-    // on the structure or beside it.
-    let rings: Vec<Vec<[f64; 2]>> = deck
-        .rings
-        .iter()
-        .map(|r| r.iter().map(|p| to_rd(*p)).collect())
-        .collect();
-    let corners = [
-        to_rd(deck.min),
-        to_rd([deck.min[0], deck.max[1]]),
-        to_rd([deck.max[0], deck.min[1]]),
-        to_rd(deck.max),
-    ];
-    let min = [
-        corners.iter().map(|c| c[0]).fold(f64::MAX, f64::min),
-        corners.iter().map(|c| c[1]).fold(f64::MAX, f64::min),
-    ];
-    let max = [
-        corners.iter().map(|c| c[0]).fold(f64::MIN, f64::max),
-        corners.iter().map(|c| c[1]).fold(f64::MIN, f64::max),
-    ];
-    let (lat, lng) = tile_frac_to_lat_lng(
-        cell.0 as f64 + f64::from(deck.min[0] + deck.max[0]) * 0.5 / f64::from(tile_m),
-        cell.1 as f64 + f64::from(deck.min[1] + deck.max[1]) * 0.5 / f64::from(tile_m),
-    );
-    if !HeightLayer::covers(lat, lng) {
-        return Some(0.0);
-    }
-
-    let grid = (deck.span_m() / DECK_SAMPLE_M).ceil() as u32;
-    let grid = grid.clamp(DECK_GRID_MIN, DECK_GRID_MAX);
-    let surface = HeightRequest {
-        model: HeightModel::Surface,
-        min,
-        max,
-        grid,
-    };
-    let terrain = HeightRequest {
-        model: HeightModel::Terrain,
-        min,
-        max,
-        grid,
-    }
-    .padded(GROUND_RING_M);
-
+    let (surface, ground) = cluster.requests();
     let deck_top = layer
-        .patch(surface)
-        .and_then(|p| p.median_where(|rd| inside_rings(&rings, rd)));
-    // No predicate on the terrain side: AHN's DTM has the structure cut out of it
-    // already, so everything left in the padded box *is* the ground around it.
-    let ground = layer.patch(terrain).and_then(|p| p.median());
-
+        .get(&surface)
+        .and_then(|p| p.median_where(|rd| inside_rings(&deck.rings, rd)));
+    // No outline test on the terrain side: AHN's DTM has the structure cut out of
+    // it already, so everything left in the box around the deck *is* the ground
+    // beside it. The box is the deck's own, padded — the cluster's patch reaches
+    // further, into other decks' ground.
+    let (lo, hi) = (
+        [deck.min[0] - GROUND_RING_M, deck.min[1] - GROUND_RING_M],
+        [deck.max[0] + GROUND_RING_M, deck.max[1] + GROUND_RING_M],
+    );
+    let ground = layer.get(&ground).and_then(|p| {
+        p.median_where(|rd| (lo[0]..=hi[0]).contains(&rd[0]) && (lo[1]..=hi[1]).contains(&rd[1]))
+    });
     match (deck_top, ground) {
         (Some(top), Some(ground)) => {
             let clearance = (top - ground).clamp(0.0, MAX_DECK_M);
-            Some(if clearance < MIN_LIFT_M {
+            if clearance < MIN_LIFT_M {
                 0.0
             } else {
                 clearance
-            })
+            }
         }
-        _ if layer.settled(&surface) && layer.settled(&terrain) => Some(0.0),
-        _ => None,
+        _ => 0.0,
     }
 }
 
@@ -3152,6 +3238,61 @@ mod tests {
             min: [0.0, 0.0],
             max: [span, span],
         }
+    }
+
+    /// `square_deck`, moved `dx`, `dz` metres into the tile.
+    fn deck_at(span: f32, dx: f32, dz: f32) -> BridgeDeck {
+        let mut d = square_deck(span);
+        for p in &mut d.rings[0] {
+            *p = [p[0] + dx, p[1] + dz];
+        }
+        d.min = [dx, dz];
+        d.max = [dx + span, dz + span];
+        d
+    }
+
+    /// **Neighbouring decks share their patches; distant ones do not; and every
+    /// deck is measured from its own box, not its cluster's.**
+    #[test]
+    fn decks_are_measured_in_clusters() {
+        // Groningen's Grote Markt cell.
+        let cell = (8490, 5320);
+        let decks = [
+            deck_at(20.0, 100.0, 100.0),
+            deck_at(15.0, 180.0, 120.0),
+            deck_at(30.0, 1_000.0, 900.0),
+        ];
+        let (boxes, clusters) = cluster_decks(&decks, cell, 1470.0);
+        assert_eq!(
+            clusters.len(),
+            2,
+            "two near decks share, the far one does not"
+        );
+        assert_eq!(boxes[0].cluster, boxes[1].cluster);
+        assert_ne!(boxes[0].cluster, boxes[2].cluster);
+        for c in &clusters {
+            assert!(c.max[0] - c.min[0] <= DECK_CLUSTER_M && c.max[1] - c.min[1] <= DECK_CLUSTER_M);
+            let (s, g) = c.requests();
+            assert!(s.grid <= DECK_GRID_MAX && g.grid == s.grid);
+            assert_eq!(s.model, HeightModel::Surface);
+        }
+        // A deck's own box is its footprint, not the cluster's.
+        let b = &boxes[0];
+        assert!(b.max[0] - b.min[0] < 25.0 && b.max[1] - b.min[1] < 25.0);
+    }
+
+    /// Outside AHN a deck is settled flat without a request.
+    #[test]
+    fn a_deck_outside_ahn_asks_for_nothing() {
+        // Paris, at z14.
+        let (x, y) = cartopolis_core::lat_lng_to_tile(48.8566, 2.3522, 14);
+        let (boxes, clusters) = cluster_decks(&[deck_at(20.0, 10.0, 10.0)], (x, y), 1470.0);
+        assert!(clusters.is_empty());
+        assert_eq!(boxes[0].cluster, None);
+        assert_eq!(
+            deck_height(&HeightLayer::default(), &clusters, &boxes[0]),
+            0.0
+        );
     }
 
     /// **The approach corridor is the approach, and the deck is not in it.**

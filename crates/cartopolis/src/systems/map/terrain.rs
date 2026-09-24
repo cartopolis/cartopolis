@@ -1248,7 +1248,10 @@ pub fn update_terrain_field(
             }
         }
     } else {
-        if height.patch(req).is_none() {
+        if height
+            .patch_ranked(req, crate::systems::height::RANK_FIELD)
+            .is_none()
+        {
             wait("the WCS patch", &field);
             return;
         }
@@ -1293,7 +1296,7 @@ pub fn update_terrain_field(
         // bake would double the field's resident cost — which is also why every
         // re-bake downloads it again, and why tiles are worth having.
         None => {
-            let Some(patch) = height.patch(req) else {
+            let Some(patch) = height.patch_ranked(req, crate::systems::height::RANK_FIELD) else {
                 return;
             };
             let job = patch.clone();
