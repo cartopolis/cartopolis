@@ -2020,7 +2020,16 @@ pub fn update_fine_terrain(
     );
     // A re-anchor moves the origin these metres are counted from, so the tier describes
     // the wrong ground the instant it happens.
-    if field.fine_gen != Some(stream.anchor_generation) {
+    //
+    // **Only a tier or a job from another generation.** This compared against the
+    // installed tier alone, which is `None` until the first bake lands — so every
+    // frame in between cancelled the job it had just queued and queued another. The
+    // patch download rate-limited that by accident, one retry per PDOK round trip;
+    // once the patch came off the device the tier queued a bake every frame or two
+    // (Deck, 2026-09-24: 27 in five seconds, 99 s of the worker pool, and the
+    // basemap waited 132 s in that queue).
+    let gen = stream.anchor_generation;
+    if field.fine_gen.is_some_and(|g| g != gen) || field.fine_job.is_some_and(|(_, g)| g != gen) {
         field.clear_fine();
     }
     let snap = |v: f32| (v / FINE_RECENTRE_M).round() * FINE_RECENTRE_M;
@@ -2058,11 +2067,19 @@ pub fn update_fine_terrain(
     let job = patch.clone();
     height.drop_patch(&req);
 
-    let gen = stream.anchor_generation;
     let datum = field.datum_m;
     let water_rev = levels.revision;
     let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
     let sink = field.fine_sink.clone();
+    tracing::debug!(
+        want_x = want.x,
+        want_z = want.y,
+        had = ?field.fine_wanted,
+        water_rev,
+        had_water_rev = ?field.fine_water_rev,
+        loading = levels.loading(),
+        "fine terrain bake queued"
+    );
     field.fine_job = Some((want, gen));
     crate::platform::workers::submit(
         "terrain_fine",
