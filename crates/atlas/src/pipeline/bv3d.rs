@@ -10,8 +10,9 @@
 //! elevation comes back as a few centimetres of AHN noise, and deciding what is
 //! worth a mesh is the client's job, not this one's.
 //!
-//! One zip per 2 km RD block, ~12.5 MB compressed, ~64 MB of CityJSON inside: a
-//! bulk download, because the service publishes sheets, not features.
+//! One zip per 2 km RD block — 26 MB compressed and 129 MB of CityJSON inside for
+//! a block of Groningen's west side in the 2025 edition — a bulk download,
+//! because the service publishes sheets, not features.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -25,6 +26,12 @@ use super::{Ctx, Outcome, PipelineError, Progress};
 
 /// Edge of one published sheet, RD metres.
 const BLOCK_M: f64 = 2000.0;
+
+/// Blocks downloaded at once — atlas's default `upstream_concurrency`. These
+/// are static files off a download server, not API pages, and a block is ~5 s
+/// of download against ~2 s of parse (2026-09-24), so one at a time left
+/// Groningen's 30 blocks at ~3.5 minutes, paid by both `water` and `bgt`.
+const BLOCK_FETCHES: usize = 3;
 
 const DOWNLOAD_ROOT: &str = "https://download.pdok.nl/kadaster/basisvoorziening-3d/v1_0";
 
@@ -63,7 +70,7 @@ pub struct CityObject {
     pub geometry: Vec<Geometry>,
 }
 
-/// Only what the two readers need, typed: a block is ~64 MB of JSON and an
+/// Only what the two readers need, typed: a block is ~130 MB of JSON and an
 /// untyped tree of it would cost several times that in memory.
 #[derive(Deserialize)]
 pub struct CityJson {
@@ -226,35 +233,64 @@ pub fn for_each_block(
         blocks.len()
     ));
     let mut failed = 0;
-    for (index, &[x, y]) in blocks.iter().enumerate() {
-        ctx.check()?;
-        ctx.progress(Progress {
-            phase: Some(what.to_string()),
-            done: Some(index as u64),
-            total: Some(Some(blocks.len() as u64)),
-        });
-        // A block outside the published area (the sea, over the border) is a 404:
-        // a block with nothing in it, not a failure.
-        let parsed = get_bytes_optional(ctx, &block_url(year, x, y), Duration::from_secs(300))
-            .and_then(|b| match b {
-                None => Ok(None),
-                Some(raw) => single_zip_entry(&raw)
-                    .and_then(|json| {
-                        serde_json::from_slice::<CityJson>(&json).map_err(|e| e.to_string())
-                    })
-                    .map(Some)
-                    .map_err(PipelineError::Failed),
-            });
-        match parsed {
-            Ok(Some(cj)) => visit(&cj, x, y),
-            Ok(None) => {}
-            Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
-            Err(e) => {
-                failed += 1;
-                ctx.log(format!("{what}: blok {x},{y} overgeslagen ({e})"));
+    // Download a batch while the one before it is parsed, in block order, so the
+    // callers see exactly the sequence a serial walk gave them. Only the raw zips
+    // are held in flight (~26 MB each); a parsed block is several times that.
+    let fetch = |&[x, y]: &[i64; 2]| {
+        get_bytes_optional(ctx, &block_url(year, x, y), Duration::from_secs(300))
+    };
+    std::thread::scope(|s| -> Outcome<()> {
+        let fetch = &fetch;
+        let spawn = |batch| {
+            let handles: Vec<_> = <[[i64; 2]]>::iter(batch)
+                .map(|&b| s.spawn(move || fetch(&b)))
+                .collect();
+            (batch, handles)
+        };
+        let mut batches = blocks.chunks(BLOCK_FETCHES);
+        let mut in_flight = batches.next().map(spawn);
+        let mut index = 0usize;
+        while let Some((batch, handles)) = in_flight.take() {
+            ctx.check()?;
+            let raws: Vec<Outcome<Option<Vec<u8>>>> = handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(PipelineError::Failed("download panicked".into())))
+                })
+                .collect();
+            in_flight = batches.next().map(spawn);
+            for (raw, &[x, y]) in raws.into_iter().zip(batch) {
+                ctx.progress(Progress {
+                    phase: Some(what.to_string()),
+                    done: Some(index as u64),
+                    total: Some(Some(blocks.len() as u64)),
+                });
+                index += 1;
+                // A block outside the published area (the sea, over the border) is
+                // a 404: a block with nothing in it, not a failure.
+                let parsed = raw.and_then(|b| match b {
+                    None => Ok(None),
+                    Some(raw) => single_zip_entry(&raw)
+                        .and_then(|json| {
+                            serde_json::from_slice::<CityJson>(&json).map_err(|e| e.to_string())
+                        })
+                        .map(Some)
+                        .map_err(PipelineError::Failed),
+                });
+                match parsed {
+                    Ok(Some(cj)) => visit(&cj, x, y),
+                    Ok(None) => {}
+                    Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
+                    Err(e) => {
+                        failed += 1;
+                        ctx.log(format!("{what}: blok {x},{y} overgeslagen ({e})"));
+                    }
+                }
             }
         }
-    }
+        Ok(())
+    })?;
     if failed > 0 {
         ctx.log(format!("{what}: {failed} blokken mislukt"));
     }
