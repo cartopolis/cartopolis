@@ -426,10 +426,19 @@ impl TerrainTiles {
     }
 }
 
-async fn fetch_tile(url: String, key: String) -> Answer {
+/// One tile, from the device cache or atlas.
+///
+/// **A graded tile is never "nothing measured".** The manifest lists a cell as
+/// graded only where there was ground to grade, so a 404 for one means this atlas
+/// cannot serve it — an atlas older than the client, asked for a grid it does not
+/// thin to (seen 2026-09-24: every 129² tile of a handset's field). Read as
+/// "nothing here", that drew the whole field flat and cached the answer for the
+/// life of the grading run. As an error it is not cached, and the field falls back
+/// to the ground it can get (`terrain::update_terrain_field`).
+async fn fetch_tile(url: String, key: String, graded: bool) -> Answer {
     if let Some(bytes) = storage::get(storage::Namespace::Cache, &key).await {
         // An empty entry is atlas having answered "nothing measured here".
-        if bytes.is_empty() {
+        if bytes.is_empty() && !graded {
             return Ok(None);
         }
         if let Ok(tile) = TerrainTile::decode(&bytes) {
@@ -442,6 +451,7 @@ async fn fetch_tile(url: String, key: String) -> Answer {
             storage::put(storage::Namespace::Cache, &key, &bytes).await;
             Ok(Some(Arc::new(tile)))
         }
+        None if graded => Err("atlas does not serve this graded tile".to_string()),
         None => {
             storage::put(storage::Namespace::Cache, &key, &[]).await;
             Ok(None)
@@ -472,7 +482,7 @@ pub fn poll_terrain_tiles(mut tiles: ResMut<TerrainTiles>, time: Res<Time>) {
         let key = cache_key(x, y, stamp, grid);
         IoTaskPool::get()
             .spawn(async move {
-                let out = fetch_tile(url, key).await;
+                let out = fetch_tile(url, key, stamp > 0).await;
                 if let Ok(mut g) = results.lock() {
                     g.push(((x, y, stamp), out));
                 }
