@@ -167,6 +167,16 @@ seen.
    rebuilds nearly the whole building ring, which is the price of the smaller
    cold start. Cold and warm starts are unchanged (11.8 / 5.1 s).
 
+   **What a re-anchor still costs, and why the rest of this step waits**
+   (`deck-1`, 2026-09-24, warm, 600 m, pitched 35°): a jump from the Grote Markt
+   to 6 km east settles 7.0 s after the jump against 6.5 s for a start there, and
+   to 20 km east 3.1 s against 2.6 s. The re-anchor adds ~0.5 s; the rest is
+   loading the destination, which a frame without an anchor would load too, so
+   removing it would buy about that. What the 6 km start does spend its time on is
+   ground atlas has not graded: the field waits for the cells, is graded on the
+   device (baked 4.7 s in), and every cell is then rebuilt on it. Extending
+   atlas's graded coverage removes that; the anchor rewrite would not.
+
    Found on the way: graded ground had stopped waiting for the water levels,
    so a cold start could draw every canal at its bank. It waits again, 3 s at
    most (`GRADED_WATER_HOLD_S`), and a later level re-bakes it.
