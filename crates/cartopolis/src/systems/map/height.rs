@@ -636,9 +636,13 @@ pub fn probe_anchor_ground(
 /// bit, and a cached answer must describe exactly the box it is handed back for.
 /// The in-memory cache has always shared a patch between requests that round
 /// alike, so no consumer depends on the sub-metre part.
-fn device_key(key: HeightKey) -> String {
+///
+/// `source` separates the flights: `v1` is PDOK's AHN4, `atlas-v1` atlas's
+/// answer — AHN6 where it is published — so a patch measured before atlas served
+/// heights is never handed back as one it measured.
+fn device_key(key: HeightKey, source: &str) -> String {
     format!(
-        "height/v1/{}/{}_{}_{}_{}_{}.tif",
+        "height/{source}/{}/{}_{}_{}_{}_{}.tif",
         key.model.coverage(),
         key.min[0],
         key.min[1],
@@ -653,7 +657,7 @@ async fn cached_patch(req: HeightRequest) -> Option<HeightPatch> {
     let req = req.quantised();
     let bytes = crate::platform::storage::get(
         crate::platform::storage::Namespace::Cache,
-        &device_key(req.key()),
+        &device_key(req.key(), device_source()),
     )
     .await?;
     patch_from(req, &bytes).ok()
@@ -671,10 +675,96 @@ fn patch_from(req: HeightRequest, bytes: &[u8]) -> Result<HeightPatch, String> {
     })
 }
 
-/// Fetch and decode one patch, and keep it on the device.
+/// Atlas's `/height`: the same question as PDOK's `GetCoverage`, answered from
+/// **AHN6** wherever that flight has been published and from AHN4 elsewhere
+/// (`crates/atlas/src/ahn6.rs`). PDOK serves AHN4 only, and AHN4 was flown while
+/// Groningen's southern ring was an open trench — over the roofed tunnel it reads
+/// −7.4 m NAP where people now walk on a park at +2.4.
+///
+/// `CARTO_HEIGHT_URL` overrides it; an empty value asks PDOK directly.
+fn atlas_height_url() -> Option<String> {
+    let url = std::env::var("CARTO_HEIGHT_URL").unwrap_or_else(|_| {
+        if cfg!(target_arch = "wasm32") {
+            "/height".to_string()
+        } else {
+            "https://cartopolis.org/height".to_string()
+        }
+    });
+    (!url.is_empty()).then_some(url)
+}
+
+/// Whether atlas answers `/height`: unknown until the first patch asks, then
+/// latched. A host that has not been given the route answers 404 — or, on the
+/// web, the viewer's own page — and every later patch goes to PDOK, so a session
+/// measures everything against one flight rather than alternating.
+static ATLAS_HEIGHTS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const ATLAS_UNKNOWN: u8 = 0;
+const ATLAS_SERVES: u8 = 1;
+const ATLAS_ABSENT: u8 = 2;
+
+/// Which flight a patch from this session is stored under ([`device_key`]).
+fn device_source() -> &'static str {
+    use std::sync::atomic::Ordering;
+    if atlas_height_url().is_none() || ATLAS_HEIGHTS.load(Ordering::Relaxed) == ATLAS_ABSENT {
+        "v1"
+    } else {
+        "atlas-v1"
+    }
+}
+
+/// Fetch and decode one patch — from atlas, else PDOK — and keep it on the device.
 async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
+    use std::sync::atomic::Ordering;
     let req = req.quantised();
     let grid = req.grid.clamp(2, MAX_GRID);
+    if let Some(base) = atlas_height_url() {
+        let state = ATLAS_HEIGHTS.load(Ordering::Relaxed);
+        if state != ATLAS_ABSENT {
+            let url = format!(
+                "{base}?coverage={coverage}&bbox={x0:.2},{y0:.2},{x1:.2},{y1:.2}&grid={grid}",
+                coverage = req.model.coverage(),
+                x0 = req.min[0],
+                y0 = req.min[1],
+                x1 = req.max[0],
+                y1 = req.max[1],
+            );
+            // Longer than the default: the first request over ground nobody has
+            // visited makes atlas download the sheets under it — ~8 MB a square
+            // kilometre, and a terrain field spans 6.4 km.
+            let request = http::Request::get(url).timeout(std::time::Duration::from_secs(90));
+            match http::fetch_optional(request).await {
+                Ok(Some(bytes)) => match patch_from(req, &bytes) {
+                    Ok(patch) => {
+                        ATLAS_HEIGHTS.store(ATLAS_SERVES, Ordering::Relaxed);
+                        crate::platform::storage::put(
+                            crate::platform::storage::Namespace::Cache,
+                            &device_key(req.key(), "atlas-v1"),
+                            &bytes,
+                        )
+                        .await;
+                        return Ok(patch);
+                    }
+                    // Not a height raster at all: a host without the route that
+                    // answers every path with a page.
+                    Err(e) if state == ATLAS_UNKNOWN => {
+                        tracing::info!(error = %e, "atlas serves no heights; asking PDOK");
+                        ATLAS_HEIGHTS.store(ATLAS_ABSENT, Ordering::Relaxed);
+                    }
+                    Err(e) => return Err(e),
+                },
+                Ok(None) => {
+                    tracing::info!("atlas serves no heights; asking PDOK");
+                    ATLAS_HEIGHTS.store(ATLAS_ABSENT, Ordering::Relaxed);
+                }
+                // Once atlas has answered, a failure is a failure to retry — not
+                // a reason to measure this one patch against another flight.
+                Err(e) if state == ATLAS_SERVES => return Err(e),
+                Err(e) => {
+                    tracing::info!(error = %e, "atlas heights unreachable; asking PDOK");
+                }
+            }
+        }
+    }
     let path = format!(
         "{AHN_WCS_PATH}?SERVICE=WCS&VERSION=1.0.0&REQUEST=GetCoverage\
          &COVERAGE={coverage}&CRS=EPSG:28992&FORMAT=GEOTIFF\
@@ -692,7 +782,7 @@ async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
     // would answer every later launch with the same refusal.
     crate::platform::storage::put(
         crate::platform::storage::Namespace::Cache,
-        &device_key(req.key()),
+        &device_key(req.key(), "v1"),
         &bytes,
     )
     .await;

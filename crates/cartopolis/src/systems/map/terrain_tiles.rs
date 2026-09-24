@@ -164,9 +164,9 @@ pub fn covered(lat: f64, lng: f64) -> bool {
 fn template() -> Option<String> {
     let t = std::env::var("CARTO_TERRAIN_URL").unwrap_or_else(|_| {
         if cfg!(target_arch = "wasm32") {
-            "/terrain/{z}/{x}/{y}?grid=513".to_string()
+            "/terrain/{z}/{x}/{y}?grid=513&ahn=6".to_string()
         } else {
-            "https://cartopolis.org/terrain/{z}/{x}/{y}?grid=513".to_string()
+            "https://cartopolis.org/terrain/{z}/{x}/{y}?grid=513&ahn=6".to_string()
         }
     });
     (!t.is_empty()).then_some(t)
@@ -177,8 +177,9 @@ fn cache_key(x: i64, y: i64, stamp: u64) -> String {
         // Per grading run: a re-grade is new ground, and an old copy is never it.
         return format!("terrain/graded/{stamp}/{TILE_ZOOM}/{x}/{y}.g513.ctt");
     }
-    // `v2`: atlas's unfilled tiles. See `crates/atlas/src/terrain.rs::store_dir`.
-    format!("terrain/v2/{TILE_ZOOM}/{x}/{y}.g513.ctt")
+    // `v3`: atlas's unfilled tiles, cut from AHN6 where it is published. See
+    // `crates/atlas/src/terrain.rs::store_dir`.
+    format!("terrain/v3/{TILE_ZOOM}/{x}/{y}.g513.ctt")
 }
 
 /// The URL for one tile; a graded one carries `graded=1` and the run's stamp, so
