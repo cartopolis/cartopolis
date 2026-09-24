@@ -30,6 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::{Commands, Entity};
@@ -84,6 +85,10 @@ pub struct CellStream<K, R> {
     in_flight: HashSet<K>,
     failed: HashMap<K, Failure>,
     results: Arc<Mutex<Vec<(K, R)>>>,
+    /// Cleared when [`reset`](Self::reset) orphans the sink, so a task that is
+    /// still running can stop before its expensive half rather than build a cell
+    /// nobody will read ([`live`](Self::live)).
+    live: Arc<AtomicBool>,
     despawn_queue: Vec<Entity>,
     /// The `MapStream::anchor_generation` these cells belong to.
     generation: u32,
@@ -101,6 +106,7 @@ where
             in_flight: HashSet::new(),
             failed: HashMap::new(),
             results: Arc::new(Mutex::new(Vec::new())),
+            live: Arc::new(AtomicBool::new(true)),
             despawn_queue: Vec::new(),
             generation: 0,
         }
@@ -111,6 +117,17 @@ where
     /// one and the orphaned pushes go nowhere.
     pub fn sink(&self) -> Arc<Mutex<Vec<(K, R)>>> {
         self.results.clone()
+    }
+
+    /// Whether a task dispatched now is still wanted, readable from the task.
+    ///
+    /// **The sink alone could not say.** An orphaned push goes nowhere, but the
+    /// work before it was still done: measured on the Deck (2026-09-24), a
+    /// coverage answer arriving 0.1 s after a ring was dispatched reset the stream,
+    /// and all eight orphaned ground cells were meshed anyway, a second of a
+    /// worker each, beside the eight that replaced them.
+    pub fn live(&self) -> Arc<AtomicBool> {
+        self.live.clone()
     }
 
     /// Ask for a cell with no distance to state. See
@@ -378,6 +395,8 @@ where
         self.failed.clear();
         self.dispatch = Dispatcher::new(self.policy.max_in_flight, self.policy.min_interval_secs);
         self.results = Arc::new(Mutex::new(Vec::new()));
+        self.live.store(false, Ordering::Relaxed);
+        self.live = Arc::new(AtomicBool::new(true));
     }
 
     /// Backoff before retrying a cell that has failed `attempts` times.

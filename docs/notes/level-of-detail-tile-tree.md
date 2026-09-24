@@ -119,17 +119,15 @@ seen.
      patch was dropped after each bake and a re-bake downloaded the 12 MB
      again — and every revisit. The wall-clock effect on a real GPU is still
      to be measured.
-   - **2c. Retear per cell, not per ring.** One global `revision` makes ~10
-     layers rebuild their whole ring on every bake. Each cell instead keys its
-     rebuild on the heights *under it*, so a bake that changes nothing under a
-     cell does not rebuild it, and the first build waits for its ground instead
-     of building flat and tearing.
-   - **2d. Grade in windows.** Grading moves from one global bake to a job per
-     z14 cell over the cell plus a 150 m margin (the grading reach), fed with
-     the road triangles of every loaded cell the window touches. A cell is
-     graded only once its neighbours' roads are known, so two cells always
-     grade their shared margin from the same roads and agree at the seam. That
-     retires the global `RoadMask`, the settle timers and the ring hold.
+   - **2c. Retear per cell, not per ring.** **Partly built** (2026-09-24): the
+     ground cells record the field revision they stand on
+     (`MapSurfaces::built_rev`) and a new field retires only the older ones, and
+     over graded ground (2d) the first build waits for its ground instead of
+     building flat — the cells fetch meanwhile and are handed the field when it
+     lands (`TerrainField::ground_later`). Still whole-ring: the building cells
+     (`lod22`), which hold their dispatch rather than their meshing.
+   - **2d. Grade on atlas.** **Built** (2026-09-24), in place of grading in
+     windows on the client. See "Atlas grades" below.
 3. Fold the globe into the tree, which retires the 50 km switch and the re-anchor.
 4. Building levels of detail per tile. The LoD1.2 blocks already exist per z14
    cell; any coarser merged level is built by atlas, which runs the building
@@ -233,14 +231,56 @@ which 0.8–1.5 s is `refine_for_terrain` (ground lookups ~10 % of that; the
 default hasher was a third, and is replaced). Cold, the long pole is still the
 ~185 PDOK deck and crest requests the ring waits for.
 
+## Atlas grades (2026-09-24)
+
+The client's field bake carved the water, filled the holes, flattened the roads
+and ramped the bridge approaches — and could not start until every ground cell
+around the camera had been meshed (the road shapes come out of that) and every
+deck measured against PDOK. It was the whole of the cold start's critical path.
+Atlas now does it once per city with the same code (`cartopolis_geo::terrain_grade`,
+which the client's own bake also calls where atlas has not graded), and serves
+the result: `/terrain/14/x/y?grid=513&graded=1&v=<stamp>`, listed in
+`terrain/coverage.json` as `graded` with the run's `graded_stamp`. It also
+publishes the deck heights it measured (`decks/14/x/y.json`), which the ground
+cells use instead of asking PDOK.
+
+**Heights only.** Atlas reads the roads, decks and water to decide where the
+ground goes, and sends nothing but heights. Every road, bridge and building still
+reaches the client as vector data, so selecting a building, the route line and
+the labels are unchanged. Nor is this the rejected image-tile set: it is the same
+~0.5 MB height tile atlas already stored, graded — Groningen is 49 tiles, 25 MB,
+graded in 43 s on the Deck including measuring 149 decks. The Netherlands would
+be ~19,000 tiles (an estimate), and nowhere else has the survey.
+
+Each tile is graded over itself plus 350 m of its neighbours, on its own sample
+lattice, and keeps its own 513²; neighbours agree along their shared edge to
+≤ 1 cm (`graded_store_report`, measured over the Groningen run). One knowing
+difference from the client: it grades under every footpath, including the ones
+the client leaves to the BGT's surveyed paving.
+
+Measured on `deck-1` over the Grote Markt at 600 m, release build, the same
+binary against the same live data with the manifest listing the graded tiles or
+not, time until everything has loaded:
+
+| | client grades | atlas grades |
+|---|---|---|
+| cold | 31.6 s | **13.6 s** |
+| warm | 14.4 s | **7.4 s** |
+
+Cold PDOK requests fell 183 → 61 (the rest are dike crests, which only feed a
+label, and the half-metre tier). The map image is complete at ~2.4 s warm and
+~9 s cold. The picture is the same; relief differs by 2.4 m at the box's extremes
+and the client's approach counters read 0, because that grading happens on atlas.
+
 ## Rejected
 
 - **A world raster tile set on the server.** The server serves the vector map
   only; a planet of rendered imagery is not something this project can host.
-- **Baking road flattening into the terrain tiles on the server.** It needs the
-  client's road shapes (`cartopolis_geo`) on the server, either as a second copy
-  in TypeScript that drifts or as a new cross-repository dependency. The client
-  does it per tile instead.
+- **Grading on the client, in windows** (the first plan for step 2d). Rejected
+  2026-09-24 for atlas grading: its reason — that the server would need a second
+  copy of the road code in TypeScript — went away when the pipelines became Rust
+  in this workspace, and grading on every device for every visit is the cost the
+  cold start was paying.
 - **Dropping the vector ground meshes outright.** Up close they carry the water
   shader, sharp kerbs and tunnel openings. Whether images are good enough at
   walking height is step 5's question, answered with captures, not assumed.

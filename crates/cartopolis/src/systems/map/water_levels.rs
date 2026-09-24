@@ -88,19 +88,6 @@ const WATER_BACKOFF_SECS: f64 = 1.0;
 const WATER_BACKOFF_DOUBLINGS: u32 = 3;
 const WATER_RETRY_AFTER_SECS: f64 = 30.0;
 
-/// How far below its surface a canal's bed is taken to be, in metres.
-///
-/// **This one number is not measured, and it is the only one here that isn't.** AHN's
-/// laser does not come back off water and the BGT records the surface, so no source in
-/// this client's reach says how deep a canal is. The ground is therefore carved to the
-/// measured surface *minus this*, purely so the water sheet has something to stand its
-/// own depth rung on rather than lying coplanar with the bed — the z-fight this
-/// codebase spends a whole depth ladder avoiding.
-///
-/// Deliberately shallow. Being wrong by a metre of invisible depth under an opaque
-/// sheet costs nothing; carving a trench deeper than the quays are tall would show.
-const WATER_BED_M: f32 = 0.5;
-
 /// How far outside a registered outline a drawn vertex may sit and still be taken as
 /// belonging to it.
 ///
@@ -517,12 +504,6 @@ fn point_in_ring(pts: &[[f32; 2]], x: f32, z: f32) -> bool {
         }
     }
     inside
-}
-
-/// How far below the measured surface the ground is carved. See [`WATER_BED_M`].
-#[must_use]
-pub fn bed_below_surface_m() -> f32 {
-    WATER_BED_M
 }
 
 fn water_covers(cx: i64, cy: i64) -> bool {

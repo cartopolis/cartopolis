@@ -44,6 +44,11 @@ struct Manifest {
     zoom: u32,
     cells: HashSet<(i64, i64)>,
     attribution: String,
+    /// The cells a tree has also *processed further*, and which run did it — only
+    /// the terrain manifest has these: the tiles atlas has graded, and the stamp
+    /// that goes into their URL and cache key (`terrain_tiles`).
+    graded: HashSet<(i64, i64)>,
+    graded_stamp: u64,
 }
 
 impl Manifest {
@@ -52,6 +57,8 @@ impl Manifest {
             zoom,
             cells: HashSet::new(),
             attribution: String::new(),
+            graded: HashSet::new(),
+            graded_stamp: 0,
         }
     }
 }
@@ -133,6 +140,21 @@ impl CoverageSlot {
             .is_some_and(|m| m.zoom == self.zoom && m.cells.contains(&(cx, cy)))
     }
 
+    /// The stamp of the run that graded this cell, if one did (only the terrain
+    /// manifest carries any). A stamp of 0 is an old manifest's, and means none.
+    pub fn graded(&self, cx: i64, cy: i64) -> Option<u64> {
+        self.answer
+            .get()
+            .filter(|m| m.zoom == self.zoom && m.graded_stamp > 0 && m.graded.contains(&(cx, cy)))
+            .map(|m| m.graded_stamp)
+    }
+
+    /// The manifest's grading stamp, whatever the cell: 0 until it lands, and for a
+    /// tree that was never graded.
+    pub fn graded_stamp(&self) -> u64 {
+        self.answer.get().map_or(0, |m| m.graded_stamp)
+    }
+
     /// 0 while the question is open, 1 once it has an answer of any kind.
     ///
     /// A streamer that bakes this tree's data into geometry reads it as a
@@ -206,23 +228,34 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let mut cells = HashSet::new();
-    if let Some(arr) = json.get("cells").and_then(serde_json::Value::as_array) {
-        for cell in arr {
-            if let Some(pair) = cell.as_array() {
-                if let (Some(x), Some(y)) = (
-                    pair.first().and_then(serde_json::Value::as_i64),
-                    pair.get(1).and_then(serde_json::Value::as_i64),
-                ) {
-                    cells.insert((x, y));
+    let cell_set = |key: &str| {
+        let mut cells = HashSet::new();
+        if let Some(arr) = json.get(key).and_then(serde_json::Value::as_array) {
+            for cell in arr {
+                if let Some(pair) = cell.as_array() {
+                    if let (Some(x), Some(y)) = (
+                        pair.first().and_then(serde_json::Value::as_i64),
+                        pair.get(1).and_then(serde_json::Value::as_i64),
+                    ) {
+                        cells.insert((x, y));
+                    }
                 }
             }
         }
-    }
-    tracing::info!(%url, cells = cells.len(), zoom, "coverage loaded");
+        cells
+    };
+    let cells = cell_set("cells");
+    let graded = cell_set("graded");
+    let graded_stamp = json
+        .get("graded_stamp")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    tracing::info!(%url, cells = cells.len(), graded = graded.len(), zoom, "coverage loaded");
     Some(Manifest {
         zoom,
         cells,
         attribution,
+        graded,
+        graded_stamp,
     })
 }

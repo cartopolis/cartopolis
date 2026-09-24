@@ -946,7 +946,9 @@ pub fn update_lod22(
     // Dispatch queued cells up to the concurrency cap: each becomes a detached
     // fetch+mesh task (ADR-033 seam) pushing to the sink — no OS thread.
     let results = lod.stream.sink();
-    while let Some((cx, cy)) = lod.stream.next_job(now) {
+    // Graded ground on its way: one build per cell, on it (`TerrainField::holds_builds`).
+    let held = terrain.holds_builds(stream.anchor_generation);
+    while let Some((cx, cy)) = (!held).then(|| lod.stream.next_job(now)).flatten() {
         let results = results.clone();
         // Resolved at dispatch, not inside the worker: the worker has no camera,
         // and recording what a cell was *built* with is what makes the promotion
@@ -956,6 +958,7 @@ pub fn update_lod22(
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
         let ground = terrain.snapshot();
+        let live = lod.stream.live();
         // Two halves on two executors, matching the tile path (ADR-033): the fetch
         // is awaited here — free on wasm, where this is the main thread but the
         // browser does the transfer — while the parse and mesh, which are pure
@@ -983,6 +986,10 @@ pub fn update_lod22(
                 let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
                 // …and the imported models for the same cell, on the same terms.
                 let lod3 = crate::systems::lod3::load_lod3_text(cx, cy).await;
+                // Torn down while it fetched (`CellStream::live`): no parse, no mesh.
+                if !live.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
                 crate::platform::workers::submit_heavy(
                     "lod22",
                     Box::new(move || {

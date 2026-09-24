@@ -44,7 +44,7 @@
 //!
 //! AHN's DTM is full of holes and that is not an error: bridges and buildings are
 //! *cut out* of it, the sea has no measurement, and a box near the border is half
-//! Germany. Small holes are filled from their neighbours (out to [`FILL_REACH_M`])
+//! Germany. Small holes are filled from their neighbours (out to [`cartopolis_geo::ahn::FILL_REACH_M`])
 //! because a cut-out viaduct must not read as a pit;
 //! what is left over — the sea, the far side of a border — settles at the anchor's
 //! own level, which is flat, and flat is the honest answer for ground we have not
@@ -57,6 +57,8 @@ use crate::grid::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
 use crate::systems::map_stream::MapStream;
+use futures_channel::oneshot;
+use std::sync::{Arc, Mutex};
 
 /// Half-extent of the field in world metres (a 6.4 km box). Sized to cover the
 /// geometry ring and the finest textured tiles around it, which is everything
@@ -143,7 +145,6 @@ const TAPER_START: f32 = 0.82;
 /// ~150 m", which was true of the 25 m field it was written for and would be 37 m of
 /// the 6.25 m one — every building footprint an unfilled pit, with nothing in the
 /// constant to say the resolution had moved out from under it.
-use cartopolis_geo::ahn::FILL_REACH_M;
 
 /// Extra RD metres requested around the field's own box, so a bilinear lookup at
 /// the very edge still has measured samples on both sides of it.
@@ -438,9 +439,65 @@ pub struct TerrainField {
     /// [`streaming_busy`](Self::streaming_busy), because every bake retears the
     /// ground and a capture taken before it would show the ground it replaces.
     bake_owed: bool,
+    /// The anchor generation whose ground is graded on atlas and on its way, and
+    /// when the wait for it began — see [`Self::holds_builds`].
+    build_hold: Option<(u32, f32)>,
+    /// Cell jobs that have fetched their inputs and are waiting for that ground
+    /// ([`Self::ground_later`]). Answered with whatever is in place once the hold
+    /// ends, however it ends.
+    ground_waiters: Arc<Mutex<Vec<oneshot::Sender<GroundArrival>>>>,
 }
 
+/// Ground a waiting cell job is handed: the placement (`None` for flat) and the
+/// field revision it is, which the cell records so that only cells standing on an
+/// older revision are rebuilt when the field changes.
+pub type GroundArrival = (Option<GroundPlacement>, u32);
+
+/// Longest the ground and building cells wait for graded ground before building
+/// flat anyway. It lands in ~3 s warm and ~5 s cold on the Deck (2026-09-24).
+const GRADED_HOLD_S: f32 = 8.0;
+
 impl TerrainField {
+    /// Whether cells for this anchor should wait before they are built.
+    ///
+    /// **Only for ground atlas has graded.** That field needs nothing from the
+    /// cells and is a few seconds away, so building them flat first spends a whole
+    /// ring of cell jobs on ground that is torn down the moment it lands — measured
+    /// on the Deck, every surface and building cell built twice in a warm start.
+    /// Ground graded here cannot be waited for: its bake needs the cells' roads.
+    #[must_use]
+    pub fn holds_builds(&self, gen: u32) -> bool {
+        matches!(self.build_hold, Some((g, _)) if g == gen)
+    }
+
+    /// The ground for a cell job to be built on, when the hold ends. The job
+    /// fetches its inputs meanwhile: holding the fetch as well cost a cold start
+    /// its first five seconds of downloads (Deck, 2026-09-24: 20.4 s → 24.9 s).
+    #[must_use]
+    pub fn ground_later(&self) -> oneshot::Receiver<GroundArrival> {
+        let (tx, rx) = oneshot::channel();
+        match self.ground_waiters.lock() {
+            Ok(mut w) => w.push(tx),
+            Err(p) => p.into_inner().push(tx),
+        }
+        rx
+    }
+
+    /// Hand every waiting job the ground in place now.
+    fn release_waiters(&self) {
+        let waiting: Vec<_> = match self.ground_waiters.lock() {
+            Ok(mut w) => w.drain(..).collect(),
+            Err(p) => p.into_inner().drain(..).collect(),
+        };
+        if waiting.is_empty() {
+            return;
+        }
+        let arrival = (self.placement(), self.revision);
+        for tx in waiting {
+            let _ = tx.send(arrival.clone());
+        }
+    }
+
     /// Whether a field is expected here and has not arrived yet.
     ///
     /// The bake is on a worker now, so a scripted capture can reach the shutter with the
@@ -507,7 +564,7 @@ impl TerrainField {
     /// or `None` where no registered body covers it.
     ///
     /// Deliberately *not* the ground under it: the ground there has been carved to this
-    /// minus a bed (`water_levels::bed_below_surface_m`), so a sheet laid on the ground
+    /// minus a bed (`cartopolis_geo::terrain_grade::WATER_BED_M`), so a sheet laid on the ground
     /// would be half a metre under its own canal.
     #[must_use]
     pub fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
@@ -1016,30 +1073,9 @@ impl RoadMask {
     }
 }
 
-/// A cell's road-sheet triangles in its own tile-local XZ, for [`RoadMask`].
-///
-/// **The ribbons, not the tunnels.** A tunnel's carriageway is metres below the
-/// surface and grading the ground down to meet it would dig a trench over every
-/// bore.
-#[must_use]
-pub fn road_triangles(meshes: &[crate::systems::vector_tiles::SurfaceMesh]) -> Vec<[[f32; 2]; 3]> {
-    meshes
-        .iter()
-        .filter(|m| {
-            matches!(
-                m.group,
-                crate::systems::vector_tiles::SurfaceGroup::Road(_)
-                    | crate::systems::vector_tiles::SurfaceGroup::RoadCasing(_)
-            )
-        })
-        .flat_map(|m| {
-            m.indices.chunks_exact(3).filter_map(move |t| {
-                let q = |i: u32| m.positions.get(i as usize).map(|v| [v[0], v[2]]);
-                Some([q(t[0])?, q(t[1])?, q(t[2])?])
-            })
-        })
-        .collect()
-}
+/// A cell's road-sheet triangles in its own tile-local XZ, for [`RoadMask`] —
+/// shared with atlas's grading, which marks the same ones.
+pub use cartopolis_geo::terrain_grade::road_triangles;
 
 /// How long the road mask must stop growing before the field is baked again.
 ///
@@ -1098,16 +1134,27 @@ pub fn update_terrain_field(
     // When a bake that is ready to run started waiting for the surface ring.
     mut hold: Local<Option<f32>>,
     mut tiles: ResMut<crate::systems::terrain_tiles::TerrainTiles>,
-    // Which source this anchor's field comes from: (anchor generation, tiles?).
-    // Latched per anchor, so a coverage manifest landing mid-fetch does not start a
-    // second download of the same ground.
-    mut source: Local<Option<(u32, bool)>>,
+    // Which source this anchor's field comes from. Latched per anchor generation,
+    // so a coverage manifest landing mid-fetch does not start a second download of
+    // the same ground.
+    mut source: Local<Option<(u32, FieldSource)>>,
     // What an owed bake is waiting on, logged when it changes: a field that never
     // finishes owing a bake keeps a capture from settling, and nothing else says why.
     mut waiting: Local<&'static str>,
     // When this anchor started waiting for the atlas coverage answer.
     mut coverage_wait: Local<Option<(u32, f32)>>,
 ) {
+    // The cells' wait for graded ground ends when it lands (`apply_coarse_terrain`),
+    // when the anchor moves on, or at `GRADED_HOLD_S` — hills a little late beat a
+    // map that is not drawn.
+    if let Some((g, since)) = field.build_hold {
+        if g != stream.anchor_generation || time.elapsed_secs() - since > GRADED_HOLD_S {
+            field.build_hold = None;
+        }
+    }
+    if field.build_hold.is_none() {
+        field.release_waiters();
+    }
     let Some(anchor) = stream.geo_anchor() else {
         return;
     };
@@ -1184,10 +1231,18 @@ pub fn update_terrain_field(
         // has asked for.
         field.answered_road_rev.unwrap_or(0)
     };
+    // **Graded ground owes nothing to the roads, the water or the decks.** Atlas
+    // graded it against all three (`cartopolis_geo::terrain_grade`), so once it is
+    // baked for this anchor, nothing that lands afterwards is a reason to bake again.
+    let graded = matches!(
+        *source,
+        Some((g, FieldSource::Graded(_))) if g == stream.anchor_generation
+    );
     if field.answered_gen == Some(stream.anchor_generation)
-        && field.answered_water_rev == Some(water_rev)
-        && field.answered_road_rev == Some(road_rev)
-        && field.answered_deck_rev == Some(deck_rev)
+        && (graded
+            || (field.answered_water_rev == Some(water_rev)
+                && field.answered_road_rev == Some(road_rev)
+                && field.answered_deck_rev == Some(deck_rev)))
     {
         *hold = None;
         // An input that moved and then moved back — the deck digest does exactly
@@ -1228,8 +1283,8 @@ pub fn update_terrain_field(
     // Atlas tiles where atlas has cut the area (`terrain_tiles` says why only
     // there), and only at the desktop grid: a handset's 513² field is 1 MB as one
     // WCS patch and would be ~21 MB as the z16 tiles under it.
-    let use_tiles = match *source {
-        Some((g, t)) if g == gen => t,
+    let chosen = match *source {
+        Some((g, s)) if g == gen => s,
         _ => {
             let eligible = tiles.enabled() && grid >= 1025;
             // **Ask atlas before choosing.** The manifest is one small request that
@@ -1251,29 +1306,54 @@ pub fn update_terrain_field(
                     return;
                 }
             }
-            let t = eligible && crate::systems::terrain_tiles::covered(anchor.0, anchor.1);
-            *source = Some((gen, t));
-            tracing::info!(anchor_gen = gen, tiles = t, "terrain field source");
-            t
+            let s = if !eligible || !crate::systems::terrain_tiles::covered(anchor.0, anchor.1) {
+                FieldSource::Wcs
+            } else {
+                match crate::systems::terrain_tiles::graded_stamp(&field_tiles(
+                    anchor,
+                    TERRAIN_HALF_M,
+                )) {
+                    Some(stamp) => FieldSource::Graded(stamp),
+                    None => FieldSource::Tiles,
+                }
+            };
+            *source = Some((gen, s));
+            tracing::info!(anchor_gen = gen, source = ?s, "terrain field source");
+            // Once per anchor, here where the source is chosen, so an expired hold
+            // is not started again.
+            if matches!(s, FieldSource::Graded(_)) {
+                field.build_hold = Some((gen, time.elapsed_secs()));
+            }
+            s
         }
     };
     // Either source queues its fetch on the first ask and answers "not yet" until
     // it lands; the field simply stays flat for those few frames.
-    let mosaic = if use_tiles {
+    let stamp = match chosen {
+        FieldSource::Graded(s) => Some(s),
+        FieldSource::Tiles => Some(0),
+        FieldSource::Wcs => None,
+    };
+    let mosaic = if let Some(stamp) = stamp {
         let want = field_tiles(anchor, TERRAIN_HALF_M);
-        match tiles.mosaic(&want) {
+        match tiles.mosaic(&want, stamp) {
             crate::systems::terrain_tiles::Mosaic::Ready(m) => Some(m),
             crate::systems::terrain_tiles::Mosaic::Waiting => {
                 wait("atlas tiles", &field);
                 return;
             }
-            // A tile atlas would not give: this anchor goes back to WCS.
+            // A tile atlas would not give: graded ground falls back to the raw
+            // tiles and graded here, raw tiles to WCS.
             crate::systems::terrain_tiles::Mosaic::Failed => {
-                tracing::warn!(
-                    anchor_gen = gen,
-                    "terrain tiles failed; field falls back to WCS"
-                );
-                *source = Some((gen, false));
+                let next = if stamp > 0 {
+                    FieldSource::Tiles
+                } else {
+                    FieldSource::Wcs
+                };
+                tracing::warn!(anchor_gen = gen, next = ?next, "terrain tiles failed; falling back");
+                *source = Some((gen, next));
+                // Ground graded here needs the cells built first.
+                field.build_hold = None;
                 tiles.release();
                 return;
             }
@@ -1307,8 +1387,12 @@ pub fn update_terrain_field(
     // seconds, the first bake ran while 20 of 50 levels were in, and the rest cost a
     // second bake and a second retear of everything (Deck, 2026-09-24: warm 25 s →
     // 38 s). The debounce above cannot see this: it ends in any two-second gap.
+    //
+    // **None of this holds graded ground**, which is the point of grading it on
+    // atlas: nothing the ring or the water register publishes changes it.
+    let pre_graded = matches!(chosen, FieldSource::Graded(_));
     let held_since = *hold.get_or_insert(now);
-    if now - held_since < RING_HOLD_MAX_S {
+    if !pre_graded && now - held_since < RING_HOLD_MAX_S {
         if surfaces.streaming_busy() {
             wait("the surface ring", &field);
             return;
@@ -1377,10 +1461,13 @@ pub fn update_terrain_field(
                 anchor,
                 TERRAIN_HALF_M,
                 grid,
-                &water,
-                road,
-                ramp,
-                &deck_lift,
+                // Graded on atlas: no carve, no fill, no grading here.
+                (!pre_graded).then_some(Grading {
+                    water: &water,
+                    road,
+                    ramp,
+                    deck_lift: &deck_lift,
+                }),
             );
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
@@ -1412,6 +1499,8 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
         return;
     }
     field.coarse_job = None;
+    // The ground the cells were waiting for.
+    field.build_hold = None;
     // Answered, whether or not there was anything there. Recording it for the no-data
     // case — all sea, over the border — is what stops a box AHN has nothing for from
     // re-baking four million samples every frame for the rest of the session; the
@@ -1517,6 +1606,32 @@ impl GroundSource for crate::systems::terrain_tiles::TileMosaic {
     }
 }
 
+/// Where this anchor's field comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldSource {
+    /// One PDOK WCS patch, graded here.
+    Wcs,
+    /// Atlas's raw tiles, graded here.
+    Tiles,
+    /// Atlas's graded tiles, by the grading run with this stamp: sampled, not
+    /// graded again.
+    Graded(u64),
+}
+
+/// What a bake grades the ground against, when it grades it at all.
+struct Grading<'a> {
+    water: &'a crate::systems::water_levels::WaterLevelField,
+    // **By value, so the widening mutates it in place.** `for_gen` already hands
+    // the worker its own copy of the mask.
+    road: Vec<bool>,
+    // Where the approach roads run, and how high the structure they climb to
+    // stands — `map_geometry::DeckPlates::grade_masks`. Separate from `road`
+    // because a gradient travels through everything a raster corridor touches,
+    // and the street passing *under* a viaduct touches its approach.
+    ramp: Vec<bool>,
+    deck_lift: &'a [f32],
+}
+
 /// Resample measured ground into the world-XZ grid, fill its holes, subtract the
 /// anchor's own ground and taper the edge to zero.
 ///
@@ -1526,17 +1641,8 @@ fn bake(
     anchor: (f64, f64, u32),
     half: f32,
     n: usize,
-    water: &crate::systems::water_levels::WaterLevelField,
-    // **By value, so the widening below mutates it in place.** `for_gen` already
-    // hands the worker its own copy of the mask; taking a slice here meant
-    // copying all 4.2 M samples a second time just to be allowed to grow them.
-    mut road: Vec<bool>,
-    // Where the approach roads run, and how high the structure they climb to
-    // stands — `map_geometry::DeckPlates::grade_masks`. Separate from `road`
-    // because a gradient travels through everything a raster corridor touches,
-    // and the street passing *under* a viaduct touches its approach.
-    mut ramp: Vec<bool>,
-    deck_lift: &[f32],
+    // `None` for ground atlas has already graded.
+    grading: Option<Grading<'_>>,
 ) -> (Option<(Vec<f32>, f32, usize)>, (usize, usize)) {
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
@@ -1574,106 +1680,33 @@ fn bake(
         m
     };
 
-    // The same carve the fine tier gets, and it matters here for a different reason:
-    // this is the field the basemap clipmap is displaced by
-    // (`map_stream::apply_terrain_to_tiles`), so without it the ground runs flat across
-    // a canal the water sheet has just dropped into. At 25 m a city canal is about one
-    // sample wide, so what this buys is a shallow dip rather than a trench — the tier
-    // that can express the banks is the fine one.
+    // Carve, fill and grade: `cartopolis_geo::terrain_grade::grade`, the same code
+    // atlas grades its tiles with. The carve is the same one the fine tier gets, and
+    // it matters here for a different reason — this is the field the basemap
+    // clipmap is displaced by (`map_stream::apply_terrain_to_tiles`), so without it
+    // the ground runs flat across a canal the water sheet has just dropped into.
     // Coarse: resampled, so a finite sample inside a ring is not evidence.
-    let carved = carve_water(&mut raw, n, half, Vec2::ZERO, water, false);
-    fill_holes(
-        &mut raw,
-        n,
-        Some(FILL_REACH_M / (half * 2.0 / (n - 1) as f32)),
-    );
-    // **After the holes and before the datum.** The relaxation holds unmarked
-    // samples fixed as its boundary condition, so it needs them to be heights
-    // rather than the no-data the survey leaves under every building — and it must
-    // see the same absolute metres the carve did. What it buys is the ridge that
-    // otherwise stands along every road for its whole length: a survey reads the
-    // kerbs, the parked cars and the hedge, and a built road has none of them.
-    let mut approach = (0usize, 0usize);
-    if road.len() == n * n {
-        // The margin, once, here — `mark_cell` marks the carriageway and nothing
-        // else. This is the worker, and `road` was moved in, so the widening
-        // costs no allocation at all.
-        cartopolis_geo::road_grade::dilate_mask(
-            &mut road,
-            n,
-            cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
-        );
-        // **An embankment is a gradient along the road, so it is built before the
-        // relaxation and pinned against it.** `flatten_pinned` on its own cannot
-        // express one: a corridor is a strip held at the surrounding ground along
-        // both long sides, and the smoothest surface in a strip with a raised end
-        // decays exponentially away from it — measured on a 15-sample corridor, a
-        // 7 m abutment arrives as a 1.9 m step within a few samples of the deck
-        // and is flat after that, which is the abrupt end this exists to remove,
-        // reproduced by another route (`road_grade::ramp_from_pins`).
-        let mut pins = vec![f32::NAN; n * n];
-        let mut abutments = 0usize;
-        if ramp.len() == n * n && deck_lift.len() == n * n {
-            cartopolis_geo::road_grade::dilate_mask(
-                &mut ramp,
-                n,
-                cartopolis_geo::road_grade::DEFAULT_MARGIN_SAMPLES,
-            );
-            // A dilated approach may have grown over the structure; the abutment
-            // is the sample *beside* the deck, not on it.
-            for i in 0..n * n {
-                if deck_lift[i].is_finite() {
-                    ramp[i] = false;
-                }
-            }
-            // **The pin is the deck's height above the ground at the abutment**,
-            // which is what `deck_height` measured it against: the survey's DSM
-            // over the structure less its DTM around it. So the absolute level to
-            // reach is the ground here plus that clearance, and a road already
-            // standing higher is left alone by `ramp_from_pins` — it is in a
-            // cutting, and inventing a trench for it would delete the hill.
-            for z in 1..n - 1 {
-                for x in 1..n - 1 {
-                    let i = z * n + x;
-                    if !ramp[i] || !raw[i].is_finite() {
-                        continue;
-                    }
-                    let lift = [i - 1, i + 1, i - n, i + n]
-                        .into_iter()
-                        .filter_map(|k| deck_lift.get(k).copied())
-                        .filter(|v| v.is_finite())
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    if lift.is_finite() {
-                        pins[i] = raw[i] + lift;
-                        abutments += 1;
-                    }
-                }
-            }
-        }
-        let raised = cartopolis_geo::road_grade::ramp_from_pins(
+    let (mut carved, mut approach) = (0, (0, 0));
+    if let Some(g) = grading {
+        let lattice = field_lattice(n, half, Vec2::ZERO);
+        let road = if g.road.len() == n * n {
+            g.road
+        } else {
+            Vec::new()
+        };
+        let graded = cartopolis_geo::terrain_grade::grade(
             &mut raw,
-            n,
-            &ramp,
-            &mut pins,
-            (half * 2.0) as f32 / (n - 1) as f32,
-            cartopolis_geo::road_grade::MAX_APPROACH_GRADE,
+            lattice,
+            &|x, z| g.water.level_at(x, z),
+            road,
+            g.ramp,
+            g.deck_lift,
         );
-        // Pinned, not plain: every sample the ramp raised became a pin itself, so
-        // the relaxation smooths the rest of the corridor and leaves the
-        // engineered grade where the pass above put it. Without that the
-        // embankment is averaged away again by the ground either side.
-        let moved = cartopolis_geo::road_grade::flatten_pinned(
-            &mut raw,
-            n,
-            &road,
-            &pins,
-            cartopolis_geo::road_grade::DEFAULT_PASSES,
-        );
-        approach = (abutments, raised);
+        carved = graded.carved;
+        approach = (graded.abutments, graded.raised);
         tracing::debug!(
-            moved,
-            abutments,
-            raised,
+            abutments = graded.abutments,
+            raised = graded.raised,
             "graded the field along the roads and up to the decks"
         );
     }
@@ -2108,57 +2141,43 @@ fn carve_water(
     if water.is_empty() {
         return 0;
     }
-    let bed = crate::systems::water_levels::bed_below_surface_m();
-    let step = half_m * 2.0 / (n - 1) as f32;
-    let mut carved = 0;
-    for z in 0..n {
-        let wz = centre.y - half_m + z as f32 * step;
-        for x in 0..n {
-            let i = z * n + x;
-            let wx = centre.x - half_m + x as f32 * step;
-            let Some(level) = water.level_at(wx, wz) else {
-                continue;
-            };
-            let bed_m = level - bed;
-            let before = grid[i];
-            grid[i] = if before.is_finite() {
-                if keep_measured_above && before > level {
-                    // A real measurement standing **above** the water surface is
-                    // not a bed, and carving it drowns a structure that is really
-                    // there: a quay path, a jetty, a lock chamber, a bridge
-                    // abutment. The laser does not come back off water at all, so
-                    // inside a water ring a return is a return off something solid
-                    // — and this runs before `fill_holes`, which is what makes
-                    // "finite" mean "measured" rather than "invented".
-                    //
-                    // Measured at the native half metre over the study quay block
-                    // 2026-09-16, sampling inside the registered water polygons:
-                    // 78.3 % no-data, **21.6 % measured above the surface**
-                    // (5,052 m², all of it carved away before this), 0.1 % measured
-                    // at or below it. That last group is the specular return off the
-                    // water itself and is the only thing the `min` below is for.
-                    //
-                    // **Only the fine tier may do this**, which is what
-                    // `keep_measured_above` is. The coarse field is resampled at
-                    // 3.125 m by a service that area-averages, so a sample inside a
-                    // canal is the banks averaged in rather than a reading off
-                    // anything — keeping those is what left the basemap flat across
-                    // a canal for a day, and
-                    // `the_carve_overwrites_resampled_ground_but_keeps_a_deeper_reading`
-                    // pins it.
-                    before
-                } else {
-                    before.min(bed_m)
-                }
-            } else {
-                bed_m
-            };
-            if before != grid[i] {
-                carved += 1;
-            }
-        }
+    // The loop is `cartopolis_geo::terrain_grade::carve`, shared with atlas. What
+    // `keep_measured_above` is for, measured, stays here with the tier that uses it.
+    //
+    // A real measurement standing **above** the water surface is not a bed, and
+    // carving it drowns a structure that is really there: a quay path, a jetty, a
+    // lock chamber, a bridge abutment. The laser does not come back off water at
+    // all, so inside a water ring a return is a return off something solid — and
+    // this runs before `fill_holes`, which is what makes "finite" mean "measured"
+    // rather than "invented".
+    //
+    // Measured at the native half metre over the study quay block 2026-09-16,
+    // sampling inside the registered water polygons: 78.3 % no-data, **21.6 %
+    // measured above the surface** (5,052 m², all of it carved away before this),
+    // 0.1 % measured at or below it. That last group is the specular return off the
+    // water itself and is the only thing the `min` is for.
+    //
+    // **Only the fine tier may do this.** The coarse field is resampled at 3.125 m
+    // by a service that area-averages, so a sample inside a canal is the banks
+    // averaged in rather than a reading off anything — keeping those is what left
+    // the basemap flat across a canal for a day, and
+    // `the_carve_overwrites_resampled_ground_but_keeps_a_deeper_reading` pins it.
+    cartopolis_geo::terrain_grade::carve(
+        grid,
+        field_lattice(n, half_m, centre),
+        &|x, z| water.level_at(x, z),
+        keep_measured_above,
+    )
+}
+
+/// The placement of an `n`² grid spanning `±half_m` around `centre`, for the
+/// shared grading code.
+fn field_lattice(n: usize, half_m: f32, centre: Vec2) -> cartopolis_geo::terrain_grade::Lattice {
+    cartopolis_geo::terrain_grade::Lattice {
+        n,
+        origin: [centre.x - half_m, centre.y - half_m],
+        step: half_m * 2.0 / (n - 1) as f32,
     }
-    carved
 }
 
 /// Close no-data holes out to `reach_cells` from the nearest measurement — see
@@ -2412,6 +2431,7 @@ fn median_finite(grid: &[f32]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cartopolis_geo::ahn::FILL_REACH_M;
 
     /// Build a coarse-shaped snapshot out of a height function, for the refinement
     /// tests below. Small on purpose — 6.4 km at the real spacing is four million
@@ -3098,7 +3118,7 @@ mod tests {
                 [-half * 2.0, half * 2.0],
             ],
         );
-        let bed = crate::systems::water_levels::bed_below_surface_m();
+        let bed = cartopolis_geo::terrain_grade::WATER_BED_M;
 
         let mut grid = vec![5.0f32; n * n];
         grid[0] = f32::NAN; // a genuine hole
@@ -3144,7 +3164,7 @@ mod tests {
                 [-half * 2.0, half * 2.0],
             ],
         );
-        let bed = crate::systems::water_levels::bed_below_surface_m();
+        let bed = cartopolis_geo::terrain_grade::WATER_BED_M;
 
         let mut grid = vec![f32::NAN; n * n];
         grid[1] = 0.10; // a quay path: a real return, 10 cm above the surface
@@ -3577,10 +3597,12 @@ mod tests {
             anchor,
             TERRAIN_HALF_M,
             n,
-            &crate::systems::water_levels::WaterLevelField::default(),
-            road,
-            ramp,
-            &deck_lift,
+            Some(Grading {
+                water: &crate::systems::water_levels::WaterLevelField::default(),
+                road,
+                ramp,
+                deck_lift: &deck_lift,
+            }),
         );
         let (samples, _datum, _carved) = baked.expect("patch covers the field");
 
@@ -3648,13 +3670,16 @@ mod tests {
             anchor,
             TERRAIN_HALF_M,
             n,
-            &crate::systems::water_levels::WaterLevelField::default(),
-            // No roads either: this test is about the ramp the patch carries, and
-            // an empty mask is what a box with no streamed cell in it yet has.
-            Vec::new(),
-            // …and no decks, for the same reason.
-            Vec::new(),
-            &[],
+            Some(Grading {
+                water: &crate::systems::water_levels::WaterLevelField::default(),
+                // No roads either: this test is about the ramp the patch carries,
+                // and an empty mask is what a box with no streamed cell in it yet
+                // has.
+                road: Vec::new(),
+                // …and no decks, for the same reason.
+                ramp: Vec::new(),
+                deck_lift: &[],
+            }),
         );
         assert_eq!(
             approach,

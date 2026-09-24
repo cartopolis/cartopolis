@@ -192,7 +192,20 @@ type Tessellated = (
     // Whether the meshes above were already stood on the measured ground by the
     // worker — see `spawn_geometry_task`'s `ground`.
     bool,
+    // The terrain revision the cell was built against (`MapSurfaces::built_rev`).
+    u32,
+    // The deck heights atlas measured in this cell, if it did
+    // (`terrain_tiles::load_atlas_decks`).
+    Option<Vec<[f32; 3]>>,
 );
+
+/// The ground a cell job builds on: the field in place now, or — while atlas's
+/// graded ground is on its way (`TerrainField::holds_builds`) — whatever lands,
+/// awaited after the job's fetches rather than before them.
+enum GroundJob {
+    Now(Option<crate::systems::terrain::GroundPlacement>, u32),
+    Later(futures_channel::oneshot::Receiver<crate::systems::terrain::GroundArrival>),
+}
 
 /// The per-cell stores that live and die with a surface cell: the street names
 /// written into the roads, everything in the cell a player can walk up to, and
@@ -257,7 +270,7 @@ pub struct SurfaceMaterials<'w> {
 /// routed over. Same shape and same contract as `collision::BuildingColliders`: the
 /// streamer publishes, consumers sample, and an entry dies with its cell.
 ///
-/// Only decks that were actually *lifted* are kept ([`MIN_LIFT_M`]). A flat deck is
+/// Only decks that were actually *lifted* are kept ([`cartopolis_geo::terrain_grade::MIN_LIFT_M`]). A flat deck is
 /// a piece of road surface and there is nothing to climb onto.
 #[derive(Resource, Default)]
 pub struct DeckPlates {
@@ -436,102 +449,27 @@ impl DeckPlates {
     /// the same street feature as the span (`vector_tiles::Approach`).
     #[must_use]
     pub fn grade_masks(&self, n: usize, half: f32) -> (Vec<bool>, Vec<f32>) {
-        let mut ramp = vec![false; n * n];
-        let mut lift = vec![f32::NAN; n * n];
-        if n < 3 || self.plates.is_empty() {
-            return (ramp, lift);
-        }
+        let plates: Vec<cartopolis_geo::terrain_grade::DeckPlate<'_>> = self
+            .plates
+            .values()
+            .flatten()
+            .map(|p| cartopolis_geo::terrain_grade::DeckPlate {
+                deck: &p.deck,
+                world: p.world.to_array(),
+                height: p.height,
+                approaches: &p.approaches,
+            })
+            .collect();
         #[allow(clippy::cast_precision_loss)]
-        let step = half * 2.0 / (n - 1) as f32;
-        if step <= 0.0 {
-            return (ramp, lift);
-        }
-        // World XZ → grid index, clamped to the interior.
-        let to_grid = |v: f32| -> Option<usize> {
-            let k = ((v + half) / step).round();
-            (k >= 0.0 && k < n as f32).then_some(k as usize)
-        };
-
-        for plate in self.plates.values().flatten() {
-            // The structure: every sample its outline covers, at its height.
-            let (lo, hi) = (plate.deck.min, plate.deck.max);
-            if lo[0] > hi[0] {
-                continue;
-            }
-            let (x0, x1) = (
-                to_grid(plate.world.x + lo[0] - step),
-                to_grid(plate.world.x + hi[0] + step),
-            );
-            let (z0, z1) = (
-                to_grid(plate.world.y + lo[1] - step),
-                to_grid(plate.world.y + hi[1] + step),
-            );
-            if let (Some(x0), Some(x1), Some(z0), Some(z1)) = (x0, x1, z0, z1) {
-                for z in z0..=z1 {
-                    for x in x0..=x1 {
-                        #[allow(clippy::cast_precision_loss)]
-                        let p = [
-                            -half + x as f32 * step - plate.world.x,
-                            -half + z as f32 * step - plate.world.y,
-                        ];
-                        if plate.deck.contains(p) {
-                            let i = z * n + x;
-                            // The tallest wins, matching `lift_at`: at an
-                            // interchange the approach climbs to the top deck.
-                            if !(lift[i] >= plate.height) {
-                                lift[i] = plate.height;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // The approaches: a centre line has no width and a sample is only
-            // marked when something covers it, so each run is walked as a corridor
-            // one step either side. The dilation the caller applies is what gives
-            // it the embankment's real width; this only has to be thick enough not
-            // to fall between samples.
-            for run in &plate.approaches {
-                for w in run.windows(2) {
-                    let (a, b) = (
-                        Vec2::new(plate.world.x + w[0][0], plate.world.y + w[0][1]),
-                        Vec2::new(plate.world.x + w[1][0], plate.world.y + w[1][1]),
-                    );
-                    let len = a.distance(b);
-                    if len < 1e-3 {
-                        continue;
-                    }
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let steps = (len / step).ceil() as usize + 1;
-                    for k in 0..=steps {
-                        #[allow(clippy::cast_precision_loss)]
-                        let t = k as f32 / steps as f32;
-                        let p = a.lerp(b, t);
-                        let (Some(gx), Some(gz)) = (to_grid(p.x), to_grid(p.y)) else {
-                            continue;
-                        };
-                        for dz in -1i32..=1 {
-                            for dx in -1i32..=1 {
-                                let (x, z) = (gx as i32 + dx, gz as i32 + dz);
-                                if x >= 0 && z >= 0 && (x as usize) < n && (z as usize) < n {
-                                    ramp[z as usize * n + x as usize] = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // **A sample the structure stands on is not approach.** The abutment is
-        // the ramp sample *beside* the deck, and leaving the two overlapping lets
-        // the relaxation grade the land up to meet a road that is not standing on
-        // it.
-        for i in 0..n * n {
-            if lift[i].is_finite() {
-                ramp[i] = false;
-            }
-        }
-        (ramp, lift)
+        let step = half * 2.0 / (n.max(2) - 1) as f32;
+        cartopolis_geo::terrain_grade::deck_masks(
+            &plates,
+            cartopolis_geo::terrain_grade::Lattice {
+                n,
+                origin: [-half, -half],
+                step,
+            },
+        )
     }
 }
 
@@ -540,32 +478,13 @@ impl DeckPlates {
 /// sheet of paper floating over the tracks.
 const DECK_THICKNESS_M: f32 = 0.9;
 
-/// Below this measured height a deck is laid **flat**, at the level of the roads
-/// that reach it.
-///
-/// Not a tolerance on the measurement — the measurement is fine. It is that the
-/// road network this deck connects to is flat at `y = 0`, so any lift is a step at
-/// both ends, and the step is only worth paying for where something genuinely
-/// passes *underneath*. A Dutch canal bridge measures a metre or so above its
-/// quays (a deck does arch over the water) while being level with the street it
-/// carries; lifting it built a slab floating over its own approach roads. Above
-/// this, the clearance is a grade separation — a viaduct over a rail yard measures
-/// 6.6 m here — and the step is the honest lesser evil until approach ramps are
-/// sampled from AHN too.
-const MIN_LIFT_M: f32 = 2.5;
-
 /// Below this height a deck gets no fascia: a flat deck is a piece of road
 /// surface, and a skirt around it would read as a kerb.
 const FASCIA_MIN_M: f32 = 0.4;
 
-/// Ceiling on a measured deck height, in metres. Beyond this the measurement is
-/// not a bridge: it is a crane, a gantry or a stack of containers that the DSM
-/// caught standing on the structure.
-const MAX_DECK_M: f32 = 25.0;
-
 /// How far outside a deck the ground level is measured. Wide enough to clear the
 /// structure and its abutments, narrow enough to stay in the same terrain.
-const GROUND_RING_M: f64 = 30.0;
+const GROUND_RING_M: f64 = cartopolis_geo::terrain_grade::GROUND_RING_M;
 
 /// **Decks are measured in clusters, not one by one.** Every deck used to ask for
 /// its own surface patch and its own ground patch, and a cell asked for them one
@@ -591,6 +510,10 @@ const DECK_GRID_MAX: u32 = 384;
 pub struct MapSurfaces {
     /// Live cells → their spawned mesh entities (one per surface group).
     loaded: HashMap<Cell, Vec<Entity>>,
+    /// The terrain revision each live cell stands on. **A new field retires only
+    /// the cells built on an older one** — the ring used to be torn down whole,
+    /// which also threw away cells still waiting for the very field that landed.
+    built_rev: HashMap<Cell, u32>,
     /// Requested/failed/in-flight bookkeeping, the results sink, the despawn queue
     /// and the anchor generation (`platform::stream`).
     stream: CellStream<Cell, Tessellated>,
@@ -631,6 +554,7 @@ impl Default for MapSurfaces {
     fn default() -> Self {
         Self {
             loaded: HashMap::new(),
+            built_rev: HashMap::new(),
             stream: CellStream::new(Policy {
                 max_in_flight: SURFACE_MAX_IN_FLIGHT,
                 min_interval_secs: 0.0,
@@ -665,9 +589,13 @@ struct PendingDecks {
     /// Cell origin in world metres — the same north-west corner the cell's other
     /// meshes are placed at.
     world: Vec2,
-    /// Where each deck is in RD, and which pair of patches measures it.
+    /// Where each deck is in RD, and which pair of patches measures it. Empty when
+    /// `known` is set.
     clusters: Vec<DeckCluster>,
     boxes: Vec<DeckBox>,
+    /// Every deck's height, by the same index as `decks`, when atlas measured
+    /// them all (`terrain_tiles::match_atlas_decks`).
+    known: Option<Vec<f32>>,
 }
 
 /// One deck's footprint in RD: its outline, and the box around it the ground
@@ -857,8 +785,10 @@ fn spawn_geometry_task(
     // was handed is still the live one: a terrain revision moving resets the stream,
     // which orphans this job's sink, so a cell placed on a superseded field is never
     // delivered.
-    ground: Option<(crate::systems::terrain::GroundPlacement, Vec2)>,
+    ground: GroundJob,
+    origin: Vec2,
     results: Arc<Mutex<Vec<(Cell, Tessellated)>>>,
+    live: Arc<std::sync::atomic::AtomicBool>,
 ) {
     // Fetch on the task pool, tessellate on the worker pool (ADR-033). The
     // comments below already said this work "belongs on the worker" — it did not:
@@ -987,6 +917,20 @@ fn spawn_geometry_task(
                     crate::systems::crossings::CrossingCell::default(),
                 )
             };
+            let atlas_decks =
+                crate::systems::terrain_tiles::load_atlas_decks(cell.0, cell.1).await;
+            // The ground last, after every fetch: a job waiting for graded ground
+            // has spent the wait downloading.
+            let (ground, built_rev) = match ground {
+                GroundJob::Now(g, rev) => (g, rev),
+                GroundJob::Later(rx) => rx.await.unwrap_or((None, 0)),
+            };
+            let ground = ground.map(|g| (g, origin));
+            // Torn down while it fetched or waited (`CellStream::live`): stop
+            // before the meshing, which is the expensive half.
+            if !live.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             crate::platform::workers::submit_heavy("surfaces", Box::new(move || {
                 let mut lap = Lap::new();
                 let mut shore = None;
@@ -1601,6 +1545,8 @@ fn spawn_geometry_task(
                             },
                             road_tris,
                             placed,
+                            built_rev,
+                            atlas_decks,
                         ),
                     ));
                 }
@@ -1716,11 +1662,30 @@ impl MapSurfaces {
         for (_, entities) in self.loaded.drain() {
             self.stream.retire_all(entities);
         }
+        self.built_rev.clear();
         self.pending_decks.clear();
         // Drops the requested/failed bookkeeping and orphans the results sink, so
         // in-flight tasks cannot deliver a cell placed in the old origin's frame.
         self.stream.reset();
     }
+}
+
+/// Retire one live cell and everything that lives and dies with it; a cell still
+/// in the ring is asked for again.
+fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
+    if let Some(entities) = surfaces.loaded.remove(&c) {
+        surfaces.stream.retire_all(entities);
+    }
+    surfaces.built_rev.remove(&c);
+    surfaces.pending_decks.remove(&c);
+    surfaces.stream.forget(&c);
+    stores.labels.remove_cell(&c);
+    stores.places.remove_cell(&c);
+    stores.decks.remove_cell(&c);
+    stores.grass.remove_cell(&c);
+    stores.roads.remove_cell(&c);
+    stores.tunnels.drop_cell(c);
+    stores.placeholders.forget_cell(c);
 }
 
 /// Stream vector surface meshes around the camera.
@@ -1803,6 +1768,30 @@ pub fn update_map_surfaces(
     // does with the BAG and the LoD3 manifests.
     let bgt_revision = crate::systems::surveyed::coverage_revision()
         | (crate::systems::crops::coverage_revision() << 1);
+    // **A new field alone retires only the cells built on an older one** (step 2c
+    // of `level-of-detail-tile-tree.md`). The ring used to go whole, which also threw
+    // away the in-flight cells waiting for this very field and built them twice.
+    // A cell arriving later on an old field is dropped at arrival for the same
+    // reason (`built_rev`).
+    if surfaces.bgt_revision == bgt_revision && surfaces.terrain_revision != terrain.revision {
+        let old: Vec<Cell> = surfaces
+            .built_rev
+            .iter()
+            .filter(|(_, rev)| **rev != terrain.revision)
+            .map(|(c, _)| *c)
+            .collect();
+        tracing::info!(
+            cells = old.len(),
+            of = surfaces.loaded.len(),
+            terrain_rev = terrain.revision,
+            was_terrain_rev = surfaces.terrain_revision,
+            "surface cells retear"
+        );
+        surfaces.terrain_revision = terrain.revision;
+        for c in old {
+            retire_cell(&mut surfaces, &mut stores, c);
+        }
+    }
     if surfaces.terrain_revision != terrain.revision || surfaces.bgt_revision != bgt_revision {
         // **What a retear costs, and why it is worth a line in the log.** Each one
         // re-tessellates the whole ring, and a cell job is the most expensive thing
@@ -1885,17 +1874,7 @@ pub fn update_map_surfaces(
         .copied()
         .collect();
     for c in stale {
-        if let Some(entities) = surfaces.loaded.remove(&c) {
-            surfaces.stream.retire_all(entities);
-        }
-        surfaces.stream.forget(&c);
-        stores.labels.remove_cell(&c);
-        stores.places.remove_cell(&c);
-        stores.decks.remove_cell(&c);
-        stores.grass.remove_cell(&c);
-        stores.roads.remove_cell(&c);
-        stores.tunnels.drop_cell(c);
-        stores.placeholders.forget_cell(c);
+        retire_cell(&mut surfaces, &mut stores, c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -1915,15 +1894,33 @@ pub fn update_map_surfaces(
     // starts on a later frame as slots free, so nothing is dropped.
     let sink = surfaces.stream.sink();
     let placement = terrain.placement();
+    // Graded ground on its way: build the cells once, on it, rather than flat and
+    // then again (`TerrainField::holds_builds`). The jobs start now and fetch; only
+    // the meshing waits for the ground.
+    let held = terrain.holds_builds(stream.anchor_generation);
     while let Some(c) = surfaces.stream.next_job(now) {
         // The same origin the arrival below computes, so the worker stands the cell
         // exactly where it will be spawned.
-        let ground = placement.clone().map(|g| {
-            let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
-            let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
-            (g, Vec2::new(wx, wz))
-        });
-        spawn_geometry_task(c, tile_m, template.clone(), wants, ground, sink.clone());
+        let origin = Vec2::new(
+            ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32,
+            ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32,
+        );
+        let ground = if held {
+            GroundJob::Later(terrain.ground_later())
+        } else {
+            GroundJob::Now(placement.clone(), terrain.revision)
+        };
+        tracing::debug!(cell = ?c, held, terrain_rev = terrain.revision, "surface cell dispatched");
+        spawn_geometry_task(
+            c,
+            tile_m,
+            template.clone(),
+            wants,
+            ground,
+            origin,
+            sink.clone(),
+            surfaces.stream.live(),
+        );
     }
 
     // 3. Upload finished tessellations, capped per frame and byte-bounded by the
@@ -1972,6 +1969,8 @@ pub fn update_map_surfaces(
             tunnels,
             road_tris,
             placed,
+            built_rev,
+            atlas_decks,
         ),
     ) in ready
     {
@@ -1980,6 +1979,13 @@ pub fn update_map_surfaces(
             surfaces.stream.forget(&c);
             continue;
         }
+        // Built on a field that has since been replaced: ask again, on this one.
+        if built_rev != terrain.revision {
+            tracing::debug!(cell = ?c, built_rev, terrain_rev = terrain.revision, "surface cell on an old field; again");
+            surfaces.stream.forget(&c);
+            continue;
+        }
+        tracing::debug!(cell = ?c, built_rev, replaces = surfaces.loaded.contains_key(&c), "surface cell arrived");
         let Some(surface_meshes) = outcome else {
             // Not in `loaded`, and marked failed so it is not retried every frame;
             // the ring moving off it forgets the cell.
@@ -1987,6 +1993,7 @@ pub fn update_map_surfaces(
             continue;
         };
         surfaces.stream.succeeded(&c);
+        surfaces.built_rev.insert(c, built_rev);
 
         // Cell's north-west corner in world metres — the origin the tessellator's
         // tile-local coordinates are relative to.
@@ -2220,7 +2227,15 @@ pub fn update_map_surfaces(
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
         if !decks.is_empty() {
-            let (boxes, clusters) = cluster_decks(&decks, c, tile_m);
+            // Measured by atlas while it graded this ground: nothing to ask PDOK.
+            let known = atlas_decks
+                .as_deref()
+                .and_then(|a| crate::systems::terrain_tiles::match_atlas_decks(&decks, tile_m, a));
+            let (boxes, clusters) = if known.is_some() {
+                (Vec::new(), Vec::new())
+            } else {
+                cluster_decks(&decks, c, tile_m)
+            };
             surfaces.pending_decks.insert(
                 c,
                 PendingDecks {
@@ -2230,6 +2245,7 @@ pub fn update_map_surfaces(
                     world: Vec2::new(wx, wz),
                     clusters,
                     boxes,
+                    known,
                 },
             );
         }
@@ -2299,11 +2315,14 @@ pub fn resolve_bridge_decks(
         if !ready {
             continue;
         }
-        let heights: Vec<f32> = pending
-            .boxes
-            .iter()
-            .map(|b| deck_height(&height, &pending.clusters, b))
-            .collect();
+        let heights: Vec<f32> = match &pending.known {
+            Some(known) => known.clone(),
+            None => pending
+                .boxes
+                .iter()
+                .map(|b| deck_height(&height, &pending.clusters, b))
+                .collect(),
+        };
 
         let Some(pending) = surfaces.pending_decks.remove(&c) else {
             continue;
@@ -2476,14 +2495,8 @@ fn deck_height(layer: &HeightLayer, clusters: &[DeckCluster], deck: &DeckBox) ->
         p.median_where(|rd| (lo[0]..=hi[0]).contains(&rd[0]) && (lo[1]..=hi[1]).contains(&rd[1]))
     });
     match (deck_top, ground) {
-        (Some(top), Some(ground)) => {
-            let clearance = (top - ground).clamp(0.0, MAX_DECK_M);
-            if clearance < MIN_LIFT_M {
-                0.0
-            } else {
-                clearance
-            }
-        }
+        // The same rule atlas measures its decks by, for the ground it grades.
+        (Some(top), Some(ground)) => cartopolis_geo::terrain_grade::deck_clearance(top, ground),
         _ => 0.0,
     }
 }

@@ -55,10 +55,94 @@ const MAX_ATTEMPTS: u32 = 2;
 /// Where atlas publishes which area it has pre-cut.
 static COVERAGE: CoverageSlot = CoverageSlot::new("terrain", "/terrain/coverage.json", TILE_ZOOM);
 
+/// Where atlas publishes which cells it measured the bridge decks of.
+static DECKS: CoverageSlot = CoverageSlot::new("decks", "/decks/coverage.json", TILE_ZOOM);
+
 /// Keep the coverage question moving from startup, so it has usually answered
 /// before the first field is asked for.
 pub fn prefetch_terrain_coverage(time: Res<Time>) {
     COVERAGE.ensure(time.elapsed_secs_f64());
+    DECKS.ensure(time.elapsed_secs_f64());
+}
+
+/// The bridge decks atlas measured in a cell while grading
+/// (`crates/atlas/src/pipeline/terrain_grade.rs::write_decks`): each deck's
+/// bounding-box centre in fractions of the tile, and its clearance in metres, 0
+/// for a deck laid flat. `None` where atlas did not measure the cell.
+///
+/// **What it replaces is the cold start's long pole.** The client measured every
+/// deck itself against PDOK, a surface and a ground patch per cluster, three at a
+/// time and spaced — and the ground cells are not done until their decks are.
+/// Measured on the Deck (2026-09-24), cold, with the ground graded on atlas: the
+/// cells were built by ~12 s and the last deck placed at ~21 s.
+pub(crate) async fn load_atlas_decks(cx: i64, cy: i64) -> Option<Vec<[f32; 3]>> {
+    ATLAS_DECKS.load(cx, cy).await
+}
+
+const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<[f32; 3]>>> =
+    crate::platform::cell_source::CellSource {
+        label: "atlas decks",
+        gate: Some(|cx, cy| DECKS.covers(cx, cy)),
+        // Per grading run, like the graded tiles: a re-grade is a new file.
+        key: |cx, cy| {
+            format!(
+                "decks/{}/{TILE_ZOOM}/{cx}/{cy}.json",
+                COVERAGE.graded_stamp()
+            )
+        },
+        url: Some(|cx, cy| {
+            format!(
+                "{}/decks/{TILE_ZOOM}/{cx}/{cy}.json?v={}",
+                crate::systems::osm_buildings::tdbag_url(),
+                COVERAGE.graded_stamp()
+            )
+        }),
+        breaker: None,
+        timeout: None,
+        parse: |text| {
+            let v: serde_json::Value = serde_json::from_str(text).ok()?;
+            let decks = v
+                .get("decks")?
+                .as_array()?
+                .iter()
+                .filter_map(|d| {
+                    let d = d.as_array()?;
+                    Some([
+                        d.first()?.as_f64()? as f32,
+                        d.get(1)?.as_f64()? as f32,
+                        d.get(2)?.as_f64()? as f32,
+                    ])
+                })
+                .collect();
+            Some(Some(decks))
+        },
+    };
+
+/// Every deck of a cell's heights out of atlas's list, by the same index as
+/// `decks`, or `None` if any deck is not in it — the map changed since atlas
+/// measured it, and the cell measures its own as before. Matched on the
+/// bounding-box centre: both sides tessellate the same tile with the same code.
+#[must_use]
+pub fn match_atlas_decks(
+    decks: &[cartopolis_geo::vector_tiles::BridgeDeck],
+    tile_m: f32,
+    atlas: &[[f32; 3]],
+) -> Option<Vec<f32>> {
+    // A metre, in tile fractions.
+    let tol = 1.0 / tile_m;
+    decks
+        .iter()
+        .map(|d| {
+            let c = [
+                (d.min[0] + d.max[0]) * 0.5 / tile_m,
+                (d.min[1] + d.max[1]) * 0.5 / tile_m,
+            ];
+            atlas
+                .iter()
+                .find(|a| (a[0] - c[0]).abs() < tol && (a[1] - c[1]).abs() < tol)
+                .map(|a| a[2])
+        })
+        .collect()
 }
 
 /// Whether the coverage manifest has answered, yes or no.
@@ -88,9 +172,46 @@ fn template() -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
-fn cache_key(x: i64, y: i64) -> String {
+fn cache_key(x: i64, y: i64, stamp: u64) -> String {
+    if stamp > 0 {
+        // Per grading run: a re-grade is new ground, and an old copy is never it.
+        return format!("terrain/graded/{stamp}/{TILE_ZOOM}/{x}/{y}.g513.ctt");
+    }
     // `v2`: atlas's unfilled tiles. See `crates/atlas/src/terrain.rs::store_dir`.
     format!("terrain/v2/{TILE_ZOOM}/{x}/{y}.g513.ctt")
+}
+
+/// The URL for one tile; a graded one carries `graded=1` and the run's stamp, so
+/// no HTTP cache between here and atlas can answer it with an older grading.
+fn tile_url(template: &str, x: i64, y: i64, stamp: u64) -> String {
+    let url = template
+        .replace("{z}", &TILE_ZOOM.to_string())
+        .replace("{x}", &x.to_string())
+        .replace("{y}", &y.to_string());
+    if stamp == 0 {
+        return url;
+    }
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}graded=1&v={stamp}")
+}
+
+/// The grading run every covered tile of `want` was graded by, if they all were
+/// and by the same one. The field is graded all or nothing: half a field graded
+/// on the server and half on the device would meet at a seam.
+#[must_use]
+pub fn graded_stamp(want: &[(i64, i64)]) -> Option<u64> {
+    let mut stamp = None;
+    for &(x, y) in want {
+        if !COVERAGE.covers(x, y) {
+            // No raw tile either: nothing measured here, so nothing to grade.
+            continue;
+        }
+        let s = COVERAGE.graded(x, y)?;
+        if *stamp.get_or_insert(s) != s {
+            return None;
+        }
+    }
+    stamp
 }
 
 /// The z14 tiles under a square of ground, nearest its centre first.
@@ -150,18 +271,23 @@ pub enum Mosaic {
 
 type Answer = Result<Option<Arc<TerrainTile>>, String>;
 
+/// A tile as fetched: `(x, y, stamp)`, where the stamp is the atlas grading run
+/// for a graded tile and 0 for the raw one. Two different things at one place, so
+/// never one key.
+type Key = (i64, i64, u64);
+
 #[derive(Resource)]
 pub struct TerrainTiles {
     template: Option<String>,
-    dispatch: Dispatcher<(i64, i64)>,
-    results: Arc<Mutex<Vec<((i64, i64), Answer)>>>,
+    dispatch: Dispatcher<Key>,
+    results: Arc<Mutex<Vec<(Key, Answer)>>>,
     /// Answered tiles, `None` for "nothing measured". Held only until a mosaic is
     /// handed to a bake ([`Self::release`]); the device cache holds them after.
-    answered: HashMap<(i64, i64), Option<Arc<TerrainTile>>>,
-    requested: HashSet<(i64, i64)>,
-    failed: HashMap<(i64, i64), u32>,
+    answered: HashMap<Key, Option<Arc<TerrainTile>>>,
+    requested: HashSet<Key>,
+    failed: HashMap<Key, u32>,
     /// Failed tiles waiting out [`RETRY_S`] before their next attempt.
-    retry: Vec<((i64, i64), f64)>,
+    retry: Vec<(Key, f64)>,
     /// Tiles fetched over the network, and read back from the device.
     pub fetched: usize,
 }
@@ -193,11 +319,13 @@ impl TerrainTiles {
         self.template.is_some()
     }
 
-    /// Ask for these tiles; queue whatever has not been asked for. Nearest first,
-    /// as `want` is ordered, so the ground under the anchor arrives first.
-    pub fn mosaic(&mut self, want: &[(i64, i64)]) -> Mosaic {
+    /// Ask for these tiles — graded by the atlas run `stamp`, or raw for 0; queue
+    /// whatever has not been asked for. Nearest first, as `want` is ordered, so the
+    /// ground under the anchor arrives first.
+    pub fn mosaic(&mut self, want: &[(i64, i64)], stamp: u64) -> Mosaic {
         let mut ready = true;
-        for (rank, &t) in want.iter().enumerate() {
+        for (rank, &(x, y)) in want.iter().enumerate() {
+            let t = (x, y, stamp);
             if self.answered.contains_key(&t) {
                 continue;
             }
@@ -215,11 +343,11 @@ impl TerrainTiles {
         Mosaic::Ready(TileMosaic {
             tiles: want
                 .iter()
-                .filter_map(|t| {
+                .filter_map(|&(x, y)| {
                     self.answered
-                        .get(t)
+                        .get(&(x, y, stamp))
                         .and_then(Clone::clone)
-                        .map(|tile| (*t, tile))
+                        .map(|tile| ((x, y), tile))
                 })
                 .collect(),
         })
@@ -264,7 +392,7 @@ pub fn poll_terrain_tiles(mut tiles: ResMut<TerrainTiles>, time: Res<Time>) {
         return;
     };
     let now = time.elapsed_secs_f64();
-    let due: Vec<(i64, i64)> = tiles
+    let due: Vec<Key> = tiles
         .retry
         .iter()
         .filter(|(_, at)| *at <= now)
@@ -275,23 +403,20 @@ pub fn poll_terrain_tiles(mut tiles: ResMut<TerrainTiles>, time: Res<Time>) {
         tiles.dispatch.queue(t);
     }
     let results = tiles.results.clone();
-    while let Some((x, y)) = tiles.dispatch.next(now) {
+    while let Some((x, y, stamp)) = tiles.dispatch.next(now) {
         let results = results.clone();
-        let url = template
-            .replace("{z}", &TILE_ZOOM.to_string())
-            .replace("{x}", &x.to_string())
-            .replace("{y}", &y.to_string());
-        let key = cache_key(x, y);
+        let url = tile_url(&template, x, y, stamp);
+        let key = cache_key(x, y, stamp);
         IoTaskPool::get()
             .spawn(async move {
                 let out = fetch_tile(url, key).await;
                 if let Ok(mut g) = results.lock() {
-                    g.push(((x, y), out));
+                    g.push(((x, y, stamp), out));
                 }
             })
             .detach();
     }
-    let done: Vec<((i64, i64), Answer)> = tiles
+    let done: Vec<(Key, Answer)> = tiles
         .results
         .lock()
         .map(|mut g| g.drain(..).collect())
@@ -376,17 +501,41 @@ mod tests {
     }
 
     #[test]
+    fn atlas_deck_heights_are_matched_by_centre_or_not_at_all() {
+        let deck = |x: f32, z: f32| cartopolis_geo::vector_tiles::BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: Vec::new(),
+            min: [x - 10.0, z - 5.0],
+            max: [x + 10.0, z + 5.0],
+        };
+        let tile_m = 1470.0;
+        let decks = [deck(100.0, 200.0), deck(700.0, 50.0)];
+        let atlas = [
+            [700.0 / tile_m, 50.0 / tile_m, 0.0],
+            [100.2 / tile_m, 199.9 / tile_m, 6.5],
+        ];
+        assert_eq!(
+            match_atlas_decks(&decks, tile_m, &atlas),
+            Some(vec![6.5, 0.0])
+        );
+        // One deck atlas never saw, and the cell measures its own.
+        let more = [deck(100.0, 200.0), deck(700.0, 50.0), deck(1200.0, 900.0)];
+        assert_eq!(match_atlas_decks(&more, tile_m, &atlas), None);
+    }
+
+    #[test]
     fn asking_twice_queues_once_and_a_failure_is_final() {
         let mut t = TerrainTiles::default();
         let want = [(1, 1), (1, 2)];
-        assert!(matches!(t.mosaic(&want), Mosaic::Waiting));
-        assert!(matches!(t.mosaic(&want), Mosaic::Waiting));
+        assert!(matches!(t.mosaic(&want, 0), Mosaic::Waiting));
+        assert!(matches!(t.mosaic(&want, 0), Mosaic::Waiting));
         assert_eq!(t.dispatch.queued(), 2);
-        t.answered.insert((1, 1), None);
-        t.failed.insert((1, 2), MAX_ATTEMPTS);
-        assert!(matches!(t.mosaic(&want), Mosaic::Failed));
+        t.answered.insert((1, 1, 0), None);
+        t.failed.insert((1, 2, 0), MAX_ATTEMPTS);
+        assert!(matches!(t.mosaic(&want, 0), Mosaic::Failed));
         t.failed.clear();
-        t.answered.insert((1, 2), None);
-        assert!(matches!(t.mosaic(&want), Mosaic::Ready(m) if m.len() == 0));
+        t.answered.insert((1, 2, 0), None);
+        assert!(matches!(t.mosaic(&want, 0), Mosaic::Ready(m) if m.len() == 0));
     }
 }
