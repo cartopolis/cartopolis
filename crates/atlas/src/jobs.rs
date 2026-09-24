@@ -157,6 +157,8 @@ struct Shared {
     inner: Mutex<Inner>,
     wake: Condvar,
     out_root: PathBuf,
+    /// Atlas's own store, handed to every `Ctx` (`Ctx::with_data_dir`).
+    data_dir: std::sync::OnceLock<PathBuf>,
     registry: Registry,
 }
 
@@ -177,6 +179,7 @@ impl Runner {
             }),
             wake: Condvar::new(),
             out_root: out_root.to_path_buf(),
+            data_dir: std::sync::OnceLock::new(),
             registry,
         });
         let worker = Arc::clone(&shared);
@@ -185,6 +188,13 @@ impl Runner {
             .spawn(move || drain(&worker))
             .expect("spawn the pipeline runner thread");
         Self { shared }
+    }
+
+    /// Give datasets atlas's own store. Set once, before any job is submitted.
+    #[must_use]
+    pub fn with_data_dir(self, data_dir: &Path) -> Self {
+        let _ = self.shared.data_dir.set(data_dir.to_path_buf());
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -389,6 +399,10 @@ fn run_job(shared: &Arc<Shared>, id: &str) {
                 dataset: dataset.clone(),
             }),
         );
+        let ctx = match shared.data_dir.get() {
+            Some(dir) => ctx.with_data_dir(dir),
+            None => ctx,
+        };
         // A panic in an extractor is a failed step, not a dead runner: the thread
         // is the only one and every later job would queue behind it forever.
         let outcome =

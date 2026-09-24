@@ -48,6 +48,7 @@ fn plural(stem: &str) -> &str {
         "ring" => "water outlines",
         "prop" => "street objects",
         "surface" => "paved surfaces",
+        "tile" => "height tiles",
         "tree" => "trees",
         other => other,
     }

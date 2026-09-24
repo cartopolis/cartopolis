@@ -58,6 +58,7 @@ fn run_datasets(
     name: Option<String>,
     bbox: Option<Vec<f64>>,
     datasets: Vec<String>,
+    data_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
     use cartopolis_atlas::pipeline::{dataset, Ctx, DATASETS};
     let area = match area {
@@ -97,7 +98,8 @@ fn run_datasets(
         &out,
         Arc::new(AtomicBool::new(false)),
         Arc::new(Stderr),
-    );
+    )
+    .with_data_dir(data_dir);
     for id in wanted {
         let d = dataset(id).expect("checked above");
         eprintln!(
@@ -139,7 +141,9 @@ fn main() -> anyhow::Result<()> {
         datasets,
     }) = cli.command
     {
-        return run_datasets(out, area, name, bbox, datasets);
+        // The configuration names atlas's store, which the `terrain` dataset fills.
+        let config = cartopolis_atlas::config::AtlasConfig::load(&cli.config)?;
+        return run_datasets(out, area, name, bbox, datasets, &config.data_dir);
     }
     let mut config = cartopolis_atlas::config::AtlasConfig::load(&cli.config)?;
     if let Some(listen) = cli.listen {

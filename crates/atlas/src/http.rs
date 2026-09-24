@@ -69,15 +69,24 @@ pub fn router(state: AtlasState) -> Router {
         .nest("/api/pipeline", console)
 }
 
+/// `?grid=513` asks for the dense cut the client's terrain field is assembled from
+/// (`cartopolis_geo::terrain_tile::DENSE_GRID`); the default is the tile tree's.
+#[derive(serde::Deserialize)]
+struct Grid {
+    grid: Option<usize>,
+}
+
 async fn terrain_tile(
     State(state): State<AtlasState>,
     Path((z, x, y)): Path<(u32, i64, i64)>,
+    axum::extract::Query(q): axum::extract::Query<Grid>,
 ) -> Response {
     // A week: a cut tile never changes for a given survey, and a new AHN release
     // is a new cache directory, not an edit.
     let cache = (header::CACHE_CONTROL, "public, max-age=604800");
     let cors = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-    match state.terrain.tile(z, x, y).await {
+    let grid = q.grid.unwrap_or(cartopolis_geo::terrain_tile::GRID);
+    match state.terrain.tile_at(z, x, y, grid).await {
         Ok(Answer::Tile(bytes)) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, TERRAIN_MEDIA_TYPE), cache, cors],
@@ -172,6 +181,15 @@ mod tests {
         assert_eq!(media, TERRAIN_MEDIA_TYPE);
         let tile = cartopolis_geo::terrain_tile::TerrainTile::decode(&body).unwrap();
         assert!(tile.heights.iter().all(|h| (h - 1.5).abs() < 0.01));
+
+        let (status, _, body) = get(format!("{base}/terrain/14/8490/5318?grid=513")).await;
+        assert_eq!(status, 200);
+        let dense = cartopolis_geo::terrain_tile::TerrainTile::decode(&body).unwrap();
+        assert_eq!(dense.grid, cartopolis_geo::terrain_tile::DENSE_GRID);
+        assert_eq!(
+            get(format!("{base}/terrain/14/8490/5318?grid=7")).await.0,
+            400
+        );
 
         let (x, y) = cartopolis_core::lat_lng_to_tile(48.8566, 2.3522, 14);
         assert_eq!(get(format!("{base}/terrain/14/{x}/{y}")).await.0, 404);

@@ -29,7 +29,8 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
         auth: Arc::new(auth::Auth::new(Box::new(auth::Simulator {
             api: config.admin_api.clone(),
         }))),
-        runner: jobs::Runner::new(&config.site_dir, jobs::default_registry()),
+        runner: jobs::Runner::new(&config.site_dir, jobs::default_registry())
+            .with_data_dir(&config.data_dir),
         out_root: config.site_dir.clone(),
         autopilot: config.autopilot_config.clone(),
     };

@@ -27,8 +27,9 @@ pub const GRID: usize = 129;
 /// format) is refused rather than read as heights.
 const MAGIC: &[u8; 4] = b"CTT1";
 
-/// The step value that means "no measurement here" — open water AHN does not
-/// cover, or a gap the hole fill did not reach.
+/// The step value that means "no measurement here" — water, and the ground under
+/// buildings, which AHN's bare-ground model leaves open. Atlas serves the holes
+/// as they are; the client fills them after carving the water in.
 const NO_DATA: u16 = u16::MAX;
 
 /// Header: magic, grid (u16), min (f32), step (f32). Little-endian throughout.
@@ -163,10 +164,25 @@ fn unpack(body: &[u8], grid: usize) -> Vec<u16> {
 /// Where each sample of tile `z/x/y` is, as WGS84 `(lat, lng)`, row-major.
 #[must_use]
 pub fn sample_points(z: u32, x: i64, y: i64) -> Vec<(f64, f64)> {
-    let last = (GRID - 1) as f64;
-    let mut out = Vec::with_capacity(GRID * GRID);
-    for row in 0..GRID {
-        for col in 0..GRID {
+    sample_points_grid(z, x, y, GRID)
+}
+
+/// A denser lattice for one tile: [`DENSE_GRID`]² samples over a z14 tile are
+/// exactly the samples of its sixteen z16 children at [`GRID`] — the same points,
+/// so the two can never disagree — in one request instead of sixteen. It is what
+/// the client's terrain field is assembled from (`terrain_tiles`), because a field
+/// needs ~360 z16 tiles and that many small requests queue behind the rest of the
+/// client's streaming on a native thread pool (measured 2026-09-23: ~3 tiles a
+/// second on the container).
+pub const DENSE_GRID: usize = (GRID - 1) * 4 + 1;
+
+/// [`sample_points`] at any grid size.
+#[must_use]
+pub fn sample_points_grid(z: u32, x: i64, y: i64, grid: usize) -> Vec<(f64, f64)> {
+    let last = (grid - 1) as f64;
+    let mut out = Vec::with_capacity(grid * grid);
+    for row in 0..grid {
+        for col in 0..grid {
             out.push(tile_frac_to_lat_lng(
                 x as f64 + col as f64 / last,
                 y as f64 + row as f64 / last,
@@ -345,6 +361,24 @@ mod tests {
                 (h - want).abs() < 1e-3,
                 "sampled {h}, the plane says {want}"
             );
+        }
+    }
+
+    #[test]
+    fn a_dense_z14_tile_is_its_sixteen_z16_children() {
+        let (x, y) = (8490, 5318);
+        let dense = sample_points_grid(14, x, y, DENSE_GRID);
+        for (cy, cx) in [(0, 0), (1, 2), (3, 3)] {
+            let child = sample_points(16, x * 4 + cx, y * 4 + cy);
+            for row in [0, 64, GRID - 1] {
+                for col in [0, 17, GRID - 1] {
+                    let d = dense[(cy as usize * (GRID - 1) + row) * DENSE_GRID
+                        + cx as usize * (GRID - 1)
+                        + col];
+                    let c = child[row * GRID + col];
+                    assert!((d.0 - c.0).abs() < 1e-9 && (d.1 - c.1).abs() < 1e-9);
+                }
+            }
         }
     }
 }

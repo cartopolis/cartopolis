@@ -25,6 +25,7 @@ pub mod geom;
 pub mod http;
 pub mod lod22;
 pub mod rd;
+pub mod terrain;
 pub mod tile;
 pub mod water;
 
@@ -127,6 +128,9 @@ pub struct Ctx {
     /// The coverage name — "groningen", and what every manifest is stamped with.
     pub name: String,
     out_root: PathBuf,
+    /// Atlas's own store (`AtlasConfig::data_dir`), for a dataset that fills
+    /// something atlas serves itself rather than the site tree — `terrain`.
+    data_dir: Option<PathBuf>,
     cancel: Arc<AtomicBool>,
     sink: Arc<dyn Sink>,
 }
@@ -143,9 +147,25 @@ impl Ctx {
             bbox,
             name: name.to_string(),
             out_root: out_root.to_path_buf(),
+            data_dir: None,
             cancel,
             sink,
         }
+    }
+
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: &Path) -> Self {
+        self.data_dir = Some(data_dir.to_path_buf());
+        self
+    }
+
+    /// Atlas's own store, or a failure naming the dataset that needed it.
+    pub fn data_dir(&self) -> Outcome<&Path> {
+        self.data_dir.as_deref().ok_or_else(|| {
+            PipelineError::Failed(
+                "this dataset writes atlas's data directory, and none was given".into(),
+            )
+        })
     }
 
     pub fn log(&self, message: impl Into<String>) {
@@ -275,6 +295,15 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "bgt/coverage.json",
         typical_minutes: 12,
         run: bgt::run,
+    },
+    Dataset {
+        id: "terrain",
+        label: "Terrain tiles (AHN)",
+        description: "Cuts every z16 height tile over the area into atlas's terrain store, so \
+                      the client's ground is never cut from PDOK on a player's first visit.",
+        coverage: "terrain/coverage.json",
+        typical_minutes: 4,
+        run: terrain::run,
     },
 ];
 

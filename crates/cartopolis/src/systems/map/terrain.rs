@@ -1086,6 +1086,11 @@ pub fn update_terrain_field(
     mut deck_settled: Local<(u64, f32)>,
     // When a bake that is ready to run started waiting for the surface ring.
     mut hold: Local<Option<f32>>,
+    mut tiles: ResMut<crate::systems::terrain_tiles::TerrainTiles>,
+    // Which source this anchor's field comes from: (anchor generation, tiles?).
+    // Latched per anchor, so a coverage manifest landing mid-fetch does not start a
+    // second download of the same ground.
+    mut source: Local<Option<(u32, bool)>>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1182,10 +1187,44 @@ pub fn update_terrain_field(
         .clamp(65, TERRAIN_GRID);
 
     let req = field_request(anchor, TERRAIN_HALF_M, grid);
-    // `patch` queues the fetch on the first ask and answers `None` until it lands;
-    // the field simply stays flat for those few frames.
-    let Some(patch) = height.patch(req) else {
-        return;
+    let gen = stream.anchor_generation;
+    // Atlas tiles where atlas has cut the area (`terrain_tiles` says why only
+    // there), and only at the desktop grid: a handset's 513² field is 1 MB as one
+    // WCS patch and would be ~21 MB as the z16 tiles under it.
+    let use_tiles = match *source {
+        Some((g, t)) if g == gen => t,
+        _ => {
+            let t = tiles.enabled()
+                && grid >= 1025
+                && crate::systems::terrain_tiles::covered(anchor.0, anchor.1);
+            *source = Some((gen, t));
+            tracing::info!(anchor_gen = gen, tiles = t, "terrain field source");
+            t
+        }
+    };
+    // Either source queues its fetch on the first ask and answers "not yet" until
+    // it lands; the field simply stays flat for those few frames.
+    let mosaic = if use_tiles {
+        let want = field_tiles(anchor, TERRAIN_HALF_M);
+        match tiles.mosaic(&want) {
+            crate::systems::terrain_tiles::Mosaic::Ready(m) => Some(m),
+            crate::systems::terrain_tiles::Mosaic::Waiting => return,
+            // A tile atlas would not give: this anchor goes back to WCS.
+            crate::systems::terrain_tiles::Mosaic::Failed => {
+                tracing::warn!(
+                    anchor_gen = gen,
+                    "terrain tiles failed; field falls back to WCS"
+                );
+                *source = Some((gen, false));
+                tiles.release();
+                return;
+            }
+        }
+    } else {
+        if height.patch(req).is_none() {
+            return;
+        }
+        None
     };
     // **Not while the surface ring is still arriving.** Everything the bake grades
     // against — the road outlines, the bridge decks — is published by those cells
@@ -1206,13 +1245,33 @@ pub fn update_terrain_field(
     }
     *hold = None;
     field.bake_owed = false;
-    // 17 MB cloned onto the worker, once per anchor. Holding the layer's cache
-    // borrowed across a job is not an option, and keeping the patch after the bake
-    // would double the field's resident cost for a request that is never re-read.
-    let job = patch.clone();
-    height.drop_patch(&req);
+    let job: Box<dyn GroundSource> = match mosaic {
+        // The tiles are shared, not copied; the layer forgets them and a re-bake
+        // reads them back from the device cache rather than the network.
+        Some(m) => {
+            tiles.release();
+            tracing::info!(
+                anchor_gen = gen,
+                measured_tiles = m.len(),
+                fetched = tiles.fetched,
+                "terrain field from atlas tiles"
+            );
+            Box::new(m)
+        }
+        // 17 MB cloned onto the worker, once per anchor. Holding the layer's cache
+        // borrowed across a job is not an option, and keeping the patch after the
+        // bake would double the field's resident cost — which is also why every
+        // re-bake downloads it again, and why tiles are worth having.
+        None => {
+            let Some(patch) = height.patch(req) else {
+                return;
+            };
+            let job = patch.clone();
+            height.drop_patch(&req);
+            Box::new(job)
+        }
+    };
 
-    let gen = stream.anchor_generation;
     // **Every bake is a retear of every streamer that stands on the ground**, so
     // which of the three inputs moved is worth naming. The field is the head of that
     // chain: a bake bumps `revision`, and `map_geometry` and `lod22` answer a bump by
@@ -1238,7 +1297,7 @@ pub fn update_terrain_field(
         "terrain_field",
         Box::new(move || {
             let (baked, approach) = bake(
-                &job,
+                job.as_ref(),
                 anchor,
                 TERRAIN_HALF_M,
                 grid,
@@ -1344,12 +1403,50 @@ fn field_request(anchor: (f64, f64, u32), half: f32, grid: usize) -> HeightReque
     .padded(0.0)
 }
 
-/// Resample a measured patch into the world-XZ grid, fill its holes, subtract the
+/// The atlas tiles under the same world box [`field_request`] measures.
+fn field_tiles(anchor: (f64, f64, u32), half: f32) -> Vec<(i64, i64)> {
+    let h = f64::from(half) + REQUEST_PAD_M;
+    let (mut south, mut west, mut north, mut east) = (90.0f64, 180.0f64, -90.0f64, -180.0f64);
+    for wz in [-h, h] {
+        for wx in [-h, h] {
+            let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
+            south = south.min(lat);
+            north = north.max(lat);
+            west = west.min(lng);
+            east = east.max(lng);
+        }
+    }
+    crate::systems::terrain_tiles::tiles_under(south, west, north, east)
+}
+
+/// Where a bake reads measured ground from: one WCS patch, or atlas tiles
+/// (`terrain_tiles`). Everything after the read — carving, filling, grading — is
+/// the same for both.
+pub trait GroundSource: Send + Sync {
+    /// Metres above NAP, or `None` where nothing was measured.
+    fn height(&self, lat: f64, lng: f64) -> Option<f32>;
+}
+
+impl GroundSource for HeightPatch {
+    fn height(&self, lat: f64, lng: f64) -> Option<f32> {
+        // `wgs84_to_rd` is a bivariate polynomial and genuinely is per sample;
+        // after the separable axes in `bake` it is the whole remaining cost.
+        self.at(wgs84_to_rd(lat, lng))
+    }
+}
+
+impl GroundSource for crate::systems::terrain_tiles::TileMosaic {
+    fn height(&self, lat: f64, lng: f64) -> Option<f32> {
+        Self::height(self, lat, lng)
+    }
+}
+
+/// Resample measured ground into the world-XZ grid, fill its holes, subtract the
 /// anchor's own ground and taper the edge to zero.
 ///
-/// `None` when the patch has no usable sample under the field at all.
+/// `None` when the source has no usable sample under the field at all.
 fn bake(
-    patch: &HeightPatch,
+    patch: &dyn GroundSource,
     anchor: (f64, f64, u32),
     half: f32,
     n: usize,
@@ -1378,9 +1475,7 @@ fn bake(
     let mut raw = vec![f32::NAN; n * n];
     for (z, &lat) in lats.iter().enumerate() {
         for (x, &lng) in lngs.iter().enumerate() {
-            // `wgs84_to_rd` is a bivariate polynomial and genuinely is per sample;
-            // after the above it is the whole remaining cost of this loop.
-            if let Some(v) = patch.at(wgs84_to_rd(lat, lng)) {
+            if let Some(v) = patch.height(lat, lng) {
                 raw[z * n + x] = v;
             }
         }

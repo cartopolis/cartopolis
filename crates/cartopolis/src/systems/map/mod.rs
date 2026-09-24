@@ -58,6 +58,7 @@ pub mod municipal;
 pub mod surveyed;
 pub mod tall_structures;
 pub mod terrain;
+pub mod terrain_tiles;
 pub mod tile_loader;
 pub mod tile_source;
 // The bores the map used to throw away, as places rather than as triangles:

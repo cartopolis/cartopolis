@@ -54,9 +54,9 @@ tile and kept in the device's cache (`tile_loader::rendered_cache_key`). They ar
 a per-device cache, never a server-side raster set.
 
 **Terrain per tile.** Each tile carries its own height grid with skirts, from a
-terrain tile endpoint (`atlas.md`). The client flattens it to the roads per tile,
-on a worker. Neighbouring tiles agree at the seam because an MVT tile carries a
-buffer past its edge.
+terrain tile endpoint (`atlas.md`). The client flattens it to the roads on a
+worker. It cannot do that one tile at a time (step 2 below says why), so heights
+are *fetched* per tile and *graded* over a window wider than any one tile.
 
 **One scheduler,** ordered by screen importance, cancelling tiles that leave the
 view, within the existing byte and upload budgets, evicting the least recently
@@ -70,7 +70,66 @@ seen.
    Groningen at 600 m, pitched 35° down: **375 → 213 tiles, 1.02 → 0.80 GB of
    graphics memory**, the same picture (2026-09-23, `--dump-state`).
 2. Per-tile terrain from `cartopolis_atlas`'s `/terrain/{z}/{x}/{y}` (`atlas.md`,
-   its first step), which retires the global field and the ring retears.
+   its first step), which retires the global field and the ring retears. Mapped
+   2026-09-23 before starting, and it is four steps, not one, because two things
+   the first design assumed are false:
+
+   - **Road grading does not fit in a tile.** `flatten_pinned` spreads ~75 m,
+     a bridge approach ramps ~120 m at 6 %, and both run over the whole 6.4 km
+     grid (`cartopolis_geo::road_grade`). An MVT tile's buffer is ~23 m at z14,
+     so grading each tile from its own roads puts a step at every tile edge a
+     road crosses.
+   - **A cold fetch gets slower, not faster.** Today's field is one ~12 MB WCS
+     request (~4.5 s). The same 3.125 m over the same box is ~324 z16 tiles,
+     and atlas cuts each from PDOK on first request, three at a time — ~25 s
+     for an area nobody has visited. What tiles win is *reuse*: a tile's key
+     does not depend on the map anchor, so a re-anchor or a second visit hits
+     the device cache, where today's patch (keyed on an anchor-shaped box)
+     misses.
+
+   So:
+
+   - **2a. Atlas pre-cuts an area.** **Built.** A `terrain` dataset in the
+     pipeline cuts every tile over an area into atlas's store, like the other
+     extractors, so a covered city is never cut on a player's request, and
+     writes `terrain/coverage.json`. Atlas serves the tiles **unfilled** (holes
+     as `NaN`, which the format already carries — 42–69 % of a city-centre
+     tile), because the client must carve the water *before* it fills, and a
+     pre-filled tile has already smeared the banks into the water.
+   - **2b. The field is assembled from tiles.** **Built** (`terrain_tiles`),
+     where the coverage manifest says atlas has cut the area, at the desktop
+     grid only; WCS everywhere else and as the fallback when a tile fails.
+     Nothing downstream changes: `terrain::bake` reads a `GroundSource`, which
+     is either the WCS patch or the tiles.
+
+     **The tiles are z14 at 513² (`terrain_tile::DENSE_GRID`), not z16 at
+     129².** The same sample points, but ~30 requests a field instead of ~360.
+     The z16 version was built first and measured at ~3 tiles a second on the
+     container: each small request queues for a native pool thread behind the
+     rest of the streaming, and the field had not arrived when the capture
+     fired. Groningen is 42 dense tiles, 22 MB, cut in 52 s.
+
+     Measured 2026-09-23 over the Grote Markt at 600 m, both runs against the
+     same live sources: the 30 tiles arrived 1–11 s after startup, and the
+     field matches WCS to 2 cm at the anchor, with relief 39.30 m against
+     39.85 m (the extremes differ by 0.6 m because the two sample the survey on
+     different lattices). **Neither run was waiting on the fetch**: both baked
+     ~55 s in, held by the surface ring (`RING_HOLD_MAX_S` on a software
+     renderer). So what 2b buys is not the first bake but the others — the old
+     patch was dropped after each bake and a re-bake downloaded the 12 MB
+     again — and every revisit. The wall-clock effect on a real GPU is still
+     to be measured.
+   - **2c. Retear per cell, not per ring.** One global `revision` makes ~10
+     layers rebuild their whole ring on every bake. Each cell instead keys its
+     rebuild on the heights *under it*, so a bake that changes nothing under a
+     cell does not rebuild it, and the first build waits for its ground instead
+     of building flat and tearing.
+   - **2d. Grade in windows.** Grading moves from one global bake to a job per
+     z14 cell over the cell plus a 150 m margin (the grading reach), fed with
+     the road triangles of every loaded cell the window touches. A cell is
+     graded only once its neighbours' roads are known, so two cells always
+     grade their shared margin from the same roads and agree at the seam. That
+     retires the global `RoadMask`, the settle timers and the ring hold.
 3. Fold the globe into the tree, which retires the 50 km switch and the re-anchor.
 4. Building levels of detail per tile. The LoD1.2 blocks already exist per z14
    cell; any coarser merged level is built by atlas, which runs the building

@@ -2135,6 +2135,7 @@ fn run_client() {
         .init_resource::<systems::tall_structures::TallStructures>()
         .init_resource::<systems::collision::BuildingColliders>()
         .init_resource::<systems::height::HeightLayer>()
+        .init_resource::<systems::terrain_tiles::TerrainTiles>()
         .init_resource::<systems::water_levels::WaterLevels>()
         .init_resource::<systems::terrain::TerrainField>()
         .insert_resource({
@@ -2680,6 +2681,7 @@ fn run_client() {
                 systems::building_facts::update_building_facts,
                 systems::surveyed::prefetch_bgt_coverage,
                 systems::crops::prefetch_brp_coverage,
+                systems::terrain_tiles::prefetch_terrain_coverage,
                 systems::interiors::update_interiors,
                 // Which building the avatar is standing in, and the glass that
                 // answers. Chained after the rooms because `track_indoors` reads
@@ -2769,6 +2771,9 @@ fn run_client() {
                 // and the anchor ground probe that both proves the path works and
                 // gives `--dump-state` a measured number to show.
                 systems::height::poll_height_layer,
+                // The same field's heights as atlas tiles, where atlas has cut the
+                // area (`terrain_tiles`); asked for by the same system.
+                systems::terrain_tiles::poll_terrain_tiles,
                 systems::height::probe_anchor_ground
                     .after(systems::map_stream::apply_reanchor)
                     .before(systems::height::poll_height_layer),
