@@ -538,7 +538,13 @@ fn main() -> Result<()> {
         None => Vec::new(),
     });
     if let (Some(field), false) = (ground.0.as_ref(), bridges.0.is_empty()) {
-        let (lifted, profiled, steps, max, mean) = bridges::report(&loaded, &bridges.0, field);
+        let graded = cli
+            .atlas
+            .as_deref()
+            .map(|a| bridges::GradedTiles::fetch(&loaded, a))
+            .unwrap_or_default();
+        let (lifted, profiled, steps, max, mean) =
+            bridges::report(&loaded, &bridges.0, field, &graded);
         let piers: usize = bridges.0.iter().map(|b| b.piers.len()).sum();
         println!(
             "bridges: {lifted} decks lifted, {profiled} profiled, {piers} surveyed piers; \

@@ -6056,6 +6056,85 @@ mod tests {
         );
     }
 
+    /// The bridge-flagged streets, decks and approaches of one tile within
+    /// `CARTO_BRIDGE_NEAR` metres (default 150) of `CARTO_BRIDGE_AT=lat,lng`, in
+    /// tile-local metres — for an approach step `carto-view --site` reports, which
+    /// says where it probed but not what the tile holds there.
+    ///
+    /// ```text
+    /// CARTO_BRIDGE_TILE=/tmp/t.mvt CARTO_BRIDGE_XYZ=14/8489/5321 CARTO_BRIDGE_AT=53.2126,6.5422 \
+    ///     cargo test -p cartopolis_geo dump_the_bridges_near -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a diagnostic: needs CARTO_BRIDGE_TILE, CARTO_BRIDGE_XYZ and CARTO_BRIDGE_AT"]
+    fn dump_the_bridges_near() {
+        let bytes =
+            std::fs::read(std::env::var("CARTO_BRIDGE_TILE").expect("tile")).expect("reads");
+        let tile = TileData::parse(&bytes).expect("parses");
+        let v: Vec<f64> = std::env::var("CARTO_BRIDGE_XYZ")
+            .expect("xyz")
+            .split('/')
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        let (z, x, y) = (v[0], v[1], v[2]);
+        let at: Vec<f64> = std::env::var("CARTO_BRIDGE_AT")
+            .expect("at")
+            .split(',')
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        let near: f32 = std::env::var("CARTO_BRIDGE_NEAR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(150.0);
+        let n = 2f64.powf(z);
+        let lat0 = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+        let tile_m = (40_075_016.686 * lat0.cos() / n) as f32;
+        let fx = (at[1] + 180.0) / 360.0 * n;
+        let fy = (1.0
+            - (at[0].to_radians().tan() + 1.0 / at[0].to_radians().cos()).ln()
+                / std::f64::consts::PI)
+            / 2.0
+            * n;
+        let p = [
+            ((fx - x) * f64::from(tile_m)) as f32,
+            ((fy - y) * f64::from(tile_m)) as f32,
+        ];
+        let close = |q: &[f32; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) <= near;
+        println!("tile_m={tile_m:.1} point={p:?}");
+        let mut decks = super::tessellate_bridges(&tile, tile_m).expect("bridges");
+        for (i, d) in decks.iter().enumerate() {
+            if d.rings.iter().flatten().any(close) {
+                println!("deck {i}: min {:?} max {:?}", d.min, d.max);
+            }
+        }
+        for l in crate::tunnels::surface_lines(&tile, tile_m) {
+            if l.bridge && l.pts.iter().any(close) {
+                let f = |q: [f32; 2]| [q[0].round(), q[1].round()];
+                println!(
+                    "bridge way: {:?} (own {:?}) .. {:?} (own {:?}), {} points",
+                    f(l.pts[0]),
+                    l.own[0],
+                    f(*l.pts.last().unwrap()),
+                    l.own[1],
+                    l.pts.len()
+                );
+            }
+        }
+        let roads = super::tessellate_roads(&tile, tile_m, &mut decks, None, false).expect("roads");
+        for a in &roads.approaches {
+            if a.points.iter().any(close) {
+                let f = |q: [f32; 2]| [q[0].round(), q[1].round()];
+                println!(
+                    "approach of deck {}: {:?} .. {:?}, {:.0} m",
+                    a.deck,
+                    f(a.points[0]),
+                    f(*a.points.last().unwrap()),
+                    crate::tunnels::polyline_len(&a.points)
+                );
+            }
+        }
+    }
+
     /// Where every bridge deck in a tile is, **on Earth**.
     ///
     /// The sibling of `tunnels::tests::dump_the_fixture_bores`, and it exists for

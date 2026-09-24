@@ -606,6 +606,13 @@ impl DeckPlates {
                 }
                 let edge = crate::systems::map_geometry::point_along(run, clear);
                 let out = crate::systems::map_geometry::point_along(run, clear + APPROACH_PROBE_M);
+                // A run that never leaves the deck — a slip road inside a wide
+                // viaduct's outline, cut by the tile's edge — has no ground end
+                // to measure: probed at its end it reads the ground under the
+                // deck (a false 6.8 m at Laan 1940–1945, 2026-09-24).
+                if clear >= len || plate.deck.contains(out) {
+                    continue;
+                }
                 let ground = terrain.at(plate.world.x + out[0], plate.world.y + out[1]);
                 // The deck's top where this approach leaves it: a sloped deck
                 // meets each approach at its own end's height.

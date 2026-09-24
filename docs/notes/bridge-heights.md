@@ -204,11 +204,17 @@ the 44 profiles ended on an outlier — 22.1 m against a 6.2 m deck, 5.9 m again
 each end against the line through its two neighbours. And `extend_approaches`
 stopped at the first fork, so an interchange arm splitting at its abutment got a
 few metres of ramp; every branch carrying on ahead is now an approach of its own.
-After both, graded again locally: 182 approaches, mean 0.61 m, the Hoogkerk deck's
-13.0 m step down to 2.3 m. **What is left over 2 m is not a fork**: Laan
-1940–1945's south abutment (6.8 m) has its ramp built beside the probe rather than
-along it — an 85 m-wide motorway deck whose carriageway centre lines leave its
-outline at a corner — and three others of 3–5 m on the eastern ring.
+After both, graded again locally, and **measured with two instrument faults
+fixed** — an approach that never leaves its deck (a slip road inside a wide
+viaduct's outline, cut by the tile edge) is skipped rather than probed at its end
+over the ground under the deck, and the ground is read from each cell's own graded
+tile rather than a field built at the first cell's metres, which sat 8 m off six
+columns east: **178 approaches, mean 0.13 m, median 0.09 m, 176 within 0.5 m.** Most
+of the earlier outliers were the instrument. The two left (2.8 and 3.7 m, Laan
+1940–1945 south) are real: two low slip-road decks (~3 m) inside the big viaduct's
+outline, whose approaches run into the ground the viaduct's own ramp raised to
+7–8 m. Where two ramps of different heights overlap, which one owns the ground is
+the open question.
 
 The 3D basisvoorziening's own bridge objects were checked for this and not taken:
 LoD1.2 drapes of the same BGT polygons, dated (one new deck came out 2.83 m against

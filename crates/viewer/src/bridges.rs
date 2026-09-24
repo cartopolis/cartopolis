@@ -93,6 +93,50 @@ pub fn graded_field(loaded: &Loaded, atlas: &str) -> Option<Field> {
     })
 }
 
+/// Atlas's graded tiles by cell, for reading the ground at a point **in that
+/// cell's own frame**. The field is one grid at the first cell's metres while
+/// the cells are placed at their own, which differ by the cosine of a
+/// kilometre of latitude — about 1.4 m a cell row over Groningen, eight metres
+/// six columns out. A probe read off the field there landed beside the
+/// embankment it was measuring (a false 3.9 m on the eastern ring,
+/// 2026-09-24).
+#[derive(Default)]
+pub struct GradedTiles(std::collections::HashMap<(i64, i64), TerrainTile>);
+
+impl GradedTiles {
+    pub fn fetch(loaded: &Loaded, atlas: &str) -> Self {
+        let grid = cartopolis_geo::terrain_tile::DENSE_GRID;
+        let mut out = std::collections::HashMap::new();
+        for c in &loaded.cells {
+            let url = format!(
+                "{atlas}/terrain/{}/{}/{}?grid={grid}&graded=1",
+                c.z, c.x, c.y
+            );
+            if let Some(t) = get(&url).and_then(|b| TerrainTile::decode(&b).ok()) {
+                out.insert((c.x, c.y), t);
+            }
+        }
+        Self(out)
+    }
+
+    /// Ground (NAP) at a tile-local point of `cell`, bilinear; a point past the
+    /// cell's edge is read from the neighbour it falls in.
+    pub fn at(&self, cell: &Cell, local: [f32; 2]) -> Option<f32> {
+        let (fx, fy) = (local[0] / cell.tile_m, local[1] / cell.tile_m);
+        let (dx, dy) = (fx.floor() as i64, fy.floor() as i64);
+        let t = self.0.get(&(cell.x + dx, cell.y + dy))?;
+        let last = (t.grid - 1) as f32;
+        let (u, v) = ((fx - dx as f32) * last, (fy - dy as f32) * last);
+        let (c0, r0) = (u.floor() as usize, v.floor() as usize);
+        let (c1, r1) = ((c0 + 1).min(t.grid - 1), (r0 + 1).min(t.grid - 1));
+        let (tu, tv) = (u - c0 as f32, v - r0 as f32);
+        let top = t.at(c0, r0) + (t.at(c1, r0) - t.at(c0, r0)) * tu;
+        let bottom = t.at(c0, r1) + (t.at(c1, r1) - t.at(c0, r1)) * tu;
+        let h = top + (bottom - top) * tv;
+        h.is_finite().then_some(h)
+    }
+}
+
 /// What the client knows about one cell's bridges.
 #[derive(Default)]
 pub struct CellBridges {
@@ -212,6 +256,7 @@ pub fn report(
     loaded: &Loaded,
     bridges: &[CellBridges],
     field: &Field,
+    graded: &GradedTiles,
 ) -> (usize, usize, usize, f32, f32) {
     let (mut lifted, mut profiled, mut steps, mut max, mut sum) = (0, 0, 0, 0.0f32, 0.0f32);
     for (cell, b) in loaded.cells.iter().zip(bridges) {
@@ -246,8 +291,15 @@ pub fn report(
                 while clear < len && deck.contains(point_along(&a.points, clear)) {
                     clear += 0.5;
                 }
-                let edge = point_along(&a.points, clear);
+                // A run that never leaves the deck — a slip road inside a wide
+                // viaduct's outline, cut by the tile's edge — has no ground end
+                // to measure: probed at its end it reads the ground *under* the
+                // deck (a false 6.8 m at Laan 1940–1945, 2026-09-24).
                 let out = point_along(&a.points, clear + APPROACH_PROBE_M);
+                if clear >= len || deck.contains(out) {
+                    continue;
+                }
+                let edge = point_along(&a.points, clear);
                 let Some(top) = top_at(m, edge) else {
                     continue;
                 };
@@ -278,7 +330,9 @@ pub fn report(
                     })
                     .min_by(|a, b| (a - top).abs().total_cmp(&(b - top).abs()));
                 let ground = onto.unwrap_or_else(|| {
-                    field.at(origin[0] + out[0], origin[1] + out[1]) + field.datum
+                    graded.at(cell, out).unwrap_or_else(|| {
+                        field.at(origin[0] + out[0], origin[1] + out[1]) + field.datum
+                    })
                 });
                 let step = (top - ground).abs();
                 let (lat, lng) = cartopolis_core::world::tile_frac_to_lat_lng(
