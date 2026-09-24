@@ -1464,12 +1464,14 @@ pub fn update_terrain_field(
     let req = field_request(anchor, TERRAIN_HALF_M, grid);
     let gen = stream.anchor_generation;
     // Atlas tiles where atlas has cut the area (`terrain_tiles` says why only
-    // there), and only at the desktop grid: a handset's 513² field is 1 MB as one
-    // WCS patch and would be ~21 MB as the z16 tiles under it.
+    // there). A handset's field reads graded tiles thinned to 129², and has no raw
+    // tiles at that grid to fall back to (`terrain_tiles::tile_grid`).
+    let dense =
+        crate::systems::terrain_tiles::tile_grid() == cartopolis_geo::terrain_tile::DENSE_GRID;
     let chosen = match *source {
         Some((g, s)) if g == gen => s,
         _ => {
-            let eligible = tiles.enabled() && grid >= 1025;
+            let eligible = tiles.enabled();
             // **Ask atlas before choosing.** The manifest is one small request that
             // starts at launch, but on a cold start the anchor lands first, and
             // latching then chose the 12 MB WCS patch over tiles atlas had already
@@ -1498,7 +1500,8 @@ pub fn update_terrain_field(
                     Vec2::ZERO,
                 )) {
                     Some(stamp) => FieldSource::Graded(stamp),
-                    None => FieldSource::Tiles,
+                    None if dense => FieldSource::Tiles,
+                    None => FieldSource::Wcs,
                 }
             };
             *source = Some((gen, s));
@@ -1542,7 +1545,7 @@ pub fn update_terrain_field(
             // A tile atlas would not give: graded ground falls back to the raw
             // tiles and graded here, raw tiles to WCS.
             crate::systems::terrain_tiles::Mosaic::Failed => {
-                let next = if stamp > 0 {
+                let next = if stamp > 0 && dense {
                     FieldSource::Tiles
                 } else {
                     FieldSource::Wcs

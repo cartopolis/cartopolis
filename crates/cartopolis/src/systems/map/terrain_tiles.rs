@@ -28,6 +28,11 @@
 //! take longer than the one WCS request it replaces. So the terrain coverage
 //! manifest decides, per map anchor, and anywhere it does not cover — or before it
 //! has answered — the field is fetched as it always was.
+//!
+//! **A handset reads the graded tiles at 129²** ([`tile_grid`]), which atlas thins
+//! from the dense ones: its field is too coarse to use 513², and before this it got
+//! no graded ground at all. It has no raw 129² fallback — atlas does not pre-cut
+//! those — so off graded ground a handset stays on WCS.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -199,28 +204,57 @@ fn template() -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
-fn cache_key(x: i64, y: i64, stamp: u64) -> String {
+/// The grid a tile is fetched at: [`DENSE_GRID`](cartopolis_geo::terrain_tile::DENSE_GRID)
+/// for a desktop field, the tile tree's own 129² for a handset's. A handset's field
+/// is 513² over 6.4 km, ~12.5 m apart, and the dense tiles under it would be ~16 MB
+/// to read 1 sample in 20; at 129² a z14 tile's samples are ~11.5 m apart and the
+/// whole field is ~1 MB. Atlas serves the 129² tile only graded (it thins the dense
+/// one), so a handset uses tiles over graded ground and WCS everywhere else.
+#[must_use]
+pub fn tile_grid() -> usize {
+    use cartopolis_geo::terrain_tile::{DENSE_GRID, GRID};
+    if crate::quality::budget().terrain_grid >= 1025 {
+        DENSE_GRID
+    } else {
+        GRID
+    }
+}
+
+fn cache_key(x: i64, y: i64, stamp: u64, grid: usize) -> String {
     if stamp > 0 {
         // Per grading run: a re-grade is new ground, and an old copy is never it.
-        return format!("terrain/graded/{stamp}/{TILE_ZOOM}/{x}/{y}.g513.ctt");
+        return format!("terrain/graded/{stamp}/{TILE_ZOOM}/{x}/{y}.g{grid}.ctt");
     }
     // `v3`: atlas's unfilled tiles, cut from AHN6 where it is published. See
     // `crates/atlas/src/terrain.rs::store_dir`.
-    format!("terrain/v3/{TILE_ZOOM}/{x}/{y}.g513.ctt")
+    format!("terrain/v3/{TILE_ZOOM}/{x}/{y}.g{grid}.ctt")
 }
 
-/// The URL for one tile; a graded one carries `graded=1` and the run's stamp, so
-/// no HTTP cache between here and atlas can answer it with an older grading.
-fn tile_url(template: &str, x: i64, y: i64, stamp: u64) -> String {
-    let url = template
+/// The URL for one tile at `grid`; a graded one carries `graded=1` and the run's
+/// stamp, so no HTTP cache between here and atlas can answer it with an older
+/// grading. A template that names a grid has it replaced.
+fn tile_url(template: &str, x: i64, y: i64, stamp: u64, grid: usize) -> String {
+    let mut url = template
         .replace("{z}", &TILE_ZOOM.to_string())
         .replace("{x}", &x.to_string())
         .replace("{y}", &y.to_string());
+    let named = url.find("grid=").map(|i| {
+        let end = url[i + 5..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(url.len(), |e| i + 5 + e);
+        (i, end)
+    });
+    match named {
+        Some((i, end)) => url.replace_range(i..end, &format!("grid={grid}")),
+        None => {
+            let sep = if url.contains('?') { '&' } else { '?' };
+            url = format!("{url}{sep}grid={grid}");
+        }
+    }
     if stamp == 0 {
         return url;
     }
-    let sep = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{sep}graded=1&v={stamp}")
+    format!("{url}&graded=1&v={stamp}")
 }
 
 /// The grading run every covered tile of `want` was graded by, if they all were
@@ -431,10 +465,11 @@ pub fn poll_terrain_tiles(mut tiles: ResMut<TerrainTiles>, time: Res<Time>) {
         tiles.dispatch.queue(t);
     }
     let results = tiles.results.clone();
+    let grid = tile_grid();
     while let Some((x, y, stamp)) = tiles.dispatch.next(now) {
         let results = results.clone();
-        let url = tile_url(&template, x, y, stamp);
-        let key = cache_key(x, y, stamp);
+        let url = tile_url(&template, x, y, stamp, grid);
+        let key = cache_key(x, y, stamp, grid);
         IoTaskPool::get()
             .spawn(async move {
                 let out = fetch_tile(url, key).await;
@@ -483,6 +518,26 @@ pub fn poll_terrain_tiles(mut tiles: ResMut<TerrainTiles>, time: Res<Time>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The grid a template names is the one asked for, and a template that names
+    /// none gains one — including an override like the Deck harness's proxy.
+    #[test]
+    fn a_tile_is_asked_for_at_the_grid_the_field_needs() {
+        let t = "https://a.org/terrain/{z}/{x}/{y}?grid=513&ahn=6";
+        assert_eq!(
+            tile_url(t, 1, 2, 0, 129),
+            "https://a.org/terrain/14/1/2?grid=129&ahn=6"
+        );
+        assert_eq!(
+            tile_url(t, 1, 2, 7, 513),
+            "https://a.org/terrain/14/1/2?grid=513&ahn=6&graded=1&v=7"
+        );
+        assert_eq!(
+            tile_url("http://h/terrain/{z}/{x}/{y}", 1, 2, 7, 129),
+            "http://h/terrain/14/1/2?grid=129&graded=1&v=7"
+        );
+        assert_ne!(cache_key(1, 2, 7, 129), cache_key(1, 2, 7, 513));
+    }
 
     #[test]
     fn a_point_reads_the_sample_of_the_tile_it_falls_in() {

@@ -279,6 +279,43 @@ mod tests {
         assert!(page.contains("href=\"/viewer/\"") && page.contains("href=\"/console/\""));
     }
 
+    /// A graded tile is served at the grid the pipeline wrote and, thinned, at the
+    /// tile tree's — the handset's — and nowhere it was not graded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_graded_tile_is_served_dense_and_thinned() {
+        use cartopolis_geo::terrain_tile::{TerrainTile, DENSE_GRID, GRID};
+        let (base, dir) = serve(Arc::new(Flat)).await;
+        let dense = TerrainTile {
+            grid: DENSE_GRID,
+            heights: (0..DENSE_GRID * DENSE_GRID)
+                .map(|i| (i % DENSE_GRID) as f32 * 0.01)
+                .collect(),
+        };
+        crate::terrain::write_stored(
+            &crate::terrain::graded_dir(dir.path()),
+            14,
+            8490,
+            5318,
+            DENSE_GRID,
+            &Answer::Tile(dense.encode()),
+        );
+
+        let (status, _, body) = get(format!("{base}/terrain/14/8490/5318?grid=513&graded=1")).await;
+        assert_eq!(status, 200);
+        assert_eq!(TerrainTile::decode(&body).unwrap().grid, DENSE_GRID);
+
+        let (status, _, body) = get(format!("{base}/terrain/14/8490/5318?graded=1")).await;
+        assert_eq!(status, 200);
+        let thin = TerrainTile::decode(&body).unwrap();
+        assert_eq!(thin.grid, GRID);
+        assert!((thin.at(GRID - 1, 0) - dense.at(DENSE_GRID - 1, 0)).abs() < 0.01);
+
+        assert_eq!(
+            get(format!("{base}/terrain/14/8491/5318?graded=1")).await.0,
+            404
+        );
+    }
+
     /// `/height` answers in the shape PDOK's WCS did, so the client's decoder
     /// reads it unchanged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

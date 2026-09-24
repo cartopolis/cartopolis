@@ -57,6 +57,24 @@ impl TerrainTile {
         self.heights.iter().any(|h| h.is_finite())
     }
 
+    /// The coarser tile on every `step`-th sample, both ways: the lattice whose
+    /// points are a subset of this one's, so the two agree exactly wherever they
+    /// share a sample. `None` unless `step` divides the intervals. How a
+    /// [`DENSE_GRID`] graded tile is served at [`GRID`] to a handset, whose field
+    /// is too coarse to use the dense one (`crates/atlas`, `TerrainService::graded`).
+    #[must_use]
+    pub fn every(&self, step: usize) -> Option<Self> {
+        if step == 0 || self.grid < 2 || (self.grid - 1) % step != 0 {
+            return None;
+        }
+        let grid = (self.grid - 1) / step + 1;
+        let heights = (0..grid)
+            .flat_map(|row| (0..grid).map(move |col| (row, col)))
+            .map(|(row, col)| self.at(col * step, row * step))
+            .collect();
+        Some(Self { grid, heights })
+    }
+
     /// The wire form. Quantised to steps of at most 1 cm; a tile spanning more than
     /// ~655 m of relief gets coarser steps rather than a wrong answer.
     #[must_use]
@@ -251,6 +269,30 @@ pub fn resample(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dense tile thinned to the tile tree's grid keeps exactly the samples the
+    /// two lattices share, corners included, and refuses a step that does not
+    /// divide it.
+    #[test]
+    fn a_dense_tile_thins_to_the_samples_it_shares() {
+        let heights = (0..DENSE_GRID * DENSE_GRID).map(|i| i as f32).collect();
+        let dense = TerrainTile {
+            grid: DENSE_GRID,
+            heights,
+        };
+        let thin = dense.every(4).expect("4 divides 512");
+        assert_eq!(thin.grid, GRID);
+        for (row, col) in [
+            (0, 0),
+            (0, GRID - 1),
+            (GRID - 1, 0),
+            (GRID - 1, GRID - 1),
+            (7, 91),
+        ] {
+            assert_eq!(thin.at(col, row), dense.at(col * 4, row * 4));
+        }
+        assert!(dense.every(3).is_none());
+    }
 
     /// A tile survives the wire to the centimetre, holes included.
     #[test]

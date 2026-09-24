@@ -290,12 +290,34 @@ impl TerrainService {
 
     /// A graded tile, if the pipeline has graded it. Never cut or graded here:
     /// `None` is the client's cue to fetch the raw tile and grade it itself.
+    ///
+    /// The pipeline grades at [`terrain_tile::DENSE_GRID`] only. The tile tree's
+    /// grid is that tile on every fourth sample — what a handset's field, ~12 m
+    /// apart, is assembled from, at a sixteenth of the bytes — thinned
+    /// on each request, which costs about a millisecond. Not kept: the pipeline
+    /// re-grades in place, and a kept copy would outlive the tile it came from.
     pub async fn graded(&self, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
         let dir = self.graded.clone();
-        tokio::task::spawn_blocking(move || read_stored(&dir, z, x, y, grid))
-            .await
-            .ok()
-            .flatten()
+        tokio::task::spawn_blocking(move || {
+            if let Some(answer) = read_stored(&dir, z, x, y, grid) {
+                return Some(answer);
+            }
+            if grid != terrain_tile::GRID {
+                return None;
+            }
+            let answer = match read_stored(&dir, z, x, y, terrain_tile::DENSE_GRID)? {
+                Answer::Tile(bytes) => {
+                    let dense = terrain_tile::TerrainTile::decode(&bytes).ok()?;
+                    let step = (terrain_tile::DENSE_GRID - 1) / (terrain_tile::GRID - 1);
+                    Answer::Tile(dense.every(step)?.encode())
+                }
+                Answer::Nothing => Answer::Nothing,
+            };
+            Some(answer)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// [`Self::tile`] at a chosen grid ([`valid_grid`]).

@@ -316,6 +316,16 @@ lattice, and keeps its own 513²; neighbours agree along their shared edge to
 difference from the client: it grades under every footpath, including the ones
 the client leaves to the BGT's surveyed paving.
 
+**Handsets get it at 129².** A handset's field is 513² over 6.4 km, ~12.5 m
+apart, so it used WCS, and so got no graded ground at all. Atlas now answers
+`graded=1` at the tile tree's own 129² by taking every fourth sample of the
+graded 513² tile, on each request and without storing it, because the pipeline
+re-grades in place and a stored copy would go stale. Those 129 samples are
+exactly the ones the desktop's 513² shares, so a phone and a desktop agree about
+the ground wherever both have a sample. A handset has no raw 129² tile to fall
+back to, so on ground that is not graded it stays on WCS
+(`terrain_tiles::tile_grid`).
+
 Measured on `deck-1` over the Grote Markt at 600 m, release build, the same
 binary against the same live data with the manifest listing the graded tiles or
 not, time until everything has loaded:
