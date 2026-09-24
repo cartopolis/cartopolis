@@ -1481,7 +1481,11 @@ pub fn update_terrain_field(
     let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
     let road = roads.for_gen(gen, grid);
     // Per plate, not per sample — see `DeckPlates::grade_masks`.
-    let (ramp, deck_lift) = decks.grade_masks(grid, TERRAIN_HALF_M);
+    let cartopolis_geo::terrain_grade::DeckMasks {
+        ramp,
+        lift: deck_lift,
+        top: deck_top,
+    } = decks.grade_masks(grid, TERRAIN_HALF_M);
     let sink = field.coarse_sink.clone();
     field.coarse_job = Some(gen);
     crate::platform::workers::submit_heavy(
@@ -1498,6 +1502,7 @@ pub fn update_terrain_field(
                     road,
                     ramp,
                     deck_lift: &deck_lift,
+                    deck_top: &deck_top,
                 }),
             );
             if let Ok(mut g) = sink.lock() {
@@ -1661,6 +1666,9 @@ struct Grading<'a> {
     // and the street passing *under* a viaduct touches its approach.
     ramp: Vec<bool>,
     deck_lift: &'a [f32],
+    // The deck's measured top (NAP) where the survey has one, else NaN — what an
+    // approach is graded *to* (`terrain_grade::DeckPlate::top`).
+    deck_top: &'a [f32],
 }
 
 /// Resample measured ground into the world-XZ grid, fill its holes, subtract the
@@ -1732,6 +1740,7 @@ fn bake(
             road,
             g.ramp,
             g.deck_lift,
+            g.deck_top,
         );
         carved = graded.carved;
         approach = (graded.abutments, graded.raised);
@@ -3662,6 +3671,8 @@ mod tests {
                 road,
                 ramp,
                 deck_lift: &deck_lift,
+                // No measured top: the clearance path, which is what this pins.
+                deck_top: &[],
             }),
         );
         let (samples, _datum, _carved) = baked.expect("patch covers the field");
@@ -3739,6 +3750,7 @@ mod tests {
                 // …and no decks, for the same reason.
                 ramp: Vec::new(),
                 deck_lift: &[],
+                deck_top: &[],
             }),
         );
         assert_eq!(

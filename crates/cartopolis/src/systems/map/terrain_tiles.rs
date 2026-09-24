@@ -65,21 +65,32 @@ pub fn prefetch_terrain_coverage(time: Res<Time>) {
     DECKS.ensure(time.elapsed_secs_f64());
 }
 
-/// The bridge decks atlas measured in a cell while grading
-/// (`crates/atlas/src/pipeline/terrain_grade.rs::write_decks`): each deck's
-/// bounding-box centre in fractions of the tile, and its clearance in metres, 0
-/// for a deck laid flat. `None` where atlas did not measure the cell.
+/// One deck as atlas published it (`crates/atlas/src/pipeline/terrain_grade.rs::
+/// write_decks`): `[x, y, height, top?, profile?]` — its bounding-box centre in
+/// fractions of the tile, its clearance in metres (0 for a deck laid flat), and,
+/// trailing so a file from before them still reads, its median top in NAP and its
+/// profile (`DeckProfile::to_wire`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtlasDeck {
+    pub at: [f32; 2],
+    pub height: f32,
+    pub top: Option<f32>,
+    pub profile: Option<Vec<f64>>,
+}
+
+/// The bridge decks atlas measured in a cell while grading, or `None` where atlas
+/// did not measure the cell.
 ///
 /// **What it replaces is the cold start's long pole.** The client measured every
 /// deck itself against PDOK, a surface and a ground patch per cluster, three at a
 /// time and spaced — and the ground cells are not done until their decks are.
 /// Measured on the Deck (2026-09-24), cold, with the ground graded on atlas: the
 /// cells were built by ~12 s and the last deck placed at ~21 s.
-pub(crate) async fn load_atlas_decks(cx: i64, cy: i64) -> Option<Vec<[f32; 3]>> {
+pub(crate) async fn load_atlas_decks(cx: i64, cy: i64) -> Option<Vec<AtlasDeck>> {
     ATLAS_DECKS.load(cx, cy).await
 }
 
-const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<[f32; 3]>>> =
+const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<AtlasDeck>>> =
     crate::platform::cell_source::CellSource {
         label: "atlas decks",
         gate: Some(|cx, cy| DECKS.covers(cx, cy)),
@@ -107,11 +118,14 @@ const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<[f32; 3]>
                 .iter()
                 .filter_map(|d| {
                     let d = d.as_array()?;
-                    Some([
-                        d.first()?.as_f64()? as f32,
-                        d.get(1)?.as_f64()? as f32,
-                        d.get(2)?.as_f64()? as f32,
-                    ])
+                    Some(AtlasDeck {
+                        at: [d.first()?.as_f64()? as f32, d.get(1)?.as_f64()? as f32],
+                        height: d.get(2)?.as_f64()? as f32,
+                        top: d.get(3).and_then(serde_json::Value::as_f64).map(|v| v as f32),
+                        profile: d.get(4).and_then(|p| {
+                            p.as_array()?.iter().map(serde_json::Value::as_f64).collect()
+                        }),
+                    })
                 })
                 .collect();
             Some(Some(decks))
@@ -126,8 +140,8 @@ const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<[f32; 3]>
 pub fn match_atlas_decks(
     decks: &[cartopolis_geo::vector_tiles::BridgeDeck],
     tile_m: f32,
-    atlas: &[[f32; 3]],
-) -> Option<Vec<f32>> {
+    atlas: &[AtlasDeck],
+) -> Option<Vec<cartopolis_geo::deck_profile::DeckMeasure>> {
     // A metre, in tile fractions.
     let tol = 1.0 / tile_m;
     decks
@@ -139,8 +153,15 @@ pub fn match_atlas_decks(
             ];
             atlas
                 .iter()
-                .find(|a| (a[0] - c[0]).abs() < tol && (a[1] - c[1]).abs() < tol)
-                .map(|a| a[2])
+                .find(|a| (a.at[0] - c[0]).abs() < tol && (a.at[1] - c[1]).abs() < tol)
+                .map(|a| cartopolis_geo::deck_profile::DeckMeasure {
+                    height: a.height,
+                    top: a.top.filter(|t| t.is_finite() && a.height > 0.0),
+                    // In tile fractions on the wire; this cell's metres here.
+                    profile: a.profile.as_deref().and_then(|w| {
+                        cartopolis_geo::deck_profile::DeckProfile::from_wire(w, f64::from(tile_m))
+                    }),
+                })
         })
         .collect()
 }
@@ -512,13 +533,20 @@ mod tests {
         };
         let tile_m = 1470.0;
         let decks = [deck(100.0, 200.0), deck(700.0, 50.0)];
+        let at = |x: f32, z: f32, height: f32, top: Option<f32>| AtlasDeck {
+            at: [x / tile_m, z / tile_m],
+            height,
+            top,
+            profile: None,
+        };
         let atlas = [
-            [700.0 / tile_m, 50.0 / tile_m, 0.0],
-            [100.2 / tile_m, 199.9 / tile_m, 6.5],
+            at(700.0, 50.0, 0.0, None),
+            at(100.2, 199.9, 6.5, Some(8.2)),
         ];
+        let known = match_atlas_decks(&decks, tile_m, &atlas).unwrap();
         assert_eq!(
-            match_atlas_decks(&decks, tile_m, &atlas),
-            Some(vec![6.5, 0.0])
+            known.iter().map(|m| (m.height, m.top)).collect::<Vec<_>>(),
+            vec![(6.5, Some(8.2)), (0.0, None)]
         );
         // One deck atlas never saw, and the cell measures its own.
         let more = [deck(100.0, 200.0), deck(700.0, 50.0), deck(1200.0, 900.0)];

@@ -28,6 +28,8 @@ use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use cartopolis_geo::deck_profile::DeckMeasure;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
@@ -228,7 +230,7 @@ type Tessellated = (
     u32,
     // The deck heights atlas measured in this cell, if it did
     // (`terrain_tiles::load_atlas_decks`).
-    Option<Vec<[f32; 3]>>,
+    Option<Vec<crate::systems::terrain_tiles::AtlasDeck>>,
 );
 
 /// The ground a cell job builds on: the field in place now, or — while atlas's
@@ -336,6 +338,93 @@ struct Plate {
     /// same street feature as the span, which `split_by_deck` establishes on the
     /// worker and which is lost the moment the cell's meshes are merged.
     approaches: Vec<Vec<[f32; 2]>>,
+    /// The deck's measured top in NAP metres — the survey's surface over the
+    /// structure — where the survey covers it. What an approach is graded up to
+    /// and what the drawn deck stands at; see [`deck_measure`].
+    top_nap: Option<f32>,
+    /// Where the deck was drawn, in world `y`: what traffic on it stands on.
+    world_top: f32,
+    /// The deck's height along its length, where the survey measured one
+    /// (`DeckShape`). `world_top` and `top_nap` are its median, and what a deck
+    /// without one stands at everywhere.
+    shape: Option<Arc<DeckShape>>,
+}
+
+impl Plate {
+    /// World `y` of the drawn deck over a tile-local point.
+    fn world_top_at(&self, local: [f32; 2]) -> f32 {
+        self.shape
+            .as_ref()
+            .map_or(self.world_top, |s| s.world_y(local))
+    }
+
+    /// The measured top in NAP over a tile-local point.
+    fn top_nap_at(&self, local: [f32; 2]) -> Option<f32> {
+        match &self.shape {
+            Some(s) => Some(s.nap_at(local)),
+            None => self.top_nap,
+        }
+    }
+}
+
+/// **A deck's measured height along its length**, in the tile-local frame the
+/// deck is meshed in (`cartopolis_geo::deck_profile`), and where NAP is in the
+/// world.
+pub struct DeckShape {
+    profile: cartopolis_geo::deck_profile::DeckProfile,
+    /// World `y` of NAP 0 — minus the field's datum.
+    offset: f32,
+}
+
+/// Tile-local metres → RD, linearised at one point of a deck — for reading the
+/// survey's RD patches at a deck's own points (`DeckProfile::fit_over`). Over a
+/// deck's few hundred metres the projection is linear to well under a centimetre.
+#[derive(Clone, Copy, Debug)]
+struct LocalToRd {
+    /// The local point it was fitted at, and RD there.
+    at: [f32; 2],
+    rd0: [f64; 2],
+    /// RD metres per tile-local metre along x and along z.
+    ex: [f64; 2],
+    ez: [f64; 2],
+}
+
+impl LocalToRd {
+    fn fit(at: [f32; 2], to_rd: impl Fn([f32; 2]) -> [f64; 2]) -> Self {
+        const STEP: f32 = 10.0;
+        let rd0 = to_rd(at);
+        let (x, z) = (to_rd([at[0] + STEP, at[1]]), to_rd([at[0], at[1] + STEP]));
+        let s = f64::from(STEP);
+        Self {
+            at,
+            rd0,
+            ex: [(x[0] - rd0[0]) / s, (x[1] - rd0[1]) / s],
+            ez: [(z[0] - rd0[0]) / s, (z[1] - rd0[1]) / s],
+        }
+    }
+
+    fn rd(&self, local: [f32; 2]) -> [f64; 2] {
+        let (dx, dz) = (
+            f64::from(local[0] - self.at[0]),
+            f64::from(local[1] - self.at[1]),
+        );
+        [
+            self.rd0[0] + dx * self.ex[0] + dz * self.ez[0],
+            self.rd0[1] + dx * self.ex[1] + dz * self.ez[1],
+        ]
+    }
+}
+
+impl DeckShape {
+    #[must_use]
+    pub fn nap_at(&self, local: [f32; 2]) -> f32 {
+        self.profile.at([f64::from(local[0]), f64::from(local[1])])
+    }
+
+    #[must_use]
+    pub fn world_y(&self, local: [f32; 2]) -> f32 {
+        self.nap_at(local) + self.offset
+    }
 }
 
 impl DeckPlates {
@@ -350,7 +439,7 @@ impl DeckPlates {
     /// city about once a second for the rest of the session.
     ///
     /// A retear produces the *same* decks: a plate's height is the survey's DSM
-    /// over the structure less its DTM around it (`deck_height`), which does not
+    /// over the structure less its DTM around it (`deck_measure`), which does not
     /// depend on the field being graded, and the approaches are the tessellation's
     /// own output. So comparing is enough, and comparing a digest rather than the
     /// meshes keeps it to a few dozen words per cell.
@@ -405,6 +494,11 @@ impl DeckPlates {
         };
         for p in plates {
             eat(p.height.to_bits());
+            if let Some(shape) = &p.shape {
+                for h in shape.profile.heights() {
+                    eat(h.to_bits());
+                }
+            }
             eat(p.world.x.to_bits());
             eat(p.world.y.to_bits());
             for v in p.deck.min.iter().chain(p.deck.max.iter()) {
@@ -438,6 +532,85 @@ impl DeckPlates {
         }
     }
 
+    /// How well the raised decks meet their approaches: `(decks, decks with no
+    /// approach, largest step, mean step)`, a step being the deck's drawn top less
+    /// the ground three metres out along each approach.
+    ///
+    /// **Because an embankment cannot be seen to be right.** 150 m of ground
+    /// climbing to a viaduct reads as ground from any angle that also shows the
+    /// viaduct, and the bridge research of 2026-09-23 found every view in the
+    /// manifest too small to show an 8.7 m cliff. This is the number instead.
+    #[must_use]
+    pub fn approach_steps(
+        &self,
+        terrain: &crate::systems::terrain::TerrainField,
+    ) -> (usize, usize, f32, f32) {
+        let (mut decks, mut bare, mut max, mut sum, mut n) =
+            (0usize, 0usize, 0.0f32, 0.0f32, 0usize);
+        for plate in self.plates.values().flatten() {
+            decks += 1;
+            if plate.approaches.is_empty() {
+                bare += 1;
+                continue;
+            }
+            for run in &plate.approaches {
+                // A stub under a metre is where the tile border cut a deck that
+                // carries on in the next tile, not an abutment: the ground three
+                // metres past it is under the same structure, and measured it
+                // reads as an 8.8 m cliff that is not there (2026-09-24).
+                let len: f32 = run
+                    .windows(2)
+                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                    .sum();
+                if len < 1.0 {
+                    continue;
+                }
+                // Past the deck's own outline, which is often wider than the road
+                // and under which the ground is left alone on purpose: the step is
+                // where the embankment meets the structure, not under it.
+                // Stepped in half metres, not by vertex: an approach's segments
+                // run to a hundred metres, and skipping one whole put the probe
+                // at natural ground far down the road.
+                let mut clear = 0.0f32;
+                while clear < len
+                    && plate
+                        .deck
+                        .contains(crate::systems::map_geometry::point_along(run, clear))
+                {
+                    clear += 0.5;
+                }
+                let edge = crate::systems::map_geometry::point_along(run, clear);
+                let out = crate::systems::map_geometry::point_along(run, clear + APPROACH_PROBE_M);
+                let ground = terrain.at(plate.world.x + out[0], plate.world.y + out[1]);
+                // The deck's top where this approach leaves it: a sloped deck
+                // meets each approach at its own end's height.
+                let step = (plate.world_top_at(edge) - ground).abs();
+                max = max.max(step);
+                sum += step;
+                n += 1;
+            }
+        }
+        (decks, bare, max, if n > 0 { sum / n as f32 } else { 0.0 })
+    }
+
+    /// The drawn top of the tallest deck over `p`, in world `y`, or `None` off
+    /// every deck. What a car on a bridge-flagged line stands on: the height the
+    /// deck was *drawn* at, which is the one number that cannot disagree with it.
+    #[must_use]
+    pub fn top_at(&self, p: Vec2) -> Option<f32> {
+        self.plates
+            .values()
+            .flatten()
+            .filter_map(|plate| {
+                let local = [p.x - plate.world.x, p.y - plate.world.y];
+                plate
+                    .deck
+                    .contains(local)
+                    .then(|| plate.world_top_at(local))
+            })
+            .reduce(f32::max)
+    }
+
     /// How far above the ground plane a deck carries this world-XZ point, or 0
     /// where none does.
     ///
@@ -449,13 +622,14 @@ impl DeckPlates {
     pub fn lift_at(&self, p: Vec2) -> f32 {
         let mut best = 0.0f32;
         for plate in self.plates.values().flatten() {
-            if plate.height > best
-                && plate
-                    .deck
-                    .contains([p.x - plate.world.x, p.y - plate.world.y])
-            {
-                best = plate.height;
+            let local = [p.x - plate.world.x, p.y - plate.world.y];
+            if !plate.deck.contains(local) {
+                continue;
             }
+            // The clearance is the median's; a sloped deck stands that much
+            // higher or lower here than at its median.
+            let here = plate.height + plate.world_top_at(local) - plate.world_top;
+            best = best.max(here);
         }
         best
     }
@@ -480,7 +654,7 @@ impl DeckPlates {
     /// passing *under* the viaduct. The approach is separable only because it is
     /// the same street feature as the span (`vector_tiles::Approach`).
     #[must_use]
-    pub fn grade_masks(&self, n: usize, half: f32) -> (Vec<bool>, Vec<f32>) {
+    pub fn grade_masks(&self, n: usize, half: f32) -> cartopolis_geo::terrain_grade::DeckMasks {
         let plates: Vec<cartopolis_geo::terrain_grade::DeckPlate<'_>> = self
             .plates
             .values()
@@ -489,6 +663,8 @@ impl DeckPlates {
                 deck: &p.deck,
                 world: p.world.to_array(),
                 height: p.height,
+                top: p.top_nap,
+                profile: p.shape.as_ref().map(|s| &s.profile),
                 approaches: &p.approaches,
             })
             .collect();
@@ -631,7 +807,7 @@ struct PendingDecks {
     boxes: Vec<DeckBox>,
     /// Every deck's height, by the same index as `decks`, when atlas measured
     /// them all (`terrain_tiles::match_atlas_decks`).
-    known: Option<Vec<f32>>,
+    known: Option<Vec<DeckMeasure>>,
 }
 
 /// One deck's footprint in RD: its outline, and the box around it the ground
@@ -640,6 +816,9 @@ struct DeckBox {
     rings: Vec<Vec<[f64; 2]>>,
     min: [f64; 2],
     max: [f64; 2],
+    /// How the deck's tile-local frame maps into RD, for reading a profile
+    /// fitted there back at the mesh's vertices.
+    frame: LocalToRd,
     /// The cluster that measures it; `None` outside AHN, where a deck is settled
     /// at street level without asking.
     cluster: Option<usize>,
@@ -732,6 +911,13 @@ fn cluster_decks(
             rings,
             min,
             max,
+            frame: LocalToRd::fit(
+                [
+                    (deck.min[0] + deck.max[0]) * 0.5,
+                    (deck.min[1] + deck.max[1]) * 0.5,
+                ],
+                &to_rd,
+            ),
             cluster,
         });
     }
@@ -2534,33 +2720,72 @@ pub fn resolve_bridge_decks(
         if !ready {
             continue;
         }
-        let heights: Vec<f32> = match &pending.known {
-            Some(known) => known.clone(),
+        // Atlas's measurements where it published every deck of this cell, the
+        // cell's own otherwise — the same rule, the same sampling
+        // (`cartopolis_geo::deck_profile::DeckMeasure`).
+        let measures: Vec<Option<DeckMeasure>> = match &pending.known {
+            Some(known) => known.iter().cloned().map(Some).collect(),
             None => pending
                 .boxes
                 .iter()
-                .map(|b| deck_height(&height, &pending.clusters, b))
+                .zip(&pending.decks)
+                .map(|(b, d)| deck_measure(&height, &pending.clusters, b, d))
                 .collect(),
         };
+        let heights: Vec<f32> = measures
+            .iter()
+            .map(|m| m.as_ref().map_or(0.0, |m| m.height))
+            .collect();
+        let tops: Vec<Option<f32>> = measures
+            .iter()
+            .map(|m| m.as_ref().and_then(|m| m.top))
+            .collect();
+        // **Each deck along its own measured length**, where the survey gives it
+        // one: in world `y` through the field's datum, which is why a field that
+        // has not landed yet leaves every deck at its single height.
+        let shapes: Vec<Option<Arc<DeckShape>>> = measures
+            .into_iter()
+            .map(|m| {
+                let profile = m?.profile?;
+                terrain.is_ready().then(|| {
+                    Arc::new(DeckShape {
+                        profile,
+                        offset: -terrain.datum_m,
+                    })
+                })
+            })
+            .collect();
 
         let Some(pending) = surfaces.pending_decks.remove(&c) else {
             continue;
         };
-        let mesh = build_deck_mesh(&pending.decks, &heights);
         let cell_world = pending.world;
-        // The one terrain height the whole structure stands on — read here rather
+        // The one terrain height the cell's mesh is placed on — read here rather
         // than left to `build_mesh`, because the carriageways cut out of these
         // slabs have to be lifted onto *this* number and not onto the field's
         // answer over their own narrower footprint.
         let deck_level = if terrain.is_ready() {
             terrain.level_over(
-                mesh.positions
+                pending
+                    .decks
                     .iter()
+                    .flat_map(|d| d.positions.iter())
                     .map(|p| [cell_world.x + p[0], cell_world.y + p[2]]),
             )
         } else {
             0.0
         };
+        // **Each deck at its own measured top**, as an offset from that shared
+        // level; the clearance where the survey has no top for it.
+        let levels: Vec<f32> = heights
+            .iter()
+            .zip(&tops)
+            .map(|(&h, top)| match top {
+                Some(t) if terrain.is_ready() => (t - terrain.datum_m) - deck_level,
+                _ => h,
+            })
+            .collect();
+        let mesh = build_deck_mesh(&pending.decks, &levels, &heights, &shapes, deck_level);
         // Publish before the mesh is spawned rather than after, so the two cannot
         // disagree about a cell: this is the same `heights` the vertices were built
         // from, and a deck that reached the screen but not the resource is a route
@@ -2577,6 +2802,9 @@ pub fn resolve_bridge_decks(
                     deck,
                     world: cell_world,
                     height,
+                    top_nap: tops[i],
+                    world_top: deck_level + levels[i],
+                    shape: shapes[i].clone(),
                     // This deck's own approaches, by the index
                     // `vector_tiles::Approach::deck` carries.
                     approaches: pending
@@ -2645,7 +2873,7 @@ pub fn resolve_bridge_decks(
         // materials as any road, so a bridge keeps its tarmac, its lane markings
         // and its place in the depth ladder all the way across.
         for (di, sm) in &pending.roads {
-            let Some(&h) = heights.get(*di as usize) else {
+            let Some(&h) = levels.get(*di as usize) else {
                 continue;
             };
             let material = surfaces
@@ -2666,7 +2894,10 @@ pub fn resolve_bridge_decks(
                             sm,
                             cell_world.x,
                             cell_world.y,
-                            Stand::Lifted(deck_level + h),
+                            match shapes.get(*di as usize).and_then(Option::as_deref) {
+                                Some(shape) => Stand::Deck(shape),
+                                None => Stand::Lifted(deck_level + h),
+                            },
                         ))),
                         MeshMaterial3d(material),
                         placement(),
@@ -2688,20 +2919,22 @@ pub fn resolve_bridge_decks(
     }
 }
 
-/// How high one deck stands above the ground it crosses, in metres, read from its
-/// cluster's two patches (`cluster_decks`).
+/// How one deck measures against the survey: its clearance over the ground
+/// around it, its median top, and its profile from the same surface samples.
 ///
-/// `0.0` is the answer for "no data here" as much as for a bridge that really is
-/// at street level — a Dutch canal bridge is exactly that, and telling the two
-/// apart would buy nothing, because both want a flat deck.
-fn deck_height(layer: &HeightLayer, clusters: &[DeckCluster], deck: &DeckBox) -> f32 {
-    let Some(cluster) = deck.cluster.and_then(|i| clusters.get(i)) else {
-        return 0.0;
-    };
+/// `None` for "no data here" as much as for a bridge that really is at street
+/// level — a Dutch canal bridge is exactly that, and telling the two apart would
+/// buy nothing, because both want a flat deck.
+fn deck_measure(
+    layer: &HeightLayer,
+    clusters: &[DeckCluster],
+    deck: &DeckBox,
+    bridge: &BridgeDeck,
+) -> Option<DeckMeasure> {
+    let cluster = deck.cluster.and_then(|i| clusters.get(i))?;
     let (surface, ground) = cluster.requests();
-    let deck_top = layer
-        .get(&surface)
-        .and_then(|p| p.median_where(|rd| inside_rings(&deck.rings, rd)));
+    let surface = layer.get(&surface);
+    let deck_top = surface.and_then(|p| p.median_where(|rd| inside_rings(&deck.rings, rd)));
     // No outline test on the terrain side: AHN's DTM has the structure cut out of
     // it already, so everything left in the box around the deck *is* the ground
     // beside it. The box is the deck's own, padded — the cluster's patch reaches
@@ -2713,12 +2946,36 @@ fn deck_height(layer: &HeightLayer, clusters: &[DeckCluster], deck: &DeckBox) ->
     let ground = layer.get(&ground).and_then(|p| {
         p.median_where(|rd| (lo[0]..=hi[0]).contains(&rd[0]) && (lo[1]..=hi[1]).contains(&rd[1]))
     });
-    match (deck_top, ground) {
-        // The same rule atlas measures its decks by, for the ground it grades.
-        (Some(top), Some(ground)) => cartopolis_geo::terrain_grade::deck_clearance(top, ground),
-        _ => 0.0,
+    // **The top is kept, not only the difference.** The clearance says whether
+    // the deck is a structure at all; the top says where it *is*. Using ground +
+    // clearance for that instead counted the embankment twice wherever the survey's
+    // ground already held it — approaches graded 4–5 m above the deck they lead to
+    // (Emmaviaduct north, 11.4–12.8 against a 7.81 top) — and one median ground for
+    // all of a tile's decks floated a small one 3.4 m over its canal and buried
+    // another (bridge research, 2026-09-23).
+    let (Some(top), Some(ground)) = (deck_top, ground) else {
+        return None;
+    };
+    // The same rule atlas measures its decks by, for the ground it grades.
+    let height = cartopolis_geo::terrain_grade::deck_clearance(top, ground);
+    if height <= 0.0 {
+        return None;
     }
+    // Only a lifted deck gets a profile: one at street level is road surface,
+    // and the ground under it already has the slope. Read at the deck's own
+    // tile-local points, as atlas reads it (`DeckProfile::fit_over`).
+    let profile = surface.and_then(|patch| {
+        cartopolis_geo::deck_profile::DeckProfile::fit_over(bridge, |local| {
+            patch.at(deck.frame.rd(local))
+        })
+    });
+    Some(DeckMeasure {
+        height,
+        top: Some(top),
+        profile,
+    })
 }
+
 
 /// Even-odd point-in-polygon over a deck's RD rings.
 fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
@@ -2756,12 +3013,67 @@ fn tile_frac_to_lat_lng(fx: f64, fy: f64) -> (f64, f64) {
 /// The fascia is what makes a deck a *structure*. Without it a raised deck is a
 /// sheet with no thickness, and from any angle but straight down it reads as a
 /// texture floating in mid-air rather than as something a road runs over.
-fn build_deck_mesh(decks: &[BridgeDeck], heights: &[f32]) -> SurfaceMesh {
+/// `levels` is where each slab is drawn relative to the cell's level; `clearance`
+/// is how far the structure stands over its own ground, which is what decides
+/// whether it has a fascia at all.
+fn build_deck_mesh(
+    decks: &[BridgeDeck],
+    levels: &[f32],
+    clearance: &[f32],
+    shapes: &[Option<Arc<DeckShape>>],
+    deck_level: f32,
+) -> SurfaceMesh {
+    let mut out = deck_slab(&[], &[], &[]);
+    for (i, deck) in decks.iter().enumerate() {
+        let (Some(&level), Some(&lift)) = (levels.get(i), clearance.get(i)) else {
+            continue;
+        };
+        let one = std::slice::from_ref(deck);
+        let slab = match shapes.get(i).and_then(Option::as_deref) {
+            None => deck_slab(one, &[level], &[lift]),
+            // A profiled deck: built level at 0, subdivided so its slope has
+            // vertices to follow, then stood on the profile. Fascia and surface
+            // move together, so the slab keeps its thickness all the way along.
+            Some(shape) => {
+                let mut slab = deck_slab(one, &[0.0], &[lift]);
+                let (mut uvs, mut colors, mut rungs) = (Vec::new(), Vec::new(), Vec::new());
+                cartopolis_geo::terrain_refine::refine_for_terrain(
+                    &mut slab.positions,
+                    &mut slab.indices,
+                    &mut uvs,
+                    &mut slab.normals,
+                    &mut colors,
+                    &mut rungs,
+                    DECK_PROFILE_EDGE_M,
+                    None,
+                );
+                for p in &mut slab.positions {
+                    p[1] += shape.world_y([p[0], p[2]]) - deck_level;
+                }
+                slab
+            }
+        };
+        let base = out.positions.len() as u32;
+        out.positions.extend(slab.positions);
+        out.normals.extend(slab.normals);
+        out.indices.extend(slab.indices.iter().map(|i| base + i));
+    }
+    out
+}
+
+/// Longest edge a profiled deck's mesh keeps: under a station
+/// (`deck_profile::STATION_M`) apart, so the drawn slope bends where the
+/// measured one does.
+const DECK_PROFILE_EDGE_M: f32 = 3.0;
+
+/// Level slabs, each deck at its own level: the surface and, for a deck lifted
+/// far enough to have one, the fascia down its sides.
+fn deck_slab(decks: &[BridgeDeck], levels: &[f32], clearance: &[f32]) -> SurfaceMesh {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
-    for (deck, &h) in decks.iter().zip(heights) {
+    for ((deck, &h), &lift) in decks.iter().zip(levels).zip(clearance) {
         // Surface.
         let base = positions.len() as u32;
         for p in &deck.positions {
@@ -2770,7 +3082,7 @@ fn build_deck_mesh(decks: &[BridgeDeck], heights: &[f32]) -> SurfaceMesh {
         }
         indices.extend(deck.indices.iter().map(|i| base + i));
 
-        if h < FASCIA_MIN_M {
+        if lift < FASCIA_MIN_M {
             continue;
         }
         let bottom = h - DECK_THICKNESS_M;
@@ -3083,6 +3395,10 @@ enum Stand<'a> {
     /// over its own slightly different footprint and landing a few centimetres off
     /// the slab it was cut out of.
     Lifted(f32),
+    /// Onto a deck's measured profile: [`Self::Lifted`] with a height per vertex,
+    /// after subdividing so a long deck's slope has vertices to follow — a road
+    /// ribbon across a straight 200 m viaduct is otherwise two triangles.
+    Deck(&'a DeckShape),
     /// Already stood on the ground by the surface worker (`spawn_geometry_task`).
     Placed,
 }
@@ -3126,6 +3442,21 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
         Stand::Lifted(y) => {
             for p in &mut positions {
                 p[1] += y;
+            }
+        }
+        Stand::Deck(shape) => {
+            cartopolis_geo::terrain_refine::refine_for_terrain(
+                &mut positions,
+                &mut indices,
+                &mut uvs,
+                &mut normals,
+                &mut colors,
+                &mut rungs,
+                DECK_PROFILE_EDGE_M,
+                None,
+            );
+            for p in &mut positions {
+                p[1] += shape.world_y([p[0], p[2]]);
             }
         }
         Stand::Terrain(terrain, _) if !terrain.is_ready() => {}
@@ -3559,6 +3890,26 @@ thread_local! {
 /// How far below a registered water surface a tunnel's roof and walls are held.
 const UNDER_WATER_M: f32 = 0.3;
 
+/// How far out along an approach [`DeckPlates::approach_steps`] reads the ground.
+const APPROACH_PROBE_M: f32 = 3.0;
+
+/// The point `at` metres along a polyline, clamped to its ends.
+pub(crate) fn point_along(pts: &[[f32; 2]], at: f32) -> [f32; 2] {
+    let mut walked = 0.0f32;
+    for w in pts.windows(2) {
+        let seg = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+        if walked + seg >= at && seg > 1e-6 {
+            let t = (at - walked) / seg;
+            return [
+                w[0][0] + (w[1][0] - w[0][0]) * t,
+                w[0][1] + (w[1][1] - w[0][1]) * t,
+            ];
+        }
+        walked += seg;
+    }
+    pts.last().copied().unwrap_or([0.0, 0.0])
+}
+
 /// The level the ground at `(x, z)` is filled to where it is filled at all: the
 /// middle of the land around (`TerrainField::lid_level`), and never below a
 /// lid's roof plus its slab (`Tunnels::cover_over`). One function, because the
@@ -3619,6 +3970,80 @@ mod tests {
         d
     }
 
+    /// **A sloped deck is drawn sloped, and what stands on it stands on the
+    /// slope.** A 120 × 12 m deck whose survey rises 6 m end to end: the slab's
+    /// surface follows it within a few centimetres all along — which needs the
+    /// subdivision, since its outline is four corners — and `top_at` answers the
+    /// height under a car at either end, not the median.
+    #[test]
+    fn a_profiled_deck_follows_its_slope() {
+        let deck = BridgeDeck {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [120.0, 0.0, 0.0],
+                [120.0, 0.0, 12.0],
+                [0.0, 0.0, 12.0],
+            ],
+            indices: vec![0, 2, 1, 0, 3, 2],
+            rings: vec![vec![
+                [0.0, 0.0],
+                [120.0, 0.0],
+                [120.0, 12.0],
+                [0.0, 12.0],
+                [0.0, 0.0],
+            ]],
+            min: [0.0, 0.0],
+            max: [120.0, 12.0],
+        };
+        let rise = |x: f64| (2.0 + 0.05 * x) as f32;
+        let profile = cartopolis_geo::deck_profile::DeckProfile::fit_over(&deck, |p| {
+            Some(rise(f64::from(p[0])))
+        })
+        .unwrap();
+        let shape = Arc::new(DeckShape {
+            profile,
+            offset: 0.0,
+        });
+
+        let mesh = build_deck_mesh(
+            std::slice::from_ref(&deck),
+            &[5.0],
+            &[5.0],
+            &[Some(shape.clone())],
+            0.0,
+        );
+        let mut checked = 0;
+        for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+            // The top surface only: the fascia's subdivided faces have vertices
+            // all the way down the slab's thickness.
+            if n[1] < 0.9 {
+                continue;
+            }
+            let want = rise(f64::from(p[0]).clamp(2.0, 118.0));
+            assert!((p[1] - want).abs() < 0.12, "{p:?} against {want}");
+            checked += 1;
+        }
+        assert!(checked > 40, "only {checked} vertices on the surface");
+
+        let mut plates = DeckPlates::default();
+        plates.set_cell(
+            (0, 0),
+            vec![Plate {
+                deck,
+                world: Vec2::ZERO,
+                height: 5.0,
+                top_nap: Some(5.0),
+                world_top: 5.0,
+                shape: Some(shape),
+                approaches: Vec::new(),
+            }],
+        );
+        let low = plates.top_at(Vec2::new(10.0, 6.0)).unwrap();
+        let high = plates.top_at(Vec2::new(110.0, 6.0)).unwrap();
+        assert!((low - rise(10.0)).abs() < 0.12, "{low}");
+        assert!((high - rise(110.0)).abs() < 0.12, "{high}");
+    }
+
     /// **Neighbouring decks share their patches; distant ones do not; and every
     /// deck is measured from its own box, not its cluster's.**
     #[test]
@@ -3654,12 +4079,13 @@ mod tests {
     fn a_deck_outside_ahn_asks_for_nothing() {
         // Paris, at z14.
         let (x, y) = cartopolis_core::lat_lng_to_tile(48.8566, 2.3522, 14);
-        let (boxes, clusters) = cluster_decks(&[deck_at(20.0, 10.0, 10.0)], (x, y), 1470.0);
+        let deck = deck_at(20.0, 10.0, 10.0);
+        let (boxes, clusters) = cluster_decks(std::slice::from_ref(&deck), (x, y), 1470.0);
         assert!(clusters.is_empty());
         assert_eq!(boxes[0].cluster, None);
         assert_eq!(
-            deck_height(&HeightLayer::default(), &clusters, &boxes[0]),
-            0.0
+            deck_measure(&HeightLayer::default(), &clusters, &boxes[0], &deck),
+            None
         );
     }
 
@@ -3685,12 +4111,15 @@ mod tests {
                 world: Vec2::new(-20.0, -20.0),
                 height: 6.0,
                 approaches: vec![run],
+                top_nap: None,
+                world_top: 0.0,
+                shape: None,
             }],
         );
 
         // 201 samples over ±100 m is one per metre, which resolves a 40 m deck.
         let (n, half) = (201usize, 100.0f32);
-        let (ramp, lift) = plates.grade_masks(n, half);
+        let (ramp, lift, _) = plates.grade_masks(n, half);
         let at = |x: f32, z: f32| -> usize {
             let g = |v: f32| ((v + half).round()) as usize;
             g(z) * n + g(x)
@@ -3726,7 +4155,7 @@ mod tests {
 
         // And an empty set of plates is an empty pair, not a panic — which is
         // every tile in a city with no viaduct in it.
-        let (ramp, lift) = DeckPlates::default().grade_masks(n, half);
+        let (ramp, lift, _) = DeckPlates::default().grade_masks(n, half);
         assert!(!ramp.iter().any(|m| *m));
         assert!(!lift.iter().any(|v| v.is_finite()));
     }
@@ -3745,6 +4174,9 @@ mod tests {
                 world: Vec2::new(1000.0, 2000.0),
                 height: 6.0,
                 approaches: Vec::new(),
+                top_nap: None,
+                world_top: 0.0,
+                shape: None,
             }],
         );
 
@@ -3780,6 +4212,9 @@ mod tests {
                     world: Vec2::ZERO,
                     height,
                     approaches: Vec::new(),
+                    top_nap: None,
+                    world_top: 0.0,
+                    shape: None,
                 }],
             );
         }
@@ -3803,6 +4238,9 @@ mod tests {
             world: Vec2::new(100.0, 200.0),
             height: 6.0,
             approaches: vec![vec![[40.0, 20.0], [90.0, 20.0]]],
+            top_nap: None,
+            world_top: 0.0,
+            shape: None,
         };
         let mut plates = DeckPlates::default();
         plates.set_cell((1, 1), vec![plate()]);
@@ -3851,6 +4289,9 @@ mod tests {
                 world: Vec2::ZERO,
                 height: 6.0,
                 approaches: Vec::new(),
+                top_nap: None,
+                world_top: 0.0,
+                shape: None,
             }],
         );
         assert_ne!(plates.revision, start, "an arriving deck is a change");

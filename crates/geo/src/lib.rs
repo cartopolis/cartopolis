@@ -22,6 +22,8 @@ pub mod crops;
 // claim. It borrows `furniture`'s mesh buffer and its way index, so a boom and a
 // bench end up in one group, one material and one draw call.
 pub mod crossings;
+// A bridge deck's height along its length, from the surface-model samples over it.
+pub mod deck_profile;
 // The triangulation both surveyed polygon layers use: rings in, byte-bounded
 // merged meshes out, with the per-polygon tone in the vertex colours.
 mod flat_fill;

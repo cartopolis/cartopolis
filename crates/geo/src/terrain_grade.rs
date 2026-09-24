@@ -108,9 +108,42 @@ pub struct DeckPlate<'a> {
     /// Metres above the ground at the abutment (DSM over the deck less the DTM
     /// around it).
     pub height: f32,
+    /// The deck's measured top (NAP, the median of the surface over it), where the
+    /// survey has one: what an approach is graded **to**.
+    ///
+    /// Not the ground plus [`Self::height`]: the survey's ground at an abutment is
+    /// routinely the real embankment already most of the way up, and adding the
+    /// clearance on top of it graded approaches 4–5 m above the deck they meet
+    /// (Emmaviaduct north, 11.4–12.8 m against a 7.81 m top, 2026-09-23).
+    pub top: Option<f32>,
+    /// The top along the deck's length, in its cell's tile-local frame, where the
+    /// survey covers it well enough (`deck_profile`). Where set it answers the top
+    /// under each sample instead of [`Self::top`] — a sloped deck meets each of its
+    /// approaches at its own end's height.
+    pub profile: Option<&'a crate::deck_profile::DeckProfile>,
     /// The deck's own street either side of its span, tile-local, abutment first
     /// (`vector_tiles::Approach`).
     pub approaches: &'a [Vec<[f32; 2]>],
+}
+
+impl DeckPlate<'_> {
+    /// The measured top over a tile-local point (NAP), if the survey has one.
+    #[must_use]
+    pub fn top_at(&self, local: [f32; 2]) -> Option<f32> {
+        match self.profile {
+            Some(p) => Some(p.at([f64::from(local[0]), f64::from(local[1])])),
+            None => self.top,
+        }
+    }
+}
+
+/// [`deck_masks`]: where the approaches run, how high the structure stands over
+/// the ground (`NaN` off every deck), and its measured top in NAP (`NaN` where
+/// the survey has none).
+pub struct DeckMasks {
+    pub ramp: Vec<bool>,
+    pub lift: Vec<f32>,
+    pub top: Vec<f32>,
 }
 
 /// The two grids an embankment is built from: where the approach roads run, and
@@ -121,13 +154,14 @@ pub struct DeckPlate<'a> {
 /// it, including the street passing *under* the viaduct; the approach is separable
 /// only because it is the same street feature as the span.
 #[must_use]
-pub fn deck_masks(plates: &[DeckPlate<'_>], lattice: Lattice) -> (Vec<bool>, Vec<f32>) {
+pub fn deck_masks(plates: &[DeckPlate<'_>], lattice: Lattice) -> DeckMasks {
     let n = lattice.n;
     let step = lattice.step;
     let mut ramp = vec![false; n * n];
     let mut lift = vec![f32::NAN; n * n];
+    let mut top = vec![f32::NAN; n * n];
     if n < 3 || plates.is_empty() || step <= 0.0 {
-        return (ramp, lift);
+        return DeckMasks { ramp, lift, top };
     }
     let axis = |v: f32, o: f32| -> Option<usize> {
         let k = ((v - o) / step).round();
@@ -153,12 +187,14 @@ pub fn deck_masks(plates: &[DeckPlate<'_>], lattice: Lattice) -> (Vec<bool>, Vec
             for z in z0..=z1 {
                 for x in x0..=x1 {
                     let [px, pz] = lattice.at(x, z);
-                    if plate.deck.contains([px - wx, pz - wz]) {
+                    let local = [px - wx, pz - wz];
+                    if plate.deck.contains(local) {
                         let i = z * n + x;
                         // The tallest wins: at an interchange the approach climbs
                         // to the top deck.
                         if !(lift[i] >= plate.height) {
                             lift[i] = plate.height;
+                            top[i] = plate.top_at(local).unwrap_or(f32::NAN);
                         }
                     }
                 }
@@ -203,7 +239,7 @@ pub fn deck_masks(plates: &[DeckPlate<'_>], lattice: Lattice) -> (Vec<bool>, Vec
             ramp[i] = false;
         }
     }
-    (ramp, lift)
+    DeckMasks { ramp, lift, top }
 }
 
 /// A cell's road-sheet triangles in its own tile-local XZ.
@@ -332,9 +368,9 @@ pub struct Graded {
 /// embankments are built **before** the relaxation and pinned against it, because a
 /// corridor held at the ground along both sides cannot express a gradient along it.
 ///
-/// `road` is the carriageway only; the margin is added here, once. `ramp` and `lift`
-/// are [`deck_masks`]; pass them empty where there are no decks. `road` empty skips
-/// the grading altogether.
+/// `road` is the carriageway only; the margin is added here, once. `ramp`, `lift`
+/// and `top` are [`deck_masks`]; pass them empty where there are no decks. `road`
+/// empty skips the grading altogether.
 pub fn grade(
     raw: &mut [f32],
     lattice: Lattice,
@@ -342,6 +378,7 @@ pub fn grade(
     mut road: Vec<bool>,
     mut ramp: Vec<bool>,
     lift: &[f32],
+    top: &[f32],
 ) -> Graded {
     let n = lattice.n;
     let step = lattice.step;
@@ -363,21 +400,28 @@ pub fn grade(
                 ramp[i] = false;
             }
         }
-        // The pin is the deck's height above the ground at the abutment, which is
-        // what it was measured against; a road already standing higher is left
-        // alone by `ramp_from_pins` — it is in a cutting.
+        // The pin is the deck's measured top beside it where the survey has one
+        // (`DeckPlate::top` says why not the clearance), else the ground here plus
+        // the clearance it was measured against. A road already standing higher is
+        // left alone by `ramp_from_pins` — it is in a cutting.
+        let near = |i: usize, grid: &[f32]| {
+            [i - 1, i + 1, i - n, i + n]
+                .into_iter()
+                .filter_map(|k| grid.get(k).copied())
+                .filter(|v| v.is_finite())
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
         for z in 1..n - 1 {
             for x in 1..n - 1 {
                 let i = z * n + x;
                 if !ramp[i] || !raw[i].is_finite() {
                     continue;
                 }
-                let up = [i - 1, i + 1, i - n, i + n]
-                    .into_iter()
-                    .filter_map(|k| lift.get(k).copied())
-                    .filter(|v| v.is_finite())
-                    .fold(f32::NEG_INFINITY, f32::max);
-                if up.is_finite() {
+                let (up, at) = (near(i, lift), near(i, top));
+                if at.is_finite() {
+                    pins[i] = at;
+                    out.abutments += 1;
+                } else if up.is_finite() {
                     pins[i] = raw[i] + up;
                     out.abutments += 1;
                 }
@@ -410,6 +454,34 @@ mod tests {
         }
     }
 
+    /// **An approach meets the deck's measured top, not the ground plus its
+    /// clearance.** Where the survey's ground at the abutment is already the
+    /// embankment (5 m here), adding the 6 m clearance again would grade the road
+    /// to 11 m against a 7 m deck — what the Emmaviaduct's north approach did.
+    /// Without a top the clearance is still the answer.
+    #[test]
+    fn an_approach_is_pinned_to_the_measured_top() {
+        let l = lattice(31);
+        let n = l.n;
+        let road: Vec<bool> = (0..n * n).map(|i| (14..=16).contains(&(i / n))).collect();
+        let ramp: Vec<bool> = (0..n * n)
+            .map(|i| i / n == 15 && i % n < 20)
+            .collect();
+        let deck = |i: usize| (13..=17).contains(&(i / n)) && i % n >= 20;
+        let lift: Vec<f32> = (0..n * n).map(|i| if deck(i) { 6.0 } else { f32::NAN }).collect();
+        let top: Vec<f32> = (0..n * n).map(|i| if deck(i) { 7.0 } else { f32::NAN }).collect();
+        let none = |_: f32, _: f32| None;
+        let at_abutment = |top: &[f32]| {
+            let mut g = vec![5.0f32; n * n];
+            grade(&mut g, l, &none, road.clone(), ramp.clone(), &lift, top);
+            g[15 * n + 19]
+        };
+        let with_top = at_abutment(&top);
+        assert!((with_top - 7.0).abs() < 0.3, "{with_top}");
+        let without = at_abutment(&[]);
+        assert!(without > 10.0, "{without}");
+    }
+
     #[test]
     fn water_is_carved_before_the_holes_are_filled() {
         let l = lattice(21);
@@ -424,7 +496,7 @@ mod tests {
             })
             .collect();
         let level = |x: f32, _: f32| (-2.5..=2.5).contains(&x).then_some(0.0);
-        let out = grade(&mut g, l, &level, Vec::new(), Vec::new(), &[]);
+        let out = grade(&mut g, l, &level, Vec::new(), Vec::new(), &[], &[]);
         assert!(out.carved > 0);
         let mid = g[10 * l.n + 10];
         assert!((mid - (0.0 - WATER_BED_M)).abs() < 1e-4, "{mid}");

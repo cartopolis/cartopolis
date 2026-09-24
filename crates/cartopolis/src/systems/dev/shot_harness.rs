@@ -999,6 +999,14 @@ pub struct ShotMetrics {
     /// the client called it.
     pub approach_abutments: usize,
     pub approach_raised: usize,
+    /// Raised decks standing, how many have no approach at all, and how far a
+    /// deck's drawn top is from the ground three metres out along its approaches
+    /// — the largest and the mean (`DeckPlates::approach_steps`). A cliff at the
+    /// end of an embankment is a large `deck_step_max_m`, which no view shows.
+    pub deck_count: usize,
+    pub decks_unapproached: usize,
+    pub deck_step_max_m: f32,
+    pub deck_step_mean_m: f32,
     /// Whether the half-metre tier under the camera has baked
     /// (`terrain::update_fine_terrain`), and what it actually samples at.
     ///
@@ -1198,7 +1206,7 @@ traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,terrain_sample_m,terrain_graded_samples,\
-approach_abutments,approach_raised,\
+approach_abutments,approach_raised,deck_count,decks_unapproached,deck_step_max_m,deck_step_mean_m,\
 fine_terrain_ready,fine_terrain_sample_m,\
 ground_detail_ready,ground_detail_sample_m,water_rings,\
 water_carved_coarse,water_carved_fine,water_drop_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
@@ -1280,6 +1288,8 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("terrain_relief_m", 2),
     ("terrain_sample_m", 2),
     ("terrain_graded_samples", 0),
+    ("deck_step_max_m", 2),
+    ("deck_step_mean_m", 2),
     ("approach_abutments", 0),
     ("approach_raised", 0),
     ("fine_terrain_sample_m", 2),
@@ -3042,6 +3052,8 @@ pub struct ShotReadouts<'w, 's> {
     /// The near-camera interior layer, for its room count alone.
     interiors: Res<'w, crate::systems::interiors::Interiors>,
     tunnels: Res<'w, crate::systems::tunnels::Tunnels>,
+    /// The raised decks, for how well they meet their approaches.
+    decks: Res<'w, crate::systems::map_geometry::DeckPlates>,
     /// The same layer's support field, for its storey tally.
     interior_floors: Res<'w, crate::systems::interiors::InteriorFloors>,
     /// What is selected and what the avatar is standing in — see
@@ -3562,6 +3574,7 @@ pub fn drive_capture(
                     r.total_reserved_bytes / 1024,
                 )
             });
+        let deck_steps = readouts.decks.approach_steps(&readouts.terrain);
         let m = ShotMetrics {
             shot: progress.index + 1,
             name: shot.name.clone(),
@@ -3697,6 +3710,10 @@ pub fn drive_capture(
             terrain_graded_samples: readouts.road_mask.marked_samples(),
             approach_abutments: readouts.terrain.approach_samples.0,
             approach_raised: readouts.terrain.approach_samples.1,
+            deck_count: deck_steps.0,
+            decks_unapproached: deck_steps.1,
+            deck_step_max_m: deck_steps.2,
+            deck_step_mean_m: deck_steps.3,
             ground_detail_ready: readouts.ground_detail.slope.is_some(),
             ground_detail_sample_m: readouts.ground_detail.sample_m,
             fine_terrain_ready: readouts.terrain.fine_ready(),
@@ -4432,6 +4449,10 @@ mod tests {
             terrain_graded_samples: 0,
             approach_abutments: 0,
             approach_raised: 0,
+            deck_count: 0,
+            decks_unapproached: 0,
+            deck_step_max_m: 0.0,
+            deck_step_mean_m: 0.0,
             upload_peak_kb: 0,
             upload_peak_asset_kb: 0,
             gpu_resident_kb: 0,

@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
 triggers: [height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-08-30
+updated: 2026-09-24
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -100,6 +100,34 @@ block, one viaduct running 0.96 → 6.62 m, measured 2026-08-30). It is the same
 AHN measured above, so it supplies a number this note already has, and the
 constraint was never the height — it is the flat approach roads.
 [3d-basisvoorziening.md](3d-basisvoorziening.md)
+
+## Three faults the grading still had, measured 2026-09-23
+
+A research pass over the four bridge views in `docs/grade-shots.toml` found none
+of them right, and all three causes were numbers rather than pictures — at the
+manifest's altitudes an 8.7 m cliff is a few pixels.
+
+- **The approach was a sliver.** `split_by_deck` only knew the part of the
+  *bridge* way that overhung the deck outline, and OSM's bridge way stops at the
+  abutment: every approach over four Groningen tiles was 0.0–0.3 m, and many decks
+  had none. `vector_tiles::extend_approaches` now follows the street that carries
+  on from each abutment, the walk `tunnels::find_approaches` does for a tunnel
+  ramp, up to `APPROACH_REACH_M` (160 m).
+- **The target was counted twice.** The pin was the ground at the abutment plus
+  the clearance, and the survey's ground there is routinely the real embankment
+  already: approaches graded 4–5 m above their deck. `deck_height` keeps the
+  measured top now, and the grading pins to it.
+- **One level per tile.** Every deck in a cell stood on one median ground level
+  plus its clearance, floating a small canal deck 3.4 m and burying another. Each
+  deck is drawn at its own measured top; traffic on it stands on that
+  (`DeckPlates::top_at`).
+
+`deck_step_max_m` / `deck_step_mean_m` in `--dump-state` are the check: a deck's
+drawn top against the ground three metres past where each approach leaves the
+deck's outline, skipping stubs under a metre (a deck the tile border cut, which
+continues next door). Measured on the Deck after the fixes: mean 0.1–0.3 m in
+every bridge view. What still steps is an approach the **tile border** cuts: the
+next tile does not know the deck is there, so the ramp stops at the edge.
 
 ## A deck is the structure, not the road surface
 

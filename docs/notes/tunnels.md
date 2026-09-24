@@ -205,6 +205,40 @@ anywhere**. Beside is not beyond, and the test now requires the offset between t
 two ends to lie *along* the road. Same tile after the fix: four entrances on the
 deep roads, 6.0–6.7 m down, in opposite-heading pairs.
 
+## What the ring's portals taught, 2026-09-23
+
+Bisected on the Deck with `CARTO_DBG_HIDE` (and `!word` to look at one layer
+alone), which is the instrument to reach for before guessing — four guesses about
+one pale block in a mouth were each disproved before it existed.
+
+- **The pale block in each mouth was the portal frame**, OSM building 1157021132,
+  a 35 × 5 m strip across both mouths, standing on the survey's trench floor. Both
+  OSM tiers (the detail patch *and* the far tier, which also draws near the camera
+  as the patch's fallback) and lod22 leave out a building whose outline is over a
+  covered corridor or an opening **and** stands more than `TRENCH_DUG_M` below the
+  land around (`tunnels::footprint_in_a_covered_trench`). They rebuild when the
+  lids *or the terrain* under them change (`lid_key`): judged before the field
+  landed, the frame was kept, and it came and went with streaming order.
+- **The survey's own tunnel walls** — the east headwall at 7.02 m, the north
+  cutting's retaining wall at 9.11 m — are measured trench floor to top and were
+  stood *up* from the ground as boundary boxes. `wall_of_a_sunken_road` leaves a
+  wall to the tunnel when most of it lies along one.
+- **The fill's target** is the 80th percentile of sixteen samples at 30 m and
+  60 m (`TerrainField::lid_level`): the highest sample jumped near any ramp, the
+  middle one sank into a construction pit wider than the ring. Over a covered
+  corridor, and within `COVER_REACH_M` of one, it is never below the roof plus
+  its slab (`Tunnels::cover_over`). It fills **beside** a deep cutting as well as
+  over a lid (`fill_weight`), and wall tops rise to the ground as drawn.
+- Trees, grass, the basemap (by the least lift in a vertex's neighbourhood, so its
+  coarse quads stay under the vector ground) and the half-metre shading all take
+  the fill now; traffic on a sunken line stands on `at`, the field its deck was
+  drawn on, not the half-metre `ground_at`.
+
+Still open at the east portal: a thin dark line along the median toward the
+canal in an oblique view, which the layer bisect puts at the ground meeting the
+tunnel rather than in the tunnel mesh, and pale bars across the canal that look
+like the quay walls' measured height stood up from the ground the same way.
+
 ## The ground over a lid is filled back in
 
 **Settled 2026-09-16: where the two sources disagree, the map's tag wins.** The

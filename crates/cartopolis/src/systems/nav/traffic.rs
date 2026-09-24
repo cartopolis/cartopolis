@@ -1195,7 +1195,13 @@ pub fn drive_traffic(
         // the street under it are at the same position. Asking only for a line
         // the tile flagged `bridge` is what keeps the underpass underneath.
         let lift = if on_deck { decks.lift_at(pos) } else { 0.0 };
-        let y = ground + sunk + lift + CAR_RIDE_HEIGHT;
+        // On a deck, the deck **as drawn**: each is now placed at its own
+        // measured top, and ground + clearance put cars in or over a deck by the
+        // difference between the two (bridge research, 2026-09-23).
+        let y = match on_deck.then(|| decks.top_at(pos)).flatten() {
+            Some(top) => top + CAR_RIDE_HEIGHT,
+            None => ground + sunk + lift + CAR_RIDE_HEIGHT,
+        };
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;

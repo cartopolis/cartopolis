@@ -35,6 +35,7 @@
 use std::collections::HashMap;
 
 use cartopolis_core::world::{lat_lng_to_tile_frac, tile_frac_to_lat_lng, tile_to_meters};
+use cartopolis_geo::deck_profile::{DeckMeasure, DeckProfile};
 use cartopolis_geo::terrain_grade::{self, DeckPlate, Lattice};
 use cartopolis_geo::terrain_tile::{TerrainTile, DENSE_GRID};
 use cartopolis_geo::vector_tiles::{self, BridgeDeck, TileData};
@@ -114,6 +115,8 @@ impl VectorSource for HttpTiles {
 struct Deck {
     deck: BridgeDeck,
     height: f32,
+    top: Option<f32>,
+    profile: Option<cartopolis_geo::deck_profile::DeckProfile>,
     approaches: Vec<Vec<[f32; 2]>>,
 }
 
@@ -134,7 +137,9 @@ pub struct Grader<'a> {
     water: HashMap<(i64, i64), Vec<(f32, Vec<(f64, f64)>)>>,
     /// Every deck measured, per cell: its centre in tile fractions and its
     /// clearance (0 for a flat one), for `decks/14/x/y.json`.
-    pub deck_heights: HashMap<(i64, i64), Vec<[f32; 3]>>,
+    /// Every deck measured, per cell, as its published record — see
+    /// [`write_decks`].
+    pub deck_heights: HashMap<(i64, i64), Vec<serde_json::Value>>,
     /// Decks measured, and how many were lifted.
     pub decks_measured: usize,
     pub decks_lifted: usize,
@@ -232,15 +237,24 @@ impl<'a> Grader<'a> {
             cell.roads = terrain_grade::road_triangles(&roads.ground);
             self.deck_heights.entry((x, y)).or_default();
             for (i, deck) in decks.into_iter().enumerate() {
-                let height = self.measure_deck(x, y, tile_m, &deck)?;
+                let measured = self.measure_deck(x, y, tile_m, &deck)?;
+                let height = measured.height;
                 self.decks_measured += 1;
                 // Recorded whether lifted or not: a flat deck is an answer too, and
-                // the client asks PDOK for any deck it cannot find here.
-                self.deck_heights.entry((x, y)).or_default().push([
-                    (deck.min[0] + deck.max[0]) * 0.5 / tile_m,
-                    (deck.min[1] + deck.max[1]) * 0.5 / tile_m,
-                    height,
-                ]);
+                // the client asks PDOK for any deck it cannot find here. The top
+                // and the profile trail, so a client from before them still reads
+                // the height.
+                let round = |v: f64| (v * 1e5).round() / 1e5;
+                self.deck_heights.entry((x, y)).or_default().push(serde_json::json!([
+                    round(f64::from((deck.min[0] + deck.max[0]) * 0.5 / tile_m)),
+                    round(f64::from((deck.min[1] + deck.max[1]) * 0.5 / tile_m)),
+                    round(f64::from(height)),
+                    measured.top.map(|t| round(f64::from(t))),
+                    measured
+                        .profile
+                        .as_ref()
+                        .map(|p| p.to_wire(f64::from(tile_m)).into_iter().map(round).collect::<Vec<_>>()),
+                ]));
                 if height <= 0.0 {
                     continue;
                 }
@@ -254,6 +268,8 @@ impl<'a> Grader<'a> {
                 cell.decks.push(Deck {
                     deck,
                     height,
+                    top: measured.top,
+                    profile: measured.profile,
                     approaches,
                 });
             }
@@ -274,7 +290,7 @@ impl<'a> Grader<'a> {
         cy: i64,
         tile_m: f32,
         deck: &BridgeDeck,
-    ) -> Result<f32, String> {
+    ) -> Result<DeckMeasure, String> {
         let to_ll = |p: [f32; 2]| {
             tile_frac_to_lat_lng(
                 cx as f64 + f64::from(p[0] / tile_m),
@@ -299,8 +315,13 @@ impl<'a> Grader<'a> {
             lo = [lo[0].min(p[0]), lo[1].min(p[1])];
             hi = [hi[0].max(p[0]), hi[1].max(p[1])];
         }
+        let flat = DeckMeasure {
+            height: 0.0,
+            top: None,
+            profile: None,
+        };
         if lo[0] > hi[0] {
-            return Ok(0.0);
+            return Ok(flat);
         }
         let span = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1.0);
         let n = ((span / DECK_SAMPLE_M).ceil() as usize + 1).clamp(2, DECK_RASTER_MAX);
@@ -348,9 +369,32 @@ impl<'a> Grader<'a> {
             }
             z += step;
         }
-        Ok(match (median(&mut tops), median(&mut grounds)) {
-            (Some(top), Some(ground)) => terrain_grade::deck_clearance(top, ground),
-            _ => 0.0,
+        let (Some(top), Some(ground)) = (median(&mut tops), median(&mut grounds)) else {
+            return Ok(flat);
+        };
+        let height = terrain_grade::deck_clearance(top, ground);
+        if height <= 0.0 {
+            return Ok(flat);
+        }
+        // The profile from the same raster, read at the deck's own tile-local
+        // points as the client reads it (`DeckProfile::fit_over`).
+        let at = |p: [f64; 2]| -> Option<f32> {
+            let c = ((p[0] - lo[0]) / px).floor();
+            let r = ((max[1] - p[1]) / px).floor();
+            if c < 0.0 || r < 0.0 || c >= n as f64 || r >= n as f64 {
+                return None;
+            }
+            let v = surface[r as usize * n + c as usize];
+            v.is_finite().then_some(v)
+        };
+        let profile = DeckProfile::fit_over(deck, |local| {
+            let (lat, lng) = to_ll(local);
+            at(cartopolis_geo::ahn::wgs84_to_rd(lat, lng))
+        });
+        Ok(DeckMeasure {
+            height,
+            top: Some(top),
+            profile,
         })
     }
 
@@ -390,7 +434,15 @@ impl<'a> Grader<'a> {
         // wider).
         let reach = (k + last - 1) / last;
         let mut road = vec![false; n * n];
-        let mut scaled: Vec<(BridgeDeck, [f32; 2], f32, Vec<Vec<[f32; 2]>>)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut scaled: Vec<(
+            BridgeDeck,
+            [f32; 2],
+            f32,
+            Option<f32>,
+            Option<DeckProfile>,
+            Vec<Vec<[f32; 2]>>,
+        )> = Vec::new();
         for dy in -reach..=reach {
             for dx in -reach..=reach {
                 self.cell(tx + dx, ty + dy)?;
@@ -428,20 +480,30 @@ impl<'a> Grader<'a> {
                         .iter()
                         .map(|r| r.iter().map(|&p| sc(p)).collect())
                         .collect();
-                    scaled.push((deck, off, d.height, approaches));
+                    scaled.push((
+                        deck,
+                        off,
+                        d.height,
+                        d.top,
+                        d.profile.as_ref().map(|p| p.scaled(f64::from(s))),
+                        approaches,
+                    ));
                 }
             }
         }
         let plates: Vec<DeckPlate<'_>> = scaled
             .iter()
-            .map(|(deck, world, height, approaches)| DeckPlate {
+            .map(|(deck, world, height, top, profile, approaches)| DeckPlate {
                 deck,
                 world: *world,
                 height: *height,
+                top: *top,
+                profile: profile.as_ref(),
                 approaches,
             })
             .collect();
-        let (ramp, lift) = terrain_grade::deck_masks(&plates, lattice);
+        let terrain_grade::DeckMasks { ramp, lift, top } =
+            terrain_grade::deck_masks(&plates, lattice);
 
         // The water, from the water dataset's cells under the window.
         let mut rings: Vec<(f32, Vec<[f32; 2]>)> = Vec::new();
@@ -469,7 +531,7 @@ impl<'a> Grader<'a> {
             v.is_finite().then_some(v)
         };
 
-        terrain_grade::grade(&mut raw, lattice, &level_at, road, ramp, &lift);
+        terrain_grade::grade(&mut raw, lattice, &level_at, road, ramp, &lift, &top);
 
         let k = k as usize;
         let mut heights = Vec::with_capacity(DENSE_GRID * DENSE_GRID);
@@ -529,14 +591,12 @@ pub fn grade_area(
 /// its clearance in metres, 0 for a deck laid flat. Every cell the grading
 /// tessellated is written, including ones with no decks, so the client can tell
 /// "no decks here" from "not measured".
-fn write_decks(ctx: &Ctx, decks: &HashMap<(i64, i64), Vec<[f32; 3]>>) -> Outcome<()> {
-    let round = |v: f32| (f64::from(v) * 1e5).round() / 1e5;
+/// `decks/14/x/y.json`: `{"decks": [[x, y, height, top, profile], …]}` — the
+/// centre in tile fractions, the clearance, the median top in NAP (`null` for a
+/// flat deck) and the profile (`DeckProfile::to_wire`, `null` without one).
+fn write_decks(ctx: &Ctx, decks: &HashMap<(i64, i64), Vec<serde_json::Value>>) -> Outcome<()> {
     let mut cells = Vec::new();
-    for (&(x, y), list) in decks {
-        let rows: Vec<serde_json::Value> = list
-            .iter()
-            .map(|d| serde_json::json!([round(d[0]), round(d[1]), round(d[2])]))
-            .collect();
+    for (&(x, y), rows) in decks {
         ctx.write_json(
             &format!("decks/14/{x}/{y}.json"),
             &serde_json::json!({ "decks": rows }),
