@@ -449,4 +449,49 @@ mod tests {
              and would now do it twice (worst {worst} m)"
         );
     }
+
+    /// Wall-clock for a cell-sized mesh, printed rather than asserted (see
+    /// `perf`'s module note on timers). Shaped like a city cell: 1,470 m square in
+    /// 12 m quads, each quad's corners unshared as `flat_fill` emits them.
+    /// `cargo test -p cartopolis_geo --release refine_a_cell -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn refine_a_cell() {
+        let (n, step) = (122u32, 12.0f32);
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let (x, z) = (i as f32 * step, j as f32 * step);
+                let b = positions.len() as u32;
+                positions.extend([
+                    [x, 0.0, z],
+                    [x + step, 0.0, z],
+                    [x + step, 0.0, z + step],
+                    [x, 0.0, z + step],
+                ]);
+                indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+            }
+        }
+        let t = std::time::Instant::now();
+        refine_for_terrain(
+            &mut positions,
+            &mut indices,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            12.5,
+            Some(Crease {
+                field: &Bumpy,
+                origin: [0.0, 0.0],
+            }),
+        );
+        println!(
+            "refined to {} vertices, {} triangles in {:?}",
+            positions.len(),
+            indices.len() / 3,
+            t.elapsed()
+        );
+    }
 }
