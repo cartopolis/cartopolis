@@ -194,10 +194,21 @@ deck's top where the road runs straight onto one, in any loaded cell). Measured
 over 20 cells of Groningen (2026-09-24, AHN6, RD 230000–236500 × 578500–583000
 graded): 36 lifted decks, all profiled; 146 approaches, mean step 0.26 m, 140 of
 them within 0.61 m — where the flat median had left the Emmaviaduct view at 1.98 m
-mean. **The six left over 2 m are at interchange arms that fork at the abutment**
-(Laan 1940–1945 north, 7.75 m): `extend_approaches` stops following a street at a
-fork, so such an arm gets a few metres of ramp — 1.1 → 6.5 m in 14 m — and then
-ground. Following the fork's continuation is the next step there.
+mean.
+
+**Over the whole of Groningen as published** (49 graded tiles, 44 lifted decks,
+175 approaches, measured with `carto-view` against the live atlas the same day):
+mean 0.70 m, median 0.35 m, 10 over 2 m. Two causes were fixed at once. Two of
+the 44 profiles ended on an outlier — 22.1 m against a 6.2 m deck, 5.9 m against
+10.2 — which the running median cannot reach, so `DeckProfile::fit` now checks
+each end against the line through its two neighbours. And `extend_approaches`
+stopped at the first fork, so an interchange arm splitting at its abutment got a
+few metres of ramp; every branch carrying on ahead is now an approach of its own.
+After both, graded again locally: 182 approaches, mean 0.61 m, the Hoogkerk deck's
+13.0 m step down to 2.3 m. **What is left over 2 m is not a fork**: Laan
+1940–1945's south abutment (6.8 m) has its ramp built beside the probe rather than
+along it — an 85 m-wide motorway deck whose carriageway centre lines leave its
+outline at a corner — and three others of 3–5 m on the eastern ring.
 
 The 3D basisvoorziening's own bridge objects were checked for this and not taken:
 LoD1.2 drapes of the same BGT polygons, dated (one new deck came out 2.83 m against

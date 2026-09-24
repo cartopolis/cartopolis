@@ -3604,6 +3604,7 @@ fn extend_approaches(
     }
     let mut keep = vec![true; approaches.len()];
 
+    let mut branches: Vec<Approach> = Vec::new();
     for (ai, a) in approaches.iter_mut().enumerate() {
         let n = a.points.len();
         if n < 2 {
@@ -3615,62 +3616,18 @@ fn extend_approaches(
         if len < 1e-3 {
             continue;
         }
-        let mut heading = [dx / len, dz / len];
-        let mut here = tail;
-        let mut used: Vec<usize> = Vec::new();
-        let mut walked = 0.0f32;
-        let mut extra: Vec<[f32; 2]> = Vec::new();
-        for _ in 0..6 {
-            let candidates: Vec<(usize, Vec<[f32; 2]>, f32)> = lines
-                .iter()
-                .enumerate()
-                .filter(|(i, l)| !l.bridge && !used.contains(i))
-                .flat_map(|(i, l)| {
-                    [0usize, 1].into_iter().filter_map(move |k| {
-                        let end = if k == 0 {
-                            l.pts[0]
-                        } else {
-                            l.pts[l.pts.len() - 1]
-                        };
-                        if !l.own[k] || !near(end, here, 1.5) {
-                            return None;
-                        }
-                        let mut pts = l.pts.clone();
-                        if k == 1 {
-                            pts.reverse();
-                        }
-                        Some((i, pts))
-                    })
-                })
-                .filter_map(|(i, pts)| {
-                    let d = crate::tunnels::leaving(&pts)?;
-                    Some((i, pts, d[0] * heading[0] + d[1] * heading[1]))
-                })
-                .filter(|(_, _, cos)| *cos >= 0.82)
-                .collect();
-            if candidates.len() != 1 {
-                break;
-            }
-            let (i, mut pts, _) = candidates.into_iter().next().expect("one");
-            used.push(i);
-            pts[0] = here;
-            let room = APPROACH_REACH_M - walked;
-            let pts = crate::tunnels::cut_at(&pts, room);
-            walked += crate::tunnels::polyline_len(&pts);
-            let m = pts.len();
-            if m >= 2 {
-                let (ex, ez) = (pts[m - 1][0] - pts[m - 2][0], pts[m - 1][1] - pts[m - 2][1]);
-                let el = ex.hypot(ez).max(1e-6);
-                heading = [ex / el, ez / el];
-            }
-            here = pts[m - 1];
-            extra.extend(pts.into_iter().skip(1));
-            if walked >= APPROACH_REACH_M - 0.5 || !lines[i].own[0] || !lines[i].own[1] {
-                break;
-            }
-        }
+        let mut paths = Vec::new();
+        follow_approach(
+            &lines,
+            tail,
+            [dx / len, dz / len],
+            &mut Vec::new(),
+            0.0,
+            Vec::new(),
+            &mut paths,
+        );
         let seeded = ai >= first_seed;
-        if extra.is_empty() {
+        if paths.is_empty() {
             // A seed that found no road to follow is not an approach.
             keep[ai] = !seeded;
             continue;
@@ -3678,11 +3635,114 @@ fn extend_approaches(
         if seeded {
             a.points.remove(0);
         }
-        a.points.extend(extra);
+        // **Every branch of a fork is an approach of its own.** An interchange
+        // arm splits into slip roads right at the abutment, and each of them
+        // leaves the deck at the deck's height; stopping at the fork gave such
+        // an arm a few metres of ramp and then a cliff — 7.75 m at Laan
+        // 1940–1945's north arm (2026-09-24).
+        let mut paths = paths.into_iter();
+        let first = paths.next().expect("non-empty");
+        for extra in paths {
+            let mut points = a.points.clone();
+            points.extend(extra);
+            branches.push(Approach {
+                deck: a.deck,
+                points,
+            });
+        }
+        a.points.extend(first);
     }
     let mut k = keep.into_iter();
     approaches.retain(|_| k.next().unwrap_or(true));
+    approaches.extend(branches);
     approaches
+}
+
+/// Most roads one approach is followed through, and most paths it may branch
+/// into at forks — a bound on the walk, not a property of any real junction.
+const APPROACH_WAYS: usize = 6;
+const APPROACH_BRANCHES: usize = 4;
+
+/// Follow the street carrying on from `here` along `heading`, through further
+/// ways, pushing each complete path found into `out` (the points past `here`).
+/// Where more than one way carries on — a fork — every one is followed, up to
+/// [`APPROACH_BRANCHES`] paths in all.
+fn follow_approach(
+    lines: &[crate::tunnels::SurfaceLine],
+    here: [f32; 2],
+    heading: [f32; 2],
+    used: &mut Vec<usize>,
+    walked: f32,
+    so_far: Vec<[f32; 2]>,
+    out: &mut Vec<Vec<[f32; 2]>>,
+) {
+    let near = |a: [f32; 2], b: [f32; 2], r: f32| (a[0] - b[0]).hypot(a[1] - b[1]) <= r;
+    let done = |out: &mut Vec<Vec<[f32; 2]>>, so_far: Vec<[f32; 2]>| {
+        if !so_far.is_empty() && out.len() < APPROACH_BRANCHES {
+            out.push(so_far);
+        }
+    };
+    if used.len() >= APPROACH_WAYS || walked >= APPROACH_REACH_M - 0.5 {
+        done(out, so_far);
+        return;
+    }
+    let candidates: Vec<(usize, Vec<[f32; 2]>)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| !l.bridge && !used.contains(i))
+        .flat_map(|(i, l)| {
+            [0usize, 1].into_iter().filter_map(move |k| {
+                let end = if k == 0 {
+                    l.pts[0]
+                } else {
+                    l.pts[l.pts.len() - 1]
+                };
+                if !l.own[k] || !near(end, here, 1.5) {
+                    return None;
+                }
+                let mut pts = l.pts.clone();
+                if k == 1 {
+                    pts.reverse();
+                }
+                Some((i, pts))
+            })
+        })
+        .filter(|(_, pts)| {
+            crate::tunnels::leaving(pts)
+                .is_some_and(|d| d[0] * heading[0] + d[1] * heading[1] >= 0.82)
+        })
+        .collect();
+    if candidates.is_empty() {
+        done(out, so_far);
+        return;
+    }
+    for (i, mut pts) in candidates {
+        if out.len() >= APPROACH_BRANCHES {
+            return;
+        }
+        pts[0] = here;
+        let pts = crate::tunnels::cut_at(&pts, APPROACH_REACH_M - walked);
+        let m = pts.len();
+        let step = crate::tunnels::polyline_len(&pts);
+        let mut next_heading = heading;
+        if m >= 2 {
+            let (ex, ez) = (pts[m - 1][0] - pts[m - 2][0], pts[m - 1][1] - pts[m - 2][1]);
+            let el = ex.hypot(ez).max(1e-6);
+            next_heading = [ex / el, ez / el];
+        }
+        let end = pts[m - 1];
+        let mut path = so_far.clone();
+        path.extend(pts.into_iter().skip(1));
+        used.push(i);
+        // A way cut by the tile's edge carries on in the next tile, which walks
+        // it from there: stop here.
+        if !lines[i].own[0] || !lines[i].own[1] {
+            done(out, path);
+        } else {
+            follow_approach(lines, end, next_heading, used, walked + step, path, out);
+        }
+        used.pop();
+    }
 }
 
 /// What [`tessellate_roads`] hands back: the road sheet that lies on the ground,
@@ -5957,6 +6017,43 @@ mod tests {
                 "an approach ran past the reach"
             );
         }
+    }
+
+    /// **A fork past the abutment is followed down every branch.** An arm leaves
+    /// the deck heading east and splits 20 m on into two slip roads, one bearing
+    /// north-east and one south-east; a road turning off at a right angle is not
+    /// the approach. Stopping at the fork graded 20 m of ramp and left the rest
+    /// of a 7 m arm as a cliff.
+    #[test]
+    fn an_approach_is_followed_down_both_branches_of_a_fork() {
+        let line = |pts: Vec<[f32; 2]>| crate::tunnels::SurfaceLine {
+            feature: 0,
+            pts,
+            own: [true, true],
+            bridge: false,
+        };
+        let lines = vec![
+            line(vec![[0.0, 0.0], [20.0, 0.0]]),
+            line(vec![[20.0, 0.0], [80.0, 25.0]]),
+            line(vec![[20.0, 0.0], [80.0, -25.0]]),
+            line(vec![[20.0, 0.0], [20.0, 60.0]]),
+        ];
+        let mut paths = Vec::new();
+        super::follow_approach(
+            &lines,
+            [0.0, 0.0],
+            [1.0, 0.0],
+            &mut Vec::new(),
+            0.0,
+            Vec::new(),
+            &mut paths,
+        );
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        let ends: Vec<[f32; 2]> = paths.iter().map(|p| *p.last().unwrap()).collect();
+        assert!(
+            ends.contains(&[80.0, 25.0]) && ends.contains(&[80.0, -25.0]),
+            "{ends:?}"
+        );
     }
 
     /// Where every bridge deck in a tile is, **on Earth**.
