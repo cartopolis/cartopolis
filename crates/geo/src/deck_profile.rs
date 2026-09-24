@@ -185,14 +185,11 @@ impl DeckProfile {
             .chunks_exact(2)
             .map(|c| (c[0] * tile_m, c[1] as f32))
             .collect();
-        stations
-            .windows(2)
-            .all(|w| w[1].0 > w[0].0)
-            .then(|| Self {
-                origin: [v[0] * tile_m, v[1] * tile_m],
-                axis: [v[2], v[3]],
-                stations,
-            })
+        stations.windows(2).all(|w| w[1].0 > w[0].0).then(|| Self {
+            origin: [v[0] * tile_m, v[1] * tile_m],
+            axis: [v[2], v[3]],
+            stations,
+        })
     }
 
     /// The height at a point: linear between stations, level past the ends.
@@ -374,13 +371,23 @@ mod tests {
         let deck = crate::vector_tiles::BridgeDeck {
             positions: Vec::new(),
             indices: Vec::new(),
-            rings: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 10.0], [0.0, 10.0], [0.0, 0.0]]],
+            rings: vec![vec![
+                [0.0, 0.0],
+                [100.0, 0.0],
+                [100.0, 10.0],
+                [0.0, 10.0],
+                [0.0, 0.0],
+            ]],
             min: [0.0, 0.0],
             max: [100.0, 10.0],
         };
         // A slope over the deck and a wall of 30 m everywhere outside it.
         let p = DeckProfile::fit_over(&deck, |q| {
-            Some(if deck.contains(q) { 1.0 + q[0] * 0.05 } else { 30.0 })
+            Some(if deck.contains(q) {
+                1.0 + q[0] * 0.05
+            } else {
+                30.0
+            })
         })
         .unwrap();
         assert!((p.at([10.0, 5.0]) - 1.5).abs() < 0.15);

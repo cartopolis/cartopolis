@@ -121,9 +121,15 @@ const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<AtlasDeck
                     Some(AtlasDeck {
                         at: [d.first()?.as_f64()? as f32, d.get(1)?.as_f64()? as f32],
                         height: d.get(2)?.as_f64()? as f32,
-                        top: d.get(3).and_then(serde_json::Value::as_f64).map(|v| v as f32),
+                        top: d
+                            .get(3)
+                            .and_then(serde_json::Value::as_f64)
+                            .map(|v| v as f32),
                         profile: d.get(4).and_then(|p| {
-                            p.as_array()?.iter().map(serde_json::Value::as_f64).collect()
+                            p.as_array()?
+                                .iter()
+                                .map(serde_json::Value::as_f64)
+                                .collect()
                         }),
                     })
                 })
@@ -539,10 +545,7 @@ mod tests {
             top,
             profile: None,
         };
-        let atlas = [
-            at(700.0, 50.0, 0.0, None),
-            at(100.2, 199.9, 6.5, Some(8.2)),
-        ];
+        let atlas = [at(700.0, 50.0, 0.0, None), at(100.2, 199.9, 6.5, Some(8.2))];
         let known = match_atlas_decks(&decks, tile_m, &atlas).unwrap();
         assert_eq!(
             known.iter().map(|m| (m.height, m.top)).collect::<Vec<_>>(),

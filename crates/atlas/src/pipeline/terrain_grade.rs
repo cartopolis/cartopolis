@@ -245,16 +245,20 @@ impl<'a> Grader<'a> {
                 // and the profile trail, so a client from before them still reads
                 // the height.
                 let round = |v: f64| (v * 1e5).round() / 1e5;
-                self.deck_heights.entry((x, y)).or_default().push(serde_json::json!([
-                    round(f64::from((deck.min[0] + deck.max[0]) * 0.5 / tile_m)),
-                    round(f64::from((deck.min[1] + deck.max[1]) * 0.5 / tile_m)),
-                    round(f64::from(height)),
-                    measured.top.map(|t| round(f64::from(t))),
-                    measured
-                        .profile
-                        .as_ref()
-                        .map(|p| p.to_wire(f64::from(tile_m)).into_iter().map(round).collect::<Vec<_>>()),
-                ]));
+                self.deck_heights
+                    .entry((x, y))
+                    .or_default()
+                    .push(serde_json::json!([
+                        round(f64::from((deck.min[0] + deck.max[0]) * 0.5 / tile_m)),
+                        round(f64::from((deck.min[1] + deck.max[1]) * 0.5 / tile_m)),
+                        round(f64::from(height)),
+                        measured.top.map(|t| round(f64::from(t))),
+                        measured.profile.as_ref().map(|p| p
+                            .to_wire(f64::from(tile_m))
+                            .into_iter()
+                            .map(round)
+                            .collect::<Vec<_>>()),
+                    ]));
                 if height <= 0.0 {
                     continue;
                 }
@@ -493,14 +497,16 @@ impl<'a> Grader<'a> {
         }
         let plates: Vec<DeckPlate<'_>> = scaled
             .iter()
-            .map(|(deck, world, height, top, profile, approaches)| DeckPlate {
-                deck,
-                world: *world,
-                height: *height,
-                top: *top,
-                profile: profile.as_ref(),
-                approaches,
-            })
+            .map(
+                |(deck, world, height, top, profile, approaches)| DeckPlate {
+                    deck,
+                    world: *world,
+                    height: *height,
+                    top: *top,
+                    profile: profile.as_ref(),
+                    approaches,
+                },
+            )
             .collect();
         let terrain_grade::DeckMasks { ramp, lift, top } =
             terrain_grade::deck_masks(&plates, lattice);

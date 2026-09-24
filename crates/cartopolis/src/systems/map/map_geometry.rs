@@ -3037,7 +3037,6 @@ fn deck_measure(
     })
 }
 
-
 /// Even-odd point-in-polygon over a deck's RD rings.
 fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
     let mut inside = false;

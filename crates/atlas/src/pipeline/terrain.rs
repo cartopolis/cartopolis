@@ -32,9 +32,10 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     // The same source the HTTP route cuts from — AHN6 where it is published —
     // for the ground and the decks alike, or a pre-cut tile and one cut on
     // demand would be two different flights.
-    let source: std::sync::Arc<dyn HeightSource> = std::sync::Arc::new(
-        crate::ahn6::Ahn6::new(ctx.data_dir()?, std::sync::Arc::new(Pdok::new())),
-    );
+    let source: std::sync::Arc<dyn HeightSource> = std::sync::Arc::new(crate::ahn6::Ahn6::new(
+        ctx.data_dir()?,
+        std::sync::Arc::new(Pdok::new()),
+    ));
     let surface = crate::terrain::SurfaceOf(source.clone());
     run_graded(ctx, source.as_ref(), Some((&vector, &surface)))
 }

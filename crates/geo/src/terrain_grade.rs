@@ -464,12 +464,14 @@ mod tests {
         let l = lattice(31);
         let n = l.n;
         let road: Vec<bool> = (0..n * n).map(|i| (14..=16).contains(&(i / n))).collect();
-        let ramp: Vec<bool> = (0..n * n)
-            .map(|i| i / n == 15 && i % n < 20)
-            .collect();
+        let ramp: Vec<bool> = (0..n * n).map(|i| i / n == 15 && i % n < 20).collect();
         let deck = |i: usize| (13..=17).contains(&(i / n)) && i % n >= 20;
-        let lift: Vec<f32> = (0..n * n).map(|i| if deck(i) { 6.0 } else { f32::NAN }).collect();
-        let top: Vec<f32> = (0..n * n).map(|i| if deck(i) { 7.0 } else { f32::NAN }).collect();
+        let lift: Vec<f32> = (0..n * n)
+            .map(|i| if deck(i) { 6.0 } else { f32::NAN })
+            .collect();
+        let top: Vec<f32> = (0..n * n)
+            .map(|i| if deck(i) { 7.0 } else { f32::NAN })
+            .collect();
         let none = |_: f32, _: f32| None;
         let at_abutment = |top: &[f32]| {
             let mut g = vec![5.0f32; n * n];
