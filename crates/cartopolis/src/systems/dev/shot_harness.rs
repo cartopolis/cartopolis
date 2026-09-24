@@ -1794,6 +1794,11 @@ pub struct ShotProgress {
     elapsed: f32,
     /// Seconds the tile streams have been quiet.
     quiet: f32,
+    /// The streamers busy on the last frame, and the wall-clock moment of
+    /// placement — so each one's going quiet is logged with *when*, which is the
+    /// load's waterfall: `settled_in` is virtual time and one number for all.
+    was_busy: Vec<&'static str>,
+    placed_at: Option<bevy::platform::time::Instant>,
     /// Frames, total wall-clock seconds and the worst single frame since the
     /// stream went quiet — the mean and max frame time reported with each capture.
     ///
@@ -2557,6 +2562,8 @@ pub fn place_camera(
     progress.placed = true;
     progress.elapsed = 0.0;
     progress.quiet = 0.0;
+    progress.was_busy.clear();
+    progress.placed_at = Some(bevy::platform::time::Instant::now());
     progress.frames = 0;
     progress.frame_time = 0.0;
     progress.frame_time_max = 0.0;
@@ -3371,6 +3378,30 @@ pub fn drive_capture(
     // seconds, or when `--wait` runs out (whichever comes first). Which streamers
     // that is, and why the list has to be exhaustive, is `StreamWatch`.
     let busy = watch.busy();
+    if progress.verdict.is_none() {
+        let wall_s = progress
+            .placed_at
+            .map_or(0.0, |t| t.elapsed().as_secs_f32());
+        for name in &busy {
+            if !progress.was_busy.contains(name) {
+                tracing::info!(
+                    streamer = name,
+                    wall_s = format!("{wall_s:.1}"),
+                    "streamer busy"
+                );
+            }
+        }
+        for name in &progress.was_busy {
+            if !busy.contains(name) {
+                tracing::info!(
+                    streamer = name,
+                    wall_s = format!("{wall_s:.1}"),
+                    "streamer quiet"
+                );
+            }
+        }
+        progress.was_busy.clone_from(&busy);
+    }
     if busy.is_empty() {
         progress.quiet += time.delta_secs();
     } else {
@@ -3400,6 +3431,22 @@ pub fn drive_capture(
         // moment and for the same reason: the quiesce that follows finishes
         // decodes on the harness's clock, not the world's.
         progress.fetch_window = crate::platform::http::stats::snapshot().since(progress.fetch_base);
+        // Cumulative for the process rather than per shot: these answer "what
+        // did this load fetch and what did the cache hand back", which is a
+        // question about a run, and a one-shot run is how a load is timed.
+        for (route, r) in crate::platform::http::stats::routes() {
+            tracing::info!(
+                route = %route,
+                requests = r.requests,
+                failed = r.failed,
+                kb = r.bytes / 1024,
+                ms = r.us / 1000,
+                "fetch route"
+            );
+        }
+        for (kind, hits, misses) in crate::platform::storage::stats::reads() {
+            tracing::info!(kind = %kind, hits, misses, "cache reads");
+        }
         progress.worker_window = crate::platform::workers::stats::snapshot()
             .into_iter()
             .map(|(label, totals)| {

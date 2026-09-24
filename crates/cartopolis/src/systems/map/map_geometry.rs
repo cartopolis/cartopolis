@@ -71,6 +71,33 @@ use cartopolis_core::{tile_source_kind, TileSourceKind};
 /// streamers agree on what a "cell" is.
 const GEOMETRY_ZOOM: u32 = vector_tiles::MAX_SOURCE_ZOOM;
 
+/// Stage stopwatch for one cell job: which of a dozen passes a cell's second
+/// and a half actually goes on, logged once per cell as `surface cell stages`.
+struct Lap {
+    last: bevy::platform::time::Instant,
+    split: String,
+}
+
+impl Lap {
+    fn new() -> Self {
+        Self {
+            last: bevy::platform::time::Instant::now(),
+            split: String::new(),
+        }
+    }
+
+    fn mark(&mut self, stage: &str) {
+        use std::fmt::Write as _;
+        let now = bevy::platform::time::Instant::now();
+        let _ = write!(
+            self.split,
+            "{stage}:{} ",
+            now.duration_since(self.last).as_millis()
+        );
+        self.last = now;
+    }
+}
+
 /// Cells kept live around the camera (radius 1 → 3×3 ≈ 6 km at NL latitudes).
 /// Beyond this the textured tiles carry the map on their own.
 const CELL_RADIUS: i64 = 1;
@@ -961,6 +988,7 @@ fn spawn_geometry_task(
                 )
             };
             crate::platform::workers::submit_heavy("surfaces", Box::new(move || {
+                let mut lap = Lap::new();
                 let mut shore = None;
                 let mut grass = None;
                 let mut decks = Vec::new();
@@ -984,9 +1012,11 @@ fn spawn_geometry_task(
                     .and_then(|bytes| {
                         crate::systems::tile_loader::parse_shared(key, &bytes)
                     });
+                lap.mark("parse");
                 let outcome = match parsed {
                     Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m, mesh_bytes) {
                         Ok(mut meshes) => {
+                            lap.mark("fills");
                             // Decks first: the road tessellation needs them, since a
                             // bridge-flagged street's span rides the deck that
                             // carries it rather than the ground plane — and it
@@ -998,6 +1028,7 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "bridge tessellation failed");
                                 }
                             }
+                            lap.mark("bridges");
                             // Roads share the fetch, the parse, the worker and the
                             // per-cell batching with the area surfaces — they
                             // differ only in being lines, so they ride along here
@@ -1037,6 +1068,7 @@ fn spawn_geometry_task(
                             let crop_meshes = cartopolis_geo::crops::build_crop_meshes(
                                 &parcels, mesh_bytes,
                             );
+                            lap.mark("paving");
                             match vector_tiles::tessellate_roads(
                                 &tile,
                                 tile_m,
@@ -1094,6 +1126,7 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
                                 }
                             }
+                            lap.mark("roads");
                             // A cell whose roads failed still has its pavements,
                             // uncut because there is nothing to cut them against.
                             // `take` above makes this the empty vector on the
@@ -1138,6 +1171,7 @@ fn spawn_geometry_task(
                             sunken_ways = tunnels.sunken;
                             cell_openings = tunnels.openings;
                             meshes.extend(tunnels.meshes);
+                            lap.mark("tunnels");
                             // Trees ride the same fetch and the same per-cell
                             // batching (`systems::vegetation`). Scattering and
                             // merging thousands of canopies is pure CPU work, so
@@ -1211,6 +1245,7 @@ fn spawn_geometry_task(
                                     }
                                 }
                             }
+                            lap.mark("trees");
                             // Benches, bins and shelters likewise ride this fetch:
                             // Shortbread's `pois` layer is already in these bytes
                             // and was being decoded and dropped
@@ -1410,6 +1445,7 @@ fn spawn_geometry_task(
                                     mesh_bytes,
                                 ));
                             }
+                            lap.mark("furniture");
                             // …and so do the two layers this tile was decoding
                             // and dropping outright (`docs/notes/vector-tile-unused-layers.md`).
                             match places::extract_pois(&tile, tile_m) {
@@ -1447,6 +1483,7 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "street label extraction failed");
                                 }
                             }
+                            lap.mark("extract");
                             // The water meshes carry no notion of where the bank
                             // is (earcut only ever emits boundary vertices), so
                             // the shader gets it as a rasterised distance field —
@@ -1461,6 +1498,7 @@ fn spawn_geometry_task(
                                     }
                                 }
                             }
+                            lap.mark("shore");
                             // Where a blade may stand. Rides this fetch and this
                             // parse like everything above it — the `land` layer
                             // is already decoded here, and the two keep-out masks
@@ -1483,6 +1521,7 @@ fn spawn_geometry_task(
                                     grass = Some(area);
                                 }
                             }
+                            lap.mark("grass");
                             Some(meshes)
                         }
                         Err(e) => {
@@ -1532,6 +1571,8 @@ fn spawn_geometry_task(
                     }
                     placed = true;
                 }
+                lap.mark("ground");
+                tracing::info!(cell = ?cell, placed, stages = %lap.split, "surface cell stages");
                 if let Ok(mut g) = results.lock() {
                     g.push((
                         cell,

@@ -84,7 +84,49 @@ impl Cached {
 
 /// Read a blob, or `None` if absent (or unreadable).
 pub async fn get(ns: Namespace, key: &str) -> Option<Vec<u8>> {
-    imp::get(ns, key).await
+    let found = imp::get(ns, key).await;
+    if ns == Namespace::Cache {
+        stats::record(key, found.is_some());
+    }
+    found
+}
+
+/// Cache reads counted by the key's first segment (`tiles`, `rendered`,
+/// `terrain`, …): hits and misses, cumulative for the process. What says
+/// whether a warm start was actually warm, per kind of thing, without reading a
+/// cache directory by hand.
+pub mod stats {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    static READS: Mutex<BTreeMap<String, (u64, u64)>> = Mutex::new(BTreeMap::new());
+
+    pub(super) fn record(key: &str, hit: bool) {
+        let kind = key.split('/').find(|s| !s.is_empty()).unwrap_or("");
+        let mut reads = match READS.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let e = reads.entry(kind.to_string()).or_default();
+        if hit {
+            e.0 += 1;
+        } else {
+            e.1 += 1;
+        }
+    }
+
+    /// `(kind, hits, misses)` for every kind read so far.
+    #[must_use]
+    pub fn reads() -> Vec<(String, u64, u64)> {
+        let reads = match READS.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        reads
+            .iter()
+            .map(|(k, (h, m))| (k.clone(), *h, *m))
+            .collect()
+    }
 }
 
 /// Read a blob and decode it as UTF-8.
@@ -117,7 +159,11 @@ pub async fn age_secs(ns: Namespace, key: &str) -> Option<f64> {
 /// ask again next frame. A caller that cannot wait treats `Loading` as a miss
 /// ([`Cached::ready`]) and gets the value on a later frame instead of never.
 pub fn read_now(ns: Namespace, key: &str) -> Cached {
-    imp::read_now(ns, key)
+    let found = imp::read_now(ns, key);
+    if ns == Namespace::Cache && !matches!(found, Cached::Loading) {
+        stats::record(key, matches!(found, Cached::Ready(_)));
+    }
+    found
 }
 
 /// Write from a synchronous context.

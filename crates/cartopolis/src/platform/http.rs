@@ -234,6 +234,57 @@ pub mod stats {
     pub(super) fn record_error() {
         ERRORS.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// The same account split by where the request went — host plus the first
+    /// path segment, so `cartopolis.org/terrain` and `cartopolis.org/tiles` are
+    /// two rows. The totals above say *how much* a load fetched; this says
+    /// *what*, which is the question a warm start that still fetches answers.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Route {
+        pub requests: u64,
+        pub failed: u64,
+        pub bytes: u64,
+        /// Summed wall-clock per request, µs, on both platforms.
+        pub us: u64,
+    }
+
+    static ROUTES: std::sync::Mutex<std::collections::BTreeMap<String, Route>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    /// `https://host/first/rest?q` → `host/first`.
+    #[must_use]
+    pub fn route_of(url: &str) -> String {
+        let rest = url.split_once("://").map_or(url, |(_, r)| r);
+        let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+        let mut parts = rest.split('/').filter(|s| !s.is_empty());
+        match (parts.next(), parts.next()) {
+            (Some(host), Some(first)) => format!("{host}/{first}"),
+            (Some(host), None) => host.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    pub(super) fn record_route(route: String, bytes: u64, us: u64, failed: bool) {
+        let mut routes = match ROUTES.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let r = routes.entry(route).or_default();
+        r.requests += 1;
+        r.failed += u64::from(failed);
+        r.bytes += bytes;
+        r.us += us;
+    }
+
+    /// Every route seen so far, cumulative for the process.
+    #[must_use]
+    pub fn routes() -> Vec<(String, Route)> {
+        let routes = match ROUTES.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        routes.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    }
 }
 
 /// How long a tripped [`Breaker`] stays open before the next request is allowed
@@ -323,6 +374,20 @@ pub enum Answer {
     Refused(u16),
 }
 
+/// The one call into the transport, with the per-route account kept around it
+/// (`stats::routes`).
+async fn answer(req: Request) -> Result<Answer, String> {
+    let route = stats::route_of(&req.url);
+    let started = bevy::platform::time::Instant::now();
+    let result = imp::fetch_answer(req).await;
+    let (bytes, failed) = match &result {
+        Ok(Answer::Body(b)) => (b.len() as u64, false),
+        Ok(Answer::Refused(_)) | Err(_) => (0, true),
+    };
+    stats::record_route(route, bytes, started.elapsed().as_micros() as u64, failed);
+    result
+}
+
 /// Fetch the response body as bytes. `Err` carries a human-readable message, to
 /// match the `Result<_, String>` shape the fetchers already use.
 ///
@@ -330,7 +395,7 @@ pub enum Answer {
 /// meant to be blocked on from a system.
 pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
     let url = req.url.clone();
-    match imp::fetch_answer(req).await? {
+    match answer(req).await? {
         Answer::Body(bytes) => Ok(bytes),
         // The shape `ureq` produced when this was one function, kept verbatim: it
         // is what every "… status code 404" line in the logs and the notes reads.
@@ -354,7 +419,7 @@ pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
 /// runs; both keep the retry they had.
 pub async fn fetch_optional(req: Request) -> Result<Option<Vec<u8>>, String> {
     let url = req.url.clone();
-    match imp::fetch_answer(req).await? {
+    match answer(req).await? {
         Answer::Body(bytes) => Ok(Some(bytes)),
         Answer::Refused(404 | 410) => Ok(None),
         Answer::Refused(status) => Err(format!("{url}: status code {status}")),
