@@ -103,6 +103,15 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   server read that as an index into the buffer, so once a long BAG run filled the
   buffer the followed log stopped updating. The console now keeps the server's
   `total` as its cursor.
+- **Source answers are kept a month** in `<data_dir>/source-cache/`
+  (`pipeline/http.rs`), so a re-run after a pipeline change does not page the BGT
+  and download the 3D basisvoorziening again: over a 1 km square the BGT dataset
+  went from 14 s to 3 s with identical output (2026-09-24), and a whole city's
+  run is dominated by that paging. Every run first deletes what has expired, so
+  the cache holds at most a month of what runs actually fetched — Groningen's
+  3D sheets alone are ~550 MB. `atlas run --fresh` and the console's *Fetch
+  fresh source data* ask everything anew. A 200 whose body does not parse is
+  evicted rather than served back.
 - **It writes as `cartoatlas` in group `ubuntu`, umask 0002**
   (`deploy/cartopolis-atlas.service`). The site tree and the autopilot's control
   file belong to `ubuntu`, and the autopilot writes that file too, so anything

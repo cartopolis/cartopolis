@@ -283,7 +283,11 @@ async fn start_job(
         })
         .collect();
 
-    let job = state.runner.submit(&name, bbox, &datasets, &who.username);
+    // `"fresh": true` asks every source anew instead of the month's cache.
+    let fresh = body.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+    let job = state
+        .runner
+        .submit_with(&name, bbox, &datasets, &who.username, fresh);
     Json(json!({"job": job, "replaces": replaces})).into_response()
 }
 

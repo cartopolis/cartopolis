@@ -132,6 +132,9 @@ pub struct Ctx {
     /// Atlas's own store (`AtlasConfig::data_dir`), for a dataset that fills
     /// something atlas serves itself rather than the site tree — `terrain`.
     data_dir: Option<PathBuf>,
+    /// Ask every source again rather than reusing what was fetched within
+    /// [`http::SOURCE_CACHE_TTL`] — what was fetched is still written back.
+    fresh: bool,
     cancel: Arc<AtomicBool>,
     sink: Arc<dyn Sink>,
 }
@@ -149,9 +152,25 @@ impl Ctx {
             name: name.to_string(),
             out_root: out_root.to_path_buf(),
             data_dir: None,
+            fresh: false,
             cancel,
             sink,
         }
+    }
+
+    /// Fetch every source anew this run (`http::cached`).
+    #[must_use]
+    pub fn with_fresh(mut self, fresh: bool) -> Self {
+        self.fresh = fresh;
+        self
+    }
+
+    /// Where fetched source data is kept between runs, and whether this run may
+    /// read it: `None` without a data directory, where nothing is kept.
+    pub(crate) fn source_cache(&self) -> Option<(PathBuf, bool)> {
+        self.data_dir
+            .as_ref()
+            .map(|d| (d.join("source-cache"), !self.fresh))
     }
 
     #[must_use]

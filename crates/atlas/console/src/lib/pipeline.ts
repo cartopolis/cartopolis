@@ -70,11 +70,12 @@ export async function startRun(
     area: string,
     datasets: string[],
     bbox?: [number, number, number, number],
+    fresh = false,
 ): Promise<null | PipelineJob> {
     try {
         const result = await api.post<{job: PipelineJob; replaces: Array<{dataset: string; name: string}>}>(
             '/api/pipeline/jobs',
-            bbox ? {area, bbox, datasets} : {area, datasets},
+            bbox ? {area, bbox, datasets, fresh} : {area, datasets, fresh},
         )
         $s.pipelineJobs = [result.job, ...$s.pipelineJobs]
         follow(result.job.id)

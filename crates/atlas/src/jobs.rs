@@ -80,6 +80,10 @@ pub struct Job {
     pub started_at: Option<u64>,
     pub status: JobStatus,
     pub steps: Vec<JobStep>,
+    /// Fetch every source anew rather than reuse the month's cache
+    /// (`pipeline::http::SOURCE_CACHE_TTL`).
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 /// One runnable dataset, as the runner sees it.
@@ -233,6 +237,18 @@ impl Runner {
     }
 
     pub fn submit(&self, area: &str, bbox: [f64; 4], datasets: &[String], by: &str) -> Job {
+        self.submit_with(area, bbox, datasets, by, false)
+    }
+
+    /// [`Self::submit`], optionally fetching every source anew.
+    pub fn submit_with(
+        &self,
+        area: &str,
+        bbox: [f64; 4],
+        datasets: &[String],
+        by: &str,
+        fresh: bool,
+    ) -> Job {
         let mut inner = self.lock();
         let id = inner.next_id.to_string();
         inner.next_id += 1;
@@ -245,6 +261,7 @@ impl Runner {
             id: id.clone(),
             started_at: None,
             status: JobStatus::Queued,
+            fresh,
             steps: datasets
                 .iter()
                 .map(|d| JobStep {
@@ -340,7 +357,7 @@ fn drain(shared: &Arc<Shared>) {
 
 fn run_job(shared: &Arc<Shared>, id: &str) {
     let lock = || shared.inner.lock().unwrap_or_else(|p| p.into_inner());
-    let (cancel, area, bbox, datasets) = {
+    let (cancel, area, bbox, fresh, datasets) = {
         let mut inner = lock();
         let Some(e) = inner.entry(id) else { return };
         e.job.status = JobStatus::Running;
@@ -349,6 +366,7 @@ fn run_job(shared: &Arc<Shared>, id: &str) {
             Arc::clone(&e.cancel),
             e.job.area.clone(),
             e.job.bbox,
+            e.job.fresh,
             e.job
                 .steps
                 .iter()
@@ -357,6 +375,11 @@ fn run_job(shared: &Arc<Shared>, id: &str) {
         )
     };
 
+    // What expired since the last run goes first, so the cache never holds more
+    // than a month of what runs actually fetched.
+    if let Some(dir) = shared.data_dir.get() {
+        crate::pipeline::http::sweep_source_cache(dir);
+    }
     for (index, dataset) in datasets.iter().enumerate() {
         let set = |f: &dyn Fn(&mut JobStep)| {
             if let Some(step) = lock().entry(id).and_then(|e| e.job.steps.get_mut(index)) {
@@ -402,7 +425,8 @@ fn run_job(shared: &Arc<Shared>, id: &str) {
         let ctx = match shared.data_dir.get() {
             Some(dir) => ctx.with_data_dir(dir),
             None => ctx,
-        };
+        }
+        .with_fresh(fresh);
         // A panic in an extractor is a failed step, not a dead runner: the thread
         // is the only one and every later job would queue behind it forever.
         let outcome =

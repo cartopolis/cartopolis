@@ -58,6 +58,7 @@ export const Pipeline = () => {
     const [custom, setCustom] = useState('')
     const [customName, setCustomName] = useState('')
     const [picked, setPicked] = useState<string[]>([])
+    const [fresh, setFresh] = useState(false)
     const logRef = useRef<HTMLPreElement>(null)
 
     useEffect(() => {
@@ -143,9 +144,9 @@ export const Pipeline = () => {
             if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) {
                 return
             }
-            void startRun(customName.trim(), picked, parts as [number, number, number, number])
+            void startRun(customName.trim(), picked, parts as [number, number, number, number], fresh)
         } else {
-            void startRun(area, picked)
+            void startRun(area, picked, undefined, fresh)
         }
     }
 
@@ -250,6 +251,21 @@ export const Pipeline = () => {
                         </label>
                     ))}
                 </div>
+
+                <label class="check">
+                    <input
+                        checked={fresh}
+                        onChange={(e) => setFresh((e.target as HTMLInputElement).checked)}
+                        type="checkbox"
+                    />
+                    <span>
+                        <b>Fetch fresh source data</b>
+                        <em>
+                            Otherwise what was fetched from the registers in the last month is
+                            reused, which is what a re-run after a pipeline change wants.
+                        </em>
+                    </span>
+                </label>
 
                 <div class="row-actions">
                     <button
