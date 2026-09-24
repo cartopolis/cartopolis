@@ -61,6 +61,12 @@ pub fn prefetch_terrain_coverage(time: Res<Time>) {
     COVERAGE.ensure(time.elapsed_secs_f64());
 }
 
+/// Whether the coverage manifest has answered, yes or no.
+#[must_use]
+pub fn coverage_answered() -> bool {
+    COVERAGE.revision() > 0
+}
+
 /// Whether atlas has pre-cut the ground under this point.
 #[must_use]
 pub fn covered(lat: f64, lng: f64) -> bool {

@@ -202,6 +202,18 @@ impl HeightRequest {
         }
     }
 
+    /// The box its key names: corners on whole metres, the grid clamped.
+    #[allow(clippy::cast_possible_truncation)]
+    fn quantised(self) -> Self {
+        let key = self.key();
+        Self {
+            model: self.model,
+            min: [f64::from(key.min[0]), f64::from(key.min[1])],
+            max: [f64::from(key.max[0]), f64::from(key.max[1])],
+            grid: key.grid,
+        }
+    }
+
     fn valid(&self) -> bool {
         self.max[0] > self.min[0] && self.max[1] > self.min[1] && self.grid >= 2
     }
@@ -325,6 +337,18 @@ pub struct HeightLayer {
     dispatch: Dispatcher<HeightRequest>,
     #[allow(clippy::type_complexity)]
     results: Arc<Mutex<Vec<(HeightKey, Result<HeightPatch, String>)>>>,
+    /// Device-cache probes that have come back: the patch when the device had
+    /// it, otherwise the request and its rank, to go on to the network queue.
+    #[allow(clippy::type_complexity)]
+    probed: Arc<
+        Mutex<
+            Vec<(
+                HeightRequest,
+                crate::platform::fetch_gate::Rank,
+                Option<HeightPatch>,
+            )>,
+        >,
+    >,
     patches: HashMap<HeightKey, HeightPatch>,
     requested: HashSet<HeightKey>,
     failed: HashMap<HeightKey, u32>,
@@ -345,6 +369,7 @@ impl Default for HeightLayer {
         Self {
             dispatch: Dispatcher::new(HEIGHT_CONCURRENCY, HEIGHT_MIN_INTERVAL_S),
             results: Arc::default(),
+            probed: Arc::default(),
             patches: HashMap::new(),
             requested: HashSet::new(),
             failed: HashMap::new(),
@@ -401,7 +426,24 @@ impl HeightLayer {
         }
         if !self.requested.contains(&key) && *self.failed.get(&key).unwrap_or(&0) < MAX_ATTEMPTS {
             self.requested.insert(key);
-            self.dispatch.queue_ranked(req, rank);
+            // **The device first, and outside the queue.** The queue is spaced for
+            // PDOK's sake (`HEIGHT_MIN_INTERVAL_S`), and a warm start asks for the
+            // same ~170 boxes the last one did: behind the spacing, reading them
+            // off the disk would still take half a minute. A miss joins the queue
+            // at the rank it was asked with, from `poll_height_layer`.
+            match IoTaskPool::try_get() {
+                Some(pool) => {
+                    let probed = self.probed.clone();
+                    pool.spawn(async move {
+                        let hit = cached_patch(req).await;
+                        if let Ok(mut g) = probed.lock() {
+                            g.push((req, rank, hit));
+                        }
+                    })
+                    .detach();
+                }
+                None => self.dispatch.queue_ranked(req, rank),
+            }
         }
         None
     }
@@ -481,6 +523,21 @@ impl HeightLayer {
 /// and 3DBAG streamers use, so it works unchanged in the browser.
 pub fn poll_height_layer(mut layer: ResMut<HeightLayer>, time: Res<Time>) {
     let now = time.elapsed_secs_f64();
+    let probed: Vec<_> = layer
+        .probed
+        .lock()
+        .map(|mut g| g.drain(..).collect())
+        .unwrap_or_default();
+    for (req, rank, hit) in probed {
+        let key = req.key();
+        match hit {
+            Some(patch) => {
+                layer.requested.remove(&key);
+                layer.patches.insert(key, patch);
+            }
+            None => layer.dispatch.queue_ranked(req, rank),
+        }
+    }
     let results = layer.results.clone();
     while let Some(req) = layer.dispatch.next(now) {
         let results = results.clone();
@@ -571,8 +628,52 @@ pub fn probe_anchor_ground(
     }
 }
 
-/// Fetch and decode one patch.
+/// Where a patch is kept on the device: the request's own identity, so the same
+/// box asked for on the next launch is the same file.
+///
+/// **The box is fetched as the key says, in whole metres** ([`HeightRequest::quantised`]).
+/// Two launches measure a deck from geometry that can differ in the last float
+/// bit, and a cached answer must describe exactly the box it is handed back for.
+/// The in-memory cache has always shared a patch between requests that round
+/// alike, so no consumer depends on the sub-metre part.
+fn device_key(key: HeightKey) -> String {
+    format!(
+        "height/v1/{}/{}_{}_{}_{}_{}.tif",
+        key.model.coverage(),
+        key.min[0],
+        key.min[1],
+        key.max[0],
+        key.max[1],
+        key.grid
+    )
+}
+
+/// A patch this device measured before, if it has it.
+async fn cached_patch(req: HeightRequest) -> Option<HeightPatch> {
+    let req = req.quantised();
+    let bytes = crate::platform::storage::get(
+        crate::platform::storage::Namespace::Cache,
+        &device_key(req.key()),
+    )
+    .await?;
+    patch_from(req, &bytes).ok()
+}
+
+fn patch_from(req: HeightRequest, bytes: &[u8]) -> Result<HeightPatch, String> {
+    let grid = req.grid.clamp(2, MAX_GRID);
+    let samples = decode_float_tiff(bytes, grid as usize)?;
+    Ok(HeightPatch {
+        min: req.min,
+        max: req.max,
+        w: grid as usize,
+        h: grid as usize,
+        samples,
+    })
+}
+
+/// Fetch and decode one patch, and keep it on the device.
 async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
+    let req = req.quantised();
     let grid = req.grid.clamp(2, MAX_GRID);
     let path = format!(
         "{AHN_WCS_PATH}?SERVICE=WCS&VERSION=1.0.0&REQUEST=GetCoverage\
@@ -586,14 +687,16 @@ async fn fetch_patch(req: HeightRequest) -> Result<HeightPatch, String> {
     );
     let url = http::upstream_url("ahn", AHN_ORIGIN, &path);
     let bytes = http::fetch(http::Request::get(url)).await?;
-    let samples = decode_float_tiff(&bytes, grid as usize)?;
-    Ok(HeightPatch {
-        min: req.min,
-        max: req.max,
-        w: grid as usize,
-        h: grid as usize,
-        samples,
-    })
+    let patch = patch_from(req, &bytes)?;
+    // Only what decoded: a service exception arrives as a 200, and keeping it
+    // would answer every later launch with the same refusal.
+    crate::platform::storage::put(
+        crate::platform::storage::Namespace::Cache,
+        &device_key(req.key()),
+        &bytes,
+    )
+    .await;
+    Ok(patch)
 }
 
 /// Decode a single-band float32 GeoTIFF into metres, with no-data as `NaN`.

@@ -1066,6 +1066,10 @@ const ROAD_SETTLE_S: f32 = 0.75;
 /// against a rebuild of the whole ring.
 const WATER_SETTLE_S: f32 = 2.0;
 
+/// Longest the field waits for atlas's coverage manifest before choosing the
+/// WCS patch instead. The manifest answers in ~50 ms from a reachable host.
+const COVERAGE_WAIT_S: f32 = 5.0;
+
 /// Longest a ready bake waits for the surface ring to finish arriving — see the
 /// hold in [`update_terrain_field`].
 ///
@@ -1101,6 +1105,8 @@ pub fn update_terrain_field(
     // What an owed bake is waiting on, logged when it changes: a field that never
     // finishes owing a bake keeps a capture from settling, and nothing else says why.
     mut waiting: Local<&'static str>,
+    // When this anchor started waiting for the atlas coverage answer.
+    mut coverage_wait: Local<Option<(u32, f32)>>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1225,9 +1231,27 @@ pub fn update_terrain_field(
     let use_tiles = match *source {
         Some((g, t)) if g == gen => t,
         _ => {
-            let t = tiles.enabled()
-                && grid >= 1025
-                && crate::systems::terrain_tiles::covered(anchor.0, anchor.1);
+            let eligible = tiles.enabled() && grid >= 1025;
+            // **Ask atlas before choosing.** The manifest is one small request that
+            // starts at launch, but on a cold start the anchor lands first, and
+            // latching then chose the 12 MB WCS patch over tiles atlas had already
+            // cut (measured on the Deck, 2026-09-24: every cold run). Bounded, so a
+            // host that never answers costs a few seconds and not the field.
+            if eligible && !crate::systems::terrain_tiles::coverage_answered() {
+                let now = time.elapsed_secs();
+                let since = match *coverage_wait {
+                    Some((g, t)) if g == gen => t,
+                    _ => {
+                        *coverage_wait = Some((gen, now));
+                        now
+                    }
+                };
+                if now - since < COVERAGE_WAIT_S {
+                    wait("the atlas coverage", &field);
+                    return;
+                }
+            }
+            let t = eligible && crate::systems::terrain_tiles::covered(anchor.0, anchor.1);
             *source = Some((gen, t));
             tracing::info!(anchor_gen = gen, tiles = t, "terrain field source");
             t
