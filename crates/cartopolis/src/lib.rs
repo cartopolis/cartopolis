@@ -1675,8 +1675,14 @@ fn run_client() {
                     // while the terrain was ready to bake. Every streamer still
                     // caps its own requests in flight, so this widens the queue
                     // for reads, not the load on any server.
-                    min_threads: 8,
-                    max_threads: 12,
+                    //
+                    // Sixteen, because a cold start saturates eight: the Deck's
+                    // cold fill held io threads for ~117 s of blocking requests
+                    // inside ~40 s (PDOK 51 s, Overpass 28 s at 0.75 s each), and
+                    // the basemap's 145 tile requests queued behind them — the
+                    // map image finished at 11.7 s cold against 3.9 s warm.
+                    min_threads: 16,
+                    max_threads: 24,
                     percent: 0.30,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
