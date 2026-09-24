@@ -452,12 +452,12 @@ mod tests {
 
     /// Wall-clock for a cell-sized mesh, printed rather than asserted (see
     /// `perf`'s module note on timers). Shaped like a city cell: 1,470 m square in
-    /// 3 m quads, each quad's corners unshared as `flat_fill` emits them.
+    /// 24.5 m quads (so the long-edge rule splits every one), each quad's corners unshared as `flat_fill` emits them.
     /// `cargo test -p cartopolis_geo --release refine_a_cell -- --ignored --nocapture`
     #[test]
     #[ignore = "a timing, not a check"]
     fn refine_a_cell() {
-        let (n, step) = (490u32, 3.0f32);
+        let (n, step) = (60u32, 24.5f32);
         let mut positions = Vec::new();
         let mut indices = Vec::new();
         for j in 0..n {
