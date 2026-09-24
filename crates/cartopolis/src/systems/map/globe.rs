@@ -1498,9 +1498,32 @@ fn spawn_globe_tile(
             // runs on the main thread, so doing that here was the frame loop.
             match fetch_globe_tile_payload(&key, &template).await {
                 Ok(payload) => {
+                    // A tile drawn on an earlier visit comes back as a PNG instead
+                    // of being drawn again (`tile_loader::globe_cache_key`).
+                    let cache_key =
+                        crate::systems::tile_loader::globe_cache_key(&key, &payload, GLOBE_TILE_PX);
+                    let stored = match &cache_key {
+                        Some(k) => {
+                            crate::platform::storage::get(
+                                crate::platform::storage::Namespace::Cache,
+                                k,
+                            )
+                            .await
+                        }
+                        None => None,
+                    };
                     crate::platform::workers::submit(
                         "globe",
                         Box::new(move || {
+                            let reused = stored.and_then(|png| {
+                                crate::systems::tile_loader::decode_rendered(&png, GLOBE_TILE_PX)
+                            });
+                            if let Some(rgba) = reused {
+                                if let Ok(mut g) = results.lock() {
+                                    g.push((key, TileFetch::Ok(decode_globe_tile(rgba, true))));
+                                }
+                                return;
+                            }
                             // Log the reason, the way the flat streamer's twin does
                             // (`tile_loader::spawn_tile_task`). Discarding it left the
                             // aggregate `globe tile fetches failed` warning below as the
@@ -1508,6 +1531,9 @@ fn spawn_globe_tile(
                             // the tile 404'd, arrived truncated or failed to rasterise.
                             let outcome = match payload.decode(GLOBE_TILE_PX) {
                                 Ok((rgba, masked)) => {
+                                    if let (true, Some(k)) = (masked, &cache_key) {
+                                        crate::systems::tile_loader::store_rendered(k, &rgba);
+                                    }
                                     TileFetch::Ok(decode_globe_tile(rgba, masked))
                                 }
                                 Err(e) => {

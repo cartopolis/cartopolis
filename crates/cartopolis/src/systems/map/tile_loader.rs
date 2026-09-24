@@ -207,6 +207,35 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     ))
 }
 
+/// [`rendered_cache_key`] for a globe tile: the same pixels, drawn at the globe's
+/// own size, with the ocean mask packed into alpha — so a distinct entry.
+///
+/// **The globe re-drew every tile on every launch.** Its bytes were cached and its
+/// pixels were not, so zooming out to the planet paid tiny-skia for every tile of
+/// the quadtree each time, where the flat map had been reading finished tiles
+/// back since `keeping-what-was-expensive.md`. Only a tile whose mask came out is
+/// kept, because the entry cannot say whether it has one and a read assumes it.
+#[must_use]
+pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> Option<String> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let GlobeTilePayload::Vector { bytes, .. } = payload else {
+        return None;
+    };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    Some(format!(
+        "rendered-globe/{}/{size}/{}/{}/{}-{:016x}.png",
+        env!("CARTO_RENDER_FINGERPRINT"),
+        key.z,
+        key.x,
+        key.y,
+        h.finish()
+    ))
+}
+
 /// A stored tile back to pixels, if it decodes to the size that was asked for.
 /// Anything else — a torn file, a stray entry — is a miss, and the tile is drawn.
 #[must_use]
