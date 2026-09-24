@@ -61,6 +61,8 @@ bevy_image.workspace = true
 # One blocking request, for `--ahn`. The client's async stack is its own; a
 # harness run asks the height service once and exits.
 ureq.workspace = true
+# For `--site`: the decks atlas published and the BGT cell files, as JSON.
+serde_json.workspace = true
 clap.workspace = true
 # For `--texture`, which writes a road class's generated surface straight out as
 # a PNG. Bevy reaches `image` internally (a screenshot converts through it) but

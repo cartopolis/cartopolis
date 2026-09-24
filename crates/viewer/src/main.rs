@@ -29,6 +29,8 @@
 
 use std::io::Read;
 
+mod bridges;
+
 use anyhow::{Context, Result};
 use bevy::asset::RenderAssetUsages;
 // `RenderTarget` is its own component in Bevy 0.19 (required by `Camera`), and it
@@ -240,6 +242,20 @@ struct Cli {
     #[arg(long, value_name = "METRES", default_value_t = 5.0)]
     deck_height: f32,
 
+    /// Stand the ground on atlas's **graded** terrain tiles from this host
+    /// (`http://127.0.0.1:4790`) — what the client samples where atlas has graded,
+    /// approaches already ramped to each deck's measured top. Replaces `--ahn`.
+    #[arg(long, value_name = "URL")]
+    atlas: Option<String>,
+
+    /// Read the decks atlas measured and the BGT's piers from this data host (the
+    /// tree `3dbag.cartopolis.org` serves), and stand each deck along its measured
+    /// profile with its piers under it instead of the flat `--deck-height`. With
+    /// `--atlas` it also prints how far each deck's top is from the ground three
+    /// metres out along its approaches — the client's `deck_step_*`.
+    #[arg(long, value_name = "URL")]
+    site: Option<String>,
+
     /// Print the tile's street centre lines within this many metres of `--at`,
     /// in tile-local metres, and exit.
     ///
@@ -367,6 +383,8 @@ struct Cell {
     /// The ground stretches that climb onto those decks, abutment first. What
     /// bounds the approach ramp to the roads that actually reach a structure.
     approaches: Vec<vector_tiles::Approach>,
+    /// `(index into meshes, deck)` for each deck slab and each carriageway on one.
+    deck_tags: Vec<(usize, u32)>,
     /// Street centre lines in tile-local metres — see `--dump-lines`.
     lines: Vec<vector_tiles::StreetLine>,
     /// Every layer, its feature count and its kinds — see `--census`.
@@ -510,6 +528,23 @@ fn main() -> Result<()> {
     }
 
     let ground = Ground(build_field(&loaded, &cli));
+    // What the client knows about the bridges, off the same published data.
+    let bridges = Bridges(match &cli.site {
+        Some(site) => loaded
+            .cells
+            .iter()
+            .map(|c| bridges::cell_bridges(site, c))
+            .collect(),
+        None => Vec::new(),
+    });
+    if let (Some(field), false) = (ground.0.as_ref(), bridges.0.is_empty()) {
+        let (lifted, profiled, steps, max, mean) = bridges::report(&loaded, &bridges.0, field);
+        let piers: usize = bridges.0.iter().map(|b| b.piers.len()).sum();
+        println!(
+            "bridges: {lifted} decks lifted, {profiled} profiled, {piers} surveyed piers; \
+             {steps} approaches, step max {max:.2} m, mean {mean:.2} m"
+        );
+    }
 
     let mut app = App::new();
     if cli.window {
@@ -544,6 +579,7 @@ fn main() -> Result<()> {
         .init_resource::<Drawn>()
         .insert_resource(tour)
         .insert_resource(ground)
+        .insert_resource(bridges)
         .insert_resource(ClearColor(Color::srgb(0.53, 0.68, 0.82)))
         .add_systems(
             Startup,
@@ -584,7 +620,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
             cartopolis_core::world::tile_to_meters(z, lat) as f32
         };
         match tessellate(&tile, tile_m, (z, x, y), !cli.no_cut, cli.deck_height) {
-            Ok((meshes, bridges, tunnels, bores, openings_m2, decks, approaches)) => {
+            Ok((meshes, bridges, tunnels, bores, openings_m2, decks, approaches, deck_tags)) => {
                 cells.push(Cell {
                     z,
                     x,
@@ -597,6 +633,7 @@ fn load(cli: &Cli) -> Result<Loaded> {
                     openings_m2,
                     decks,
                     approaches,
+                    deck_tags,
                     unhandled: vector_tiles::unhandled_land_kinds(&tile),
                     lines: vector_tiles::street_lines(&tile, tile_m),
                     census: vector_tiles::layer_census(&tile),
@@ -629,6 +666,7 @@ fn tessellate(
     f32,
     Vec<vector_tiles::BridgeDeck>,
     Vec<vector_tiles::Approach>,
+    Vec<(usize, u32)>,
 )> {
     let mut meshes = vector_tiles::tessellate_surfaces(tile, tile_m, None)
         .map_err(anyhow::Error::msg)
@@ -662,10 +700,15 @@ fn tessellate(
     // geometry is continuous, where the joins are, what the deck cuts out of the
     // ground — and it is not evidence about a deck's real height, which nothing
     // in a tile could be.
-    for deck in &decks {
+    // `(mesh index, deck index)` for every mesh that is a deck or rides one, so a
+    // measured deck can be stood on its profile (`--site`).
+    let mut deck_tags: Vec<(usize, u32)> = Vec::new();
+    for (i, deck) in decks.iter().enumerate() {
         if deck.indices.is_empty() {
             continue;
         }
+        #[allow(clippy::cast_possible_truncation)]
+        deck_tags.push((meshes.len(), i as u32));
         meshes.push(SurfaceMesh {
             group: SurfaceGroup::BridgeDeck,
             positions: deck
@@ -688,10 +731,11 @@ fn tessellate(
             .map(|(_, m)| format!("{:?}", m.group))
             .collect::<Vec<_>>(),
     );
-    for (_, mut m) in roads.on_deck {
+    for (d, mut m) in roads.on_deck {
         for p in &mut m.positions {
             p[1] += deck_m;
         }
+        deck_tags.push((meshes.len(), d));
         meshes.push(m);
     }
 
@@ -764,6 +808,7 @@ fn tessellate(
         opening_m2,
         decks,
         approaches,
+        deck_tags,
     ))
 }
 
@@ -1070,6 +1115,10 @@ const MAX_GROUND_EDGE_M: f32 = cartopolis_geo::ahn::SAMPLE_M * 4.0;
 #[derive(Resource)]
 struct Ground(Option<Field>);
 
+/// Per loaded cell, what the client knows about its bridges (`--site`).
+#[derive(Resource)]
+struct Bridges(Vec<bridges::CellBridges>);
+
 impl Ground {
     /// The lowest point of the ground, or zero when it is flat. What the
     /// checkered underlay is hung beneath.
@@ -1088,6 +1137,11 @@ struct Field {
     /// measured field sizes itself to the ground it covers, and the synthetic one
     /// does not.
     n: usize,
+    /// World position of sample `(0, 0)` — the loaded cells' north-west corner
+    /// when that is not the origin cell's.
+    origin: [f32; 2],
+    /// NAP of height 0, for a field built from absolute heights.
+    datum: f32,
 }
 
 impl terrain_refine::GroundField for Field {
@@ -1128,7 +1182,10 @@ impl Field {
     /// Bilinear height at a world point, `0.0` outside.
     fn at(&self, x: f32, z: f32) -> f32 {
         let n = self.n;
-        let (fx, fz) = (x / self.step_m, z / self.step_m);
+        let (fx, fz) = (
+            (x - self.origin[0]) / self.step_m,
+            (z - self.origin[1]) / self.step_m,
+        );
         #[allow(clippy::cast_precision_loss)]
         if !(0.0..=(n - 1) as f32).contains(&fx) || !(0.0..=(n - 1) as f32).contains(&fz) {
             return 0.0;
@@ -1313,6 +1370,9 @@ fn grade_along_roads(samples: &mut [f32], n: usize, step_m: f32, loaded: &Loaded
 /// the scale a surface's triangles span, and curvature between corners *is* the
 /// fault being reproduced.
 fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
+    if let Some(atlas) = &cli.atlas {
+        return bridges::graded_field(loaded, atlas);
+    }
     if cli.ahn {
         let mut field = measured_field(loaded)?;
         // **The measured field is the one that needs this**, and it was the one
@@ -1371,7 +1431,13 @@ fn build_field(loaded: &Loaded, cli: &Cli) -> Option<Field> {
     let lo = samples.iter().copied().fold(f32::INFINITY, f32::min);
     let hi = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     tracing::info!(span_m = span, step_m, low_m = lo, high_m = hi, "ground");
-    Some(Field { samples, step_m, n })
+    Some(Field {
+        samples,
+        step_m,
+        n,
+        origin: [0.0, 0.0],
+        datum: 0.0,
+    })
 }
 
 /// The tone this draws a surface in.
@@ -1414,9 +1480,10 @@ fn spawn_scene(
     mut drawn: ResMut<Drawn>,
     ground: Res<Ground>,
     mut images: ResMut<Assets<Image>>,
+    bridges: Res<Bridges>,
 ) {
     let field = ground.0.as_ref();
-    for cell in &loaded.cells {
+    for (ci, cell) in loaded.cells.iter().enumerate() {
         // Tile x runs east; tile y runs south, which is +z here.
         #[allow(clippy::cast_precision_loss)]
         let cell_origin = Vec3::new(
@@ -1424,7 +1491,8 @@ fn spawn_scene(
             0.0,
             (cell.y - loaded.origin.1) as f32 * cell.tile_m,
         );
-        for m in &cell.meshes {
+        let cell_bridges = bridges.0.get(ci);
+        for (mi, m) in cell.meshes.iter().enumerate() {
             if let Some(want) = &cli.only {
                 if !format!("{:?}", m.group)
                     .to_lowercase()
@@ -1433,7 +1501,30 @@ fn spawn_scene(
                     continue;
                 }
             }
-            let Some(mesh) = to_bevy_mesh(m, field, cell_origin, &cell.bores) else {
+            // A deck the client has a measurement for stands on it, as in the
+            // client — not on the ground plus a flat `--deck-height`.
+            let measured = cell
+                .deck_tags
+                .iter()
+                .find(|t| t.0 == mi)
+                .and_then(|t| bridges::measured(cell_bridges?, t.1));
+            let mesh = match (measured, field) {
+                (Some(meas), Some(f)) => {
+                    let mut stood = m.clone();
+                    bridges::stand_on_deck(
+                        &mut stood.positions,
+                        &mut stood.indices,
+                        &mut stood.uvs,
+                        meas,
+                        f.datum,
+                        cli.deck_height,
+                    );
+                    stood.normals = Vec::new();
+                    to_bevy_mesh(&stood, None, cell_origin, &cell.bores)
+                }
+                _ => to_bevy_mesh(m, field, cell_origin, &cell.bores),
+            };
+            let Some(mesh) = mesh else {
                 continue;
             };
             drawn.meshes += 1;
@@ -1485,6 +1576,31 @@ fn spawn_scene(
                 // report an ordering fault of this binary's own making.
                 Transform::from_translation(cell_origin + Vec3::Y * m.group.layer().y_offset()),
             ));
+        }
+        // The surveyed piers, from the ground to the deck over each.
+        if let (Some(b), Some(f)) = (cell_bridges, field) {
+            let (pos, nor, idx, _) = bridges::pier_mesh(cell, b, f, [cell_origin.x, cell_origin.z]);
+            if !idx.is_empty() {
+                let mut mesh = Mesh::new(
+                    bevy::render::mesh::PrimitiveTopology::TriangleList,
+                    RenderAssetUsages::RENDER_WORLD,
+                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+                mesh.insert_indices(bevy::render::mesh::Indices::U32(idx));
+                drawn.meshes += 1;
+                commands.spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: harness_tone(SurfaceGroup::BridgeDeck),
+                        perceptual_roughness: 0.95,
+                        cull_mode: None,
+                        double_sided: true,
+                        ..default()
+                    })),
+                    Transform::from_translation(cell_origin),
+                ));
+            }
         }
     }
     tracing::info!(
@@ -2462,5 +2578,11 @@ fn measured_field(loaded: &Loaded) -> Option<Field> {
          sample {step_m:.2} m over {n}²",
         hi - lo
     );
-    Some(Field { samples, step_m, n })
+    Some(Field {
+        samples,
+        step_m,
+        n,
+        origin: [0.0, 0.0],
+        datum: mean,
+    })
 }
