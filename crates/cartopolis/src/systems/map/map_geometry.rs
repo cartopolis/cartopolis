@@ -1573,7 +1573,6 @@ fn spawn_geometry_task(
                 }
                 lap.mark("ground");
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
-                let field = FIELD_CALLS.with(|f| f.replace([0; 4]));
                 tracing::info!(
                     cell = ?cell,
                     placed,
@@ -1582,10 +1581,6 @@ fn spawn_geometry_task(
                     displace_ms = split[1] / 1000,
                     normals_ms = split[2] / 1000,
                     verts = split[3],
-                    field_calls = field[0],
-                    field_ms = field[1] / 1000,
-                    added = field[2],
-                    refined_meshes = field[3],
                     "surface cell stages"
                 );
                 if let Ok(mut g) = results.lock() {
@@ -3231,8 +3226,6 @@ fn stand_on_terrain<G: MeasuredGround>(
     };
     let t0 = bevy::platform::time::Instant::now();
     if !volumetric {
-        let counted = CountedField(&lidded, std::cell::Cell::new((0, 0)));
-        let before = positions.len();
         crate::systems::terrain::refine_for_terrain(
             positions,
             indices,
@@ -3242,19 +3235,10 @@ fn stand_on_terrain<G: MeasuredGround>(
             rungs,
             terrain.ground_edge_m(),
             Some(crate::systems::terrain::Crease {
-                field: &counted,
+                field: &lidded,
                 origin: origin.to_array(),
             }),
         );
-        let (calls, ns) = counted.1.get();
-        FIELD_CALLS.with(|f| {
-            let mut v = f.get();
-            v[0] += calls;
-            v[1] += ns / 1000;
-            v[2] += (positions.len() - before) as u64;
-            v[3] += 1;
-            f.set(v);
-        });
     }
     let t1 = bevy::platform::time::Instant::now();
     {
@@ -3296,29 +3280,6 @@ thread_local! {
     /// Where `stand_on_terrain`'s time goes on this worker, µs: refine, displace,
     /// normals, and the vertex count out. Read and reset per cell job.
     static GROUND_SPLIT: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
-    /// Inside the refinement: ground lookups, µs spent in them, vertices added,
-    /// and how many meshes were refined.
-    static FIELD_CALLS: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
-}
-
-/// A ground field that counts and times what the refinement asks of it.
-struct CountedField<'a>(
-    &'a dyn cartopolis_geo::terrain_refine::GroundField,
-    std::cell::Cell<(u64, u64)>,
-);
-
-impl cartopolis_geo::terrain_refine::GroundField for CountedField<'_> {
-    fn min_ground_edge_m(&self) -> f32 {
-        self.0.min_ground_edge_m()
-    }
-
-    fn at(&self, x: f32, z: f32) -> f32 {
-        let t = bevy::platform::time::Instant::now();
-        let h = self.0.at(x, z);
-        let (n, ns) = self.1.get();
-        self.1.set((n + 1, ns + t.elapsed().as_nanos() as u64));
-        h
-    }
 }
 
 /// Seed for a cell's tree scatter. Stable for the cell's absolute tile coordinate,
