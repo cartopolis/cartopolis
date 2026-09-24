@@ -1573,7 +1573,7 @@ fn spawn_geometry_task(
                 }
                 lap.mark("ground");
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
-                tracing::info!(
+                tracing::debug!(
                     cell = ?cell,
                     placed,
                     stages = %lap.split,
