@@ -1572,7 +1572,17 @@ fn spawn_geometry_task(
                     placed = true;
                 }
                 lap.mark("ground");
-                tracing::info!(cell = ?cell, placed, stages = %lap.split, "surface cell stages");
+                let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
+                tracing::info!(
+                    cell = ?cell,
+                    placed,
+                    stages = %lap.split,
+                    refine_ms = split[0] / 1000,
+                    displace_ms = split[1] / 1000,
+                    normals_ms = split[2] / 1000,
+                    verts = split[3],
+                    "surface cell stages"
+                );
                 if let Ok(mut g) = results.lock() {
                     g.push((
                         cell,
@@ -3214,6 +3224,7 @@ fn stand_on_terrain<G: MeasuredGround>(
         around: &|x, z| terrain.surrounding(x, z, TUNNEL_DATUM_M),
         weight: &|p| tunnels.covered_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
+    let t0 = bevy::platform::time::Instant::now();
     if !volumetric {
         crate::systems::terrain::refine_for_terrain(
             positions,
@@ -3229,12 +3240,21 @@ fn stand_on_terrain<G: MeasuredGround>(
             }),
         );
     }
+    let t1 = bevy::platform::time::Instant::now();
     {
         use cartopolis_geo::terrain_refine::GroundField as _;
         for p in positions.iter_mut() {
             p[1] += lidded.at(origin.x + p[0], origin.y + p[2]);
         }
     }
+    let t2 = bevy::platform::time::Instant::now();
+    GROUND_SPLIT.with(|g| {
+        let mut v = g.get();
+        v[0] += t1.duration_since(t0).as_micros() as u64;
+        v[1] += t2.duration_since(t1).as_micros() as u64;
+        v[3] += positions.len() as u64;
+        g.set(v);
+    });
     if !volumetric {
         // Normals from the field, then flattened where the fill has raised the
         // ground: a surface lifted out of a trench is level, and shading it with
@@ -3249,6 +3269,17 @@ fn stand_on_terrain<G: MeasuredGround>(
             })
             .collect();
     }
+    GROUND_SPLIT.with(|g| {
+        let mut v = g.get();
+        v[2] += t2.elapsed().as_micros() as u64;
+        g.set(v);
+    });
+}
+
+thread_local! {
+    /// Where `stand_on_terrain`'s time goes on this worker, µs: refine, displace,
+    /// normals, and the vertex count out. Read and reset per cell job.
+    static GROUND_SPLIT: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
 }
 
 /// Seed for a cell's tree scatter. Stable for the cell's absolute tile coordinate,
