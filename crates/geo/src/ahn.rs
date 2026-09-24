@@ -63,9 +63,20 @@ pub fn wgs84_to_rd(lat: f64, lng: f64) -> [f64; 2] {
 /// person can paste it into a browser — which is how a refusal gets diagnosed.
 #[must_use]
 pub fn coverage_url(min: [f64; 2], max: [f64; 2], grid: u32) -> String {
+    coverage_url_of(DTM, min, max, grid)
+}
+
+/// AHN's bare ground: buildings and bridge decks cut out.
+pub const DTM: &str = "dtm_05m";
+/// AHN's surface: everything the laser hit, bridge decks at their real height.
+pub const DSM: &str = "dsm_05m";
+
+/// [`coverage_url`] for either model ([`DTM`], [`DSM`]).
+#[must_use]
+pub fn coverage_url_of(coverage: &str, min: [f64; 2], max: [f64; 2], grid: u32) -> String {
     format!(
         "https://service.pdok.nl/rws/ahn/wcs/v1_0?SERVICE=WCS&VERSION=1.0.0\
-         &REQUEST=GetCoverage&COVERAGE=dtm_05m&CRS=EPSG:28992&FORMAT=GEOTIFF\
+         &REQUEST=GetCoverage&COVERAGE={coverage}&CRS=EPSG:28992&FORMAT=GEOTIFF\
          &BBOX={:.2},{:.2},{:.2},{:.2}&WIDTH={grid}&HEIGHT={grid}",
         min[0], min[1], max[0], max[1]
     )

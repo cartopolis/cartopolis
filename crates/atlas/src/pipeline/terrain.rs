@@ -28,7 +28,9 @@ pub const ZOOM: u32 = 14;
 const ATTRIBUTION: &str = "AHN (Rijkswaterstaat / Het Waterschapshuis), CC0";
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
-    run_with(ctx, &Pdok::new())
+    let vector = super::terrain_grade::HttpTiles::from_env();
+    let surface = Pdok::surface();
+    run_graded(ctx, &Pdok::new(), Some((&vector, &surface)))
 }
 
 /// Every z14 tile an RD bbox touches, nearest the centre first — so a cancelled
@@ -49,7 +51,18 @@ pub fn tiles_for(bbox: [f64; 4]) -> Vec<(i64, i64)> {
     tiles
 }
 
+/// Cut only, no grading — what the tests drive, with no vector tiles to read.
 pub fn run_with(ctx: &Ctx, source: &dyn HeightSource) -> Outcome<DatasetResult> {
+    run_graded(ctx, source, None)
+}
+
+/// Cut every tile, then grade them (`terrain_grade`) when given the road shapes
+/// and the surface model to grade with.
+pub fn run_graded(
+    ctx: &Ctx,
+    source: &dyn HeightSource,
+    grading: Option<(&dyn super::terrain_grade::VectorSource, &dyn HeightSource)>,
+) -> Outcome<DatasetResult> {
     let data_dir = ctx.data_dir()?.to_path_buf();
     let tiles = tiles_for(ctx.bbox);
     ctx.log(format!("{} tegels op z{ZOOM}…", tiles.len()));
@@ -95,27 +108,47 @@ pub fn run_with(ctx: &Ctx, source: &dyn HeightSource) -> Outcome<DatasetResult> 
             ));
         }
     }
+    ctx.log(format!(
+        "{cut} gesneden, {stored} al aanwezig, {nothing} zonder meting, {failed} mislukt"
+    ));
+    // Graded after every tile is cut, because each is graded over a window
+    // reaching into its neighbours.
+    let (graded, decks_lifted) = match grading {
+        Some((vector, surface)) => {
+            let tiles: Vec<(i64, i64)> = measured.iter().map(|c| (c[0], c[1])).collect();
+            let (graded, _, lifted) =
+                super::terrain_grade::grade_area(ctx, &tiles, vector, surface)?;
+            (graded, lifted)
+        }
+        None => (Vec::new(), 0),
+    };
+    // The stamp names this grading run: the client puts it in the tile URL and its
+    // cache key, so a re-grade is never answered from an old copy.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     ctx.write_json(
         "terrain/coverage.json",
         &json!({
             "attribution": ATTRIBUTION,
             "bbox_rd": ctx.bbox,
             "cells": measured,
+            "graded": graded,
+            "graded_stamp": stamp,
             "name": ctx.name,
             "source": "PDOK AHN WCS dtm_05m, cut to z14 tiles at 513 samples",
             "tile_count": measured.len(),
             "zoom": ZOOM,
         }),
     )?;
-    ctx.log(format!(
-        "{cut} gesneden, {stored} al aanwezig, {nothing} zonder meting, {failed} mislukt"
-    ));
     Ok(DatasetResult {
         cells: measured.len(),
         counts: vec![
             Count::new("tiles cut", cut),
             Count::new("tiles already stored", stored),
             Count::new("tiles with no data", nothing),
+            Count::new("tiles graded", graded.len()),
+            Count::new("bridge decks lifted", decks_lifted),
         ],
     })
 }

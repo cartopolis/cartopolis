@@ -26,6 +26,7 @@ pub mod http;
 pub mod lod22;
 pub mod rd;
 pub mod terrain;
+pub mod terrain_grade;
 pub mod tile;
 pub mod water;
 
@@ -220,6 +221,13 @@ impl Ctx {
             .map_err(|e| PipelineError::Failed(format!("{relative}: {e}")))?;
         Ok(())
     }
+
+    /// A file another dataset wrote into the site tree, if it is there — how the
+    /// terrain grading reads the water levels (`water/14/x/y.json`).
+    #[must_use]
+    pub fn read_site(&self, relative: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.out_root.join(relative)).ok()
+    }
 }
 
 /// One extractor, as the console lists it.
@@ -299,8 +307,10 @@ pub const DATASETS: &[Dataset] = &[
     Dataset {
         id: "terrain",
         label: "Terrain tiles (AHN)",
-        description: "Cuts every z16 height tile over the area into atlas's terrain store, so \
-                      the client's ground is never cut from PDOK on a player's first visit.",
+        description: "Cuts every z14 height tile over the area into atlas's terrain store and \
+                      grades it — water carved, holes filled, roads flattened, bridge approaches \
+                      ramped — so the client only samples it, and publishes the bridge deck \
+                      heights it measured. Reads the water levels, so it runs after them.",
         coverage: "terrain/coverage.json",
         typical_minutes: 4,
         run: terrain::run,

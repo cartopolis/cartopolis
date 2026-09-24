@@ -32,7 +32,7 @@ const MAX_RASTER: usize = 1024;
 /// Where AHN heights come from. A trait so the service can be tested without the
 /// network, and so a pre-built national raster can stand in for PDOK later.
 pub trait HeightSource: Send + Sync + 'static {
-    /// The bare-ground heights over an RD box, `n × n`, north row first, `NaN`
+    /// The heights over an RD box, `n × n`, north row first, `NaN`
     /// where nothing was measured. Blocking.
     fn raster(&self, min: [f64; 2], max: [f64; 2], n: usize) -> Result<Vec<f32>, String>;
 }
@@ -41,16 +41,31 @@ pub trait HeightSource: Send + Sync + 'static {
 /// (`cartopolis_geo::ahn::coverage_url`).
 pub struct Pdok {
     agent: ureq::Agent,
+    /// `ahn::DTM` or `ahn::DSM`.
+    coverage: &'static str,
 }
 
 impl Pdok {
+    /// The bare ground, which is what every terrain tile is cut from.
     #[must_use]
     pub fn new() -> Self {
+        Self::of(ahn::DTM)
+    }
+
+    /// The surface model: bridge decks at their real height, for measuring them
+    /// (`pipeline::terrain_grade`).
+    #[must_use]
+    pub fn surface() -> Self {
+        Self::of(ahn::DSM)
+    }
+
+    fn of(coverage: &'static str) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("cartopolis-atlas (+https://cartopolis.org)")
                 .build(),
+            coverage,
         }
     }
 }
@@ -64,7 +79,7 @@ impl Default for Pdok {
 impl HeightSource for Pdok {
     fn raster(&self, min: [f64; 2], max: [f64; 2], n: usize) -> Result<Vec<f32>, String> {
         use std::io::Read;
-        let url = ahn::coverage_url(min, max, n as u32);
+        let url = ahn::coverage_url_of(self.coverage, min, max, n as u32);
         let response = self.agent.get(&url).call().map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         // A float32 raster is 4 bytes a sample; anything much larger is not one.
@@ -106,6 +121,7 @@ pub fn valid_grid(grid: usize) -> bool {
 pub struct TerrainService {
     source: Arc<dyn HeightSource>,
     dir: PathBuf,
+    graded: PathBuf,
     upstream: Semaphore,
     /// One cut per tile at a time: a second request for a tile being cut waits for
     /// the first and then reads its result from disk, rather than asking PDOK again.
@@ -121,6 +137,7 @@ impl TerrainService {
         Self {
             source,
             dir: store_dir(data_dir),
+            graded: graded_dir(data_dir),
             upstream: Semaphore::new(upstream_concurrency.max(1)),
             cutting: Mutex::new(HashMap::new()),
         }
@@ -128,6 +145,16 @@ impl TerrainService {
 
     pub async fn tile(&self, z: u32, x: i64, y: i64) -> Result<Answer, TerrainError> {
         self.tile_at(z, x, y, terrain_tile::GRID).await
+    }
+
+    /// A graded tile, if the pipeline has graded it. Never cut or graded here:
+    /// `None` is the client's cue to fetch the raw tile and grade it itself.
+    pub async fn graded(&self, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
+        let dir = self.graded.clone();
+        tokio::task::spawn_blocking(move || read_stored(&dir, z, x, y, grid))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// [`Self::tile`] at a chosen grid ([`valid_grid`]).
@@ -223,6 +250,15 @@ pub fn store_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("terrain-v2")
 }
 
+/// Where the **graded** tiles are kept (`pipeline::terrain_grade`): the same
+/// ground, water carved, holes filled, roads flattened and bridge approaches
+/// ramped, so the client only has to sample it. Only the pipeline writes here;
+/// nothing is graded on a request.
+#[must_use]
+pub fn graded_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("terrain-graded-v1")
+}
+
 /// `{z}/{x}/{y}.ctt` for the tile tree's grid, `{z}/{x}/{y}.g513.ctt` for another,
 /// so the two cuts of one tile never overwrite each other.
 fn tile_path(dir: &Path, z: u32, x: i64, y: i64, grid: usize, ext: &str) -> PathBuf {
@@ -233,7 +269,7 @@ fn tile_path(dir: &Path, z: u32, x: i64, y: i64, grid: usize, ext: &str) -> Path
     }
 }
 
-fn read_stored(dir: &Path, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
+pub(crate) fn read_stored(dir: &Path, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
     if let Ok(bytes) = std::fs::read(tile_path(dir, z, x, y, grid, "ctt")) {
         // A torn or foreign file is a miss, and gets cut again.
         if terrain_tile::TerrainTile::decode(&bytes).is_ok_and(|t| t.grid == grid) {
@@ -249,7 +285,7 @@ fn read_stored(dir: &Path, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer
 /// temporary name is the writer's own: the service and a pipeline run may cut the
 /// same tile at once, and two writers sharing one temporary file can rename the
 /// other's half-written bytes into place.
-fn write_stored(dir: &Path, z: u32, x: i64, y: i64, grid: usize, answer: &Answer) {
+pub(crate) fn write_stored(dir: &Path, z: u32, x: i64, y: i64, grid: usize, answer: &Answer) {
     let (path, bytes): (PathBuf, &[u8]) = match answer {
         Answer::Tile(b) => (tile_path(dir, z, x, y, grid, "ctt"), b),
         Answer::Nothing => (tile_path(dir, z, x, y, grid, "none"), &[]),

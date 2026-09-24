@@ -53,8 +53,15 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
 ## Order
 
 1. Crate skeleton plus `/terrain/{z}/{x}/{y}`: AHN height grids per tile, cut
-   from PDOK on first request and kept on disk; 404 outside coverage. No road
-   flattening server-side. **Built** (`crates/atlas`, format
+   from PDOK on first request and kept on disk; 404 outside coverage. Road
+   flattening server-side came later, as a pipeline step rather than on request:
+   the `terrain` dataset grades every tile it cuts (`pipeline/terrain_grade.rs`)
+   into `terrain-graded-v1/`, served with `&graded=1`, and writes the deck
+   heights it measured to `decks/14/x/y.json`
+   (`level-of-detail-tile-tree.md`, "Atlas grades"). It reads the vector tiles
+   from `ATLAS_VECTOR_TILES` (default `tiles.cartopolis.org`), the water dataset's
+   own output from the site tree — so run `water` before `terrain` — and PDOK's
+   surface model for the decks. **Built** (`crates/atlas`, format
    `cartopolis_geo::terrain_tile`): z8–z17, 129² samples, 33 KB a tile. Against
    live PDOK from the VPS (2026-09-23): a first cut takes 0.2–0.3 s and a repeat
    is ~1 ms from disk. North Groningen (`14/8490/5318`) spans −1.0 to +10.6 m

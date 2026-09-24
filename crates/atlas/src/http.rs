@@ -71,9 +71,13 @@ pub fn router(state: AtlasState) -> Router {
 
 /// `?grid=513` asks for the dense cut the client's terrain field is assembled from
 /// (`cartopolis_geo::terrain_tile::DENSE_GRID`); the default is the tile tree's.
+/// `&graded=1` asks for the graded tile (`pipeline::terrain_grade`) and is answered
+/// only from what the pipeline wrote. The client adds `&v=` with the grading run's
+/// stamp from the coverage manifest, so a re-grade is a new URL to every cache.
 #[derive(serde::Deserialize)]
 struct Grid {
     grid: Option<usize>,
+    graded: Option<u8>,
 }
 
 async fn terrain_tile(
@@ -86,6 +90,20 @@ async fn terrain_tile(
     let cache = (header::CACHE_CONTROL, "public, max-age=604800");
     let cors = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
     let grid = q.grid.unwrap_or(cartopolis_geo::terrain_tile::GRID);
+    if q.graded == Some(1) {
+        return match state.terrain.graded(z, x, y, grid).await {
+            Some(Answer::Tile(bytes)) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, TERRAIN_MEDIA_TYPE), cache, cors],
+                bytes,
+            )
+                .into_response(),
+            // Not cached: the pipeline may grade it later.
+            Some(Answer::Nothing) | None => {
+                (StatusCode::NOT_FOUND, [cors], "not graded here").into_response()
+            }
+        };
+    }
     match state.terrain.tile_at(z, x, y, grid).await {
         Ok(Answer::Tile(bytes)) => (
             StatusCode::OK,

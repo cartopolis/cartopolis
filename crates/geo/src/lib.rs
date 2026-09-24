@@ -110,6 +110,9 @@ pub mod traffic;
 // `cartopolis`, and bending unrefined triangles drew cracks that were the
 // instrument, not the map.
 pub mod terrain_refine;
+// Carve, fill and grade measured ground. Here so atlas grades its tiles with the
+// code the client grades its field with.
+pub mod terrain_grade;
 pub mod terrain_tile;
 pub mod tunnels;
 pub mod turf;
