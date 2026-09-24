@@ -49,6 +49,9 @@ struct Manifest {
     /// that goes into their URL and cache key (`terrain_tiles`).
     graded: HashSet<(i64, i64)>,
     graded_stamp: u64,
+    /// When the tree was last extracted, for a consumer that keys its cache on
+    /// the run (`dikes`). 0 for a manifest that does not say.
+    stamp: u64,
 }
 
 impl Manifest {
@@ -59,6 +62,7 @@ impl Manifest {
             attribution: String::new(),
             graded: HashSet::new(),
             graded_stamp: 0,
+            stamp: 0,
         }
     }
 }
@@ -153,6 +157,12 @@ impl CoverageSlot {
     /// tree that was never graded.
     pub fn graded_stamp(&self) -> u64 {
         self.answer.get().map_or(0, |m| m.graded_stamp)
+    }
+
+    /// The extraction run's stamp (`Manifest::stamp`): 0 until the manifest lands
+    /// and for one that does not carry it.
+    pub fn stamp(&self) -> u64 {
+        self.answer.get().map_or(0, |m| m.stamp)
     }
 
     /// 0 while the question is open, 1 once it has an answer of any kind.
@@ -250,6 +260,10 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
         .get("graded_stamp")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
+    let stamp = json
+        .get("stamp")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     tracing::info!(%url, cells = cells.len(), graded = graded.len(), zoom, "coverage loaded");
     Some(Manifest {
         zoom,
@@ -257,5 +271,6 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
         attribution,
         graded,
         graded_stamp,
+        stamp,
     })
 }

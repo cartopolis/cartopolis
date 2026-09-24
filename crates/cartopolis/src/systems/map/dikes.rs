@@ -34,6 +34,12 @@
 //! line would mean a second resolution inside the lookup every mesh build calls
 //! thousands of times, to change ground the camera reads as a ridge either way.
 //! The label is the one consumer that genuinely cannot use the coarse answer.
+//!
+//! **Where atlas has measured them, the cell file carries the crests**
+//! (`crests`, beside `lines`) and nothing is asked here: the same half-metre
+//! maximum, taken once on the server instead of on every device. The boxes were
+//! most of what a cold start asked of the height service. A file without them —
+//! an older extraction — is measured here as before.
 
 use std::sync::Arc;
 
@@ -224,17 +230,28 @@ pub fn parse_dike_cell(text: &str) -> Result<DikeCell, String> {
         names: Vec<String>,
         #[serde(default)]
         lines: Vec<(usize, usize, i64, Vec<(f64, f64)>)>,
+        /// The crests atlas measured, by line (`pipeline/dikes.rs`). A file
+        /// without them is measured here, as before.
+        #[serde(default)]
+        crests: Option<Vec<Option<f32>>>,
     }
     let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let names: Vec<Arc<str>> = wire.names.into_iter().map(Arc::from).collect();
+    let crests = wire.crests.filter(|c| c.len() == wire.lines.len());
     Ok(DikeCell {
         lines: wire
             .lines
             .into_iter()
+            .enumerate()
             // A line with one point is not a line. The extractor never writes
             // one; a truncated cache entry can.
-            .filter(|(_, _, _, pts)| pts.len() >= 2)
-            .map(|(k, c, n, points)| DikeLine {
+            .filter(|(_, (_, _, _, pts))| pts.len() >= 2)
+            .map(|(i, (k, c, n, points))| {
+                // Measured on atlas: settled, whether it found a crest or not.
+                let measured = crests.as_ref().map(|c| c[i]);
+                (k, c, n, points, measured)
+            })
+            .map(|(k, c, n, points, measured)| DikeLine {
                 // An index past the end is clamped to `Unknown` rather than
                 // dropping the defence: a host running a newer extractor should
                 // cost this build the *type* of a defence, never the defence.
@@ -245,8 +262,8 @@ pub fn parse_dike_cell(text: &str) -> Result<DikeCell, String> {
                     .unwrap_or(DikeCategory::Other),
                 name: usize::try_from(n).ok().and_then(|i| names.get(i).cloned()),
                 points,
-                crest_nap_m: None,
-                crest_settled: false,
+                crest_nap_m: measured.flatten(),
+                crest_settled: measured.is_some(),
             })
             .collect(),
     })
@@ -318,11 +335,20 @@ fn dike_covers(cx: i64, cy: i64) -> bool {
 }
 
 async fn fetch_dike_text(cx: i64, cy: i64) -> Result<String, String> {
-    let key = format!("dikes/{DIKE_ZOOM}/{cx}/{cy}.json");
+    // Keyed on the extraction run (`CoverageSlot::stamp`), so a re-run — which is
+    // how the cells gained their crests — is never answered from an old copy.
+    let stamp = COVERAGE.stamp();
+    let key = format!("dikes/{stamp}/{DIKE_ZOOM}/{cx}/{cy}.json");
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
     }
-    let url = format!("{}/dikes/{}/{}/{}.json", tdbag_url(), DIKE_ZOOM, cx, cy);
+    let url = format!(
+        "{}/dikes/{}/{}/{}.json?v={stamp}",
+        tdbag_url(),
+        DIKE_ZOOM,
+        cx,
+        cy
+    );
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
@@ -618,6 +644,24 @@ pub fn feed_dike_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crests_measured_on_atlas_are_settled_and_a_file_without_them_is_not() {
+        let line = r#"[0,0,0,[[53.2,6.5],[53.21,6.51]]]"#;
+        let with = format!(r#"{{"names":["Dijk"],"lines":[{line},{line}],"crests":[3.5,null]}}"#);
+        let cell = parse_dike_cell(&with).unwrap();
+        assert_eq!(cell.lines[0].crest_nap_m, Some(3.5));
+        assert!(cell.lines[0].crest_settled);
+        assert_eq!(cell.lines[1].crest_nap_m, None);
+        assert!(
+            cell.lines[1].crest_settled,
+            "measured and found nothing is an answer"
+        );
+
+        let without = format!(r#"{{"names":["Dijk"],"lines":[{line}]}}"#);
+        let cell = parse_dike_cell(&without).unwrap();
+        assert!(!cell.lines[0].crest_settled, "measured here, as before");
+    }
 
     /// Midpoints along one quay share a patch; a line across town does not; and a
     /// cluster's patch keeps the half metre a single crest box was sampled at.

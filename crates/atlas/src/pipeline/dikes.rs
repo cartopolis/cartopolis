@@ -13,7 +13,9 @@
 //!
 //! Wire format per cell — `names` interned per cell because one defence arrives as
 //! many segments under one name; `lines` is `[type, category, name_index,
-//! [[lat, lng], …]]` with `name_index` −1 for an unnamed one.
+//! [[lat, lng], …]]` with `name_index` −1 for an unnamed one; `crests`, by the
+//! same index, is the measured crest in metres NAP, or `null` for a line that
+//! carries no label or stands no crest (a lock, a pumping station).
 //!
 //! Data: IMWA Keringen — the Dutch water boards via PDOK, open data.
 
@@ -192,6 +194,96 @@ fn line_strings(geom: &Value) -> Vec<Vec<Pt>> {
 struct CellData {
     names: Vec<String>,
     lines: Vec<Value>,
+    /// Per line, where its crest is measured (RD, the line's middle vertex), for a
+    /// named line whose crest is ground; `None` for the rest.
+    mids: Vec<Option<[f64; 2]>>,
+    /// Per line, the measured crest in metres NAP ([`measure_crests`]).
+    crests: Vec<Option<f32>>,
+}
+
+/// Half-width of the box a crest is measured in, and the model's own half metre
+/// it is measured at — the client's `dikes::CREST_HALF_M` and `CREST_GRID`, which
+/// this replaces where atlas has measured.
+const CREST_HALF_M: f64 = 30.0;
+const CREST_SAMPLE_M: f64 = 0.5;
+/// Lines whose midpoints share a cell of this size share one request.
+const CREST_CLUSTER_M: f64 = 120.0;
+/// Bound on a cluster's raster; a wider cluster is sampled more coarsely.
+const CREST_RASTER_MAX: usize = 400;
+
+/// The highest bare ground within [`CREST_HALF_M`] of each measurable line's
+/// middle — what the client used to ask PDOK for itself, ~450 boxes over Groningen,
+/// which kept the height service's queue busy for the whole of a cold start.
+fn measure_crests(
+    ctx: &Ctx,
+    cells: &mut HashMap<Cell, CellData>,
+    ground: &dyn crate::terrain::HeightSource,
+) -> Outcome<(usize, usize)> {
+    let mut groups: HashMap<(i64, i64), Vec<(Cell, usize, [f64; 2])>> = HashMap::new();
+    for (cell, data) in cells.iter_mut() {
+        data.crests = vec![None; data.lines.len()];
+        for (i, mid) in data.mids.iter().enumerate() {
+            if let Some(m) = mid {
+                let key = (
+                    (m[0] / CREST_CLUSTER_M).floor() as i64,
+                    (m[1] / CREST_CLUSTER_M).floor() as i64,
+                );
+                groups.entry(key).or_default().push((*cell, i, *m));
+            }
+        }
+    }
+    let (mut asked, mut measured) = (0usize, 0usize);
+    for members in groups.values() {
+        ctx.check()?;
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for (_, _, m) in members {
+            lo = [
+                lo[0].min(m[0] - CREST_HALF_M),
+                lo[1].min(m[1] - CREST_HALF_M),
+            ];
+            hi = [
+                hi[0].max(m[0] + CREST_HALF_M),
+                hi[1].max(m[1] + CREST_HALF_M),
+            ];
+        }
+        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        let n = ((span / CREST_SAMPLE_M).ceil() as usize + 1).clamp(2, CREST_RASTER_MAX);
+        let max = [lo[0] + span, lo[1] + span];
+        let px = span / n as f64;
+        asked += 1;
+        let raster = match ground.raster(lo, max, n) {
+            Ok(r) => r,
+            // A cluster PDOK would not answer is labels the client measures itself.
+            Err(e) => {
+                ctx.log(format!("kruin niet gemeten: {e}"));
+                continue;
+            }
+        };
+        for (cell, i, m) in members {
+            let mut top = f32::NEG_INFINITY;
+            for r in 0..n {
+                // North row first.
+                let y = max[1] - (r as f64 + 0.5) * px;
+                if (y - m[1]).abs() > CREST_HALF_M {
+                    continue;
+                }
+                for c in 0..n {
+                    let x = lo[0] + (c as f64 + 0.5) * px;
+                    let v = raster[r * n + c];
+                    if (x - m[0]).abs() <= CREST_HALF_M && v.is_finite() {
+                        top = top.max(v);
+                    }
+                }
+            }
+            if top.is_finite() {
+                if let Some(data) = cells.get_mut(cell) {
+                    data.crests[*i] = Some(top);
+                    measured += 1;
+                }
+            }
+        }
+    }
+    Ok((asked, measured))
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
@@ -300,6 +392,14 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                         },
                         None => -1,
                     };
+                    // The client's rule for which lines carry a label worth a
+                    // crest: named, and not a lock or a pumping station, whose
+                    // highest point is its roof.
+                    let mid = (label.is_some() && kind != "structure").then(|| {
+                        let [lat, lng] = back[back.len() / 2];
+                        cartopolis_geo::ahn::wgs84_to_rd(lat, lng)
+                    });
+                    bucket.mids.push(mid);
                     bucket.lines.push(json!([kind_ix, cat_ix, name_ix, back]));
                     n_pieces += 1;
                 }
@@ -319,16 +419,32 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             .map(str::to_string);
     }
 
+    ctx.log("kruinhoogtes…");
+    let (asked, measured) = measure_crests(ctx, &mut cells, &crate::terrain::Pdok::new())?;
+    ctx.log(format!("{measured} kruinen gemeten in {asked} verzoeken"));
     for (cell, data) in &cells {
+        // `crests` beside `lines` rather than inside each line: a client that
+        // reads a line as exactly four fields would refuse a fifth, and every
+        // installed one does.
+        let crests: Vec<Value> = data
+            .crests
+            .iter()
+            .map(|c| c.map_or(Value::Null, |v| json!(round(f64::from(v), 2))))
+            .collect();
         ctx.write_json(
             &cell_path("dikes", *cell),
-            &json!({"names": data.names, "lines": data.lines}),
+            &json!({"names": data.names, "lines": data.lines, "crests": crests}),
         )?;
     }
     ctx.write_json(
         "dikes/coverage.json",
         &json!({
             "name": ctx.name,
+            // The run: the client keys its cache of these cells on it, so a
+            // re-run (the one that added `crests`) is never read from an old copy.
+            "stamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
             "zoom": CACHE_ZOOM,
             "attribution": ATTRIBUTION,
             "source": "IMWA Keringen via PDOK OGC API",
@@ -351,6 +467,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         counts: vec![
             Count::new("defences", n_lines),
             Count::new("pieces", n_pieces),
+            Count::new("crests measured", measured),
         ],
     })
 }
@@ -358,6 +475,50 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Quiet;
+    impl crate::pipeline::Sink for Quiet {
+        fn log(&self, _: String) {}
+        fn progress(&self, _: crate::pipeline::Progress) {}
+    }
+
+    /// Ground that rises eastward a metre per metre, so the highest sample in a
+    /// crest box is its east edge: 30 m past the line's middle.
+    struct Ramp(std::sync::atomic::AtomicUsize);
+    impl crate::terrain::HeightSource for Ramp {
+        fn raster(&self, min: [f64; 2], max: [f64; 2], n: usize) -> Result<Vec<f32>, String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let px = (max[0] - min[0]) / n as f64;
+            Ok((0..n * n)
+                .map(|i| (min[0] + ((i % n) as f64 + 0.5) * px) as f32)
+                .collect())
+        }
+    }
+
+    #[test]
+    fn crests_are_the_highest_ground_near_each_line_and_neighbours_share_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(
+            [0.0; 4],
+            "t",
+            dir.path(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(Quiet),
+        );
+        let mut cells: HashMap<Cell, CellData> = HashMap::new();
+        let data = cells.entry((1, 1)).or_default();
+        data.lines = vec![Value::Null; 3];
+        // Two measurable lines 20 m apart, and one that is not measured.
+        data.mids = vec![Some([1000.0, 5000.0]), Some([1020.0, 5000.0]), None];
+        let source = Ramp(std::sync::atomic::AtomicUsize::new(0));
+        let (asked, measured) = measure_crests(&ctx, &mut cells, &source).unwrap();
+        assert_eq!((asked, measured), (1, 2));
+        assert_eq!(source.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let crests = &cells[&(1, 1)].crests;
+        assert!((crests[0].unwrap() - 1030.0).abs() < 0.5, "{crests:?}");
+        assert!((crests[1].unwrap() - 1050.0).abs() < 0.5, "{crests:?}");
+        assert_eq!(crests[2], None);
+    }
 
     /// A line crossing a cell edge becomes two pieces that share the crossing
     /// segment, so there is no gap where the cells meet.
