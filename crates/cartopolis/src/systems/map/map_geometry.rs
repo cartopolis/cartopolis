@@ -363,14 +363,6 @@ impl Plate {
             .as_ref()
             .map_or(self.world_top, |s| s.world_y(local))
     }
-
-    /// The measured top in NAP over a tile-local point.
-    fn top_nap_at(&self, local: [f32; 2]) -> Option<f32> {
-        match &self.shape {
-            Some(s) => Some(s.nap_at(local)),
-            None => self.top_nap,
-        }
-    }
 }
 
 /// **A deck's measured height along its length**, in the tile-local frame the
@@ -4300,7 +4292,8 @@ mod tests {
 
         // 201 samples over ±100 m is one per metre, which resolves a 40 m deck.
         let (n, half) = (201usize, 100.0f32);
-        let (ramp, lift, _) = plates.grade_masks(n, half);
+        let cartopolis_geo::terrain_grade::DeckMasks { ramp, lift, .. } =
+            plates.grade_masks(n, half);
         let at = |x: f32, z: f32| -> usize {
             let g = |v: f32| ((v + half).round()) as usize;
             g(z) * n + g(x)
@@ -4336,7 +4329,8 @@ mod tests {
 
         // And an empty set of plates is an empty pair, not a panic — which is
         // every tile in a city with no viaduct in it.
-        let (ramp, lift, _) = DeckPlates::default().grade_masks(n, half);
+        let cartopolis_geo::terrain_grade::DeckMasks { ramp, lift, .. } =
+            DeckPlates::default().grade_masks(n, half);
         assert!(!ramp.iter().any(|m| *m));
         assert!(!lift.iter().any(|v| v.is_finite()));
     }
