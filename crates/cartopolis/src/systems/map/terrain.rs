@@ -1068,7 +1068,14 @@ const WATER_SETTLE_S: f32 = 2.0;
 
 /// Longest a ready bake waits for the surface ring to finish arriving — see the
 /// hold in [`update_terrain_field`].
-const RING_HOLD_MAX_S: f32 = 10.0;
+///
+/// 30 s, not the 10 it started at. At 10 the first bake went ahead with part of
+/// the ring's bridge decks still unpublished, the rest landed a few seconds later,
+/// and the digest moving brought a second bake — every ground and building cell
+/// built three times instead of twice. Measured on the Deck (2026-09-24, Grote
+/// Markt): 600 m cold 67 → 50 s, 3 km warm 48 → 41 s, one bake per fill. The
+/// price is a camera that keeps a ring busy waiting up to 30 s for its hills.
+const RING_HOLD_MAX_S: f32 = 30.0;
 
 /// Keep [`TerrainField`] in step with the map anchor: request the box once, bake it
 /// when it lands, and drop it whenever the layer is off or out of coverage.

@@ -176,6 +176,12 @@ the workers were idle 80 % of the time):
   to 72 s, which is what pointed here. It was not kept: PDOK is a shared public
   service, and fewer requests is the same win without the load.
 
+**Then the rebuilds.** With the queue fixed, every ground and building cell was
+still built three times: flat, after a first bake that gave up waiting for the
+ring at `RING_HOLD_MAX_S` = 10 s with part of the bridge decks unpublished, and
+after the second bake their arrival caused. A 30 s hold gives a stationary view
+one bake: 600 m cold 67 → 50 s, 3 km cold 52 → 48 s, 3 km warm 48 → 41 s.
+
 Two things the A/B also caught. The branch's `bake_owed` never cleared when an
 input moved and then moved back (the deck digest does, while a ring republishes),
 so no capture on it settled at all until that was fixed. And one warm run lost
