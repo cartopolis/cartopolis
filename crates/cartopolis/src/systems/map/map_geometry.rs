@@ -3564,7 +3564,7 @@ const UNDER_WATER_M: f32 = 0.3;
 /// lid's roof plus its slab (`Tunnels::cover_over`). One function, because the
 /// ground and the wall tops that meet it must agree.
 fn fill_target(
-    terrain: &TerrainField,
+    terrain: &crate::systems::terrain::TerrainSnapshot,
     tunnels: &crate::systems::tunnels::Tunnels,
     x: f32,
     z: f32,
