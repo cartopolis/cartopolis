@@ -1148,12 +1148,18 @@ fn detect(preferred: Option<&str>) -> Budget {
 
 /// Apply the guards that belong to the *machine* rather than to the rung.
 ///
+/// `CARTO_HANDSET` applies them on any machine. `CARTO_QUALITY=phone` picks the
+/// rung a handset *could* be put on; a real phone runs `balanced` through these
+/// guards, and `CARTO_QUALITY=balanced CARTO_HANDSET=1` is that configuration on a
+/// machine that can capture it — the handset's terrain grid and the graded tiles
+/// thinned for it included.
+///
 /// `cfg!` rather than `#[cfg]` so [`handset_guarded`] is compiled — and testable —
 /// on every target. That is the same trap [`android_budget`] fell into: a rule
 /// that only exists in the Android build is a rule no test on any other host can
 /// see.
 fn on_this_machine(budget: Budget) -> Budget {
-    let budget = if cfg!(target_os = "android") {
+    let budget = if cfg!(target_os = "android") || crate::env_value("CARTO_HANDSET").is_some() {
         handset_guarded(budget)
     } else {
         budget
