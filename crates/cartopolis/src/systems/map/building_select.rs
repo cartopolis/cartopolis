@@ -259,8 +259,11 @@ pub fn pick_building(
     }
     // The click belongs to egui, or to the prim it landed on — see
     // `picking::PrimClick`, and note this system's `.after(prim_picking)` edge,
-    // which is what makes that answer about *this* press.
-    if egui.ctx.egui_wants_pointer_input() || prim_click.took() {
+    // which is what makes that answer about *this* press. `owns_click`, not
+    // `egui_wants_pointer_input()`: the second tap of a double tap is the brisk
+    // one, and egui has usually seen it lift by the frame its click lands here.
+    let cursor = windows.iter().next().and_then(|w| w.cursor_position());
+    if egui.owns_click(touch.touch_click(), cursor) || prim_click.took() {
         return;
     }
     // Collision matches what is drawn and so does selection: with the 3DBAG layer
@@ -271,7 +274,7 @@ pub fn pick_building(
     let Some(geo) = anchor.geo else {
         return;
     };
-    let Some(cursor) = windows.iter().next().and_then(|w| w.cursor_position()) else {
+    let Some(cursor) = cursor else {
         return;
     };
     // The first press is not an answer on either device — see the doc above.

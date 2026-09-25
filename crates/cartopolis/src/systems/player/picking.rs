@@ -29,6 +29,8 @@ pub struct PrimPickWorld<'w, 's> {
         Query<'w, 's, (&'static GridCell, &'static Transform), With<crate::components::FreeCamera>>,
     anchor: Res<'w, crate::resources::MapAnchor>,
     online: Option<Res<'w, crate::resources::OnlineSession>>,
+    /// Whether this frame's press is a finger's — see `EguiManager::owns_click`.
+    touch: Res<'w, crate::systems::touch::TouchGestures>,
 }
 
 /// Whether the last left click this system processed landed on a prim.
@@ -88,7 +90,9 @@ pub fn prim_picking(
 ) {
     let (geo_cameras, map_anchor, online) = (&world.cameras, &world.anchor, &world.online);
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
-    if egui_manager.ctx.egui_wants_pointer_input() {
+    // The same gate `building_select::pick_building` uses, or `PrimClick` goes stale.
+    let cursor = windows.iter().next().and_then(|w| w.cursor_position());
+    if egui_manager.owns_click(world.touch.touch_click(), cursor) {
         return;
     }
 

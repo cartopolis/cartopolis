@@ -88,6 +88,10 @@ pub struct EguiManager {
     /// middle of that would break the ordering contract for no gain — a key has
     /// no position.
     injected: Vec<egui::Event>,
+    /// What the panels left of the root `Ui` at the end of the last pass — the
+    /// map, in egui points. Read by [`Self::owns_click`]; `None` before the first
+    /// pass has ended.
+    map_rect: Option<egui::Rect>,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -327,6 +331,7 @@ impl Default for EguiManager {
             ui_scale,
             modal: false,
             injected: Vec::new(),
+            map_rect: None,
         }
     }
 }
@@ -462,6 +467,32 @@ impl EguiManager {
     /// from the top-left corner.
     pub fn window_to_ui(&self, p: Vec2) -> egui::Pos2 {
         egui::pos2(p.x / self.ui_scale, p.y / self.ui_scale)
+    }
+
+    /// Does this frame's `just_pressed(Left)` belong to egui rather than to the
+    /// world under it? The gate for a *world click* — `picking::prim_picking` and
+    /// `building_select::pick_building`, which must agree (`picking::PrimClick`).
+    ///
+    /// A mouse click asks `egui_wants_pointer_input()`, which is right for a
+    /// mouse: the press reaches `ButtonInput` on the same frame egui sees it, so
+    /// the button is still down and the answer is "did a widget take it".
+    ///
+    /// **A finger's click cannot ask that**, because it arrives a frame late
+    /// (`touch::emulate_mouse`'s ordering note) and egui reads the `TouchInput`
+    /// stream directly. When the finger lifted in that one frame — a brisk tap on
+    /// a handset, and the second tap of a double tap is the brisk one — egui has
+    /// already seen the release by the time the click lands, and with no button
+    /// down `egui_wants_pointer_input()` falls through to `is_pointer_over_egui()`,
+    /// which is unconditionally true here (the root `Ui` is ours, so egui never
+    /// learns its `root_ui_available_rect`). The tap was swallowed over the bare
+    /// map, and the building card never opened. So a finger's click is decided by
+    /// *where it landed* instead: on a floating area or modal, or on the root
+    /// layer outside the map (a panel), it is egui's — [`press_over_ui`].
+    pub fn owns_click(&self, touch_click: bool, cursor: Option<Vec2>) -> bool {
+        match (touch_click, cursor) {
+            (true, Some(at)) => press_over_ui(&self.ctx, self.map_rect, self.window_to_ui(at)),
+            _ => self.ctx.egui_wants_pointer_input(),
+        }
     }
 
     /// Declare (each frame) whether a modal owns the screen — see the `modal`
@@ -1118,6 +1149,23 @@ fn bevy_key_to_egui(key: KeyCode) -> Option<egui::Key> {
 }
 
 /// Tessellate the egui frame and store the output for the render world (runs in PostUpdate).
+/// Did a press at `at` (egui points) land on the UI?
+///
+/// A floating area, window or modal is found by `layer_id_at` and is the UI's
+/// outright. The root layer covers the whole screen — egui registers it so panels
+/// can catch clicks — so there the answer is whether the press is outside
+/// `map_rect`, i.e. on a panel. Pure over the context's last pass, so it answers
+/// the same whether or not the finger is still down.
+fn press_over_ui(ctx: &egui::Context, map_rect: Option<egui::Rect>, at: egui::Pos2) -> bool {
+    match ctx.layer_id_at(at) {
+        None => false,
+        Some(layer) if layer == egui::LayerId::background() => {
+            map_rect.is_some_and(|map| !map.contains(at))
+        }
+        Some(_) => true,
+    }
+}
+
 pub fn end_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     mut render_output: ResMut<EguiRenderOutput>,
@@ -1136,7 +1184,11 @@ pub fn end_egui_frame(
     let (physical, _) = egui_manager.surface;
 
     // Drop the shared root `Ui`, finalizing its panel layers, before ending the pass.
-    egui_manager.root_ui = None;
+    // What the panels left of it is the map, for `owns_click`'s next frame.
+    egui_manager.map_rect = egui_manager
+        .root_ui
+        .take()
+        .map(|root| root.available_rect_before_wrap());
 
     let full_output = egui_manager.ctx.end_pass();
     // Bridge egui-side copies (Ctrl+C in a text field) to the system clipboard.
@@ -1517,6 +1569,59 @@ mod tests {
             pointer_events(ev, ui_scale, &mut state, &mut out);
         }
         out
+    }
+
+    /// The double tap that never opened the building card.
+    ///
+    /// A finger's click reaches `ButtonInput` a frame after egui saw the finger
+    /// land, and a brisk tap has lifted by then. On that frame egui has no button
+    /// down and `egui_wants_pointer_input()` answers `true` over the bare map, so
+    /// the world gate threw the tap away. [`press_over_ui`] answers from where the
+    /// finger landed: the map is the world's, a panel is egui's.
+    #[test]
+    fn a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift() {
+        use bevy::input::touch::TouchPhase;
+
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+        let mut map_rect = None;
+        let mut pass = |stream: &[WindowEvent]| {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            raw.events = bridge(stream);
+            ctx.begin_pass(raw);
+            // As `begin_egui_frame` builds it, with one docked panel on the right.
+            let mut root = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new((ctx.viewport_id(), "__cartopolis_root_ui")),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(ctx.viewport_rect()),
+            );
+            responsive_right_panel("panel", false, 1280.0, 260.0).show(&mut root, |ui| {
+                ui.label("panel");
+            });
+            map_rect = Some(root.available_rect_before_wrap());
+            drop(root);
+            let _ = ctx.end_pass();
+        };
+
+        let on_map = egui::pos2(300.0, 300.0);
+        let on_panel = egui::pos2(1200.0, 300.0);
+        pass(&[]);
+        pass(&[touch(1, TouchPhase::Started, on_map.x, on_map.y)]);
+        // The frame the emulated click lands on, with the lift in its batch.
+        pass(&[touch(1, TouchPhase::Ended, on_map.x, on_map.y)]);
+
+        assert!(
+            ctx.egui_wants_pointer_input(),
+            "the old gate: egui claims a lifted tap over the bare map"
+        );
+        assert!(
+            !press_over_ui(&ctx, map_rect, on_map),
+            "the map is the world's"
+        );
+        assert!(press_over_ui(&ctx, map_rect, on_panel), "a panel is egui's");
     }
 
     /// A finger that goes down and is never lifted — the Android camera intent

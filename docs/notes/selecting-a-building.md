@@ -106,6 +106,16 @@ invisible from a desktop **by construction** — a 100 ms tap spans six 60 Hz
 frames, so no amount of clicking here could reproduce it.
 `docs/notes/touch-input.md` has the mechanism and the rule it leaves behind.
 
+### …and then egui threw the second tap away (fixed 2026-09-25)
+
+Reported as "double tap on a building doesn't show the card anymore". With the
+tap now seen, the double tap was recognised — and `pick_building` returned at
+its first gate. A finger's click reaches `ButtonInput` a frame after egui saw the
+finger land, the brisk second tap has lifted by then, and with no button down
+`egui_wants_pointer_input()` answers `true` everywhere (`touch-input.md` has why).
+The world click gate is `EguiManager::owns_click` now, which decides a finger's
+click by where it landed.
+
 ## Roof area and volume are measured, not fetched
 
 The obvious way to put "Totale Dakoppervlak" and "Volume" on the card is the way

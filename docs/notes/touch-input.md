@@ -93,7 +93,24 @@ Fixing the root cause (setting `root_ui_available_rect` from `end_egui_frame`)
 is a one-line change and was deliberately **not** made here: it silently alters
 the answer at six call sites that currently work, which is not something to
 bundle into an input feature. Worth doing on its own, with the click behaviour of
-each site checked.
+each site checked. **It is also not possible as written**: `pass_state_mut` is
+`pub(crate)` in egui 0.35, so only `Context::run_ui` can set the field.
+
+**The deferred release does not cover a finger's click, and the world gate had to
+change for it (fixed 2026-09-25).** The deferral keeps the *emulated button* from
+pressing and releasing in one frame, but egui never reads the emulated button: it
+reads the `TouchInput` stream, one frame *ahead* of `ButtonInput`. A tap whose
+`Started` lands in one frame's batch and whose `Ended` lands in the next — the
+ordinary brisk tap on a handset — therefore reaches `picking::prim_picking` and
+`building_select::pick_building` on a frame where egui has already seen the lift,
+and the gate above answered `true` over the bare map. That is what kept the
+building card shut after the `fingers_this_frame` fix below. Both consumers now
+ask `EguiManager::owns_click`, which keeps `egui_wants_pointer_input()` for a mouse
+and decides a finger's click by *where it landed*: a floating area or modal is
+egui's, and on the root layer only a press outside the rect the panels left over
+(recorded at the end of each pass) is. The two must share the gate, or
+`PrimClick` goes stale — `egui_manager`'s
+`a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift` pins it.
 
 ## `Touch::delta()` is stale on a quiet frame
 
