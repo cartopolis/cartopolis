@@ -838,7 +838,8 @@ fn storage_section(ui: &mut egui::Ui, cache: &CacheReset) -> bool {
                 "The map, the aerial photography, the buildings and the registers are \
                  kept on this device so revisiting a place is quick. Clearing them \
                  fixes a map that has cached something wrong — tiles that flicker, \
-                 a layer that will not draw — at the cost of downloading it again.",
+                 a layer that will not draw, buildings or ground that look out of \
+                 date. The map around you is then rebuilt from a fresh download.",
             )
             .size(theme::SIZE_SUB)
             .color(theme::TEXT_DIM),

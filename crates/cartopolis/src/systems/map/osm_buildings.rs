@@ -25,8 +25,8 @@ use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -159,8 +159,23 @@ struct Coverage {
     attribution: String,
 }
 
-static COVERAGE: OnceLock<Coverage> = OnceLock::new();
-static COVERAGE_LOD22: OnceLock<Coverage> = OnceLock::new();
+static COVERAGE: RwLock<Option<Arc<Coverage>>> = RwLock::new(None);
+static COVERAGE_LOD22: RwLock<Option<Arc<Coverage>>> = RwLock::new(None);
+/// The `coverage::refresh_epoch` both manifests answer for — see
+/// [`refresh_coverage`].
+static COVERAGE_EPOCH: AtomicU32 = AtomicU32::new(0);
+
+fn read_coverage(slot: &RwLock<Option<Arc<Coverage>>>) -> Option<Arc<Coverage>> {
+    slot.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn write_coverage(slot: &RwLock<Option<Arc<Coverage>>>, coverage: Coverage) {
+    *slot
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(coverage));
+}
 /// A coverage fetch is in flight (see [`ensure_coverage_prefetch`]).
 static COVERAGE_FETCHING: AtomicBool = AtomicBool::new(false);
 /// When the last coverage fetch was started, as `f64` bits; 0 = never.
@@ -294,7 +309,9 @@ async fn fetch_coverage(sub: &str) -> Option<Coverage> {
 /// the empty answer into a `OnceLock` and disabled 3DBAG for the process. Retrying
 /// is the other half of `fetch_coverage` returning `Option`.
 fn ensure_coverage_prefetch(now: f64) {
-    if coverage_resolved() || COVERAGE_FETCHING.load(Ordering::Relaxed) {
+    let epoch = crate::systems::coverage::refresh_epoch();
+    let stale = COVERAGE_EPOCH.load(Ordering::Relaxed) != epoch;
+    if (coverage_resolved() && !stale) || COVERAGE_FETCHING.load(Ordering::Relaxed) {
         return;
     }
     let last = f64::from_bits(COVERAGE_LAST_ATTEMPT.load(Ordering::Relaxed));
@@ -304,22 +321,43 @@ fn ensure_coverage_prefetch(now: f64) {
     COVERAGE_FETCHING.store(true, Ordering::Relaxed);
     COVERAGE_LAST_ATTEMPT.store(now.to_bits(), Ordering::Relaxed);
     IoTaskPool::get()
-        .spawn(async {
+        .spawn(async move {
             // Each manifest is asked for only while still unanswered, so a run
             // where one succeeded and the other did not costs one request, not two.
-            if COVERAGE.get().is_none() {
+            // A refresh asks both again, and keeps an answer it could not replace.
+            if stale || read_coverage(&COVERAGE).is_none() {
                 if let Some(c) = fetch_coverage("/coverage.json").await {
-                    let _ = COVERAGE.set(c);
+                    write_coverage(&COVERAGE, c);
                 }
             }
-            if COVERAGE_LOD22.get().is_none() {
+            if stale || read_coverage(&COVERAGE_LOD22).is_none() {
                 if let Some(c) = fetch_coverage("/lod22/coverage.json").await {
-                    let _ = COVERAGE_LOD22.set(c);
+                    write_coverage(&COVERAGE_LOD22, c);
                 }
+            }
+            if coverage_resolved() {
+                COVERAGE_EPOCH.store(epoch, Ordering::Relaxed);
             }
             COVERAGE_FETCHING.store(false, Ordering::Relaxed);
         })
         .detach();
+}
+
+/// Ask both 3DBAG manifests again — this module's half of
+/// [`coverage::refresh_all`](crate::systems::coverage::refresh_all), which must be
+/// called first so the epoch has moved. Call it every frame while waiting on
+/// [`coverage_refreshed`]: the building streamer that normally asks is not running
+/// while the Buildings layer is off.
+pub(crate) fn refresh_coverage(now: f64, first: bool) {
+    if first {
+        COVERAGE_LAST_ATTEMPT.store(0, Ordering::Relaxed);
+    }
+    ensure_coverage_prefetch(now);
+}
+
+/// Whether both manifests have answered since the last refresh.
+pub(crate) fn coverage_refreshed() -> bool {
+    COVERAGE_EPOCH.load(Ordering::Relaxed) == crate::systems::coverage::refresh_epoch()
 }
 
 /// True once both coverage manifests have resolved — successfully or as the
@@ -331,7 +369,7 @@ fn ensure_coverage_prefetch(now: f64) {
 /// `CARTO_3DBAG_URL` is empty), so briefly holding building work for it is
 /// cheaper than doing it twice.
 pub(crate) fn coverage_resolved() -> bool {
-    COVERAGE.get().is_some() && COVERAGE_LOD22.get().is_some()
+    read_coverage(&COVERAGE).is_some() && read_coverage(&COVERAGE_LOD22).is_some()
 }
 
 /// True if the 3DBAG host serves this cell's LoD1.2 footprints. `false` until the
@@ -339,8 +377,7 @@ pub(crate) fn coverage_resolved() -> bool {
 /// Layers panel's 3DBAG toggle is off.
 pub(crate) fn tdbag_covers(cx: i64, cy: i64) -> bool {
     tdbag_user_enabled()
-        && COVERAGE
-            .get()
+        && read_coverage(&COVERAGE)
             .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
 }
 
@@ -350,8 +387,7 @@ pub(crate) fn tdbag_covers(cx: i64, cy: i64) -> bool {
 /// and while the Layers panel's 3DBAG toggle is off.
 pub(crate) fn lod22_covers(cx: i64, cy: i64) -> bool {
     tdbag_user_enabled()
-        && COVERAGE_LOD22
-            .get()
+        && read_coverage(&COVERAGE_LOD22)
             .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
 }
 
@@ -360,7 +396,10 @@ pub(crate) fn lod22_covers(cx: i64, cy: i64) -> bool {
 /// already-initialised manifests and returns `None` until a building fetch has
 /// loaded coverage, so it never triggers the network fetch itself.
 pub fn tdbag_attribution() -> Option<String> {
-    for cov in [COVERAGE_LOD22.get(), COVERAGE.get()].into_iter().flatten() {
+    for cov in [read_coverage(&COVERAGE_LOD22), read_coverage(&COVERAGE)]
+        .into_iter()
+        .flatten()
+    {
         if !cov.cells.is_empty() && !cov.attribution.is_empty() {
             return Some(cov.attribution.clone());
         }
