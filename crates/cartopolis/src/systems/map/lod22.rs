@@ -7,6 +7,18 @@
 //! `{"elements":[{id, p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}` — deduped vertices
 //! and triangles tagged roof/wall.
 //!
+//! **The same cell also comes as a binary, and that is what is asked for first**
+//! (`lod22/14/{x}/{y}.bin`, [`cartopolis_geo::lod22_cell`] — the one definition
+//! atlas writes it with and this module reads it with). It carries exactly the
+//! JSON's numbers on the JSON's own 10⁻⁷°/1 cm grid, in a fifth of the bytes
+//! (half, gzipped) and with no float text to parse; `docs/notes/atlas.md` has
+//! the measurements.
+//! [`fetch_lod22_body`] falls back to the JSON on a 404 or any failure and latches
+//! the binary off for the session after [`MAX_BIN_FAILURES`], so a host that has
+//! not re-run the pipeline costs a handful of 404s. Both formats end in
+//! [`cell_file`], so nothing downstream of the parse can tell them apart, and each
+//! is cached under its own key so neither parser is ever handed the other's body.
+//!
 //! It mirrors the building far-cell streamer: one CACHE_ZOOM cell fetched + meshed
 //! per worker turn, anchored to its own BigSpace grid cell for f32 precision, kept
 //! while in range. To avoid overlapping the simplified extrusions, `osm_buildings`
@@ -1094,7 +1106,7 @@ pub fn update_lod22(
         // is what put `serde_json` at ~46% of the main thread's non-idle time.
         IoTaskPool::get()
             .spawn(async move {
-                let text = match fetch_lod22_text(cx, cy).await {
+                let body = match fetch_lod22_body(cx, cy).await {
                     Ok(t) => t,
                     Err(e) => {
                         if let Ok(mut g) = results.lock() {
@@ -1140,8 +1152,8 @@ pub fn update_lod22(
                 crate::platform::workers::submit_heavy(
                     "lod22",
                     Box::new(move || {
-                        let built = build_lod22_from_text(
-                            &text,
+                        let built = build_lod22_from_body(
+                            &body,
                             cx,
                             cy,
                             ax,
@@ -1222,12 +1234,16 @@ pub fn update_lod22(
                     // what stops a corrupt entry being re-served forever: whatever
                     // failed, the stored text is the one thing we can invalidate.
                     // Harmless when the failure came from the network instead —
-                    // the key simply isn't there.
-                    let key = cell_cache_key(c.0, c.1);
+                    // the key simply isn't there. Both formats' keys: the error
+                    // does not say which body was parsed, and dropping a good
+                    // entry costs one refetch.
+                    let keys = [cell_cache_key(c.0, c.1), bin_cache_key(c.0, c.1)];
                     IoTaskPool::get()
-                        .spawn(
-                            async move { storage::remove(storage::Namespace::Cache, &key).await },
-                        )
+                        .spawn(async move {
+                            for key in keys {
+                                storage::remove(storage::Namespace::Cache, &key).await;
+                            }
+                        })
                         .detach();
                     lod.stream.failed(&c, now); // allows a bounded re-queue later
                 }
@@ -1404,20 +1420,6 @@ pub fn update_lod22(
     }
 }
 
-/// Fetch one cell (disk-cached) and build its merged LoD2.2 mesh, anchored to the
-/// cell's own BigSpace grid cell. Runs on the worker thread. `None` if empty.
-/// The CPU half: JSON text in, finished mesh out. Pure — no I/O, no globals, and
-/// every input owned — which is what lets [`update_lod22`] hand it to
-/// [`platform::workers`] instead of running it on the thread that renders.
-///
-/// That split is the whole point of the function existing separately. Profiling
-/// the web build put `serde_json` at ~46% of the main thread's non-idle time,
-/// with `drop_glue::<Value>` the single largest entry, because this ran inside an
-/// `IoTaskPool` future — and on wasm `IoTaskPool` is the main thread, Bevy having
-/// no `multi_threaded` there. Awaiting a fetch on it costs nothing; parsing a
-/// megabyte of CityJSON and meshing it costs a frame.
-///
-/// [`platform::workers`]: crate::platform::workers
 /// [`cartopolis_geo::tunnels::stands_in_a_covered_trench`] for a building of
 /// this cell, from the cell's own street tile, whose frame is the cell's
 /// north-west corner.
@@ -1440,8 +1442,23 @@ fn over_a_lid(
     })
 }
 
-fn build_lod22_from_text(
-    text: &str,
+/// Build one fetched cell's merged LoD2.2 mesh, anchored to the cell's own
+/// BigSpace grid cell. Runs on the worker thread. `None` if empty.
+/// The CPU half: a cell body (binary or JSON) in, finished mesh out. Pure — no
+/// I/O, no globals, and every input owned — which is what lets [`update_lod22`]
+/// hand it to [`platform::workers`] instead of running it on the thread that
+/// renders.
+///
+/// That split is the whole point of the function existing separately. Profiling
+/// the web build put `serde_json` at ~46% of the main thread's non-idle time,
+/// with `drop_glue::<Value>` the single largest entry, because this ran inside an
+/// `IoTaskPool` future — and on wasm `IoTaskPool` is the main thread, Bevy having
+/// no `multi_threaded` there. Awaiting a fetch on it costs nothing; parsing a
+/// megabyte of CityJSON and meshing it costs a frame.
+///
+/// [`platform::workers`]: crate::platform::workers
+fn build_lod22_from_body(
+    body: &Lod22Body,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -1454,7 +1471,7 @@ fn build_lod22_from_text(
     detail: load_control::Detail,
     streets: Option<&cartopolis_geo::vector_tiles::TileData>,
 ) -> Result<Option<Lod22Build>, String> {
-    let shell = parse_lod22(text)?;
+    let shell = body.parse()?;
     // An imported-model cell, when the host serves one. A failure to parse it is
     // not a failure of the cell: the shells are what this lane exists to draw, and
     // losing them because somebody's model file is malformed would be the wrong
@@ -1949,25 +1966,118 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
     format!("buildings/lod22/v2/{}/{}/{}.json", LOD22_ZOOM, cx, cy)
 }
 
+/// Cache key for the same cell in the binary encoding
+/// ([`cartopolis_geo::lod22_cell`]).
+///
+/// **A different key, not a different body under the same one.** The two formats
+/// share nothing a parser could tell apart by accident, but a cached JSON body
+/// handed to the binary decoder (or the reverse) would be a failed cell and an
+/// eviction every time, so each format has its own namespace and a body is only
+/// ever read back by the parser that wrote it. The `bin1` names the format's
+/// version, which the decoder also checks in the header.
+fn bin_cache_key(cx: i64, cy: i64) -> String {
+    format!("buildings/lod22/bin1/{}/{}/{}.bin", LOD22_ZOOM, cx, cy)
+}
+
+/// One cell's body as fetched, in whichever format the host served.
+enum Lod22Body {
+    Json(String),
+    Bin(Vec<u8>),
+}
+
+impl Lod22Body {
+    /// Parse into the cell's elements. Both arms go through [`cell_file`], so
+    /// everything downstream receives the same data whichever format arrived.
+    fn parse(&self) -> Result<CellFile, String> {
+        match self {
+            Lod22Body::Json(text) => parse_lod22_json(text).map(cell_file),
+            Lod22Body::Bin(bytes) => cartopolis_geo::lod22_cell::decode(bytes)
+                .map(cell_file)
+                .map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// Whether this host serves the binary cells: unknown, yes, or no — the same
+/// latch `cell_bundle::SUPPORT` keeps, for the same reason. A host that has not
+/// re-run the pipeline since the binary was added answers 404, and that must cost
+/// a handful of requests per session rather than one per cell.
+mod bin_support {
+    pub const UNKNOWN: u8 = 0;
+    pub const YES: u8 = 1;
+    pub const NO: u8 = 2;
+}
+
+static BIN_SUPPORT: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(bin_support::UNKNOWN);
+static BIN_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Failed `.bin` requests before the host is written off as not serving them.
+/// One wave of the streamer's concurrency: the opening ring asks for that many
+/// cells at once, so latching on the first failure would decide on a coin toss
+/// among requests already in flight.
+const MAX_BIN_FAILURES: u32 = LOD22_CONCURRENCY as u32;
+
+/// Count a failed binary fetch, and latch the binary off once enough have failed.
+/// A host that has served one binary cell is never written off: a later failure
+/// there is an outage or a missing cell, and the JSON fallback covers both.
+fn note_bin_failure() {
+    use std::sync::atomic::Ordering;
+    if BIN_SUPPORT.load(Ordering::Relaxed) == bin_support::YES {
+        return;
+    }
+    if BIN_FAILURES.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_BIN_FAILURES {
+        BIN_SUPPORT.store(bin_support::NO, Ordering::Relaxed);
+        tracing::info!("this host serves no binary LoD2.2 cells; reading the JSON");
+    }
+}
+
 /// Fetch one LoD2.2 cell from the host, cached through the storage seam. Runs on
 /// an `IoTaskPool` task — no thread, no `ureq`, no `std::fs` (ADR-033), so it is
 /// wasm-buildable.
 /// The network half: cache lookup, fetch, cache write — and no parsing.
 ///
+/// **The binary first, the JSON as the fallback.** `lod22/14/x/y.bin` is the
+/// same cell in [`cartopolis_geo::lod22_cell`]'s encoding — about a quarter of
+/// the JSON's bytes and no float text to parse. A host that has not been re-run
+/// since atlas learned to write it answers 404, which falls through to the JSON
+/// in the same call and counts towards [`BIN_SUPPORT`] latching off. A cached
+/// JSON body is still read when there is no cached binary and the host has no
+/// binary to give; it is the same data.
+///
 /// It used to parse a cache hit to validate it, discarding the entry if that
 /// failed. That check has moved to the caller, which now knows a parse failed and
 /// evicts the key then; doing it here would mean parsing on this thread, which is
-/// exactly what [`build_lod22_from_text`] exists to avoid.
-async fn fetch_lod22_text(cx: i64, cy: i64) -> Result<String, String> {
+/// exactly what [`build_lod22_from_body`] exists to avoid. The binary is checked
+/// for its magic before it is stored, which costs four byte comparisons.
+async fn fetch_lod22_body(cx: i64, cy: i64) -> Result<Lod22Body, String> {
+    use std::sync::atomic::Ordering;
+    let bin_key = bin_cache_key(cx, cy);
+    if let Some(cached) = storage::get(storage::Namespace::Cache, &bin_key).await {
+        return Ok(Lod22Body::Bin(cached));
+    }
+    if BIN_SUPPORT.load(Ordering::Relaxed) != bin_support::NO {
+        let url = format!("{}/lod22/{}/{}/{}.bin", tdbag_url(), LOD22_ZOOM, cx, cy);
+        match http::fetch_optional(http::Request::get(url)).await {
+            Ok(Some(bytes)) if cartopolis_geo::lod22_cell::looks_like_cell(&bytes) => {
+                BIN_SUPPORT.store(bin_support::YES, Ordering::Relaxed);
+                storage::put(storage::Namespace::Cache, &bin_key, &bytes).await;
+                return Ok(Lod22Body::Bin(bytes));
+            }
+            // A 404, a body that is not a cell (an HTML error page from a proxy),
+            // or a transport failure: all of them are answered by the JSON below.
+            _ => note_bin_failure(),
+        }
+    }
     let key = cell_cache_key(cx, cy);
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return Ok(cached);
+        return Ok(Lod22Body::Json(cached));
     }
     let url = format!("{}/lod22/{}/{}/{}.json", tdbag_url(), LOD22_ZOOM, cx, cy);
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
-    Ok(text)
+    Ok(Lod22Body::Json(text))
 }
 
 /// Parse a LoD2.2 cell file: `{"elements":[{p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}`.
@@ -1979,7 +2089,46 @@ async fn fetch_lod22_text(cx: i64, cy: i64) -> Result<String, String> {
 /// a hand-written seq visitor (an `untagged` enum would buffer each row and
 /// give the win back); the missing-roof-flag row still reads as wall, matching
 /// the old lenient parser.
+///
+/// Used for the imported-model (LoD3) files too, which are only ever JSON.
 fn parse_lod22(text: &str) -> Result<CellFile, String> {
+    parse_lod22_json(text).map(cell_file)
+}
+
+/// A parsed cell's elements, validated: triangles whose indices fall outside
+/// their vertex list are dropped, and so is an element left with fewer than three
+/// vertices or no triangles. The one place that happens, for the JSON and the
+/// binary alike — which is what makes the two formats produce the same buildings.
+fn cell_file(cell: cartopolis_geo::lod22_cell::Cell) -> CellFile {
+    let mut out = Vec::with_capacity(cell.elements.len());
+    for el in cell.elements {
+        let p = el.p;
+        let mut t = Vec::with_capacity(el.t.len());
+        for (i, j, k, rf) in el.t {
+            let (i, j, k) = (i as usize, j as usize, k as usize);
+            if i < p.len() && j < p.len() && k < p.len() {
+                t.push((i, j, k, rf));
+            }
+        }
+        if p.len() >= 3 && !t.is_empty() {
+            out.push(Bldg {
+                id: el.id,
+                p,
+                t,
+                class: el.class,
+            });
+        }
+    }
+    CellFile {
+        elements: out,
+        pands: cell.pands,
+    }
+}
+
+/// The JSON cell file as the host wrote it, before [`cell_file`]'s validation —
+/// the shape [`cartopolis_geo::lod22_cell`] encodes, so the two formats can be
+/// compared element for element.
+fn parse_lod22_json(text: &str) -> Result<cartopolis_geo::lod22_cell::Cell, String> {
     #[derive(serde::Deserialize)]
     struct File {
         elements: Vec<El>,
@@ -1992,6 +2141,11 @@ fn parse_lod22(text: &str) -> Result<CellFile, String> {
     struct El {
         #[serde(default)]
         id: WireId,
+        /// Which solid of a split pand this is; absent when 0. Not read by the
+        /// mesh build, carried so the binary encoding holds everything the JSON
+        /// does.
+        #[serde(default)]
+        part: u32,
         #[serde(default)]
         p: Vec<(f64, f64, f32)>,
         #[serde(default)]
@@ -2059,27 +2213,22 @@ fn parse_lod22(text: &str) -> Result<CellFile, String> {
     }
 
     let file: File = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    let mut out = Vec::with_capacity(file.elements.len());
-    for el in file.elements {
-        let p = el.p;
-        let mut t = Vec::with_capacity(el.t.len());
-        for Tri(i, j, k, rf) in el.t {
-            let (i, j, k) = (i as usize, j as usize, k as usize);
-            if i < p.len() && j < p.len() && k < p.len() {
-                t.push((i, j, k, rf));
-            }
-        }
-        if p.len() >= 3 && !t.is_empty() {
-            out.push(Bldg {
+    Ok(cartopolis_geo::lod22_cell::Cell {
+        elements: file
+            .elements
+            .into_iter()
+            .map(|el| cartopolis_geo::lod22_cell::Element {
                 id: el.id.0,
-                p,
-                t,
+                part: el.part,
                 class: el.class,
-            });
-        }
-    }
-    Ok(CellFile {
-        elements: out,
+                p: el.p,
+                t: el
+                    .t
+                    .into_iter()
+                    .map(|Tri(i, j, k, rf)| (i, j, k, rf))
+                    .collect(),
+            })
+            .collect(),
         pands: file.pands,
     })
 }
@@ -2135,5 +2284,186 @@ mod tests {
             "expected the south wall, got {at:?}"
         );
         assert!((at.x - 3.0).abs() < 1e-4);
+    }
+
+    use cartopolis_geo::lod22_cell::{self, Grid};
+
+    /// 34 real buildings from Groningen's densest cell (8490/5319), cut from the
+    /// host's JSON on 2026-09-26: the first thirty, three split pands (`part`),
+    /// and the cell's largest shell (1,026 vertices).
+    fn sample_json() -> String {
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../geo/tests/fixtures/lod22_groningen_sample.json"
+        ))
+        .expect("the lod22 sample fixture")
+    }
+
+    const SAMPLE_CELL: (i64, i64) = (8490, 5319);
+
+    /// Everything the pipeline carries, compared field by field: the binary
+    /// holds the JSON's numbers, not an approximation of them. atlas rounds to
+    /// 10⁻⁷° and 1 cm before writing either file and the binary is on exactly that
+    /// grid, so the only difference allowed is float parsing (an ulp or so).
+    #[test]
+    fn the_binary_carries_exactly_what_the_json_does() {
+        let json = parse_lod22_json(&sample_json()).unwrap();
+        assert!(
+            json.elements.iter().any(|e| e.part != 0),
+            "no split pand in the sample"
+        );
+        let bin = lod22_cell::decode(&lod22_cell::encode(&json, Grid::JSON).unwrap()).unwrap();
+        assert_eq!(bin.pands, json.pands);
+        assert_eq!(bin.elements.len(), json.elements.len());
+        let (mut exact, mut total) = (0usize, 0usize);
+        for (b, j) in bin.elements.iter().zip(&json.elements) {
+            assert_eq!((&b.id, b.part, &b.class), (&j.id, j.part, &j.class));
+            assert_eq!(b.t, j.t);
+            assert_eq!(b.p.len(), j.p.len());
+            for (pb, pj) in b.p.iter().zip(&j.p) {
+                total += 1;
+                exact += usize::from(pb == pj);
+                assert!((pb.0 - pj.0).abs() < 1e-12 && (pb.1 - pj.1).abs() < 1e-12);
+                assert!((pb.2 - pj.2).abs() <= f32::EPSILON * pj.2.abs().max(1.0));
+            }
+        }
+        eprintln!("{exact} of {total} vertices bit-identical");
+    }
+
+    fn build(body: &Lod22Body) -> Result<Option<Lod22Build>, String> {
+        let (clat, clng) = (53.2194, 6.5665);
+        let z = 16;
+        let (ax, ay) = lat_lng_to_tile(clat, clng, z);
+        build_lod22_from_body(
+            body,
+            SAMPLE_CELL.0,
+            SAMPLE_CELL.1,
+            ax,
+            ay,
+            z,
+            clat,
+            &crate::systems::terrain::TerrainSnapshot::default(),
+            &crate::systems::building_facts::BagCell::default(),
+            None,
+            load_control::Detail::Near,
+            None,
+        )
+    }
+
+    fn positions_and_indices(mesh: &Mesh) -> (Vec<[f32; 3]>, Vec<u32>) {
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+            bevy::mesh::VertexAttributeValues::Float32x3(v) => v.clone(),
+            other => panic!("unexpected position format: {other:?}"),
+        };
+        let indices = match mesh.indices().unwrap() {
+            bevy::mesh::Indices::U32(v) => v.clone(),
+            bevy::mesh::Indices::U16(v) => v.iter().map(|&i| u32::from(i)).collect(),
+        };
+        (positions, indices)
+    }
+
+    /// …and the mesh built from either is the same mesh: same pieces, same
+    /// vertex and index counts, the same indices, positions within a millimetre.
+    #[test]
+    fn the_binary_and_the_json_build_the_same_meshes() {
+        let text = sample_json();
+        let cell = parse_lod22_json(&text).unwrap();
+        let bin = lod22_cell::encode(&cell, Grid::JSON).unwrap();
+        let (gj, pj, fj, dj, doorsj, hj) = build(&Lod22Body::Json(text)).unwrap().unwrap();
+        let (gb, pb, fb, db, doorsb, hb) = build(&Lod22Body::Bin(bin)).unwrap().unwrap();
+        assert_eq!(gj, gb);
+        assert_eq!((fj.len(), dj, doorsj), (fb.len(), db, doorsb));
+        assert_eq!(hj.len(), hb.len());
+        assert!(!fj.is_empty(), "the sample built no buildings");
+        assert_eq!(pj.len(), pb.len());
+        for ((mj, ij), (mb, ib)) in pj.iter().zip(&pb) {
+            assert_eq!(ij, ib);
+            let (vj, xj) = positions_and_indices(mj);
+            let (vb, xb) = positions_and_indices(mb);
+            assert_eq!(vj.len(), vb.len(), "vertex counts differ");
+            assert_eq!(xj, xb, "indices differ");
+            for (a, b) in vj.iter().zip(&vb) {
+                let d = Vec3::from(*a).distance(Vec3::from(*b));
+                assert!(d <= 1e-3, "a vertex moved {d} m");
+            }
+        }
+    }
+
+    /// A cut-off download is a failed cell — which evicts the cache entry and
+    /// retries — never a panic and never a cell missing its last buildings.
+    #[test]
+    fn a_truncated_binary_is_an_error() {
+        let cell = parse_lod22_json(&sample_json()).unwrap();
+        let bin = lod22_cell::encode(&cell, Grid::JSON).unwrap();
+        for n in [0, 3, 16, 17, bin.len() / 2, bin.len() - 1] {
+            assert!(
+                build(&Lod22Body::Bin(bin[..n].to_vec())).is_err(),
+                "a {n}-byte prefix built"
+            );
+        }
+    }
+
+    /// The two formats never share a cache entry.
+    #[test]
+    fn the_formats_are_cached_apart() {
+        assert_ne!(cell_cache_key(8490, 5319), bin_cache_key(8490, 5319));
+        assert!(bin_cache_key(8490, 5319).ends_with(".bin"));
+    }
+
+    /// Bytes and parse+build time of one real cell, JSON against binary — the
+    /// instrument behind the numbers in `docs/notes/atlas.md`. Reads the cell's
+    /// JSON from `CARTO_LOD22_CELL` (default `/tmp/lod22bin/8490_5319.json`) and
+    /// writes the encoding beside it as `.bin`, so `gzip -6 -c` can size both.
+    ///
+    /// ```text
+    /// curl -o /tmp/lod22bin/8490_5319.json https://3dbag.cartopolis.org/lod22/14/8490/5319.json
+    /// cargo test -p cartopolis --release print_lod22_cell_cost -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "timing instrument; needs a downloaded cell"]
+    fn print_lod22_cell_cost() {
+        let path = std::env::var("CARTO_LOD22_CELL")
+            .unwrap_or_else(|_| "/tmp/lod22bin/8490_5319.json".into());
+        let text = std::fs::read_to_string(&path).expect("a downloaded lod22 cell");
+        let cell = parse_lod22_json(&text).unwrap();
+        let bin = lod22_cell::encode(&cell, Grid::JSON).unwrap();
+        std::fs::write(std::path::Path::new(&path).with_extension("bin"), &bin).unwrap();
+        let (verts, tris): (usize, usize) = cell
+            .elements
+            .iter()
+            .fold((0, 0), |(v, t), e| (v + e.p.len(), t + e.t.len()));
+        eprintln!(
+            "{path}: {} elements, {verts} vertices, {tris} triangles; json {} B, bin {} B",
+            cell.elements.len(),
+            text.len(),
+            bin.len()
+        );
+        let best = |f: &dyn Fn()| {
+            (0..5)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1e3
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let json_parse = best(&|| {
+            std::hint::black_box(Lod22Body::Json(text.clone()).parse().unwrap());
+        });
+        let bin_parse = best(&|| {
+            std::hint::black_box(Lod22Body::Bin(bin.clone()).parse().unwrap());
+        });
+        let json_build = best(&|| {
+            std::hint::black_box(build(&Lod22Body::Json(text.clone())).unwrap());
+        });
+        let bin_build = best(&|| {
+            std::hint::black_box(build(&Lod22Body::Bin(bin.clone())).unwrap());
+        });
+        let encode = best(&|| {
+            std::hint::black_box(lod22_cell::encode(&cell, Grid::JSON).unwrap());
+        });
+        eprintln!("parse only (best of 5): json {json_parse:.1} ms, bin {bin_parse:.1} ms");
+        eprintln!("parse + build (best of 5): json {json_build:.1} ms, bin {bin_build:.1} ms");
+        eprintln!("encode (atlas side): {encode:.1} ms");
     }
 }

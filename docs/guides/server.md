@@ -525,7 +525,7 @@ checks against the code each replaced, and what is still done by hand.
 /data/3dbag/site               # OUTPUT, bind-mounted read-only into caddy
 ├── coverage.json              # which z14 cells this host serves (client routing)
 ├── buildings/14/{x}/{y}.json  # per-cell Overpass-shaped buildings
-├── lod22/14/{x}/{y}.json      # per-cell LoD2.2 triangle meshes
+├── lod22/14/{x}/{y}.json      # per-cell LoD2.2 triangle meshes (+ .bin, .bin.gz)
 ├── bag/14/{x}/{y}.json        # per-cell building facts  (+ .places.json)
 ├── bgt/14/{x}/{y}.json        # per-cell street objects  (+ .surfaces.json)
 ├── dikes/14/{x}/{y}.json      # per-cell flood defences
@@ -564,6 +564,12 @@ and the `Caddyfile` has:
 	header /dikes/* Cache-Control "public, max-age=86400"
 }
 ```
+
+`precompressed gzip` is load-bearing for the LoD2.2 **binary** cells
+(`lod22/14/{x}/{y}.bin`): `encode gzip` compresses only a default list of text
+content types and a `.bin` goes out as `application/octet-stream`, so it is
+served compressed only because atlas writes `x.bin.gz` beside it. The JSON has no
+sidecar and is compressed on the fly, as before.
 
 Adding the bind mount needs a **recreate** (not reload):
 `docker compose up -d --force-recreate caddy`. A DNS record

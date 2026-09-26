@@ -69,8 +69,12 @@ and not on one type. Atlas writes each format through `serde_json::Value`, and
 and `water_levels.rs` in the client each parse their own. A renamed key still
 compiles on both sides and arrives as a layer that draws nothing. What changed is
 that one commit can now change both sides, and one gate tests both. Moving each
-format onto a shared type in `cartopolis_geo` is the obvious next step and has
-not been taken.
+format onto a shared type in `cartopolis_geo` is the obvious next step, and it
+has been taken once: the LoD2.2 cells' **binary** twin (`lod22/14/x/y.bin`,
+2026-09-26) is written and read through `cartopolis_geo::lod22_cell`, so that
+half of `lod22`'s seam is a compile error rather than an empty layer
+(`atlas.md` has the format and the numbers). The JSON beside it is still
+written through `json!` and parsed by the client's own serde struct.
 
 The TypeScript pipeline pinned the formats with `server/pipeline/format.test.ts` against captures
 of a real run. That test was not ported: it existed because the parsers were in

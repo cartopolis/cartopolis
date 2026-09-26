@@ -1797,7 +1797,7 @@ type FarCellBuild = (GridCell, Mesh, [Option<Mesh>; 4]);
 /// no buildings.
 /// The CPU half of a far cell: response text in, meshes out. Pure and owned, so
 /// it is `Send` and runs on `platform::workers` rather than on the thread that
-/// renders — see `build_lod22_from_text` for the measurement that motivated it.
+/// renders — see `build_lod22_from_body` for the measurement that motivated it.
 fn build_far_from_text(
     text: &str,
     cx: i64,

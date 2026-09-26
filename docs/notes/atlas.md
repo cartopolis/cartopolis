@@ -143,6 +143,52 @@ it silently (reported by the tunnel/bridge work, 2026-09-23):
   `status` and the footprint are read per building, and `lod22` also reads the
   cell's street tile on the worker to skip buildings standing in a covered
   tunnel's trench.
+- **`lod22` writes each cell twice, and both must stay** (below): the JSON that
+  every installed APK and cached web build reads, and `lod22/14/{x}/{y}.bin`
+  (+ `.bin.gz`) that a client from 2026-09-26 on asks for first.
+
+## The LoD2.2 cells are binary as well as JSON
+
+`pipeline/lod22.rs` writes `lod22/14/{x}/{y}.bin` beside every cell's JSON,
+in `cartopolis_geo::lod22_cell`'s encoding — the **one** format in this tree
+whose writer and reader share a type and a codec, so a change to it is a
+compile error on the other side rather than a layer that draws nothing. The
+module docs have the layout: a 16-byte header, then five varint streams
+(metadata, latitude deltas, longitude deltas, heights, triangle index codes).
+It is on the JSON's own grid (10⁻⁷°, 1 cm), so it carries the JSON's numbers,
+not an approximation of them — the client's tests check both formats give the
+same meshes.
+
+Measured 2026-09-26 on Groningen's densest cell, 8490/5319 (7,934 buildings,
+174,614 vertices, 266,902 triangles), with the client's own
+`print_lod22_cell_cost` instrument in a release build (best of five, one core
+of the VPS):
+
+| | raw | `gzip -6` | parse | parse + mesh |
+|---|---|---|---|---|
+| JSON | 8.31 MB | 1.76 MB | 57.8 ms | 445.7 ms |
+| binary | 1.80 MB | 0.94 MB | 23.0 ms | 394.3 ms |
+
+A cold start at 600 m fetches ten such cells, so the win is mostly **bytes**:
+the gzipped transfer of the opening ring nearly halves on a phone link, and the
+decompressed body a client holds and caches is a fifth. The parse saves 35 ms
+of worker time on the densest cell, but the mesh build around it (~370 ms) is
+what dominates a cell's CPU cost, and this change does not touch it. atlas's
+encode is 12 ms a cell.
+
+Three things about serving it:
+
+- **The `.bin.gz` sidecar is what makes it compressed on the wire.** Caddy's
+  `encode gzip` compresses only a default list of text types and a `.bin` goes
+  out as `application/octet-stream`, so only `file_server { precompressed gzip }`
+  finding `x.bin.gz` serves it gzipped. atlas writes it (`Ctx::write_bytes_gzipped`,
+  best compression — done once per run, read by everybody).
+- **A host that has not re-run `lod22` since then has no `.bin`s**, and that is
+  fine: the client asks for the binary first, falls back to the JSON on any
+  failure, and after six failures (one wave of the streamer's concurrency) stops
+  asking for the session. Re-running `lod22` for an area is the whole deploy.
+- **Never stop writing the JSON** while any client older than the binary is in
+  use. They are one run's output, so they cannot disagree.
 - The z14 `streets` layer is **not** a pipeline product. It is the VersaTiles
   planet mirror at `tiles.cartopolis.org`, so a pipeline port does not touch it.
   The tunnel code relies on its `kind`, `tunnel`, `bridge`, `link` and `oneway`
