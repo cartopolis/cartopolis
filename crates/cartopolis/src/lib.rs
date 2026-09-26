@@ -2694,7 +2694,8 @@ fn run_client() {
             // `update_building_facts` takes no ordering edges: it spawns nothing
             // and is read by panels and readouts, never by a streamer mid-frame.
             (
-                systems::lod22::update_lod22,
+                // After the field's ask, for the hold — see `update_map_surfaces`.
+                systems::lod22::update_lod22.after(systems::terrain::update_terrain_field),
                 systems::building_facts::update_building_facts,
                 systems::surveyed::prefetch_bgt_coverage,
                 systems::crops::prefetch_brp_coverage,
@@ -2937,8 +2938,11 @@ fn run_client() {
                     .after(systems::terrain::update_terrain_field),
                 // Vector surfaces as geometry (ADR-035 option B): water and landuse
                 // meshes over the textured tiles. No-op on a raster tile source.
+                // After the field's ask, so a new anchor's hold on the cells
+                // (`TerrainField::holds_builds`) is in place before any dispatch.
                 systems::map_geometry::update_map_surfaces
-                    .after(systems::map_stream::update_map_stream),
+                    .after(systems::map_stream::update_map_stream)
+                    .after(systems::terrain::update_terrain_field),
                 // Bridge decks stand at a *measured* height, so they are placed a
                 // few frames after their cell — whenever the height layer answers.
                 systems::map_geometry::resolve_bridge_decks

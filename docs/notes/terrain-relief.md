@@ -135,6 +135,41 @@ direct form on a field with a cliff, a ripple and a plateau, and allows one unit
 `Rg8Snorm` — a running sum carries float error the re-summation does not, and what has
 to hold is that it stays inside a quantisation step.
 
+## The coarse bake is start-up time, and it was the same helper again (measured 2026-09-26)
+
+Over graded ground every surface and building cell waits for the coarse field
+(`TerrainField::holds_builds`), so its bake is on the critical path of every start
+and every re-anchor. On `deck-1` (release build, Grote Markt) a pre-graded bake — no
+grading at all, only resampling atlas's tiles — took **4.3–5.1 s**, one thread, and a
+warm start's waterfall was that bake, then the ground cells, then the settle.
+
+`terrain field bake timed` / `terrain field bake stages` now log each part per bake.
+The first reading (container, dev profile, after the resample was already made
+separable and threaded) was 110 ms for resample and taper against **4,961 ms for
+`bank_flags`**, four threads and all: a `WaterLevelField::level_at` point test per
+sample, 4.2 million of them. The grid index of 2026-09-21 made each test cheap; it
+could not make 4.2 million of them cheap. Three changes, each pinned against the code
+it replaced:
+
+- **The bank flags are a scanline** (`WaterLevelField::mark_wet_row`): a ring's edges
+  cross a row at fixed `x`s, so each ring is walked once per row and its samples are
+  decided by counting sorted crossings — the same arithmetic as `point_in_ring` and the
+  same box test as `level_at`, so `a_wet_row_matches_the_point_test` asserts equality
+  sample for sample, including samples exactly on vertices and edges. 4,961 → 332 ms.
+  The carve on ground graded here asked the same 4.2 million questions and now reads a
+  grid built the same way (`levels_on`).
+- **The atlas-tile resample is separable** (`TileMosaic::height_row`): a tile column
+  depends on longitude alone and a row on latitude alone, so the `tan`/`cos`/`ln` of
+  the Mercator are paid 2 × 2,049 times rather than 4.2 million
+  (`a_mosaic_row_matches_its_samples`, bit for bit), and every per-sample pass is split
+  over up to four threads (`terrain::for_rows`).
+- **The floors are built on the worker.** `build_floors` — the min-filter chain over
+  every sample — ran where the bake is installed, i.e. on the main thread, a frozen
+  frame per bake. And the road-mask copy and deck rasters the main thread built for
+  every bake are skipped for pre-graded ground, which reads neither.
+
+After: resample 91 ms, taper ~20 ms, banks 332 ms on the same container build.
+
 ## The field arrives *after* the anchor, so every consumer needs a revision
 
 `at()` returns 0 while the request is in flight, which is the same answer it gives

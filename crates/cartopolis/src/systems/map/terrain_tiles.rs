@@ -323,6 +323,57 @@ impl TileMosaic {
         v.is_finite().then_some(v)
     }
 
+    /// [`Self::height`] over one row of a lattice: `out[i]` for `(lat, lngs[i])`,
+    /// NaN where nothing was measured.
+    ///
+    /// **Web Mercator is separable**, so a tile column depends on the longitude
+    /// alone and a tile row on the latitude alone: `columns` is the per-longitude
+    /// half, worked out once for the whole lattice by [`Self::columns`], and this
+    /// does the latitude's half once per row. Per sample that leaves a rounding and
+    /// a lookup — the field is 4.2 million samples, and the `tan`, `cos` and `ln`
+    /// in `lat_lng_to_tile_frac` had been paid for every one of them. The answers
+    /// are the same arithmetic on the same numbers as [`Self::height`], so they
+    /// match it bit for bit (`a_mosaic_row_matches_its_samples`).
+    pub fn height_row(&self, lat: f64, columns: &[(i64, f64)], out: &mut [f32]) {
+        let (_, fy) = lat_lng_to_tile_frac(lat, 0.0, TILE_ZOOM);
+        let y = fy.floor();
+        let mut current: Option<(i64, Option<&Arc<TerrainTile>>)> = None;
+        for (slot, &(x, frac)) in out.iter_mut().zip(columns) {
+            let tile = match current {
+                Some((cx, t)) if cx == x => t,
+                _ => {
+                    let t = self.tiles.get(&(x, y as i64));
+                    current = Some((x, t));
+                    t
+                }
+            };
+            *slot = tile.map_or(f32::NAN, |tile| {
+                let last = (tile.grid - 1) as f64;
+                let col = (frac * last).round() as usize;
+                let row = ((fy - y) * last).round() as usize;
+                let v = tile.at(col.min(tile.grid - 1), row.min(tile.grid - 1));
+                if v.is_finite() {
+                    v
+                } else {
+                    f32::NAN
+                }
+            });
+        }
+    }
+
+    /// The longitude half of [`Self::height_row`]: each longitude's tile column and
+    /// its fraction across that tile.
+    #[must_use]
+    pub fn columns(lngs: &[f64]) -> Vec<(i64, f64)> {
+        lngs.iter()
+            .map(|&lng| {
+                let (fx, _) = lat_lng_to_tile_frac(0.0, lng, TILE_ZOOM);
+                let x = fx.floor();
+                (x as i64, fx - x)
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.tiles.len()
@@ -572,6 +623,55 @@ mod tests {
         assert_eq!(mosaic.height(lat, lng), Some(want));
         // A tile atlas answered "nothing" for is no data, not zero.
         assert_eq!(mosaic.height(lat + 0.02, lng), None);
+    }
+
+    /// The row path is the same arithmetic as the per-point one, so a lattice
+    /// straddling several tiles, a hole and a missing tile reads identically.
+    #[test]
+    fn a_mosaic_row_matches_its_samples() {
+        let grid = cartopolis_geo::terrain_tile::GRID;
+        let (x, y) = lat_lng_to_tile(53.2194, 6.5665, TILE_ZOOM);
+        let tile = |seed: usize| {
+            let mut heights: Vec<f32> = (0..grid * grid)
+                .map(|i| ((i * 7919 + seed) % 1000) as f32 * 0.01)
+                .collect();
+            heights[grid * 3 + 5] = f32::NAN;
+            Arc::new(TerrainTile { grid, heights })
+        };
+        // Three of the four tiles; (x + 1, y + 1) is "nothing measured".
+        let mosaic = TileMosaic {
+            tiles: HashMap::from([
+                ((x, y), tile(1)),
+                ((x + 1, y), tile(2)),
+                ((x, y + 1), tile(3)),
+            ]),
+        };
+        let (north, west) = cartopolis_core::world::tile_to_lat_lng(x, y, TILE_ZOOM);
+        let (south, east) = cartopolis_core::world::tile_to_lat_lng(x + 2, y + 2, TILE_ZOOM);
+        let n = 301;
+        let lngs: Vec<f64> = (0..n)
+            .map(|i| west + (east - west) * i as f64 / (n - 1) as f64)
+            .collect();
+        let lats: Vec<f64> = (0..n)
+            .map(|i| north + (south - north) * i as f64 / (n - 1) as f64)
+            .collect();
+        let columns = TileMosaic::columns(&lngs);
+        let mut row = vec![0.0f32; n];
+        let mut holes = 0;
+        for &lat in &lats {
+            mosaic.height_row(lat, &columns, &mut row);
+            for (&lng, &got) in lngs.iter().zip(&row) {
+                match mosaic.height(lat, lng) {
+                    Some(want) => assert_eq!(got.to_bits(), want.to_bits(), "{lat} {lng}"),
+                    None => {
+                        assert!(got.is_nan(), "{lat} {lng}: {got}");
+                        holes += 1;
+                    }
+                }
+            }
+        }
+        // The missing tile is a quarter of the lattice.
+        assert!(holes >= n * n / 5, "{holes}");
     }
 
     #[test]

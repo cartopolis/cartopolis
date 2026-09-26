@@ -1,7 +1,7 @@
 ---
 topic: level-of-detail-tile-tree
 triggers: [LOAD_RADIUS, COARSE_RADIUS, MIN_ZOOM, CELL_RADIUS, LOD22_RADIUS, FAR_CELL_RADIUS, TERRAIN_HALF_M, GLOBE_SHOW_ALT, REANCHOR_DISTANCE, "screen-space error", "tile tree", "level of detail", "LOD", "Google Earth", "ring retear", "loads slowly", "time to first image"]
-updated: 2026-09-24
+updated: 2026-09-26
 ---
 
 # The world streams as one screen-driven tile tree
@@ -215,6 +215,14 @@ seen.
    600 m settles in **9.1 s cold and 5.3 s warm**, walking height 13.0 / 7.1 s,
    and the street view keeps the city-registered trees and parked cars the
    rebuilds used to lose.
+
+   The LoD2.2 ring had the same race one layer down (2026-09-26): the hold on the
+   cells was only taken once the terrain source was *chosen*, which waits on atlas's
+   coverage answer, and at 600 m the building cells were dispatched in the frames
+   between — all six built flat, then torn down and rebuilt when the graded field
+   landed. The hold is now taken the moment an anchor lands wherever atlas may cover
+   it, lifted as soon as the source turns out not to be graded, and both cell
+   streamers are ordered after the field's system so no dispatch can precede it.
 
 Each step is judged on time to first image and time to sharp at orbit, 3 km,
 600 m and street level, cold and warm, **wall-clock on a real GPU**. The

@@ -382,6 +382,103 @@ impl WaterLevelField {
         self.rings.is_empty()
     }
 
+    /// Set `row[x] = mark` for every sample of lattice row `z` that lies in any
+    /// ring — exactly the samples where [`Self::level_at`] answers `Some`.
+    ///
+    /// **A scanline rather than a point test per sample.** The field's bank flags
+    /// asked `level_at` of all 4.2 million samples, a bucket lookup and an
+    /// even-odd walk of every nearby ring's edges each time, and that alone was
+    /// **5.0 s** of the field bake with the rest of it at 110 ms (container,
+    /// 2026-09-26, four threads) — time every ground and building cell waits for.
+    /// Along one row a ring's edges cross the row's `z` at fixed `x`s, so each
+    /// ring is walked once per row and every sample in its box is decided by
+    /// counting sorted crossings. The crossing is the same arithmetic on the same
+    /// numbers as `point_in_ring`, and the box test the same as `level_at`'s, so
+    /// the answers match it sample for sample (`a_wet_row_matches_the_point_test`).
+    pub fn mark_wet_row(
+        &self,
+        lattice: &cartopolis_geo::terrain_grade::Lattice,
+        z: usize,
+        row: &mut [u8],
+        mark: u8,
+    ) {
+        self.walk_row(lattice, z, row, |slot, _| *slot = mark);
+    }
+
+    /// [`Self::level_at`] at every sample of `lattice`, NaN where there is no
+    /// water: the lowest level of the rings a sample is in, as `level_at` takes.
+    ///
+    /// For the carve, which asked `level_at` of every sample on one thread — the
+    /// same 4.2 million point tests [`Self::mark_wet_row`] replaced, paid again on
+    /// ground graded here. By the same scanline, row-parallel.
+    #[must_use]
+    pub fn levels_on(&self, lattice: &cartopolis_geo::terrain_grade::Lattice) -> Vec<f32> {
+        let mut levels = vec![f32::NAN; lattice.n * lattice.n];
+        crate::systems::terrain::for_rows(&mut levels, lattice.n, |z, row| {
+            self.walk_row(lattice, z, row, |slot, level| {
+                if !(*slot <= level) {
+                    *slot = level;
+                }
+            });
+        });
+        levels
+    }
+
+    /// Call `inside(slot, level)` for every sample of row `z` inside each ring, once
+    /// per ring that contains it. See [`Self::mark_wet_row`] for why a scanline.
+    fn walk_row<T>(
+        &self,
+        lattice: &cartopolis_geo::terrain_grade::Lattice,
+        z: usize,
+        row: &mut [T],
+        mut inside: impl FnMut(&mut T, f32),
+    ) {
+        let wz = lattice.at(0, z)[1];
+        let mut crossings: Vec<f32> = Vec::new();
+        for (level, pts, bb) in self.rings.iter() {
+            if wz < bb[1] || wz > bb[3] {
+                continue;
+            }
+            crossings.clear();
+            let n = pts.len();
+            for i in 0..n {
+                let a = pts[i];
+                let b = pts[(i + 1) % n];
+                if (a[1] > wz) != (b[1] > wz) {
+                    let t = (wz - a[1]) / (b[1] - a[1]);
+                    crossings.push(a[0] + t * (b[0] - a[0]));
+                }
+            }
+            if crossings.is_empty() {
+                continue;
+            }
+            crossings.sort_unstable_by(f32::total_cmp);
+            // The samples in the ring's box, found from the lattice arithmetic
+            // itself rather than solved for, so a box edge falling exactly on a
+            // sample is decided the way `level_at` decides it.
+            let first = ((bb[0] - lattice.origin[0]) / lattice.step)
+                .floor()
+                .max(0.0) as usize;
+            let mut passed = 0;
+            for (x, slot) in row.iter_mut().enumerate().skip(first.saturating_sub(1)) {
+                let wx = lattice.at(x, z)[0];
+                if wx < bb[0] {
+                    continue;
+                }
+                if wx > bb[2] {
+                    break;
+                }
+                // `point_in_ring` flips once per crossing with `wx < crossing`.
+                while passed < crossings.len() && !(wx < crossings[passed]) {
+                    passed += 1;
+                }
+                if (crossings.len() - passed) % 2 == 1 {
+                    inside(slot, *level);
+                }
+            }
+        }
+    }
+
     /// One ring at one level, for tests in this crate that need a field without a
     /// streamed cell behind it.
     #[cfg(test)]
@@ -820,6 +917,73 @@ mod tests {
 
     fn square(level: f32, half: f32) -> WaterLevelField {
         WaterLevelField::from_rings(vec![square_ring(level, half)])
+    }
+
+    fn ring(level: f32, pts: Vec<[f32; 2]>) -> (f32, Vec<[f32; 2]>, [f32; 4]) {
+        let mut bb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for p in &pts {
+            bb = [
+                bb[0].min(p[0]),
+                bb[1].min(p[1]),
+                bb[2].max(p[0]),
+                bb[3].max(p[1]),
+            ];
+        }
+        (level, pts, bb)
+    }
+
+    /// The scanline answers exactly what the point test answers, including the
+    /// cases a scanline gets wrong when it is not the same arithmetic: samples
+    /// landing exactly on vertices and edges (an integer lattice over integer
+    /// rings), a concave ring, rings overlapping and nested, a sliver, and a
+    /// lattice whose rows run off the rings' boxes.
+    #[test]
+    fn a_wet_row_matches_the_point_test() {
+        let field = WaterLevelField::from_rings(vec![
+            square_ring(-1.0, 10.0),
+            square_ring(-3.0, 4.0),
+            // An L, concave at (2, 2).
+            ring(
+                0.0,
+                vec![
+                    [-20.0, -20.0],
+                    [2.0, -20.0],
+                    [2.0, 2.0],
+                    [14.0, 2.0],
+                    [14.0, 9.0],
+                    [-20.0, 9.0],
+                ],
+            ),
+            // A diagonal sliver, and a triangle whose edges cross rows at fractions.
+            ring(
+                0.5,
+                vec![[-30.0, 30.0], [30.0, -29.5], [30.2, -29.3], [-29.8, 30.2]],
+            ),
+            ring(0.2, vec![[5.3, 12.1], [27.7, 18.9], [11.4, 26.6]]),
+        ]);
+        for (origin, step, n) in [
+            ([-32.0, -32.0], 1.0, 65),
+            ([-31.7, -33.2], 0.37, 180),
+            ([-5.0, 25.0], 0.5, 40),
+        ] {
+            let lattice = cartopolis_geo::terrain_grade::Lattice { n, origin, step };
+            let levels = field.levels_on(&lattice);
+            let mut wet = 0;
+            for z in 0..n {
+                let mut row = vec![0u8; n];
+                field.mark_wet_row(&lattice, z, &mut row, 7);
+                for (x, &got) in row.iter().enumerate() {
+                    let [wx, wz] = lattice.at(x, z);
+                    let want = field.level_at(wx, wz);
+                    assert_eq!(got == 7, want.is_some(), "({wx}, {wz}) step {step}");
+                    // The lowest level where rings overlap, as `level_at` answers.
+                    let level = levels[z * n + x];
+                    assert_eq!(level.is_finite().then_some(level), want, "({wx}, {wz})");
+                    wet += usize::from(want.is_some());
+                }
+            }
+            assert!(wet > 0, "a lattice with no water tests nothing");
+        }
     }
 
     #[test]

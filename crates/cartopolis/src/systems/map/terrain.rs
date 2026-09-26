@@ -229,17 +229,11 @@ fn bank_flags(
     }
     let lattice = field_lattice(n, half_m, centre);
     let mut flags = vec![0u8; n * n];
-    let mut any = false;
-    for z in 0..n {
-        for x in 0..n {
-            let [wx, wz] = lattice.at(x, z);
-            if water.level_at(wx, wz).is_some() {
-                flags[z * n + x] = WET;
-                any = true;
-            }
-        }
-    }
-    if !any {
+    // By scanline, and independent per row (`for_rows`).
+    for_rows(&mut flags, n, |z, row| {
+        water.mark_wet_row(&lattice, z, row, WET)
+    });
+    if !flags.contains(&WET) {
         return Vec::new();
     }
     for z in 0..n {
@@ -421,9 +415,9 @@ struct CoarseBake {
     /// The rings the bake carved with, handed back so the water surfaces are drawn
     /// against the same numbers the ground was cut to.
     water: crate::systems::water_levels::WaterLevelField,
-    baked: Option<(Vec<f32>, f32, usize)>,
-    /// [`bank_flags`] over the baked samples; empty with no water registered.
-    banks: Vec<u8>,
+    /// The finished ground — samples, [`bank_flags`] (empty with no water
+    /// registered) and floors — with its datum and carved-sample count.
+    baked: Option<(TerrainSnapshot, f32, usize)>,
     /// `(abutment samples, samples the embankment raised)` — see
     /// [`TerrainField::approach_samples`].
     approach: (usize, usize),
@@ -1534,6 +1528,16 @@ const COVERAGE_WAIT_S: f32 = 5.0;
 /// price is a camera that keeps a ring busy waiting up to 30 s for its hills.
 const RING_HOLD_MAX_S: f32 = 30.0;
 
+/// What [`update_terrain_field`] remembers about an anchor whose source is not
+/// chosen yet.
+#[derive(Default)]
+pub struct UndecidedSource {
+    /// When this anchor started waiting for the atlas coverage answer.
+    coverage_wait: Option<(u32, f32)>,
+    /// The anchor whose cells were held while its source was still undecided.
+    pending_hold: Option<u32>,
+}
+
 /// Keep [`TerrainField`] in step with the map anchor: request the box once, bake it
 /// when it lands, and drop it whenever the layer is off or out of coverage.
 pub fn update_terrain_field(
@@ -1558,9 +1562,15 @@ pub fn update_terrain_field(
     // What an owed bake is waiting on, logged when it changes: a field that never
     // finishes owing a bake keeps a capture from settling, and nothing else says why.
     mut waiting: Local<&'static str>,
-    // When this anchor started waiting for the atlas coverage answer.
-    mut coverage_wait: Local<Option<(u32, f32)>>,
+    // When this anchor started waiting for the atlas coverage answer, and which
+    // anchor's cells were held while its source was still undecided. One
+    // parameter, because Bevy caps a system at sixteen.
+    mut undecided: Local<UndecidedSource>,
 ) {
+    let UndecidedSource {
+        coverage_wait,
+        pending_hold,
+    } = &mut *undecided;
     let time = &clock.time;
     // The cells' wait for graded ground ends when it lands (`apply_coarse_terrain`),
     // when the anchor moves on, or at `GRADED_HOLD_S` — hills a little late beat a
@@ -1608,6 +1618,19 @@ pub fn update_terrain_field(
         return;
     }
     field.wanted_gen = Some(stream.anchor_generation);
+    // **Hold the cells from the moment an anchor lands, not from the moment its
+    // source is chosen.** The choice waits on atlas's coverage answer, and building
+    // cells were being dispatched in the frames between — on flat ground, torn down
+    // and rebuilt when the graded field landed (Deck, 2026-09-26, warm at 600 m:
+    // all six LoD2.2 cells built twice). Once per anchor, bounded by the same
+    // `GRADED_HOLD_S`, and lifted below the moment the choice is anything but graded.
+    if tiles.enabled()
+        && *pending_hold != Some(stream.anchor_generation)
+        && !matches!(*source, Some((g, _)) if g == stream.anchor_generation)
+    {
+        *pending_hold = Some(stream.anchor_generation);
+        field.build_hold = Some((stream.anchor_generation, time.elapsed_secs()));
+    }
     // **The roads have to stop arriving before they are worth baking in.** The mask
     // grows a cell at a time, so this waits for the burst to end rather than baking
     // per cell; `settled` is (the revision last seen, when it was last seen).
@@ -1759,9 +1782,16 @@ pub fn update_terrain_field(
             *source = Some((gen, s));
             tracing::info!(anchor_gen = gen, source = ?s, "terrain field source");
             // Once per anchor, here where the source is chosen, so an expired hold
-            // is not started again.
+            // is not started again. The hold taken while undecided keeps its start
+            // time, so the whole wait stays inside `GRADED_HOLD_S`; any other
+            // source is ground graded here, which needs the cells built first.
             if matches!(s, FieldSource::Graded(_)) {
-                field.build_hold = Some((gen, time.elapsed_secs()));
+                if !field.holds_builds(gen) && *pending_hold != Some(gen) {
+                    field.build_hold = Some((gen, time.elapsed_secs()));
+                }
+            } else if field.holds_builds(gen) {
+                field.build_hold = None;
+                field.release_waiters();
             }
             s
         }
@@ -1928,19 +1958,24 @@ pub fn update_terrain_field(
         "terrain field bake queued"
     );
     let water = crate::systems::water_levels::WaterLevelField::build(&levels, anchor);
-    let road = roads.for_gen(gen, grid);
-    // Per plate, not per sample — see `DeckPlates::grade_masks`.
-    let cartopolis_geo::terrain_grade::DeckMasks {
-        ramp,
-        lift: deck_lift,
-        top: deck_top,
-    } = decks.grade_masks(grid, TERRAIN_HALF_M);
+    // The grading inputs, only for ground that is graded here. Both are built on
+    // the main thread at the field's full size — a 4.2 MB copy of the road mask and
+    // three deck rasters beside it — and ground atlas has graded reads neither.
+    let (road, ramp, deck_lift, deck_top) = if pre_graded {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    } else {
+        // Per plate, not per sample — see `DeckPlates::grade_masks`.
+        let cartopolis_geo::terrain_grade::DeckMasks { ramp, lift, top } =
+            decks.grade_masks(grid, TERRAIN_HALF_M);
+        (roads.for_gen(gen, grid), ramp, lift, top)
+    };
     let sink = field.coarse_sink.clone();
     let datum = field.gen_datum.filter(|(g, _)| *g == gen).map(|(_, d)| d);
     field.coarse_job = Some(gen);
     crate::platform::workers::submit_heavy(
         "terrain_field",
         Box::new(move || {
+            let started = bevy::platform::time::Instant::now();
             let (baked, approach) = bake(
                 job.as_ref(),
                 anchor,
@@ -1957,11 +1992,46 @@ pub fn update_terrain_field(
                     deck_top: &deck_top,
                 }),
             );
+            let baked_at = bevy::platform::time::Instant::now();
             let banks = if baked.is_some() {
                 bank_flags(n, half, want_centre, &water)
             } else {
                 Vec::new()
             };
+            let banked_at = bevy::platform::time::Instant::now();
+            // The snapshot, floors included, is finished here rather than where it
+            // is installed: the floors are a min-filter chain over every sample,
+            // and on the main thread they were a frozen frame per bake. The
+            // envelopes are the basemap's, so they are built from the canal-side
+            // values the basemap's finest level reads (`floor_at`) — never higher
+            // than the field, so the guarantee `build_floors` states still holds.
+            let baked = baked.map(|(samples, datum, carved)| {
+                let mut ground = TerrainSnapshot {
+                    samples: std::sync::Arc::new(samples),
+                    half_m: half,
+                    grid: n,
+                    centre: want_centre,
+                    floors: std::sync::Arc::default(),
+                    banks: std::sync::Arc::new(banks),
+                };
+                let sample_m = half * 2.0 / (n - 1) as f32;
+                let floors = match ground.sunk_samples() {
+                    Some(sunk) => build_floors(&sunk, n, sample_m),
+                    None => build_floors(&ground.samples, n, sample_m),
+                };
+                ground.floors = std::sync::Arc::new(floors);
+                (ground, datum, carved)
+            });
+            // Every ground and building cell waits on this job, so its time is
+            // start-up time: the stages say which part of it to go after.
+            tracing::info!(
+                grid = n,
+                pre_graded,
+                bake_ms = baked_at.duration_since(started).as_millis() as u64,
+                banks_ms = banked_at.duration_since(baked_at).as_millis() as u64,
+                floors_ms = banked_at.elapsed().as_millis() as u64,
+                "terrain field bake timed"
+            );
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
                     centre: want_centre,
@@ -1973,7 +2043,6 @@ pub fn update_terrain_field(
                     deck_rev: baked_deck_rev,
                     water,
                     baked,
-                    banks,
                     approach,
                 });
             }
@@ -2009,30 +2078,14 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
     field.water = done.water;
     // Before the empty case, which is an answer for this centre too.
     field.answered_centre = Some(done.centre);
-    let Some((samples, datum, carved)) = done.baked else {
+    let Some((ground, datum, carved)) = done.baked else {
         field.clear();
         return;
     };
 
-    let lo = samples.iter().copied().fold(f32::MAX, f32::min);
-    let hi = samples.iter().copied().fold(f32::MIN, f32::max);
+    let lo = ground.samples.iter().copied().fold(f32::MAX, f32::min);
+    let hi = ground.samples.iter().copied().fold(f32::MIN, f32::max);
     let sample_m = done.half * 2.0 / (done.grid - 1) as f32;
-    let mut ground = TerrainSnapshot {
-        samples: std::sync::Arc::new(samples),
-        half_m: done.half,
-        grid: done.grid,
-        centre: done.centre,
-        floors: std::sync::Arc::default(),
-        banks: std::sync::Arc::new(done.banks),
-    };
-    // The envelopes are the basemap's, so they are built from the canal-side
-    // values the basemap's finest level reads (`floor_at`) — never higher than the
-    // field, so the guarantee `build_floors` states still holds.
-    let floors = match ground.sunk_samples() {
-        Some(sunk) => build_floors(&sunk, done.grid, sample_m),
-        None => build_floors(&ground.samples, done.grid, sample_m),
-    };
-    ground.floors = std::sync::Arc::new(floors);
     field.ground = ground;
     field.gen_datum = Some((done.gen, datum));
     field.carved_coarse = carved;
@@ -2101,6 +2154,17 @@ fn field_tiles(anchor: (f64, f64, u32), half: f32, centre: Vec2) -> Vec<(i64, i6
 pub trait GroundSource: Send + Sync {
     /// Metres above NAP, or `None` where nothing was measured.
     fn height(&self, lat: f64, lng: f64) -> Option<f32>;
+
+    /// The whole lattice at once: `out[z * lngs.len() + x]` for `(lats[z],
+    /// lngs[x])`, NaN where nothing was measured. Rows are independent, so they
+    /// are split across threads ([`for_rows`]).
+    fn fill(&self, lats: &[f64], lngs: &[f64], out: &mut [f32]) {
+        for_rows(out, lngs.len(), |z, row| {
+            for (slot, &lng) in row.iter_mut().zip(lngs) {
+                *slot = self.height(lats[z], lng).unwrap_or(f32::NAN);
+            }
+        });
+    }
 }
 
 impl GroundSource for HeightPatch {
@@ -2114,6 +2178,57 @@ impl GroundSource for HeightPatch {
 impl GroundSource for crate::systems::terrain_tiles::TileMosaic {
     fn height(&self, lat: f64, lng: f64) -> Option<f32> {
         Self::height(self, lat, lng)
+    }
+
+    fn fill(&self, lats: &[f64], lngs: &[f64], out: &mut [f32]) {
+        let columns = Self::columns(lngs);
+        for_rows(out, lngs.len(), |z, row| {
+            self.height_row(lats[z], &columns, row)
+        });
+    }
+}
+
+/// Run `each(z, row)` over every `width`-long row of `grid`.
+///
+/// **Split across a few threads natively**, because the field's per-sample passes
+/// are 4.2 million independent answers and every ground and building cell waits
+/// for the bake they are part of: on the Deck a pre-graded bake — no grading at
+/// all, only resampling — took 4.3–5.1 s on one thread (2026-09-26). Four
+/// threads at most, for the reason `road_stitch`'s `PARALLEL_MAX_THREADS` gives:
+/// this is already a job on the worker pool. Serial on wasm, which has no
+/// scoped threads here.
+pub(crate) fn for_rows<T: Send>(
+    grid: &mut [T],
+    width: usize,
+    each: impl Fn(usize, &mut [T]) + Sync,
+) {
+    if width == 0 {
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let rows = grid.len() / width;
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(4);
+        // Below a few hundred rows the threads cost more than the work.
+        if threads > 1 && rows >= 256 {
+            let band = rows.div_ceil(threads);
+            let each = &each;
+            std::thread::scope(|s| {
+                for (b, chunk) in grid.chunks_mut(band * width).enumerate() {
+                    s.spawn(move || {
+                        for (i, row) in chunk.chunks_mut(width).enumerate() {
+                            each(b * band + i, row);
+                        }
+                    });
+                }
+            });
+            return;
+        }
+    }
+    for (z, row) in grid.chunks_mut(width).enumerate() {
+        each(z, row);
     }
 }
 
@@ -2162,6 +2277,7 @@ fn bake(
     // `None` for ground atlas has already graded.
     grading: Option<Grading<'_>>,
 ) -> (Option<(Vec<f32>, f32, usize)>, (usize, usize)) {
+    let started = bevy::platform::time::Instant::now();
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
     // really `n` longitudes and `n` latitudes (`geo_nav::WorldFrame` says why this
@@ -2179,13 +2295,8 @@ fn bake(
         .collect();
 
     let mut raw = vec![f32::NAN; n * n];
-    for (z, &lat) in lats.iter().enumerate() {
-        for (x, &lng) in lngs.iter().enumerate() {
-            if let Some(v) = patch.height(lat, lng) {
-                raw[z * n + x] = v;
-            }
-        }
-    }
+    patch.fill(&lats, &lngs, &mut raw);
+    let resampled_at = bevy::platform::time::Instant::now();
     if !raw.iter().any(|v| v.is_finite()) {
         return (None, (0, 0));
     }
@@ -2230,7 +2341,7 @@ fn bake(
         let graded = cartopolis_geo::terrain_grade::grade(
             &mut raw,
             lattice,
-            &|x, z| g.water.level_at(x, z),
+            &level_lookup(&g.water.levels_on(&lattice), lattice),
             road,
             g.ramp,
             g.deck_lift,
@@ -2244,14 +2355,21 @@ fn bake(
             "graded the field along the roads and up to the decks"
         );
     }
+    let graded_at = bevy::platform::time::Instant::now();
     let mut samples = vec![0.0f32; n * n];
-    for z in 0..n {
-        for x in 0..n {
+    for_rows(&mut samples, n, |z, row| {
+        for (x, slot) in row.iter_mut().enumerate() {
             let v = raw[z * n + x];
             let h = if v.is_finite() { v - datum } else { 0.0 };
-            samples[z * n + x] = h * edge_taper_from(x, z, n, taper_start);
+            *slot = h * edge_taper_from(x, z, n, taper_start);
         }
-    }
+    });
+    tracing::info!(
+        resample_ms = resampled_at.duration_since(started).as_millis() as u64,
+        grade_ms = graded_at.duration_since(resampled_at).as_millis() as u64,
+        taper_ms = graded_at.elapsed().as_millis() as u64,
+        "terrain field bake stages"
+    );
     (Some((samples, datum, carved)), approach)
 }
 
@@ -2720,12 +2838,29 @@ fn carve_water(
     // averaged in rather than a reading off anything — keeping those is what left
     // the basemap flat across a canal for a day, and
     // `the_carve_overwrites_resampled_ground_but_keeps_a_deeper_reading` pins it.
+    let lattice = field_lattice(n, half_m, centre);
     cartopolis_geo::terrain_grade::carve(
         grid,
-        field_lattice(n, half_m, centre),
-        &|x, z| water.level_at(x, z),
+        lattice,
+        &level_lookup(&water.levels_on(&lattice), lattice),
         keep_measured_above,
     )
+}
+
+/// The carve's `level_at`, answered from [`WaterLevelField::levels_on`] for the
+/// lattice it walks. The carve only ever asks at the lattice's own points, which
+/// `index_of` rounds back to their sample exactly.
+///
+/// [`WaterLevelField::levels_on`]: crate::systems::water_levels::WaterLevelField::levels_on
+fn level_lookup(
+    levels: &[f32],
+    lattice: cartopolis_geo::terrain_grade::Lattice,
+) -> impl Fn(f32, f32) -> Option<f32> + '_ {
+    move |x, z| {
+        let (ix, iz) = lattice.index_of([x, z])?;
+        let v = *levels.get(iz * lattice.n + ix)?;
+        v.is_finite().then_some(v)
+    }
 }
 
 /// The placement of an `n`² grid spanning `±half_m` around `centre`, for the
@@ -3002,6 +3137,26 @@ fn median_finite(grid: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
     use cartopolis_geo::ahn::FILL_REACH_M;
+
+    /// Every row is visited once, with its own index, whether the grid is big
+    /// enough to be split across threads or not — including a last band that is
+    /// shorter than the others.
+    #[test]
+    fn for_rows_visits_every_row_once_with_its_index() {
+        for (rows, width) in [(3, 5), (257, 3), (1001, 7), (2049, 2)] {
+            let mut grid = vec![usize::MAX; rows * width];
+            for_rows(&mut grid, width, |z, row| {
+                for (x, slot) in row.iter_mut().enumerate() {
+                    assert_eq!(*slot, usize::MAX, "row {z} visited twice");
+                    *slot = z * width + x;
+                }
+            });
+            assert!(
+                grid.iter().enumerate().all(|(i, &v)| v == i),
+                "{rows}x{width}"
+            );
+        }
+    }
 
     /// A field of `n`² samples centred at `centre`, each the height of a fixed
     /// function at its own world place — what two bakes over the same tiles give.
