@@ -1451,10 +1451,7 @@ pub fn update_terrain_field(
     let req = field_request(anchor, TERRAIN_HALF_M, grid);
     let gen = stream.anchor_generation;
     // Atlas tiles where atlas has cut the area (`terrain_tiles` says why only
-    // there). A handset's field reads graded tiles thinned to 129², and has no raw
-    // tiles at that grid to fall back to (`terrain_tiles::tile_grid`).
-    let dense =
-        crate::systems::terrain_tiles::tile_grid() == cartopolis_geo::terrain_tile::DENSE_GRID;
+    // there), at the grid this field reads (`terrain_tiles::tile_grid`).
     let chosen = match *source {
         Some((g, s)) if g == gen => s,
         _ => {
@@ -1487,8 +1484,9 @@ pub fn update_terrain_field(
                     Vec2::ZERO,
                 )) {
                     Some(stamp) => FieldSource::Graded(stamp),
-                    None if dense => FieldSource::Tiles,
-                    None => FieldSource::Wcs,
+                    // Raw tiles at the handset's grid too: atlas thins or cuts
+                    // them (`terrain_tiles::tile_grid`).
+                    None => FieldSource::Tiles,
                 }
             };
             *source = Some((gen, s));
@@ -1521,6 +1519,28 @@ pub fn update_terrain_field(
     } else {
         (TERRAIN_HALF_M, grid)
     };
+    // **Graded only where every tile under *this* field is.** The source is chosen
+    // once per anchor, from the first field's tiles; a field that follows the
+    // camera is larger and moves, and near the edge of the graded area it reaches
+    // tiles atlas has never graded — asked for graded, those answer 404 (a
+    // handset capture at 53.21 N 6.53 E, 2026-09-26: eleven of them, each retried
+    // before the fallback). So each request asks again, and
+    // one that reaches past the graded area takes raw tiles and is graded here.
+    let stamp = match stamp {
+        Some(s)
+            if s > 0
+                && crate::systems::terrain_tiles::graded_stamp(&field_tiles(
+                    anchor,
+                    half,
+                    want_centre,
+                )) != Some(s) =>
+        {
+            // Ground graded here needs the cells built first.
+            field.build_hold = None;
+            Some(0)
+        }
+        other => other,
+    };
     let mosaic = if let Some(stamp) = stamp {
         let want = field_tiles(anchor, half, want_centre);
         match tiles.mosaic(&want, stamp) {
@@ -1532,7 +1552,7 @@ pub fn update_terrain_field(
             // A tile atlas would not give: graded ground falls back to the raw
             // tiles and graded here, raw tiles to WCS.
             crate::systems::terrain_tiles::Mosaic::Failed => {
-                let next = if stamp > 0 && dense {
+                let next = if stamp > 0 {
                     FieldSource::Tiles
                 } else {
                     FieldSource::Wcs
@@ -1578,7 +1598,7 @@ pub fn update_terrain_field(
     // **Graded ground is not held for the ring**, which is the point of grading it
     // on atlas: nothing the ring publishes changes it. It is held for the water
     // levels, briefly — see `graded` above — and they come from our own host.
-    let pre_graded = matches!(chosen, FieldSource::Graded(_));
+    let pre_graded = stamp.is_some_and(|s| s > 0);
     let held_since = *hold.get_or_insert(now);
     let bound = if pre_graded {
         GRADED_WATER_HOLD_S

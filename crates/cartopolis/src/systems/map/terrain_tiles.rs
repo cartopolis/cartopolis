@@ -29,10 +29,12 @@
 //! manifest decides, per map anchor, and anywhere it does not cover — or before it
 //! has answered — the field is fetched as it always was.
 //!
-//! **A handset reads the graded tiles at 129²** ([`tile_grid`]), which atlas thins
-//! from the dense ones: its field is too coarse to use 513², and before this it got
-//! no graded ground at all. It has no raw 129² fallback — atlas does not pre-cut
-//! those — so off graded ground a handset stays on WCS.
+//! **A handset reads its tiles at 129²** ([`tile_grid`]), which atlas thins from
+//! the dense ones: its field is too coarse to use 513². Graded and raw alike — a
+//! raw 129² tile is thinned from a stored dense one where atlas has cut the area
+//! and cut from AHN on request elsewhere — so a handset off graded ground takes
+//! raw tiles and grades them itself, as a desktop does, rather than one WCS patch
+//! that no second visit can reuse.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -208,8 +210,8 @@ fn template() -> Option<String> {
 /// for a desktop field, the tile tree's own 129² for a handset's. A handset's field
 /// is 513² over 6.4 km, ~12.5 m apart, and the dense tiles under it would be ~16 MB
 /// to read 1 sample in 20; at 129² a z14 tile's samples are ~11.5 m apart and the
-/// whole field is ~1 MB. Atlas serves the 129² tile only graded (it thins the dense
-/// one), so a handset uses tiles over graded ground and WCS everywhere else.
+/// whole field is ~1 MB. Atlas thins the 129² tile from the dense one, graded or
+/// raw.
 #[must_use]
 pub fn tile_grid() -> usize {
     use cartopolis_geo::terrain_tile::{DENSE_GRID, GRID};
@@ -257,17 +259,23 @@ fn tile_url(template: &str, x: i64, y: i64, stamp: u64, grid: usize) -> String {
     format!("{url}&graded=1&v={stamp}")
 }
 
-/// The grading run every covered tile of `want` was graded by, if they all were
-/// and by the same one. The field is graded all or nothing: half a field graded
-/// on the server and half on the device would meet at a seam.
+/// The grading run every tile of `want` was graded by, if they all were and by
+/// the same one. The field is graded all or nothing: half a field graded on the
+/// server and half on the device would meet at a seam.
+///
+/// **Every tile, not every covered one.** This used to skip the tiles outside the
+/// manifest, on the reading that nothing was measured there — but atlas cuts a
+/// raw tile anywhere in AHN on request, and never grades one it has not been
+/// asked to. So a field reaching past the graded area (anywhere near the edge of
+/// Groningen's 7×7, which a following field does routinely) chose graded ground,
+/// asked for graded tiles atlas answers with 404, waited out their retries, and
+/// only then fell back — on a handset to one WCS patch for the whole box
+/// (measured on the Deck, 2026-09-25: four seconds of 404s at the Weg der
+/// Verenigde Naties before the fallback began).
 #[must_use]
 pub fn graded_stamp(want: &[(i64, i64)]) -> Option<u64> {
     let mut stamp = None;
     for &(x, y) in want {
-        if !COVERAGE.covers(x, y) {
-            // No raw tile either: nothing measured here, so nothing to grade.
-            continue;
-        }
         let s = COVERAGE.graded(x, y)?;
         if *stamp.get_or_insert(s) != s {
             return None;

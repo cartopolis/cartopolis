@@ -345,9 +345,19 @@ apart, so it used WCS, and so got no graded ground at all. Atlas now answers
 graded 513² tile, on each request and without storing it, because the pipeline
 re-grades in place and a stored copy would go stale. Those 129 samples are
 exactly the ones the desktop's 513² shares, so a phone and a desktop agree about
-the ground wherever both have a sample. A handset has no raw 129² tile to fall
-back to, so on ground that is not graded it stays on WCS
+the ground wherever both have a sample. Raw tiles are thinned the same way since
+2026-09-26 (`atlas::terrain::read_or_thin`), so a handset off graded ground reads
+raw tiles and grades them itself, as a desktop does, rather than one WCS patch
 (`terrain_tiles::tile_grid`).
+
+**Graded means every tile of the field, not every covered one.** The field was
+graded when all its *covered* tiles were, and the tiles outside the manifest were
+asked for graded too — atlas answers those 404, having cut them raw on request and
+never graded them. A following field near the edge of the graded area therefore
+spent its retries on 404s before falling back, and a handset fell back to WCS for
+the whole box: four seconds of 404s at the Weg der Verenigde Naties on the Deck,
+2026-09-25. `terrain_tiles::graded_stamp` now answers graded only when every tile
+is.
 
 Measured on `deck-1` over the Grote Markt at 600 m, release build, the same
 binary against the same live data with the manifest listing the graded tiles or

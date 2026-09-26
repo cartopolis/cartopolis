@@ -298,26 +298,10 @@ impl TerrainService {
     /// re-grades in place, and a kept copy would outlive the tile it came from.
     pub async fn graded(&self, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
         let dir = self.graded.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Some(answer) = read_stored(&dir, z, x, y, grid) {
-                return Some(answer);
-            }
-            if grid != terrain_tile::GRID {
-                return None;
-            }
-            let answer = match read_stored(&dir, z, x, y, terrain_tile::DENSE_GRID)? {
-                Answer::Tile(bytes) => {
-                    let dense = terrain_tile::TerrainTile::decode(&bytes).ok()?;
-                    let step = (terrain_tile::DENSE_GRID - 1) / (terrain_tile::GRID - 1);
-                    Answer::Tile(dense.every(step)?.encode())
-                }
-                Answer::Nothing => Answer::Nothing,
-            };
-            Some(answer)
-        })
-        .await
-        .ok()
-        .flatten()
+        tokio::task::spawn_blocking(move || read_or_thin(&dir, z, x, y, grid))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// [`Self::tile`] at a chosen grid ([`valid_grid`]).
@@ -385,7 +369,7 @@ impl TerrainService {
     // "one dependency's feature forks the whole build" trap.
     async fn stored(&self, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
         let dir = self.dir.clone();
-        tokio::task::spawn_blocking(move || read_stored(&dir, z, x, y, grid))
+        tokio::task::spawn_blocking(move || read_or_thin(&dir, z, x, y, grid))
             .await
             .ok()
             .flatten()
@@ -465,6 +449,31 @@ pub(crate) fn read_stored(dir: &Path, z: u32, x: i64, y: i64, grid: usize) -> Op
     tile_path(dir, z, x, y, grid, "none")
         .exists()
         .then_some(Answer::Nothing)
+}
+
+/// A stored tile at `grid`, or — for the tile tree's own [`terrain_tile::GRID`] —
+/// the stored dense one on every fourth sample.
+///
+/// Thinned on every request rather than stored, for graded and raw tiles alike: the
+/// pipeline re-grades in place, and a kept copy would outlive the tile it came
+/// from. For raw tiles it is also what makes a handset's field cheap where atlas has
+/// cut the area: without it the 129² tile was a PDOK round trip of its own, for
+/// exactly the samples a dense tile already on disk holds.
+pub(crate) fn read_or_thin(dir: &Path, z: u32, x: i64, y: i64, grid: usize) -> Option<Answer> {
+    if let Some(answer) = read_stored(dir, z, x, y, grid) {
+        return Some(answer);
+    }
+    if grid != terrain_tile::GRID {
+        return None;
+    }
+    Some(match read_stored(dir, z, x, y, terrain_tile::DENSE_GRID)? {
+        Answer::Tile(bytes) => {
+            let dense = terrain_tile::TerrainTile::decode(&bytes).ok()?;
+            let step = (terrain_tile::DENSE_GRID - 1) / (terrain_tile::GRID - 1);
+            Answer::Tile(dense.every(step)?.encode())
+        }
+        Answer::Nothing => Answer::Nothing,
+    })
 }
 
 /// Through a temporary file and a rename, so a reader never sees half a tile. The
