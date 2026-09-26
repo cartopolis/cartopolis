@@ -543,6 +543,21 @@ const DEFAULT_ANCHOR_LAT: f64 = 53.2194;
 const DEFAULT_ANCHOR_LNG: f64 = 6.5665;
 const DEFAULT_ANCHOR_ZOOM: u32 = 17;
 
+/// The anchor the map opens on: the default point **snapped to its tile centre**,
+/// like every other anchor (`snap_anchor`).
+///
+/// It was the raw point until 2026-09-26, which cost nothing while every teleport
+/// re-anchored — the first jump replaced it with a snapped one. Since short jumps
+/// keep the frame (`geo_nav::SHORT_JUMP_M`), a session that starts anywhere
+/// within 3 km of the Grote Markt — a restored location, a place opened from a
+/// chat, every `--shot` over Groningen — keeps this anchor for good, and every
+/// building (`lat_lng_to_local`, relative to the anchor *tile's centre*) stood
+/// 51 m east and 73 m south of the map under it.
+fn bootstrap_anchor() -> (f64, f64, u32) {
+    let (lat, lng) = snap_anchor(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
+    (lat, lng, DEFAULT_ANCHOR_ZOOM)
+}
+
 pub fn init_map_stream(
     mut stream: ResMut<MapStream>,
     mut published: ResMut<crate::resources::MapAnchor>,
@@ -556,7 +571,7 @@ pub fn init_map_stream(
     // `user_store` teleports a returning user to their last location, which
     // re-anchors. Regions are retired (ADR-020/029), so there is no seed region
     // to read a location from.
-    let (clat, clng, z) = (DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
+    let (clat, clng, z) = bootstrap_anchor();
     stream.anchor = Some((clat, clng, z));
     published.geo = stream.anchor;
     stream.current_zoom = z;
@@ -2111,6 +2126,35 @@ mod tests {
     /// reading whatever tier the machine running them resolved to.
     fn desktop() -> crate::quality::Budget {
         crate::quality::Budget::desktop()
+    }
+
+    /// The anchor the map opens on places a building where the world frame
+    /// places the ground under it.
+    ///
+    /// Buildings go through `lat_lng_to_local` (metres from the anchor *tile's
+    /// centre*); the camera, the teleport and the ground go through
+    /// `lat_lng_to_world` (metres from the anchor itself). The two agree only if
+    /// the anchor is a tile centre, and the bootstrap one was not: with short
+    /// jumps keeping the frame it lasted a whole session and put every building
+    /// 89 m off the map.
+    #[test]
+    fn the_bootstrap_anchor_places_buildings_on_the_map() {
+        let anchor = bootstrap_anchor();
+        let (clat, clng, z) = anchor;
+        let (ax, ay) = lat_lng_to_tile(clat, clng, z);
+        let tile_m = tile_to_meters(z, clat) as f32;
+        // The Martinitoren, and a point near the edge of a short jump.
+        for (lat, lng) in [(53.21937, 6.56820), (53.2030, 6.5930)] {
+            let building =
+                crate::systems::osm_buildings::lat_lng_to_local(lat, lng, ax, ay, z, tile_m);
+            let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+            assert!(
+                (building.x as f64 - wx).abs() < 0.05 && (building.y as f64 - wz).abs() < 0.05,
+                "building at ({}, {}) but the ground at ({wx:.2}, {wz:.2})",
+                building.x,
+                building.y,
+            );
+        }
     }
 
     /// All four children ready hides the parent; three does not.
