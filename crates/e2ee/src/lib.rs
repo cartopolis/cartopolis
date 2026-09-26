@@ -138,7 +138,38 @@ pub enum Received {
 /// version can't display" instead of guessing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Payload {
-    Text { body: String, sent_at_ms: u64 },
+    Text {
+        body: String,
+        sent_at_ms: u64,
+    },
+    /// An ActivityStreams object as JSON — today always a point
+    /// (`cartopolis_core::point`). Carried as text rather than as a typed struct
+    /// so this crate stays about sealing, and so a newer kind of object reaches
+    /// an older build as "something it cannot show" rather than a decode error
+    /// that looks like a broken chat.
+    Object {
+        json: String,
+        sent_at_ms: u64,
+    },
+    /// Where the sender's *phone* is, shared with this chat until `until_ms`
+    /// (Unix milliseconds). Sent repeatedly while the share lasts.
+    ///
+    /// **The end is enforced by the devices, not the server**, which cannot read
+    /// this: the sender stops sending at `until_ms`, and every receiver drops the
+    /// position at `until_ms` whatever it last heard — so a sender whose phone
+    /// dies mid-share still disappears on time. Never federated and never an
+    /// ActivityStreams object: a live position is not a post.
+    Location {
+        latitude: f64,
+        longitude: f64,
+        accuracy_m: f32,
+        until_ms: u64,
+        sent_at_ms: u64,
+    },
+    /// The sender stopped sharing before `until_ms`.
+    LocationStopped {
+        sent_at_ms: u64,
+    },
 }
 
 impl Payload {
@@ -492,6 +523,7 @@ mod tests {
             .filter_map(|r| match r {
                 Received::Message { bytes, .. } => match Payload::decode(bytes).ok()? {
                     Payload::Text { body, .. } => Some(body),
+                    _ => None,
                 },
                 Received::Membership { .. } => None,
             })

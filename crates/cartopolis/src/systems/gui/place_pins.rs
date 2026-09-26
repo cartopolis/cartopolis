@@ -55,6 +55,9 @@ const HEAD_LIFT: f32 = 2.0;
 const HOLE_R: f32 = 0.40;
 /// Hovering scales the pin up by this much (and reveals its name).
 const HOVER_SCALE: f32 = 1.18;
+/// First pin id used for a chat's points: far above any bookmark id, which
+/// counts up from 1.
+const CHAT_PIN_IDS: u64 = 1 << 48;
 
 /// Beyond this ground distance a pin is dropped below the space tier. The
 /// anchored Mercator frame distorts with distance from the anchor, and a pin
@@ -78,6 +81,10 @@ pub fn render_place_pins(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     driver: Res<crate::systems::driver::DriverState>,
     route: Res<crate::systems::navigation::RouteState>,
+    // The points of the private chat whose World view is on (the chat panel's
+    // "Map" toggle). Drawn by the same code as saved places so they share the
+    // projection, the culling and the one ordering rule this system obeys.
+    chat: Res<crate::systems::chat::ChatState>,
 ) {
     // Driver mode owns the screen and strips the map to the route — but this
     // system never learned that, so the teardrops kept drawing over the
@@ -87,7 +94,8 @@ pub fn render_place_pins(
     if driver.active {
         return;
     }
-    if store.data.bookmarks.is_empty() {
+    let chat_points = chat.world_points();
+    if store.data.bookmarks.is_empty() && chat_points.is_empty() {
         return;
     }
     let Some(anchor) = map_anchor.geo else {
@@ -171,6 +179,39 @@ pub fn render_place_pins(
                 },
                 b.name.clone(),
             ));
+        }
+    }
+    // A private chat's points, in the brand colour so they read as "from the
+    // conversation" rather than as one of your own saved places. Ids from a range
+    // no bookmark reaches, since egui keys each pin's `Area` by it.
+    let brand = theme::BRAND;
+    let brand = [
+        f32::from(brand.r()) / 255.0,
+        f32::from(brand.g()) / 255.0,
+        f32::from(brand.b()) / 255.0,
+    ];
+    for (i, (point, label)) in chat_points.iter().enumerate() {
+        let Some(delta) = place_delta(
+            &globe,
+            anchor,
+            cam_world,
+            in_space,
+            point.latitude,
+            point.longitude,
+            &terrain,
+        ) else {
+            continue;
+        };
+        let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
+            continue;
+        };
+        let tip = to_ui(screen);
+        if !map_rect.contains(tip) {
+            continue;
+        }
+        drawn += 1;
+        if pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, brand, label) {
+            jump = Some((Teleport::point(point), label.clone()));
         }
     }
     // "The pins aren't showing" has three very different causes — no anchor, all

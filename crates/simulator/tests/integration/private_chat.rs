@@ -229,6 +229,7 @@ fn text(dev: &mut Device, group: &[u8], message: &[u8]) -> String {
     match dev.receive(group, message).unwrap() {
         Received::Message { bytes, .. } => match Payload::decode(&bytes).unwrap() {
             Payload::Text { body, .. } => body,
+            other => panic!("expected text, got {other:?}"),
         },
         other => panic!("expected a message, got {other:?}"),
     }

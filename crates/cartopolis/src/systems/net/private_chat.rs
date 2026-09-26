@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
+use cartopolis_core::point::Point;
 use cartopolis_core::{E2eeCursor, E2eeWelcome, NetMessage};
 use cartopolis_e2ee::{Device, Payload, Received};
 use serde::{Deserialize, Serialize};
@@ -112,15 +113,47 @@ pub fn group_of(channel: &str) -> Option<Vec<u8>> {
 pub enum Event {
     /// A private chat is ready to use (just started, or just joined).
     Opened { group: Vec<u8>, peer: String },
-    /// Somebody said something in one.
+    /// Somebody said something in one. `point` is set when what they sent was a
+    /// place; `body` is then its caption, or its name.
     Line {
         group: Vec<u8>,
         from: String,
         body: String,
+        point: Option<Point>,
         sent_at_ms: u64,
     },
     /// Something the person should be told, in words.
     Notice(String),
+}
+
+/// What a sealed payload says, as a line of text and the point it carries.
+///
+/// Anything this build cannot read becomes a line saying so rather than an
+/// error: the entry has been applied either way (the ratchet moved on), and a
+/// chat that silently skips a message reads as a friend who never answered.
+fn read_payload(bytes: &[u8]) -> (String, Option<Point>) {
+    const UNREADABLE: &str = "(a message this version can't display)";
+    match Payload::decode(bytes) {
+        Ok(Payload::Text { body, .. }) => (body, None),
+        Ok(Payload::Object { json, .. }) => match Point::from_activity_json(&json) {
+            Ok(point) => (point_caption(&point), Some(point)),
+            Err(_) => (UNREADABLE.into(), None),
+        },
+        // Location updates are not lines; `on_deliver` handles them before this.
+        Ok(Payload::Location { .. } | Payload::LocationStopped { .. }) | Err(_) => {
+            (UNREADABLE.into(), None)
+        }
+    }
+}
+
+/// How a point reads as a line of chat: its text, else its name, else "a place".
+#[must_use]
+pub fn point_caption(point: &Point) -> String {
+    point
+        .text
+        .clone()
+        .or_else(|| point.name.clone())
+        .unwrap_or_else(|| "a place".into())
 }
 
 /// A direct chat being set up: which step it is waiting on.
@@ -295,15 +328,47 @@ impl Engine {
         now_ms: u64,
         out: &mut Vec<NetMessage>,
     ) -> Result<(), String> {
+        self.send_payload(
+            group,
+            &Payload::Text {
+                body: body.to_string(),
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Seal and send a point: a place and the view it was seen from, as an
+    /// ActivityStreams object (`cartopolis_core::point`). `link` is the web
+    /// address of the same view, for any reader that ignores the extension.
+    pub fn send_point(
+        &mut self,
+        group: &[u8],
+        point: &Point,
+        link: Option<String>,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<(), String> {
+        let json = point.to_activity_json(link).map_err(|e| e.to_string())?;
+        self.send_payload(
+            group,
+            &Payload::Object {
+                json,
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    fn send_payload(
+        &mut self,
+        group: &[u8],
+        payload: &Payload,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<(), String> {
         let sealed = self
             .device
-            .encrypt(
-                group,
-                &Payload::Text {
-                    body: body.to_string(),
-                    sent_at_ms: now_ms,
-                },
-            )
+            .encrypt(group, payload)
             .map_err(|e| e.to_string())?;
         out.push(NetMessage::E2eeSend {
             request_id: self.request(),
@@ -583,14 +648,12 @@ impl Engine {
         }
         match self.device.receive(&group, message) {
             Ok(Received::Message { from, bytes }) => {
-                let body = match Payload::decode(&bytes) {
-                    Ok(Payload::Text { body, .. }) => body,
-                    Err(_) => "(a message this version can't display)".into(),
-                };
+                let (body, point) = read_payload(&bytes);
                 events.push(Event::Line {
                     group,
                     from: from.username,
                     body,
+                    point,
                     sent_at_ms,
                 });
             }
@@ -727,6 +790,38 @@ pub fn drive_private_chats(
         }
         private.dirty = true;
     }
+    for (channel, point) in std::mem::take(&mut chat.private_points) {
+        let Some(group) = group_of(&channel) else {
+            continue;
+        };
+        let link = Some(match point.view {
+            Some(v) => crate::systems::place_link::web_link(
+                point.latitude,
+                point.longitude,
+                v.altitude,
+                Some((v.pitch, v.yaw)),
+            ),
+            None => {
+                crate::systems::place_link::web_link(point.latitude, point.longitude, 300.0, None)
+            }
+        });
+        match engine.send_point(&group, &point, link, now_ms(), &mut out) {
+            Ok(()) => {
+                let me = engine.username().to_string();
+                let my_id = chat.my_id.unwrap_or(0);
+                chat.receive_point(
+                    &channel,
+                    my_id,
+                    me,
+                    point_caption(&point),
+                    None,
+                    Some(point),
+                );
+            }
+            Err(e) => events.push(Event::Notice(format!("not sent: {e}"))),
+        }
+        private.dirty = true;
+    }
     for ev in events {
         match ev {
             Event::Opened { group, peer } => {
@@ -735,13 +830,23 @@ pub fn drive_private_chats(
                 chat.focus_channel(&key);
             }
             Event::Line {
-                group, from, body, ..
+                group,
+                from,
+                body,
+                point,
+                ..
             } => {
                 let filter = private
                     .filter
                     .get_or_insert_with(cartopolis_core::Filter::seeded);
                 let (body, _) = filter.mask(&body);
-                chat.receive(&channel_key(&group), 0, from, body, None);
+                // A point's own text is masked too: it is shown in the same log.
+                let point = point.map(|mut p| {
+                    p.text = p.text.map(|t| filter.mask(&t).0);
+                    p.name = p.name.map(|n| filter.mask(&n).0);
+                    p
+                });
+                chat.receive_point(&channel_key(&group), 0, from, body, None, point);
             }
             Event::Notice(text) => {
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
@@ -957,6 +1062,47 @@ mod loopback {
         assert_eq!(alice.lines(), vec![("bob".into(), "yes!".into())]);
         // Neither sees their own line come back as somebody else's.
         assert!(bob.lines().iter().all(|(f, _)| f == "alice"));
+    }
+
+    #[tokio::test]
+    async fn a_point_arrives_as_the_same_place_and_view() {
+        let (_dir, _h, addr) = server(&["alice", "bob"]).await;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .start_direct("bob", &mut out, &mut alice.events);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let group = alice.opened().unwrap();
+
+        let sent = Point {
+            latitude: 53.2166,
+            longitude: 6.5708,
+            name: Some("Stadsschouwburg".into()),
+            text: Some("then the show after?".into()),
+            view: Some(cartopolis_core::point::PointView {
+                altitude: 120.0,
+                pitch: -35.0,
+                yaw: 40.0,
+            }),
+        };
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_point(&group, &sent, None, 0, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        bob.pump(PUMP).await;
+        let got = bob.events.iter().find_map(|e| match e {
+            Event::Line { point, body, .. } => point.clone().map(|p| (p, body.clone())),
+            _ => None,
+        });
+        assert_eq!(got, Some((sent, "then the show after?".into())));
     }
 
     #[tokio::test]

@@ -20,6 +20,8 @@ doctest = false
 glam = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
+# `point`: a point is an ActivityStreams object, i.e. JSON (see that module).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 

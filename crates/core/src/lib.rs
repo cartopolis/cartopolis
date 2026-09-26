@@ -6,6 +6,7 @@ pub mod moderation;
 pub mod motion;
 pub mod particles;
 pub mod placeholders;
+pub mod point;
 pub mod protocol;
 pub mod script_api;
 pub mod world;

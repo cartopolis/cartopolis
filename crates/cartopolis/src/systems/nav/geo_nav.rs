@@ -548,6 +548,17 @@ impl Teleport {
         self
     }
 
+    /// A jump to a point somebody sent into a chat: their spot, from their view.
+    pub fn point(point: &cartopolis_core::point::Point) -> Self {
+        Self {
+            lat: point.latitude,
+            lng: point.longitude,
+            altitude: point.view.map(|v| v.altitude),
+            pose: point.view.map(|v| CameraPose::free_look(v.pitch, v.yaw)),
+            silent: false,
+        }
+    }
+
     /// A jump to a parsed location (pasted coordinates, or the `?place=` launch
     /// URL). Restores the view too when the fix carries look angles — that is
     /// what makes a copied place a shareable *view*, not just a spot.
@@ -1464,6 +1475,8 @@ fn history_row(
 pub enum ViewAction {
     SetHome,
     CopyLink,
+    /// Send this view into a private chat, as a point.
+    SendToChat,
 }
 
 /// The foot of the panel: Set Home here, Copy link.
@@ -1475,6 +1488,7 @@ pub enum ViewAction {
 fn view_actions_ui(
     ui: &mut egui::Ui,
     enabled: bool,
+    can_send: bool,
     done: Option<ViewAction>,
 ) -> Option<ViewAction> {
     let mut fired = None;
@@ -1512,6 +1526,17 @@ fn view_actions_ui(
                 .clicked()
             {
                 fired = Some(ViewAction::CopyLink);
+            }
+            // Only with somebody to send it to: private chats need a session.
+            if can_send
+                && theme::menu_entry_enabled(ui, enabled, icons::CHAT, "Send this view to a chat")
+                    .on_hover_text(
+                        "Send this place and this view into a private chat. Whoever opens it \
+                         sees it from exactly where you are looking.",
+                    )
+                    .clicked()
+            {
+                fired = Some(ViewAction::SendToChat);
             }
         });
         // The panel's own bottom edge is the screen's on a phone, and a row
@@ -1827,6 +1852,9 @@ pub fn render_search_panel(
     // Which view action last fired, and when — the ✔ flash. A `Local`, like the
     // one the app menu kept for the same two entries.
     mut flash: Local<Option<(ViewAction, Instant)>>,
+    // "Send this view to a chat" hands a point to the chat panel to place.
+    mut chat: ResMut<crate::systems::chat::ChatState>,
+    online: Option<Res<crate::resources::OnlineSession>>,
 ) {
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
@@ -1877,7 +1905,7 @@ pub fn render_search_panel(
                 .frame(egui::Frame::NONE)
                 .show_separator_line(false)
                 .show(ui, |ui| {
-                    fired = view_actions_ui(ui, place.is_some(), done);
+                    fired = view_actions_ui(ui, place.is_some(), online.is_some(), done);
                 });
             search_ui(ui, &mut nav, viewer);
         },
@@ -1908,6 +1936,33 @@ pub fn render_search_panel(
                 lat, lng, alt, look,
             ));
             *flash = Some((ViewAction::CopyLink, Instant::now()));
+        }
+        (Some(ViewAction::SendToChat), Some(((lat, lng), alt))) => {
+            // The same view the link would carry, as a point; the chat panel asks
+            // which private chat it goes to. Named after where history says the
+            // camera is, when it arrived by a named jump.
+            let (pitch, yaw) = cam
+                .map(|(_, tf)| {
+                    let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                    (pitch.to_degrees(), yaw.to_degrees())
+                })
+                .unwrap_or((-45.0, 0.0));
+            let name = nav
+                .history
+                .get(nav.history_pos)
+                .and_then(|e| e.label.clone());
+            chat.point_draft = Some(cartopolis_core::point::Point {
+                latitude: lat,
+                longitude: lng,
+                name,
+                text: None,
+                view: Some(cartopolis_core::point::PointView {
+                    altitude: alt,
+                    pitch,
+                    yaw,
+                }),
+            });
+            *right_panel = RightPanel::Chat;
         }
         _ => {}
     }

@@ -77,6 +77,18 @@ pub struct ChatState {
     pub private_outbox: Vec<(String, String)>,
     /// The "private chat with…" field in the panel.
     pub private_input: String,
+    /// Points to seal and send this frame: (channel key, point). Drained by
+    /// `systems::private_chat`, like [`Self::private_outbox`].
+    pub private_points: Vec<(String, cartopolis_core::point::Point)>,
+    /// A view waiting for the person to pick which private chat it goes to —
+    /// set by "Send this view to a chat" and offered at the top of the panel.
+    pub point_draft: Option<cartopolis_core::point::Point>,
+    /// The optional line typed to go with [`Self::point_draft`].
+    pub point_text: String,
+    /// The private chat whose World view is on: its points are pinned on the
+    /// map (`place_pins`). One at a time, so the map says which conversation
+    /// it is showing.
+    pub world: Option<String>,
 }
 
 /// A one-line answer to something the person just did.
@@ -126,6 +138,9 @@ pub struct ChatLine {
     /// [`ChatState::clock`] when this line landed — the age every fade is
     /// measured from.
     pub arrived: f64,
+    /// A place that came with the line (private chats only for now): the log
+    /// draws it as a button that puts the camera where the sender's was.
+    pub point: Option<cartopolis_core::point::Point>,
 }
 
 impl Default for ChatState {
@@ -155,6 +170,10 @@ impl Default for ChatState {
             private_start: Vec::new(),
             private_outbox: Vec::new(),
             private_input: String::new(),
+            private_points: Vec::new(),
+            point_draft: None,
+            point_text: String::new(),
+            world: None,
         }
     }
 }
@@ -195,6 +214,25 @@ impl ChatState {
         key.starts_with("dm:")
     }
 
+    /// The points of the chat whose World view is on, each with the label its
+    /// pin shows: the chat laid out on the map. Empty when no World view is on.
+    #[must_use]
+    pub fn world_points(&self) -> Vec<(cartopolis_core::point::Point, String)> {
+        let Some(key) = &self.world else {
+            return Vec::new();
+        };
+        self.channels
+            .iter()
+            .filter(|c| &c.key == key)
+            .flat_map(|c| c.lines.iter())
+            .filter_map(|l| {
+                l.point
+                    .clone()
+                    .map(|p| (p, format!("{}: {}", l.sender, l.body)))
+            })
+            .collect()
+    }
+
     /// Forget a channel we have left, keeping the send scope on something that
     /// still exists.
     ///
@@ -226,6 +264,19 @@ impl ChatState {
         body: String,
         distance: Option<f32>,
     ) {
+        self.receive_point(channel, sender_id, sender, body, distance, None);
+    }
+
+    /// [`Self::receive`], for a line that may carry a place.
+    pub fn receive_point(
+        &mut self,
+        channel: &str,
+        sender_id: u64,
+        sender: String,
+        body: String,
+        distance: Option<f32>,
+        point: Option<cartopolis_core::point::Point>,
+    ) {
         let arrived = self.clock;
         let idx = self.channel_index(channel);
         let lines = &mut self.channels[idx].lines;
@@ -235,6 +286,7 @@ impl ChatState {
             body,
             distance,
             arrived,
+            point,
         });
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
@@ -313,6 +365,8 @@ pub fn render_chat_panel(
     online: Option<Res<OnlineSession>>,
     mut right_panel: ResMut<RightPanel>,
     mut voice: ResMut<crate::systems::voice::VoiceState>,
+    // A point in the log is a button that flies the camera to it.
+    mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
 ) {
     let Some(online) = online else {
         return;
@@ -345,6 +399,11 @@ pub fn render_chat_panel(
     let mut open_report: Option<(String, Option<String>)> = None;
     let mut message_now: Option<String> = None;
     let mut focus_now: Option<String> = None;
+    let mut toggle_world: Option<String> = None;
+    let world_on = chat.world.clone();
+    let mut send_point_to: Option<String> = None;
+    let mut cancel_point = false;
+    let mut go_to: Option<cartopolis_core::point::Point> = None;
     let blocked = chat.blocked.clone();
     let mut dismiss_notice = false;
     let private: Vec<(String, String)> = chat
@@ -401,6 +460,44 @@ pub fn render_chat_panel(
                     });
                 }
             }
+            // A view waiting to be sent ("Send this view to a chat", Search panel):
+            // first thing in the panel, because it is what the person came here to
+            // finish.
+            if let Some(draft) = chat.point_draft.clone() {
+                ui.group(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} Send this view: {}",
+                            icons::PIN,
+                            draft.name.clone().unwrap_or_else(|| format!(
+                                "{:.4}, {:.4}",
+                                draft.latitude, draft.longitude
+                            ))
+                        ))
+                        .color(theme::CREAM),
+                    );
+                    crate::systems::text_touch::field(
+                        ui,
+                        egui::TextEdit::singleline(&mut chat.point_text)
+                            .desired_width(ui.available_width())
+                            .hint_text("Add a message (optional)"),
+                    );
+                    if private.is_empty() {
+                        theme::note(ui, "Start a private chat below first.");
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        for (key, label) in &private {
+                            if theme::action_button(ui, &format!("Send to {label}")).clicked() {
+                                send_point_to = Some(key.clone());
+                            }
+                        }
+                        if theme::action_button(ui, "Cancel").clicked() {
+                            cancel_point = true;
+                        }
+                    });
+                });
+                ui.separator();
+            }
             voice_row(ui, &mut voice);
             ui.separator();
 
@@ -447,6 +544,14 @@ pub fn render_chat_panel(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::action_button(ui, "Write").clicked() {
                             focus_now = Some(key.clone());
+                        }
+                        // The chat's World view: its points pinned on the map.
+                        let on = world_on.as_deref() == Some(key.as_str());
+                        if theme::action_button(ui, if on { "Hide map" } else { "Map" })
+                            .on_hover_text("Show the places sent in this chat as pins on the map")
+                            .clicked()
+                        {
+                            toggle_world = Some(key.clone());
                         }
                     });
                 });
@@ -545,7 +650,22 @@ pub fn render_chat_panel(
                                     }
                                 },
                             );
-                            ui.label(&line.body);
+                            match &line.point {
+                                // A point is the one line you can act on: it puts
+                                // the camera where the sender's was.
+                                Some(point) => {
+                                    if ui
+                                        .button(format!("{} {}", icons::PIN, line.body))
+                                        .on_hover_text("Look from here")
+                                        .clicked()
+                                    {
+                                        go_to = Some(point.clone());
+                                    }
+                                }
+                                None => {
+                                    ui.label(&line.body);
+                                }
+                            }
                         });
                     }
                 });
@@ -578,6 +698,30 @@ pub fn render_chat_panel(
         chat.drop_channel(&key);
     }
 
+    if let Some(key) = send_point_to {
+        if let Some(mut point) = chat.point_draft.take() {
+            let text = chat.point_text.trim().to_string();
+            point.text = (!text.is_empty()).then_some(text);
+            chat.private_points.push((key.clone(), point));
+            chat.point_text.clear();
+            chat.focus_channel(&key);
+        }
+    }
+    if cancel_point {
+        chat.point_draft = None;
+        chat.point_text.clear();
+    }
+    if let Some(key) = toggle_world {
+        chat.world = if chat.world.as_deref() == Some(key.as_str()) {
+            None
+        } else {
+            Some(key)
+        };
+    }
+    if let Some(point) = go_to {
+        nav.pending_label = point.name.clone();
+        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::point(&point));
+    }
     if let Some(name) = message_now {
         chat.private_start.push(name);
         chat.private_input.clear();
@@ -858,6 +1002,45 @@ mod tests {
         chat.blocked = vec!["loud".into()];
         chat.blocked = Vec::new();
         assert!(!chat.is_blocked("loud"));
+    }
+
+    /// The map shows one chat's points: the chosen one's, and none from any other.
+    #[test]
+    fn the_world_view_pins_only_the_chosen_chats_points() {
+        let spot = |lat: f64| cartopolis_core::point::Point {
+            latitude: lat,
+            longitude: 6.57,
+            name: None,
+            text: None,
+            view: None,
+        };
+        let mut chat = ChatState::default();
+        chat.receive_point(
+            "dm:aa",
+            0,
+            "bob".into(),
+            "here".into(),
+            None,
+            Some(spot(53.1)),
+        );
+        chat.receive_point(
+            "dm:bb",
+            0,
+            "eve".into(),
+            "there".into(),
+            None,
+            Some(spot(52.0)),
+        );
+        chat.receive("dm:aa", 0, "bob".into(), "no place".into(), None);
+        assert!(
+            chat.world_points().is_empty(),
+            "nothing is on the map by default"
+        );
+        chat.world = Some("dm:aa".into());
+        let pins = chat.world_points();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].0.latitude, 53.1);
+        assert_eq!(pins[0].1, "bob: here");
     }
 
     /// Lines already in the scrollback when a block is made must disappear too —
