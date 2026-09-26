@@ -475,6 +475,14 @@ pub(crate) fn ambient_light(
     }
 }
 
+/// How much of the sky is cloud, 0 (clear) to 1 (overcast): thick cloud, and a
+/// little of the rain. One definition, because the ground lighting and the
+/// water's stand-in sky reflection (`water::update_water_waves`) both grey out on
+/// it and would disagree about the weather otherwise.
+pub(crate) fn overcast(dev: &DevPanelState) -> f32 {
+    dev.cloud_cover.max(dev.precipitation * 0.9).clamp(0.0, 1.0)
+}
+
 /// How a cloud deck redistributes the ground's light: what is left of the direct
 /// beam, and the diffuse fill that replaces what it took.
 ///
@@ -912,7 +920,7 @@ pub(crate) fn apply_day_night_cycle(
     // lighting — the direct sun drops, the sky's fill light rises, colours grey
     // out. Ground tier only (space has its own lighting model, and the planet
     // cloud sphere shades the globe there), so it fades out with `space`.
-    let overcast = dev.cloud_cover.max(dev.precipitation * 0.9) * (1.0 - space);
+    let overcast = overcast(&dev) * (1.0 - space);
 
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
 

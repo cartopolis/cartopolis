@@ -4,8 +4,8 @@ triggers: [water.wgsl, water.rs, "water looks", waves, ocean, sea, foam, whiteca
   glitter, "specular aliasing", Cox-Munk, "RMS slope", octave, LEAN, Toksvig,
   moire, corduroy, reflectance, F0, shore field, bank field, canal, "sea state",
   WaterSeaState, "shadow around the shore", "rim of shadow",
-  water_octaves]
-updated: 2026-09-11
+  water_octaves, sky_ibl, "water looks grey", "no environment map"]
+updated: 2026-09-26
 ---
 
 # The water surface: what is measured, and what only looked measured
@@ -285,6 +285,36 @@ lighting off — the standard path has no reflection to give, so the shader stan
 in with the `DistanceFog` haze colour under `#ifndef ENVIRONMENT_MAP`, weighted by
 the same `reflected` the body colour was taken out of. Not compiled at all when
 there *is* an environment map.
+
+**That branch is what Android draws, not an edge case.** Android resolves to the
+`balanced` rung, and `balanced` has `sky_ibl: false` (the cubemap is re-baked
+every frame), so no environment map — and neither does the laptop. Reflecting one
+haze colour at every angle made the reflection independent of the wave normal:
+the only thing left to show a wave was the fresnel weight, and a phone
+screenshot of the Paterswoldsemeer (2026-09-26) was uniform grey corduroy under a
+blue sky. The reflected ray now looks up a two-stop sky — haze at the horizon,
+`SKY_ZENITH_TINT` of it overhead, `sqrt(elevation)` between, drifting to the
+cosine-weighted mean with roughness. The zenith is derived from the haze, so the
+clock and the dusk tint come free; only cloud cover is sent (`wind.w`, from
+`sky::overcast`), because an overcast sky has no blue in it.
+
+Bevy's *ambient* reflects too (`EnvBRDFApprox` in `ambient.wgsl`, one colour from
+every direction, raised to 4000 lux on these tiers for exactly this sheen), and
+that flat third of the reflection washed the gradient out. The shader recomputes
+it with bevy's own functions and removes it **in proportion to
+`sky_t × clear`**. Both limits were measured on the Deck at the `balanced` rung:
+removed everywhere, an overcast lake went dark navy under a grey sky and a dusk
+lake went darker than its own horizon, because under cloud the ambient *is* the
+sky and at the horizon it is the brightness the haze colour alone is short of.
+Scaled, mean water colour over a fixed crop:
+
+| view | before | after |
+|---|---|---|
+| `sunpath` (clear, 15:00) | 101, 107, 107 | 91, 100, 105 |
+| `canal` (clear, 11:00) | 66, 81, 88 | 55, 74, 86 |
+| overcast, same view | 149, 160, 167 | 149, 160, 167 |
+| `lowsun` (17:12) | 199, 162, 128 | 198, 160, 125 |
+| `ringedge` (12 km, the palette seam) | 76, 105, 132 | 76, 105, 132 |
 
 ## Aim a test view with arithmetic
 

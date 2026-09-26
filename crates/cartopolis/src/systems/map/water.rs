@@ -133,6 +133,10 @@ const UNKNOWN_WIND: f32 = 3.0;
 /// *weather*, and weather moves on the scale of minutes.
 const WIND_EPSILON: f32 = 0.25;
 
+/// Change in sky clearness (0 overcast … 1 clear) needed before the uniforms are
+/// rewritten — a twentieth of the range, well under what the reflection shows.
+const CLEAR_SKY_EPSILON: f32 = 0.05;
+
 /// Cox & Munk's sun-glitter measurement of sea-surface slope, 1954: the variance
 /// of the surface slope over a clean sea is `0.003 + 0.00512·U`, with `U` the wind
 /// speed in m/s. It is the classic result and it is still what ocean-optics work
@@ -282,7 +286,9 @@ pub struct WaterExtension {
     /// z: top-down depth darkening. w: crest foam amount.
     #[uniform(101)]
     pub surface: Vec4,
-    /// xy: unit wind direction. z: chop 0–1 (swell → wind chop). w unused.
+    /// xy: unit wind direction. z: chop 0–1 (swell → wind chop). w: how clear the
+    /// sky is, 1 − [`overcast`](crate::systems::sky::overcast) — read only by the
+    /// shader's stand-in sky reflection on a view with no environment map.
     #[uniform(102)]
     pub wind: Vec4,
     /// Where this cell's [shore field] sits: xy = the cell's north-west corner in
@@ -532,7 +538,9 @@ fn sea_state(wind_ms: f32, octave_count: u32) -> (Vec4, Vec4, Vec4, Vec4) {
             // mask in the shader, which is already narrow.
             0.45 * foam,
         ),
-        Vec4::new(dir.x, dir.y, sea, 0.0),
+        // w is the sky's clearness, which is weather but not wind: a clear sky
+        // until `update_water_waves` has read the cloud cover.
+        Vec4::new(dir.x, dir.y, sea, 1.0),
         // Chop sharpens the crests, which changes how much slope one octave is
         // worth — so the normaliser is part of the sea state, not a constant.
         octave_norms(octave_count, sea),
@@ -546,9 +554,10 @@ fn sea_state(wind_ms: f32, octave_count: u32) -> (Vec4, Vec4, Vec4, Vec4) {
 pub fn update_water_waves(
     weather: Res<WeatherState>,
     dl: Res<crate::systems::data_layers::DataLayers>,
+    dev: Res<crate::resources::DevPanelState>,
     mut state: ResMut<WaterSeaState>,
     mut materials: ResMut<Assets<WaterMaterial>>,
-    mut applied: Local<Option<(f32, bool)>>,
+    mut applied: Local<Option<(f32, bool, f32)>>,
 ) {
     // The "Water shading" toggle (`DataLayers::water_shading`) flattens the sea to a
     // still sheet: hold the wind at calm and zero the wave steepness + foam. New
@@ -559,13 +568,20 @@ pub fn update_water_waves(
     } else {
         0.0
     };
-    if applied.is_some_and(|(prev_wind, prev_shading)| {
-        (prev_wind - wind_ms).abs() < WIND_EPSILON && prev_shading == shading
+    // The stand-in sky reflection's cloud cover (`wind.w`, read only where there
+    // is no environment map). Weather, like the wind: it moves in minutes, so the
+    // same threshold-then-rewrite applies.
+    let clear = 1.0 - crate::systems::sky::overcast(&dev);
+    if applied.is_some_and(|(prev_wind, prev_shading, prev_clear)| {
+        (prev_wind - wind_ms).abs() < WIND_EPSILON
+            && prev_shading == shading
+            && (prev_clear - clear).abs() < CLEAR_SKY_EPSILON
     }) {
         return;
     }
-    let (mut wave, mut surface, wind, octaves) =
+    let (mut wave, mut surface, mut wind, octaves) =
         sea_state(wind_ms, crate::quality::budget().water_octaves);
+    wind.w = clear;
     if !shading {
         wave.x = 0.0; // RMS slope → no ripples in the normal
         surface.w = 0.0; // no crest foam
@@ -588,7 +604,7 @@ pub fn update_water_waves(
             material.extension.octaves = octaves;
         }
     }
-    *applied = Some((wind_ms, shading));
+    *applied = Some((wind_ms, shading, clear));
     tracing::debug!(wind_ms, shading, "water sea state updated");
 }
 

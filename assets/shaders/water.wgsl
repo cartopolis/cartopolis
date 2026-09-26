@@ -62,7 +62,8 @@
     // `pbr_functions` does.
     mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_functions::{alpha_discard, apply_pbr_lighting, calculate_F0, main_pass_post_lighting_processing},
+    lighting::{EnvBRDFApprox, F_AB},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 }
 
@@ -77,7 +78,8 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: vec4<f32>;
 
 // xy: unit wind direction the waves travel along. z: chop (0 = rolling swell,
-// 1 = sharp wind chop — raises the crest exponent). w unused.
+// 1 = sharp wind chop — raises the crest exponent). w: how clear the sky is,
+// 1 = cloudless, 0 = overcast (read only by the no-environment-map reflection).
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var<uniform> wind: vec4<f32>;
 
 // This cell's shore field placement. xy: the cell's north-west corner in the
@@ -184,6 +186,19 @@ const WATER_F0: f32 = 0.0204;
 /// is the only thing that can place the line, and a band narrower than its own
 /// sampling grid simply never shows (measured: no bright band at all at 2.6 m).
 const SHORE_FOAM_M: f32 = 4.0;
+
+/// The clear sky overhead as a multiple of the haze colour at the horizon, for
+/// the reflection a view without an environment map stands in (see the
+/// `ENVIRONMENT_MAP` fallback in `fragment`). Linear. The haze's day colour
+/// `#B5BFD4` becomes a zenith of roughly `#779BDB`: ~60 % of the horizon's
+/// luminance and clearly blue, which is the shape of a real clear sky — darker
+/// and more saturated overhead, pale and bright along the horizon.
+const SKY_ZENITH_TINT: vec3<f32> = vec3<f32>(0.40, 0.63, 1.08);
+
+/// Where a fully rough surface lands between horizon (0) and zenith (1): the
+/// cosine-weighted mean of `sqrt(elevation sine)` over the upper hemisphere,
+/// 2·∫₀¹ √y · y dy = 0.8.
+const SKY_MEAN_T: f32 = 0.8;
 
 const TAU: f32 = 6.2831853;
 
@@ -699,8 +714,53 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Weighted by the *same* `reflected` the body colour was taken out of, so the
     // two halves of the surface still add up to one and switching an environment
     // map on and off moves it as little as this approximation can manage.
+    //
+    // **The haze is only the bottom of the sky, so it is only the bottom of the
+    // mirror.** Reflecting that one colour at every angle made the reflection
+    // independent of the wave normal: a facet tilted toward the zenith and one
+    // tilted toward the horizon returned the same grey, the only thing left to
+    // show a wave was the fresnel weight, and the sea on every tier without an
+    // environment map (Android's included) read as grey corduroy with none of the
+    // sky's blue in it. So the reflected ray now looks up a two-stop sky: the
+    // haze at the horizon, `SKY_ZENITH_TINT` of it overhead. The zenith is derived
+    // from the haze rather than sent, so it follows the day/night clock and the
+    // dusk tint the fog already carries with no new uniform; only the cloud
+    // cover is sent (`wind.w`), because an overcast sky has no blue in it.
+    let sky_ray = reflect(-v, n);
+    let clear = clamp(wind.w, 0.0, 1.0);
+    let horizon_rgb = view_bindings::fog.base_color.rgb;
+    let zenith_rgb = mix(horizon_rgb, horizon_rgb * SKY_ZENITH_TINT, clear);
+    // A rough surface sums the sky over a wide lobe, so it drifts toward the
+    // sky's mean rather than picking out one elevation — the same reason the
+    // retired octaves come back as roughness rather than disappearing.
+    let rough = pbr_input.material.perceptual_roughness;
+    let sky_t = mix(sqrt(clamp(sky_ray.y, 0.0, 1.0)), SKY_MEAN_T, rough * rough);
+    // **And the ambient light's reflection gives way to the zenith.** Bevy's
+    // ambient is not diffuse-only: `ambient.wgsl` runs `EnvBRDFApprox` for a
+    // specular lobe too, one colour from every direction, and on these tiers it
+    // was raised to 4000 lux precisely so the water would have *some* sheen
+    // (`sky::AMBIENT_DAY_BRIGHTNESS_NO_IBL`). That flat whitish term is about a
+    // third of the reflection and was what washed the gradient out, so a facet
+    // looking up the sky loses it — recomputed with bevy's own functions on
+    // bevy's own inputs, so what comes out is exactly what went in.
+    //
+    // Only in proportion to `sky_t × clear`, and both halves were measured
+    // (Deck, 2026-09-26). Taken out everywhere, an overcast lake went dark navy
+    // under a grey sky, and a dusk lake went darker than the horizon it
+    // reflects: under cloud the ambient *is* the sky, and at the horizon it is
+    // the brightness the haze colour alone is short of. Scaled this way, a
+    // grazing reflection and an overcast one are left exactly as they were, and
+    // only the part of the mirror that holds the open sky overhead turns blue.
+    // Foam keeps all of it, being a rough white mat and not a mirror.
+    let f0 = calculate_F0(pbr_input.material.base_color.rgb, pbr_input.material.metallic, pbr_input.material.reflectance);
+    let ambient_spec = EnvBRDFApprox(f0, F_AB(rough, max(dot(pbr_input.N, pbr_input.V), 0.0001)))
+        * saturate(dot(f0, vec3(50.0 * 0.33)))
+        * lights.ambient_color.rgb
+        * pbr_input.diffuse_occlusion
+        * view.exposure;
     out.color = vec4<f32>(
-        out.color.rgb + view_bindings::fog.base_color.rgb * reflected * mirror * (1.0 - foam),
+        max(out.color.rgb - ambient_spec * (sky_t * clear * (1.0 - foam)), vec3<f32>(0.0))
+            + mix(horizon_rgb, zenith_rgb, sky_t) * reflected * mirror * (1.0 - foam),
         out.color.a,
     );
 #endif
