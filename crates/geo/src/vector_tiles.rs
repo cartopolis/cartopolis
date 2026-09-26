@@ -2538,9 +2538,21 @@ impl BridgeDeck {
 /// why a viaduct was nothing but the road ribbon crossing it. Measured over
 /// Groningen station: the Emmaviaduct arrives as 34 × 149 m and 68 × 176 m of
 /// footprint. That is a deck you can stand geometry on.
+///
+/// **Not every bridge has an area.** Where OSM maps the bridge-flagged ways and
+/// no `man_made=bridge` outline, the structure is built from the ways
+/// themselves ([`street_decks`]) and follows the outlines in the list.
 pub fn tessellate_bridges(tile: &TileData, tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
+    let mut decks = area_decks(tile, tile_m);
+    let from_streets = street_decks(tile, tile_m, &decks);
+    decks.extend(from_streets);
+    Ok(decks)
+}
+
+/// The decks the `bridges` layer draws as areas.
+fn area_decks(tile: &TileData, tile_m: f32) -> Vec<BridgeDeck> {
     let Some(meta) = tile.layer("bridges") else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let features = tile.features(meta);
     let extent = TileData::extent(meta);
@@ -2577,7 +2589,279 @@ pub fn tessellate_bridges(tile: &TileData, tile_m: f32) -> Result<Vec<BridgeDeck
             });
         }
     }
-    Ok(decks)
+    decks
+}
+
+/// How far a deck built from a street reaches past the carriageway on either
+/// side, metres: the edge beam and the parapet an outline would have included.
+const STREET_DECK_MARGIN_M: f32 = 1.0;
+
+/// Shortest stretch of a bridge-flagged street that is given a deck of its own,
+/// metres. Below it the stretch is a sliver of a way overhanging an outline, or a
+/// culvert nobody would call a bridge.
+const STREET_DECK_MIN_M: f32 = 6.0;
+
+/// Smallest deck built from a street, square metres — a footpath's
+/// [`STREET_DECK_MIN_M`] of span is about fifteen.
+const STREET_DECK_MIN_AREA_M2: f32 = 8.0;
+
+/// **Decks for the bridges OSM maps only as flagged ways.** Shortbread's `bridges`
+/// layer is the `man_made=bridge` areas, and many bridges have none: the
+/// Europaplein flyover in Groningen, where the ring road crosses the junction
+/// (reported 2026-09-26), is four `bridge=yes` carriageways and no outline. With
+/// no deck under them nothing measured their height and nothing lifted them, so
+/// the flyover was drawn on the ground across the roads it passes over.
+///
+/// Each stretch of a bridge-flagged road or railway that no outline covers is buffered
+/// into one: the carriageway's own width plus [`STREET_DECK_MARGIN_M`] either
+/// side, round at the bends and square at the ends, where the way — and so the
+/// structure — stops. Overlapping stretches are merged, so an interchange's slip
+/// road joining the main span is one deck rather than two slabs fighting over the
+/// same ground, and the result is clipped to the tile the way an outline is.
+///
+/// From here a deck is a deck: `split_by_deck` puts the ways on it,
+/// `extend_approaches` finds their ramps and the height is measured over the
+/// outline as it is for any other — which is also what keeps the canal bridges
+/// flat, since they measure under `MIN_LIFT_M`.
+fn street_decks(tile: &TileData, tile_m: f32, areas: &[BridgeDeck]) -> Vec<BridgeDeck> {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::core::overlay::{Overlay, ShapeType};
+    use i_overlay::core::overlay_rule::OverlayRule;
+    use i_overlay::i_float::int::point::IntPoint;
+
+    let Some(meta) = tile.layer("streets") else {
+        return Vec::new();
+    };
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
+    let scale = tile_m / extent;
+    let mm = |p: [f32; 2]| {
+        IntPoint::new(
+            (p[0] * 1000.0).round() as i32,
+            (p[1] * 1000.0).round() as i32,
+        )
+    };
+    // Clipped to the tile the way an outline is — every piece is convex, so
+    // Sutherland–Hodgman is exact — and given one winding: under the non-zero rule
+    // a clockwise piece over an anticlockwise one would cancel into a hole
+    // instead of merging.
+    let contour = |pts: Vec<[f32; 2]>| -> Vec<IntPoint<i32>> {
+        let pts = clip_ring(&pts, tile_m);
+        let twice_area: f32 = pts
+            .iter()
+            .zip(pts.iter().cycle().skip(1))
+            .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+            .sum();
+        let mut out: Vec<IntPoint<i32>> = pts.into_iter().map(mm).collect();
+        if twice_area < 0.0 {
+            out.reverse();
+        }
+        out
+    };
+
+    let mut overlay: Overlay<i32> = Overlay::new(64);
+    let mut any = false;
+    let mut add = |overlay: &mut Overlay<i32>, pts: Vec<[f32; 2]>| {
+        let c = contour(pts);
+        if c.len() >= 3 {
+            overlay.add_contour(&c, ShapeType::Subject);
+            any = true;
+        }
+    };
+    for feature in features {
+        if !flag_of(feature, "bridge") {
+            continue;
+        }
+        // Main roads and rail only. A path or a lane is narrow and routinely runs
+        // under trees, and the survey over a strip that narrow is the canopy:
+        // Groningen's boardwalks and Stadspark lanes measured 11–23 m
+        // (2026-09-26), which would have stood them on slabs over the park.
+        let Some((class, half)) = drawn_street(feature) else {
+            continue;
+        };
+        if matches!(class, RoadClass::Path | RoadClass::Minor) {
+            continue;
+        }
+        let w = half + STREET_DECK_MARGIN_M;
+        let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
+            Geometry::LineString(ls) => vec![ls],
+            Geometry::MultiLineString(mls) => mls.iter().collect(),
+            _ => continue,
+        };
+        for ls in lines {
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x, c.y])
+                    .collect();
+            let whole_m = crate::tunnels::polyline_len(&pts) * scale;
+            if whole_m < STREET_DECK_MIN_M {
+                continue;
+            }
+            for run in clip_polyline(&pts, 0.0, extent) {
+                // Asked every couple of metres, because `split_by_deck` only asks
+                // at the vertices: a way whose two ends lie just off an outline
+                // and whose whole span crosses it otherwise reads as never
+                // touching it, and was given a second deck over the first.
+                let mut metres: Vec<[f32; 2]> = Vec::new();
+                for s in run.windows(2) {
+                    let (a, b) = (
+                        [s[0][0] * scale, s[0][1] * scale],
+                        [s[1][0] * scale, s[1][1] * scale],
+                    );
+                    let steps = ((b[0] - a[0]).hypot(b[1] - a[1]) / 2.0).ceil().max(1.0) as usize;
+                    metres.extend((0..steps).map(|k| {
+                        let t = k as f32 / steps as f32;
+                        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+                    }));
+                }
+                if let Some(&last) = run.last() {
+                    metres.push([last[0] * scale, last[1] * scale]);
+                }
+                // A run cut by the tile border is short here and continues next
+                // door, where the rest of the same structure is built.
+                let at_border = |p: [f32; 2]| {
+                    p[0] <= 0.01 || p[1] <= 0.01 || p[0] >= tile_m - 0.01 || p[1] >= tile_m - 0.01
+                };
+                for (owner, part) in split_by_deck(&metres, areas) {
+                    if owner.is_some() || part.len() < 2 {
+                        continue;
+                    }
+                    let clipped = part.first().is_some_and(|p| at_border(*p))
+                        || part.last().is_some_and(|p| at_border(*p));
+                    if crate::tunnels::polyline_len(&part) < STREET_DECK_MIN_M && !clipped {
+                        continue;
+                    }
+                    for s in part.windows(2) {
+                        let (a, b) = (s[0], s[1]);
+                        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                        let len = dx.hypot(dz);
+                        if len < 1e-3 {
+                            continue;
+                        }
+                        let n = [-dz / len * w, dx / len * w];
+                        add(
+                            &mut overlay,
+                            vec![
+                                [a[0] + n[0], a[1] + n[1]],
+                                [b[0] + n[0], b[1] + n[1]],
+                                [b[0] - n[0], b[1] - n[1]],
+                                [a[0] - n[0], a[1] - n[1]],
+                            ],
+                        );
+                    }
+                    // Round joins, so a bend is not notched on its outside —
+                    // only where it bends, not at every sample laid above.
+                    for s in part.windows(3) {
+                        let (u, v) = (
+                            [s[1][0] - s[0][0], s[1][1] - s[0][1]],
+                            [s[2][0] - s[1][0], s[2][1] - s[1][1]],
+                        );
+                        let turn = (u[0] * v[1] - u[1] * v[0]).abs()
+                            / (u[0].hypot(u[1]) * v[0].hypot(v[1])).max(1e-6);
+                        if turn < 1e-3 {
+                            continue;
+                        }
+                        let c = s[1];
+                        let disc = (0..12)
+                            .map(|k| {
+                                let t = k as f32 * std::f32::consts::TAU / 12.0;
+                                [c[0] + w * t.cos(), c[1] + w * t.sin()]
+                            })
+                            .collect();
+                        add(&mut overlay, disc);
+                    }
+                }
+            }
+        }
+    }
+    if !any {
+        return Vec::new();
+    }
+    // Less the outlines, so no ground is claimed by two decks: a street deck
+    // only meets an outline where the way runs off it, and there the two must
+    // share an edge rather than overlap at two measured heights.
+    for deck in areas {
+        for ring in &deck.rings {
+            let pts: Vec<IntPoint<i32>> = ring[..ring.len() - 1].iter().map(|p| mm(*p)).collect();
+            overlay.add_contour(&pts, ShapeType::Clip);
+        }
+    }
+
+    let mut decks = Vec::new();
+    for shape in overlay.overlay(OverlayRule::Difference, FillRule::NonZero) {
+        let rings: Vec<Vec<[f32; 2]>> = shape
+            .iter()
+            .filter(|c| c.len() >= 3)
+            .map(|c| {
+                let mut ring: Vec<[f32; 2]> = c
+                    .iter()
+                    .map(|p| [p.x as f32 / 1000.0, p.y as f32 / 1000.0])
+                    .collect();
+                ring.push(ring[0]);
+                ring
+            })
+            .collect();
+        // What the subtraction leaves along an outline's edge where a way ran
+        // onto it is a sliver, not a structure.
+        let area = rings.first().map_or(0.0, |r| {
+            0.5 * r
+                .windows(2)
+                .map(|e| e[0][0] * e[1][1] - e[1][0] * e[0][1])
+                .sum::<f32>()
+                .abs()
+        });
+        if area < STREET_DECK_MIN_AREA_M2 {
+            continue;
+        }
+        let mut flat: Vec<f64> = Vec::new();
+        let mut holes: Vec<usize> = Vec::new();
+        for (ri, ring) in rings.iter().enumerate() {
+            if ri > 0 {
+                holes.push(flat.len() / 2);
+            }
+            for p in &ring[..ring.len() - 1] {
+                flat.extend([f64::from(p[0]), f64::from(p[1])]);
+            }
+        }
+        let Ok(tris) = earcutr::earcut(&flat, &holes, 2) else {
+            continue;
+        };
+        let positions: Vec<[f32; 3]> = flat
+            .chunks_exact(2)
+            .map(|p| [p[0] as f32, 0.0, p[1] as f32])
+            .collect();
+        let mut indices: Vec<u32> = Vec::with_capacity(tris.len());
+        for t in tris.chunks_exact(3) {
+            let [a, b, c] = [positions[t[0]], positions[t[1]], positions[t[2]]];
+            // Facing up, as every ground triangle out of `tessellate_polygon` does;
+            // the union keeps no winding of its own worth trusting.
+            let cross = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+            if cross.abs() < f32::EPSILON {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let t: [u32; 3] = [t[0] as u32, t[1] as u32, t[2] as u32];
+            indices.extend(if cross < 0.0 { t } else { [t[0], t[2], t[1]] });
+        }
+        if indices.is_empty() {
+            continue;
+        }
+        let mut min = [f32::MAX, f32::MAX];
+        let mut max = [f32::MIN, f32::MIN];
+        for p in rings.iter().flatten() {
+            min = [min[0].min(p[0]), min[1].min(p[1])];
+            max = [max[0].max(p[0]), max[1].max(p[1])];
+        }
+        decks.push(BridgeDeck {
+            positions,
+            indices,
+            rings,
+            min,
+            max,
+        });
+    }
+    decks
 }
 
 /// How far a ribbon may be pushed past the end of its centre line, in metres, to
@@ -6104,6 +6388,95 @@ mod tests {
             on_road, on_lid,
             "the ground four metres over the lid is painted the colour of the road \
              that runs into the tunnel — a round cap past the mouth"
+        );
+    }
+
+    /// **A bridge OSM maps only as flagged ways still gets a deck.** The ring
+    /// fixture's Europaplein flyover is four `bridge=yes` trunk carriageways with
+    /// no `bridges` outline, and was drawn on the ground across the junction it
+    /// crosses (reported 2026-09-26). Every bridge-flagged road here must now
+    /// stand on a deck along its whole length, and the flyover's must carry its
+    /// carriageway and have an approach to ramp.
+    #[test]
+    fn a_bridge_mapped_only_as_ways_gets_a_deck() {
+        let tile = crate::testdata::groningen_ring();
+        let tile_m = 1465.3;
+        let areas = super::area_decks(&tile, tile_m);
+        let mut decks = super::tessellate_bridges(&tile, tile_m).expect("bridges");
+        assert!(
+            decks.len() > areas.len(),
+            "no deck was built from a street: {} decks, {} outlines",
+            decks.len(),
+            areas.len()
+        );
+
+        let meta = tile.layer("streets").expect("streets");
+        let extent = TileData::extent(meta);
+        let scale = tile_m / extent;
+        let mut checked = 0;
+        for f in tile.features(meta) {
+            if !flag_of(&f, "bridge")
+                || !drawn_street(&f)
+                    .is_some_and(|(c, _)| !matches!(c, RoadClass::Path | RoadClass::Minor))
+            {
+                continue;
+            }
+            let Geometry::LineString(ls) = &f.geometry else {
+                continue;
+            };
+            let pts: Vec<[f32; 2]> = ls.0.iter().map(|c| [c.x, c.y]).collect();
+            for run in clip_polyline(&pts, 0.0, extent) {
+                let m: Vec<[f32; 2]> = run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+                if crate::tunnels::polyline_len(&m) < STREET_DECK_MIN_M {
+                    continue;
+                }
+                // Every metre of it, bar the ends: a way may overhang an outline by
+                // up to `STREET_DECK_MIN_M`, and that sliver is left on the ground.
+                for s in m.windows(2) {
+                    let (a, b) = (s[0], s[1]);
+                    let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+                    let steps = l.floor() as usize;
+                    for k in 1..steps {
+                        let t = k as f32 / l;
+                        let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                        let near_end = (p[0] - m[0][0]).hypot(p[1] - m[0][1]) < STREET_DECK_MIN_M
+                            || (p[0] - m[m.len() - 1][0]).hypot(p[1] - m[m.len() - 1][1])
+                                < STREET_DECK_MIN_M;
+                        assert!(
+                            near_end || decks.iter().any(|d| d.contains(p)),
+                            "a bridge street is off every deck at {p:?}"
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 4, "only {checked} bridge streets checked");
+
+        // Europaplein, between the two main carriageways' spans.
+        let europaplein = [1247.9, 125.7];
+        let di = decks
+            .iter()
+            .position(|d| d.contains(europaplein))
+            .expect("no deck at the Europaplein flyover");
+        assert!(
+            di >= areas.len(),
+            "the flyover's deck is an outline after all"
+        );
+        let roads = super::tessellate_roads(&tile, tile_m, &mut decks, None, false).expect("roads");
+        assert!(
+            roads.on_deck.iter().any(|(d, _)| *d as usize == di),
+            "no carriageway rides the flyover"
+        );
+        let ramp = roads
+            .approaches
+            .iter()
+            .filter(|a| a.deck as usize == di)
+            .map(|a| crate::tunnels::polyline_len(&a.points))
+            .fold(0.0f32, f32::max);
+        assert!(
+            ramp >= 40.0,
+            "the flyover's longest approach is {ramp:.1} m"
         );
     }
 

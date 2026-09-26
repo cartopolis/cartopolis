@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
 triggers: [height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-09-24
+updated: 2026-09-26
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -128,6 +128,36 @@ deck's outline, skipping stubs under a metre (a deck the tile border cut, which
 continues next door). Measured on the Deck after the fixes: mean 0.1–0.3 m in
 every bridge view. What still steps is an approach the **tile border** cuts: the
 next tile does not know the deck is there, so the ramp stops at the edge.
+
+## Not every bridge has an outline
+
+Everything above hangs off the `bridges` layer, and that layer is only the
+bridges somebody mapped as an **area** (`man_made=bridge`). Plenty are mapped as
+nothing but `bridge=yes` ways: the Europaplein flyover, where the ring road
+crosses the junction, is four such carriageways and no outline, so no deck was
+built, nothing was measured and the flyover was drawn on the ground across the
+roads it passes over (reported from the phone 2026-09-26). The two Groningen
+fixture tiles counted 4–5 outlines against 9–20 flagged stretches no outline
+covers.
+
+`vector_tiles::street_decks` builds the missing deck from the main-road and rail
+ways: each
+uncovered stretch buffered to its carriageway plus a metre either side, merged
+with its neighbours, clipped to the tile, less any outline it runs onto. From
+there it is an ordinary deck — measured, profiled, ramped. Three things about it:
+
+- `split_by_deck` only asks at a way's vertices, so a two-vertex way whose ends
+  lie just off an outline reads as never touching it; the stretch is sampled
+  every two metres before asking. Without that the station fixture's rail bridge
+  got a second deck over its own outline. The road tessellator still asks only
+  at vertices.
+- Paths and minor lanes are left out: over a narrow strip under trees the
+  survey is the canopy — Groningen's boardwalks and Stadspark lanes measured
+  11–23 m. So a residential bridge with no outline still lies flat.
+- Atlas matches decks to the client by position, and a cell with a deck atlas
+  never measured is measured by the client instead — so a client with this
+  change over ground graded *before* it lifts the new decks but gets no ramp to
+  them until atlas grades that ground again.
 
 ## A deck is the structure, not the road surface
 
