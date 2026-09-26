@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 
 use super::bgt_extract::Extract;
 use super::bv3d::separation_heights_for;
-use super::geom::{polygon_rings, ring_area, round, simplify, Pt, M_PER_DEG};
+use super::geom::{lat_lng_rings, polygon_rings, round, Pt};
 use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
 use super::{Count, Ctx, DatasetResult, Outcome, Progress};
 
@@ -178,41 +178,7 @@ const MIN_AREA_M2: f64 = 1.0;
 /// [`SIMPLIFY_M`], holes after the outer ring. Empty when the outer ring is a
 /// sliver under [`MIN_AREA_M2`].
 fn simplified_rings(poly: &[Vec<Pt>]) -> Vec<Vec<[f64; 2]>> {
-    let Some(&[lng0, lat0]) = poly.first().and_then(|r| r.first()) else {
-        return Vec::new();
-    };
-    let scale = lat0.to_radians().cos();
-    let mut out_rings: Vec<Vec<[f64; 2]>> = Vec::new();
-    for (ri, ring) in poly.iter().enumerate() {
-        // Local metres, for both the simplification and the area test.
-        let mut m: Vec<Pt> = ring
-            .iter()
-            .map(|p| [(p[0] - lng0) * scale * M_PER_DEG, (p[1] - lat0) * M_PER_DEG])
-            .collect();
-        // A GeoJSON ring repeats its first point; simplify the open form so the
-        // closing vertex cannot anchor a corner that is not there.
-        if m.len() > 1 && m[0] == m[m.len() - 1] {
-            m.pop();
-        }
-        let kept = simplify(&m, SIMPLIFY_M);
-        if kept.len() < 3 {
-            continue;
-        }
-        if ri == 0 && ring_area(&kept) < MIN_AREA_M2 {
-            break;
-        }
-        out_rings.push(
-            kept.iter()
-                .map(|&[x, y]| {
-                    [
-                        round(lat0 + y / M_PER_DEG, 7),
-                        round(lng0 + x / (scale * M_PER_DEG), 7),
-                    ]
-                })
-                .collect(),
-        );
-    }
-    out_rings
+    lat_lng_rings(poly, SIMPLIFY_M, MIN_AREA_M2)
 }
 
 /// BGT `plus_type` → our point form. Unlisted objects are dropped rather than

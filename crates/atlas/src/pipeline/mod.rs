@@ -19,6 +19,7 @@
 pub mod bag;
 pub mod bgt;
 pub mod bgt_extract;
+pub mod brp;
 pub mod buildings;
 pub mod bv3d;
 pub mod dikes;
@@ -465,6 +466,16 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "bgt/coverage.json",
         typical_minutes: 1,
         run: bgt::run,
+    },
+    Dataset {
+        id: "brp",
+        label: "Crop parcels (BRP)",
+        description: "Every agricultural field with the crop grown on it this year, from the \
+                      RVO's Basisregistratie Gewaspercelen. The client paints each field in its \
+                      crop's tone instead of one generic green.",
+        coverage: "brp/coverage.json",
+        typical_minutes: 1,
+        run: brp::run,
     },
     Dataset {
         id: "terrain",

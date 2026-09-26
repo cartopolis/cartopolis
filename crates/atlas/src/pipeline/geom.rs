@@ -55,6 +55,49 @@ pub fn simplify(ring: &[Pt], eps: f64) -> Vec<Pt> {
         .collect()
 }
 
+/// A GeoJSON polygon (`[lng, lat]` rings) as `[lat, lng]` rings, each simplified
+/// to `eps` metres and rounded to 7 decimals (~1 cm), holes after the outer ring.
+/// Empty when the outer ring is a sliver under `min_area_m2`. The paving
+/// (`bgt.rs`) and the crop parcels (`brp.rs`) differ only in the two numbers.
+#[must_use]
+pub fn lat_lng_rings(poly: &[Vec<Pt>], eps: f64, min_area_m2: f64) -> Vec<Vec<[f64; 2]>> {
+    let Some(&[lng0, lat0]) = poly.first().and_then(|r| r.first()) else {
+        return Vec::new();
+    };
+    let scale = lat0.to_radians().cos();
+    let mut out_rings: Vec<Vec<[f64; 2]>> = Vec::new();
+    for (ri, ring) in poly.iter().enumerate() {
+        // Local metres, for both the simplification and the area test.
+        let mut m: Vec<Pt> = ring
+            .iter()
+            .map(|p| [(p[0] - lng0) * scale * M_PER_DEG, (p[1] - lat0) * M_PER_DEG])
+            .collect();
+        // A GeoJSON ring repeats its first point; simplify the open form so the
+        // closing vertex cannot anchor a corner that is not there.
+        if m.len() > 1 && m[0] == m[m.len() - 1] {
+            m.pop();
+        }
+        let kept = simplify(&m, eps);
+        if kept.len() < 3 {
+            continue;
+        }
+        if ri == 0 && ring_area(&kept) < min_area_m2 {
+            break;
+        }
+        out_rings.push(
+            kept.iter()
+                .map(|&[x, y]| {
+                    [
+                        round(lat0 + y / M_PER_DEG, 7),
+                        round(lng0 + x / (scale * M_PER_DEG), 7),
+                    ]
+                })
+                .collect(),
+        );
+    }
+    out_rings
+}
+
 /// Shoelace area of a ring, unsigned, in the ring's own units.
 #[must_use]
 pub fn ring_area(pts: &[Pt]) -> f64 {

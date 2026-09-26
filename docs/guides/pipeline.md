@@ -165,7 +165,7 @@ The ground stage is the first and the largest. Still to move off the client:
 
 * The surveyed pavements and the building records, which atlas's extractors
   (`crates/atlas/src/pipeline/bgt.rs`, `bag.rs`) serve as raw per-cell records for
-  the client to mesh, and the crop parcels, whose extractor is not written yet.
+  the client to mesh, and the crop parcels (`brp.rs`), likewise.
 * **Buildings**, which are deliberately *not* here yet: the Dutch 3D building data
   is already per-cell and already on our own host, so it fits, but a merged mesh
   cannot be clicked and the client needs per-building identity for selection, facade

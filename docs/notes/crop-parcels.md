@@ -1,16 +1,17 @@
 ---
 topic: crop-parcels
-triggers: [crops.rs, BRP, gewaspercelen, gewascode, RVO, brpgewas, "crop parcels", "farmland", SurfaceGroup::Crop, turf.rs, arable]
-updated: 2026-08-30
+triggers: [crops.rs, brp.rs, BRP, gewaspercelen, gewascode, RVO, brpgewas, "crop parcels", "farmland", SurfaceGroup::Crop, turf.rs, arable]
+updated: 2026-09-26
 ---
 
 # Crop parcels (RVO BRP)
 
 Every agricultural field in the Netherlands with the crop grown on it that year,
 from the RVO's Basisregistratie Gewaspercelen. `cartopolis_geo::crops` is the
-pure half, `systems::crops` the streaming half, and the extractor is not written
-yet — it belongs in atlas's `crates/atlas/src/pipeline/` (the TypeScript
-pipeline, where it was meant to go, never had one), so the layer draws nothing anywhere until it is.
+pure half, `systems::crops` the streaming half, and the extractor is atlas's
+`crates/atlas/src/pipeline/brp.rs` (dataset `brp`, written 2026-09-26; the
+TypeScript pipeline, where it was meant to go, never had one). The layer draws
+nothing for an area until that dataset has been run over it.
 
 ## The interface, and what it costs
 

@@ -12,10 +12,10 @@
 //! later on a schedule of its own. `map_geometry` awaits it beside the surveyed
 //! paving.
 //!
-//! **The extractor half is not written yet** — it belongs in atlas's `pipeline/`
-//! beside `bgt.rs` — and this side goes first — the same order the BGT's second round of collections used.
-//! A client that can name a form the host never sends is harmless; an extractor
-//! that sends one no client knows is silently dropped content.
+//! The extractor half is atlas's `pipeline/brp.rs`. This side went first — the
+//! same order the BGT's second round of collections used: a client that can
+//! name a form the host never sends is harmless; an extractor that sends one no
+//! client knows is silently dropped content.
 
 use cartopolis_geo::crops::{CropCategory, CropParcel};
 
@@ -51,9 +51,9 @@ pub fn brp_attribution() -> Option<String> {
     COVERAGE.attribution()
 }
 
-/// The categories the extractor can name, in wire order. The BRP extractor, when
-/// it is written in atlas's `pipeline/`, must mirror this list — **append, never
-/// renumber**.
+/// The categories the extractor can name, in wire order. The BRP extractor
+/// (`CATEGORIES` in atlas's `pipeline/brp.rs`) mirrors this list — **append,
+/// never renumber**.
 ///
 /// Position 5 is the register's `Landschapselement` and is deliberately **not
 /// drawable**. Sixty per cent of the features in the register are landscape

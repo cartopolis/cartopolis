@@ -8,7 +8,7 @@ updated: 2026-09-23
 
 The extractors that turn the Dutch open registers into the per-cell files the
 client streams live in `crates/atlas/src/pipeline/`: `water`, `buildings`,
-`lod22`, `bag`, `dikes` and `bgt`, plus `bv3d` (the Kadaster's 3D
+`lod22`, `bag`, `dikes`, `bgt` and `brp` (the crop parcels), plus `bv3d` (the Kadaster's 3D
 basisvoorziening, which `water` and `bgt` both read). They write
 `<dataset>/14/{x}/{y}.json` and a `coverage.json` per dataset into
 `/data/3dbag/site`, which Caddy serves as `3dbag.cartopolis.org`.
