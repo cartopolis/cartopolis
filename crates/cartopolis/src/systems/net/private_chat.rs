@@ -23,8 +23,6 @@
 //!   registered; earlier ones need the encrypted backup (recovery key).
 //! - **Groups.** The engine and the server both support more than two people;
 //!   only direct chats have a way to be started from the UI so far.
-//! - **A padlock.** The chat list says "private" in words until the icon font
-//!   gains a lock glyph with the Chats | World interface.
 
 use std::collections::BTreeMap;
 
@@ -83,6 +81,22 @@ pub fn state_key(server: &str, username: &str) -> String {
         clean(server),
         clean(&username.to_lowercase())
     )
+}
+
+/// How a private chat is labelled in lists: a padlock, then who it is with.
+/// The padlock is the whole of how the UI says "encrypted" at a glance, so it
+/// is on every private chat and on nothing else.
+#[must_use]
+pub fn private_label(peer: &str) -> String {
+    format!("{} {peer}", crate::systems::icons::LOCK)
+}
+
+/// Who a private chat is with, from its label ([`private_label`]).
+#[must_use]
+pub fn peer_of_label(label: &str) -> &str {
+    label
+        .strip_prefix(crate::systems::icons::LOCK)
+        .map_or(label, str::trim_start)
 }
 
 /// The chat-panel channel key for a private chat.
@@ -935,7 +949,7 @@ pub fn drive_private_chats(
         private.connected = true;
         engine.on_connected(&mut out);
         for (g, peer) in engine.chats() {
-            chat.open_channel(&channel_key(g), &format!("private · {peer}"));
+            chat.open_channel(&channel_key(g), &private_label(peer));
         }
         private.dirty = true;
     }
@@ -997,7 +1011,7 @@ pub fn drive_private_chats(
         match ev {
             Event::Opened { group, peer } => {
                 let key = channel_key(&group);
-                chat.open_channel(&key, &format!("private · {peer}"));
+                chat.open_channel(&key, &private_label(&peer));
                 chat.focus_channel(&key);
             }
             Event::Line {
@@ -1065,6 +1079,14 @@ pub fn drive_private_chats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_private_label_carries_the_padlock_and_gives_back_the_name() {
+        let label = private_label("bob");
+        assert!(label.starts_with(crate::systems::icons::LOCK));
+        assert_eq!(peer_of_label(&label), "bob");
+        assert_eq!(peer_of_label("Global"), "Global");
+    }
 
     #[test]
     fn a_channel_key_round_trips_to_its_group() {

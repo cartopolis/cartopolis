@@ -123,6 +123,8 @@ icons! {
     COPY = "\u{e14d}", "content_copy";
     /// A session key / token — and signing in with one.
     KEY = "\u{e73c}", "key";
+    /// A private, end-to-end encrypted chat (`systems::private_chat`).
+    LOCK = "\u{e899}", "lock";
     /// Leave the world and go back to the offline map.
     LOGOUT = "\u{e9ba}", "logout";
     /// Take a photo, or a screenshot slot.
@@ -277,7 +279,7 @@ icons! {
     /// A post box, a vending machine, a parcel locker.
     CABINET = "\u{e1a1}", "inventory_2";
     /// An information board.
-    BOARD = "\u{ef87}", "article";
+    BOARD = "\u{ef42}", "article";
     /// A fountain.
     FOUNTAIN = "\u{e798}", "water_drop";
     /// A sculpture on a plinth.

@@ -21,8 +21,8 @@ V20). That metadata is visible to the operator and is not hidden.
 
 Here (nearby), Global and public rooms are **not** encrypted and cannot be: the
 server picks who hears a nearby line by where people stand. The UI must say
-which kind a chat is. Until the icon font has a padlock, private channels are
-labelled "private · name" in words.
+which kind a chat is: every private chat's label starts with a padlock
+(`private_chat::private_label`, `icons::LOCK`), and nothing else carries one.
 
 ## Why openmls with the pure-Rust provider
 
@@ -76,9 +76,10 @@ the reported line server-side (`user-safety.md`) cannot work on sealed text.
   operator's additions are server config and never reach a client.
 - **Block and account deletion work** as for the rest of chat (blocks are
   enforced by the server, which sees the sender).
-- **Reports do not yet carry the reported private lines.** A report has to take
-  them from the reporter's device, ideally with message franking so they cannot
-  be forged. Not built.
+- **A report carries the reported private line from the reporter's device**:
+  the name menu on a private line opens the ordinary report with that line
+  attached, as it does for nearby chat. The server cannot check it was really
+  said. Message franking would make it checkable; not built.
 
 ## Points and real-location sharing ride inside the same sealed messages
 

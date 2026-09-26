@@ -629,8 +629,7 @@ pub fn render_chat_panel(
             });
 
             // Private chats: end-to-end encrypted, one per person
-            // (`systems::private_chat`). Said in words, "private", until the icon
-            // font has a padlock.
+            // (`systems::private_chat`), each labelled with a padlock.
             theme::section(ui, "Private chats");
             for (key, label) in &private {
                 ui.horizontal(|ui| {

@@ -87,7 +87,9 @@ fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> 
                             .channels
                             .iter()
                             .find(|c| c.key == share.channel)
-                            .map(|c| c.label.trim_start_matches("private · ").to_string())
+                            .map(|c| {
+                                crate::systems::private_chat::peer_of_label(&c.label).to_string()
+                            })
                             .unwrap_or_else(|| "a chat".into());
                         ui.horizontal(|ui| {
                             ui.label(
