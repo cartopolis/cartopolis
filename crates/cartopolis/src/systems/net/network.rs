@@ -34,6 +34,9 @@ pub struct AuthWriteback<'w> {
     /// here rather than in a system of its own — a second drain of one queue
     /// would race for the messages.
     voice: ResMut<'w, crate::systems::voice::VoiceState>,
+    /// Private-chat traffic, handed on to `private_chat::drive_private_chats`
+    /// for the same reason voice is decoded here: one drain of one queue.
+    private: ResMut<'w, crate::systems::private_chat::PrivateInbox>,
 }
 use crate::systems::avatar::AIRBORNE_EPS;
 use crate::systems::locomotion;
@@ -664,6 +667,12 @@ pub fn apply_network_snapshot(
     for (i, msg) in batch.into_iter().enumerate() {
         if matches!(msg, NetMessage::WorldSnapshot { .. }) && Some(i) != last_snapshot {
             skipped += 1;
+            continue;
+        }
+        // Before the match: a private-chat refusal is a `ServerError` whose 403
+        // would otherwise land in the prim-edit arm below and deselect a prim.
+        if crate::systems::private_chat::PrivateInbox::wants(&msg) {
+            auth.private.0.push(msg);
             continue;
         }
         match msg {

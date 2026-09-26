@@ -293,12 +293,13 @@ make it checked: nothing but a person keeps the two in step. Change an account
 field and change it there too. `docs/notes/hosted-simulator.md` has the
 deployment.
 
-This is a **Cargo workspace** with six crates:
+This is a **Cargo workspace** with seven crates:
 
 | Crate | Role | Notable deps |
 |-------|------|-------------|
 | `cartopolis_core` | Shared protocol types, `NetMessage`, tile/coordinate math | `serde`, `postcard`, `glam` |
 | `cartopolis_geo` (`crates/geo`) | Bevy-free map geodata: MVT decode/raster, road classes, tree scatter, the routing graph. ~6,900 lines and 60 tests that used to be recompiled and relinked behind the Bevy binary. **Nothing here may depend on `bevy`** — if a type needs a `Component` it belongs in `cartopolis`, and the pure part it wraps belongs here. Re-exported by `systems/mod.rs`, so client code still writes `systems::vector_tiles`. | `mvt-reader`, `tiny-skia`, `earcutr`, `image` — **no Bevy** |
+| `cartopolis_e2ee` (`crates/e2ee`) | End-to-end encrypted private chats: device keys, MLS groups, sealed messages, no I/O (`docs/notes/encrypted-chat.md`). The client's `systems::private_chat` wraps it. **The simulator must never link it outside its tests** — the server relays sealed bytes, and not containing the code that could open them is how that stays true. | `openmls` + `openmls_rust_crypto` (pure Rust: builds for Android and wasm) — **no Bevy** |
 | `simulator` | Headless TCP simulation server; SQLite authority; tick loop | `tokio`, `rusqlite`, `refinery` — **no Bevy** |
 | `cartopolis` | Bevy 0.19 client; rendering, ECS systems, UI | Bevy 0.19 + `big_space` (path dep), `egui` 0.35 |
 | `cartopolis_android` | The Android app: a `cdylib` owning `android_main`, plus `AndroidManifest.xml` and `build-apk.sh`. **Both its dependencies are target-gated**, so off Android the crate is empty — 8.4 s and a 4.3 MB artifact in a workspace build, not the second full static link of Bevy that a `cdylib` on `cartopolis`'s own `[lib]` would cost. "Empty" is not free and cannot be: a cdylib links std regardless. It also means `cargo check --workspace` proves nothing about the crate, which is why CI checks it for `aarch64-linux-android` separately. `docs/notes/android-build.md` | Bevy 0.19 + `cartopolis`, on `cfg(target_os = "android")` only |

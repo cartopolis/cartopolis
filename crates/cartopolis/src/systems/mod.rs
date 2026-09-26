@@ -63,7 +63,7 @@ pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
     transit_vehicles,
 };
-pub use net::{background, network, session, user_store, voice};
+pub use net::{background, network, private_chat, session, user_store, voice};
 pub use player::{
     avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, sit_pose, touch,
 };

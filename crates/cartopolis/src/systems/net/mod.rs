@@ -4,6 +4,9 @@
 /// foreground service).
 pub mod background;
 pub mod network;
+/// Private chats: this installation's encryption keys and the conversations
+/// they open (protocol 25).
+pub mod private_chat;
 pub mod session;
 pub mod user_store;
 /// Proximity voice: capture, the codec, and the playback of what arrives.

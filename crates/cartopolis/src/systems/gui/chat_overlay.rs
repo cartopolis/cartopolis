@@ -513,6 +513,7 @@ pub fn render_chat_transcript(
     let interactive = overlay.composing;
     let ctx = egui.ctx_mut().clone();
     let mut block_now: Option<String> = None;
+    let mut message_now: Option<String> = None;
     let mut open_report: Option<(String, Option<String>)> = None;
 
     egui::Area::new(egui::Id::new("chat_transcript"))
@@ -574,6 +575,9 @@ pub fn render_chat_transcript(
                                 &line.sender,
                                 Some(&line.body),
                                 |action| match action {
+                                    PersonAction::Message => {
+                                        message_now = Some(line.sender.clone())
+                                    }
                                     PersonAction::Block => block_now = Some(line.sender.clone()),
                                     PersonAction::Report(msg) => {
                                         open_report = Some((line.sender.clone(), msg))
@@ -593,6 +597,9 @@ pub fn render_chat_transcript(
             }
         });
 
+    if let Some(name) = message_now {
+        chat.private_start.push(name);
+    }
     if let Some(username) = block_now {
         if let Some(session) = online.as_ref() {
             session.send(
@@ -797,7 +804,20 @@ pub fn render_chat_composer(
         // The session is what *sends*, not what draws: a scripted `--ui chat`
         // capture has none, and a pill that refused to appear without one would
         // be the feature photographing as an empty screen.
-        if let (Some(session), Some(channel)) = (online.as_ref(), chat.channels.get(chat.active)) {
+        let private = chat
+            .channels
+            .get(chat.active)
+            .filter(|c| crate::systems::chat::ChatState::is_private(&c.key))
+            .map(|c| c.key.clone());
+        if let Some(key) = private {
+            // Sealed and sent by `systems::private_chat`. This branch comes first
+            // and returns nothing to the plain path: a private line must never
+            // reach `ChatSend`, where the server would read and store it.
+            let body = chat.input.trim().to_string();
+            chat.private_outbox.push((key, body));
+        } else if let (Some(session), Some(channel)) =
+            (online.as_ref(), chat.channels.get(chat.active))
+        {
             let scope = crate::systems::chat::scope_for(&channel.key, chat.shout);
             let body = chat.input.trim().to_string();
             session.send(

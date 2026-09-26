@@ -1328,6 +1328,9 @@ pub fn run() {
             utils::photo_store::THUMB_SUFFIX,
         )
         .await;
+        // Private-chat keys are read on the frame a session comes up, which
+        // cannot wait on IndexedDB either.
+        storage::preload(systems::private_chat::STATE_PREFIX, "").await;
         run_client();
     });
     #[cfg(not(target_arch = "wasm32"))]
@@ -2235,6 +2238,8 @@ fn run_client() {
     // launch, so it wins over the remembered session and is not written back.
     app.init_resource::<AuthIdentity>();
     app.init_resource::<systems::chat::ChatState>();
+    app.init_resource::<systems::private_chat::PrivateInbox>();
+    app.init_resource::<systems::private_chat::PrivateChats>();
     app.init_resource::<systems::chat_overlay::ChatOverlay>();
     app.init_resource::<systems::voice::VoiceState>();
     // Voice plays through the output device the soundscape already opened, as a
@@ -2635,6 +2640,9 @@ fn run_client() {
         (
             network::apply_network_snapshot,
             network::create_egui_texture_handles.after(network::apply_network_snapshot),
+            // After the network system has sorted this frame's private-chat
+            // traffic into the inbox it drains.
+            systems::private_chat::drive_private_chats.after(network::apply_network_snapshot),
             // ADR-029: derive geo-anchored prims' GridCell/Transform from the
             // current OSM anchor (and re-project on re-anchor) before meshing.
             systems::prim_geo::place_geo_prims

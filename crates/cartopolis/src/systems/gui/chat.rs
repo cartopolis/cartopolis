@@ -67,6 +67,16 @@ pub struct ChatState {
     pub report: Option<ReportDraft>,
     /// One-line feedback after a report is acknowledged.
     pub notice: Option<ChatNotice>,
+    /// People to open a private chat with, asked for this frame. Drained by
+    /// `systems::private_chat`, which owns the keys; left here so the panels
+    /// that ask need no handle on it.
+    pub private_start: Vec<String>,
+    /// Lines typed into private channels this frame: (channel key, text).
+    /// Drained by `systems::private_chat`, which seals and sends them — a
+    /// private line must never go out as a `ChatSend`.
+    pub private_outbox: Vec<(String, String)>,
+    /// The "private chat with…" field in the panel.
+    pub private_input: String,
 }
 
 /// A one-line answer to something the person just did.
@@ -142,6 +152,9 @@ impl Default for ChatState {
             blocked: Vec::new(),
             report: None,
             notice: None,
+            private_start: Vec::new(),
+            private_outbox: Vec::new(),
+            private_input: String::new(),
         }
     }
 }
@@ -158,6 +171,28 @@ impl ChatState {
             lines: Vec::new(),
         });
         self.channels.len() - 1
+    }
+
+    /// Make sure a channel exists under `label`. For channels whose name is not
+    /// in their key — a private chat's key is its group id, and the label is who
+    /// it is with (`systems::private_chat`).
+    pub fn open_channel(&mut self, key: &str, label: &str) {
+        let i = self.channel_index(key);
+        self.channels[i].label = label.to_string();
+    }
+
+    /// Point the composer at a channel, e.g. the private chat just opened.
+    pub fn focus_channel(&mut self, key: &str) {
+        if let Some(i) = self.channels.iter().position(|c| c.key == key) {
+            self.active = i;
+        }
+    }
+
+    /// Whether a channel is a private, end-to-end encrypted chat. Its lines go
+    /// through `systems::private_chat`, never `ChatSend`.
+    #[must_use]
+    pub fn is_private(key: &str) -> bool {
+        key.starts_with("dm:")
     }
 
     /// Forget a channel we have left, keeping the send scope on something that
@@ -308,8 +343,16 @@ pub fn render_chat_panel(
     let mut unblock_now: Option<String> = None;
     let mut leave_now: Option<String> = None;
     let mut open_report: Option<(String, Option<String>)> = None;
+    let mut message_now: Option<String> = None;
+    let mut focus_now: Option<String> = None;
     let blocked = chat.blocked.clone();
     let mut dismiss_notice = false;
+    let private: Vec<(String, String)> = chat
+        .channels
+        .iter()
+        .filter(|c| ChatState::is_private(&c.key))
+        .map(|c| (c.key.clone(), c.label.clone()))
+        .collect();
     // Every joined room, as (channel key, name). The two built-in channels are
     // not rooms and cannot be left.
     let rooms: Vec<(String, String)> = chat
@@ -394,6 +437,45 @@ pub fn render_chat_panel(
                 join_now = (join.clicked() || entered) && ready;
             });
 
+            // Private chats: end-to-end encrypted, one per person
+            // (`systems::private_chat`). Said in words, "private", until the icon
+            // font has a padlock.
+            theme::section(ui, "Private chats");
+            for (key, label) in &private {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::action_button(ui, "Write").clicked() {
+                            focus_now = Some(key.clone());
+                        }
+                    });
+                });
+            }
+            ui.horizontal(|ui| {
+                let field = crate::systems::text_touch::field(
+                    ui,
+                    egui::TextEdit::singleline(&mut chat.private_input)
+                        .desired_width(ui.available_width() * 0.55)
+                        .hint_text("Username"),
+                );
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let ready = !chat.private_input.trim().is_empty();
+                let start = crate::systems::theme::action_enabled_because(
+                    ui,
+                    ready,
+                    "Chat privately",
+                    "Type who to write to first",
+                );
+                if (start.clicked() || entered) && ready {
+                    message_now = Some(chat.private_input.trim().to_string());
+                }
+            });
+            theme::note(
+                ui,
+                "Only you and the people in a private chat can read it. The server passes it on \
+                 without being able to open it.",
+            );
+
             // Only once there is something in it. An empty "Blocked (0)" header on
             // every session is chrome that says nothing; the list is a place to
             // *undo* a block, and until one exists there is nothing to undo.
@@ -454,6 +536,9 @@ pub fn render_chat_panel(
                                 &line.sender,
                                 Some(&line.body),
                                 |action| match action {
+                                    PersonAction::Message => {
+                                        message_now = Some(line.sender.clone())
+                                    }
                                     PersonAction::Block => block_now = Some(line.sender.clone()),
                                     PersonAction::Report(msg) => {
                                         open_report = Some((line.sender.clone(), msg))
@@ -493,6 +578,14 @@ pub fn render_chat_panel(
         chat.drop_channel(&key);
     }
 
+    if let Some(name) = message_now {
+        chat.private_start.push(name);
+        chat.private_input.clear();
+    }
+    if let Some(key) = focus_now {
+        chat.focus_channel(&key);
+    }
+
     if dismiss_notice {
         chat.notice = None;
     }
@@ -524,6 +617,8 @@ pub fn render_chat_panel(
 
 /// What the person menu can ask for.
 pub enum PersonAction {
+    /// Open (or start) a private, end-to-end encrypted chat with them.
+    Message,
     Block,
     /// Report, carrying the line that prompted it when there is one.
     Report(Option<String>),
@@ -544,6 +639,10 @@ pub fn person_menu(
     response.context_menu(|ui| {
         ui.label(egui::RichText::new(sender).strong().color(theme::CREAM));
         ui.separator();
+        if ui.button("Message privately").clicked() {
+            act(PersonAction::Message);
+            ui.close();
+        }
         if ui.button("Block").clicked() {
             act(PersonAction::Block);
             ui.close();

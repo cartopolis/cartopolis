@@ -136,6 +136,11 @@ serde_json.workspace = true
 toml = "0.8"
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
+# Private chats (`systems::private_chat`). The only crate that can open a
+# sealed message; the simulator links it for tests only.
+cartopolis_e2ee = { path = "../e2ee" }
+# The private-chat state blob (`systems::private_chat`); already built for core.
+postcard = { workspace = true }
 bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
