@@ -752,6 +752,52 @@ pub(crate) async fn fetch_bag_text(cx: i64, cy: i64, part: BagPart) -> Result<St
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
     }
+    // **One download per file, however many ask.** `lod22` fetches a cell's
+    // buildings inside its own job while this module's stream asks for the same
+    // file, and on a cold start both miss the cache in the same instant: the
+    // "second request that is a cache hit" was a second full download (Deck,
+    // 2026-09-26: 52 BAG requests, 34 MB, for a 25-cell ring). A caller that finds
+    // the file already on its way waits for that answer instead.
+    let waiter = {
+        let mut flying = match BAG_IN_FLIGHT.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        match flying.get_mut(&key) {
+            Some(waiters) => {
+                let (tx, rx) = futures_channel::oneshot::channel();
+                waiters.push(tx);
+                Some(rx)
+            }
+            None => {
+                flying.insert(key.clone(), Vec::new());
+                None
+            }
+        }
+    };
+    if let Some(rx) = waiter {
+        return rx
+            .await
+            .unwrap_or_else(|_| Err("the shared BAG download was dropped".to_string()));
+    }
+    let answer = download_bag_text(cx, cy, part, &key).await;
+    let waiters = match BAG_IN_FLIGHT.lock() {
+        Ok(mut g) => g.remove(&key),
+        Err(p) => p.into_inner().remove(&key),
+    };
+    for tx in waiters.into_iter().flatten() {
+        let _ = tx.send(answer.clone());
+    }
+    answer
+}
+
+type BagWaiters = Vec<futures_channel::oneshot::Sender<Result<String, String>>>;
+
+/// The BAG files on their way, by cache key, with whoever else is waiting for each.
+static BAG_IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<HashMap<String, BagWaiters>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+async fn download_bag_text(cx: i64, cy: i64, part: BagPart, key: &str) -> Result<String, String> {
     let url = format!(
         "{}/bag/{}/{}/{}.{}",
         tdbag_url(),
@@ -762,7 +808,7 @@ pub(crate) async fn fetch_bag_text(cx: i64, cy: i64, part: BagPart) -> Result<St
     );
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
+    storage::put(storage::Namespace::Cache, key, text.as_bytes()).await;
     Ok(text)
 }
 
