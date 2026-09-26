@@ -71,6 +71,14 @@ use crate::systems::weather::WeatherState;
 /// angles, and the sun, sky and environment map put light back. Shaded, it lands
 /// around `#36495C`–`#415462`.
 ///
+/// **Past the ring the paint no longer stands in for it** (2026-09-26). The
+/// clipmap's vector-drawn tiles carry a water mask in their alpha and light those
+/// texels as this surface's far field (`WaterSeaState::far_water`,
+/// `ground_detail.wgsl`), so this constant now *is* the far water's colour and
+/// can be changed without re-matching anything there. What follows still holds
+/// for the paint itself, which remains what an image basemap, the globe tier and
+/// a tile drawn before the mask existed show.
+///
 /// That rendered tone is the number `vector_tiles::palette::WATER` is matched to,
 /// because the vector surfaces only stream in a ring around the camera and the
 /// paint has to take over at its edge without a step. Changing this means
@@ -109,10 +117,9 @@ use crate::systems::weather::WeatherState;
 ///
 /// The residual 8–9 levels are not closable by constants at all — the surface
 /// reflects *this* sky and the paint does not, so any single pair of numbers is
-/// matched at one time of day and drifts at every other. Closing it properly
-/// means the ring's edge stops being a hard line (fading the water surface out
-/// over its last cell), which is a change to the surface build and the shader,
-/// not to a colour.
+/// matched at one time of day and drifts at every other. That is what the far
+/// field above replaced: over a vector basemap the step measured at the ring's
+/// edge from 150 m went from 40–50 levels to about 2.
 const WATER_ALBEDO: Color = Color::srgb(0.12, 0.24, 0.30);
 
 /// Wind speed (m/s) at which the wave shaping is fully "blown up" — beyond this
@@ -369,7 +376,18 @@ pub struct WaterSeaState {
     /// and `WaterSeaState::material` already has a documented fallback for a cell
     /// that has no field at all.
     pub shading: bool,
+    /// Keeps `cartopolis::water_common` alive in `Assets<Shader>` — a shader
+    /// import module is only importable while something holds it.
+    _common: Handle<Shader>,
 }
+
+/// The shared water module both water shaders import (`water_common.wgsl`).
+const WATER_COMMON_WGSL: &str = include_str!("../../../../../assets/shaders/water_common.wgsl");
+
+/// Bevy's `reflectance` for water — not F0: `F0 = 0.16 · reflectance²`, and
+/// water's F0 is `((n-1)/(n+1))²` at n = 1.333, i.e. 0.0204. Shared by the
+/// surface and the clipmap's water past the ring.
+const WATER_REFLECTANCE: f32 = 0.3571;
 
 impl FromWorld for WaterSeaState {
     fn from_world(world: &mut World) -> Self {
@@ -377,6 +395,17 @@ impl FromWorld for WaterSeaState {
             world
                 .resource_mut::<Assets<Image>>()
                 .add(shore_image(&[u8::MAX], 1, "open water"));
+        // `water.wgsl` and `ground_detail.wgsl` both import it, so it has to be in
+        // `Assets<Shader>` before either pipeline composes. Compiled in rather
+        // than loaded, for the reason `atmosphere_patch` gives: on Android there
+        // is no asset directory to lose it in, and an import that is not there
+        // yet is a pipeline that waits.
+        let common = world
+            .resource_mut::<Assets<Shader>>()
+            .add(Shader::from_wgsl(
+                WATER_COMMON_WGSL,
+                "shaders/water_common.wgsl",
+            ));
         let s = sea_state(UNKNOWN_WIND, crate::quality::budget().water_octaves);
         Self {
             wave: s.0,
@@ -384,6 +413,7 @@ impl FromWorld for WaterSeaState {
             wind: s.2,
             octaves: s.3,
             open_water,
+            _common: common,
             // Matches `DataLayers::water_shading`'s own default, which is the
             // tier's `detail_layers`. `update_water_waves` corrects it on the first
             // frame either way; starting from the tier means a phone does not
@@ -394,6 +424,28 @@ impl FromWorld for WaterSeaState {
 }
 
 impl WaterSeaState {
+    /// What the surface draws once every wave it models has faded out — the
+    /// uniforms a clipmap tile's water texels are lit with past the ring
+    /// (`GroundDetailExtension::water_body` / `water_sea`).
+    ///
+    /// Derived from the same state the surface's own uniforms are, which is the
+    /// whole point: the ring's edge used to be a painted colour matched to the
+    /// lit surface by hand, at one time of day. `body` is the albedo less what
+    /// depth takes out of it (`surface.z`), in linear, plus the reflectance. The
+    /// roughness is the shader's own far field: with every octave retired, the
+    /// slope variance it folds into the GGX width is exactly `wave.x²` (that is
+    /// what `octave_norms` normalises to), so `α² = surface.x⁴ + wave.x²`.
+    #[must_use]
+    pub fn far_water(&self) -> (Vec4, Vec4) {
+        let albedo = WATER_ALBEDO.to_linear().to_vec3() * (1.0 - self.surface.z.clamp(0.0, 1.0));
+        let alpha_base = self.surface.x * self.surface.x;
+        let alpha = (alpha_base * alpha_base + self.wave.x * self.wave.x).sqrt();
+        (
+            albedo.extend(WATER_REFLECTANCE),
+            Vec4::new(alpha.sqrt().clamp(0.02, 1.0), self.wind.w, 1.0, 0.0),
+        )
+    }
+
     /// The material for one streamed cell: the shared sea state, plus this cell's
     /// own shore and bank fields and the frame to sample them in.
     pub fn material(
@@ -418,7 +470,7 @@ impl WaterSeaState {
                 // nearly all of what a water surface is. `water.wgsl` uses the
                 // same 0.0204 for the fresnel it does itself, so the body colour
                 // and the reflection cannot disagree about where the light went.
-                reflectance: 0.3571,
+                reflectance: WATER_REFLECTANCE,
                 // Same coplanar-ground ordering the other surface groups use; see
                 // `SurfaceGroup::depth_bias`.
                 depth_bias: crate::systems::vector_tiles::SurfaceGroup::Water.depth_bias(),
@@ -557,6 +609,7 @@ pub fn update_water_waves(
     dev: Res<crate::resources::DevPanelState>,
     mut state: ResMut<WaterSeaState>,
     mut materials: ResMut<Assets<WaterMaterial>>,
+    mut ground: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     mut applied: Local<Option<(f32, bool, f32)>>,
 ) {
     // The "Water shading" toggle (`DataLayers::water_shading`) flattens the sea to a
@@ -602,6 +655,22 @@ pub fn update_water_waves(
             material.extension.surface = surface;
             material.extension.wind = wind;
             material.extension.octaves = octaves;
+        }
+    }
+    // And the clipmap tiles' water past the ring, which is lit from the same
+    // state. Only the tiles carry a mask (`water_sea.z`); the other ground
+    // materials are left alone rather than marked changed and re-uploaded.
+    let (body, sea) = state.far_water();
+    let ids: Vec<_> = ground.ids().collect();
+    for id in ids {
+        if ground
+            .get(id)
+            .is_some_and(|m| m.extension.water_sea.z > 0.0)
+        {
+            if let Some(mut material) = ground.get_mut(id) {
+                material.extension.water_body = body;
+                material.extension.water_sea = sea;
+            }
         }
     }
     *applied = Some((wind_ms, shading, clear));
@@ -668,6 +737,7 @@ mod tests {
             octaves: Vec4::ZERO,
             open_water: Handle::default(),
             shading: true,
+            _common: Handle::default(),
         }
         .material(None, None, Vec2::ZERO, 1.0);
         let f0 = 0.16 * material.base.reflectance * material.base.reflectance;
@@ -676,6 +746,50 @@ mod tests {
             "reflectance {} gives F0 {f0}, water is 0.0204",
             material.base.reflectance
         );
+    }
+
+    /// The clipmap's water past the ring is only seamless if it is what the
+    /// surface draws there, so `far_water`'s roughness is checked against the
+    /// shader's own arithmetic with every octave retired: `α² = surface.x⁴ +
+    /// scale² · slope_ms · Σ amp²`, with `scale = wave.x · octaves.y`.
+    #[test]
+    fn the_far_field_is_the_surface_with_every_wave_retired() {
+        for wind in [0.0, 3.0, 7.0, 12.0, 20.0] {
+            for count in [4, 6, 8] {
+                let (wave, surface, wind_v, octaves) = sea_state(wind, count);
+                let state = WaterSeaState {
+                    wave,
+                    surface,
+                    wind: wind_v,
+                    octaves,
+                    open_water: Handle::default(),
+                    shading: true,
+                    _common: Handle::default(),
+                };
+                let chop = wind_v.z;
+                let mut amp = 1.0_f32;
+                let mut retired_sq = 0.0_f32;
+                for _ in 0..count {
+                    retired_sq += amp * amp;
+                    amp *= AMP_FALLOFF;
+                }
+                let scale = wave.x * octaves.y;
+                let slope_var = scale * scale * slope_mean_square(chop) * retired_sq;
+                let alpha_base = surface.x * surface.x;
+                let shader = (alpha_base * alpha_base + slope_var)
+                    .sqrt()
+                    .sqrt()
+                    .clamp(0.02, 1.0);
+                let (body, sea) = state.far_water();
+                assert!(
+                    (sea.x - shader).abs() < 1e-4,
+                    "wind {wind}, {count} octaves: far roughness {} vs the shader's {shader}",
+                    sea.x
+                );
+                assert_eq!(sea.z, 1.0, "a tile's water is switched on by this");
+                assert!((body.w - WATER_REFLECTANCE).abs() < f32::EPSILON);
+            }
+        }
     }
 
     #[test]

@@ -101,6 +101,13 @@ pub struct RoadDepthExtension {
     #[texture(104)]
     #[sampler(105)]
     pub basemap: Option<Handle<Image>>,
+    /// Always zero — see the type's own docs. The clipmap's water (106–107) is
+    /// here for the same reason the cross-fade is: a road carries no water mask,
+    /// and `water_sea.z == 0` keeps the shader off it.
+    #[uniform(106)]
+    pub water_body: Vec4,
+    #[uniform(107)]
+    pub water_sea: Vec4,
 }
 
 impl MaterialExtension for RoadDepthExtension {

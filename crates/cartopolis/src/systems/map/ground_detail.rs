@@ -84,6 +84,16 @@ pub struct GroundDetailExtension {
     #[texture(104)]
     #[sampler(105)]
     pub basemap: Option<Handle<Image>>,
+    /// The water surface's deep body colour (rgb, linear) and its `reflectance`
+    /// (w), for a clipmap tile's water texels —
+    /// [`WaterSeaState::far_water`](crate::systems::water::WaterSeaState::far_water).
+    #[uniform(106)]
+    pub water_body: Vec4,
+    /// x: the surface's roughness with every wave retired. y: how clear the sky
+    /// is. z: `1.0` on a clipmap tile, whose alpha carries the water mask, and
+    /// `0.0` on every other ground surface — the off switch.
+    #[uniform(107)]
+    pub water_sea: Vec4,
 }
 
 impl MaterialExtension for GroundDetailExtension {

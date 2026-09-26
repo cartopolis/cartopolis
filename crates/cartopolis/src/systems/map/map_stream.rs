@@ -1887,6 +1887,7 @@ pub fn apply_stream_textures(
     mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     detail: Res<crate::systems::ground_detail::GroundDetail>,
     origin: Res<crate::systems::ground_detail::GridCellOrigin>,
+    water: Res<crate::systems::water::WaterSeaState>,
     tiles: Query<
         Entity,
         (
@@ -2054,6 +2055,11 @@ pub fn apply_stream_textures(
                 // system on its next pass; until then `lod.w` is 0 and the tile is
                 // drawn exactly as it was before.
                 extension.basemap = Some(handle.clone());
+                // The tile's water texels are lit as the water surface's far
+                // field (`ground_detail.wgsl`), from the sea state as it is now;
+                // `water::update_water_waves` keeps them in step after. A tile
+                // with no mask in its alpha reads as all land and is untouched.
+                (extension.water_body, extension.water_sea) = water.far_water();
                 let mat = materials.add(crate::systems::ground_detail::GroundMaterial {
                     base: StandardMaterial {
                         base_color_texture: Some(handle),

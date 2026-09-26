@@ -4119,6 +4119,18 @@ fn veg_seed(cell: Cell) -> u64 {
 mod tests {
     use super::*;
 
+    /// `water.wgsl` fades its waves out toward the edge of this module's ring,
+    /// which it cannot ask about — so it carries the radius as a constant, and
+    /// this is what stops the two drifting. A shader that believed the ring was
+    /// bigger would put the fade's end past the last cell: waves right up to a
+    /// hard line again.
+    #[test]
+    fn the_water_shader_knows_the_ring_radius() {
+        let src = include_str!("../../../../../assets/shaders/water.wgsl");
+        let decl = format!("const RING_RADIUS_CELLS: f32 = {CELL_RADIUS}.0;");
+        assert!(src.contains(&decl), "water.wgsl must declare `{decl}`");
+    }
+
     /// A square deck, `span` metres on a side, with its south-west corner at the
     /// tile-local origin. Only the outline matters here — `lift_at` never touches
     /// the triangles.

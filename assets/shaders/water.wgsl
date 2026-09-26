@@ -62,10 +62,10 @@
     // `pbr_functions` does.
     mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, calculate_F0, main_pass_post_lighting_processing},
-    lighting::{EnvBRDFApprox, F_AB},
+    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 }
+#import cartopolis::water_common::{water_reflected, water_transmitted, sky_fallback}
 
 // x: RMS slope of the wave field (see `water::sea_state`). y: base wavelength in
 // metres. z: wave speed scalar (metres/second at the base wavelength).
@@ -117,28 +117,51 @@ const SHELTER_M: f32 = 30.0;
 /// Not zero: sheltered water is calm, not a mirror.
 const SHELTER_FLOOR: f32 = 0.22;
 
-/// How much brighter the water is where it meets the bank, before absorption
-/// takes the colour back out of it channel by channel.
-const SHALLOW_LIFT: f32 = 1.9;
+/// Cells either side of the camera's cell that `map_geometry` keeps live — its
+/// `CELL_RADIUS`, which a test there holds this to. The ring the surface fades
+/// out toward is this many cells out from the camera's cell, on every side.
+const RING_RADIUS_CELLS: f32 = 1.0;
 
-/// Distance from the bank at which each channel has been absorbed away.
+/// Width of the band inside the ring's edge over which the surface's waves, and
+/// its shore terms, give way to the flat far field the clipmap draws past it.
+/// A third of a z14 cell: the camera's cell is always whole inside the ring, so
+/// the band starts at least a kilometre out, where a ripple is a few pixels at
+/// most, and it is wide enough that the retirement reads as distance rather than
+/// as a line.
+const RING_FADE_M: f32 = 500.0;
+
+/// How fast the bed falls away from the bank: metres of depth per metre of
+/// distance from it. There is no bathymetry in a vector tile, so distance from
+/// the bank stands in for depth — which is also what the eye reads at the edge
+/// of water. 0.12 puts a metre of water eight metres out, a gently shelving
+/// lake shore; a quay-walled canal is steeper than that, and reads a little
+/// clearer than it is.
+const BED_SLOPE: f32 = 0.12;
+
+/// Deepest the stand-in bed goes. Past it the bed is out of sight in every
+/// channel (`WATER_EXTINCTION` × the shortest path takes it under 1 %), so the
+/// water is exactly its deep colour and the painted-tile seam `WATER_ALBEDO` is
+/// matched against is untouched.
+const BED_MAX_DEPTH_M: f32 = 6.0;
+
+/// Colour of the bed where it shows through: silt over sand, linear albedo.
+/// Close to the pale bank beside it on purpose, so the water's edge reads as the
+/// ground running on under the surface rather than as the end of a blue
+/// polygon.
+const BED_ALBEDO: vec3<f32> = vec3<f32>(0.20, 0.165, 0.10);
+
+/// Extinction per metre of path, red / green / blue, for **inland** water.
 ///
-/// This is Beer–Lambert wearing a cheaper coat. Clear water's extinction runs
-/// about 0.45 / 0.08 / 0.03 per metre for red / green / blue, which is why a
-/// shallow edge is pale, then turquoise, then green, then blue as it deepens —
-/// the single most recognisable thing about water in daylight, and the thing one
-/// scalar tint could never produce. Distance from the bank stands in for depth
-/// (there is no bathymetry in a vector tile), and a per-channel `smoothstep` in
-/// that distance stands in for `exp(-kd)`: three multiplies each instead of three
-/// transcendentals, exactly zero at the far end where an exponential only
-/// approaches it, and the widths are in metres a person can reason about.
-///
-/// The ratios are **compressed** against the real coefficients (1 : 5.6 : 15
-/// becomes 1 : 3.7 : 6.7). At true ratios the blue band runs 100 m from the bank,
-/// which over a canal is not a band at all — it is the whole canal.
-const SHALLOW_RED_M: f32 = 6.0;
-const SHALLOW_GREEN_M: f32 = 22.0;
-const SHALLOW_BLUE_M: f32 = 40.0;
+/// Clear ocean runs about 0.45 / 0.08 / 0.03, which is why a tropical shallow
+/// goes turquoise. Dutch lakes, rivers and canals are nothing like it: algae and
+/// dissolved peat take the blue out almost as fast as the red, visibility is a
+/// metre or two, and the colour that survives a little depth is green-brown —
+/// so a bank here shelves from sand through olive into the deep water's own
+/// colour, not through turquoise.
+const WATER_EXTINCTION: vec3<f32> = vec3<f32>(0.80, 0.42, 0.62);
+
+/// `1 / 1.333²`, for the refracted view angle under the surface.
+const INV_IOR_SQ: f32 = 0.5628;
 
 /// Height of the thing the bank field marks — a building, so two or three
 /// storeys. It sets *how far along the mirror* the surface looks for one: the
@@ -176,29 +199,11 @@ const BANK_SOFT_M: f32 = 12.0;
 /// sunlit brick quay is dark against the sky, not black.
 const BANK_MIRROR: f32 = 0.28;
 
-/// Water's reflectance at normal incidence, from its refractive index:
-/// `((1.333 - 1) / (1.333 + 1))²`. The one number the whole surface turns on —
-/// nearly everything you see looking at water is this times the sky.
-const WATER_F0: f32 = 0.0204;
-
 /// Half-width of the foam line against the bank, in metres, at full sea.
 /// Must stay comfortably above one shore-field texel (~1.4 m at z14): the field
 /// is the only thing that can place the line, and a band narrower than its own
 /// sampling grid simply never shows (measured: no bright band at all at 2.6 m).
 const SHORE_FOAM_M: f32 = 4.0;
-
-/// The clear sky overhead as a multiple of the haze colour at the horizon, for
-/// the reflection a view without an environment map stands in (see the
-/// `ENVIRONMENT_MAP` fallback in `fragment`). Linear. The haze's day colour
-/// `#B5BFD4` becomes a zenith of roughly `#779BDB`: ~60 % of the horizon's
-/// luminance and clearly blue, which is the shape of a real clear sky — darker
-/// and more saturated overhead, pale and bright along the horizon.
-const SKY_ZENITH_TINT: vec3<f32> = vec3<f32>(0.40, 0.63, 1.08);
-
-/// Where a fully rough surface lands between horizon (0) and zenith (1): the
-/// cosine-weighted mean of `sqrt(elevation sine)` over the upper hemisphere,
-/// 2·∫₀¹ √y · y dy = 0.8.
-const SKY_MEAN_T: f32 = 0.8;
 
 const TAU: f32 = 6.2831853;
 
@@ -516,7 +521,39 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // wall 6 m away has none. Damping the whole wave field by distance from the
     // bank is what makes the same shader serve a canal, a harbour basin and the
     // open river without three sets of numbers.
-    let shelter = mix(SHELTER_FLOOR, 1.0, smoothstep(0.0, SHELTER_M, shore_m));
+    // **Past the ring the flat map draws the water, so the surface has to arrive
+    // there looking like it.** The clipmap tiles light their water as this
+    // surface's far field — no waves, every octave's variance returned as
+    // roughness (`ground_detail.wgsl`) — so the colour matches across the ring's
+    // edge by construction. What cannot match is texture: at low altitude this
+    // surface's ripples are still resolved at the edge, and the tile beyond it is
+    // a smooth sheet — a hard square line of *texture* across open water (Deck,
+    // 2026-09-26, 150 m over the IJsselmeer).
+    //
+    // So over the last `RING_FADE_M` inside the ring the wave detail is retired
+    // early: the distance cut is divided by the fade, and at the edge every
+    // octave is past it. That is the octave fade's own mechanism, so what it
+    // leaves behind is exactly what the tile draws, not an approximation of it.
+    // The shore terms go with it (shelter, the bed, the bank in the mirror),
+    // because the tile has no shore field either.
+    //
+    // The ring is `map_geometry`'s: the `RING_RADIUS_CELLS` cells either side of
+    // the camera's cell. It is found here rather than sent — this cell's corner
+    // and size give the cell grid in the anchor-metre frame, and the offset
+    // between that frame and render space at this fragment puts the camera in it.
+    let cam = view.world_position.xz + (p - in.world_position.xz);
+    let cell_m = max(field.z, 1.0);
+    let cam_cell = field.xy + floor((cam - field.xy) / cell_m) * cell_m;
+    let ring_lo = cam_cell - RING_RADIUS_CELLS * cell_m;
+    let ring_hi = cam_cell + (RING_RADIUS_CELLS + 1.0) * cell_m;
+    let inside = min(p - ring_lo, ring_hi - p);
+    let ring = smoothstep(0.0, RING_FADE_M, min(inside.x, inside.y));
+
+    let shelter = mix(
+        1.0,
+        mix(SHELTER_FLOOR, 1.0, smoothstep(0.0, SHELTER_M, shore_m)),
+        ring,
+    );
 
     // Still water runs no octaves at all. `wave.x` is zero whenever Map ▸ Water
     // shading is off — which is the *default* on the tier with the least fill to
@@ -527,7 +564,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // waves that are not there stop being computed.
     var w: Waves;
     if wave.x > 0.0 {
-        w = waves_at(p, globals.time, dist * wave.w, shelter);
+        w = waves_at(p, globals.time, dist * wave.w / max(ring, 1e-4), shelter);
     } else {
         w.grad = vec2<f32>(0.0);
         w.height_lo = 0.0;
@@ -553,13 +590,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let alpha = sqrt(alpha_base * alpha_base + w.slope_var);
     pbr_input.material.perceptual_roughness = clamp(sqrt(alpha), 0.02, 1.0);
 
-    // Schlick against water's own F0. Written out as multiplies: the exponent is
-    // a constant 5, and `pow` is `exp2(y·log2(x))` on every adapter there is.
+    // Schlick against water's own F0 (`water_common`, shared with the flat map's
+    // water past the ring so the two cannot disagree about it).
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let grazing = 1.0 - n_dot_v;
-    let grazing2 = grazing * grazing;
-    let fresnel = grazing2 * grazing2 * grazing;
-    let reflected = WATER_F0 + (1.0 - WATER_F0) * fresnel;
+    let reflected = water_reflected(n_dot_v);
 
     // **Light that was not reflected is light that went in**, so the body colour
     // is worth `1 - F` and nothing else. This used to be the other way round —
@@ -573,21 +607,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // still what the depth takes out of the albedo looking straight down, which
     // is the number `vector_tiles::palette::WATER` was matched against (see
     // `WATER_ALBEDO`). Only the grazing end moves, and it moves onto the sky.
-    let body = (1.0 - reflected) * (1.0 - clamp(surface.z, 0.0, 1.0))
-        / (1.0 - WATER_F0);
+    let transmitted = water_transmitted(reflected);
+    let deep = pbr_input.material.base_color.rgb * (1.0 - clamp(surface.z, 0.0, 1.0));
 
-    // Absorption, channel by channel: red is gone within a few metres of the
-    // bank, green holds on, blue goes furthest. That progression — pale, then
-    // turquoise, then green, then blue — is what shallow water looks like, and no
-    // single tint can produce it. Distance from the bank stands in for depth,
-    // which is also the right proxy *visually*: what the eye reads is "this is
-    // the edge of the water", and that is exactly what the field measures.
-    let shallow = vec3<f32>(
-        1.0 - smoothstep(0.0, SHALLOW_RED_M, shore_m),
-        1.0 - smoothstep(0.0, SHALLOW_GREEN_M, shore_m),
-        1.0 - smoothstep(0.0, SHALLOW_BLUE_M, shore_m),
-    );
-    let body_tint = (vec3<f32>(1.0) + shallow * (SHALLOW_LIFT - 1.0)) * body;
+    // **Transparency without a transparent pass.** In the shallows the bed shows
+    // through: light goes down to it, is reflected by it, and comes back up,
+    // losing each channel to Beer–Lambert on the way. Blending the surface for
+    // real would move water into the transmissive pass (the coplanar-ground
+    // ordering this tree keeps being bitten by) and still need a depth prepass
+    // it no longer has to know how thick the water is; the shore field already
+    // says how far out the bank is, and that is the depth proxy.
+    //
+    // The path is down at roughly the sun's steepness and up along the
+    // *refracted* view ray, which is why a grazing look into shallow water sees
+    // less of the bed than one straight down. Refraction bounds it: under water
+    // the view ray is never flatter than ~41°, so the path cannot run away.
+    let depth_m = min(shore_m * BED_SLOPE, BED_MAX_DEPTH_M);
+    let cos_under = sqrt(1.0 - (1.0 - n_dot_v * n_dot_v) * INV_IOR_SQ);
+    let bed = exp(-WATER_EXTINCTION * (depth_m * (1.0 + 1.0 / cos_under)));
+    // Faded with the ring, like the waves: the tile past it has no bed to show.
+    let body_rgb = mix(deep, BED_ALBEDO, bed * ring) * transmitted;
 
     // **What a canal actually looks like is the far bank upside down in it.**
     // There are no scene reflections here and there cannot cheaply be — but the
@@ -625,6 +664,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let ahead = textureSample(bank_field, bank_sampler, bank_uv).r * field.w;
         mirror = mix(BANK_MIRROR, 1.0, smoothstep(0.0, BANK_SOFT_M, ahead));
     }
+    // And the bank in the mirror, which the tile past the ring has no field for.
+    mirror = mix(1.0, mirror, ring);
     // `F0 = 0.16 · reflectance²`, so a mirror worth `m` is a reflectance scaled by
     // its square root. Dimming F0 rather than the lit colour is what keeps the sun
     // glint out of a reflection that is looking at a wall — a building blocks the
@@ -632,7 +673,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.material.reflectance *= sqrt(mirror);
 
     pbr_input.material.base_color = vec4<f32>(
-        pbr_input.material.base_color.rgb * body_tint,
+        body_rgb,
         pbr_input.material.base_color.a,
     );
 
@@ -699,68 +740,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #ifndef ENVIRONMENT_MAP
 #ifdef DISTANCE_FOG
     // No environment map on this view, so the standard path has *no* reflection
-    // to give the surface at all — which is the state a phone-class adapter
-    // without `FLOAT32_FILTERABLE` renders in (`systems::sky_dome`), and any run
-    // with sky lighting switched off. Water with nothing in it is the one thing
-    // water can never look like, so stand in with the haze colour the ground
-    // already fades into: it is the horizon's own tone, it is driven by the same
-    // day/night clock, and a reflected ray off near-flat water is near-horizontal
-    // anyway. Weighted by the same fresnel the tint above uses, so it arrives at
-    // grazing angles and stays out of the head-on colour.
+    // to give the surface at all — which is what Android's `balanced` rung renders
+    // in (`sky_ibl` off), as do the laptop and any run with sky lighting switched
+    // off. Water with nothing in it is the one thing water can never look like, so
+    // `water_common::sky_fallback` stands in with a two-stop sky built on the haze
+    // colour the ground already fades into, and gives it the ambient's reflection
+    // where the sky is open. It carries the argument and the measurements; the
+    // flat map's water past the ring (`ground_detail.wgsl`) calls the same thing.
     //
     // Deliberately not compiled at all when there *is* an environment map: this
-    // would be a second reflection stacked on the real one.
-    //
-    // Weighted by the *same* `reflected` the body colour was taken out of, so the
-    // two halves of the surface still add up to one and switching an environment
-    // map on and off moves it as little as this approximation can manage.
-    //
-    // **The haze is only the bottom of the sky, so it is only the bottom of the
-    // mirror.** Reflecting that one colour at every angle made the reflection
-    // independent of the wave normal: a facet tilted toward the zenith and one
-    // tilted toward the horizon returned the same grey, the only thing left to
-    // show a wave was the fresnel weight, and the sea on every tier without an
-    // environment map (Android's included) read as grey corduroy with none of the
-    // sky's blue in it. So the reflected ray now looks up a two-stop sky: the
-    // haze at the horizon, `SKY_ZENITH_TINT` of it overhead. The zenith is derived
-    // from the haze rather than sent, so it follows the day/night clock and the
-    // dusk tint the fog already carries with no new uniform; only the cloud
-    // cover is sent (`wind.w`), because an overcast sky has no blue in it.
-    let sky_ray = reflect(-v, n);
-    let clear = clamp(wind.w, 0.0, 1.0);
-    let horizon_rgb = view_bindings::fog.base_color.rgb;
-    let zenith_rgb = mix(horizon_rgb, horizon_rgb * SKY_ZENITH_TINT, clear);
-    // A rough surface sums the sky over a wide lobe, so it drifts toward the
-    // sky's mean rather than picking out one elevation — the same reason the
-    // retired octaves come back as roughness rather than disappearing.
-    let rough = pbr_input.material.perceptual_roughness;
-    let sky_t = mix(sqrt(clamp(sky_ray.y, 0.0, 1.0)), SKY_MEAN_T, rough * rough);
-    // **And the ambient light's reflection gives way to the zenith.** Bevy's
-    // ambient is not diffuse-only: `ambient.wgsl` runs `EnvBRDFApprox` for a
-    // specular lobe too, one colour from every direction, and on these tiers it
-    // was raised to 4000 lux precisely so the water would have *some* sheen
-    // (`sky::AMBIENT_DAY_BRIGHTNESS_NO_IBL`). That flat whitish term is about a
-    // third of the reflection and was what washed the gradient out, so a facet
-    // looking up the sky loses it — recomputed with bevy's own functions on
-    // bevy's own inputs, so what comes out is exactly what went in.
-    //
-    // Only in proportion to `sky_t × clear`, and both halves were measured
-    // (Deck, 2026-09-26). Taken out everywhere, an overcast lake went dark navy
-    // under a grey sky, and a dusk lake went darker than the horizon it
-    // reflects: under cloud the ambient *is* the sky, and at the horizon it is
-    // the brightness the haze colour alone is short of. Scaled this way, a
-    // grazing reflection and an overcast one are left exactly as they were, and
-    // only the part of the mirror that holds the open sky overhead turns blue.
-    // Foam keeps all of it, being a rough white mat and not a mirror.
-    let f0 = calculate_F0(pbr_input.material.base_color.rgb, pbr_input.material.metallic, pbr_input.material.reflectance);
-    let ambient_spec = EnvBRDFApprox(f0, F_AB(rough, max(dot(pbr_input.N, pbr_input.V), 0.0001)))
-        * saturate(dot(f0, vec3(50.0 * 0.33)))
-        * lights.ambient_color.rgb
-        * pbr_input.diffuse_occlusion
-        * view.exposure;
+    // would be a second reflection stacked on the real one. Weighted by the *same*
+    // `reflected` the body colour was taken out of, so the two halves of the
+    // surface still add up to one; foam keeps the ambient, being a rough white mat
+    // and not a mirror. Only the cloud cover is sent (`wind.w`), because an
+    // overcast sky has no blue in it.
     out.color = vec4<f32>(
-        max(out.color.rgb - ambient_spec * (sky_t * clear * (1.0 - foam)), vec3<f32>(0.0))
-            + mix(horizon_rgb, zenith_rgb, sky_t) * reflected * mirror * (1.0 - foam),
+        sky_fallback(
+            out.color.rgb,
+            pbr_input,
+            view_bindings::fog.base_color.rgb,
+            wind.w,
+            reflect(-v, n).y,
+            reflected,
+            mirror * (1.0 - foam),
+            foam,
+        ),
         out.color.a,
     );
 #endif

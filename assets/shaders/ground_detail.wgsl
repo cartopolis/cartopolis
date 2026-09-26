@@ -28,11 +28,27 @@
 // rather than every frame, because unlike `building_windows` there are hundreds of
 // ground materials and not one.
 
+//
+// # The map's water is lit as water, not painted
+//
+// Past the streamed ring the only water is the clipmap tile's own pixels, and the
+// painted colour there used to be matched to the lit surface inside the ring by
+// hand (`WATER_ALBEDO`, `palette::WATER`) — at one time of day, and drifting at
+// every other. The tile now carries **which texels are water** in its alpha
+// (`tile_loader::TilePayload::decode`, 255 = land, so an image source with no mask
+// reads as land and is untouched), and those texels take the surface's deep body
+// colour, its far-field roughness and its reflectance from `water_body` /
+// `water_sea`, then the same fresnel and stand-in sky out of `water_common`. Past
+// the ring the surface has already retired every wave it can resolve, so a flat
+// sheet with that roughness *is* what it would draw there.
+
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
+    mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
 }
+#import cartopolis::water_common::{water_reflected, water_transmitted, sky_fallback}
 
 // x, z: the detail box's centre in render-space XZ. z: 1 / its half-extent, so
 // `(world_position.xz - centre) * inv_half` is −1..1 across it. w: strength, 0 when
@@ -48,6 +64,16 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var<uniform> lod: vec4<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var lod_basemap: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var lod_basemap_sampler: sampler;
+
+// The water surface's far field, for a clipmap tile's water texels
+// (`water::WaterSeaState::far_water`). rgb: the deep body colour — the surface's
+// albedo less what depth takes out of it, linear. w: its `reflectance`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> water_body: vec4<f32>;
+// x: perceptual roughness with every wave retired. y: how clear the sky is (1 =
+// cloudless), for the stand-in sky. z: 1 on a clipmap tile, 0 everywhere else —
+// the off switch, since the vector fills and the roads share this material and
+// carry no mask. w unused.
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var<uniform> water_sea: vec4<f32>;
 
 // Metres of rise per metre of run a fully-saturated texel stands for. Must equal
 // `terrain::DETAIL_SLOPE_RANGE`.
@@ -68,6 +94,13 @@ const LOD_BLEND_START: f32 = 0.65;
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // How much of this texel is water, read out of the tile's alpha **before**
+    // `alpha_discard` flattens it to 1 for an opaque material. 255 is land, so a
+    // mask-less image and every surface that is not a tile answer 0.
+    var water = 0.0;
+    if water_sea.z > 0.0 {
+        water = 1.0 - pbr_input.material.base_color.a;
+    }
     pbr_input.material.base_color =
         alpha_discard(pbr_input.material, pbr_input.material.base_color);
 
@@ -118,7 +151,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if detail.w > 0.0 {
         let d = (in.world_position.xz - detail.xy) * detail.z;
         let rim = max(abs(d.x), abs(d.y));
-        let w = detail.w * (1.0 - smoothstep(RIM_START, 1.0, rim));
+        // Water is level; the ground's kerbs and ruts are not in it.
+        let w = detail.w * (1.0 - smoothstep(RIM_START, 1.0, rim)) * (1.0 - water);
         if w > 0.0 {
             let uv = d * 0.5 + vec2<f32>(0.5, 0.5);
             let s = textureSampleLevel(detail_slope, detail_sampler, uv, 0.0).xy
@@ -134,8 +168,63 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
     }
 
+    // The water texels become the surface's far field: its deep body colour
+    // behind the same fresnel, its roughness with every wave retired, its
+    // reflectance. Blended by the mask, so a coastline's mip-softened edge is a
+    // blend rather than a stair.
+    var reflected = 0.0;
+    if water > 0.0 {
+        // **Water is level, whatever the tile under it is doing.** A relief tile's
+        // normal follows the terrain field at its own quad size, and beside a dike
+        // that is a slope spread over tens of metres of open water. Matte paint
+        // never showed it; a glossy surface reflecting the sky turned it into a
+        // dark band on one side of the Afsluitdijk and a bright one on the other
+        // (Deck, 2026-09-26). The mask-weighted blend keeps a coastline's land
+        // half on the ground's own normal.
+        let up = normalize(mix(pbr_input.N, vec3<f32>(0.0, 1.0, 0.0), water));
+        pbr_input.N = up;
+        pbr_input.world_normal = up;
+        reflected = water_reflected(dot(pbr_input.N, pbr_input.V));
+        pbr_input.material.base_color = vec4<f32>(
+            mix(
+                pbr_input.material.base_color.rgb,
+                water_body.rgb * water_transmitted(reflected),
+                water,
+            ),
+            pbr_input.material.base_color.a,
+        );
+        pbr_input.material.perceptual_roughness =
+            mix(pbr_input.material.perceptual_roughness, water_sea.x, water);
+        pbr_input.material.reflectance =
+            mix(pbr_input.material.reflectance, vec3<f32>(water_body.w), water);
+    }
+
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
+
+#ifndef ENVIRONMENT_MAP
+#ifdef DISTANCE_FOG
+    // The same stand-in sky the surface reflects where there is no environment
+    // map, weighted by the mask; the land part of a coastal texel keeps all of
+    // bevy's ambient.
+    if water > 0.0 {
+        out.color = vec4<f32>(
+            sky_fallback(
+                out.color.rgb,
+                pbr_input,
+                view_bindings::fog.base_color.rgb,
+                water_sea.y,
+                reflect(-pbr_input.V, pbr_input.N).y,
+                reflected,
+                water,
+                1.0 - water,
+            ),
+            out.color.a,
+        );
+    }
+#endif
+#endif
+
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

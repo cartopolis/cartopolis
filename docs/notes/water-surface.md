@@ -4,7 +4,9 @@ triggers: [water.wgsl, water.rs, "water looks", waves, ocean, sea, foam, whiteca
   glitter, "specular aliasing", Cox-Munk, "RMS slope", octave, LEAN, Toksvig,
   moire, corduroy, reflectance, F0, shore field, bank field, canal, "sea state",
   WaterSeaState, "shadow around the shore", "rim of shadow",
-  water_octaves, sky_ibl, "water looks grey", "no environment map"]
+  water_octaves, sky_ibl, "water looks grey", "no environment map", shallows,
+  transparency, "ring edge", far_water, water_common, "hole in the water",
+  "painted water", RENDERED_FORMAT]
 updated: 2026-09-26
 ---
 
@@ -315,6 +317,75 @@ Scaled, mean water colour over a fixed crop:
 | overcast, same view | 149, 160, 167 | 149, 160, 167 |
 | `lowsun` (17:12) | 199, 162, 128 | 198, 160, 125 |
 | `ringedge` (12 km, the palette seam) | 76, 105, 132 | 76, 105, 132 |
+
+The sky, the fresnel and the ambient give-way live in `water_common.wgsl`
+(`cartopolis::water_common`), registered as a shader library from
+`WaterSeaState::from_world` and imported by both water shaders below.
+
+## Shallows show their bed, without a transparent pass
+
+Inland water was opaque with a brightened edge, so a bank never read as seen
+through water. Distance from the bank stands in for depth (`BED_SLOPE` 0.12 m/m,
+capped at `BED_MAX_DEPTH_M`), and a silt-and-sand bed shows through by
+Beer–Lambert along a down-and-up path through the refracted view ray. The
+extinction is **inland**, not ocean: 0.80 / 0.42 / 0.62 per metre, because algae
+and peat take the blue out nearly as fast as the red, so a Dutch bank shelves
+through olive, not turquoise. Canals are never more than a few metres from a bank
+and so read murky olive-brown — asked about and kept, 2026-09-26. Real blending
+was rejected for the reasons in *Real reflections* below: the transmissive pass
+and a depth prepass. Deep water is untouched to the level, so the far field below
+still matches.
+
+## The ring's edge: the tiles are lit as the surface's far field
+
+Past the streamed ring the only water was the clipmap's *painted* colour, matched
+to the lit surface by hand at one time of day. Now `TilePayload::decode` packs the
+water mask into a vector tile's alpha as **land** coverage (255 = land, so an
+image source or a tile without a mask reads as land and is untouched), and
+`ground_detail.wgsl` lights those texels with the surface's deep body colour, its
+roughness with every octave retired (`α² = surface.x⁴ + wave.x²`, which a test
+checks against the shader's own series) and its reflectance, through the same
+`water_common` fresnel and sky. `WaterSeaState::far_water` supplies them, at
+spawn and whenever `update_water_waves` rewrites the sea. The disk cache key
+carries `RENDERED_FORMAT` so a tile drawn before the mask is not read back as
+all land.
+
+Three things this needed:
+
+* **Water texels are level.** A relief tile's normal follows the terrain at its
+  own quad size, and beside the Afsluitdijk that spreads the dike's slope over
+  tens of metres of open water. Matte paint never showed it; glossy water drew a
+  dark band on one side of the dike and a bright one on the other.
+* **The surface's waves fade out before the edge** (`RING_FADE_M`, 500 m inside
+  it). The distance cut is divided by the fade, so at the edge every octave is
+  retired and what is left *is* the tile's far field. The shore terms (shelter,
+  bed, bank mirror) fade with it. The ring is found in the shader from the cell's
+  own corner and size; `RING_RADIUS_CELLS` is held to `map_geometry::CELL_RADIUS`
+  by a test.
+* Measured at 150 m over the IJsselmeer: the colour step across the edge went
+  from 40–50 levels to about 2.
+
+## Water that is there, under the map
+
+Most "holes" in the surface are not missing geometry. A per-cell comparison of
+`tessellate_surfaces`' water area against the tile's mask agrees to the third
+decimal everywhere it was checked; the surface is drawn **under a clipmap tile**.
+The discriminating test is to discard the tile's water texels
+(`if water > 0.5 { discard; }` in `ground_detail.wgsl`): the hole turns into
+surface.
+
+* **Unregistered water** was flat at the median of its outline, and AHN has no
+  return off open water, so the field over it is filled from the banks — which
+  beside a dike rises metres above that median. The relief tiles follow the field
+  and stood through the sheet: square patches of basemap in the IJsselmeer. Fixed
+  by clamping to the ground drawn under it, the rule registered water already had
+  (`map_geometry::water_surface`).
+* **Still open, 2026-09-26:** small blotches near the Paterswoldsemeer's shore
+  show the same symptom *with* registered levels (`water_rings` 2924). Not missing
+  geometry; unexplained. With the lit far field they are nearly invisible, which
+  is also what makes them hard to find — check with the discard test, not by eye.
+  Note that above `FLAT_GROUND_OFF_M` (500 m) the flat ground, water included, is
+  never meshed at all, by design.
 
 ## Aim a test view with arithmetic
 

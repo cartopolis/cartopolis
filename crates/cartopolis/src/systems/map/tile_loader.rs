@@ -162,12 +162,43 @@ impl TilePayload {
                 let rgba =
                     vector_tiles::render_mvt_sized(&tile, sub, size, source_ground_m(source))
                         .map_err(|e| e.to_string())?;
-                image::RgbaImage::from_raw(size, size, rgba)
-                    .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
+                let mut img = image::RgbaImage::from_raw(size, size, rgba)
+                    .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
+                pack_land_alpha(&mut img, vector_tiles::ocean_mask_sized(&tile, sub, size));
+                Ok(img)
             }
         }
     }
 }
+
+/// Pack a flat tile's water mask into its alpha as **land** coverage: 255 is
+/// land, 0 is water.
+///
+/// Inverted against the globe's (`GlobeTilePayload::decode`, 255 = water) on
+/// purpose. `ground_detail.wgsl` lights the water texels as the water surface's
+/// far field, and every tile that carries no mask — an image source, a PNG from
+/// before the mask existed, a mask that failed — decodes opaque, i.e. 255. With
+/// 255 meaning land, "no mask" and "no water" are the same answer, and nothing
+/// that did not ask for it is ever drawn as a lake. A failed mask is logged and
+/// the tile keeps its painted water.
+fn pack_land_alpha(img: &mut image::RgbaImage, mask: Result<Vec<u8>, String>) {
+    match mask {
+        Ok(mask) if mask.len() == (img.width() * img.height()) as usize => {
+            for (px, m) in img.pixels_mut().zip(mask) {
+                px.0[3] = u8::MAX - m;
+            }
+        }
+        Ok(_) => tracing::warn!("water mask had the wrong size; tile keeps its painted water"),
+        Err(e) => tracing::warn!(error = %e, "water mask failed; tile keeps its painted water"),
+    }
+}
+
+/// What the pixels a [`rendered_cache_key`] entry holds *mean*, beyond what the
+/// renderer's fingerprint already covers. The fingerprint hashes
+/// `cartopolis_geo`, and the water mask is packed on this side of the seam
+/// (`pack_land_alpha`), so without this an entry drawn before the mask existed
+/// would be read back as a tile with no water in it.
+const RENDERED_FORMAT: u32 = 2;
 
 /// Where a finished basemap tile is kept on disk, or `None` when it is not kept.
 ///
@@ -198,7 +229,7 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     Some(format!(
-        "rendered/{}/{size}/{}/{}/{}-{:016x}.png",
+        "rendered/{}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
         env!("CARTO_RENDER_FINGERPRINT"),
         key.z,
         key.x,
