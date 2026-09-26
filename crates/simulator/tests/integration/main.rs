@@ -27,5 +27,6 @@ mod http_surface;
 mod model_library;
 mod moderation;
 mod presence;
+mod private_chat;
 mod scripting_wire;
 mod voice;

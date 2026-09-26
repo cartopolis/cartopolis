@@ -14,6 +14,7 @@ pub mod cli;
 pub mod config;
 pub mod content;
 pub mod db;
+pub mod e2ee;
 pub mod houses;
 pub mod http;
 pub mod library;

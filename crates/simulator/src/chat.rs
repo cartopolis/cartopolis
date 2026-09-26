@@ -97,6 +97,13 @@ struct Client {
     /// a set lookup rather than a second encode or a database round trip on a
     /// path that runs at conversation speed.
     blocked: HashSet<String>,
+    /// The account behind this connection (`accounts.id`), which is what a
+    /// private chat's membership is keyed by.
+    account: String,
+    /// This installation's private-chat device, once it has registered one
+    /// (`NetMessage::E2eeRegisterDevice`). A connection with none gets no
+    /// private-chat traffic: it has no keys to read it with.
+    device: Option<uuid::Uuid>,
 }
 
 impl Client {
@@ -158,6 +165,7 @@ impl ChatHub {
     pub fn register(
         &self,
         avatar_id: u64,
+        account: &str,
         blocked: impl IntoIterator<Item = String>,
     ) -> (mpsc::Receiver<Bytes>, mpsc::Receiver<Bytes>) {
         let (text, text_rx) = mpsc::channel(TEXT_BACKLOG);
@@ -169,9 +177,46 @@ impl ChatHub {
                 voice,
                 rooms: HashSet::new(),
                 blocked: blocked.into_iter().map(|u| u.to_lowercase()).collect(),
+                account: account.to_string(),
+                device: None,
             },
         );
         (text_rx, voice_rx)
+    }
+
+    /// Record the private-chat device a connection registered.
+    pub fn set_device(&self, avatar_id: u64, device: uuid::Uuid) {
+        if let Some(c) = locked(&self.clients).get_mut(&avatar_id) {
+            c.device = Some(device);
+        }
+    }
+
+    /// Deliver a private-chat log entry to every connected device of `accounts`.
+    ///
+    /// A block withholds a blocked sender's *messages* but never their
+    /// *commits*: a device that misses a membership change can read nothing in
+    /// that chat again (`e2ee`'s rule 4). The sender's own connection gets it
+    /// too — its other devices need it, and the sending device skips its own.
+    pub fn deliver_private(&self, accounts: &[String], from: &str, is_commit: bool, frame: &Bytes) {
+        let from = from.to_lowercase();
+        for (id, c) in locked(&self.clients).iter() {
+            if c.device.is_none() || !accounts.contains(&c.account) {
+                continue;
+            }
+            if !is_commit && c.blocked.contains(&from) {
+                continue;
+            }
+            c.enqueue(*id, Lane::Text, frame.clone());
+        }
+    }
+
+    /// Deliver a frame to whichever connection has registered `device`.
+    pub fn deliver_to_device(&self, device: uuid::Uuid, frame: &Bytes) {
+        for (id, c) in locked(&self.clients).iter() {
+            if c.device == Some(device) {
+                c.enqueue(*id, Lane::Text, frame.clone());
+            }
+        }
     }
 
     /// Add or remove a block for a live connection, so it takes effect on the
@@ -322,7 +367,7 @@ mod tests {
     #[test]
     fn a_client_that_never_reads_bounds_the_queue_instead_of_the_heap() {
         let hub = ChatHub::new();
-        let (_text_rx, mut voice_rx) = hub.register(1, []);
+        let (_text_rx, mut voice_rx) = hub.register(1, "a", []);
 
         // Ten times the backlog, from a "speaker" that is not this connection.
         for _ in 0..VOICE_BACKLOG * 10 {
@@ -343,7 +388,7 @@ mod tests {
     #[test]
     fn a_voice_flood_does_not_drop_text() {
         let hub = ChatHub::new();
-        let (mut text_rx, _voice_rx) = hub.register(1, []);
+        let (mut text_rx, _voice_rx) = hub.register(1, "a", []);
 
         for _ in 0..VOICE_BACKLOG * 4 {
             hub.deliver_to(1, "speaker", Lane::Voice, Bytes::from(vec![0u8; 1500]));
@@ -362,7 +407,7 @@ mod tests {
     #[test]
     fn room_membership_is_visible_to_the_sender_side() {
         let hub = ChatHub::new();
-        let (_t, _v) = hub.register(1, []);
+        let (_t, _v) = hub.register(1, "a", []);
         assert!(!hub.in_room(1, "room:secret"), "not joined");
         hub.set_room(1, "room:secret", true);
         assert!(hub.in_room(1, "room:secret"));
@@ -377,7 +422,7 @@ mod tests {
     #[test]
     fn a_blocked_speaker_reaches_none_of_the_three_channels() {
         let hub = ChatHub::new();
-        let (mut rx, _v) = hub.register(1, ["loud".to_string()]);
+        let (mut rx, _v) = hub.register(1, "a", ["loud".to_string()]);
         hub.set_room(1, "room:x", true);
 
         hub.deliver_all("loud", &Bytes::from_static(b"global"));
@@ -402,7 +447,7 @@ mod tests {
     #[test]
     fn blocking_ignores_case_on_both_sides() {
         let hub = ChatHub::new();
-        let (mut rx, _v) = hub.register(1, ["LoUd".to_string()]);
+        let (mut rx, _v) = hub.register(1, "a", ["LoUd".to_string()]);
         hub.deliver_all("lOuD", &Bytes::from_static(b"x"));
         assert!(rx.try_recv().is_err());
     }
@@ -412,7 +457,7 @@ mod tests {
     #[test]
     fn unblocking_lands_on_the_live_connection() {
         let hub = ChatHub::new();
-        let (mut rx, _v) = hub.register(1, ["loud".to_string()]);
+        let (mut rx, _v) = hub.register(1, "a", ["loud".to_string()]);
         hub.deliver_all("loud", &Bytes::from_static(b"before"));
         assert!(rx.try_recv().is_err());
 

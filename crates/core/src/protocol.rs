@@ -113,6 +113,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "AvatarStateDto.velocity — the world velocity the sim integrated this tick, so a receiver can extrapolate another avatar to the present and pick its gait from a speed rather than differencing smoothed positions",
     },
+    ProtocolRevision {
+        version: 25,
+        adr: "",
+        summary: "private chats — E2eeRegisterDevice / ClaimKeyPackages / CreateGroup / Send / Sync and their answers; the server orders and relays MLS-sealed bytes it cannot open (docs/notes/encrypted-chat.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -164,6 +169,18 @@ pub enum MessageKind {
     AccountDeleted = 33,
     Teleport = 34,
     SetPresence = 35,
+    E2eeRegisterDevice = 36,
+    E2eeDeviceStatus = 37,
+    E2eeClaimKeyPackages = 38,
+    E2eeKeyPackages = 39,
+    E2eeCreateGroup = 40,
+    E2eeGroupCreated = 41,
+    E2eeSend = 42,
+    E2eeSent = 43,
+    E2eeSync = 44,
+    E2eeSynced = 45,
+    E2eeDeliver = 46,
+    E2eeInvite = 47,
 }
 
 impl MessageKind {
@@ -204,6 +221,18 @@ impl MessageKind {
             33 => Some(Self::AccountDeleted),
             34 => Some(Self::Teleport),
             35 => Some(Self::SetPresence),
+            36 => Some(Self::E2eeRegisterDevice),
+            37 => Some(Self::E2eeDeviceStatus),
+            38 => Some(Self::E2eeClaimKeyPackages),
+            39 => Some(Self::E2eeKeyPackages),
+            40 => Some(Self::E2eeCreateGroup),
+            41 => Some(Self::E2eeGroupCreated),
+            42 => Some(Self::E2eeSend),
+            43 => Some(Self::E2eeSent),
+            44 => Some(Self::E2eeSync),
+            45 => Some(Self::E2eeSynced),
+            46 => Some(Self::E2eeDeliver),
+            47 => Some(Self::E2eeInvite),
             _ => None,
         }
     }
@@ -874,6 +903,127 @@ pub enum NetMessage {
     /// snapshot is the resynchronisation — there is no catch-up and no ack, for
     /// the same reason `Teleport` has none: the next snapshot is the whole state.
     SetPresence { request_id: u32, active: bool },
+
+    // ── Private chats (protocol 25, `docs/notes/encrypted-chat.md`) ──────────
+    //
+    // Everything below carries *sealed* bytes. The server is the MLS delivery
+    // service: it keeps each device's one-use key packages, an ordered log per
+    // chat, and who is in which chat so it knows whom to deliver to. It cannot
+    // open any of it, and `cartopolis_simulator` does not link the crate that
+    // could. What it does see is who talks to whom, when, and how much.
+    /// Client registers this installation's device for its account, and tops
+    /// up its stock of key packages (each can be used once, to add this device
+    /// to one chat). Idempotent: sent on every connect.
+    E2eeRegisterDevice {
+        request_id: u32,
+        device: Uuid,
+        key_packages: Vec<Vec<u8>>,
+    },
+    /// Server: how many unused key packages this device has left, so the
+    /// client knows how many to make next time.
+    E2eeDeviceStatus { request_id: u32, key_packages: u32 },
+    /// Client asks for one key package per device of `username`, to add them to
+    /// a chat. Each package handed out is deleted: it opens one invitation.
+    /// Asking for your own username returns your *other* devices.
+    E2eeClaimKeyPackages { request_id: u32, username: String },
+    /// Server: the packages, one per device that had one left. A device with
+    /// none left is simply absent — it can be added later, when it tops up.
+    E2eeKeyPackages {
+        request_id: u32,
+        username: String,
+        packages: Vec<E2eeKeyPackage>,
+    },
+    /// Client registers a new chat's id with the server, with the sender as
+    /// its only member. `direct_with` names the other person for a direct
+    /// chat, so the server can refuse a second direct chat between the same
+    /// two accounts and point at the first instead.
+    E2eeCreateGroup {
+        request_id: u32,
+        group: Vec<u8>,
+        direct_with: Option<String>,
+    },
+    /// Server: the chat exists. `existing` is set when a direct chat between
+    /// these two people was already there; the client then uses that one.
+    E2eeGroupCreated {
+        request_id: u32,
+        group: Vec<u8>,
+        existing: Option<Vec<u8>>,
+    },
+    /// Client appends a sealed entry to a chat's log.
+    ///
+    /// A `commit` (a membership change) is accepted only if `epoch` is the
+    /// chat's current epoch; the second of two simultaneous commits is refused
+    /// and its sender retries after catching up. That is the whole of the
+    /// server's part in keeping everyone's view of the chat identical.
+    E2eeSend {
+        request_id: u32,
+        group: Vec<u8>,
+        epoch: u64,
+        commit: bool,
+        message: Vec<u8>,
+        /// For a commit that adds people: the invitation and whom it is for.
+        welcome: Option<E2eeWelcome>,
+    },
+    /// Server: the entry's place in the log, or why it was refused.
+    E2eeSent {
+        request_id: u32,
+        group: Vec<u8>,
+        seq: Option<u64>,
+        refused: Option<String>,
+    },
+    /// Client asks for everything it has not seen: entries after each cursor,
+    /// and any invitations waiting for this device. An invitation stops being
+    /// resent once its chat appears in `cursors` (the device has joined).
+    E2eeSync {
+        request_id: u32,
+        cursors: Vec<E2eeCursor>,
+    },
+    /// Server: the end of a sync's replay. Everything before it has been sent.
+    E2eeSynced { request_id: u32 },
+    /// Server: one log entry, live or replayed. The client skips entries its own
+    /// device wrote, and processes the rest strictly in `seq` order.
+    E2eeDeliver {
+        group: Vec<u8>,
+        seq: u64,
+        sender: String,
+        device: Uuid,
+        sent_at_ms: u64,
+        commit: bool,
+        message: Vec<u8>,
+    },
+    /// Server: an invitation for this device. Join it, then read the chat's log
+    /// from after `after`, the commit that added this device.
+    E2eeInvite {
+        group: Vec<u8>,
+        from: String,
+        after: u64,
+        welcome: Vec<u8>,
+    },
+}
+
+/// One device's key package, as handed out by [`NetMessage::E2eeKeyPackages`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct E2eeKeyPackage {
+    pub device: Uuid,
+    pub bytes: Vec<u8>,
+}
+
+/// An invitation riding on a commit ([`NetMessage::E2eeSend`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct E2eeWelcome {
+    /// The devices it is addressed to (the ones whose key packages were used).
+    pub devices: Vec<Uuid>,
+    /// The accounts those devices belong to, which become members of the chat
+    /// for delivery purposes. The server checks each device belongs to one.
+    pub members: Vec<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// "I have read chat `group` up to and including `after`."
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct E2eeCursor {
+    pub group: Vec<u8>,
+    pub after: u64,
 }
 
 /// Why a person is being reported. A closed list rather than free text: it is
@@ -1007,6 +1157,18 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::AccountDeleted => MessageKind::AccountDeleted,
         NetMessage::Teleport { .. } => MessageKind::Teleport,
         NetMessage::SetPresence { .. } => MessageKind::SetPresence,
+        NetMessage::E2eeRegisterDevice { .. } => MessageKind::E2eeRegisterDevice,
+        NetMessage::E2eeDeviceStatus { .. } => MessageKind::E2eeDeviceStatus,
+        NetMessage::E2eeClaimKeyPackages { .. } => MessageKind::E2eeClaimKeyPackages,
+        NetMessage::E2eeKeyPackages { .. } => MessageKind::E2eeKeyPackages,
+        NetMessage::E2eeCreateGroup { .. } => MessageKind::E2eeCreateGroup,
+        NetMessage::E2eeGroupCreated { .. } => MessageKind::E2eeGroupCreated,
+        NetMessage::E2eeSend { .. } => MessageKind::E2eeSend,
+        NetMessage::E2eeSent { .. } => MessageKind::E2eeSent,
+        NetMessage::E2eeSync { .. } => MessageKind::E2eeSync,
+        NetMessage::E2eeSynced { .. } => MessageKind::E2eeSynced,
+        NetMessage::E2eeDeliver { .. } => MessageKind::E2eeDeliver,
+        NetMessage::E2eeInvite { .. } => MessageKind::E2eeInvite,
     }
 }
 
@@ -1031,6 +1193,16 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::DeleteAccount { request_id, .. } => *request_id,
         NetMessage::Teleport { request_id, .. } => *request_id,
         NetMessage::SetPresence { request_id, .. } => *request_id,
+        NetMessage::E2eeRegisterDevice { request_id, .. } => *request_id,
+        NetMessage::E2eeDeviceStatus { request_id, .. } => *request_id,
+        NetMessage::E2eeClaimKeyPackages { request_id, .. } => *request_id,
+        NetMessage::E2eeKeyPackages { request_id, .. } => *request_id,
+        NetMessage::E2eeCreateGroup { request_id, .. } => *request_id,
+        NetMessage::E2eeGroupCreated { request_id, .. } => *request_id,
+        NetMessage::E2eeSend { request_id, .. } => *request_id,
+        NetMessage::E2eeSent { request_id, .. } => *request_id,
+        NetMessage::E2eeSync { request_id, .. } => *request_id,
+        NetMessage::E2eeSynced { request_id } => *request_id,
         _ => 0,
     }
 }
@@ -1446,7 +1618,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 34] = [
+        const ALL: [MessageKind; 46] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -1481,6 +1653,18 @@ mod tests {
             AccountDeleted,
             Teleport,
             SetPresence,
+            E2eeRegisterDevice,
+            E2eeDeviceStatus,
+            E2eeClaimKeyPackages,
+            E2eeKeyPackages,
+            E2eeCreateGroup,
+            E2eeGroupCreated,
+            E2eeSend,
+            E2eeSent,
+            E2eeSync,
+            E2eeSynced,
+            E2eeDeliver,
+            E2eeInvite,
         ];
         for k in ALL {
             assert_eq!(
@@ -1494,7 +1678,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(SetPresence as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(E2eeInvite as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

@@ -71,6 +71,7 @@ refinery = { workspace = true }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -88,6 +89,10 @@ tempfile = "3.0"
 # A WebSocket *client*, for the test that proves the browser carrier reaches the
 # same handshake the TCP one does. Test-only: the server half is axum's.
 tokio-tungstenite.workspace = true
+# Real encrypting clients for the private-chat suite, so it proves the server
+# relays what MLS devices actually produce. Test-only, and it must stay that
+# way: the server binary does not link the code that could open a message.
+cartopolis_e2ee = { path = "../e2ee" }
 
 [lints]
 workspace = true

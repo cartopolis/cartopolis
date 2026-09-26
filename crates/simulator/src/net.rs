@@ -35,6 +35,12 @@ const VOICE_CHANNEL: &str = "voice:local";
 const MAX_VOICE_BYTES: usize = 1500;
 const MIN_VOICE_INTERVAL: Duration = Duration::from_millis(15);
 
+/// Private chats: the least time between two key-package claims from one
+/// connection. Each claim deletes a package from somebody else's stock, so an
+/// unthrottled loop could leave a person impossible to add to a chat until they
+/// next connect and top up. A person starting chats never comes near this.
+const MIN_CLAIM_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Longest username the moderation messages will act on.
 ///
 /// Same reasoning as `MAX_ROOM_LEN`: `SetBlocked`/`ReportUser` carry a `String`
@@ -465,7 +471,7 @@ pub async fn handle_connection<T: FrameTransport>(
     // strings into a `HashSet`, against a `ChatSend` path that would otherwise
     // rebuild it at typing speed.
     let filter = config.moderation_filter();
-    let (mut chat_rx, mut voice_rx) = chat.register(avatar_id, blocked.clone());
+    let (mut chat_rx, mut voice_rx) = chat.register(avatar_id, &principal_key, blocked.clone());
     let blocked_frame = encode_app_frame(&NetMessage::BlockedList {
         usernames: blocked.clone(),
     })?;
@@ -545,6 +551,15 @@ pub async fn handle_connection<T: FrameTransport>(
     // everything else are delivered to an idle client unchanged, which is the
     // entire point of holding the connection open.
     let mut presence_active = true;
+
+    // This connection's private-chat device, once registered (protocol 25). Every
+    // other private-chat message is ignored until it is: the server keys
+    // invitations and cursors by device, and a connection with none has no keys
+    // to read anything with anyway.
+    let mut e2ee_device: Option<uuid::Uuid> = None;
+    let mut last_claim = Instant::now()
+        .checked_sub(MIN_CLAIM_INTERVAL)
+        .unwrap_or_else(Instant::now);
 
     let mut outcome: anyhow::Result<()> = Ok(());
     loop {
@@ -1258,6 +1273,157 @@ pub async fn handle_connection<T: FrameTransport>(
                                         framed.send(Bytes::from(frame)).await?;
                                     }
                                 }
+                            }
+                            // ── Private chats (protocol 25). `e2ee` holds the rules;
+                            // these arms only translate and deliver.
+                            NetMessage::E2eeRegisterDevice { request_id, device, key_packages } => {
+                                let result = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::e2ee::register_device(&c, &principal_key, device, &key_packages)
+                                };
+                                match result {
+                                    Ok(left) => {
+                                        e2ee_device = Some(device);
+                                        chat.set_device(avatar_id, device);
+                                        let frame = encode_app_frame(&NetMessage::E2eeDeviceStatus { request_id, key_packages: left })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                    Err(refusal) => {
+                                        let frame = encode_app_frame(&NetMessage::ServerError {
+                                            request_id, code: 403, message: refusal.to_string(),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                }
+                            }
+                            NetMessage::E2eeClaimKeyPackages { request_id, username: subject } => {
+                                if e2ee_device.is_none() || last_claim.elapsed() < MIN_CLAIM_INTERVAL {
+                                    return Ok(());
+                                }
+                                last_claim = Instant::now();
+                                let subject = subject.trim().to_string();
+                                // Your own name means "my other devices".
+                                let except = if subject.eq_ignore_ascii_case(&display_name) { e2ee_device } else { None };
+                                let packages = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::e2ee::claim_key_packages(&c, &subject, except).unwrap_or_default()
+                                };
+                                let frame = encode_app_frame(&NetMessage::E2eeKeyPackages {
+                                    request_id,
+                                    username: subject,
+                                    packages: packages
+                                        .into_iter()
+                                        .map(|(device, bytes)| cartopolis_core::E2eeKeyPackage { device, bytes })
+                                        .collect(),
+                                })?;
+                                framed.send(Bytes::from(frame)).await?;
+                            }
+                            NetMessage::E2eeCreateGroup { request_id, group, direct_with } => {
+                                if e2ee_device.is_none() {
+                                    return Ok(());
+                                }
+                                let result = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::e2ee::create_group(&c, &principal_key, &group, direct_with.as_deref())
+                                };
+                                let frame = match result {
+                                    Ok(existing) => encode_app_frame(&NetMessage::E2eeGroupCreated { request_id, group, existing })?,
+                                    Err(refusal) => encode_app_frame(&NetMessage::ServerError {
+                                        request_id, code: 409, message: refusal.to_string(),
+                                    })?,
+                                };
+                                framed.send(Bytes::from(frame)).await?;
+                            }
+                            NetMessage::E2eeSend { request_id, group, epoch, commit, message, welcome } => {
+                                let Some(device) = e2ee_device else { return Ok(()) };
+                                let result = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::e2ee::append(
+                                        &c,
+                                        &principal_key,
+                                        &display_name,
+                                        device,
+                                        &group,
+                                        epoch,
+                                        commit,
+                                        &message,
+                                        welcome.as_ref().map(|w| crate::e2ee::WelcomeFor {
+                                            devices: &w.devices,
+                                            members: &w.members,
+                                            bytes: &w.bytes,
+                                        }),
+                                        now_millis(),
+                                    )
+                                };
+                                match result {
+                                    Ok(appended) => {
+                                        let ack = encode_app_frame(&NetMessage::E2eeSent {
+                                            request_id, group: group.clone(), seq: Some(appended.entry.seq), refused: None,
+                                        })?;
+                                        framed.send(Bytes::from(ack)).await?;
+                                        let e = appended.entry;
+                                        let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeDeliver {
+                                            group: e.group, seq: e.seq, sender: e.sender_name, device: e.device,
+                                            sent_at_ms: e.sent_at_ms, commit: e.is_commit, message: e.message,
+                                        })?);
+                                        chat.deliver_private(&appended.members, &display_name, commit, &frame);
+                                        for inv in appended.invites {
+                                            let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeInvite {
+                                                group: inv.group, from: inv.from, after: inv.after, welcome: inv.welcome,
+                                            })?);
+                                            chat.deliver_to_device(inv.device, &frame);
+                                        }
+                                    }
+                                    Err(refusal) => {
+                                        let frame = encode_app_frame(&NetMessage::E2eeSent {
+                                            request_id, group, seq: None, refused: Some(refusal.to_string()),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                }
+                            }
+                            NetMessage::E2eeSync { request_id, cursors } => {
+                                let Some(device) = e2ee_device else { return Ok(()) };
+                                let cursors: Vec<(Vec<u8>, u64)> =
+                                    cursors.into_iter().map(|c| (c.group, c.after)).collect();
+                                let result = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    // Read fresh rather than from `blocked_lower`, the list
+                                    // at connect: a block made since must hold on the
+                                    // replay too.
+                                    let blocked: std::collections::HashSet<String> =
+                                        crate::db::blocked_usernames(&c, &principal_key)
+                                            .unwrap_or_default()
+                                            .into_iter()
+                                            .map(|u| u.to_lowercase())
+                                            .collect();
+                                    crate::e2ee::sync(&c, &principal_key, device, &cursors, &blocked)
+                                };
+                                let (entries, invites) = result.unwrap_or_default();
+                                for e in entries {
+                                    let frame = encode_app_frame(&NetMessage::E2eeDeliver {
+                                        group: e.group, seq: e.seq, sender: e.sender_name, device: e.device,
+                                        sent_at_ms: e.sent_at_ms, commit: e.is_commit, message: e.message,
+                                    })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                }
+                                for inv in invites {
+                                    let frame = encode_app_frame(&NetMessage::E2eeInvite {
+                                        group: inv.group, from: inv.from, after: inv.after, welcome: inv.welcome,
+                                    })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                }
+                                let done = encode_app_frame(&NetMessage::E2eeSynced { request_id })?;
+                                framed.send(Bytes::from(done)).await?;
+                            }
+                            NetMessage::E2eeDeviceStatus { .. }
+                            | NetMessage::E2eeKeyPackages { .. }
+                            | NetMessage::E2eeGroupCreated { .. }
+                            | NetMessage::E2eeSent { .. }
+                            | NetMessage::E2eeSynced { .. }
+                            | NetMessage::E2eeDeliver { .. }
+                            | NetMessage::E2eeInvite { .. } => {
+                                tracing::debug!("ignored server-to-client message from client");
                             }
                             NetMessage::PrimRemoved { .. }
                             | NetMessage::WorldSnapshot { .. }
