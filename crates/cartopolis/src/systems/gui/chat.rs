@@ -774,7 +774,9 @@ mod tests {
         let pins = chat.world_points();
         assert_eq!(pins.len(), 1);
         assert_eq!(pins[0].0.latitude, 53.1);
-        assert_eq!(pins[0].1, "bob: here");
+        // Numbered as the thread's card is, and named by the place (or, with no
+        // name, by the line that sent it).
+        assert_eq!(pins[0].1, "1  here");
     }
 
     /// Lines already in the scrollback when a block is made must disappear too —
