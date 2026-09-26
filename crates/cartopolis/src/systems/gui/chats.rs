@@ -450,14 +450,16 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
         } else {
             row.unread.to_string()
         };
-        let g = p.layout_no_wrap(text, egui::FontId::proportional(11.5), theme::INK);
+        // Brand orange with white, as the first mockups drew it (`.badge.b`):
+        // something new for you is the one thing in the list worth the colour.
+        let g = p.layout_no_wrap(text, egui::FontId::proportional(11.5), egui::Color32::WHITE);
         let pill = egui::Rect::from_min_size(
             egui::pos2(rect.right() - 8.0 - g.size().x - 14.0, rect.top() + 38.0),
             egui::vec2(g.size().x + 14.0, 19.0),
         );
-        p.rect_filled(pill, egui::CornerRadius::same(10), theme::ACCENT);
+        p.rect_filled(pill, egui::CornerRadius::same(10), theme::BRAND);
         let gs = g.size();
-        p.galley(pill.center() - gs / 2.0, g, theme::INK);
+        p.galley(pill.center() - gs / 2.0, g, egui::Color32::WHITE);
         badge_w = pill.width() + 10.0;
     }
     paint_line(
@@ -1158,9 +1160,18 @@ fn point_card(
     // The caption is the text when there is one and the name otherwise
     // (`private_chat::point_caption`), so it is only a second line when it is
     // not the title.
-    let sub =
+    let text =
         (point.name.is_some() && !caption.is_empty() && point.name.as_deref() != Some(caption))
             .then(|| caption.to_string());
+    // Where it was seen from, as the first mockup's card says it ("seen from
+    // 120 m"): a point is a view, not only a spot.
+    let seen = point
+        .view
+        .map(|v| format!("seen from {:.0} m", v.altitude.max(0.0)));
+    let sub = match (text, seen) {
+        (Some(t), Some(s)) => Some(format!("{t}\n{s}")),
+        (t, s) => t.or(s),
+    };
     let p = ui.painter().clone();
     let title_g = p.layout(
         title,
@@ -1177,7 +1188,14 @@ fn point_card(
         )
     });
     let img_h = 112.0;
-    let meta_h = 8.0 + title_g.size().y + sub_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y) + 10.0;
+    // Room for the orange button under the text (`.card .go`).
+    const GO_H: f32 = 32.0;
+    let meta_h = 8.0
+        + title_g.size().y
+        + sub_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y)
+        + 10.0
+        + GO_H
+        + 12.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, img_h + meta_h), egui::Sense::click());
     let (r, t) = (BUBBLE_R, TAIL_R);
     let corners = if mine {
@@ -1244,6 +1262,31 @@ fn point_card(
     if let Some(g) = sub_g {
         p.galley(egui::pos2(rect.left() + 12.0, y), g, theme::TEXT_DIM);
     }
+    // The first mockup's "Open in world" (`.card .go`): the card's one action,
+    // brand orange across its width. The whole card answers the tap; the
+    // button is what says so.
+    let go = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 12.0, rect.bottom() - 12.0 - GO_H),
+        egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0),
+    );
+    p.rect_filled(
+        go,
+        egui::CornerRadius::same(10),
+        if resp.hovered() {
+            egui::Color32::from_rgb(0xFF, 0x7A, 0x33)
+        } else {
+            theme::BRAND
+        },
+    );
+    centred_row(
+        &p,
+        go,
+        &[
+            (icons::CAM_EARTH.to_string(), 15.0, egui::Color32::WHITE),
+            ("Open in world".to_string(), 13.5, egui::Color32::WHITE),
+        ],
+        6.0,
+    );
     if resp.hovered() {
         p.rect_stroke(
             rect,
