@@ -42,7 +42,7 @@ use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::osm_buildings::{
-    lat_lng_to_local, num_from_value, overpass_query, tdbag_url, MeshData,
+    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, tdbag_url, MeshData,
 };
 use crate::systems::street_detail::{feature_seed, linear, push_yawed_box, shade, srand};
 use crate::systems::terrain::TerrainSnapshot;
@@ -161,7 +161,16 @@ async fn fetch_atlas_text(url: String) -> Result<String, String> {
 async fn fetch_cell_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cache_key(cx, cy);
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return Ok(cached);
+        // A refusal page cached before `overpass_remark` recognised one is asked
+        // for again: parsed, it failed every retry from the cache without a
+        // request, and the cell gave up for the session and every one after.
+        match overpass_remark(&cached) {
+            None => return Ok(cached),
+            Some(remark) => {
+                tracing::warn!(key, %remark, "re-fetching a cached Overpass refusal");
+                storage::remove(storage::Namespace::Cache, &key).await;
+            }
+        }
     }
     let pre_cut = match cell_source(COVERAGE.covers(cx, cy), &tdbag_url(), cx, cy) {
         CellSource::Atlas(url) => match fetch_atlas_text(url.clone()).await {
