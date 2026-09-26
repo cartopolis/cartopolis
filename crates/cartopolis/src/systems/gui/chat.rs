@@ -89,6 +89,36 @@ pub struct ChatState {
     /// map (`place_pins`). One at a time, so the map says which conversation
     /// it is showing.
     pub world: Option<String>,
+    /// Other people's phones, shared with a private chat this account is in.
+    /// Each is dropped at its `until_ms` whatever was last heard, so a phone
+    /// that went quiet mid-share still disappears on time.
+    pub locations: Vec<SharedLocation>,
+    /// This phone's own shares, one per private chat, each with its end.
+    pub sharing: Vec<OwnShare>,
+    /// Chats to tell "stopped sharing" this frame. Drained by
+    /// `systems::private_chat`.
+    pub share_stops: Vec<String>,
+    /// The chat whose "Share location" durations are showing in the panel.
+    pub share_menu: Option<String>,
+}
+
+/// Somebody else's phone, as last shared with a chat.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedLocation {
+    pub channel: String,
+    pub from: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub accuracy_m: f32,
+    /// Unix milliseconds the share ends at.
+    pub until_ms: u64,
+}
+
+/// This phone's position being shared with one chat, until `until_ms`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnShare {
+    pub channel: String,
+    pub until_ms: u64,
 }
 
 /// A one-line answer to something the person just did.
@@ -174,6 +204,10 @@ impl Default for ChatState {
             point_draft: None,
             point_text: String::new(),
             world: None,
+            locations: Vec::new(),
+            sharing: Vec::new(),
+            share_stops: Vec::new(),
+            share_menu: None,
         }
     }
 }
@@ -212,6 +246,54 @@ impl ChatState {
     #[must_use]
     pub fn is_private(key: &str) -> bool {
         key.starts_with("dm:")
+    }
+
+    /// Start (or extend) sharing this phone's position with a chat, for
+    /// `duration_ms` from `now_ms`.
+    pub fn start_sharing(&mut self, channel: &str, duration_ms: u64, now_ms: u64) {
+        let until_ms = now_ms + duration_ms;
+        match self.sharing.iter_mut().find(|s| s.channel == channel) {
+            Some(s) => s.until_ms = until_ms,
+            None => self.sharing.push(OwnShare {
+                channel: channel.to_string(),
+                until_ms,
+            }),
+        }
+    }
+
+    /// Stop sharing with a chat now, and tell it so.
+    pub fn stop_sharing(&mut self, channel: &str) {
+        let before = self.sharing.len();
+        self.sharing.retain(|s| s.channel != channel);
+        if self.sharing.len() != before {
+            self.share_stops.push(channel.to_string());
+        }
+    }
+
+    /// End every share whose time is up: this phone's own (queued to tell the
+    /// chat) and everybody else's (dropped whatever was last heard).
+    pub fn expire_shares(&mut self, now_ms: u64) {
+        let (done, live): (Vec<OwnShare>, Vec<OwnShare>) = std::mem::take(&mut self.sharing)
+            .into_iter()
+            .partition(|s| s.until_ms <= now_ms);
+        self.sharing = live;
+        self.share_stops.extend(done.into_iter().map(|s| s.channel));
+        self.locations.retain(|l| l.until_ms > now_ms);
+    }
+
+    /// Record somebody's shared position, replacing what they shared before.
+    pub fn update_location(&mut self, update: SharedLocation, now_ms: u64) {
+        self.locations
+            .retain(|l| !(l.channel == update.channel && l.from == update.from));
+        if update.until_ms > now_ms {
+            self.locations.push(update);
+        }
+    }
+
+    /// Somebody stopped sharing with a chat.
+    pub fn drop_location(&mut self, channel: &str, from: &str) {
+        self.locations
+            .retain(|l| !(l.channel == channel && l.from == from));
     }
 
     /// The points of the chat whose World view is on, each with the label its
@@ -401,6 +483,18 @@ pub fn render_chat_panel(
     let mut focus_now: Option<String> = None;
     let mut toggle_world: Option<String> = None;
     let world_on = chat.world.clone();
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let sharing = chat.sharing.clone();
+    let theirs = chat.locations.clone();
+    let share_menu = chat.share_menu.clone();
+    let mut stop_share: Option<String> = None;
+    let mut start_share: Option<(String, u64)> = None;
+    let mut open_share_menu: Option<String> = None;
+    let mut close_share_menu = false;
+    let mut show_location: Option<(f64, f64, String)> = None;
     let mut send_point_to: Option<String> = None;
     let mut cancel_point = false;
     let mut go_to: Option<cartopolis_core::point::Point> = None;
@@ -555,6 +649,71 @@ pub fn render_chat_panel(
                         }
                     });
                 });
+                // Real location: always says who can see it and for how long, in
+                // the blue that means "where a phone actually is".
+                let mine = sharing.iter().find(|s| &s.channel == key);
+                match mine {
+                    Some(share) => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} You share your real location with this chat · {} min left",
+                                    icons::HERE,
+                                    share.until_ms.saturating_sub(now) / 60_000 + 1
+                                ))
+                                .color(theme::REAL_LOCATION),
+                            );
+                            if theme::action_button(ui, "Stop").clicked() {
+                                stop_share = Some(key.clone());
+                            }
+                        });
+                    }
+                    None if share_menu.as_deref() == Some(key.as_str()) => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new("Share where your phone is, for")
+                                    .color(theme::TEXT_DIM),
+                            );
+                            for (label, minutes) in
+                                [("15 min", 15u64), ("1 hour", 60), ("8 hours", 480)]
+                            {
+                                if theme::action_button(ui, label).clicked() {
+                                    start_share = Some((key.clone(), minutes * 60_000));
+                                }
+                            }
+                            if theme::action_button(ui, "Cancel").clicked() {
+                                close_share_menu = true;
+                            }
+                        });
+                    }
+                    None => {
+                        if ui
+                            .small_button(format!("{} Share location…", icons::HERE))
+                            .on_hover_text(
+                                "Let only this chat see where your phone is, until a time you choose",
+                            )
+                            .clicked()
+                        {
+                            open_share_menu = Some(key.clone());
+                        }
+                    }
+                }
+                for l in theirs.iter().filter(|l| &l.channel == key) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {} shares their real location · {} min left",
+                                icons::HERE,
+                                l.from,
+                                l.until_ms.saturating_sub(now) / 60_000 + 1
+                            ))
+                            .color(theme::REAL_LOCATION),
+                        );
+                        if theme::action_button(ui, "Show").clicked() {
+                            show_location = Some((l.latitude, l.longitude, l.from.clone()));
+                        }
+                    });
+                }
             }
             ui.horizontal(|ui| {
                 let field = crate::systems::text_touch::field(
@@ -710,6 +869,23 @@ pub fn render_chat_panel(
     if cancel_point {
         chat.point_draft = None;
         chat.point_text.clear();
+    }
+    if let Some(key) = stop_share {
+        chat.stop_sharing(&key);
+    }
+    if let Some((key, duration)) = start_share {
+        chat.start_sharing(&key, duration, now);
+        chat.share_menu = None;
+    }
+    if let Some(key) = open_share_menu {
+        chat.share_menu = Some(key);
+    }
+    if close_share_menu {
+        chat.share_menu = None;
+    }
+    if let Some((lat, lng, who)) = show_location {
+        nav.pending_label = Some(who);
+        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(lat, lng, None));
     }
     if let Some(key) = toggle_world {
         chat.world = if chat.world.as_deref() == Some(key.as_str()) {
@@ -1002,6 +1178,58 @@ mod tests {
         chat.blocked = vec!["loud".into()];
         chat.blocked = Vec::new();
         assert!(!chat.is_blocked("loud"));
+    }
+
+    /// A share ends on time on both sides: this phone's own is queued to tell the
+    /// chat, and somebody else's is dropped whatever was last heard.
+    #[test]
+    fn a_location_share_ends_on_time_on_both_sides() {
+        let mut chat = ChatState::default();
+        chat.start_sharing("dm:aa", 60_000, 1_000);
+        chat.update_location(
+            SharedLocation {
+                channel: "dm:aa".into(),
+                from: "bob".into(),
+                latitude: 53.2,
+                longitude: 6.5,
+                accuracy_m: 10.0,
+                until_ms: 30_000,
+            },
+            1_000,
+        );
+        chat.expire_shares(30_000);
+        assert!(chat.locations.is_empty(), "bob's share ended at 30 s");
+        assert_eq!(chat.sharing.len(), 1, "ours runs to 61 s");
+        assert!(chat.share_stops.is_empty());
+        chat.expire_shares(61_000);
+        assert!(chat.sharing.is_empty());
+        assert_eq!(
+            chat.share_stops,
+            vec!["dm:aa".to_string()],
+            "the chat is told"
+        );
+    }
+
+    #[test]
+    fn stopping_tells_the_chat_and_a_newer_position_replaces_the_old() {
+        let mut chat = ChatState::default();
+        chat.start_sharing("dm:aa", 60_000, 0);
+        chat.stop_sharing("dm:aa");
+        chat.stop_sharing("dm:aa");
+        assert_eq!(chat.share_stops, vec!["dm:aa".to_string()], "told once");
+        let at = |lat: f64| SharedLocation {
+            channel: "dm:aa".into(),
+            from: "bob".into(),
+            latitude: lat,
+            longitude: 6.5,
+            accuracy_m: 10.0,
+            until_ms: 90_000,
+        };
+        chat.update_location(at(53.1), 0);
+        chat.update_location(at(53.2), 0);
+        assert_eq!(chat.locations, vec![at(53.2)]);
+        chat.drop_location("dm:aa", "bob");
+        assert!(chat.locations.is_empty());
     }
 
     /// The map shows one chat's points: the chosen one's, and none from any other.

@@ -58,6 +58,60 @@ const HOVER_SCALE: f32 = 1.18;
 /// First pin id used for a chat's points: far above any bookmark id, which
 /// counts up from 1.
 const CHAT_PIN_IDS: u64 = 1 << 48;
+/// First pin id used for people's shared locations.
+const PEOPLE_PIN_IDS: u64 = 1 << 49;
+
+/// The "you are sharing your real location" chip: top centre of the screen,
+/// naming who can see it and for how long, with a Stop for each. Answers the
+/// chat whose Stop was pressed.
+///
+/// Drawn from this system because it is the last UI system to run (the module
+/// note says why), so nothing composed later can cover it.
+fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> Option<String> {
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut stop = None;
+    egui::Area::new(egui::Id::new("real_location_sharing_chip"))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(theme::REAL_LOCATION)
+                .corner_radius(12.0)
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| {
+                    for share in &chat.sharing {
+                        let who = chat
+                            .channels
+                            .iter()
+                            .find(|c| c.key == share.channel)
+                            .map(|c| c.label.trim_start_matches("private · ").to_string())
+                            .unwrap_or_else(|| "a chat".into());
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} {who} sees where your phone is · {} min",
+                                    crate::systems::icons::HERE,
+                                    share.until_ms.saturating_sub(now) / 60_000 + 1
+                                ))
+                                .color(theme::INK),
+                            );
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new("Stop").color(theme::INK).strong(),
+                                ))
+                                .clicked()
+                            {
+                                stop = Some(share.channel.clone());
+                            }
+                        });
+                    }
+                });
+        });
+    stop
+}
 
 /// Beyond this ground distance a pin is dropped below the space tier. The
 /// anchored Mercator frame distorts with distance from the anchor, and a pin
@@ -84,8 +138,20 @@ pub fn render_place_pins(
     // The points of the private chat whose World view is on (the chat panel's
     // "Map" toggle). Drawn by the same code as saved places so they share the
     // projection, the culling and the one ordering rule this system obeys.
-    chat: Res<crate::systems::chat::ChatState>,
+    //
+    // Also where other people's shared real locations are pinned, and where the
+    // "you are sharing your location" chip is drawn — see [`sharing_chip`].
+    mut chat: ResMut<crate::systems::chat::ChatState>,
 ) {
+    // Before everything else, driver mode included: while anybody can see where
+    // this phone is, the screen says so. A share that is on without a sign of it
+    // is the one thing this feature must never be.
+    if !chat.sharing.is_empty() {
+        let ctx = egui.ctx_mut().clone();
+        if let Some(channel) = sharing_chip(&ctx, &chat) {
+            chat.stop_sharing(&channel);
+        }
+    }
     // Driver mode owns the screen and strips the map to the route — but this
     // system never learned that, so the teardrops kept drawing over the
     // navigation view, and every one of them is a live `Area` whose click is a
@@ -95,7 +161,17 @@ pub fn render_place_pins(
         return;
     }
     let chat_points = chat.world_points();
-    if store.data.bookmarks.is_empty() && chat_points.is_empty() {
+    let now_ms = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let people: Vec<crate::systems::chat::SharedLocation> = chat
+        .locations
+        .iter()
+        .filter(|l| l.until_ms > now_ms)
+        .cloned()
+        .collect();
+    if store.data.bookmarks.is_empty() && chat_points.is_empty() && people.is_empty() {
         return;
     }
     let Some(anchor) = map_anchor.geo else {
@@ -212,6 +288,39 @@ pub fn render_place_pins(
         drawn += 1;
         if pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, brand, label) {
             jump = Some((Teleport::point(point), label.clone()));
+        }
+    }
+    // People's real locations, shared with a private chat, in the blue that
+    // means nothing else (`theme::REAL_LOCATION`).
+    let blue = theme::REAL_LOCATION;
+    let blue = [
+        f32::from(blue.r()) / 255.0,
+        f32::from(blue.g()) / 255.0,
+        f32::from(blue.b()) / 255.0,
+    ];
+    for (i, l) in people.iter().enumerate() {
+        let Some(delta) = place_delta(
+            &globe,
+            anchor,
+            cam_world,
+            in_space,
+            l.latitude,
+            l.longitude,
+            &terrain,
+        ) else {
+            continue;
+        };
+        let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
+            continue;
+        };
+        let tip = to_ui(screen);
+        if !map_rect.contains(tip) {
+            continue;
+        }
+        drawn += 1;
+        let label = format!("{} (where their phone is)", l.from);
+        if pin(&ctx, map_rect, PEOPLE_PIN_IDS + i as u64, tip, blue, &label) {
+            jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
         }
     }
     // "The pins aren't showing" has three very different causes — no anchor, all

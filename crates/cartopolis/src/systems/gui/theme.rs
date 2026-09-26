@@ -202,6 +202,13 @@ pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x3E, 0x4E, 0x55);
 /// and repainting the chrome would have repainted the logo with it, silently.
 pub const BRAND: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
 
+/// A person's **real location** — where their phone is, shared with a private
+/// chat (`systems::private_chat`). Blue because every map app draws the phone
+/// that way, and never the brand orange, which marks places sent in a chat: the
+/// two must not be confused on the map, one being a spot somebody pointed at and
+/// the other being where somebody actually is. Used for nothing else.
+pub const REAL_LOCATION: Color32 = Color32::from_rgb(0x4F, 0xB2, 0xFF);
+
 /// Off-white. Headings and the one or two things that must read brightest.
 pub const CREAM: Color32 = Color32::from_rgb(0xF3, 0xF7, 0xF9);
 /// Body text.

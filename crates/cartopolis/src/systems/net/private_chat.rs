@@ -122,6 +122,17 @@ pub enum Event {
         point: Option<Point>,
         sent_at_ms: u64,
     },
+    /// Somebody in a chat shared where their phone is, until `until_ms`.
+    Location {
+        group: Vec<u8>,
+        from: String,
+        latitude: f64,
+        longitude: f64,
+        accuracy_m: f32,
+        until_ms: u64,
+    },
+    /// They stopped sharing it early.
+    LocationStopped { group: Vec<u8>, from: String },
     /// Something the person should be told, in words.
     Notice(String),
 }
@@ -358,6 +369,39 @@ impl Engine {
             },
             out,
         )
+    }
+
+    /// Seal and send where this phone is, shared with the chat until `until_ms`.
+    pub fn send_location(
+        &mut self,
+        group: &[u8],
+        fix: (f64, f64, f32),
+        until_ms: u64,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<(), String> {
+        let (latitude, longitude, accuracy_m) = fix;
+        self.send_payload(
+            group,
+            &Payload::Location {
+                latitude,
+                longitude,
+                accuracy_m,
+                until_ms,
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Tell the chat this phone stopped sharing before its time was up.
+    pub fn send_location_stopped(
+        &mut self,
+        group: &[u8],
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<(), String> {
+        self.send_payload(group, &Payload::LocationStopped { sent_at_ms: now_ms }, out)
     }
 
     fn send_payload(
@@ -647,16 +691,36 @@ impl Engine {
             return;
         }
         match self.device.receive(&group, message) {
-            Ok(Received::Message { from, bytes }) => {
-                let (body, point) = read_payload(&bytes);
-                events.push(Event::Line {
+            Ok(Received::Message { from, bytes }) => match Payload::decode(&bytes) {
+                Ok(Payload::Location {
+                    latitude,
+                    longitude,
+                    accuracy_m,
+                    until_ms,
+                    ..
+                }) => events.push(Event::Location {
                     group,
                     from: from.username,
-                    body,
-                    point,
-                    sent_at_ms,
-                });
-            }
+                    latitude,
+                    longitude,
+                    accuracy_m,
+                    until_ms,
+                }),
+                Ok(Payload::LocationStopped { .. }) => events.push(Event::LocationStopped {
+                    group,
+                    from: from.username,
+                }),
+                _ => {
+                    let (body, point) = read_payload(&bytes);
+                    events.push(Event::Line {
+                        group,
+                        from: from.username,
+                        body,
+                        point,
+                        sent_at_ms,
+                    });
+                }
+            },
             Ok(Received::Membership { .. }) => {}
             Err(e) => tracing::warn!(error = %e, seq, "could not read a private-chat entry"),
         }
@@ -706,6 +770,112 @@ pub struct PrivateChats {
     /// built-in list only: an operator's additions live in the server's config
     /// and never reach a client.
     filter: Option<cartopolis_core::Filter>,
+    /// The phone's location watch, held while any share is live and dropped
+    /// the moment none is, so the radio is not kept on for nothing.
+    watch: Option<crate::platform::location::LocationWatch>,
+    /// Per chat being shared with: when and where the last update was sent.
+    last_sent: std::collections::HashMap<String, (u64, f64, f64)>,
+}
+
+/// A live share sends at most this often while the phone moves…
+const SHARE_MIN_INTERVAL_MS: u64 = 10_000;
+/// …and only once it has moved this far, in metres…
+const SHARE_MIN_MOVE_M: f64 = 15.0;
+/// …but at least this often when standing still, so the other side can tell a
+/// quiet share from a dead phone.
+const SHARE_HEARTBEAT_MS: u64 = 60_000;
+
+/// Whether a share should send now, given what it last sent.
+fn share_due(last: Option<(u64, f64, f64)>, now_ms: u64, lat: f64, lng: f64) -> bool {
+    let Some((at, plat, plng)) = last else {
+        return true;
+    };
+    let waited = now_ms.saturating_sub(at);
+    waited >= SHARE_HEARTBEAT_MS
+        || (waited >= SHARE_MIN_INTERVAL_MS
+            && metres_between(plat, plng, lat, lng) >= SHARE_MIN_MOVE_M)
+}
+
+/// Ground distance, equirectangular: exact enough over the metres a share
+/// compares, and free of the trigonometry a great-circle formula spends.
+fn metres_between(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+    const R: f64 = 6_371_000.0;
+    let x = (lng2 - lng1).to_radians() * ((lat1 + lat2) / 2.0).to_radians().cos();
+    let y = (lat2 - lat1).to_radians();
+    (x * x + y * y).sqrt() * R
+}
+
+/// Run this phone's location shares for one frame: end the ones whose time is
+/// up (telling their chats), hold the location watch while any is live, and
+/// send each chat an update when [`share_due`] says so.
+fn share_location(
+    engine: &mut Engine,
+    private: &mut PrivateChats,
+    chat: &mut crate::systems::chat::ChatState,
+    out: &mut Vec<NetMessage>,
+    events: &mut Vec<Event>,
+) {
+    use crate::platform::location::LocationWatch;
+    let now = now_ms();
+    chat.expire_shares(now);
+    for channel in std::mem::take(&mut chat.share_stops) {
+        private.last_sent.remove(&channel);
+        if let Some(group) = group_of(&channel) {
+            if let Err(e) = engine.send_location_stopped(&group, now, out) {
+                tracing::warn!(error = %e, "could not tell a chat sharing stopped");
+            }
+        }
+    }
+    if chat.sharing.is_empty() {
+        private.watch = None;
+        return;
+    }
+    if !LocationWatch::available() {
+        // Desktop has no location provider (`platform::location`). Said once, and
+        // the share is dropped rather than left promising something it cannot do.
+        chat.sharing.clear();
+        events.push(Event::Notice(
+            "This device can't report where it is. Share your location from the phone app or \
+             the web version."
+                .into(),
+        ));
+        private.watch = None;
+        return;
+    }
+    let watch = private.watch.get_or_insert_with(LocationWatch::start);
+    if let Some(err) = watch.error() {
+        chat.sharing.clear();
+        events.push(Event::Notice(format!("Location sharing stopped: {err}")));
+        private.watch = None;
+        return;
+    }
+    let Some(fix) = watch.latest() else {
+        return; // still waiting for the first fix
+    };
+    for share in chat.sharing.clone() {
+        let last = private.last_sent.get(&share.channel).copied();
+        if !share_due(last, now, fix.lat, fix.lng) {
+            continue;
+        }
+        let Some(group) = group_of(&share.channel) else {
+            continue;
+        };
+        match engine.send_location(
+            &group,
+            (fix.lat, fix.lng, fix.accuracy_m as f32),
+            share.until_ms,
+            now,
+            out,
+        ) {
+            Ok(()) => {
+                private
+                    .last_sent
+                    .insert(share.channel.clone(), (now, fix.lat, fix.lng));
+                private.dirty = true;
+            }
+            Err(e) => tracing::warn!(error = %e, "could not send a location update"),
+        }
+    }
 }
 
 fn now_ms() -> u64 {
@@ -790,6 +960,7 @@ pub fn drive_private_chats(
         }
         private.dirty = true;
     }
+    share_location(&mut engine, &mut private, &mut chat, &mut out, &mut events);
     for (channel, point) in std::mem::take(&mut chat.private_points) {
         let Some(group) = group_of(&channel) else {
             continue;
@@ -848,6 +1019,27 @@ pub fn drive_private_chats(
                 });
                 chat.receive_point(&channel_key(&group), 0, from, body, None, point);
             }
+            Event::Location {
+                group,
+                from,
+                latitude,
+                longitude,
+                accuracy_m,
+                until_ms,
+            } => chat.update_location(
+                crate::systems::chat::SharedLocation {
+                    channel: channel_key(&group),
+                    from,
+                    latitude,
+                    longitude,
+                    accuracy_m,
+                    until_ms,
+                },
+                now_ms(),
+            ),
+            Event::LocationStopped { group, from } => {
+                chat.drop_location(&channel_key(&group), &from);
+            }
             Event::Notice(text) => {
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
             }
@@ -891,6 +1083,26 @@ mod tests {
         ));
         assert!(!is_private_request(0));
         assert!(is_private_request(REQUEST_BASE | 7));
+    }
+
+    #[test]
+    fn a_share_sends_first_then_on_movement_then_as_a_heartbeat() {
+        let (lat, lng) = (53.2, 6.5);
+        assert!(share_due(None, 0, lat, lng), "the first fix goes at once");
+        let last = Some((0, lat, lng));
+        assert!(
+            !share_due(last, 5_000, lat + 0.001, lng),
+            "too soon, even having moved"
+        );
+        assert!(
+            share_due(last, 12_000, lat + 0.001, lng),
+            "~110 m after 12 s"
+        );
+        assert!(!share_due(last, 30_000, lat, lng), "standing still");
+        assert!(
+            share_due(last, 61_000, lat, lng),
+            "heartbeat after a minute"
+        );
     }
 
     #[test]
@@ -1103,6 +1315,51 @@ mod loopback {
             _ => None,
         });
         assert_eq!(got, Some((sent, "then the show after?".into())));
+    }
+
+    #[tokio::test]
+    async fn a_shared_location_arrives_with_its_end_and_so_does_stopping() {
+        let (_dir, _h, addr) = server(&["alice", "bob"]).await;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .start_direct("bob", &mut out, &mut alice.events);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let group = alice.opened().unwrap();
+
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_location(&group, (53.2194, 6.5665, 8.0), 3_600_000, 0, &mut out)
+            .unwrap();
+        alice
+            .engine
+            .send_location_stopped(&group, 1, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        bob.pump(PUMP).await;
+        let shared = bob.events.iter().find_map(|e| match e {
+            Event::Location {
+                from,
+                latitude,
+                until_ms,
+                ..
+            } => Some((from.clone(), *latitude, *until_ms)),
+            _ => None,
+        });
+        assert_eq!(shared, Some(("alice".into(), 53.2194, 3_600_000)));
+        assert!(bob
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::LocationStopped { from, .. } if from == "alice")));
+        // And neither shows up as a chat line.
+        assert!(bob.lines().is_empty());
     }
 
     #[tokio::test]

@@ -79,3 +79,25 @@ the reported line server-side (`user-safety.md`) cannot work on sealed text.
 - **Reports do not yet carry the reported private lines.** A report has to take
   them from the reporter's device, ideally with message franking so they cannot
   be forged. Not built.
+
+## Points and real-location sharing ride inside the same sealed messages
+
+`cartopolis_e2ee::Payload` is append-only (postcard numbers variants by
+position): `Text`, then `Object` (an ActivityStreams JSON object, today always
+a point, `cartopolis_core::point`), then `Location` / `LocationStopped`. An
+older build meets a newer variant as "a message this version can't display".
+
+- **A point is an ActivityStreams Note with a Place** from day one, so the
+  same object can be posted publicly over ActivityPub later without
+  converting encrypted points on every phone.
+- **A shared real location ends on the devices.** The server cannot read it,
+  so it cannot end it: the sender stops at `until_ms`, and every receiver
+  drops the position at `until_ms` whatever it last heard. The sender sends on
+  the first fix, then at most every 10 s and only after moving 15 m, and at
+  least once a minute (`private_chat::share_due`).
+- **A share is never on without a sign of it.** While any is live, a chip at
+  the top of the map names who can see the phone and has Stop, drawn even in
+  driver mode (`place_pins::sharing_chip`).
+- **Colours mean one thing each:** a chat's points are the brand orange, a
+  person's real location is `theme::REAL_LOCATION` blue.
+- **Desktop has no location provider**, so sharing from it says so and stops.
