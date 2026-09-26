@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cartopolis_geo::lod22_cell;
 use serde_json::{json, Value};
 
 use super::geom::round;
@@ -387,6 +388,48 @@ fn solids(cj: &Value) -> Result<Vec<Solid>, String> {
     Ok(out)
 }
 
+/// One solid as the binary encoding's element — the same numbers the JSON
+/// element carries (already rounded to 10⁻⁷° and 1 cm by [`process_object`]).
+fn element(pand: String, part: u32, p: &[[f64; 3]], t: &[[u32; 4]]) -> lod22_cell::Element {
+    lod22_cell::Element {
+        id: pand,
+        part,
+        class: String::new(),
+        p: p.iter().map(|v| (v[0], v[1], v[2] as f32)).collect(),
+        // The roof flag is 0 or 1 by construction.
+        t: t.iter().map(|x| (x[0], x[1], x[2], x[3] as u8)).collect(),
+    }
+}
+
+/// `lod22/14/{x}/{y}.bin` — the binary twin of [`cell_path`]'s JSON.
+fn bin_path(cell: Cell) -> String {
+    let (x, y) = cell;
+    format!("lod22/{CACHE_ZOOM}/{x}/{y}.bin")
+}
+
+/// Write one cell in both formats.
+///
+/// The JSON exactly as it always was, because every installed APK and every
+/// cached web build reads it and only a client from 2026-09-26 on knows the
+/// binary exists. The binary beside it, in `cartopolis_geo::lod22_cell`'s
+/// encoding on [`Grid::JSON`] — the grid the JSON is already rounded to, so it
+/// holds the same numbers — plus its `.bin.gz` for the host to serve
+/// compressed. A cell whose binary cannot be encoded (a non-finite coordinate,
+/// which the JSON would have written as `null`) keeps its JSON and is logged:
+/// the client falls back to the JSON for a missing binary.
+///
+/// [`Grid::JSON`]: lod22_cell::Grid::JSON
+fn write_cell(ctx: &Ctx, cell: Cell, elements: &[Value], bin: &lod22_cell::Cell) -> Outcome<()> {
+    ctx.write_json(&cell_path("lod22", cell), &json!({"elements": elements}))?;
+    match lod22_cell::encode(bin, lod22_cell::Grid::JSON) {
+        Ok(bytes) => ctx.write_bytes_gzipped(&bin_path(cell), &bytes),
+        Err(e) => {
+            ctx.log(format!("cell {cell:?}: no binary written: {e}"));
+            Ok(())
+        }
+    }
+}
+
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let urls = tile_urls(ctx)?;
     ctx.log(format!("{} CityJSON tiles cover the bbox", urls.len()));
@@ -399,7 +442,9 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     };
     progress(0);
 
-    let mut cells: HashMap<Cell, Vec<Value>> = HashMap::new();
+    // Each cell twice over: the JSON elements, and the same elements as the
+    // binary encoding's plain data (see `write_cell`).
+    let mut cells: HashMap<Cell, (Vec<Value>, lod22_cell::Cell)> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     let (mut total, mut tiles_done) = (0usize, 0usize);
 
@@ -433,7 +478,9 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                         if part != 0 {
                             el["part"] = json!(part);
                         }
-                        cells.entry(cell).or_default().push(el);
+                        let (json_els, bin) = cells.entry(cell).or_default();
+                        json_els.push(el);
+                        bin.elements.push(element(pand, part, &p, &t));
                         total += 1;
                     }
                     ctx.log(format!(
@@ -450,8 +497,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         },
     )?;
 
-    for (cell, elements) in &cells {
-        ctx.write_json(&cell_path("lod22", *cell), &json!({"elements": elements}))?;
+    for (cell, (elements, bin)) in &cells {
+        write_cell(ctx, *cell, elements, bin)?;
     }
     ctx.write_json(
         "lod22/coverage.json",
@@ -538,5 +585,72 @@ mod tests {
         assert!(
             triangulate_surface(&[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], &[3]).is_empty()
         );
+    }
+
+    struct Quiet;
+    impl crate::pipeline::Sink for Quiet {
+        fn log(&self, _: String) {}
+        fn progress(&self, _: crate::pipeline::Progress) {}
+    }
+
+    /// A cell is written three times over — the JSON as before, the binary, and
+    /// the binary gzipped for the host to serve — and the binary decodes to the
+    /// numbers the JSON spells out.
+    #[test]
+    fn a_cell_is_written_as_json_binary_and_gzipped_binary() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(
+            [0.0; 4],
+            "t",
+            dir.path(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(Quiet),
+        );
+        let p = vec![
+            [round(53.226_222_14, 7), round(6.554_059_31, 7), 0.0],
+            [
+                round(53.226_242_9, 7),
+                round(6.554_043_5, 7),
+                round(6.318, 2),
+            ],
+            [
+                round(53.226_234_5, 7),
+                round(6.554_107_2, 7),
+                round(3.704_9, 2),
+            ],
+        ];
+        let t = vec![[0u32, 1, 2, 1]];
+        let pand = "0014100010904218".to_string();
+        let el = json!({"id": pand, "p": p, "t": t, "part": 2});
+        let bin = lod22_cell::Cell {
+            elements: vec![element(pand.clone(), 2, &p, &t)],
+            pands: vec![],
+        };
+        write_cell(&ctx, (8490, 5319), &[el], &bin).unwrap();
+
+        let root = dir.path().join("lod22/14/8490");
+        let json: Value =
+            serde_json::from_slice(&std::fs::read(root.join("5319.json")).unwrap()).unwrap();
+        assert_eq!(json["elements"][0]["id"], "0014100010904218");
+        let raw = std::fs::read(root.join("5319.bin")).unwrap();
+        let mut unzipped = Vec::new();
+        flate2::read::GzDecoder::new(std::fs::read(root.join("5319.bin.gz")).unwrap().as_slice())
+            .read_to_end(&mut unzipped)
+            .unwrap();
+        assert_eq!(
+            unzipped, raw,
+            "the sidecar is not the file it stands beside"
+        );
+
+        let decoded = lod22_cell::decode(&raw).unwrap();
+        let e = &decoded.elements[0];
+        assert_eq!((e.id.as_str(), e.part), ("0014100010904218", 2));
+        assert_eq!(e.t, vec![(0, 1, 2, 1)]);
+        for (got, want) in e.p.iter().zip(json["elements"][0]["p"].as_array().unwrap()) {
+            assert_eq!(got.0, want[0].as_f64().unwrap());
+            assert_eq!(got.1, want[1].as_f64().unwrap());
+            assert_eq!(got.2, want[2].as_f64().unwrap() as f32);
+        }
     }
 }

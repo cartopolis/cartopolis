@@ -245,6 +245,33 @@ impl Ctx {
     /// filesystem, which is why not /tmp). Compact separators, as every earlier
     /// writer of these files used — this is megabytes per cell.
     pub fn write_json(&self, relative: &str, value: &serde_json::Value) -> Outcome<()> {
+        let body = serde_json::to_vec(value).map_err(|e| PipelineError::Failed(e.to_string()))?;
+        self.write_bytes(relative, &body)
+    }
+
+    /// Write a binary file, and a `.gz` of it beside it, the same atomic way
+    /// [`Self::write_json`] writes JSON.
+    ///
+    /// The sidecar is what gets the file served compressed. Caddy's `encode gzip`
+    /// compresses only a default list of text content types, and a `.bin` goes
+    /// out as `application/octet-stream`, which is not on it — so the host's
+    /// `file_server { precompressed gzip }` has to find `x.bin.gz` already there.
+    /// Compressed at the best level, because it is done once per run and read by
+    /// every client.
+    pub fn write_bytes_gzipped(&self, relative: &str, body: &[u8]) -> Outcome<()> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let compressed = gz
+            .write_all(body)
+            .and_then(|()| gz.finish())
+            .map_err(|e| PipelineError::Failed(format!("{relative}: gzip: {e}")))?;
+        // The plain file second, so that a reader who sees it can also find the
+        // sidecar — Caddy looks for the `.gz` only once the plain file exists.
+        self.write_bytes(&format!("{relative}.gz"), &compressed)?;
+        self.write_bytes(relative, body)
+    }
+
+    fn write_bytes(&self, relative: &str, body: &[u8]) -> Outcome<()> {
         let file = self.out_root.join(relative);
         let dir = file
             .parent()
@@ -256,7 +283,6 @@ impl Ctx {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-        let body = serde_json::to_vec(value).map_err(|e| PipelineError::Failed(e.to_string()))?;
         std::fs::write(&tmp, body)
             .map_err(|e| PipelineError::Failed(format!("{relative}: {e}")))?;
         std::fs::rename(&tmp, &file)
