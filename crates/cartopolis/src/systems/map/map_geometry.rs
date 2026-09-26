@@ -1120,23 +1120,24 @@ fn spawn_geometry_task(
     let mesh_bytes = Some(crate::systems::lod22::max_cell_mesh_bytes() / TERRAIN_REFINE_EXPANSION);
     IoTaskPool::get()
         .spawn(async move {
+            // **Each input is its own task, so the downloads overlap.** Natively
+            // `http::fetch` is a blocking `ureq` call with no await point in it, so
+            // awaiting these one after another — or `zip`ping them, which is only
+            // presentation there — ran up to nine requests end to end per cell, a
+            // round trip each before the mesh could start. A spawned task parks an
+            // io thread of its own, and awaiting its handle parks nothing. On wasm
+            // the fetches were already concurrent and this changes nothing. What
+            // bounds the overlap is the io pool's width (`lib.rs`, at least 16).
+            let io = IoTaskPool::get();
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
-            let fetched = load_tile_image(&key, &template).await;
-            // One request that fills the cache entries the next three awaits are
-            // about to look for (`systems::cell_bundle`). It changes nothing about
-            // what they do — a host that serves no bundles, or a cell already
-            // bundled, and this returns without asking — but where the host does
-            // serve them it turns three sequential round trips into one. They are
-            // sequential natively whatever the `zip`s below suggest: `http::fetch`
-            // is a blocking call with no await point in it.
-            crate::systems::cell_bundle::prefill(cell.0, cell.1).await;
+            let tile_task = io.spawn(async move { load_tile_image(&key, &template).await });
             // The cell's surveyed BGT objects travel with the job for the reason
             // `building_facts` gives about `lod22`: they end up merged into this
             // cell's meshes, so they have to be in hand on the worker that builds
             // them rather than arriving later on a stream of their own. Empty
             // outside the coverage, which is everywhere the host has not run
             // atlas's `pipeline/bgt.rs`.
-            let surveyed = crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1).await;
+            let surveyed_task = io.spawn(crate::systems::surveyed::load_surveyed_cell(cell.0, cell.1));
             // …and, where the city this cell falls in publishes a tree register
             // of its own, that register — which supersedes the BGT's trees below
             // rather than joining them (`systems::municipal` says why). Empty
@@ -1146,20 +1147,22 @@ fn spawn_geometry_task(
             // BGT cell above: this one reaches a *city's* server, not ours, and a
             // dense cell of it is 1.3 MB. Asking a third party for a layer that
             // is switched off is the one cost here worth not paying.
-            let registered = if wants.trees || wants.furniture {
-                crate::systems::municipal::load_registered_cell(cell.0, cell.1).await
-            } else {
-                crate::systems::municipal::RegisteredCell::default()
-            };
+            let registered_task = (wants.trees || wants.furniture)
+                .then(|| io.spawn(crate::systems::municipal::load_registered_cell(cell.0, cell.1)));
             // …and its surveyed paving, in a file of its own because it is by far
             // the heavier half.
-            let paving = crate::systems::surveyed::load_surveyed_paving(cell.0, cell.1).await;
+            let paving_task = io.spawn(crate::systems::surveyed::load_surveyed_paving(cell.0, cell.1));
             // …and the cell's registered crop parcels, which ride along for the
             // same reason: they are merged into this cell's meshes, and the
             // arable ones are a keep-out the grass area is built against. Empty
             // outside the coverage, i.e. wherever atlas's `brp` dataset has not
             // been run.
-            let crop_cell = crate::systems::crops::load_crop_cell(cell.0, cell.1).await;
+            let crop_task = io.spawn(crate::systems::crops::load_crop_cell(cell.0, cell.1));
+            let decks_task = io.spawn(crate::systems::terrain_tiles::load_atlas_decks(cell.0, cell.1));
+            // The marks and crossings below decide whether to ask at all from the
+            // tile body, so they start once it is here; everything else is
+            // already on its way.
+            let fetched = tile_task.await;
             // …and the cell's navigation marks, on the same terms and with two
             // gates of their own (`systems::nav_marks`). The water one reads the
             // *undecoded* body: the parse happens on the worker below, and a
@@ -1173,14 +1176,11 @@ fn spawn_geometry_task(
             // one reads the undecoded body for the railway the way the marks
             // read it for water, and for the same reason.
             //
-            // Both gate reads happen here, *before* either future is polled, so
-            // the two can be awaited together: these are the only two awaits in
-            // this task that reach a host we do not own, and running them end to
-            // end means a cell's ground waits on one third party's answer twice
-            // over (#267). Natively that is presentation rather than overlap —
-            // `http::fetch` is a blocking `ureq` call with no await point in it
-            // — and what bounds the wait there is `http::OPTIONAL_LAYER_TIMEOUT`
-            // on each request plus each service's breaker.
+            // These are the only two requests in this task that reach a host we do
+            // not own, so each is its own task too: end to end, a cell's ground
+            // waited on one third party's answer twice over (#267). What bounds
+            // the wait is `http::OPTIONAL_LAYER_TIMEOUT` on each request plus each
+            // service's breaker.
             let has_water = fetched
                 .as_ref()
                 .is_ok_and(|bytes| vector_tiles::body_mentions_water(bytes));
@@ -1188,19 +1188,24 @@ fn spawn_geometry_task(
                 .as_ref()
                 .is_ok_and(|bytes| vector_tiles::body_mentions_rail(bytes));
             let (mark_cell, crossing_cell) = if wants.furniture {
-                futures_lite::future::zip(
-                    crate::systems::nav_marks::load_marks_cell(cell.0, cell.1, has_water),
-                    crate::systems::crossings::load_crossings_cell(cell.0, cell.1, has_rail),
-                )
-                .await
+                let marks = io.spawn(crate::systems::nav_marks::load_marks_cell(cell.0, cell.1, has_water));
+                let crossings =
+                    io.spawn(crate::systems::crossings::load_crossings_cell(cell.0, cell.1, has_rail));
+                (marks.await, crossings.await)
             } else {
                 (
                     crate::systems::nav_marks::MarkCell::default(),
                     crate::systems::crossings::CrossingCell::default(),
                 )
             };
-            let atlas_decks =
-                crate::systems::terrain_tiles::load_atlas_decks(cell.0, cell.1).await;
+            let surveyed = surveyed_task.await;
+            let registered = match registered_task {
+                Some(task) => task.await,
+                None => crate::systems::municipal::RegisteredCell::default(),
+            };
+            let paving = paving_task.await;
+            let crop_cell = crop_task.await;
+            let atlas_decks = decks_task.await;
             // The ground last, after every fetch: a job waiting for graded ground
             // has spent the wait downloading.
             let (ground, built_rev) = match ground {

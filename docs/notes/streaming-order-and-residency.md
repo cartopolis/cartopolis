@@ -1,7 +1,7 @@
 ---
 topic: streaming-order-and-residency
-triggers: [fetch_gate, cell_source, cell_bundle, load_control, take_shed, "shed", "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far"]
-updated: 2026-09-11
+triggers: [fetch_gate, cell_source, spawn_geometry_task, load_control, take_shed, "shed", "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far"]
+updated: 2026-09-26
 ---
 
 # What decides the order things stream in, and how much of them stays
@@ -91,23 +91,27 @@ A demotion is never acted on: a cell drawn with more detail than it now needs
 costs a few thousand triangles, and rebuilding it to take them away pays the
 expensive half of the trade for the cheap half of the benefit.
 
-## A per-cell bundle is a cache prefill, not a data path
+## A cell's inputs download side by side, and there is no bundle
 
-`map_geometry::spawn_geometry_task` awaited three of our own host's datasets one
-after another before it could mesh anything. `systems::cell_bundle` asks for all
-three at once and writes each part into the storage cache **under the key that
-part's own loader already looks for** — so no loader, parser or coverage gate
-changed, and a host that has not been redeployed costs one 404 per cell until the
-support flag latches.
+`map_geometry::spawn_geometry_task` needs up to nine documents before it can mesh
+a cell — the street tile, the BGT objects and paving, the crop parcels, the city
+register, the atlas decks, the nav marks and the level crossings. Natively
+`http::fetch` is a blocking `ureq` call with no await point, so awaiting them in
+turn (or `zip`ping them, which is only presentation there) ran them end to end: a
+round trip each before the mesh could start. Since 2026-09-26 each is its own
+`IoTaskPool` task and the job awaits the handles, so they overlap; what bounds
+that is the io pool's width. The marks and crossings still start after the tile,
+because whether to ask at all is read from its body.
 
-**A part the host omits is not cached at all.** An empty document written under a
-real key is never re-fetched, so "no trees in this cell" would become permanent
-rather than merely current. The same rule is why nothing is cached on a failed
-answer anywhere in `platform::cell_source`.
+A `/cell/14/{x}/{y}.json` bundle that prefilled three of those parts in one
+request was built on the client and **never on the host** — atlas wrote no such
+file, so every start spent nine 404s on it (Deck, 2026-09-26) before the support
+flag latched. With the parts overlapping it would buy one request instead of
+three, not a shorter wait, so it was removed rather than built.
 
-The LoD2.2 shells, the BAG attributes and the LoD3 models are deliberately **not**
-in the bundle: each has its own ring, concurrency bound and retry policy, and none
-of them is holding up the ground.
+The LoD2.2 shells, the BAG attributes and the LoD3 models are not part of this
+job: each has its own ring, concurrency bound and retry policy, and none of them
+is holding up the ground.
 
 ## The two per-cell seams are different on purpose
 

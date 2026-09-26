@@ -366,28 +366,14 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
 /// regenerated without the ghost versions the only way an existing install would
 /// ever see the fix was a new key. The `v1` entries age out through the ordinary
 /// sweep.
-/// Whether our host serves BGT data for this cell.
-///
-/// Public so `systems::cell_bundle` can ask the same question before requesting a
-/// bundle: the bundle's parts are all BGT and BRP, so a cell this returns `false`
-/// for has nothing to bundle and must not cost a request. Without it a session
-/// outside the coverage — Berlin, say, after the manifest had already answered
-/// yes for a Dutch cell — would ask for a bundle per cell and be told no, for
-/// ever, because the support flag only latches off while it is still unknown.
-pub(crate) fn covers(cx: i64, cy: i64) -> bool {
-    COVERAGE.covers(cx, cy)
-}
-
-pub(crate) fn objects_cache_key(cx: i64, cy: i64) -> String {
+fn objects_cache_key(cx: i64, cy: i64) -> String {
     // `v3`: the objects file gained the bridge parts, and a cell cached before
     // would otherwise never show a pier.
     format!("bgt/v3/{BGT_ZOOM}/{cx}/{cy}.json")
 }
 
-/// The paving half's key. Public for the same reason [`objects_cache_key`] is:
-/// `systems::cell_bundle` writes a bundled part under the key this module reads,
-/// and two spellings of one key is exactly the bug that would hide.
-pub(crate) fn paving_cache_key(cx: i64, cy: i64) -> String {
+/// The paving half's key.
+fn paving_cache_key(cx: i64, cy: i64) -> String {
     format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.surfaces.json")
 }
 

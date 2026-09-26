@@ -171,10 +171,7 @@ pub fn crop_parcels(cell: &CropCell, cx: i64, cy: i64, tile_m: f32) -> Vec<CropP
 ///
 /// An uncovered cell asks nothing and answers empty; so does an unreachable one,
 /// because the fallback is the generic green the map already draws.
-/// Public because `systems::cell_bundle` writes a bundled part under the key
-/// this module reads, and two spellings of one key is exactly the bug that
-/// would hide — the bundle would be fetched and the per-part request made anyway.
-pub(crate) fn cache_key(cx: i64, cy: i64) -> String {
+fn cache_key(cx: i64, cy: i64) -> String {
     format!("brp/v1/{BRP_ZOOM}/{cx}/{cy}.json")
 }
 
