@@ -48,7 +48,9 @@ use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::collision::{BuildingColliders, Footprint};
 use crate::systems::ground_stack::GroundLayer;
-use crate::systems::osm_buildings::{lat_lng_to_local, num_from_value, overpass_query, MeshData};
+use crate::systems::osm_buildings::{
+    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, MeshData,
+};
 use crate::systems::scatter::{
     self, build_vegetation_meshes, srgb_to_linear_rgb, TreeInstance, TREE_FADE_END,
 };
@@ -213,7 +215,15 @@ fn cache_key(cx: i64, cy: i64) -> String {
 async fn fetch_cell_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cache_key(cx, cy);
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
-        return Ok(cached);
+        // A refusal page cached before `overpass_remark` recognised one is asked
+        // for again rather than parsed as an empty street for ever.
+        match overpass_remark(&cached) {
+            None => return Ok(cached),
+            Some(remark) => {
+                tracing::warn!(key, %remark, "re-fetching a cached Overpass refusal");
+                storage::remove(storage::Namespace::Cache, &key).await;
+            }
+        }
     }
     let (north, west) = tile_to_lat_lng(cx, cy, DETAIL_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, DETAIL_ZOOM);

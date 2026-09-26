@@ -3055,7 +3055,25 @@ struct OverpassRemark {
     remark: Option<String>,
 }
 
-fn overpass_remark(text: &str) -> Option<String> {
+pub(crate) fn overpass_remark(text: &str) -> Option<String> {
+    // **Not every refusal is JSON.** Overpass answers a query it is already
+    // running for someone else, or a client over its rate limit, with an HTML
+    // page (`Dispatcher_Client::request_read_and_idx::duplicate_query`,
+    // `rate_limited`). Read as success, that page was cached by every caller —
+    // they store the text before parsing it — so the layer then parsed garbage
+    // on every later start, from the cache, without asking again (Deck,
+    // 2026-09-26: a busy Overpass left a street with no trees, no lamps and no
+    // landmarks, cold and warm alike). Every answer this client asks for is a
+    // JSON object.
+    if !text.trim_start().starts_with('{') {
+        // The page's own error line when it has one, which is the part worth
+        // logging; the first bytes are an XML preamble.
+        let said = text
+            .split_once("Error</strong>:")
+            .map_or(text, |(_, rest)| rest.split('<').next().unwrap_or(rest));
+        let head: String = said.chars().filter(|c| !c.is_control()).take(160).collect();
+        return Some(format!("not a JSON document: {}", head.trim()));
+    }
     serde_json::from_str::<OverpassRemark>(text).ok()?.remark
 }
 
@@ -3574,6 +3592,28 @@ pub(crate) fn num_from_value(v: &serde_json::Value) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both of Overpass's refusal channels are refusals — the JSON `remark` and
+    /// the HTML page it sends for a duplicate query or a rate limit — and an
+    /// ordinary answer, empty or not, is not.
+    #[test]
+    fn an_overpass_refusal_page_is_not_an_answer() {
+        let html = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html><body>\
+            <p><strong>Error</strong>: runtime error: open64: 0 Success /osm3s_osm_base \
+            Dispatcher_Client::request_read_and_idx::duplicate_query </p></body></html>";
+        assert!(
+            overpass_remark(html).is_some_and(
+                |r| r.starts_with("not a JSON document") && r.contains("duplicate_query")
+            )
+        );
+        let remark = r#"{"version":0.6,"elements":[],"remark":"runtime error: Query timed out"}"#;
+        assert!(overpass_remark(remark).is_some_and(|r| r.contains("timed out")));
+        assert_eq!(overpass_remark(r#"{"version":0.6,"elements":[]}"#), None);
+        assert_eq!(
+            overpass_remark("  \n{\"elements\":[{\"type\":\"node\"}]}"),
+            None
+        );
+    }
 
     /// Every triangle survives a split, in the same order and at the same
     /// coordinates.
