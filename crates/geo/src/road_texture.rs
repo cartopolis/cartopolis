@@ -75,17 +75,32 @@ impl RoadClass {
     /// tone, without markings. Linear-space rgb, as `Color::srgb` expects.
     #[must_use]
     pub fn flat_color(self) -> [f32; 3] {
-        let rgb = match self {
-            Self::Motorway | Self::Carriageway | Self::Major => TARMAC_DARK,
-            Self::Minor => TARMAC_LIGHT,
-            Self::Path => GRIT,
-            Self::Rail => BALLAST,
-        };
+        let rgb = self.base_tone();
         [
             rgb[0] as f32 / 255.0,
             rgb[1] as f32 / 255.0,
             rgb[2] as f32 / 255.0,
         ]
+    }
+
+    /// [`flat_color`](Self::flat_color) as `0xRRGGBB`, for the raster basemap.
+    /// Above `map_geometry`'s image altitude the basemap is the only ground
+    /// drawn, so it paints each road in the tone its mesh is built from — the
+    /// cartographic near-white it used before made every road vanish into the
+    /// paper the moment the meshes went away.
+    #[must_use]
+    pub fn flat_rgb(self) -> u32 {
+        let [r, g, b] = self.base_tone();
+        (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+    }
+
+    fn base_tone(self) -> [u8; 3] {
+        match self {
+            Self::Motorway | Self::Carriageway | Self::Major => TARMAC_DARK,
+            Self::Minor => TARMAC_LIGHT,
+            Self::Path => GRIT,
+            Self::Rail => BALLAST,
+        }
     }
 
     /// Where the tyres run, as positions across the carriageway (0 = left kerb,

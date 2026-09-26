@@ -108,8 +108,10 @@ fn a_second_read_of_a_layer_is_served_from_the_memo() {
 /// Rasterising a whole tile must not allocate per pixel.
 ///
 /// Measured at both raster sizes on purpose — see [`RENDER_DENSE_ALLOCS`], whose
-/// comment carries the finding. If these two ever diverge, something started
-/// scaling with area that did not before.
+/// comment carries the finding. The larger raster may allocate more, by the
+/// lines that cross tiny-skia's one-pixel hairline threshold between the two
+/// sizes; the smaller one allocating more would mean something started scaling
+/// against the raster the wrong way.
 #[test]
 fn rasterising_a_dense_tile_costs_the_same_at_both_raster_sizes() {
     let tile = parse(GRONINGEN);
@@ -125,13 +127,12 @@ fn rasterising_a_dense_tile_costs_the_same_at_both_raster_sizes() {
     perf::within(small, RENDER_DENSE_ALLOCS, "render_mvt_sized 256²");
     perf::within(large, RENDER_DENSE_ALLOCS, "render_mvt_sized 512²");
 
-    let spread = small.allocs.abs_diff(large.allocs);
     assert!(
-        spread * 100 < small.allocs,
-        "256² allocated {} and 512² allocated {} — a spread of {spread} (>1%) means \
-         rasterisation started allocating with area. This cost is supposed to be \
-         per-feature; if it is not, the phone tier's `tile_px = 256` is buying less \
-         than its doc comment claims.",
+        small.allocs * 100 <= large.allocs * 101,
+        "256² allocated {} and 512² allocated {} — the smaller raster costing more \
+         means rasterisation started allocating against size. This cost is supposed \
+         to be per-feature; if it is not, the phone tier's `tile_px = 256` is buying \
+         less than its doc comment claims.",
         small.allocs,
         large.allocs,
     );
@@ -279,7 +280,16 @@ const MEMO_REREAD_ALLOCS: u64 = 0;
 /// extra submission per style at the end of each streets pass rather than
 /// splitting runs where they fall (which measured 1,420), and paths are left
 /// round (1,246 with them). What remains is per flush, as above.
-const RENDER_DENSE_ALLOCS: u64 = 1_200;
+///
+/// Raised 1,200 → 1,700 on 2026-09-26, measured at 1,480 (256²) and 1,634
+/// (512²) against 1,190 before: stroke widths had been read as tile units, so
+/// every street, casing and outline in a whole z14 tile went through tiny-skia's
+/// hairline route, which builds no stroke outline. At their real widths most of
+/// them are stroked properly, and the stroker allocates per batch. The same
+/// threshold is why the two sizes now part: tiny-skia draws anything under a
+/// device pixel as a hairline, and more lines fall under a pixel at 256² —
+/// which is also why the smaller raster is the cheaper one, as it should be.
+const RENDER_DENSE_ALLOCS: u64 = 1_700;
 
 /// Heap a parsed-but-undecoded Groningen z14 retains. Measured 3,299 KiB
 /// (bit-identical across runs, 2026-08-24) from a 495 KiB body — the protobuf

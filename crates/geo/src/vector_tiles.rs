@@ -599,6 +599,19 @@ fn street_style(feature: &Feature, source_m: f32) -> (f32, u32, u32) {
         oneway_reverse: flag_of(feature, "oneway_reverse"),
         link: flag_of(feature, "link"),
     };
+    // The fill is the mesh's own tarmac/grit tone wherever the mesh path would
+    // draw this kind: the image replaces the road meshes above 500 m
+    // (`map_geometry`), and a pale cartographic fill there left the roads
+    // indistinguishable from the paper around them.
+    //
+    // A line that was one tone (paths, rail) stays one tone, casing included. A
+    // path's fill is under a pixel wide at z14, which tiny-skia draws as a
+    // hairline whose placement moves by a pixel with the raster band's offset;
+    // inside a casing of another colour that jog shows at every band seam
+    // (`banding_the_raster_changes_no_geometry`).
+    let one_tone = fill == case;
+    let fill = road_class(kind, flags).map_or(fill, RoadClass::flat_rgb);
+    let case = if one_tone { fill } else { case };
     let real_px = road_width_m(kind, flags) * TILE_PX as f32 / source_m.max(1.0);
     (real_px.max(floor_px), fill, case)
 }
@@ -1287,7 +1300,16 @@ fn flush_batch(
         }
         Some(bits) => {
             let stroke = Stroke {
-                width: f32::from_bits(bits),
+                // The batch carries its width in pixels, and tiny-skia reads a
+                // stroke width in *path* units and maps it through `t` with the
+                // geometry — tile-extent units here, 4096 to a tile. Passed
+                // through unscaled, every line came out `px · f / extent` of its
+                // width: right only at an 8× overzoom of a 512 px raster, a
+                // quarter-pixel hairline for a street in a whole z14 tile, and
+                // so the roads all but vanished from the basemap once
+                // `map_geometry` stopped drawing their meshes above 500 m. The
+                // transform is axis-aligned and uniform, so `sx` is the scale.
+                width: f32::from_bits(bits) / t.sx,
                 line_cap: if butt { LineCap::Butt } else { LineCap::Round },
                 line_join: LineJoin::Round,
                 ..Stroke::default()
@@ -6434,6 +6456,44 @@ mod tests {
         );
     }
 
+    /// A street is painted at its real width at every magnification, not only at
+    /// the one where tile units and pixels happen to coincide.
+    ///
+    /// The ratio test below cannot see this: it compares the raster against
+    /// itself at two sizes, and a width in the wrong units is wrong at both. The
+    /// widths went through tiny-skia as path units — 4096 to a tile — so a whole
+    /// z14 tile drew a 7 m street a third of a pixel wide and the basemap that
+    /// stands in for the road meshes above 500 m had no roads in it.
+    #[test]
+    fn a_street_is_painted_at_its_real_width_at_every_zoom() {
+        let street = synth::tile(&[synth::tagged_line_layer(
+            "streets",
+            4096,
+            ("kind", "residential"),
+            &[(-100, 1800), (4196, 1800)],
+        )]);
+        let real_px = road_width_m("residential", StreetFlags::default()) * TILE_PX as f32
+            / NOMINAL_Z14_TILE_M;
+        // The tarmac, told apart from the paper and from the paler kerb casing
+        // around it by the red channel's midpoint between tarmac and casing.
+        let tarmac = RoadClass::Minor.flat_rgb() >> 16;
+        let casing = palette::ROAD_CASING >> 16;
+        let dark = (tarmac + casing) / 2;
+        for (factor, y) in [(1u32, 0u32), (4, 1), (8, 3)] {
+            let sub = SubTile { factor, x: 0, y };
+            let rgba = render_mvt(&street, sub).expect("render");
+            let column = TILE_PX as usize / 2;
+            let painted = (0..TILE_PX as usize)
+                .filter(|row| u32::from(rgba[(row * TILE_PX as usize + column) * 4]) < dark)
+                .count() as f32;
+            let want = real_px * factor as f32;
+            assert!(
+                (painted - want).abs() <= 1.5,
+                "at {factor}× the street is {painted} px of tarmac, its real width is {want:.1} px"
+            );
+        }
+    }
+
     /// Halving the raster must not double every road.
     ///
     /// Stroke widths are in **pixels**, while the texture is stretched over the
@@ -6837,8 +6897,16 @@ mod tests {
                 // by `worst_row` below: a missing road is a long run of pixels
                 // in one row at full channel range, not a handful at a delta of
                 // five.
+                //
+                // Raised 8 → 12 on 2026-09-26, when the stroke widths stopped
+                // being read as tile units (`flush_batch`). Until then every
+                // street in a whole z14 tile was a sub-pixel hairline, so factor 1
+                // had no stroke edges at a real width for the shift to round;
+                // with them it measured 12 at seven bands, in at most 21 bytes of
+                // any row and 399 of the tile. The seam bounds below are
+                // unchanged and all hold.
                 assert!(
-                    max_delta <= 8,
+                    max_delta <= 12,
                     "factor {factor} in {bands} bands moved a channel by {max_delta}/255 — past anti-aliasing, so a band lost or gained geometry"
                 );
                 // Scaled by the number of seams, because that is what the residue
@@ -6883,14 +6951,24 @@ mod tests {
                 full.len(),
                 "factor {factor} ({x},{y}): raster size changed"
             );
+            // **One count, and no more.** tiny-skia builds a batch's edges by
+            // one of two routes — straight, when the whole path lies inside the
+            // pixmap (`path_contained_in_clip`), or through its edge clipper
+            // otherwise — and the two round a few edges a hair differently.
+            // Culling the off-screen members of a batch can move it from the
+            // second route to the first. Measured once real stroke widths
+            // reached the overzoomed tiles (2026-09-26): one channel of one
+            // pixel, by one, from a `bridges` outline wholly outside factor 4
+            // (0,3). A feature the cull wrongly dropped is a different shape — a
+            // run of pixels at the stroke's full contrast — and still fails.
             let differing = culled
                 .iter()
                 .zip(full.iter())
-                .filter(|(a, b)| a != b)
+                .filter(|(a, b)| a.abs_diff(**b) > 1)
                 .count();
             assert_eq!(
                 differing, 0,
-                "factor {factor} ({x},{y}): culling changed {differing} bytes"
+                "factor {factor} ({x},{y}): culling changed {differing} bytes by more than rounding"
             );
         }
     }
