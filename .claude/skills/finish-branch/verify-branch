@@ -138,6 +138,53 @@ $render  && steps="$steps smoke-orbit smoke-phone"
 $targets && steps="$steps wasm android"
 [ -n "$only" ] && steps=$(printf '%s' "$only" | tr ',' ' ')
 
+# ── A build slot of its own ──────────────────────────────────────────────────
+# **The gate builds in a slot's own directory, never in the shared one.** The
+# container exports one CARGO_TARGET_DIR for every session, and the `slot` client
+# that used to point a build at its slot's own directory lived in ~/.local/bin —
+# the container's writable layer, which the 2026-09-17 recreate emptied. Since
+# then every session built in one directory at once, and the gate with them: on
+# 2026-09-26 one run timed out at load 17 and the next died in the link with
+# "unable to copy …/incremental/…dwo", another session's build overwriting the
+# files under it. A red gate that says nothing about the branch is worse than a
+# slow one, so this waits for a VPS slot, builds in `<slot>/target` — warm, since
+# `cartopolis-slot-warm` keeps idle slots built — and hands it back on exit.
+#
+# Only when the shared directory is what is in force: a caller that has pointed
+# CARGO_TARGET_DIR somewhere else (a slot it already holds, a workstation's own
+# `target/`) has decided, and a machine with no registry is not this container.
+# CARTO_GATE_NO_SLOT=1 opts out.
+slots_dir="${CARTO_SLOTS_DIR:-/home/agent/cargo-target/slots}"
+registry="$slots_dir/carto-slots"
+gate_owner="gate-$(basename "$root")"
+gate_slot=""
+release_gate_slot() {
+    [ -n "$gate_slot" ] && python3 "$registry" release --owner "$gate_owner" >/dev/null 2>&1
+    gate_slot=""
+}
+if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && [ -x "$registry" ] \
+    && [ "${CARGO_TARGET_DIR:-}" = "$(dirname "$slots_dir")" ]; then
+    waited=0
+    while :; do
+        claim=$(python3 "$registry" mine --owner "$gate_owner" 2>/dev/null) \
+            || claim=$(python3 "$registry" claim --owner "$gate_owner" --host vps --ttl 10800 2>/dev/null) \
+            || claim=""
+        [ -n "$claim" ] && break
+        if [ "$waited" -ge 3600 ]; then
+            echo "no VPS slot came free in an hour; not building in the shared directory" >&2
+            exit 3
+        fi
+        [ "$waited" -eq 0 ] && echo "waiting for a VPS build slot ($(python3 "$registry" list 2>/dev/null | grep -c claimed) claimed)"
+        sleep 30
+        waited=$((waited + 30))
+    done
+    gate_slot=$(printf '%s' "$claim" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+    slot_path=$(printf '%s' "$claim" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')
+    trap release_gate_slot EXIT
+    export CARGO_TARGET_DIR="$slot_path/target"
+    echo "slot     $gate_slot — building in $CARGO_TARGET_DIR"
+fi
+
 failed=""
 passed=""
 skipped=""
