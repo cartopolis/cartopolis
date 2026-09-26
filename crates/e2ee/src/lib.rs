@@ -393,17 +393,23 @@ impl Device {
                     .map_err(mls)?;
                 Ok(Received::Membership { by: from })
             }
-            // Proposals without a commit are not something this client sends;
-            // one from elsewhere is stored by the library for the next commit.
-            other => Err(Error::Mls(format!(
-                "unexpected content: {}",
-                match other {
-                    ProcessedMessageContent::ProposalMessage(_) => "proposal",
-                    ProcessedMessageContent::ExternalJoinProposalMessage(_) =>
-                        "external join proposal",
-                    _ => "other",
-                }
-            ))),
+            // A bare proposal is not something this client sends, and a device's
+            // own entries are skipped before they get here. Either arriving means
+            // the caller fed this the wrong thing, which must not be reported as
+            // a membership change — it was, once, and that hid exactly this.
+            _ => Err(Error::Mls(
+                "not a message or a commit this client handles".into(),
+            )),
+        }
+    }
+
+    /// Drop a chat this device created and then abandoned (the server pointed
+    /// at an existing one instead), keys and all.
+    pub fn forget(&mut self, group: &[u8]) {
+        if let Some(mut g) = self.groups.remove(group) {
+            // A failed delete is not fatal: the group is gone from this
+            // device's list either way, and `load` only restores listed groups.
+            let _ = g.delete(self.provider.storage());
         }
     }
 
