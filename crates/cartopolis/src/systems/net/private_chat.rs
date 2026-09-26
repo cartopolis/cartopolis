@@ -20,9 +20,10 @@
 //! # What is deliberately not here yet
 //!
 //! - **Old chats on a new device.** A second phone joins chats started after it
-//!   registered; earlier ones need the encrypted backup (recovery key).
-//! - **Groups.** The engine and the server both support more than two people;
-//!   only direct chats have a way to be started from the UI so far.
+//!   registered; earlier ones would need the encrypted backup (recovery key),
+//!   which is set aside for now.
+//! - **Changing a group after it starts.** A group is created with its members
+//!   and its name; adding or removing people later is not built.
 
 use std::collections::BTreeMap;
 
@@ -40,6 +41,9 @@ const KEY_PACKAGE_STOCK: u32 = 20;
 
 /// Below this many, top up at once rather than waiting for the next connect.
 const KEY_PACKAGE_LOW: u32 = 5;
+
+/// Longest group name kept, in characters.
+const MAX_GROUP_NAME: usize = 60;
 
 /// Request ids for private-chat traffic live in their own range, so a refusal
 /// (`ServerError`) can be told apart from one about a prim edit — the network
@@ -147,6 +151,8 @@ pub enum Event {
     },
     /// They stopped sharing it early.
     LocationStopped { group: Vec<u8>, from: String },
+    /// A group chat has (or changed) its name.
+    Named { group: Vec<u8>, name: String },
     /// Something the person should be told, in words.
     Notice(String),
 }
@@ -165,9 +171,10 @@ fn read_payload(bytes: &[u8]) -> (String, Option<Point>) {
             Err(_) => (UNREADABLE.into(), None),
         },
         // Location updates are not lines; `on_deliver` handles them before this.
-        Ok(Payload::Location { .. } | Payload::LocationStopped { .. }) | Err(_) => {
-            (UNREADABLE.into(), None)
-        }
+        Ok(
+            Payload::Location { .. } | Payload::LocationStopped { .. } | Payload::GroupName { .. },
+        )
+        | Err(_) => (UNREADABLE.into(), None),
     }
 }
 
@@ -202,11 +209,31 @@ struct Starting {
     stage: Stage,
 }
 
+/// A group chat being set up. Every member's key packages are asked for at
+/// once; the chat is created when all the answers are in, and everybody who
+/// had a device is added in one commit.
+#[derive(Debug)]
+struct GroupStart {
+    name: String,
+    /// Claims not answered yet: (request id, member).
+    waiting: Vec<(u32, String)>,
+    /// Members whose devices can be added, with their packages.
+    got: Vec<(String, Vec<cartopolis_core::E2eeKeyPackage>)>,
+    /// Members who could not be added (no device, or refused).
+    missing: Vec<String>,
+    /// The request now in flight once claiming is done: registering the chat,
+    /// then committing its members.
+    request: Option<u32>,
+    group: Option<Vec<u8>>,
+    committing: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 struct SavedEngine {
     device: Vec<u8>,
     cursors: BTreeMap<Vec<u8>, u64>,
     peers: BTreeMap<Vec<u8>, String>,
+    groups: std::collections::BTreeSet<Vec<u8>>,
 }
 
 /// One device's private chats, as a state machine over protocol messages.
@@ -216,9 +243,13 @@ pub struct Engine {
     /// strictly in order; a gap means something was missed, and the answer is to
     /// ask again rather than to skip ahead (a skipped commit breaks the chat).
     cursors: BTreeMap<Vec<u8>, u64>,
-    /// Per chat: who it is with, for its label.
+    /// Per chat: its label — who a direct chat is with, or a group's name.
     peers: BTreeMap<Vec<u8>, String>,
+    /// Which chats are groups, so a direct chat with "bob" is never mistaken for
+    /// a group somebody happened to name "bob".
+    groups: std::collections::BTreeSet<Vec<u8>>,
     starting: Vec<Starting>,
+    group_starts: Vec<GroupStart>,
     next_request: u32,
 }
 
@@ -229,7 +260,9 @@ impl Engine {
             device: Device::new(username, Uuid::new_v4()).map_err(|e| e.to_string())?,
             cursors: BTreeMap::new(),
             peers: BTreeMap::new(),
+            groups: std::collections::BTreeSet::new(),
             starting: Vec::new(),
+            group_starts: Vec::new(),
             next_request: 1,
         })
     }
@@ -240,7 +273,9 @@ impl Engine {
             device: Device::load(&saved.device).map_err(|e| e.to_string())?,
             cursors: saved.cursors,
             peers: saved.peers,
+            groups: saved.groups,
             starting: Vec::new(),
+            group_starts: Vec::new(),
             next_request: 1,
         })
     }
@@ -252,6 +287,7 @@ impl Engine {
             device: self.device.save(),
             cursors: self.cursors.clone(),
             peers: self.peers.clone(),
+            groups: self.groups.clone(),
         })
         .unwrap_or_default()
     }
@@ -308,6 +344,83 @@ impl Engine {
         out.push(sync);
         // Whatever was half set up belonged to the previous connection's requests.
         self.starting.clear();
+        self.group_starts.clear();
+    }
+
+    /// Start a group chat called `name` with `members` (usernames).
+    pub fn start_group(
+        &mut self,
+        name: &str,
+        members: &[String],
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) {
+        let name = name.trim().to_string();
+        let me = self.username().to_string();
+        let mut people: Vec<String> = Vec::new();
+        for m in members {
+            let m = m.trim();
+            if !m.is_empty()
+                && !m.eq_ignore_ascii_case(&me)
+                && !people.iter().any(|p| p.eq_ignore_ascii_case(m))
+            {
+                people.push(m.to_string());
+            }
+        }
+        if name.is_empty() || people.is_empty() {
+            events.push(Event::Notice(
+                "A group needs a name and at least one other person.".into(),
+            ));
+            return;
+        }
+        let mut waiting = Vec::new();
+        for person in people {
+            let request = self.request();
+            out.push(NetMessage::E2eeClaimKeyPackages {
+                request_id: request,
+                username: person.clone(),
+            });
+            waiting.push((request, person));
+        }
+        self.group_starts.push(GroupStart {
+            name,
+            waiting,
+            got: Vec::new(),
+            missing: Vec::new(),
+            request: None,
+            group: None,
+            committing: false,
+        });
+    }
+
+    /// Every claim of a group start is answered: create the chat, or give up
+    /// if nobody could be added.
+    fn proceed_group(&mut self, i: usize, out: &mut Vec<NetMessage>, events: &mut Vec<Event>) {
+        if self.group_starts[i].got.is_empty() {
+            let gs = self.group_starts.remove(i);
+            events.push(Event::Notice(format!(
+                "Nobody in \"{}\" can receive private messages yet: {}.",
+                gs.name,
+                gs.missing.join(", ")
+            )));
+            return;
+        }
+        let group = match self.device.create_group() {
+            Ok(g) => g,
+            Err(e) => {
+                self.group_starts.remove(i);
+                events.push(Event::Notice(format!("could not start the group: {e}")));
+                return;
+            }
+        };
+        let request = self.request();
+        out.push(NetMessage::E2eeCreateGroup {
+            request_id: request,
+            group: group.clone(),
+            direct_with: None,
+        });
+        self.group_starts[i].request = Some(request);
+        self.group_starts[i].group = Some(group);
     }
 
     /// Start (or find) a direct chat with `username`.
@@ -324,7 +437,7 @@ impl Engine {
         if let Some((g, _)) = self
             .peers
             .iter()
-            .find(|(_, p)| p.eq_ignore_ascii_case(&username))
+            .find(|(g, p)| !self.groups.contains(*g) && p.eq_ignore_ascii_case(&username))
         {
             events.push(Event::Opened {
                 group: g.clone(),
@@ -457,18 +570,30 @@ impl Engine {
                 request_id,
                 packages,
                 ..
-            } => self.on_key_packages(request_id, packages, out, events),
+            } => {
+                if !self.on_group_key_packages(request_id, Some(packages.clone()), out, events) {
+                    self.on_key_packages(request_id, packages, out, events);
+                }
+            }
             NetMessage::E2eeGroupCreated {
                 request_id,
                 group,
                 existing,
-            } => self.on_group_created(request_id, group, existing, out, events),
+            } => {
+                if !self.on_group_registered(request_id, &group, out, events) {
+                    self.on_group_created(request_id, group, existing, out, events);
+                }
+            }
             NetMessage::E2eeSent {
                 request_id,
                 group,
                 seq,
                 refused,
-            } => self.on_sent(request_id, &group, seq, refused, events),
+            } => {
+                if !self.on_group_committed(request_id, seq, refused.clone(), out, events) {
+                    self.on_sent(request_id, &group, seq, refused, events);
+                }
+            }
             NetMessage::E2eeInvite {
                 group,
                 from,
@@ -491,11 +616,171 @@ impl Engine {
                 message,
                 ..
             } if is_private_request(request_id) => {
-                self.starting.retain(|s| s.request != request_id);
+                // A refused claim in a group start leaves that member out and
+                // lets the rest go ahead; anything else ends what it belonged to.
+                if !self.on_group_key_packages(request_id, None, out, events) {
+                    self.starting.retain(|s| s.request != request_id);
+                    self.group_starts.retain(|g| g.request != Some(request_id));
+                }
                 events.push(Event::Notice(message));
             }
             _ => {}
         }
+    }
+
+    /// A claim answer, if it belongs to a group start. `None` means the claim
+    /// was refused. Returns whether it did belong to one.
+    fn on_group_key_packages(
+        &mut self,
+        request_id: u32,
+        packages: Option<Vec<cartopolis_core::E2eeKeyPackage>>,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(i) = self
+            .group_starts
+            .iter()
+            .position(|g| g.waiting.iter().any(|(r, _)| *r == request_id))
+        else {
+            return false;
+        };
+        let gs = &mut self.group_starts[i];
+        let at = gs
+            .waiting
+            .iter()
+            .position(|(r, _)| *r == request_id)
+            .unwrap_or(0);
+        let (_, member) = gs.waiting.remove(at);
+        match packages {
+            Some(p) if !p.is_empty() => gs.got.push((member, p)),
+            _ => gs.missing.push(member),
+        }
+        if gs.waiting.is_empty() {
+            self.proceed_group(i, out, events);
+        }
+        true
+    }
+
+    /// The server registered a group's id: add everybody in one commit.
+    fn on_group_registered(
+        &mut self,
+        request_id: u32,
+        group: &[u8],
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(i) = self
+            .group_starts
+            .iter()
+            .position(|g| g.request == Some(request_id) && !g.committing)
+        else {
+            return false;
+        };
+        if self.group_starts[i].group.as_deref() != Some(group) {
+            let gs = self.group_starts.remove(i);
+            if let Some(g) = gs.group {
+                self.device.forget(&g);
+            }
+            tracing::warn!("the server confirmed a different group than was created");
+            return true;
+        }
+        let packages: Vec<cartopolis_core::E2eeKeyPackage> = self.group_starts[i]
+            .got
+            .iter()
+            .flat_map(|(_, p)| p.iter().cloned())
+            .collect();
+        let members: Vec<String> = self.group_starts[i]
+            .got
+            .iter()
+            .map(|(m, _)| m.clone())
+            .collect();
+        let bytes: Vec<Vec<u8>> = packages.iter().map(|p| p.bytes.clone()).collect();
+        match self.device.add(group, &bytes) {
+            Ok(add) => {
+                let request = self.request();
+                out.push(NetMessage::E2eeSend {
+                    request_id: request,
+                    group: group.to_vec(),
+                    epoch: add.epoch,
+                    commit: true,
+                    message: add.message,
+                    welcome: add.welcome.map(|w| E2eeWelcome {
+                        devices: packages.iter().map(|p| p.device).collect(),
+                        members,
+                        bytes: w,
+                    }),
+                });
+                self.group_starts[i].request = Some(request);
+                self.group_starts[i].committing = true;
+            }
+            Err(e) => {
+                let gs = self.group_starts.remove(i);
+                self.device.forget(group);
+                events.push(Event::Notice(format!(
+                    "could not add people to \"{}\": {e}",
+                    gs.name
+                )));
+            }
+        }
+        true
+    }
+
+    /// The server accepted (or refused) the commit that adds a group's members.
+    fn on_group_committed(
+        &mut self,
+        request_id: u32,
+        seq: Option<u64>,
+        refused: Option<String>,
+        out: &mut Vec<NetMessage>,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(i) = self
+            .group_starts
+            .iter()
+            .position(|g| g.request == Some(request_id) && g.committing)
+        else {
+            return false;
+        };
+        let gs = self.group_starts.remove(i);
+        let Some(group) = gs.group else {
+            return true;
+        };
+        let Some(seq) = seq else {
+            let _ = self.device.discard_pending(&group);
+            self.device.forget(&group);
+            events.push(Event::Notice(refused.unwrap_or_else(|| "refused".into())));
+            return true;
+        };
+        if let Err(e) = self.device.confirm_pending(&group) {
+            events.push(Event::Notice(format!("could not start the group: {e}")));
+            return true;
+        }
+        self.cursors.insert(group.clone(), seq);
+        self.peers.insert(group.clone(), gs.name.clone());
+        self.groups.insert(group.clone());
+        // The name goes in sealed, as the chat's first message.
+        if let Err(e) = self.send_payload(
+            &group,
+            &Payload::GroupName {
+                name: gs.name.clone(),
+                sent_at_ms: 0,
+            },
+            out,
+        ) {
+            tracing::warn!(error = %e, "could not send a group's name");
+        }
+        if !gs.missing.is_empty() {
+            events.push(Event::Notice(format!(
+                "Not added to \"{}\" (they can't receive private messages yet): {}.",
+                gs.name,
+                gs.missing.join(", ")
+            )));
+        }
+        events.push(Event::Opened {
+            group,
+            peer: gs.name,
+        });
+        true
     }
 
     fn on_key_packages(
@@ -724,6 +1009,14 @@ impl Engine {
                     group,
                     from: from.username,
                 }),
+                Ok(Payload::GroupName { name, .. }) => {
+                    let name: String = name.trim().chars().take(MAX_GROUP_NAME).collect();
+                    if !name.is_empty() {
+                        self.peers.insert(group.clone(), name.clone());
+                        self.groups.insert(group.clone());
+                        events.push(Event::Named { group, name });
+                    }
+                }
                 _ => {
                     let (body, point) = read_payload(&bytes);
                     events.push(Event::Line {
@@ -960,6 +1253,9 @@ pub fn drive_private_chats(
     for name in std::mem::take(&mut chat.private_start) {
         engine.start_direct(&name, &mut out, &mut events);
     }
+    for (name, members) in std::mem::take(&mut chat.group_start) {
+        engine.start_group(&name, &members, &mut out, &mut events);
+    }
     for (channel, text) in std::mem::take(&mut chat.private_outbox) {
         let Some(group) = group_of(&channel) else {
             continue;
@@ -1053,6 +1349,9 @@ pub fn drive_private_chats(
             ),
             Event::LocationStopped { group, from } => {
                 chat.drop_location(&channel_key(&group), &from);
+            }
+            Event::Named { group, name } => {
+                chat.open_channel(&channel_key(&group), &private_label(&name));
             }
             Event::Notice(text) => {
                 chat.notice = Some(crate::systems::chat::ChatNotice { text, error: true });
@@ -1337,6 +1636,64 @@ mod loopback {
             _ => None,
         });
         assert_eq!(got, Some((sent, "then the show after?".into())));
+    }
+
+    #[tokio::test]
+    async fn a_group_reaches_everyone_who_can_join_and_names_whoever_cannot() {
+        // Dave has an account but has never signed in with private chats.
+        let (_dir, _h, addr) = server(&["alice", "bob", "carol", "dave"]).await;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        let mut carol = Peer::connect(&addr, "carol").await;
+        for p in [&mut alice, &mut bob, &mut carol] {
+            p.pump(PUMP).await;
+        }
+        let mut out = Vec::new();
+        let members = ["bob".to_string(), "carol".to_string(), "dave".to_string()];
+        alice
+            .engine
+            .start_group("Saturday ride", &members, &mut out, &mut alice.events);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        let group = alice.opened().expect("the group opened for alice");
+        assert!(
+            alice
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::Notice(n) if n.contains("dave"))),
+            "dave is named as not added: {:?}",
+            alice.events
+        );
+
+        for p in [&mut bob, &mut carol] {
+            p.pump(PUMP).await;
+            assert_eq!(p.opened(), Some(group.clone()));
+            assert!(
+                p.events
+                    .iter()
+                    .any(|e| matches!(e, Event::Named { name, .. } if name == "Saturday ride")),
+                "the group's name arrives sealed"
+            );
+        }
+
+        let mut out = Vec::new();
+        alice
+            .engine
+            .send_text(&group, "10:00 at the station", 0, &mut out)
+            .unwrap();
+        alice.send_all(out).await;
+        for p in [&mut bob, &mut carol] {
+            p.pump(PUMP).await;
+            assert_eq!(
+                p.lines(),
+                vec![("alice".to_string(), "10:00 at the station".to_string())]
+            );
+        }
+        // A direct chat with bob is still its own chat, not this group.
+        bob.events.clear();
+        let mut out = Vec::new();
+        bob.engine.start_direct("alice", &mut out, &mut bob.events);
+        assert!(!out.is_empty(), "a new direct chat is set up");
     }
 
     #[tokio::test]

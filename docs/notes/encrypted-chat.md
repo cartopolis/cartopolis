@@ -102,3 +102,17 @@ older build meets a newer variant as "a message this version can't display".
 - **Colours mean one thing each:** a chat's points are the brand orange, a
   person's real location is `theme::REAL_LOCATION` blue.
 - **Desktop has no location provider**, so sharing from it says so and stops.
+
+## Groups
+
+A group is created with its members and its name in one go: the creator asks
+for every member's key packages at once, creates the chat, adds everybody who
+has a device in one commit, and then sends the name as the chat's first sealed
+message (`Payload::GroupName`), so the server never learns what a group is
+called. Members with no device are named back to the creator as "not added".
+
+Key-package claims are a bucket (`net::CLAIM_BURST`, refilling every
+`MIN_CLAIM_INTERVAL`) rather than a fixed gap, because a group claims for every
+member at once; past the bucket the server answers `429` with a reason, never
+silence, since an empty answer reads as "they have no app that can chat
+privately". Adding or removing people after a group starts is not built.

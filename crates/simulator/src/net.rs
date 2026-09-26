@@ -35,11 +35,18 @@ const VOICE_CHANNEL: &str = "voice:local";
 const MAX_VOICE_BYTES: usize = 1500;
 const MIN_VOICE_INTERVAL: Duration = Duration::from_millis(15);
 
-/// Private chats: the least time between two key-package claims from one
-/// connection. Each claim deletes a package from somebody else's stock, so an
-/// unthrottled loop could leave a person impossible to add to a chat until they
-/// next connect and top up. A person starting chats never comes near this.
+/// Private chats: key-package claims refill at one per this interval per
+/// connection, up to [`CLAIM_BURST`] at once. Each claim deletes a package from
+/// somebody else's stock, so an unthrottled loop could leave a person
+/// impossible to add to a chat until they next connect and top up.
+///
+/// A bucket rather than a plain interval because starting a group claims for
+/// every member at once: a fixed half-second gap dropped all but the first
+/// claim of a group without a word, which reads as those people having no
+/// app that can chat privately.
 const MIN_CLAIM_INTERVAL: Duration = Duration::from_millis(500);
+/// Claims one connection may make back to back — a group's worth of people.
+const CLAIM_BURST: u32 = 12;
 
 /// Longest username the moderation messages will act on.
 ///
@@ -557,8 +564,10 @@ pub async fn handle_connection<T: FrameTransport>(
     // invitations and cursors by device, and a connection with none has no keys
     // to read anything with anyway.
     let mut e2ee_device: Option<uuid::Uuid> = None;
-    let mut last_claim = Instant::now()
-        .checked_sub(MIN_CLAIM_INTERVAL)
+    // The claim bucket, carried as "the instant the next claim may happen", the
+    // same shape as `script_store_gate` below.
+    let mut claim_gate = Instant::now()
+        .checked_sub(MIN_CLAIM_INTERVAL * CLAIM_BURST)
         .unwrap_or_else(Instant::now);
 
     let mut outcome: anyhow::Result<()> = Ok(());
@@ -1297,10 +1306,34 @@ pub async fn handle_connection<T: FrameTransport>(
                                 }
                             }
                             NetMessage::E2eeClaimKeyPackages { request_id, username: subject } => {
-                                if e2ee_device.is_none() || last_claim.elapsed() < MIN_CLAIM_INTERVAL {
+                                if e2ee_device.is_none() {
                                     return Ok(());
                                 }
-                                last_claim = Instant::now();
+                                let within_rate = {
+                                    let now = Instant::now();
+                                    let floor = now
+                                        .checked_sub(MIN_CLAIM_INTERVAL * CLAIM_BURST)
+                                        .unwrap_or(now);
+                                    if claim_gate < floor {
+                                        claim_gate = floor;
+                                    }
+                                    let ok = claim_gate <= now;
+                                    if ok {
+                                        claim_gate += MIN_CLAIM_INTERVAL;
+                                    }
+                                    ok
+                                };
+                                if !within_rate {
+                                    // Said, not dropped: an empty answer would read as
+                                    // "they have no app that can chat privately".
+                                    let frame = encode_app_frame(&NetMessage::ServerError {
+                                        request_id,
+                                        code: 429,
+                                        message: "too many new private chats at once — try again in a moment".into(),
+                                    })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                    return Ok(());
+                                }
                                 let subject = subject.trim().to_string();
                                 // Your own name means "my other devices".
                                 let except = if subject.eq_ignore_ascii_case(&display_name) { e2ee_device } else { None };

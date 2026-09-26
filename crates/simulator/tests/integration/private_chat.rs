@@ -373,3 +373,48 @@ async fn somebody_outside_the_chat_gets_nothing_from_it() {
     .await;
     assert_eq!(replay.map(|r| r.0), Some(false));
 }
+
+/// Starting a group asks for every member's keys at once, so a burst of claims
+/// is allowed; past it the answer is a refusal that says so, not silence (an
+/// empty answer would read as "they have no app that can chat privately").
+#[tokio::test]
+async fn a_groups_worth_of_claims_goes_through_and_a_flood_is_refused_out_loud() {
+    let s = start(&["alice", "bob"]).await;
+    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
+    let mut a = online(&s.addr, &mut alice).await;
+    // Twice the burst, back to back. The bucket refills while they arrive, so
+    // the exact split is not the point: a group's worth must get through, and
+    // what does not must be refused with a reason rather than dropped.
+    const SENT: u32 = 24;
+    for i in 0..SENT {
+        send(
+            &mut a,
+            &NetMessage::E2eeClaimKeyPackages {
+                request_id: 100 + i,
+                username: "bob".into(),
+            },
+        )
+        .await;
+    }
+    let mut answered = 0u32;
+    let mut refused = 0u32;
+    while let Some((code, _)) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::E2eeKeyPackages { .. } => Some(None),
+        NetMessage::ServerError { code, .. } => Some(Some(code)),
+        _ => None,
+    })
+    .await
+    {
+        match code {
+            None => answered += 1,
+            Some(429) => refused += 1,
+            Some(other) => panic!("unexpected refusal code {other}"),
+        }
+        if answered + refused == SENT {
+            break;
+        }
+    }
+    assert_eq!(answered + refused, SENT, "every claim gets an answer");
+    assert!(answered >= 12, "a group's worth goes through ({answered})");
+    assert!(refused > 0, "a flood is refused, out loud");
+}

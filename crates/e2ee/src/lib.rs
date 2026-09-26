@@ -170,6 +170,12 @@ pub enum Payload {
     LocationStopped {
         sent_at_ms: u64,
     },
+    /// A group chat's name, set by whoever sent it last. Sealed like
+    /// everything else, so the server never learns what a group is called.
+    GroupName {
+        name: String,
+        sent_at_ms: u64,
+    },
 }
 
 impl Payload {

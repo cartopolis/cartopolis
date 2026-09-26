@@ -100,6 +100,12 @@ pub struct ChatState {
     pub share_stops: Vec<String>,
     /// The chat whose "Share location" durations are showing in the panel.
     pub share_menu: Option<String>,
+    /// Group chats to start this frame: (name, member usernames). Drained by
+    /// `systems::private_chat`.
+    pub group_start: Vec<(String, Vec<String>)>,
+    /// The "new group" fields in the panel: its name, and who is in it.
+    pub group_name_input: String,
+    pub group_members_input: String,
 }
 
 /// Somebody else's phone, as last shared with a chat.
@@ -208,6 +214,9 @@ impl Default for ChatState {
             sharing: Vec::new(),
             share_stops: Vec::new(),
             share_menu: None,
+            group_start: Vec::new(),
+            group_name_input: String::new(),
+            group_members_input: String::new(),
         }
     }
 }
@@ -482,6 +491,7 @@ pub fn render_chat_panel(
     let mut message_now: Option<String> = None;
     let mut focus_now: Option<String> = None;
     let mut toggle_world: Option<String> = None;
+    let mut create_group = false;
     let world_on = chat.world.clone();
     let now = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
@@ -733,6 +743,36 @@ pub fn render_chat_panel(
                     message_now = Some(chat.private_input.trim().to_string());
                 }
             });
+            // A private group: a name, and the people in it.
+            egui::CollapsingHeader::new("New private group")
+                .id_salt("chat_new_group")
+                .show(ui, |ui| {
+                    crate::systems::text_touch::field(
+                        ui,
+                        egui::TextEdit::singleline(&mut chat.group_name_input)
+                            .desired_width(ui.available_width())
+                            .hint_text("Group name"),
+                    );
+                    crate::systems::text_touch::field(
+                        ui,
+                        egui::TextEdit::singleline(&mut chat.group_members_input)
+                            .desired_width(ui.available_width())
+                            .hint_text("Usernames, separated by commas"),
+                    );
+                    let ready = !chat.group_name_input.trim().is_empty()
+                        && !chat.group_members_input.trim().is_empty();
+                    if crate::systems::theme::action_enabled_because(
+                        ui,
+                        ready,
+                        "Create group",
+                        "Give it a name and at least one person",
+                    )
+                    .clicked()
+                        && ready
+                    {
+                        create_group = true;
+                    }
+                });
             theme::note(
                 ui,
                 "Only you and the people in a private chat can read it. The server passes it on \
@@ -868,6 +908,18 @@ pub fn render_chat_panel(
     if cancel_point {
         chat.point_draft = None;
         chat.point_text.clear();
+    }
+    if create_group {
+        let name = chat.group_name_input.trim().to_string();
+        let members: Vec<String> = chat
+            .group_members_input
+            .split(',')
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        chat.group_start.push((name, members));
+        chat.group_name_input.clear();
+        chat.group_members_input.clear();
     }
     if let Some(key) = stop_share {
         chat.stop_sharing(&key);
