@@ -244,7 +244,6 @@ pub fn render_place_pins(
             tip,
             store.pin_color(b.folder),
             &b.name,
-            false,
         ) {
             // Same jump the panel's row does: keep the current camera mode and
             // move it to the spot (`pose: None`).
@@ -260,15 +259,10 @@ pub fn render_place_pins(
             ));
         }
     }
-    // A private chat's points, in the brand colour so they read as "from the
-    // conversation" rather than as one of your own saved places. Ids from a range
-    // no bookmark reaches, since egui keys each pin's `Area` by it.
-    let brand = theme::BRAND;
-    let brand = [
-        f32::from(brand.r()) / 255.0,
-        f32::from(brand.g()) / 255.0,
-        f32::from(brand.b()) / 255.0,
-    ];
+    // A chat's points, as the design's numbered labels ([`point_pin`]) rather
+    // than teardrops, so they read as "from the conversation" and never as one
+    // of your own saved places. Ids from a range no bookmark reaches, since egui
+    // keys each pin's `Area` by it.
     for (i, (point, label)) in chat_points.iter().enumerate() {
         let Some(delta) = place_delta(
             &globe,
@@ -290,15 +284,8 @@ pub fn render_place_pins(
         }
         drawn += 1;
         // `world_points` numbers each label "<n>  <name>", matching the card.
-        if pin(
-            &ctx,
-            map_rect,
-            CHAT_PIN_IDS + i as u64,
-            tip,
-            brand,
-            label,
-            true,
-        ) {
+        let (number, name) = label.split_once("  ").unwrap_or(("", label.as_str()));
+        if point_pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, number, name) {
             jump = Some((Teleport::point(point), label.clone()));
         }
     }
@@ -331,15 +318,7 @@ pub fn render_place_pins(
         }
         drawn += 1;
         let label = format!("{} (where their phone is)", l.from);
-        if pin(
-            &ctx,
-            map_rect,
-            PEOPLE_PIN_IDS + i as u64,
-            tip,
-            blue,
-            &label,
-            false,
-        ) {
+        if pin(&ctx, map_rect, PEOPLE_PIN_IDS + i as u64, tip, blue, &label) {
             jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
         }
     }
@@ -448,12 +427,6 @@ fn pin(
     tip: egui::Pos2,
     color: [f32; 3],
     name: &str,
-    // A chat's points keep their label up (the v5 World view): it carries the
-    // number that ties the pin to its card in the thread, and a conversation's
-    // few places are worth naming outright where a whole saved-places
-    // collection is not. The number is in the label rather than the pin's head,
-    // where it measured too small to read at phone size.
-    always_label: bool,
 ) -> bool {
     let hue = egui::Color32::from_rgb(
         (color[0] * 255.0) as u8,
@@ -519,13 +492,104 @@ fn pin(
                 ),
             );
 
-            if response.hovered() || always_label {
+            if response.hovered() {
                 label(ui, map_rect, centre, r, name);
             }
             response
         })
         .inner;
 
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
+/// A chat's point on its World view: the design's `.ppin` — a cream label with
+/// the point's number in an ink circle and its name, on a thin stem down to a
+/// dot on the ground. Always labelled: a conversation has a handful of places,
+/// and the number is what ties each to its card in the thread.
+fn point_pin(
+    ctx: &egui::Context,
+    map_rect: egui::Rect,
+    id: u64,
+    tip: egui::Pos2,
+    number: &str,
+    name: &str,
+) -> bool {
+    const STEM: f32 = 16.0;
+    const DOT_R: f32 = 4.0;
+    const HEAD_H: f32 = 30.0;
+    let font = egui::FontId::proportional(12.5);
+    let response = egui::Area::new(egui::Id::new(("chat_point_pin", id)))
+        .fixed_pos(tip)
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(map_rect);
+            let p = ui.painter();
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                name.to_string(),
+                font.clone(),
+                theme::INK,
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(170.0);
+            let galley = p.layout_job(job);
+            let head_w = 4.0 + 22.0 + 7.0 + galley.size().x + 10.0;
+            let (_rect, response) = ui.allocate_exact_size(
+                egui::vec2(head_w, HEAD_H + STEM + DOT_R * 2.0),
+                egui::Sense::click(),
+            );
+            // Painted from the exact tip, as [`pin`] is, so it does not step a
+            // whole pixel at a time over a map that is sliding smoothly.
+            let p = ui.painter();
+            let dot = egui::pos2(tip.x, tip.y - DOT_R);
+            let stem_top = dot.y - DOT_R - STEM;
+            let head = egui::Rect::from_min_size(
+                egui::pos2(tip.x - head_w / 2.0, stem_top - HEAD_H),
+                egui::vec2(head_w, HEAD_H),
+            );
+            p.add(
+                egui::epaint::Shadow {
+                    offset: [0, 6],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(90),
+                }
+                .as_shape(head, egui::CornerRadius::same(14)),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(tip.x - 1.0, stem_top),
+                    egui::pos2(tip.x + 1.0, dot.y),
+                ),
+                egui::CornerRadius::ZERO,
+                theme::CREAM,
+            );
+            p.circle(dot, DOT_R, theme::CREAM, egui::Stroke::new(2.0, theme::INK));
+            let fill = if response.hovered() {
+                egui::Color32::WHITE
+            } else {
+                theme::CREAM
+            };
+            p.rect_filled(head, egui::CornerRadius::same(14), fill);
+            let n = egui::pos2(head.left() + 4.0 + 11.0, head.center().y);
+            p.circle_filled(n, 11.0, theme::INK);
+            p.text(
+                n,
+                egui::Align2::CENTER_CENTER,
+                number,
+                egui::FontId::proportional(12.0),
+                theme::CREAM,
+            );
+            let gs = galley.size();
+            p.galley(
+                egui::pos2(n.x + 11.0 + 7.0, head.center().y - gs.y / 2.0),
+                galley,
+                theme::INK,
+            );
+            response
+        })
+        .inner;
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()

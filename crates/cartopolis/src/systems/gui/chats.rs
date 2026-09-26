@@ -34,17 +34,27 @@ use crate::systems::chat::{person_menu, ChatLine, ChatState, PersonAction, Repor
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::{icons, theme};
 
-/// The fill of your own bubbles: the cream of the palette, so they read as
-/// yours at a glance and never as a button.
-const MINE_FILL: egui::Color32 = egui::Color32::from_rgb(0xE9, 0xE5, 0xDE);
-/// Colours for the round initials, picked by name so a person keeps theirs.
-const AVATAR_TONES: [egui::Color32; 5] = [
-    egui::Color32::from_rgb(0x6B, 0x4F, 0xA0),
-    egui::Color32::from_rgb(0x3F, 0x7F, 0x6E),
-    egui::Color32::from_rgb(0x4B, 0x6F, 0xA8),
-    egui::Color32::from_rgb(0x9A, 0x5B, 0x3C),
-    egui::Color32::from_rgb(0x72, 0x7A, 0x36),
+// Every colour and size below is the design's (`docs/design/chat-world/
+// style.css` on the mockup branch), which is itself the app palette: `theme`
+// already has ink, surface, raised, accent, brand and cream at the same values.
+
+/// The hairline around glass and the segmented control (`--gline`, white at
+/// 14 %).
+const GLINE: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 36);
+/// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
+const AVATAR_TONES: [egui::Color32; 6] = [
+    egui::Color32::from_rgb(0x7A, 0x5A, 0x9A),
+    egui::Color32::from_rgb(0x3F, 0x7D, 0x6E),
+    egui::Color32::from_rgb(0xA0, 0x62, 0x3E),
+    egui::Color32::from_rgb(0x4D, 0x6A, 0x91),
+    egui::Color32::from_rgb(0x8A, 0x4F, 0x5F),
+    egui::Color32::from_rgb(0x5E, 0x6F, 0x3C),
 ];
+/// The "Here" disc: the design's grey gradient, as its middle tone.
+const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x4B, 0x5F, 0x66);
+/// Bubble corners: round, with the corner nearest the speaker tucked in.
+const BUBBLE_R: u8 = 18;
+const TAIL_R: u8 = 6;
 /// Widest the World view's header and bottom sheet get on a desktop window.
 const WORLD_SHEET_MAX_WIDTH: f32 = 520.0;
 /// Lines of the chat shown over the map in its World view.
@@ -169,22 +179,29 @@ fn avatar(ui: &mut egui::Ui, name: &str, kind: ChatKind, size: f32) {
 
 fn paint_avatar(p: &egui::Painter, c: egui::Pos2, name: &str, kind: ChatKind, size: f32) {
     let (tone, text, scale) = match kind {
-        ChatKind::Here => (AVATAR_TONES[1], "here".to_string(), 0.26),
-        ChatKind::Everyone => (AVATAR_TONES[2], icons::CAM_EARTH.to_string(), 0.45),
-        ChatKind::Room => (AVATAR_TONES[4], "#".to_string(), 0.45),
+        ChatKind::Here => (HERE_TONE, "here".to_string(), 0.26),
+        ChatKind::Everyone => (AVATAR_TONES[3], icons::CAM_EARTH.to_string(), 0.45),
+        ChatKind::Room => (AVATAR_TONES[5], "#".to_string(), 0.42),
         ChatKind::Private => (
             tone_for(name),
             name.chars().next().unwrap_or('?').to_uppercase().collect(),
-            0.42,
+            0.38,
         ),
     };
-    p.circle_filled(c, size / 2.0, tone);
+    // A room is a place people gather rather than a person, so it is the
+    // design's rounded square (`.room`), not a circle.
+    if kind == ChatKind::Room {
+        let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(size));
+        p.rect_filled(rect, egui::CornerRadius::same((size * 0.29) as u8), tone);
+    } else {
+        p.circle_filled(c, size / 2.0, tone);
+    }
     p.text(
         c,
         egui::Align2::CENTER_CENTER,
         text,
         egui::FontId::proportional(size * scale),
-        theme::CREAM,
+        egui::Color32::WHITE,
     );
 }
 
@@ -207,21 +224,168 @@ fn paint_line(
     p.galley(pos, galley, color);
 }
 
-/// Two equal segments, the right one selected when `right_on`. Answers which
-/// was tapped.
-fn segmented(ui: &mut egui::Ui, left: &str, right: &str, right_on: bool) -> Option<bool> {
-    let h = 34.0_f32.max(theme::row_height() * 0.9);
-    let w = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(40.0);
-    let mut pick = None;
-    ui.horizontal(|ui| {
-        if theme::chip_sized(ui, left, !right_on, egui::vec2(w, h)).clicked() {
-            pick = Some(false);
-        }
-        if theme::chip_sized(ui, right, right_on, egui::vec2(w, h)).clicked() {
-            pick = Some(true);
-        }
-    });
-    pick
+/// Paint a row of text pieces centred in `rect`, `gap` apart.
+fn centred_row(
+    p: &egui::Painter,
+    rect: egui::Rect,
+    parts: &[(String, f32, egui::Color32)],
+    gap: f32,
+) {
+    let galleys: Vec<_> = parts
+        .iter()
+        .map(|(t, size, c)| p.layout_no_wrap(t.clone(), egui::FontId::proportional(*size), *c))
+        .collect();
+    let total: f32 = galleys.iter().map(|g| g.size().x).sum::<f32>()
+        + gap * galleys.len().saturating_sub(1) as f32;
+    let mut x = rect.center().x - total / 2.0;
+    for (g, (_, _, c)) in galleys.into_iter().zip(parts) {
+        let y = rect.center().y - g.size().y / 2.0;
+        let w = g.size().x;
+        p.galley(egui::pos2(x, y), g, *c);
+        x += w + gap;
+    }
+}
+
+/// The "live" dot beside World (`.live`): brand orange with a soft halo, or
+/// plain white on the orange of a selected World.
+fn live_dot(p: &egui::Painter, c: egui::Pos2, on_orange: bool) {
+    if on_orange {
+        p.circle_filled(c, 3.5, egui::Color32::WHITE);
+    } else {
+        p.circle_filled(
+            c,
+            6.5,
+            egui::Color32::from_rgba_unmultiplied(0xFD, 0x60, 0x12, 64),
+        );
+        p.circle_filled(c, 3.5, theme::BRAND);
+    }
+}
+
+/// The design's segmented toggle (`.seg`), "the one control this whole design
+/// is about": a raised pill with a Chat side and a World side. A selected Chat
+/// is the pale accent; a selected World is brand orange, and World always
+/// carries the live dot. `glass` is the variant that floats over the map.
+/// Answers `Some(true)` for World, `Some(false)` for the other side.
+fn segmented(
+    ui: &mut egui::Ui,
+    left: &str,
+    unread: usize,
+    world_on: bool,
+    glass: bool,
+) -> Option<bool> {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+    let inner = rect.shrink(3.0);
+    let half = (inner.width() - 2.0) / 2.0;
+    let l = egui::Rect::from_min_size(inner.min, egui::vec2(half, inner.height()));
+    let r = egui::Rect::from_min_size(egui::pos2(l.right() + 2.0, inner.top()), l.size());
+    let id = ui.id().with(("chats_segmented", left));
+    let lr = ui.interact(l, id.with(0), egui::Sense::click());
+    let rr = ui.interact(r, id.with(1), egui::Sense::click());
+
+    let p = ui.painter();
+    p.rect_filled(
+        rect,
+        egui::CornerRadius::same(12),
+        if glass {
+            theme::GLASS
+        } else {
+            theme::SURFACE_RAISED
+        },
+    );
+    p.rect_stroke(
+        rect,
+        egui::CornerRadius::same(12),
+        egui::Stroke::new(1.0, GLINE),
+        egui::StrokeKind::Inside,
+    );
+    let seg = egui::CornerRadius::same(9);
+    if !world_on {
+        p.rect_filled(l, seg, theme::ACCENT);
+    } else if lr.hovered() {
+        p.rect_filled(l, seg, theme::SURFACE_HOVER);
+    }
+    if world_on {
+        p.rect_filled(r, seg, theme::BRAND);
+    } else if rr.hovered() {
+        p.rect_filled(r, seg, theme::SURFACE_HOVER);
+    }
+
+    let left_ink = if world_on {
+        theme::TEXT_DIM
+    } else {
+        theme::INK
+    };
+    let mut parts = vec![
+        (icons::CHAT.to_string(), 16.0, left_ink),
+        (left.to_string(), 14.0, left_ink),
+    ];
+    if unread > 0 {
+        parts.push((format!("{unread}"), 12.0, theme::BRAND));
+    }
+    centred_row(p, l, &parts, 6.0);
+
+    let right_ink = if world_on {
+        egui::Color32::WHITE
+    } else {
+        theme::TEXT_DIM
+    };
+    let label = p.layout_no_wrap("World".into(), egui::FontId::proportional(14.0), right_ink);
+    let total = 7.0 + 6.0 + label.size().x;
+    let x0 = r.center().x - total / 2.0;
+    live_dot(p, egui::pos2(x0 + 3.5, r.center().y), world_on);
+    p.galley(
+        egui::pos2(x0 + 13.0, r.center().y - label.size().y / 2.0),
+        label,
+        right_ink,
+    );
+
+    if lr.clicked() {
+        Some(false)
+    } else if rr.clicked() {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// A round button of the design's composer (`.circ`): raised, or the pale
+/// accent when it is the one that acts (`.circ.hot`).
+fn circle_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    hot: bool,
+    enabled: bool,
+    hint: &str,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
+    let (fill, ink) = match (hot, enabled) {
+        (true, true) => (theme::ACCENT, theme::INK),
+        (true, false) => (theme::ACCENT_MUTED, theme::TEXT_DIM),
+        (false, _) if resp.hovered() => (theme::SURFACE_HOVER, theme::TEXT),
+        (false, _) => (theme::SURFACE_RAISED, theme::TEXT),
+    };
+    let p = ui.painter();
+    p.circle_filled(rect.center(), 19.0, fill);
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        egui::FontId::proportional(20.0),
+        ink,
+    );
+    resp.on_hover_text(hint)
+}
+
+/// A small section title in the list (`PRIVATE`, `NEARBY, LIVE`).
+fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(10.0);
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .size(11.5)
+            .color(theme::TEXT_DIM),
+    );
+    ui.add_space(2.0);
 }
 
 /// A row of the chat list.
@@ -234,73 +398,76 @@ struct Row {
     unread: usize,
 }
 
+/// One row of the list (`.chat-row`): the 48 pt avatar, the name and time on
+/// one line, the last message and the unread pill on the next.
 fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
-    let h = 60.0;
+    let h = 70.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
     let p = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {
-        p.rect_filled(
-            rect,
-            egui::CornerRadius::same(theme::RADIUS),
-            theme::SURFACE_HOVER,
-        );
+        p.rect_filled(rect, egui::CornerRadius::same(12), theme::SURFACE_RAISED);
     }
-    let size = 42.0;
+    let size = 48.0;
     paint_avatar(
         p,
-        egui::pos2(rect.left() + 8.0 + size / 2.0, rect.center().y),
+        egui::pos2(rect.left() + 6.0 + size / 2.0, rect.center().y),
         &row.name,
         row.kind,
         size,
     );
-    let x = rect.left() + 8.0 + size + 12.0;
-    let right_reserve = 64.0;
-    paint_line(
-        p,
-        egui::pos2(x, rect.top() + 11.0),
-        &row.name,
-        theme::SIZE_VALUE,
-        theme::CREAM,
-        rect.right() - x - right_reserve,
-    );
-    let (preview, tint) = if sending && row.kind == ChatKind::Private {
-        ("Tap to send the view here".to_string(), theme::ACCENT_TEXT)
+    let x = rect.left() + 6.0 + size + 12.0;
+    let time_w = if row.time.is_empty() {
+        0.0
     } else {
-        (row.preview.clone(), theme::TEXT_DIM)
+        p.text(
+            egui::pos2(rect.right() - 8.0, rect.top() + 17.0),
+            egui::Align2::RIGHT_TOP,
+            &row.time,
+            egui::FontId::proportional(12.0),
+            theme::TEXT_DIM,
+        )
+        .width()
+            + 8.0
     };
     paint_line(
         p,
-        egui::pos2(x, rect.top() + 34.0),
-        &preview,
-        theme::SIZE_SUB,
-        tint,
-        rect.right() - x - 36.0,
+        egui::pos2(x, rect.top() + 14.0),
+        &row.name,
+        15.5,
+        theme::CREAM,
+        rect.right() - x - time_w - 8.0,
     );
-    if !row.time.is_empty() {
-        p.text(
-            egui::pos2(rect.right() - 10.0, rect.top() + 13.0),
-            egui::Align2::RIGHT_TOP,
-            &row.time,
-            egui::FontId::proportional(theme::SIZE_TINY),
-            theme::TEXT_DIM,
-        );
-    }
+    let (preview, tint) = if sending && row.kind == ChatKind::Private {
+        ("Tap to send the view here".to_string(), theme::BRAND)
+    } else {
+        (row.preview.clone(), theme::TEXT_DIM)
+    };
+    let mut badge_w = 0.0;
     if row.unread > 0 {
-        let c = egui::pos2(rect.right() - 20.0, rect.top() + 41.0);
-        p.circle_filled(c, 10.0, theme::ACCENT);
-        p.text(
-            c,
-            egui::Align2::CENTER_CENTER,
-            if row.unread > 99 {
-                "99+".to_string()
-            } else {
-                row.unread.to_string()
-            },
-            egui::FontId::proportional(theme::SIZE_TINY),
-            theme::INK,
+        let text = if row.unread > 99 {
+            "99+".to_string()
+        } else {
+            row.unread.to_string()
+        };
+        let g = p.layout_no_wrap(text, egui::FontId::proportional(11.5), theme::INK);
+        let pill = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - 8.0 - g.size().x - 14.0, rect.top() + 38.0),
+            egui::vec2(g.size().x + 14.0, 19.0),
         );
+        p.rect_filled(pill, egui::CornerRadius::same(10), theme::ACCENT);
+        let gs = g.size();
+        p.galley(pill.center() - gs / 2.0, g, theme::INK);
+        badge_w = pill.width() + 10.0;
     }
+    paint_line(
+        p,
+        egui::pos2(x, rect.top() + 38.0),
+        &preview,
+        13.5,
+        tint,
+        rect.right() - x - badge_w - 8.0,
+    );
     resp
 }
 
@@ -368,7 +535,15 @@ pub fn render_chats_panel(
     let mut open_flag = true;
     let now = now_ms();
 
+    // The design's screen is solid ink (`.phone`), not the glass the other
+    // panels use: a conversation is read, and a map showing through the text
+    // is noise behind it.
     crate::systems::egui_manager::responsive_right_panel("chats_panel", compact, viewport_w, 360.0)
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::INK)
+                .inner_margin(egui::Margin::symmetric(12, 10)),
+        )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
             match view.open.clone() {
                 None => list_screen(ui, &mut chat, &mut view, &mut voice, &mut act, now),
@@ -401,10 +576,10 @@ fn list_screen(
     act: &mut Actions,
     now: u64,
 ) {
-    if segmented(ui, "Chats", "World", false) == Some(true) {
+    if segmented(ui, "Chats", 0, false, false) == Some(true) {
         act.to_world = true;
     }
-    ui.add_space(6.0);
+    ui.add_space(10.0);
     if let Some(notice) = chat.notice.clone() {
         if notice.error {
             act.dismiss_notice = theme::inline_error(ui, &notice.text);
@@ -420,7 +595,7 @@ fn list_screen(
     // A view waiting to be sent: every private chat row becomes its target.
     let sending = chat.point_draft.is_some();
     if let Some(draft) = chat.point_draft.clone() {
-        theme::overlay_frame().show(ui, |ui| {
+        raised_frame().show(ui, |ui| {
             ui.label(
                 egui::RichText::new(format!(
                     "{} Send this view: {}",
@@ -449,19 +624,9 @@ fn list_screen(
         ui.add_space(6.0);
     }
 
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Chats")
-                .size(theme::SIZE_HEADING)
-                .color(theme::CREAM),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::action_button(ui, if view.new_chat { "Done" } else { "+ New chat" }).clicked()
-            {
-                view.new_chat = !view.new_chat;
-            }
-        });
-    });
+    // The design's title bar (`.titlebar h3`).
+    ui.label(egui::RichText::new("Chats").size(26.0).color(theme::CREAM));
+    ui.add_space(4.0);
     if view.new_chat {
         new_chat_section(ui, chat, act);
     }
@@ -525,14 +690,15 @@ fn list_screen(
     let private = rows(&|k| k == ChatKind::Private);
     let live = rows(&|k| k != ChatKind::Private);
 
+    let panel = ui.max_rect();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            theme::section(ui, &format!("{} Private", icons::LOCK));
+            section_title(ui, &format!("{} Private", icons::LOCK));
             if private.is_empty() {
                 theme::note(
                     ui,
-                    "Start one with + New chat. Only the people in it can read it.",
+                    "Start one with the button at the bottom. Only the people in it can read it.",
                 );
             }
             for row in &private {
@@ -544,8 +710,7 @@ fn list_screen(
                     }
                 }
             }
-            ui.add_space(8.0);
-            theme::section(ui, "Nearby, live · public");
+            section_title(ui, "Nearby, live · public");
             for row in &live {
                 if chat_row(ui, row, false).clicked() {
                     act.open = Some(row.key.clone());
@@ -573,12 +738,65 @@ fn list_screen(
                         });
                     }
                 });
+            // Room under the last row for the compose button to float over.
+            ui.add_space(80.0);
             let _ = now;
         });
+
+    // New chat: the design's floating button (`.fab`), bottom right, pale
+    // accent with the compose icon. Drawn after the list so it sits on top.
+    let fab = egui::Rect::from_min_size(
+        panel.right_bottom() - egui::vec2(56.0 + 6.0, 56.0 + 12.0),
+        egui::Vec2::splat(56.0),
+    );
+    let resp = ui
+        .interact(
+            fab,
+            egui::Id::new("chats_new_chat_fab"),
+            egui::Sense::click(),
+        )
+        .on_hover_text(if view.new_chat {
+            "Close"
+        } else {
+            "New chat: a person, a group or a room"
+        });
+    let p = ui.painter();
+    p.add(
+        egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 20,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(100),
+        }
+        .as_shape(fab, egui::CornerRadius::same(18)),
+    );
+    p.rect_filled(
+        fab,
+        egui::CornerRadius::same(18),
+        if resp.hovered() {
+            theme::CREAM
+        } else {
+            theme::ACCENT
+        },
+    );
+    p.text(
+        fab.center(),
+        egui::Align2::CENTER_CENTER,
+        if view.new_chat {
+            icons::CLEAR
+        } else {
+            icons::COMPOSE
+        },
+        egui::FontId::proportional(24.0),
+        theme::INK,
+    );
+    if resp.clicked() {
+        view.new_chat = !view.new_chat;
+    }
 }
 
 fn new_chat_section(ui: &mut egui::Ui, chat: &mut ChatState, act: &mut Actions) {
-    theme::overlay_frame().show(ui, |ui| {
+    raised_frame().show(ui, |ui| {
         ui.label(egui::RichText::new("Message someone").color(theme::CREAM));
         ui.horizontal(|ui| {
             let field = crate::systems::text_touch::field(
@@ -666,23 +884,29 @@ fn chat_header(
     act: &mut Actions,
     now: u64,
 ) {
+    // The design's thread header (`.thead`): a bare chevron, the small avatar,
+    // the name over one line of status.
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
         if ui
-            .add(egui::Button::new(
-                egui::RichText::new(icons::BACK).size(theme::SIZE_TITLE),
-            ))
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(icons::CHEVRON_LEFT)
+                        .size(26.0)
+                        .color(theme::TEXT),
+                )
+                .sense(egui::Sense::click()),
+            )
             .on_hover_text("All chats")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
         {
             act.back = true;
         }
-        avatar(ui, name, kind, 36.0);
+        avatar(ui, name, kind, 34.0);
         ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new(name)
-                    .size(theme::SIZE_VALUE)
-                    .color(theme::CREAM),
-            );
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(egui::RichText::new(name).size(16.0).color(theme::CREAM));
             // Somebody sharing where their phone is says so under the name,
             // in the blue that means only that.
             let theirs: Vec<_> = chat.locations.iter().filter(|l| l.channel == key).collect();
@@ -694,13 +918,13 @@ fn chat_header(
                         l.from,
                         l.until_ms.saturating_sub(now) / 60_000 + 1
                     ))
-                    .size(theme::SIZE_TINY)
+                    .size(12.0)
                     .color(theme::REAL_LOCATION),
                 );
             } else {
                 ui.label(
                     egui::RichText::new(subtitle(kind))
-                        .size(theme::SIZE_TINY)
+                        .size(12.0)
                         .color(theme::TEXT_DIM),
                 );
             }
@@ -737,27 +961,37 @@ fn chat_screen(
         .cloned()
         .collect();
     chat_header(ui, chat, key, &name, kind, act, now);
-    ui.add_space(4.0);
-    if segmented(
-        ui,
-        &format!("{} Chat", icons::CHAT),
-        &format!("{} World", icons::CAM_EARTH),
-        false,
-    ) == Some(true)
-    {
+    ui.add_space(8.0);
+    if segmented(ui, "Chat", 0, false, false) == Some(true) {
         act.world_of = Some(key.to_string());
     }
-    ui.add_space(4.0);
+    ui.add_space(10.0);
+    // The hairline under the tabs (`.tabs { border-bottom }`), edge to edge.
+    let y = ui.cursor().top();
+    let full = ui.max_rect();
+    ui.painter().hline(
+        (full.left() - 12.0)..=(full.right() + 12.0),
+        y,
+        egui::Stroke::new(1.0, GLINE),
+    );
+    ui.add_space(8.0);
 
     // The text field sits in a bottom band of its own, so the thread above it
-    // can take every point of height that is left and scroll.
+    // can take every point of height that is left and scroll. The band is the
+    // design's composer: ink, a hairline on top, "+", the field, send.
     egui::Panel::bottom(egui::Id::new("chats_composer_band"))
-        .frame(egui::Frame::NONE)
+        .frame(egui::Frame::NONE.fill(theme::INK))
         .show_separator_line(false)
         .show(ui, |ui| {
-            ui.add_space(6.0);
+            let top = ui.max_rect().top();
+            ui.painter().hline(
+                (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
+                top,
+                egui::Stroke::new(1.0, GLINE),
+            );
+            ui.add_space(10.0);
             composer(ui, chat, view, key, kind, act, now);
-            ui.add_space(4.0);
+            ui.add_space(6.0);
         });
 
     let group = kind != ChatKind::Private || !channel_is_direct(chat, key);
@@ -811,26 +1045,52 @@ fn bubble(
     act: &mut Actions,
 ) {
     let mine = is_mine(chat, line);
-    let max_w = (ui.available_width() * 0.8).max(120.0);
+    let max_w = (ui.available_width() * 0.78).max(120.0);
     let layout = if mine {
         egui::Layout::right_to_left(egui::Align::TOP)
     } else {
         egui::Layout::left_to_right(egui::Align::TOP)
     };
+    // `.m.me` / `.m.them`: yours pale accent on ink, theirs raised; the corner
+    // on the speaker's side tucked in.
     let (fill, ink, dim) = if mine {
         (
-            MINE_FILL,
+            theme::ACCENT,
             theme::INK,
-            egui::Color32::from_rgb(0x5A, 0x60, 0x66),
+            egui::Color32::from_rgb(0x4A, 0x55, 0x5A),
         )
     } else {
         (theme::SURFACE_RAISED, theme::TEXT, theme::TEXT_DIM)
     };
+    let corners = if mine {
+        egui::CornerRadius {
+            nw: BUBBLE_R,
+            ne: BUBBLE_R,
+            sw: BUBBLE_R,
+            se: TAIL_R,
+        }
+    } else {
+        egui::CornerRadius {
+            nw: BUBBLE_R,
+            ne: BUBBLE_R,
+            sw: TAIL_R,
+            se: BUBBLE_R,
+        }
+    };
+    // A place is its own card, not a bubble with a card inside it.
+    if let (Some(point), Some(n)) = (&line.point, number) {
+        ui.with_layout(layout, |ui| {
+            if point_card(ui, point, n, &line.body, mine, max_w).clicked() {
+                act.go_to = Some(point.clone());
+            }
+        });
+        return;
+    }
     ui.with_layout(layout, |ui| {
         egui::Frame::NONE
             .fill(fill)
-            .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
-            .inner_margin(egui::Margin::symmetric(10, 7))
+            .corner_radius(corners)
+            .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 ui.set_max_width(max_w);
                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -856,28 +1116,15 @@ fn bubble(
                             }
                         });
                     }
-                    match (&line.point, number) {
-                        (Some(point), Some(n)) => {
-                            if point_card(ui, point, n, &line.body, max_w, ink, dim).clicked() {
-                                act.go_to = Some(point.clone());
-                            }
-                        }
-                        _ => {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&line.body)
-                                        .size(theme::SIZE_BODY)
-                                        .color(ink),
-                                )
-                                .wrap(),
-                            );
-                        }
-                    }
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&line.body).size(14.5).color(ink))
+                            .wrap(),
+                    );
                     if line.at_ms > 0 {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                             ui.label(
                                 egui::RichText::new(clock_time(line.at_ms))
-                                    .size(theme::SIZE_TINY)
+                                    .size(10.5)
                                     .color(dim),
                             );
                         });
@@ -898,74 +1145,115 @@ fn point_card(
     point: &cartopolis_core::point::Point,
     number: usize,
     caption: &str,
+    mine: bool,
     max_w: f32,
-    ink: egui::Color32,
-    dim: egui::Color32,
 ) -> egui::Response {
-    let w = max_w.min(260.0);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, w * 0.42), egui::Sense::click());
-    let p = ui.painter();
-    p.rect_filled(
-        rect,
-        egui::CornerRadius::same(theme::RADIUS),
-        egui::Color32::from_rgb(0x39, 0x4A, 0x55),
-    );
-    // A few faint streets, so the placeholder reads as "a place" not "an error".
-    for (a, b) in [(0.1, 0.8), (0.35, 0.2), (0.7, 0.95)] {
-        p.line_segment(
-            [
-                egui::pos2(rect.left(), rect.top() + rect.height() * a),
-                egui::pos2(rect.right(), rect.top() + rect.height() * b),
-            ],
-            egui::Stroke::new(3.0, egui::Color32::from_rgb(0x4A, 0x5C, 0x68)),
-        );
-    }
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icons::PIN,
-        egui::FontId::proportional(28.0),
-        theme::BRAND,
-    );
-    let badge = egui::pos2(rect.left() + 16.0, rect.top() + 16.0);
-    p.circle_filled(badge, 11.0, theme::CREAM);
-    p.text(
-        badge,
-        egui::Align2::CENTER_CENTER,
-        number.to_string(),
-        egui::FontId::proportional(theme::SIZE_SUB),
-        theme::INK,
-    );
-    if resp.hovered() {
-        p.rect_stroke(
-            rect,
-            egui::CornerRadius::same(theme::RADIUS),
-            egui::Stroke::new(1.5, theme::ACCENT),
-            egui::StrokeKind::Inside,
-        );
-    }
+    // `.pt`: 258 wide, raised, a 112 tall picture, then the name and caption,
+    // with the speaker's corner tucked in like a bubble's.
+    let w = max_w.min(258.0);
     let title = point
         .name
         .clone()
         .unwrap_or_else(|| format!("{:.4}, {:.4}", point.latitude, point.longitude));
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(title)
-            .size(theme::SIZE_BODY)
-            .strong()
-            .color(ink),
-    );
     // The caption is the text when there is one and the name otherwise
-    // (`private_chat::point_caption`), so it is only worth a second line when
-    // it is not the title just drawn.
-    if point.name.is_some() && !caption.is_empty() && point.name.as_deref() != Some(caption) {
-        ui.label(
-            egui::RichText::new(caption)
-                .size(theme::SIZE_SUB)
-                .color(dim),
+    // (`private_chat::point_caption`), so it is only a second line when it is
+    // not the title.
+    let sub =
+        (point.name.is_some() && !caption.is_empty() && point.name.as_deref() != Some(caption))
+            .then(|| caption.to_string());
+    let p = ui.painter().clone();
+    let title_g = p.layout(
+        title,
+        egui::FontId::proportional(14.5),
+        theme::CREAM,
+        w - 24.0,
+    );
+    let sub_g = sub.map(|s| {
+        p.layout(
+            s,
+            egui::FontId::proportional(12.0),
+            theme::TEXT_DIM,
+            w - 24.0,
+        )
+    });
+    let img_h = 112.0;
+    let meta_h = 8.0 + title_g.size().y + sub_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y) + 10.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, img_h + meta_h), egui::Sense::click());
+    let (r, t) = (BUBBLE_R, TAIL_R);
+    let corners = if mine {
+        egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: r,
+            se: t,
+        }
+    } else {
+        egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: t,
+            se: r,
+        }
+    };
+    p.rect_filled(rect, corners, theme::SURFACE_RAISED);
+
+    // The picture. A point carries the camera and no image yet, so this is
+    // where the image goes rather than an invented one: a few faint streets
+    // and the pin, so it reads as "a place" and not as an error.
+    let img = egui::Rect::from_min_size(rect.min, egui::vec2(w, img_h));
+    p.rect_filled(
+        img,
+        egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: 0,
+            se: 0,
+        },
+        egui::Color32::from_rgb(0x2B, 0x3A, 0x40),
+    );
+    let street = egui::Stroke::new(4.0, egui::Color32::from_rgb(0x3A, 0x4B, 0x52));
+    for (a, b) in [(0.15, 0.85), (0.4, 0.25), (0.75, 0.95)] {
+        p.line_segment(
+            [
+                egui::pos2(img.left(), img.top() + img.height() * a),
+                egui::pos2(img.right(), img.top() + img.height() * b),
+            ],
+            street,
         );
     }
-    resp.on_hover_text("Look from where it was sent")
+    crate::systems::place_pins::paint_pin_glyph(
+        &p,
+        egui::Rect::from_center_size(img.center(), egui::vec2(22.0, 32.0)),
+        theme::BRAND,
+    );
+    // `.pt .n`: the number, cream on the picture's top left.
+    let badge = egui::pos2(img.left() + 8.0 + 12.0, img.top() + 8.0 + 12.0);
+    p.circle_filled(badge, 12.0, theme::CREAM);
+    p.text(
+        badge,
+        egui::Align2::CENTER_CENTER,
+        number.to_string(),
+        egui::FontId::proportional(13.0),
+        theme::INK,
+    );
+
+    let mut y = img.bottom() + 8.0;
+    let th = title_g.size().y;
+    p.galley(egui::pos2(rect.left() + 12.0, y), title_g, theme::CREAM);
+    y += th + 2.0;
+    if let Some(g) = sub_g {
+        p.galley(egui::pos2(rect.left() + 12.0, y), g, theme::TEXT_DIM);
+    }
+    if resp.hovered() {
+        p.rect_stroke(
+            rect,
+            corners,
+            egui::Stroke::new(1.5, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Look from where it was sent")
 }
 
 /// The open chat's text field, its "+" menu and its location sharing.
@@ -1011,7 +1299,7 @@ fn composer(
         }
     }
     if view.attach {
-        theme::overlay_frame().show(ui, |ui| {
+        raised_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if kind == ChatKind::Private {
                 if ui
@@ -1048,27 +1336,48 @@ fn composer(
     compose_row(ui, view, key, "chats_message_field", act);
 }
 
-/// "+", the field and send, shared by the Chat view and the World view.
+/// "+", the field and send, shared by the Chat view and the World view: the
+/// design's composer, a round raised "+", a raised pill of a field, and the
+/// pale round button that sends.
 fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act: &mut Actions) {
     let claim = std::mem::take(&mut view.claim_focus);
     ui.horizontal(|ui| {
-        if theme::chip(ui, "+", view.attach)
-            .on_hover_text("Send a place, or share where you are")
-            .clicked()
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if circle_button(
+            ui,
+            if view.attach {
+                icons::CLEAR
+            } else {
+                icons::ADD
+            },
+            false,
+            true,
+            "Send a place, or share where you are",
+        )
+        .clicked()
         {
             view.attach = !view.attach;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ready = !view.draft.trim().is_empty();
-            let send =
-                theme::action_enabled_because(ui, ready, icons::FORWARD, "Type a message first");
-            let field = crate::systems::text_touch::field(
-                ui,
-                egui::TextEdit::singleline(&mut view.draft)
-                    .id(egui::Id::new(id))
-                    .desired_width(ui.available_width())
-                    .hint_text("Message"),
-            );
+            let send = circle_button(ui, icons::SEND, true, ready, "Send");
+            let field = egui::Frame::NONE
+                .fill(theme::SURFACE_RAISED)
+                .corner_radius(egui::CornerRadius::same(20))
+                .inner_margin(egui::Margin::symmetric(14, 9))
+                .show(ui, |ui| {
+                    crate::systems::text_touch::field(
+                        ui,
+                        egui::TextEdit::singleline(&mut view.draft)
+                            .id(egui::Id::new(id))
+                            .frame(egui::Frame::NONE)
+                            .font(egui::FontId::proportional(14.5))
+                            .text_color(theme::TEXT)
+                            .desired_width(ui.available_width())
+                            .hint_text(egui::RichText::new("Message").color(theme::LINE)),
+                    )
+                })
+                .inner;
             if claim {
                 field.request_focus();
             }
@@ -1078,6 +1387,25 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
             }
         });
     });
+}
+
+/// A raised block inside the ink panel, for the forms and menus.
+fn raised_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(theme::SURFACE_RAISED)
+        .stroke(egui::Stroke::new(1.0, GLINE))
+        .corner_radius(egui::CornerRadius::same(14))
+        .inner_margin(egui::Margin::same(12))
+}
+
+/// The design's floating glass (`.float-top`, `.sheet`): ink at 84 %, a
+/// hairline, round corners.
+fn glass_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(theme::GLASS)
+        .stroke(egui::Stroke::new(1.0, GLINE))
+        .corner_radius(egui::CornerRadius::same(20))
+        .inner_margin(egui::Margin::symmetric(12, 10))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1312,19 +1640,11 @@ pub fn render_chats_switch(
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset(&chat)))
         .show(&ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(220.0);
-                let chats = if unread > 0 {
-                    format!("{} Chats · {unread}", icons::CHAT)
-                } else {
-                    format!("{} Chats", icons::CHAT)
-                };
-                if segmented(ui, &chats, &format!("{} World", icons::CAM_EARTH), true)
-                    == Some(false)
-                {
-                    to_chats = true;
-                }
-            });
+            // `.topseg`: the glass segmented pill on its own, no frame around it.
+            ui.set_width(250.0);
+            if segmented(ui, "Chats", unread, true, true) == Some(false) {
+                to_chats = true;
+            }
         });
     if to_chats {
         *right_panel = RightPanel::Chat;
@@ -1397,17 +1717,11 @@ pub fn render_chat_world(
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-theme::OSD_MARGIN, top))
         .show(&ctx, |ui| {
             ui.set_width(header_width);
-            theme::overlay_frame().show(ui, |ui| {
+            glass_frame().show(ui, |ui| {
                 ui.set_width(header_width - 24.0);
                 chat_header(ui, &chat, &key, &name, kind, &mut act, now);
-                ui.add_space(4.0);
-                if segmented(
-                    ui,
-                    &format!("{} Chat", icons::CHAT),
-                    &format!("{} World", icons::CAM_EARTH),
-                    true,
-                ) == Some(false)
-                {
+                ui.add_space(8.0);
+                if segmented(ui, "Chat", 0, true, false) == Some(false) {
                     act.to_world = false;
                     act.open = Some(key.clone());
                 }
@@ -1419,30 +1733,51 @@ pub fn render_chat_world(
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(&ctx, |ui| {
             ui.set_width(width);
-            theme::overlay_frame().show(ui, |ui| {
+            glass_frame().show(ui, |ui| {
                 ui.set_width(width - 24.0);
+                // `.handle`: the grip at the top of the design's sheet.
+                let (grip, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 9.0),
+                    egui::Sense::hover(),
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_center_size(grip.center(), egui::vec2(40.0, 5.0)),
+                    egui::CornerRadius::same(3),
+                    theme::LINE,
+                );
+                ui.add_space(2.0);
+                // `.mini`: the speaker's name in brand orange (yours in the
+                // pale accent), then what they said.
                 for line in &recent {
-                    let who = if is_mine(&chat, line) {
+                    let mine = is_mine(&chat, line);
+                    let who = if mine {
                         "You".to_string()
                     } else {
                         line.sender.clone()
                     };
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(who)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::ACCENT_TEXT),
-                        );
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(egui::RichText::new(who).size(13.5).color(if mine {
+                            theme::ACCENT
+                        } else {
+                            theme::BRAND
+                        }));
                         ui.label(
                             egui::RichText::new(&line.body)
-                                .size(theme::SIZE_SUB)
+                                .size(13.5)
                                 .color(theme::TEXT),
                         );
                     });
                 }
-                if !recent.is_empty() {
-                    ui.add_space(4.0);
-                }
+                ui.add_space(6.0);
+                let y = ui.cursor().top();
+                let r = ui.max_rect();
+                ui.painter().hline(
+                    (r.left() - 12.0)..=(r.right() + 12.0),
+                    y,
+                    egui::Stroke::new(1.0, GLINE),
+                );
+                ui.add_space(8.0);
                 if view.attach {
                     if kind == ChatKind::Private {
                         if ui

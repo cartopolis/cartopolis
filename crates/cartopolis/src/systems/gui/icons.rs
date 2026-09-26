@@ -125,6 +125,11 @@ icons! {
     KEY = "\u{e73c}", "key";
     /// A private, end-to-end encrypted chat (`systems::private_chat`).
     LOCK = "\u{e899}", "lock";
+    // The messenger's composer (`chats`): "+" for a place or a location, and
+    // send; and the chat list's new-chat button.
+    ADD = "\u{e145}", "add";
+    SEND = "\u{e163}", "send";
+    COMPOSE = "\u{f88d}", "edit_square";
     /// Leave the world and go back to the offline map.
     LOGOUT = "\u{e9ba}", "logout";
     /// Take a photo, or a screenshot slot.
