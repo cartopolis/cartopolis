@@ -665,12 +665,6 @@ impl TerrainField {
         })
     }
 
-    /// Whether any registered water is loaded at all.
-    #[must_use]
-    pub fn has_water_levels(&self) -> bool {
-        !self.water.is_empty()
-    }
-
     /// How far below the world's own zero the deepest registered water surface sits, in
     /// metres. `0.0` with nothing loaded.
     ///
@@ -768,15 +762,11 @@ fn water_surface_near(
 /// their height), and on the surface worker against a [`GroundPlacement`].
 pub trait MeasuredGround: std::ops::Deref<Target = TerrainSnapshot> {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32>;
-    fn has_water_levels(&self) -> bool;
 }
 
 impl MeasuredGround for TerrainField {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
         TerrainField::water_surface_at(self, wx, wz)
-    }
-    fn has_water_levels(&self) -> bool {
-        TerrainField::has_water_levels(self)
     }
 }
 
@@ -799,9 +789,6 @@ impl std::ops::Deref for GroundPlacement {
 impl MeasuredGround for GroundPlacement {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
         water_surface_near(&self.water, self.datum_m, wx, wz)
-    }
-    fn has_water_levels(&self) -> bool {
-        !self.water.is_empty()
     }
 }
 

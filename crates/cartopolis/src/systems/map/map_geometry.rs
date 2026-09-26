@@ -3803,13 +3803,10 @@ fn water_surface<G: MeasuredGround>(
     origin: Vec2,
     terrain: &G,
 ) {
+    // The median of the *outline*: with no register, the only level there is. It
+    // is not safe to use on its own, and the clamp below is what makes it so — see
+    // the note after the refinement.
     let fallback = terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
-    if !terrain.has_water_levels() {
-        for p in positions.iter_mut() {
-            p[1] += fallback;
-        }
-        return;
-    }
     crate::systems::terrain::refine_for_terrain(
         positions,
         indices,
@@ -3826,6 +3823,17 @@ fn water_surface<G: MeasuredGround>(
             origin: origin.to_array(),
         }),
     );
+    // **The clamp is not only for registered water.** Where nothing is registered
+    // the level is the median of the outline, and the outline is the one place the
+    // body's ground is lowest. AHN has no return off open water, so the field over a
+    // lake is filled in from its banks — and beside the Afsluitdijk that fill rises
+    // metres above the shoreline median. The clipmap's relief tiles follow the field,
+    // so they stood through the flat sheet and hid it: square patches of basemap in
+    // the open IJsselmeer (bisected on the Deck, 2026-09-26, by discarding the
+    // tiles' water texels — the missing surface was there all along, underneath).
+    // The same rule the register path always had — never below the ground drawn
+    // under it — settles it. (Smaller patches near registered shores are a
+    // different, still open case: `docs/notes/water-surface.md`.)
     for p in positions.iter_mut() {
         let (wx, wz) = (origin.x + p[0], origin.y + p[2]);
         let level = terrain.water_surface_at(wx, wz).unwrap_or(fallback);
