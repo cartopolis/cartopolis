@@ -600,7 +600,13 @@ pub fn render_map_controls(
     avatars: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
+    chat: Res<crate::systems::chat::ChatState>,
 ) {
+    // A chat's World view has the top of the screen for its header, as the
+    // design draws it (`chats::render_chat_world`).
+    if chat.world.is_some() && !driver.active {
+        return;
+    }
     // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui
     // always paints floating Areas on top of panels (panels live on the bottom-most
     // background layer, and even `Order::Background` Areas paint above it), so the

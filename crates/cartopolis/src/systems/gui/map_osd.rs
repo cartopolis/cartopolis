@@ -369,6 +369,7 @@ pub fn render_map_osd(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
     avatar_state: Res<crate::resources::AvatarState>,
+    chat: Res<crate::systems::chat::ChatState>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -384,7 +385,9 @@ pub fn render_map_osd(
     if let Some(cluster) = cluster_for(
         camera_state.mode,
         driver.active,
-        !right_panel.is(RightPanel::None),
+        // A chat's World view has the bottom of the screen for its sheet and
+        // text field (`chats::render_chat_world`), exactly as a panel does.
+        !right_panel.is(RightPanel::None) || chat.world.is_some(),
         keyboard.is_open(),
         theme::touch_layout() || touch.ever(),
     ) {

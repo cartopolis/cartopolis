@@ -139,9 +139,12 @@ pub fn render_dock(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut say: ResMut<crate::systems::chat_overlay::ChatOverlay>,
     avatars: Query<(), With<crate::components::Avatar>>,
+    chat: Res<crate::systems::chat::ChatState>,
 ) {
     // Driving owns the screen — its own chrome already occupies the bottom.
-    if driver.active {
+    // So does a chat's World view (`chats::render_chat_world`): its sheet and
+    // text field sit on the bottom edge, as the design draws it.
+    if driver.active || chat.world.is_some() {
         menu.open = false;
         return;
     }
