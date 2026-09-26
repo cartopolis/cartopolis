@@ -1,0 +1,45 @@
+# End-to-end encryption for private chats: device keys, MLS groups, and the
+# sealed messages that travel between them. `docs/notes/encrypted-chat.md`.
+#
+# A crate of its own for the reason `cartopolis_geo` is one: it is pure logic
+# with its own tests, and nothing in it may depend on `bevy`. The client wraps
+# it in a resource; the simulator never links it at all — the server stores and
+# relays sealed bytes and must not be able to do anything else with them, and
+# the simplest way to make that true is for it not to contain the code.
+#
+# `openmls` with `openmls_rust_crypto` rather than a binding to a C library, for
+# the same constraint that chose rustls and ADPCM: the Android and web lanes
+# have no C toolchain. Measured 2026-09-26: this set builds for
+# `aarch64-linux-android` and for `wasm32-unknown-unknown` with the web build's
+# own flags, and pulls in no `cc`-built sources on either.
+[package]
+name = "cartopolis_e2ee"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_e2ee"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+openmls = "0.9"
+openmls_basic_credential = "0.6"
+openmls_rust_crypto = "0.6"
+postcard = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+# The browser has no OS random source. `rand_core` 0.6 (under the RustCrypto
+# curves) still reaches for getrandom 0.2, which only compiles on
+# `wasm32-unknown-unknown` with its `js` backend; openmls's own `js` feature
+# covers the newer getrandom it uses directly. Both, or the web build stops at
+# `getrandom`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[lints]
+workspace = true
