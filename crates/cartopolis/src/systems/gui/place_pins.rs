@@ -244,6 +244,7 @@ pub fn render_place_pins(
             tip,
             store.pin_color(b.folder),
             &b.name,
+            false,
         ) {
             // Same jump the panel's row does: keep the current camera mode and
             // move it to the spot (`pose: None`).
@@ -288,7 +289,16 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
-        if pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, brand, label) {
+        // `world_points` numbers each label "<n>  <name>", matching the card.
+        if pin(
+            &ctx,
+            map_rect,
+            CHAT_PIN_IDS + i as u64,
+            tip,
+            brand,
+            label,
+            true,
+        ) {
             jump = Some((Teleport::point(point), label.clone()));
         }
     }
@@ -321,7 +331,15 @@ pub fn render_place_pins(
         }
         drawn += 1;
         let label = format!("{} (where their phone is)", l.from);
-        if pin(&ctx, map_rect, PEOPLE_PIN_IDS + i as u64, tip, blue, &label) {
+        if pin(
+            &ctx,
+            map_rect,
+            PEOPLE_PIN_IDS + i as u64,
+            tip,
+            blue,
+            &label,
+            false,
+        ) {
             jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
         }
     }
@@ -430,6 +448,12 @@ fn pin(
     tip: egui::Pos2,
     color: [f32; 3],
     name: &str,
+    // A chat's points keep their label up (the v5 World view): it carries the
+    // number that ties the pin to its card in the thread, and a conversation's
+    // few places are worth naming outright where a whole saved-places
+    // collection is not. The number is in the label rather than the pin's head,
+    // where it measured too small to read at phone size.
+    always_label: bool,
 ) -> bool {
     let hue = egui::Color32::from_rgb(
         (color[0] * 255.0) as u8,
@@ -495,7 +519,7 @@ fn pin(
                 ),
             );
 
-            if response.hovered() {
+            if response.hovered() || always_label {
                 label(ui, map_rect, centre, r, name);
             }
             response

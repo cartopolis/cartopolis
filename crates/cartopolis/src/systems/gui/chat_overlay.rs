@@ -456,6 +456,12 @@ pub fn render_chat_transcript(
     ) {
         return;
     }
+    // A chat's World view (`chats`) shows that chat's own last lines at the
+    // bottom of the screen; a second stream of every channel beside it would be
+    // two transcripts disagreeing about what "the chat" is.
+    if chat.world.is_some() {
+        return;
+    }
     // The keys belong to *some* field, and unless it is the composer's there is
     // nothing here worth the half of the screen they leave. While composing the
     // transcript stays: it stacks above the pill, which stacks above the slab,
@@ -636,7 +642,7 @@ fn composer_height() -> f32 {
 ///
 /// Zero unless the composer is open on a platform with no IME — see the module
 /// note on why this is *predicted* rather than measured off an open slab.
-fn keyboard_reserve(egui: &EguiManager, composing: bool) -> f32 {
+pub(crate) fn keyboard_reserve(egui: &EguiManager, composing: bool) -> f32 {
     if !composing || !onscreen_keyboard::platform_wants_keyboard() {
         return 0.0;
     }
@@ -688,7 +694,10 @@ pub fn render_chat_composer(
         driver.active,
         compact,
         panel_open,
-    ) {
+    ) || chat.world.is_some()
+    {
+        // The last test: a chat's World view has a text field of its own at the
+        // bottom of the screen (`chats::render_chat_world`).
         overlay.close();
         return;
     }

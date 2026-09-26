@@ -90,7 +90,7 @@ impl RightPanel {
             // Sentence case throughout: these strings are the dock tooltip, the
             // menu entry and the panel header, and "Nearby Chat" beside "Map
             // layers" read as two different applications.
-            Self::Chat => "Nearby chat",
+            Self::Chat => "Chats",
             Self::Appearance => "Appearance",
             Self::Script => "Script",
             Self::Models => "Models",

@@ -1972,6 +1972,51 @@ pub fn render_search_panel(
     }
 }
 
+/// Answer "send this view" from inside a chat (`chats`, the "+" menu): the view
+/// the camera has now, as a point, into that chat's sealing queue. Here because
+/// this is what knows where the camera is; the same point the Search panel's
+/// "Send this view to a chat" builds.
+pub fn answer_view_requests(
+    mut chat: ResMut<crate::systems::chat::ChatState>,
+    nav: Res<GeoNavState>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    map_anchor: Res<crate::resources::MapAnchor>,
+) {
+    if chat.view_requests.is_empty() {
+        return;
+    }
+    let requests = std::mem::take(&mut chat.view_requests);
+    let (Ok((cell, tf)), Some(anchor)) = (camera.single(), map_anchor.geo) else {
+        chat.notice = Some(crate::systems::chat::ChatNotice {
+            text: "There is no view to send yet.".into(),
+            error: true,
+        });
+        return;
+    };
+    let (lat, lng) = camera_geo(anchor, &globe, cell, tf);
+    let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+    let point = cartopolis_core::point::Point {
+        latitude: lat,
+        longitude: lng,
+        name: nav
+            .history
+            .get(nav.history_pos)
+            .and_then(|e| e.label.clone()),
+        text: None,
+        view: Some(cartopolis_core::point::PointView {
+            altitude: globe.altitude_m(cell, tf),
+            pitch: pitch.to_degrees(),
+            yaw: yaw.to_degrees(),
+        }),
+    };
+    for key in requests {
+        if crate::systems::chat::ChatState::is_private(&key) {
+            chat.private_points.push((key, point.clone()));
+        }
+    }
+}
+
 // ─── Globe-descent re-anchor ─────────────────────────────────────────────────
 
 /// Turn a globe-descent re-anchor request (set by `camera_controls` when the

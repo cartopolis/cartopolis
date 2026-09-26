@@ -2037,6 +2037,8 @@ pub struct ScriptedChat<'w, 's> {
     commands: Commands<'w, 's>,
     state: ResMut<'w, crate::systems::chat::ChatState>,
     overlay: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
+    /// The messenger's screens (`--ui chats` / `chatthread` / `chatworld`).
+    chats: ResMut<'w, crate::systems::chats::ChatsView>,
     seeded: Query<'w, 's, Entity, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
     avatar: Query<
         'w,
@@ -2080,6 +2082,10 @@ const UI_ELEMENTS: &[&str] = &[
     "world",
     "signin",
     "chat",
+    "chats",
+    "chatthread",
+    "chatworld",
+    "chatswitch",
     "sit",
     "building",
     "locate",
@@ -2198,6 +2204,33 @@ pub fn open_scripted_ui(
     } else {
         crate::resources::RightPanel::None
     };
+    // `--ui chats` is the chat list, `--ui chatthread` one chat's Chat view and
+    // `--ui chatworld` its World view (`systems::chats`), seeded with demo chats
+    // for `chat_overlay`'s reason: every scripted run is offline, and these
+    // screens need a session to draw at all.
+    let messenger = if want("chatswitch") {
+        Some("switch")
+    } else if want("chatworld") {
+        Some("world")
+    } else if want("chatthread") {
+        Some("chat")
+    } else if want("chats") {
+        Some("list")
+    } else {
+        None
+    };
+    match messenger {
+        Some(screen) => {
+            *right_panel = crate::systems::chats::seed_demo_chats(
+                &mut cards.chat.state,
+                &mut cards.chat.chats,
+                screen,
+            );
+        }
+        None => {
+            crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats)
+        }
+    }
     if panels.is_empty() {
         return;
     }

@@ -1,19 +1,11 @@
-//! Chat state (ADR-028, Simulation tier), and the panel that is *not* how you
-//! chat.
+//! Chat state (ADR-028, Simulation tier): every channel, its lines, and the
+//! requests the screens make of the network and encryption systems.
 //!
-//! **Talking happens over the map** — [`crate::systems::chat_overlay`] draws a
-//! speech bubble above whoever said it, an ambient transcript that fades, and a
-//! composer pill that appears only while you are writing. This module owns the
-//! state all three read, and one panel that is now a **log and its settings**:
-//! the whole backlog in one scroll, the rooms you are in, the people you block,
-//! the microphone, and the report form. It is reached from ☰ rather than from
-//! the dock, because it is somewhere you visit, not the way you speak.
-//!
-//! Why the panel stopped being the chat: on a compact viewport a right panel is
-//! the *whole screen* (`egui_manager::responsive_right_panel`), so saying
-//! anything meant covering the world and the people in it — in a client whose
-//! Local channel is scoped by how far away those people are standing. See
-//! `docs/notes/chat-without-a-panel.md`.
+//! Two sets of screens read it. **Over the map**, [`crate::systems::chat_overlay`]
+//! draws a speech bubble above whoever said it nearby, an ambient transcript and
+//! a composer pill. **The messenger**, [`crate::systems::chats`], is the chat
+//! list and one chat at a time in a Chat and a World view (the v5 design). This
+//! module draws only the person menu and the report form both of them use.
 //!
 //! Geo tiers (country/province/municipality) land with `cartopolis_geo`; they slot in as
 //! extra channels with no change to any of this.
@@ -21,7 +13,6 @@
 use bevy::prelude::*;
 use cartopolis_core::{ChatScope, NetMessage, ReportReason};
 
-use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
 use crate::systems::theme;
@@ -98,14 +89,16 @@ pub struct ChatState {
     /// Chats to tell "stopped sharing" this frame. Drained by
     /// `systems::private_chat`.
     pub share_stops: Vec<String>,
-    /// The chat whose "Share location" durations are showing in the panel.
-    pub share_menu: Option<String>,
     /// Group chats to start this frame: (name, member usernames). Drained by
     /// `systems::private_chat`.
     pub group_start: Vec<(String, Vec<String>)>,
     /// The "new group" fields in the panel: its name, and who is in it.
     pub group_name_input: String,
     pub group_members_input: String,
+    /// Chats to send the camera's current view to, as a point. Asked for by
+    /// the messenger's "+ → Send this view" and answered by `geo_nav`, which is
+    /// what knows where the camera is.
+    pub view_requests: Vec<String>,
 }
 
 /// Somebody else's phone, as last shared with a chat.
@@ -177,6 +170,10 @@ pub struct ChatLine {
     /// A place that came with the line (private chats only for now): the log
     /// draws it as a button that puts the camera where the sender's was.
     pub point: Option<cartopolis_core::point::Point>,
+    /// Wall-clock Unix milliseconds this line arrived on this device, for the
+    /// time a bubble shows. Only for showing: everything that fades or orders
+    /// runs on [`Self::arrived`].
+    pub at_ms: u64,
 }
 
 impl Default for ChatState {
@@ -213,10 +210,10 @@ impl Default for ChatState {
             locations: Vec::new(),
             sharing: Vec::new(),
             share_stops: Vec::new(),
-            share_menu: None,
             group_start: Vec::new(),
             group_name_input: String::new(),
             group_members_input: String::new(),
+            view_requests: Vec::new(),
         }
     }
 }
@@ -307,6 +304,10 @@ impl ChatState {
 
     /// The points of the chat whose World view is on, each with the label its
     /// pin shows: the chat laid out on the map. Empty when no World view is on.
+    ///
+    /// Numbered in the order they were sent, which is the number the same
+    /// point's card carries in the thread (`chats::point_card`), so "2" on the
+    /// map and "2" in the chat are one place.
     #[must_use]
     pub fn world_points(&self) -> Vec<(cartopolis_core::point::Point, String)> {
         let Some(key) = &self.world else {
@@ -316,10 +317,12 @@ impl ChatState {
             .iter()
             .filter(|c| &c.key == key)
             .flat_map(|c| c.lines.iter())
-            .filter_map(|l| {
-                l.point
-                    .clone()
-                    .map(|p| (p, format!("{}: {}", l.sender, l.body)))
+            .filter(|l| !self.is_blocked(&l.sender))
+            .filter_map(|l| l.point.clone().map(|p| (p, l)))
+            .enumerate()
+            .map(|(i, (p, l))| {
+                let name = p.name.clone().unwrap_or_else(|| l.body.clone());
+                (p, format!("{}  {}", i + 1, name))
             })
             .collect()
     }
@@ -378,6 +381,10 @@ impl ChatState {
             distance,
             arrived,
             point,
+            at_ms: web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
         });
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
@@ -432,558 +439,6 @@ pub fn scope_for(key: &str, shout: bool) -> ChatScope {
         "local" => ChatScope::Local { shout },
         _ => ChatScope::Room(key.strip_prefix("room:").unwrap_or(key).to_string()),
     }
-}
-
-/// The chat panel: the whole log, the rooms, the blocks and the microphone.
-///
-/// **This is not where you talk.** The composer, the scope picker and the
-/// per-channel tabs left for [`crate::systems::chat_overlay`], which draws them
-/// over the map — see this module's note. What a panel is still good at is the
-/// things you do *occasionally* and want space for: reading back further than
-/// the transcript keeps, joining and leaving rooms, undoing a block, arming the
-/// microphone, and the report form.
-///
-/// The history here is **merged across every channel**, in arrival order, the
-/// same stream the transcript shows and for the same reason: the tabs are gone,
-/// so there is nothing to scope it to, and a room's lines interleaved with the
-/// proximity ones is what actually happened.
-///
-/// Present only when online (Simulation tier) — there is no one to talk to
-/// otherwise, and the ☰ entry that opens it is hidden on the same test.
-pub fn render_chat_panel(
-    mut egui: ResMut<EguiManager>,
-    mut chat: ResMut<ChatState>,
-    online: Option<Res<OnlineSession>>,
-    mut right_panel: ResMut<RightPanel>,
-    mut voice: ResMut<crate::systems::voice::VoiceState>,
-    // A point in the log is a button that flies the camera to it.
-    mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
-) {
-    let Some(online) = online else {
-        return;
-    };
-
-    // Everything between here and the end of `right_panel` below composes only
-    // when this panel is the open one, but building its inputs is not free:
-    // `recent` allocates a `Vec` over every line of every channel, sorts it, runs
-    // `is_blocked` per line, and then two `String`s are cloned per line on top —
-    // several hundred allocations every frame of an online session, for a panel
-    // nobody is looking at. `bookmarks::render_bookmarks_panel` guards itself the
-    // same way and says so.
-    //
-    // The report dialog is deliberately *outside* that guard. It is not part of
-    // the panel: `person_menu` hangs off a name in the overlay's transcript and
-    // off a speech bubble over an avatar's head as well as off the panel's log
-    // (see its doc comment), so a report is routinely opened — and must stay on
-    // screen — with this panel shut.
-    if !right_panel.is(RightPanel::Chat) {
-        render_report_dialog(&mut egui, &mut chat, &online);
-        return;
-    }
-
-    let mut join_now = false;
-    // Collected while the panel draws and acted on after it, because every one of
-    // these mutates `chat` and the closure already holds it borrowed.
-    let mut block_now: Option<String> = None;
-    let mut unblock_now: Option<String> = None;
-    let mut leave_now: Option<String> = None;
-    let mut open_report: Option<(String, Option<String>)> = None;
-    let mut message_now: Option<String> = None;
-    let mut focus_now: Option<String> = None;
-    let mut toggle_world: Option<String> = None;
-    let mut create_group = false;
-    let world_on = chat.world.clone();
-    let now = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let sharing = chat.sharing.clone();
-    let theirs = chat.locations.clone();
-    let share_menu = chat.share_menu.clone();
-    let mut stop_share: Option<String> = None;
-    let mut start_share: Option<(String, u64)> = None;
-    let mut open_share_menu: Option<String> = None;
-    let mut close_share_menu = false;
-    let mut show_location: Option<(f64, f64, String)> = None;
-    let mut send_point_to: Option<String> = None;
-    let mut cancel_point = false;
-    let mut go_to: Option<cartopolis_core::point::Point> = None;
-    let blocked = chat.blocked.clone();
-    let mut dismiss_notice = false;
-    let private: Vec<(String, String)> = chat
-        .channels
-        .iter()
-        .filter(|c| ChatState::is_private(&c.key))
-        .map(|c| (c.key.clone(), c.label.clone()))
-        .collect();
-    // Every joined room, as (channel key, name). The two built-in channels are
-    // not rooms and cannot be left.
-    let rooms: Vec<(String, String)> = chat
-        .channels
-        .iter()
-        .filter(|c| c.key.starts_with("room:"))
-        .map(|c| (c.key.clone(), c.label.clone()))
-        .collect();
-    // The log, flattened out of the borrow before the closure takes `chat`
-    // mutably. `f64::INFINITY` because a *log* has no recency window — that is
-    // the transcript's job, and this is the place you come when the transcript
-    // has already faded.
-    let log: Vec<(String, ChatLine)> = chat
-        .recent(chat.clock, f64::INFINITY, usize::MAX)
-        .into_iter()
-        .map(|(c, l)| {
-            let prefix = if c.key == "local" {
-                String::new()
-            } else {
-                format!("[{}] ", c.label)
-            };
-            (prefix, l.clone())
-        })
-        .collect();
-
-    crate::systems::egui_manager::right_panel(
-        &mut egui,
-        &mut right_panel,
-        RightPanel::Chat,
-        "chat_panel",
-        320.0,
-        |ui| {
-            // A refusal is an error chip; a confirmation is not. They are the same
-            // field because they answer the same question ("did my report go?"),
-            // and styling a success in the error tone would teach people to
-            // ignore the tone.
-            if let Some(notice) = chat.notice.clone() {
-                if notice.error {
-                    dismiss_notice = theme::inline_error(ui, &notice.text);
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        theme::note(ui, &notice.text);
-                        if theme::action_button(ui, "OK").clicked() {
-                            dismiss_notice = true;
-                        }
-                    });
-                }
-            }
-            // A view waiting to be sent ("Send this view to a chat", Search panel):
-            // first thing in the panel, because it is what the person came here to
-            // finish.
-            if let Some(draft) = chat.point_draft.clone() {
-                ui.group(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} Send this view: {}",
-                            icons::PIN,
-                            draft.name.clone().unwrap_or_else(|| format!(
-                                "{:.4}, {:.4}",
-                                draft.latitude, draft.longitude
-                            ))
-                        ))
-                        .color(theme::CREAM),
-                    );
-                    crate::systems::text_touch::field(
-                        ui,
-                        egui::TextEdit::singleline(&mut chat.point_text)
-                            .desired_width(ui.available_width())
-                            .hint_text("Add a message (optional)"),
-                    );
-                    if private.is_empty() {
-                        theme::note(ui, "Start a private chat below first.");
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        for (key, label) in &private {
-                            if theme::action_button(ui, &format!("Send to {label}")).clicked() {
-                                send_point_to = Some(key.clone());
-                            }
-                        }
-                        if theme::action_button(ui, "Cancel").clicked() {
-                            cancel_point = true;
-                        }
-                    });
-                });
-                ui.separator();
-            }
-            voice_row(ui, &mut voice);
-            ui.separator();
-
-            theme::section(ui, "Rooms");
-            for (key, label) in &rooms {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(label).color(theme::TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::action_button(ui, "Leave").clicked() {
-                            leave_now = Some(key.clone());
-                        }
-                    });
-                });
-            }
-            ui.horizontal(|ui| {
-                // Enter submits, as it does in every other field in the client.
-                let field = crate::systems::text_touch::field(
-                    ui,
-                    egui::TextEdit::singleline(&mut chat.join_input)
-                        .desired_width(ui.available_width() * 0.55)
-                        .hint_text("Room name"),
-                );
-                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                // Disabled on an empty field rather than live-and-inert.
-                // `data_layers` states the rule this restores — "a control that
-                // swallows a tap is indistinguishable from a broken app".
-                let ready = !chat.join_input.trim().is_empty();
-                let join = crate::systems::theme::action_enabled_because(
-                    ui,
-                    ready,
-                    "Join",
-                    "Type a room name first",
-                );
-                join_now = (join.clicked() || entered) && ready;
-            });
-
-            // Private chats: end-to-end encrypted, one per person
-            // (`systems::private_chat`), each labelled with a padlock.
-            theme::section(ui, "Private chats");
-            for (key, label) in &private {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(label).color(theme::TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::action_button(ui, "Write").clicked() {
-                            focus_now = Some(key.clone());
-                        }
-                        // The chat's World view: its points pinned on the map.
-                        let on = world_on.as_deref() == Some(key.as_str());
-                        if theme::action_button(ui, if on { "Hide map" } else { "Map" })
-                            .on_hover_text("Show the places sent in this chat as pins on the map")
-                            .clicked()
-                        {
-                            toggle_world = Some(key.clone());
-                        }
-                    });
-                });
-                // Real location: always says who can see it and for how long, in
-                // the blue that means "where a phone actually is".
-                let mine = sharing.iter().find(|s| &s.channel == key);
-                match mine {
-                    Some(share) => {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} You share your real location with this chat · {} min left",
-                                    icons::HERE,
-                                    share.until_ms.saturating_sub(now) / 60_000 + 1
-                                ))
-                                .color(theme::REAL_LOCATION),
-                            );
-                            if theme::action_button(ui, "Stop").clicked() {
-                                stop_share = Some(key.clone());
-                            }
-                        });
-                    }
-                    None if share_menu.as_deref() == Some(key.as_str()) => {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new("Share where your phone is, for")
-                                    .color(theme::TEXT_DIM),
-                            );
-                            for (label, minutes) in
-                                [("15 min", 15u64), ("1 hour", 60), ("8 hours", 480)]
-                            {
-                                if theme::action_button(ui, label).clicked() {
-                                    start_share = Some((key.clone(), minutes * 60_000));
-                                }
-                            }
-                            if theme::action_button(ui, "Cancel").clicked() {
-                                close_share_menu = true;
-                            }
-                        });
-                    }
-                    None => {
-                        if ui
-                            .small_button(format!("{} Share location…", icons::HERE))
-                            .on_hover_text(
-                                "Let only this chat see where your phone is, until a time you choose",
-                            )
-                            .clicked()
-                        {
-                            open_share_menu = Some(key.clone());
-                        }
-                    }
-                }
-                for l in theirs.iter().filter(|l| &l.channel == key) {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} {} shares their real location · {} min left",
-                                icons::HERE,
-                                l.from,
-                                l.until_ms.saturating_sub(now) / 60_000 + 1
-                            ))
-                            .color(theme::REAL_LOCATION),
-                        );
-                        if theme::action_button(ui, "Show").clicked() {
-                            show_location = Some((l.latitude, l.longitude, l.from.clone()));
-                        }
-                    });
-                }
-            }
-            ui.horizontal(|ui| {
-                let field = crate::systems::text_touch::field(
-                    ui,
-                    egui::TextEdit::singleline(&mut chat.private_input)
-                        .desired_width(ui.available_width() * 0.55)
-                        .hint_text("Username"),
-                );
-                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let ready = !chat.private_input.trim().is_empty();
-                let start = crate::systems::theme::action_enabled_because(
-                    ui,
-                    ready,
-                    "Chat privately",
-                    "Type who to write to first",
-                );
-                if (start.clicked() || entered) && ready {
-                    message_now = Some(chat.private_input.trim().to_string());
-                }
-            });
-            // A private group: a name, and the people in it.
-            egui::CollapsingHeader::new("New private group")
-                .id_salt("chat_new_group")
-                .show(ui, |ui| {
-                    crate::systems::text_touch::field(
-                        ui,
-                        egui::TextEdit::singleline(&mut chat.group_name_input)
-                            .desired_width(ui.available_width())
-                            .hint_text("Group name"),
-                    );
-                    crate::systems::text_touch::field(
-                        ui,
-                        egui::TextEdit::singleline(&mut chat.group_members_input)
-                            .desired_width(ui.available_width())
-                            .hint_text("Usernames, separated by commas"),
-                    );
-                    let ready = !chat.group_name_input.trim().is_empty()
-                        && !chat.group_members_input.trim().is_empty();
-                    if crate::systems::theme::action_enabled_because(
-                        ui,
-                        ready,
-                        "Create group",
-                        "Give it a name and at least one person",
-                    )
-                    .clicked()
-                        && ready
-                    {
-                        create_group = true;
-                    }
-                });
-            theme::note(
-                ui,
-                "Only you and the people in a private chat can read it. The server passes it on \
-                 without being able to open it.",
-            );
-
-            // Only once there is something in it. An empty "Blocked (0)" header on
-            // every session is chrome that says nothing; the list is a place to
-            // *undo* a block, and until one exists there is nothing to undo.
-            if !blocked.is_empty() {
-                egui::CollapsingHeader::new(format!("Blocked ({})", blocked.len()))
-                    .id_salt("chat_blocked")
-                    .show(ui, |ui| {
-                        for name in &blocked {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(name).color(theme::TEXT));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if theme::action_button(ui, "Unblock").clicked() {
-                                            unblock_now = Some(name.clone());
-                                        }
-                                    },
-                                );
-                            });
-                        }
-                    });
-            }
-            ui.separator();
-            theme::section(ui, "Everything said");
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if log.is_empty() {
-                        theme::empty_state(
-                            ui,
-                            "Nothing said yet",
-                            "What people say near you appears over their heads, and here.",
-                        );
-                    }
-                    for (prefix, line) in &log {
-                        let who = match line.distance {
-                            Some(d) => format!("{}{} ({:.0} m)", prefix, line.sender, d),
-                            None => format!("{}{}", prefix, line.sender),
-                        };
-                        ui.horizontal_wrapped(|ui| {
-                            // The name is the handle for everything you can do
-                            // *about* a person, which is why it senses clicks at
-                            // all. It has no click action of its own, so it needs
-                            // no `long_touched` guard — the trap the Places rows
-                            // document applies to a widget that both jumps
-                            // somewhere and opens a menu.
-                            let name = ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{who}:"))
-                                        .strong()
-                                        .color(theme::ACCENT_TEXT),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            person_menu(
-                                &name,
-                                &line.sender,
-                                Some(&line.body),
-                                |action| match action {
-                                    PersonAction::Message => {
-                                        message_now = Some(line.sender.clone())
-                                    }
-                                    PersonAction::Block => block_now = Some(line.sender.clone()),
-                                    PersonAction::Report(msg) => {
-                                        open_report = Some((line.sender.clone(), msg))
-                                    }
-                                },
-                            );
-                            match &line.point {
-                                // A point is the one line you can act on: it puts
-                                // the camera where the sender's was.
-                                Some(point) => {
-                                    if ui
-                                        .button(format!("{} {}", icons::PIN, line.body))
-                                        .on_hover_text("Look from here")
-                                        .clicked()
-                                    {
-                                        go_to = Some(point.clone());
-                                    }
-                                }
-                                None => {
-                                    ui.label(&line.body);
-                                }
-                            }
-                        });
-                    }
-                });
-        },
-    );
-
-    if join_now {
-        let room = chat.join_input.trim().to_string();
-        let key = format!("room:{room}");
-        online.send(
-            "chat subscribe",
-            NetMessage::ChatSubscribe {
-                room: room.clone(),
-                join: true,
-            },
-        );
-        // Joining a room is also choosing to speak in it: the scope chip follows,
-        // which is the one thing the vanished tab strip did that mattered.
-        let idx = chat.channel_index(&key);
-        chat.active = idx;
-        chat.join_input.clear();
-    }
-
-    if let Some(key) = leave_now {
-        let room = key.strip_prefix("room:").unwrap_or(&key).to_string();
-        online.send(
-            "chat unsubscribe",
-            NetMessage::ChatSubscribe { room, join: false },
-        );
-        chat.drop_channel(&key);
-    }
-
-    if let Some(key) = send_point_to {
-        if let Some(mut point) = chat.point_draft.take() {
-            let text = chat.point_text.trim().to_string();
-            point.text = (!text.is_empty()).then_some(text);
-            chat.private_points.push((key.clone(), point));
-            chat.point_text.clear();
-            chat.focus_channel(&key);
-        }
-    }
-    if cancel_point {
-        chat.point_draft = None;
-        chat.point_text.clear();
-    }
-    if create_group {
-        let name = chat.group_name_input.trim().to_string();
-        let members: Vec<String> = chat
-            .group_members_input
-            .split(',')
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty())
-            .collect();
-        chat.group_start.push((name, members));
-        chat.group_name_input.clear();
-        chat.group_members_input.clear();
-    }
-    if let Some(key) = stop_share {
-        chat.stop_sharing(&key);
-    }
-    if let Some((key, duration)) = start_share {
-        chat.start_sharing(&key, duration, now);
-        chat.share_menu = None;
-    }
-    if let Some(key) = open_share_menu {
-        chat.share_menu = Some(key);
-    }
-    if close_share_menu {
-        chat.share_menu = None;
-    }
-    if let Some((lat, lng, who)) = show_location {
-        nav.pending_label = Some(who);
-        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(lat, lng, None));
-    }
-    if let Some(key) = toggle_world {
-        chat.world = if chat.world.as_deref() == Some(key.as_str()) {
-            None
-        } else {
-            Some(key)
-        };
-    }
-    if let Some(point) = go_to {
-        nav.pending_label = point.name.clone();
-        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::point(&point));
-    }
-    if let Some(name) = message_now {
-        chat.private_start.push(name);
-        chat.private_input.clear();
-    }
-    if let Some(key) = focus_now {
-        chat.focus_channel(&key);
-    }
-
-    if dismiss_notice {
-        chat.notice = None;
-    }
-    for (name, on) in [(block_now, true), (unblock_now, false)] {
-        let Some(username) = name else { continue };
-        online.send(
-            "set blocked",
-            NetMessage::SetBlocked {
-                request_id: 0,
-                username,
-                blocked: on,
-            },
-        );
-    }
-    if let Some((username, message)) = open_report {
-        chat.report = Some(ReportDraft {
-            username,
-            message,
-            reason: ReportReason::Harassment,
-            note: String::new(),
-            // Raised from a chat line, so it is about what somebody said rather
-            // than about an object they put in the street.
-            asset: None,
-        });
-    }
-
-    render_report_dialog(&mut egui, &mut chat, &online);
 }
 
 /// What the person menu can ask for.
@@ -1050,7 +505,7 @@ pub fn person_menu(
 /// picking me up?", and the honest answer is a bar that moves. Without it a
 /// muted microphone, a denied permission and a room where nobody is listening
 /// are the same experience: silence.
-fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::VoiceState) {
+pub(crate) fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::VoiceState) {
     use crate::systems::voice::{VoiceMode, VoiceState};
 
     if !VoiceState::can_capture() {
@@ -1139,7 +594,7 @@ fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::VoiceState) {
 /// backlog is one you lose halfway through writing. And a report is raised from
 /// places other than the chat panel eventually (an avatar's context menu, a
 /// prim's), so it cannot live inside one panel's layout.
-fn render_report_dialog(
+pub(crate) fn render_report_dialog(
     egui: &mut EguiManager,
     chat: &mut ChatState,
     online: &crate::resources::OnlineSession,

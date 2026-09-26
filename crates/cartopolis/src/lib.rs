@@ -2241,6 +2241,7 @@ fn run_client() {
     app.init_resource::<systems::private_chat::PrivateInbox>();
     app.init_resource::<systems::private_chat::PrivateChats>();
     app.init_resource::<systems::chat_overlay::ChatOverlay>();
+    app.init_resource::<systems::chats::ChatsView>();
     app.init_resource::<systems::voice::VoiceState>();
     // Voice plays through the output device the soundscape already opened, as a
     // custom `Decodable` asset. Registering the type is what teaches bevy_audio
@@ -2643,6 +2644,10 @@ fn run_client() {
             // After the network system has sorted this frame's private-chat
             // traffic into the inbox it drains.
             systems::private_chat::drive_private_chats.after(network::apply_network_snapshot),
+            // A chat's "+ → Send this view": the camera's view, as a point, queued
+            // for the sealing above to pick up on its next pass.
+            systems::geo_nav::answer_view_requests
+                .before(systems::private_chat::drive_private_chats),
             // ADR-029: derive geo-anchored prims' GridCell/Transform from the
             // current OSM anchor (and re-project on re-anchor) before meshing.
             systems::prim_geo::place_geo_prims
@@ -3320,7 +3325,10 @@ fn run_client() {
                 // this chain to find them — registered outside it, the endpoint
                 // fields would be undrawn when the keys go looking for their rect.
                 systems::navigation::render_route_sheet,
-                systems::chat::render_chat_panel,
+                // The messenger: the chat list and one chat's Chat view
+                // (`systems::chats`). Its World view and the Chats | World switch
+                // are drawn over the map, after the composer below.
+                systems::chats::render_chats_panel,
                 systems::script_editor::render_script_panel,
                 systems::model_library::render_model_library_panel,
                 systems::ui::render_avatar_chooser,
@@ -3342,6 +3350,10 @@ fn run_client() {
                     .after(systems::free_camera::camera_controls),
                 systems::chat_overlay::render_chat_transcript,
                 systems::chat_overlay::render_chat_composer,
+                // A chat's World view has a text field, so it is ordered before
+                // the on-screen keyboard (Phase 7d) for the composer's reason.
+                systems::chats::render_chat_world,
+                systems::chats::render_chats_switch,
                 // Also after the camera has moved, so pins project onto this frame's view.
                 systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
                 // The device arrow: where the phone is, in the views where the
