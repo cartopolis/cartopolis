@@ -4107,6 +4107,7 @@ fn quiesce_while_backgrounded(
     mut exits: MessageReader<AppExit>,
     mut touches: ResMut<bevy::input::touch::Touches>,
     session: Option<Res<resources::OnlineSession>>,
+    mut session_state: Option<ResMut<systems::session::SessionState>>,
 ) {
     // Leaving on purpose — suspended or exiting — is not a crash, so the
     // breadcrumb goes. What it must survive is the app dying on screen.
@@ -4158,6 +4159,12 @@ fn quiesce_while_backgrounded(
                 // The next tick's snapshot is the resynchronisation; there is no
                 // catch-up to ask for, because a snapshot is the whole state.
                 set_presence(session.as_deref(), true);
+                // A session Android took away while we were gone is being got
+                // back on a back-off, which may have run out against a network
+                // that was down in the background. Coming back is when to try.
+                if let Some(state) = session_state.as_deref_mut() {
+                    state.retry_now();
+                }
             }
             bevy::window::AppLifecycle::Idle => {}
         }

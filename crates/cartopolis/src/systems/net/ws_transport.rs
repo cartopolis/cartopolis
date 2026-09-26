@@ -208,12 +208,31 @@ pub fn start(
         .await
         {
             Ok(()) => status.set(LinkState::Closed),
-            Err(message) => {
+            Err(Ended::Failed(message)) => {
                 tracing::warn!(%message, "websocket link ended");
                 status.set(LinkState::Failed(message));
             }
+            Err(Ended::Rejected(message)) => {
+                tracing::warn!(%message, "websocket sign-in refused");
+                status.set(LinkState::Rejected(message));
+            }
         }
     });
+}
+
+/// How [`run`] can end badly — the web half of the native path's `Rejected`
+/// error, kept apart for the same reason: a lost socket is retried by
+/// `session`, a refused credential is not. `From<String>` so every `?` on a
+/// transport error keeps reading as a failure.
+enum Ended {
+    Failed(String),
+    Rejected(String),
+}
+
+impl From<String> for Ended {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -225,7 +244,7 @@ async fn run(
     mut intent_rx: UnboundedReceiver<NetMessage>,
     tile_template: &Arc<Mutex<String>>,
     status: &LinkStatus,
-) -> Result<(), String> {
+) -> Result<(), Ended> {
     // Primary then fallback, exactly as the native path: a stale persisted token
     // gets a fresh password login rather than locking the user out. Each attempt
     // needs its own socket — the server closes on a rejected credential.
@@ -238,8 +257,10 @@ async fn run(
         let mut candidate = Socket::open(&url)?;
         match candidate.next().await {
             Event::Open => {}
-            Event::Gone(why) => return Err(why),
-            Event::Frame(_) => return Err("the server spoke before the socket opened".into()),
+            Event::Gone(why) => return Err(why.into()),
+            Event::Frame(_) => {
+                return Err(String::from("the server spoke before the socket opened").into())
+            }
         }
 
         let hello = encode_app_frame(&NetMessage::ClientHello {
@@ -255,7 +276,7 @@ async fn run(
                 Event::Frame(bytes) => {
                     break decode_app_frame(&bytes).map_err(|e| e.to_string())?
                 }
-                Event::Gone(why) => return Err(why),
+                Event::Gone(why) => return Err(why.into()),
                 Event::Open => continue,
             }
         };
@@ -282,12 +303,13 @@ async fn run(
                 // attempt opens its own.
                 continue;
             }
-            other => return Err(format!("unexpected first server message: {other:?}")),
+            other => return Err(format!("unexpected first server message: {other:?}").into()),
         }
     }
 
-    let (mut socket, ack) =
-        socket.ok_or_else(|| rejection.unwrap_or_else(|| "authentication failed".to_string()))?;
+    let (mut socket, ack) = socket.ok_or_else(|| {
+        Ended::Rejected(rejection.unwrap_or_else(|| "authentication failed".to_string()))
+    })?;
     status.set(LinkState::Online);
     if out_tx.send(ack).is_err() {
         return Ok(());

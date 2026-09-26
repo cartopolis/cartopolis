@@ -164,11 +164,58 @@ pub struct SessionState {
     /// Written by the UI or startup, taken by [`drive_session`].
     pub request: Option<SessionRequest>,
     link: Option<LinkStatus>,
+    /// A session that was lost rather than left, and is being got back.
+    reconnect: Option<Reconnect>,
+}
+
+/// Seconds to wait before each attempt to get a lost session back, counted from
+/// the failure before it. The first is immediate because the common loss is the
+/// phone's: Android takes the socket away while the app is in the background and
+/// the client only finds out on the first frame back, when the network is
+/// already up again. The rest cover a server restarting under a deploy. About
+/// half a minute in all, and then the card's error line says why.
+const RECONNECT_DELAYS_S: [f64; 6] = [0.0, 1.0, 2.0, 4.0, 8.0, 15.0];
+
+/// Where a lost session was and how to sign in to it again.
+#[derive(Clone)]
+struct Reconnect {
+    server: String,
+    /// The credential the session was opened with. A remembered token is looked
+    /// up again by [`connect`], exactly as for a fresh sign-in; a password typed
+    /// this run is held here for as long as `ConnectAuth` already held it.
+    auth: ConnectAuth,
+    /// Attempts made since the session was lost.
+    attempts: usize,
+    /// When the next attempt is due, in `Time<Real>` seconds. `None` once they
+    /// have run out — kept rather than dropped so [`SessionState::retry_now`] can
+    /// start again when the app comes back to the foreground.
+    due: Option<f64>,
 }
 
 impl SessionState {
     pub fn is_online(&self) -> bool {
         self.status == SessionStatus::Online
+    }
+
+    /// Try to get a lost session back now rather than when its back-off says.
+    ///
+    /// Called when the app returns to the foreground: a phone that spent the
+    /// back-off in somebody else's app may have used up every attempt against a
+    /// network that was down, and coming back is exactly when to try again. A
+    /// no-op with no lost session, or with an attempt already on the wire.
+    pub fn retry_now(&mut self) {
+        if self.link.is_some() {
+            return;
+        }
+        if let Some(reconnect) = &mut self.reconnect {
+            reconnect.attempts = 0;
+            reconnect.due = Some(f64::NEG_INFINITY);
+            self.mode = SessionMode::Remote {
+                server: reconnect.server.clone(),
+            };
+            self.status = SessionStatus::Connecting;
+            self.error = None;
+        }
     }
 
     /// Ask for a mode. Safe to call every frame from a button — the driver takes
@@ -223,12 +270,26 @@ pub fn sign_out(session: &mut SessionState, store: &mut UserStore) {
 /// One system rather than two because both mutate the same state machine
 /// and the ordering between them matters within a single frame: a request torn
 /// down here must not be seen as a *dropped* link by the watcher below.
+///
+/// **A session that is lost rather than left comes back by itself.** Android
+/// takes an app's socket away while it is in the background, so switching to
+/// another app and back used to land the user offline with "Software caused
+/// connection abort" on the card and the password field empty — a log-out
+/// nobody asked for. A link that fails *after* it was online is therefore retried
+/// on [`RECONNECT_DELAYS_S`] with the credential it was opened with, which rides
+/// the remembered token like a launch does. Three things stop it: any request
+/// (a log-out, or a sign-in somewhere else, wins), a server that refuses the
+/// credential ([`LinkState::Rejected`] — asking again gets the same answer), and
+/// running out of attempts. A first sign-in that fails is never retried; its
+/// reason belongs on the card in front of the person who pressed the button.
 #[allow(clippy::too_many_arguments)]
 pub fn drive_session(
     mut commands: Commands,
     mut session: ResMut<SessionState>,
     store: Res<UserStore>,
     tile_url: Res<OsmTileUrlTemplate>,
+    time: Res<Time<Real>>,
+    auth: Option<Res<ConnectAuth>>,
     mut game_state: ResMut<GameState>,
     mut local_sim_id: ResMut<LocalAvatarSimId>,
     mut identity: ResMut<AuthIdentity>,
@@ -238,6 +299,7 @@ pub fn drive_session(
     avatars: Query<Entity, With<Avatar>>,
 ) {
     if let Some(request) = session.request.take() {
+        session.reconnect = None;
         teardown(
             &mut commands,
             &mut session,
@@ -283,51 +345,140 @@ pub fn drive_session(
 
     // Watch the live link. A drop is the same event as a failed sign-in as far as
     // the app is concerned: the authority is gone, so fall back to offline rather
-    // than leaving a half-online client whose avatar no longer answers.
+    // than leaving a half-online client whose avatar no longer answers — and then,
+    // if it was a session that got lost, go and get it back.
+    let now = time.elapsed_secs_f64();
     let Some(link) = session.link.clone() else {
+        // Between attempts: fire the next one when it is due.
+        let due = |r: &mut Reconnect| r.due.is_some_and(|at| now >= at);
+        if let Some(mut reconnect) = session.reconnect.take_if(due) {
+            reconnect.attempts += 1;
+            info!(
+                server = %reconnect.server,
+                attempt = reconnect.attempts,
+                "session: reconnecting"
+            );
+            session.mode = SessionMode::Remote {
+                server: reconnect.server.clone(),
+            };
+            let server = reconnect.server.clone();
+            connect(
+                &mut commands,
+                &mut session,
+                &store,
+                &tile_url,
+                &server,
+                reconnect.auth.clone(),
+            );
+            session.reconnect = Some(reconnect);
+        }
         return;
     };
-    match link.get() {
-        LinkState::Connecting => session.status = SessionStatus::Connecting,
-        LinkState::Authenticating => session.status = SessionStatus::Authenticating,
-        LinkState::Online => session.status = SessionStatus::Online,
+    let ended = match link.get() {
+        LinkState::Connecting => {
+            session.status = SessionStatus::Connecting;
+            return;
+        }
+        LinkState::Authenticating => {
+            session.status = SessionStatus::Authenticating;
+            return;
+        }
+        LinkState::Online => {
+            session.status = SessionStatus::Online;
+            if session.reconnect.take().is_some() {
+                info!(server = %session.mode.where_(), "session: reconnected");
+            }
+            return;
+        }
+        LinkState::Rejected(message) => {
+            // Refused: the token has expired or the account is gone, and trying
+            // again gets the same answer. Offline, with the server's reason.
+            warn!(%message, "session refused");
+            session.reconnect = None;
+            Some(message)
+        }
         LinkState::Failed(message) => {
             warn!(%message, "session failed");
-            let was = session.mode.where_();
-            teardown(
-                &mut commands,
-                &mut session,
-                &mut game_state,
-                &mut local_sim_id,
-                &mut identity,
-                &mut chat,
-                &prims,
-                &remotes,
-                &avatars,
-            );
-            session.error = Some(format!("{was}: {message}"));
+            Some(message)
         }
-        LinkState::Closed => {
-            let online = session.status == SessionStatus::Online;
-            let was = session.mode.where_();
-            teardown(
-                &mut commands,
-                &mut session,
-                &mut game_state,
-                &mut local_sim_id,
-                &mut identity,
-                &mut chat,
-                &prims,
-                &remotes,
-                &avatars,
-            );
-            // Only worth reporting if there was a session to lose; a link closed
-            // before it came up already failed for a better-stated reason.
-            if online {
-                session.error = Some(format!("Disconnected from {was}"));
-            }
-        }
+        LinkState::Closed => None,
+    };
+
+    // Lost — a session that was up, or an attempt to bring one back — as opposed
+    // to a sign-in that never got there.
+    let lost = session.status == SessionStatus::Online || session.reconnect.is_some();
+    let was = session.mode.where_();
+    let server = match &session.mode {
+        SessionMode::Remote { server } => Some(server.clone()),
+        SessionMode::Offline => None,
+    };
+    let resume_with = auth
+        .as_deref()
+        .cloned()
+        .or_else(|| session.reconnect.as_ref().map(|r| r.auth.clone()));
+    // The conversation is kept across a reconnect: the same people on the same
+    // server, and losing it to the phone having switched apps would be the same
+    // surprise as the log-out this avoids. `teardown` still clears it when the
+    // session is not coming back.
+    let kept_chat = std::mem::take(&mut *chat);
+    teardown(
+        &mut commands,
+        &mut session,
+        &mut game_state,
+        &mut local_sim_id,
+        &mut identity,
+        &mut chat,
+        &prims,
+        &remotes,
+        &avatars,
+    );
+    if lost && schedule_reconnect(&mut session, server, resume_with, now) {
+        *chat = kept_chat;
+        return;
     }
+    session.error = match ended {
+        Some(message) => Some(format!("{was}: {message}")),
+        // Only worth reporting if there was a session to lose; a link closed
+        // before it came up already failed for a better-stated reason.
+        None if lost => Some(format!("Disconnected from {was}")),
+        None => None,
+    };
+}
+
+/// Arrange the next attempt to get a lost session back, or record that they have
+/// run out. Returns whether one is coming.
+///
+/// The client reads as *connecting* while it waits rather than offline, because
+/// it is: the status line and the splash say "Connecting…" instead of flashing
+/// "Offline" between attempts, and a sign-in card opened meanwhile holds its
+/// button until the outcome is known.
+fn schedule_reconnect(
+    session: &mut SessionState,
+    server: Option<String>,
+    auth: Option<ConnectAuth>,
+    now: f64,
+) -> bool {
+    // Rejected clears `reconnect`, so an attempt count here always belongs to a
+    // lost session, never to a refused one.
+    let (Some(server), Some(auth)) = (server, auth) else {
+        session.reconnect = None;
+        return false;
+    };
+    let attempts = session.reconnect.as_ref().map_or(0, |r| r.attempts);
+    let due = RECONNECT_DELAYS_S.get(attempts).map(|delay| now + delay);
+    session.reconnect = Some(Reconnect {
+        server: server.clone(),
+        auth,
+        attempts,
+        due,
+    });
+    if due.is_none() {
+        warn!(%server, attempts, "session: giving up on reconnecting");
+        return false;
+    }
+    session.mode = SessionMode::Remote { server };
+    session.status = SessionStatus::Connecting;
+    true
 }
 
 /// Open the link and install the resources that make the rest of the client
@@ -431,6 +582,7 @@ mod tests {
     fn test_app() -> App {
         let mut app = App::new();
         app.init_resource::<SessionState>()
+            .init_resource::<Time<Real>>()
             .init_resource::<GameState>()
             .init_resource::<LocalAvatarSimId>()
             .init_resource::<AuthIdentity>()
@@ -439,6 +591,181 @@ mod tests {
             .insert_resource(UserStore::load())
             .add_systems(Update, drive_session);
         app
+    }
+
+    /// A session that is up, over a link this test controls instead of a
+    /// network thread. Returns the link so the test can end it.
+    fn online_over_fake_link(app: &mut App, server: &str) -> LinkStatus {
+        let link = LinkStatus::new();
+        link.set(LinkState::Online);
+        app.insert_resource(ConnectAuth {
+            credential: AuthCredential::Password {
+                username: "alice".into(),
+                password: String::new(),
+            },
+            persist_token: true,
+        });
+        let mut session = app.world_mut().resource_mut::<SessionState>();
+        session.mode = SessionMode::Remote {
+            server: server.into(),
+        };
+        session.status = SessionStatus::Online;
+        session.link = Some(link.clone());
+        link
+    }
+
+    /// **The bug this was written for**: Android takes the socket away while the
+    /// app is in the background, and the first frame back sees the link fail.
+    /// That used to be the end of the session — offline, the error on the card,
+    /// the password field empty. It must read as a reconnect instead, with
+    /// nothing put in front of the user.
+    #[test]
+    fn a_lost_session_is_got_back_rather_than_dropped() {
+        let mut app = test_app();
+        let link = online_over_fake_link(&mut app, "127.0.0.1:1");
+        link.set(LinkState::Failed(
+            "IO error: Software caused connection abort (os error 103)".into(),
+        ));
+        app.update();
+
+        let session = app.world().resource::<SessionState>();
+        assert_eq!(
+            session.error, None,
+            "a reconnect is not a failure to report"
+        );
+        assert_eq!(session.status, SessionStatus::Connecting);
+        assert_eq!(
+            session.mode,
+            SessionMode::Remote {
+                server: "127.0.0.1:1".into()
+            }
+        );
+        let reconnect = session.reconnect.as_ref().expect("no reconnect scheduled");
+        assert_eq!(reconnect.attempts, 0);
+
+        // The first attempt is immediate: the network is back by the time the
+        // client notices it was gone.
+        app.update();
+        let session = app.world().resource::<SessionState>();
+        assert!(session.link.is_some(), "the first attempt did not go out");
+        assert_eq!(session.reconnect.as_ref().map(|r| r.attempts), Some(1));
+    }
+
+    /// A link that closes cleanly under a live session — a server restarting
+    /// for a deploy — is a loss too, not a log-out.
+    #[test]
+    fn a_closed_link_is_got_back_too() {
+        let mut app = test_app();
+        let link = online_over_fake_link(&mut app, "127.0.0.1:1");
+        link.set(LinkState::Closed);
+        app.update();
+        let session = app.world().resource::<SessionState>();
+        assert!(session.reconnect.is_some());
+        assert_eq!(session.error, None);
+    }
+
+    /// A first sign-in that fails is reported, never retried: the reason
+    /// belongs on the card in front of the person who pressed the button.
+    #[test]
+    fn a_failed_first_sign_in_is_not_retried() {
+        let mut app = test_app();
+        let link = LinkStatus::new();
+        {
+            let mut session = app.world_mut().resource_mut::<SessionState>();
+            session.mode = SessionMode::Remote {
+                server: "sim.example".into(),
+            };
+            session.status = SessionStatus::Connecting;
+            session.link = Some(link.clone());
+        }
+        link.set(LinkState::Failed("No simulator is listening there".into()));
+        app.update();
+        let session = app.world().resource::<SessionState>();
+        assert!(session.reconnect.is_none());
+        assert_eq!(session.status, SessionStatus::Offline);
+        assert_eq!(
+            session.error.as_deref(),
+            Some("sim.example: No simulator is listening there")
+        );
+    }
+
+    /// A refused credential ends the reconnect: asking again gets the same
+    /// answer, and the reason is what the user needs to see.
+    #[test]
+    fn a_refused_credential_stops_the_reconnect() {
+        let mut app = test_app();
+        let link = online_over_fake_link(&mut app, "127.0.0.1:1");
+        link.set(LinkState::Failed("connection reset".into()));
+        app.update();
+        app.update(); // the first attempt goes out
+                      // Swapped for a fake: the real one is a thread dialling a closed port,
+                      // which would race the refusal this test sets.
+        let attempt = LinkStatus::new();
+        app.world_mut().resource_mut::<SessionState>().link = Some(attempt.clone());
+        attempt.set(LinkState::Rejected("session expired".into()));
+        app.update();
+
+        let session = app.world().resource::<SessionState>();
+        assert!(session.reconnect.is_none(), "a refusal was retried");
+        assert_eq!(session.status, SessionStatus::Offline);
+        assert_eq!(
+            session.error.as_deref(),
+            Some("127.0.0.1:1: session expired")
+        );
+    }
+
+    /// The back-off runs out, the reason is shown — and coming back to the app
+    /// starts it again, because a phone may have spent every attempt against a
+    /// network that was down while it was in the background.
+    #[test]
+    fn a_reconnect_gives_up_and_the_foreground_rearms_it() {
+        let mut app = test_app();
+        let link = online_over_fake_link(&mut app, "127.0.0.1:1");
+        link.set(LinkState::Failed("connection reset".into()));
+        app.update();
+        // Pretend every attempt has already been spent.
+        let spent = RECONNECT_DELAYS_S.len();
+        let attempt = LinkStatus::new();
+        {
+            let mut session = app.world_mut().resource_mut::<SessionState>();
+            session.reconnect.as_mut().unwrap().attempts = spent;
+            session.link = Some(attempt.clone());
+        }
+        attempt.set(LinkState::Failed("network unreachable".into()));
+        app.update();
+
+        let session = app.world().resource::<SessionState>();
+        assert_eq!(session.status, SessionStatus::Offline);
+        assert_eq!(
+            session.error.as_deref(),
+            Some("127.0.0.1:1: network unreachable")
+        );
+        assert_eq!(session.reconnect.as_ref().and_then(|r| r.due), None);
+
+        app.world_mut().resource_mut::<SessionState>().retry_now();
+        app.update();
+        let session = app.world().resource::<SessionState>();
+        assert!(session.link.is_some(), "the foreground did not try again");
+        assert_eq!(session.error, None);
+        assert_eq!(session.reconnect.as_ref().map(|r| r.attempts), Some(1));
+    }
+
+    /// Logging out in the middle of a reconnect ends it: a request always wins.
+    #[test]
+    fn a_log_out_cancels_a_reconnect() {
+        let mut app = test_app();
+        let link = online_over_fake_link(&mut app, "127.0.0.1:1");
+        link.set(LinkState::Closed);
+        app.update();
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Offline);
+        app.update();
+        app.update();
+        let session = app.world().resource::<SessionState>();
+        assert!(session.reconnect.is_none());
+        assert!(session.link.is_none());
+        assert_eq!(session.status, SessionStatus::Offline);
     }
 
     /// Pretend a session is up: the resources a live link installs, plus the
@@ -604,6 +931,83 @@ mod tests {
         assert!(!SessionStatus::Offline.is_busy());
     }
 
+    /// The client world as `lib.rs` assembles it, reduced to the systems and
+    /// resources the session + snapshot path touches. Fresh per "launch".
+    fn client_app(store: UserStore) -> App {
+        use crate::resources::{AvatarState, PrimTextureCache, TextureLibrary};
+        use bevy::asset::Assets;
+        use bevy::image::Image;
+
+        let mut app = App::new();
+        app.init_resource::<SessionState>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<GameState>()
+            .init_resource::<LocalAvatarSimId>()
+            .init_resource::<AuthIdentity>()
+            .init_resource::<AvatarState>()
+            .init_resource::<TextureLibrary>()
+            .init_resource::<PrimTextureCache>()
+            .init_resource::<crate::systems::chat::ChatState>()
+            .init_resource::<crate::systems::script_editor::ScriptEditorState>()
+            .init_resource::<crate::systems::voice::VoiceState>()
+            .init_resource::<crate::systems::private_chat::PrivateInbox>()
+            .init_resource::<OsmTileUrlTemplate>()
+            .insert_resource(Assets::<Image>::default())
+            .insert_resource(store)
+            .add_systems(
+                Update,
+                (
+                    drive_session,
+                    crate::systems::network::apply_network_snapshot,
+                )
+                    .chain(),
+            );
+        app
+    }
+
+    /// Pump frames (the link runs on its own thread) until `done`, or fail
+    /// with whatever the session has to say for itself. The real clock is
+    /// advanced by hand, since there is no `TimePlugin` to do it.
+    fn pump(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
+        for _ in 0..1000 {
+            app.world_mut().resource_mut::<Time<Real>>().update();
+            app.update();
+            if done(app.world()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let session = app.world().resource::<SessionState>();
+        panic!(
+            "timed out waiting for {what}: status {:?}, error {:?}",
+            session.status, session.error
+        );
+    }
+
+    /// A real simulator on loopback with one account, `alice` / `hunter22`, on
+    /// `listen` (`127.0.0.1:0` for any port). The runtime is returned because
+    /// dropping it is what takes the server down, connections and all.
+    fn boot_sim(
+        db: &str,
+        listen: &str,
+    ) -> (tokio::runtime::Runtime, cartopolis_simulator::SimHandle) {
+        {
+            let conn = cartopolis_simulator::db::open_and_migrate(db).unwrap();
+            cartopolis_simulator::ensure_account(&conn, "alice", "hunter22").unwrap();
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt
+            .block_on(cartopolis_simulator::serve(std::sync::Arc::new(
+                cartopolis_simulator::SimConfig {
+                    database_path: db.to_string(),
+                    listen: listen.to_string(),
+                    ..cartopolis_simulator::SimConfig::default()
+                },
+            )))
+            .unwrap();
+        (rt, handle)
+    }
+
     /// **"Stay signed in", end to end, across a viewer restart.** A real sim on
     /// loopback, the real `drive_session` + `apply_network_snapshot` systems, a
     /// real `UserStore` — sign in with a password once, then rebuild the whole
@@ -613,74 +1017,9 @@ mod tests {
     /// read as correct on paper; only the assembled path can say so.
     #[test]
     fn stay_signed_in_survives_a_viewer_restart() {
-        use crate::resources::{AvatarState, PrimTextureCache, TextureLibrary};
-        use bevy::asset::Assets;
-        use bevy::image::Image;
-
-        /// The client world as `lib.rs` assembles it, reduced to the systems and
-        /// resources the session + snapshot path touches. Fresh per "launch".
-        fn client_app(store: UserStore) -> App {
-            let mut app = App::new();
-            app.init_resource::<SessionState>()
-                .init_resource::<GameState>()
-                .init_resource::<LocalAvatarSimId>()
-                .init_resource::<AuthIdentity>()
-                .init_resource::<AvatarState>()
-                .init_resource::<TextureLibrary>()
-                .init_resource::<PrimTextureCache>()
-                .init_resource::<crate::systems::chat::ChatState>()
-                .init_resource::<crate::systems::script_editor::ScriptEditorState>()
-                .init_resource::<crate::systems::voice::VoiceState>()
-                .init_resource::<crate::systems::private_chat::PrivateInbox>()
-                .init_resource::<OsmTileUrlTemplate>()
-                .insert_resource(Assets::<Image>::default())
-                .insert_resource(store)
-                .add_systems(
-                    Update,
-                    (
-                        drive_session,
-                        crate::systems::network::apply_network_snapshot,
-                    )
-                        .chain(),
-                );
-            app
-        }
-
-        /// Pump frames (the link runs on its own thread) until `done`, or fail
-        /// with whatever the session has to say for itself.
-        fn pump(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
-            for _ in 0..500 {
-                app.update();
-                if done(app.world()) {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            let session = app.world().resource::<SessionState>();
-            panic!(
-                "timed out waiting for {what}: status {:?}, error {:?}",
-                session.status, session.error
-            );
-        }
-
-        // A real simulator with a known account, exactly as the voice loopback
-        // test boots one.
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("world.db").to_str().unwrap().to_string();
-        {
-            let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
-            cartopolis_simulator::ensure_account(&conn, "alice", "hunter22").unwrap();
-        }
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let handle = rt
-            .block_on(cartopolis_simulator::serve(std::sync::Arc::new(
-                cartopolis_simulator::SimConfig {
-                    database_path: db,
-                    listen: "127.0.0.1:0".into(),
-                    ..cartopolis_simulator::SimConfig::default()
-                },
-            )))
-            .unwrap();
+        let (_rt, handle) = boot_sim(&db, "127.0.0.1:0");
         let addr = handle.local_addr.to_string();
 
         // Launch one: the sign-in card's submit, "stay signed in" ticked.
@@ -738,6 +1077,54 @@ mod tests {
                 .as_deref(),
             Some("alice"),
             "the token signed in as somebody else"
+        );
+    }
+
+    /// **A dropped link comes back by itself, end to end.** A real sim takes
+    /// every connection down with it and comes back on the same port — the
+    /// shape of a deploy, and on the client's side the same event as Android
+    /// aborting the socket of a backgrounded app. The client must be online
+    /// again with nobody having asked it to sign in.
+    #[test]
+    fn a_dropped_link_signs_itself_back_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("world.db").to_str().unwrap().to_string();
+        let (rt, handle) = boot_sim(&db, "127.0.0.1:0");
+        let addr = handle.local_addr.to_string();
+
+        let mut app = client_app(UserStore::default());
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Remote {
+                server: addr.clone(),
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: "hunter22".into(),
+                },
+                persist_token: true,
+            });
+        pump(&mut app, "the password sign-in", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+
+        // The server goes, and every socket with it.
+        drop(handle);
+        rt.shutdown_timeout(std::time::Duration::from_secs(2));
+        pump(&mut app, "the loss to be noticed", |w| {
+            w.resource::<SessionState>().reconnect.is_some()
+        });
+
+        // And comes back where it was.
+        let (_rt, _handle) = boot_sim(&db, &addr);
+        pump(&mut app, "the session to come back", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+        let session = app.world().resource::<SessionState>();
+        assert!(session.reconnect.is_none(), "a live session still retrying");
+        assert_eq!(session.error, None);
+        assert_eq!(
+            app.world().resource::<AuthIdentity>().username.as_deref(),
+            Some("alice")
         );
     }
 }

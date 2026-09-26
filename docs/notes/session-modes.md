@@ -1,7 +1,7 @@
 ---
 topic: session
 triggers: [session.rs, login_screen.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth]
-updated: 2026-08-21
+updated: 2026-09-26
 ---
 
 # Two modes, decided at runtime: offline and online
@@ -93,6 +93,33 @@ who had come to look at a map. It is Offline + `auto_enter` now, which reads as
 "enter offline without asking" and is the only default that leaves the card shut.
 (Android additionally forced `--offline` until 2026-08-21, which is the bug that
 made "stay signed in" a no-op there — `docs/notes/android-build.md`.)
+
+## A lost session comes back by itself (2026-09-26)
+
+Android takes a backgrounded app's socket away, and the client only learns so on
+the first frame back — "Software caused connection abort (os error 103)". Until
+2026-09-26 that was treated like any failure: teardown, offline, the reason under
+the sign-in entry, and the user signing in again by hand with "stay signed in"
+ticked. It read as being logged out every time you switched apps.
+
+A link that fails **after it was online** is now retried by `drive_session` with
+the `ConnectAuth` it was opened with — so it rides the remembered token exactly as
+a launch does — on `RECONNECT_DELAYS_S` (immediately, then about half a minute of
+back-off), reading as *Connecting…* throughout and keeping the chat log.
+`AppLifecycle::WillResume` calls `SessionState::retry_now`, because a back-off
+spent in the background against a dead network has run out by the time anyone
+looks. Three things stop it, and each is deliberate:
+
+- **Any request.** A log-out or a sign-in elsewhere wins over a reconnect.
+- **A refused credential** — `LinkState::Rejected`, split from `Failed` for this
+  and set by both carriers. A dropped socket is worth another try; an expired
+  token is refused identically every time.
+- **A first sign-in that fails is never retried.** Its reason belongs on the card
+  in front of whoever pressed the button, not behind thirty seconds of spinner.
+
+The background-connection service (`docs/notes/background-connection.md`) is the
+other half: with it on the socket is not taken away at all, and this is only
+what happens when it is.
 
 ## Teardown is the inverse of connect, and both halves are load-bearing
 

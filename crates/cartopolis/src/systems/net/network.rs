@@ -75,7 +75,7 @@ const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// Every variant is live on every target now. It used to carry a
 /// `cfg_attr(wasm32, allow(dead_code))`, because the web build had no transport
 /// and never got past `start_link`'s wasm arm — that arm is a real WebSocket
-/// carrier since, and sets all five.
+/// carrier since, and sets all six.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkState {
     /// Opening the socket.
@@ -83,8 +83,16 @@ pub enum LinkState {
     /// Socket up, credential sent, waiting for `ServerHelloAck`.
     Authenticating,
     Online,
-    /// The attempt ended. Carries a message fit to put in front of a user.
+    /// The link ended on the way: a socket that would not open, or one the
+    /// network took away. Carries a message fit to put in front of a user.
     Failed(String),
+    /// The server answered and refused every credential offered.
+    ///
+    /// Apart from [`Self::Failed`] because the two call for opposite responses: a
+    /// lost socket is worth trying again (`session` does, on its own), while a
+    /// refused credential is refused the same way every time — retrying it is a
+    /// loop that ends with nothing but a longer wait for the same message.
+    Rejected(String),
     /// An established session ended cleanly (server shut down, or we asked).
     Closed,
 }
@@ -94,7 +102,8 @@ pub enum LinkState {
 pub struct LinkStatus(Arc<Mutex<LinkState>>);
 
 impl LinkStatus {
-    fn new() -> Self {
+    /// `pub(crate)` so `session`'s tests can stand in for a network thread.
+    pub(crate) fn new() -> Self {
         Self(Arc::new(Mutex::new(LinkState::Connecting)))
     }
 
@@ -325,7 +334,11 @@ pub fn start_link(
                 Ok(()) => status_for_thread.set(LinkState::Closed),
                 Err(e) => {
                     tracing::warn!("network client ended: {e:#}");
-                    status_for_thread.set(LinkState::Failed(friendly_error(&e)));
+                    let state = match e.downcast_ref::<Rejected>() {
+                        Some(Rejected(message)) => LinkState::Rejected(message.clone()),
+                        None => LinkState::Failed(friendly_error(&e)),
+                    };
+                    status_for_thread.set(state);
                 }
             }
         });
@@ -353,6 +366,23 @@ pub fn start_link(
         status,
     }
 }
+
+/// Every credential was refused — the error `client_loop` ends on when the server
+/// answered and said no, so `start_link` can report [`LinkState::Rejected`]
+/// rather than a [`LinkState::Failed`] that would be tried again.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct Rejected(String);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::error::Error for Rejected {}
 
 /// A connection error as a person should read it. `anyhow`'s chain is the right
 /// thing in a log and the wrong thing in a modal: "Connection refused (os error
@@ -580,7 +610,11 @@ async fn client_loop(
     }
     let (mut framed, ack_msg) = match authed {
         Some(authed) => authed,
-        None => anyhow::bail!(rejection.unwrap_or_else(|| "authentication failed".to_string())),
+        None => {
+            return Err(
+                Rejected(rejection.unwrap_or_else(|| "authentication failed".to_string())).into(),
+            )
+        }
     };
     status.set(LinkState::Online);
     if out_tx.send(ack_msg).is_err() {
