@@ -22,7 +22,8 @@ pub struct CoverageEntry {
     /// Named totals the manifest carries — `building_count`, `tree_count`, …
     pub counts: Vec<Count>,
     pub dataset: String,
-    /// How many z14 cells the client will source from this host.
+    /// How many cells the client will source from this host — z14 for every
+    /// dataset but `tall`, whose cells are z11.
     pub cells: usize,
     pub label: String,
     /// `None` when nothing has ever been extracted for this dataset.
@@ -47,6 +48,7 @@ fn plural(stem: &str) -> &str {
         "piece" => "defence sections",
         "ring" => "water outlines",
         "prop" => "street objects",
+        "structure" => "tall structures",
         "surface" => "paved surfaces",
         "tile" => "height tiles",
         "tree" => "trees",

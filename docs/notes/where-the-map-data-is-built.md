@@ -1,7 +1,7 @@
 ---
 topic: pipeline
 triggers: [brp.ts, crops.rs, 3dbag_extract.py, 3dbag_lod22.py, bag_attributes.py, bgt_objects.py, dikes.py, atlas, pipeline, extractor, coverage.json, PDOK, 3DBAG, BAG, BGT, proj4, pyproj, earcut, RD, EPSG:28992]
-updated: 2026-09-23
+updated: 2026-09-26
 ---
 
 # The map's Dutch layers are built by atlas
@@ -29,6 +29,27 @@ atlas run --out /tmp/site --name delfzijl --bbox 253000 592000 258000 597000 --d
 ```
 
 `--bbox` is RD New (EPSG:28992), the grid these registers publish on, not degrees.
+
+**One dataset is neither Dutch nor z14: `tall`** (`pipeline/tall.rs`, added
+2026-09-26). It asks *our* Overpass the exact query the client's tall-structure
+lane would have asked (`cartopolis_geo::tall::query`, shared by both) for every
+z11 cell over the area grown by the client's ring of 2, and writes each answer
+unchanged to `tall/11/{x}/{y}.json` with a z11 `tall/coverage.json`. It exists
+for cold-start time, not data quality: timed on the Steam Deck at 600 m over
+Groningen, the tall lane finished at 24.3 s, ~8 s after everything else, because
+its 25 cells were live queries at 0.7–2.6 s of server time each. Overpass's
+`duplicate_query` / `rate_limited` / timeout answers are HTML pages, sometimes
+under a 200, and are never written — they are evicted from the source cache and
+retried with a doubling backoff; a cell that never answers is left out of the
+coverage and the client queries Overpass for it as before. `ATLAS_OVERPASS_URL`
+points it at another instance. Because it is OSM, it goes stale: re-run it when
+the horizon should pick up new turbines — with `--fresh` inside a month, or the
+source cache hands back the same answers — and remember the client keeps what it
+cached under `features/tall/v1/…` either way.
+
+```bash
+atlas run --out /tmp/site --area groningen --datasets tall
+```
 
 ## What did *not* move, and why
 

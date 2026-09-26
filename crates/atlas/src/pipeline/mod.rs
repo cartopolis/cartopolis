@@ -1,6 +1,8 @@
 //! The map data pipelines: extractors that turn the Dutch open registers into the
 //! per-cell files the client streams (`<dataset>/14/{x}/{y}.json` plus a
-//! `coverage.json` per dataset, served as `3dbag.cartopolis.org`).
+//! `coverage.json` per dataset, served as `3dbag.cartopolis.org`). One is not
+//! Dutch and not z14: `tall` pre-cuts the client's z11 Overpass query for the
+//! horizon's tall structures into `tall/11/{x}/{y}.json`.
 //!
 //! Ported from the earlier TypeScript pipeline (in a separate repository), which was itself ported
 //! from the Python scripts that used to live in `tools/`. The formats are unchanged
@@ -27,6 +29,7 @@ pub mod geom;
 pub mod http;
 pub mod lod22;
 pub mod rd;
+pub mod tall;
 pub mod terrain;
 pub mod terrain_grade;
 pub mod tile;
@@ -476,6 +479,17 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "brp/coverage.json",
         typical_minutes: 1,
         run: brp::run,
+    },
+    Dataset {
+        id: "tall",
+        label: "Tall structures (OSM)",
+        description: "Wind turbines, windmills, masts, towers, chimneys, water towers and \
+                      cranes from our Overpass, pre-cut into the z11 cells the client's \
+                      horizon lane streams, over the area and 30 km around it — so a cold \
+                      start reads 25 small files instead of queueing 25 live queries.",
+        coverage: "tall/coverage.json",
+        typical_minutes: 1,
+        run: tall::run,
     },
     Dataset {
         id: "terrain",

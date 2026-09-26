@@ -1,7 +1,7 @@
 ---
 topic: atlas
 triggers: [cartopolis_atlas, crates/atlas, atlas, "terrain tile", "/terrain/", pipeline, "user management", registration, accounts, "ROBUST", OpenSim, "service design"]
-updated: 2026-09-24
+updated: 2026-09-26
 ---
 
 # `cartopolis_atlas`: everything around the world that is not the simulation
@@ -126,6 +126,13 @@ do that yet. It also lets server-side work use `cartopolis_geo` directly.
   (`deploy/cartopolis-atlas.service`). The site tree and the autopilot's control
   file belong to `ubuntu`, and the autopilot writes that file too, so anything
   atlas creates must stay writable by the group.
+
+- **Not every dataset is a Dutch register.** `tall` (2026-09-26) pre-cuts the
+  client's z11 Overpass query for tall structures into static files, because
+  that lane was the last to finish a cold start at 24.3 s
+  (`where-the-map-data-is-built.md`). It keeps at most two queries in flight
+  rather than `UPSTREAM_FETCHES`, since the Overpass it asks is the one every
+  client shares, and it refuses to write an HTML body under any status.
 
 ## Contracts a port must keep
 

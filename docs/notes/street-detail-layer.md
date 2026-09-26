@@ -15,6 +15,12 @@ chimneys, water towers and cranes. `osm_buildings` additionally fetches
 `building:part` ways and drops an outline's own extrusion where parts cover
 half its area (detail tier only; the far tier keeps outlines and skips parts).
 
+**The tall ring is pre-cut by atlas where it has run** (2026-09-26): its `tall`
+dataset asks the same z11 query (`cartopolis_geo::tall::query`) ahead of time
+and writes the answers to `3dbag.cartopolis.org/tall/11/{x}/{y}.json`, and the
+client reads a covered cell from there under the same cache key
+(`where-the-map-data-is-built.md`). Everything else here is still live Overpass.
+
 Standing facts, several of which a diff will not explain:
 
 - **The street-detail data cannot ride the building cell query.** 3DBAG-covered

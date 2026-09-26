@@ -94,6 +94,9 @@ pub mod road_grade;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;
+// The tall-structure lane's z11 cell and Overpass query, shared by the client and
+// the atlas dataset that pre-cuts the same query into static files.
+pub mod tall;
 // The pure half of the near-field grass layer: where a blade may stand, and the
 // one lattice mesh every patch of them draws. Split from `scatter` rather than
 // folded into it because the two share no machinery beyond the keep-out masks —

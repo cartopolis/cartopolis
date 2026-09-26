@@ -55,7 +55,7 @@ fn url_key(url: &str) -> String {
 /// `fetch` through the source cache: a stored answer younger than
 /// [`SOURCE_CACHE_TTL`] is reused unless the run is fresh, and a successful
 /// fetch is stored. Failures are never stored — the next run asks again.
-fn cached(
+pub(super) fn cached(
     ctx: &Ctx,
     url: &str,
     fetch: impl FnOnce() -> Result<Vec<u8>, String>,
@@ -91,7 +91,7 @@ fn cached(
 
 /// Forget one cached answer — for a body that arrived with a 200 and would not
 /// parse, which must not be served back for a month.
-fn evict(ctx: &Ctx, url: &str) {
+pub(super) fn evict(ctx: &Ctx, url: &str) {
     if let Some((dir, _)) = ctx.source_cache() {
         let key = url_key(url);
         let _ = std::fs::remove_file(dir.join(&key[..2]).join(&key));
@@ -143,7 +143,7 @@ pub fn sweep_source_cache(data_dir: &std::path::Path) {
     }
 }
 
-fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
+pub(super) fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
     let response = agent()
         .get(url)
         .timeout(timeout)

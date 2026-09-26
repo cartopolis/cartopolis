@@ -9,6 +9,20 @@
 //! fetched with `out center` so a turbine mapped as an area way still costs a
 //! single coordinate. Payloads are tiny; the ring is cheap.
 //!
+//! **Where atlas has pre-cut a cell it is a static file, not a query.** Each cell
+//! used to be a live Overpass query costing 0.7–2.6 s of server time, paced four
+//! in flight, and on a cold start at 600 m over Groningen that made this the last
+//! lane to finish — 24.3 s, ~8 s after everything else (Steam Deck, 2026-09-26).
+//! Atlas's `tall` dataset now writes the *same* query's answer
+//! (`cartopolis_geo::tall::query`, shared with it) to
+//! `{tdbag_url}/tall/11/{x}/{y}.json` and lists the cells in
+//! `tall/coverage.json`. A covered cell is fetched from there; an uncovered one,
+//! a host without the dataset, or a failed fetch goes to Overpass as before. The
+//! cache key and the parse are the same for both, so nothing past the fetch
+//! knows which answered. Dispatch waits for the manifest's answer (a 404 is one,
+//! in ~70 ms) up to [`COVERAGE_WAIT_SECS`], or a cold start would send the whole
+//! ring to Overpass in the moment before the manifest landed.
+//!
 //! Static geometry merges per cell into one vertex-coloured mesh on the shared
 //! street-detail `Solid`-style material recipe. Each wind turbine and windmill
 //! additionally spawns a **rotor entity** ([`TurbineRotor`]) whose transform
@@ -24,18 +38,30 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
-use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
-use crate::systems::osm_buildings::{lat_lng_to_local, num_from_value, overpass_query, MeshData};
+use crate::platform::{http, storage};
+use crate::systems::coverage::CoverageSlot;
+use crate::systems::osm_buildings::{
+    lat_lng_to_local, num_from_value, overpass_query, tdbag_url, MeshData,
+};
 use crate::systems::street_detail::{feature_seed, linear, push_yawed_box, shade, srand};
 use crate::systems::terrain::TerrainSnapshot;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
+use cartopolis_geo::tall;
 
 /// Coarse fetch/cache zoom — a z11 cell is ~12 km across at NL latitudes.
-const TALL_ZOOM: u32 = 11;
-/// Cells out from the camera (2 → 5×5 ≈ ±30 km).
-const CELL_RADIUS: i64 = 2;
+const TALL_ZOOM: u32 = tall::ZOOM;
+/// Cells out from the camera (2 → 5×5 ≈ ±30 km). Atlas grows its area by the
+/// same constant, which is why it is shared.
+const CELL_RADIUS: i64 = tall::RING;
 const KEEP_RADIUS: i64 = CELL_RADIUS + 1;
+/// How long dispatch waits for the atlas manifest before it asks Overpass for
+/// everything. Ours answers either way in well under a second; this only bounds
+/// the case of a host that cannot be reached at all.
+const COVERAGE_WAIT_SECS: f64 = 3.0;
+
+/// The atlas host's tall-structure cells (`crates/atlas/src/pipeline/tall.rs`).
+static COVERAGE: CoverageSlot = CoverageSlot::new("tall", "/tall/coverage.json", TALL_ZOOM);
 
 const MAX_ATTEMPTS: u32 = 3;
 const BACKOFF_SECS: f64 = 2.0;
@@ -99,22 +125,37 @@ struct Structure {
     rotor_d: Option<f32>,
 }
 
-fn tall_query(bbox: &str) -> String {
-    format!(
-        concat!(
-            "[out:json][timeout:25];(",
-            "node[\"man_made\"~\"^(windmill|water_tower|chimney|mast|tower|communications_tower|crane)$\"]({bb});",
-            "way[\"man_made\"~\"^(windmill|water_tower|chimney|mast|tower|communications_tower|crane)$\"]({bb});",
-            "node[\"power\"=\"generator\"][\"generator:source\"=\"wind\"]({bb});",
-            "way[\"power\"=\"generator\"][\"generator:source\"=\"wind\"]({bb});",
-            ");out center;"
-        ),
-        bb = bbox
-    )
-}
-
 fn cache_key(cx: i64, cy: i64) -> String {
     format!("features/tall/v1/{}/{}/{}.json", TALL_ZOOM, cx, cy)
+}
+
+/// Where one cell's answer comes from.
+#[derive(Debug, PartialEq, Eq)]
+enum CellSource {
+    /// The atlas host's pre-cut file, at this URL.
+    Atlas(String),
+    /// A live query (`cartopolis_geo::tall::query`).
+    Overpass,
+}
+
+/// A covered cell on a configured host is a file; anything else is a query.
+fn cell_source(covered: bool, host: &str, cx: i64, cy: i64) -> CellSource {
+    if covered && !host.is_empty() {
+        CellSource::Atlas(format!("{host}/tall/{TALL_ZOOM}/{cx}/{cy}.json"))
+    } else {
+        CellSource::Overpass
+    }
+}
+
+/// The pre-cut file, if it is there and looks like a document rather than an
+/// error page — anything else is reported so the caller can ask Overpass.
+async fn fetch_atlas_text(url: String) -> Result<String, String> {
+    let bytes = http::fetch(http::Request::get(url)).await?;
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    if !text.trim_start().starts_with('{') {
+        return Err("not a JSON document".into());
+    }
+    Ok(text)
 }
 
 async fn fetch_cell_text(cx: i64, cy: i64) -> Result<String, String> {
@@ -122,10 +163,20 @@ async fn fetch_cell_text(cx: i64, cy: i64) -> Result<String, String> {
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
     }
-    let (north, west) = tile_to_lat_lng(cx, cy, TALL_ZOOM);
-    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, TALL_ZOOM);
-    let bbox = format!("{south},{west},{north},{east}");
-    let fetched = overpass_query(&tall_query(&bbox)).await?;
+    let pre_cut = match cell_source(COVERAGE.covers(cx, cy), &tdbag_url(), cx, cy) {
+        CellSource::Atlas(url) => match fetch_atlas_text(url.clone()).await {
+            Ok(text) => Some(text),
+            Err(e) => {
+                tracing::debug!(%url, error = %e, "pre-cut tall cell unavailable; asking Overpass");
+                None
+            }
+        },
+        CellSource::Overpass => None,
+    };
+    let fetched = match pre_cut {
+        Some(text) => text,
+        None => overpass_query(&tall::query(cx, cy)).await?,
+    };
     storage::put(storage::Namespace::Cache, &key, fetched.as_bytes()).await;
     Ok(fetched)
 }
@@ -518,6 +569,8 @@ pub struct TallStructures {
     cells: CellStream<(i64, i64), CellResult>,
     cell_entities: HashMap<(i64, i64), Vec<Entity>>,
     material: Option<Handle<StandardMaterial>>,
+    /// When the lane first wanted cells, for [`COVERAGE_WAIT_SECS`].
+    coverage_wait_since: Option<f64>,
 }
 
 impl Default for TallStructures {
@@ -542,6 +595,7 @@ impl Default for TallStructures {
             }),
             cell_entities: HashMap::new(),
             material: None,
+            coverage_wait_since: None,
         }
     }
 }
@@ -595,6 +649,7 @@ pub fn update_tall_structures(
     if !enabled {
         return;
     }
+    COVERAGE.ensure(time.elapsed_secs_f64());
 
     if ts.anchor.is_none() {
         let (ax, ay) = lat_lng_to_tile(clat, clng, base_zoom);
@@ -635,9 +690,16 @@ pub fn update_tall_structures(
         ts.cells.request_ranked(cell, rank, now_secs);
     }
 
+    // Hold dispatch until the manifest has answered — yes, no, or not reachable
+    // within the wait — so a covered cell is not sent to Overpass in the moment
+    // before the answer lands. The cells stay queued, so the settle test still
+    // sees the lane as busy.
+    let since = *ts.coverage_wait_since.get_or_insert(now_secs);
     let mut jobs = Vec::new();
-    while let Some(cell) = ts.cells.next_job(now_secs) {
-        jobs.push(cell);
+    if COVERAGE.revision() > 0 || now_secs - since >= COVERAGE_WAIT_SECS {
+        while let Some(cell) = ts.cells.next_job(now_secs) {
+            jobs.push(cell);
+        }
     }
     let sink = ts.cells.sink();
     for (cx, cy) in jobs {
@@ -846,6 +908,38 @@ mod tests {
             "{}",
             build.rotors[0].hub.y
         );
+    }
+
+    /// A covered cell is read from the atlas host's pre-cut file; an uncovered
+    /// one, or any cell when the host is configured off, is a live query.
+    #[test]
+    fn a_covered_cell_reads_the_file_and_the_rest_ask_overpass() {
+        let host = "https://3dbag.cartopolis.org";
+        assert_eq!(
+            cell_source(true, host, 1061, 664),
+            CellSource::Atlas("https://3dbag.cartopolis.org/tall/11/1061/664.json".into())
+        );
+        assert_eq!(cell_source(false, host, 1061, 664), CellSource::Overpass);
+        assert_eq!(cell_source(true, "", 1061, 664), CellSource::Overpass);
+    }
+
+    /// Before the manifest lands nothing is covered, so a cell asks Overpass — the
+    /// lane never waits on a host that does not have the dataset.
+    #[test]
+    fn nothing_is_covered_before_the_manifest_answers() {
+        assert!(!COVERAGE.covers(1061, 664));
+        assert_eq!(COVERAGE.revision(), 0);
+    }
+
+    /// What atlas writes — the Overpass document re-serialised compactly, keys
+    /// sorted — parses as the live answer does.
+    #[test]
+    fn an_atlas_cell_parses_like_a_live_answer() {
+        let text = r#"{"elements":[{"center":{"lat":53.31,"lon":6.51},"id":2,"nodes":[1,2],"tags":{"man_made":"water_tower"},"type":"way"},{"id":1,"lat":53.3,"lon":6.5,"tags":{"generator:source":"wind","power":"generator"},"type":"node"}],"generator":"Overpass API","osm3s":{"copyright":"ODbL","timestamp_osm_base":"2026-09-26T08:00:00Z"},"version":0.6}"#;
+        let s = parse_structures(text).unwrap();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].kind, StructureKind::WaterTower);
+        assert_eq!(s[1].kind, StructureKind::WindTurbine);
     }
 
     #[test]
