@@ -2103,43 +2103,26 @@ fn run_client() {
         })
         .init_resource::<resources::FrameStats>()
         .init_resource::<resources::ScreenshotState>()
-        // The tier's ceiling on bytes uploaded to the GPU per frame, and the only
-        // bound in this client that is measured in bytes rather than in items —
-        // see `quality::Budget::upload_bytes_per_frame` for why a count of builds
-        // was never the quantity that decides whether a mobile driver survives the
-        // frame. `None` (every tier but the phone) is bevy's default and inserts a
-        // resource that throttles nothing.
-        .insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame {
-            // `CARTO_UPLOAD_KB` overrides the tier, and `0` means no ceiling at
-            // all. It is here because this is a number nobody can pick from a
-            // desk: the frame budget it protects belongs to a device none of the
-            // people changing it are holding, and the only honest way to set it is
-            // for whoever has the phone to try two values. On Android that reaches
-            // the process as `setprop debug.carto.upload_kb` (see `env_value`),
-            // which is the one platform where the tier's own answer is otherwise
-            // final.
-            // `quality::upload_ceiling` resolves the tier and `CARTO_UPLOAD_KB`
-            // together — one answer, shared with `map_stream`'s tile cap, which is
-            // the queue feeding this drain. Only the scripted exemption below is
-            // this consumer's alone.
-            max_bytes: match env_value("CARTO_UPLOAD_KB").and_then(|v| v.parse::<usize>().ok()) {
-                Some(_) => quality::upload_ceiling(),
-                // **Never in a scripted capture**, whatever the tier says, and this
-                // is not a convenience — a throttled run photographs a partly
-                // uploaded world. The settle test watches the *streamers*, and this
-                // budget defers work that is already past them: everything has been
-                // fetched, meshed and handed over, so every streamer is quiet while
-                // bevy still holds meshes for later frames. Measured with
-                // `CARTO_QUALITY=phone` over Groningen (2026-08-18): the same
-                // viewpoint captured with the budget on was missing the city
-                // centre's buildings and reported `settled=true`, which is the
-                // failure mode this project cares about most — a green run that
-                // documents something untrue. The README set and the `scene-smoke`
-                // gate both read these captures.
-                None if scripted => None,
-                None => quality::upload_ceiling(),
-            },
-        })
+        // **Bevy's own upload throttle stays off, on every tier, and that is a
+        // correctness decision.** `RenderAssetBytesPerFrame` defers a mesh's
+        // `RenderMesh` to a later frame, but bevy 0.19's `MeshAllocator` has
+        // already written that mesh's vertex and index data in the frame it was
+        // extracted — so the throttle never bounded the bytes it claims to, and a
+        // mesh that is modified or retired while its `RenderMesh` waits is drawn
+        // with the wrong geometry or not at all. On the handset, whose 4 MB
+        // ceiling is the only one ever set, that was the ground cells missing
+        // with the flat basemap showing metres below the roads, slabs across the
+        // view and buildings standing where they are not (Deck, `CARTO_HANDSET=1`,
+        // Europaplein, 2026-09-26: three throttled runs broken three different
+        // ways, every unthrottled run right). The 2026-08-18 capture that went
+        // "missing the city centre's buildings" with the budget on, and was
+        // exempted from scripted runs as "partly uploaded", was this.
+        //
+        // The byte bound this was for is `stream_ledger`, which every streamer
+        // asks before it *creates* a frame's assets — deferring there costs
+        // latency and cannot desynchronise anything. `CARTO_UPLOAD_KB` and the
+        // tier's `upload_bytes_per_frame` reach it through `quality::upload_ceiling`.
+        .insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame { max_bytes: None })
         .init_resource::<systems::osm_buildings::OsmBuildings>()
         .init_resource::<systems::lod22::Lod22Buildings>()
         .init_resource::<systems::building_facts::BuildingFacts>()

@@ -1,7 +1,7 @@
 ---
 topic: upload-bursts
 triggers: [device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation]
-updated: 2026-08-19
+updated: 2026-09-26
 ---
 
 # A per-frame cap on *items* is not a cap on bytes
@@ -65,20 +65,37 @@ low ceiling costs fill *latency* and never content. `CARTO_UPLOAD_KB` overrides 
 point being that whoever holds the device can A/B a number nobody can pick from a
 desk.
 
-## A throttled run must never be photographed
+## Bevy's throttle is off, because it drew the wrong geometry (2026-09-26)
 
-`--shot` and `cargo shots` disable the budget outright, and the reason is worth
-keeping: the settle test watches the **streamers**, and the budget defers work
-that is already past them. Everything has been fetched, meshed and handed over —
-every streamer is quiet — while bevy still holds meshes for later frames. The
-first throttled capture of this viewpoint was missing the city centre's buildings
-and reported `settled=true`. A green run that documents something untrue is worse
-than a red one, and the README set and the `scene-smoke` gate are both built on
-these captures.
+The budget above was first enforced by bevy's `RenderAssetBytesPerFrame`, and on
+the handset that is what broke the picture. In bevy 0.19 the throttle defers a
+mesh's `RenderMesh` to a later frame, but `MeshAllocator` has **already written
+that mesh's vertex and index data** in the frame it was extracted
+(`allocate_and_free_meshes` runs before `prepare_assets::<RenderMesh>` and reads
+every extracted mesh). So the throttle never bounded mesh bytes at all, and a mesh
+modified or retired while its `RenderMesh` waited was drawn against buffers that no
+longer matched it — or not drawn.
 
-If the settle test ever learns to see the upload backlog, this exemption can go.
-It cannot today: the backlog lives in the render world (`PrepareNextFrameAssets`)
-and the harness runs in the main one.
+What that looked like on the phone: ground cells missing, the flat basemap
+showing through metres below the roads, cars and people (reported 2026-09-26 at
+Europaplein), slabs across the view, buildings standing on roads. Reproduced on
+the Deck with `CARTO_QUALITY=balanced CARTO_HANDSET=1 CARTO_UPLOAD_KB=4096`,
+descending from 900 m to 40 m: three runs broken three different ways, with
+bevy's own debug log showing the backlog drained 26 s before the capture — so it
+was not an unfinished upload. Every run with the throttle off and the ledger on
+was right.
+
+This section used to be "a throttled run must never be photographed", on the
+evidence that the first throttled capture was missing the city centre's buildings
+while reporting `settled=true`. That was read as "partly uploaded". It was almost
+certainly this.
+
+The frame budget itself stands: `stream_ledger` asks every streamer before it
+*creates* a frame's assets, so a deferral there is latency in a streamer the
+settle test can see, and cannot desynchronise anything. `RenderAssetBytesPerFrame`
+is inserted with `max_bytes: None` on every tier; `CARTO_UPLOAD_KB` reaches the
+ledger through `quality::upload_ceiling`. Do not turn bevy's throttle back on
+without a capture showing it draws the same picture as without it.
 
 ## What is still not measured
 

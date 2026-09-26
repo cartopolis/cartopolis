@@ -319,9 +319,11 @@ pub struct Budget {
     /// assert it on all of them).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fps_cap: Option<f64>,
-    /// Ceiling on the bytes of `Image` and `Mesh` data bevy uploads to the GPU in
-    /// one frame (`RenderAssetBytesPerFrame`), or `None` for "as fast as they
-    /// arrive".
+    /// Ceiling on the bytes of assets the streamers hand the GPU in one frame, or
+    /// `None` for "as fast as they arrive". Enforced by `stream_ledger` before the
+    /// assets exist — **not** by bevy's `RenderAssetBytesPerFrame`, which this used
+    /// to feed and which desynchronised deferred meshes from their buffers (see the
+    /// resource's insertion in `lib.rs`).
     ///
     /// **The bound this codebase was missing.** Every streamer here is already
     /// per-frame-bounded — the flat tiles, the globe tiles, the LoD2.2 cells, the
@@ -932,11 +934,11 @@ pub fn budget() -> &'static Budget {
 
 /// How many bytes a frame may hand the GPU, with `CARTO_UPLOAD_KB` folded in.
 ///
-/// One resolution of the question, read by both consumers: bevy's
-/// `RenderAssetBytesPerFrame` (via `lib.rs`) and `map_stream`'s own tile cap. They
-/// are the queue and the drain of the same pipe, and a version of this where they
-/// disagree is one where the streamer hands over more than the renderer can write
-/// and the backlog grows without bound — which is what it did.
+/// One resolution of the question, read by `stream_ledger` and `map_stream`'s own
+/// tile cap. It also fed bevy's `RenderAssetBytesPerFrame` until 2026-09-26, when
+/// that throttle was switched off for drawing deferred meshes with the wrong
+/// buffers (`lib.rs` says how); the notes below about its scripted-capture
+/// exemption describe why the two budgets were kept apart while both existed.
 ///
 /// `0` means no ceiling, which is how a run opts out entirely.
 ///
