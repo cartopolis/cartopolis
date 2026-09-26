@@ -36,6 +36,10 @@ pub mod furniture;
 // there is now only one.
 pub mod ground_stack;
 pub mod ground_texture;
+// One LoD2.2 building cell as plain data, and its compact binary encoding. Here
+// so atlas (which writes it) and the client (which reads it) share one
+// definition of the format rather than two that must agree.
+pub mod lod22_cell;
 pub mod mip;
 // The `sites` layer's car parks and cycle parking, filled with vehicles. Split
 // from `furniture` rather than folded into it because the claim is different: a
