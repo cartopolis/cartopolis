@@ -2881,6 +2881,7 @@ fn is_ground(group: SurfaceGroup) -> bool {
             | SurfaceGroup::Canopy
             | SurfaceGroup::Trunk
             | SurfaceGroup::Furniture
+            | SurfaceGroup::QuayWall
     )
 }
 

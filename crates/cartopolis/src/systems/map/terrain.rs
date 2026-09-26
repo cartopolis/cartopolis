@@ -185,6 +185,91 @@ pub struct TerrainSnapshot {
     /// what [`floor_at`](Self::floor_at) reads. Empty on the fine tier, which no
     /// mesh samples.
     floors: std::sync::Arc<Vec<FloorLevel>>,
+    /// Per sample, [`WET`] inside a registered water body, [`BANK`] beside one, 0
+    /// elsewhere; empty where no water is registered. What [`land_at`](Self::land_at)
+    /// and [`sunk_at`](Self::sunk_at) read — see [`bank_flags`].
+    banks: std::sync::Arc<Vec<u8>>,
+}
+
+/// A sample inside a registered water body: carved to its level less a bed.
+const WET: u8 = 1;
+/// A sample within one spacing of a [`WET`] one, on dry ground.
+const BANK: u8 = 2;
+
+/// Which samples of an `n`² field lie in a registered water body, and which beside
+/// one — the mask that lets the ground beside a canal and the canal itself be
+/// drawn at two heights with a wall between them.
+///
+/// **The field cannot hold a quay.** A canal is carved into it at the sample
+/// spacing, so bilinear interpolation between the last sample on the street and
+/// the first in the canal is a slope 3 m wide on a desktop and 12.5 m wide on a
+/// handset. Everything read off the field sagged into that slope: the street ran
+/// downhill into the water and the water, clamped above the basemap, climbed up to
+/// meet it (the handset captures of 2026-09-25, "the inner canals don't have
+/// walls"). The mask is what lets the two sides stop sharing a surface: the ground
+/// reads only dry samples ([`TerrainSnapshot::land_at`]), the basemap and the water
+/// read the bank as part of the canal ([`TerrainSnapshot::sunk_at`]), and
+/// `map_geometry::quay_walls` stands a wall in the step between.
+///
+/// **One spacing of bank, not zero.** A graded field is carved on atlas's lattice
+/// and resampled onto this one, so the first sample outside a ring can carry part
+/// of the carve in it; a handset's thinned tiles move that a whole atlas sample.
+/// Treating it as bank rather than street is what keeps that partial dip out of the
+/// street. The ring test is the strict one the carve itself makes
+/// (`WaterLevelField::level_at`), so on a field graded here `WET` is exactly the
+/// carved set.
+fn bank_flags(
+    n: usize,
+    half_m: f32,
+    centre: Vec2,
+    water: &crate::systems::water_levels::WaterLevelField,
+) -> Vec<u8> {
+    if water.is_empty() || n < 2 {
+        return Vec::new();
+    }
+    let lattice = field_lattice(n, half_m, centre);
+    let mut flags = vec![0u8; n * n];
+    let mut any = false;
+    for z in 0..n {
+        for x in 0..n {
+            let [wx, wz] = lattice.at(x, z);
+            if water.level_at(wx, wz).is_some() {
+                flags[z * n + x] = WET;
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return Vec::new();
+    }
+    for z in 0..n {
+        for x in 0..n {
+            if flags[z * n + x] == WET {
+                continue;
+            }
+            let beside = (z.saturating_sub(1)..=(z + 1).min(n - 1)).any(|zz| {
+                (x.saturating_sub(1)..=(x + 1).min(n - 1)).any(|xx| flags[zz * n + xx] == WET)
+            });
+            if beside {
+                flags[z * n + x] = BANK;
+            }
+        }
+    }
+    flags
+}
+
+/// [`TerrainSnapshot::land_at`] as the shared refinement asks about ground — what
+/// the surfaces beside the water are refined against and stood on.
+pub struct LandField<'a>(&'a TerrainSnapshot);
+
+impl cartopolis_geo::terrain_refine::GroundField for LandField<'_> {
+    fn min_ground_edge_m(&self) -> f32 {
+        self.0.min_ground_edge_m()
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        self.0.land_at(x, z)
+    }
 }
 
 /// One rung of the lower-envelope pyramid: the field, min-filtered so that a mesh
@@ -337,6 +422,8 @@ struct CoarseBake {
     /// against the same numbers the ground was cut to.
     water: crate::systems::water_levels::WaterLevelField,
     baked: Option<(Vec<f32>, f32, usize)>,
+    /// [`bank_flags`] over the baked samples; empty with no water registered.
+    banks: Vec<u8>,
     /// `(abutment samples, samples the embankment raised)` — see
     /// [`TerrainField::approach_samples`].
     approach: (usize, usize),
@@ -786,6 +873,28 @@ impl std::ops::Deref for GroundPlacement {
     }
 }
 
+impl GroundPlacement {
+    /// A placement over a hand-built field and rings, with the bank mask worked
+    /// out as a bake would — for tests that stand meshes on a canal.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        mut ground: TerrainSnapshot,
+        water: crate::systems::water_levels::WaterLevelField,
+    ) -> Self {
+        ground.banks = Arc::new(bank_flags(
+            ground.grid,
+            ground.half_m,
+            ground.centre,
+            &water,
+        ));
+        Self {
+            ground,
+            water,
+            datum_m: 0.0,
+        }
+    }
+}
+
 impl MeasuredGround for GroundPlacement {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
         water_surface_near(&self.water, self.datum_m, wx, wz)
@@ -793,6 +902,19 @@ impl MeasuredGround for GroundPlacement {
 }
 
 impl TerrainSnapshot {
+    /// An `n`² field over `±half_m` about the origin, for tests outside this module.
+    #[cfg(test)]
+    pub(crate) fn from_samples_for_test(samples: Vec<f32>, n: usize, half_m: f32) -> Self {
+        Self {
+            samples: Arc::new(samples),
+            half_m,
+            grid: n,
+            centre: Vec2::ZERO,
+            floors: Arc::default(),
+            banks: Arc::default(),
+        }
+    }
+
     /// Whether the field carries measurements. `false` means every consumer should
     /// behave exactly as it did before this module existed.
     #[must_use]
@@ -973,7 +1095,9 @@ impl TerrainSnapshot {
     #[must_use]
     pub fn floor_at(&self, wx: f32, wz: f32, quad_m: f32) -> f32 {
         match self.floor_for(quad_m) {
-            None => self.at(wx, wz),
+            // The bank sunk with the canal, so the basemap stays under a level sheet
+            // right up to its wall; the rungs below are built from the same values.
+            None => self.sunk_at(wx, wz),
             Some(f) => self.sample_grid(&f.samples, f.grid, wx, wz),
         }
     }
@@ -984,7 +1108,13 @@ impl TerrainSnapshot {
     #[must_use]
     pub fn floor_normal_at(&self, wx: f32, wz: f32, quad_m: f32) -> Vec3 {
         let Some(f) = self.floor_for(quad_m) else {
-            return self.normal_at(wx, wz);
+            if self.banks.is_empty() {
+                return self.normal_at(wx, wz);
+            }
+            let d = self.sample_m();
+            let dx = self.sunk_at(wx + d, wz) - self.sunk_at(wx - d, wz);
+            let dz = self.sunk_at(wx, wz + d) - self.sunk_at(wx, wz - d);
+            return Vec3::new(-dx, 2.0 * d, -dz).normalize();
         };
         let d = f.spacing;
         let dx = self.sample_grid(&f.samples, f.grid, wx + d, wz)
@@ -1078,6 +1208,143 @@ impl TerrainSnapshot {
         let dx = self.at(wx + d, wz) - self.at(wx - d, wz);
         let dz = self.at(wx, wz + d) - self.at(wx, wz - d);
         Vec3::new(-dx, 2.0 * d, -dz).normalize()
+    }
+
+    /// The ground beside the water: [`at`](Self::at) with every sample in or beside a
+    /// registered water body replaced by the dry ground around it, so a street
+    /// runs level to the quay's edge instead of sagging into the carve
+    /// ([`bank_flags`] says why). Identical to `at` wherever no water is near.
+    #[must_use]
+    pub fn land_at(&self, wx: f32, wz: f32) -> f32 {
+        if self.banks.is_empty() {
+            return self.at(wx, wz);
+        }
+        self.bilinear_by(wx, wz, |i| self.land_value(i))
+    }
+
+    /// The normal of the surface [`land_at`](Self::land_at) describes.
+    #[must_use]
+    pub fn land_normal_at(&self, wx: f32, wz: f32) -> Vec3 {
+        if self.banks.is_empty() {
+            return self.normal_at(wx, wz);
+        }
+        let d = self.sample_m();
+        if d <= 0.0 {
+            return Vec3::Y;
+        }
+        let dx = self.land_at(wx + d, wz) - self.land_at(wx - d, wz);
+        let dz = self.land_at(wx, wz + d) - self.land_at(wx, wz - d);
+        Vec3::new(-dx, 2.0 * d, -dz).normalize()
+    }
+
+    /// The ground under the water and the basemap: [`at`](Self::at) with the bank
+    /// sunk to the canal beside it, so a sheet at the registered level is not
+    /// overlapped by the basemap's slope out of the carve — the other half of what
+    /// lets the water stay level up to its wall. Never above `at`.
+    #[must_use]
+    pub fn sunk_at(&self, wx: f32, wz: f32) -> f32 {
+        if self.banks.is_empty() {
+            return self.at(wx, wz);
+        }
+        self.bilinear_by(wx, wz, |i| self.sunk_value(i))
+    }
+
+    /// The street-side value of sample `i`: itself if it is dry, else the mean of
+    /// the dry samples within two spacings — the level the quay stands at. A sample
+    /// with none (the middle of a wide canal) keeps its own, which no dry surface
+    /// is drawn over anyway.
+    fn land_value(&self, i: usize) -> f32 {
+        if self.banks[i] == 0 {
+            return self.samples[i];
+        }
+        let n = self.grid;
+        let (x, z) = (i % n, i / n);
+        let (mut sum, mut count) = (0.0f32, 0u32);
+        for zz in z.saturating_sub(2)..=(z + 2).min(n - 1) {
+            for xx in x.saturating_sub(2)..=(x + 2).min(n - 1) {
+                let j = zz * n + xx;
+                if self.banks[j] == 0 {
+                    sum += self.samples[j];
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            self.samples[i]
+        } else {
+            sum / count as f32
+        }
+    }
+
+    /// The canal-side value of sample `i`: a bank sample takes the lowest wet sample
+    /// beside it, never rising above its own.
+    fn sunk_value(&self, i: usize) -> f32 {
+        if self.banks[i] != BANK {
+            return self.samples[i];
+        }
+        let n = self.grid;
+        let (x, z) = (i % n, i / n);
+        let mut low = self.samples[i];
+        for zz in z.saturating_sub(1)..=(z + 1).min(n - 1) {
+            for xx in x.saturating_sub(1)..=(x + 1).min(n - 1) {
+                let j = zz * n + xx;
+                if self.banks[j] == WET {
+                    low = low.min(self.samples[j]);
+                }
+            }
+        }
+        low
+    }
+
+    /// [`sample_grid`](Self::sample_grid) over the base grid with each corner's value
+    /// supplied by `value(index)`.
+    fn bilinear_by(&self, wx: f32, wz: f32, value: impl Fn(usize) -> f32) -> f32 {
+        let n = self.grid;
+        if self.samples.is_empty() || n < 2 {
+            return 0.0;
+        }
+        let span = self.half_m * 2.0;
+        let (wx, wz) = (wx - self.centre.x, wz - self.centre.y);
+        let fx = (wx + self.half_m) / span * (n - 1) as f32;
+        let fz = (wz + self.half_m) / span * (n - 1) as f32;
+        if !(0.0..=(n - 1) as f32).contains(&fx) || !(0.0..=(n - 1) as f32).contains(&fz) {
+            return 0.0;
+        }
+        let (x0, z0) = (fx.floor() as usize, fz.floor() as usize);
+        let (x1, z1) = ((x0 + 1).min(n - 1), (z0 + 1).min(n - 1));
+        let (tx, tz) = (fx - x0 as f32, fz - z0 as f32);
+        let s = |x: usize, z: usize| value(z * n + x);
+        let a = s(x0, z0) + (s(x1, z0) - s(x0, z0)) * tx;
+        let b = s(x0, z1) + (s(x1, z1) - s(x0, z1)) * tx;
+        a + (b - a) * tz
+    }
+
+    /// Whether any registered water was carved into this field — without it there
+    /// is no bank, and [`land_at`](Self::land_at) and [`sunk_at`](Self::sunk_at)
+    /// are [`at`](Self::at).
+    #[must_use]
+    pub fn has_banks(&self) -> bool {
+        !self.banks.is_empty()
+    }
+
+    /// This field as the ground beside the water — see [`LandField`].
+    #[must_use]
+    pub fn land(&self) -> LandField<'_> {
+        LandField(self)
+    }
+
+    /// Every sample as [`sunk_at`](Self::sunk_at) reads it, for building the
+    /// basemap's lower envelopes from. `None` when no water is registered, where it
+    /// is the field itself.
+    fn sunk_samples(&self) -> Option<Vec<f32>> {
+        if self.banks.is_empty() {
+            return None;
+        }
+        Some(
+            (0..self.samples.len())
+                .map(|i| self.sunk_value(i))
+                .collect(),
+        )
     }
 
     /// The median height over a polygon's vertices — what a *level* surface (a
@@ -1690,6 +1957,11 @@ pub fn update_terrain_field(
                     deck_top: &deck_top,
                 }),
             );
+            let banks = if baked.is_some() {
+                bank_flags(n, half, want_centre, &water)
+            } else {
+                Vec::new()
+            };
             if let Ok(mut g) = sink.lock() {
                 *g = Some(CoarseBake {
                     centre: want_centre,
@@ -1701,6 +1973,7 @@ pub fn update_terrain_field(
                     deck_rev: baked_deck_rev,
                     water,
                     baked,
+                    banks,
                     approach,
                 });
             }
@@ -1744,14 +2017,23 @@ pub fn apply_coarse_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStre
     let lo = samples.iter().copied().fold(f32::MAX, f32::min);
     let hi = samples.iter().copied().fold(f32::MIN, f32::max);
     let sample_m = done.half * 2.0 / (done.grid - 1) as f32;
-    let floors = build_floors(&samples, done.grid, sample_m);
-    field.ground = TerrainSnapshot {
+    let mut ground = TerrainSnapshot {
         samples: std::sync::Arc::new(samples),
         half_m: done.half,
         grid: done.grid,
         centre: done.centre,
-        floors: std::sync::Arc::new(floors),
+        floors: std::sync::Arc::default(),
+        banks: std::sync::Arc::new(done.banks),
     };
+    // The envelopes are the basemap's, so they are built from the canal-side
+    // values the basemap's finest level reads (`floor_at`) — never higher than the
+    // field, so the guarantee `build_floors` states still holds.
+    let floors = match ground.sunk_samples() {
+        Some(sunk) => build_floors(&sunk, done.grid, sample_m),
+        None => build_floors(&ground.samples, done.grid, sample_m),
+    };
+    ground.floors = std::sync::Arc::new(floors);
+    field.ground = ground;
     field.gen_datum = Some((done.gen, datum));
     field.carved_coarse = carved;
     field.datum_m = datum;
@@ -2219,6 +2501,7 @@ pub fn apply_fine_terrain(mut field: ResMut<TerrainField>, stream: Res<MapStream
         // No lower envelope: the tier answers point questions, and nothing builds a
         // mesh off it (see `TerrainField::ground_at`).
         floors: std::sync::Arc::default(),
+        banks: std::sync::Arc::default(),
     };
     field.fine_revision = field.fine_revision.wrapping_add(1);
     tracing::debug!(
@@ -2745,6 +3028,7 @@ mod tests {
             grid: n,
             centre,
             floors: std::sync::Arc::default(),
+            banks: std::sync::Arc::default(),
         }
     }
 
@@ -2766,6 +3050,69 @@ mod tests {
     /// Build a coarse-shaped snapshot out of a height function, for the refinement
     /// tests below. Small on purpose — 6.4 km at the real spacing is four million
     /// samples and these tests care about one wall.
+    /// A canal 20 m wide running north–south through a street at +2 m, carved to
+    /// a −3.5 m bed, on a 3.125 m field — the desktop's spacing.
+    fn canal() -> (
+        TerrainSnapshot,
+        crate::systems::water_levels::WaterLevelField,
+    ) {
+        let water = crate::systems::water_levels::WaterLevelField::build_for_test(
+            -3.0,
+            &[
+                [-10.0, -300.0],
+                [10.0, -300.0],
+                [10.0, 300.0],
+                [-10.0, 300.0],
+            ],
+        );
+        let mut field = snapshot_of(100.0, 3.125, |x, _| if x.abs() < 10.0 { -3.5 } else { 2.0 });
+        field.banks = Arc::new(bank_flags(field.grid, field.half_m, field.centre, &water));
+        (field, water)
+    }
+
+    /// The street reads dry ground right up to the quay, the canal side reads the
+    /// bed right up to it, and both are the field itself away from the water.
+    #[test]
+    fn the_street_is_level_to_the_quay_and_the_canal_is_level_to_its_wall() {
+        let (field, _) = canal();
+        // Between the last sample in the canal (x = 9.375) and the first on the
+        // street (12.5) the carved field is a ramp — the sag this exists to remove.
+        assert!(field.at(10.5, 0.0) < 0.0, "the carve reaches past the quay");
+        for x in [10.0, 10.5, 12.0, 14.0] {
+            assert!(
+                (field.land_at(x, 0.0) - 2.0).abs() < 1e-4,
+                "street at x = {x}: {}",
+                field.land_at(x, 0.0)
+            );
+        }
+        // At the drawn edge the canal side is still the bed, so a sheet at the
+        // registered level is clear of the basemap all the way to its wall.
+        assert!((field.sunk_at(10.0, 0.0) + 3.5).abs() < 1e-4);
+        for x in [-60.0, 40.0, 90.0] {
+            assert_eq!(field.land_at(x, 5.0), field.at(x, 5.0));
+            assert_eq!(field.sunk_at(x, 5.0), field.at(x, 5.0));
+        }
+        let mut x = -99.0;
+        while x < 99.0 {
+            assert!(
+                field.sunk_at(x, 1.0) <= field.at(x, 1.0) + 1e-5,
+                "sunk above at x = {x}"
+            );
+            x += 0.7;
+        }
+    }
+
+    /// With nothing registered, both readings are the field to the bit.
+    #[test]
+    fn without_water_the_street_and_the_canal_side_are_the_field() {
+        let field = snapshot_of(50.0, 3.125, |x, z| (x * 0.1).sin() + z * 0.02);
+        assert!(field.banks.is_empty());
+        for (x, z) in [(0.3, 1.7), (-20.0, 33.3), (41.0, -12.5)] {
+            assert_eq!(field.land_at(x, z), field.at(x, z));
+            assert_eq!(field.sunk_at(x, z), field.at(x, z));
+        }
+    }
+
     fn snapshot_of(half: f32, sample: f32, height: impl Fn(f32, f32) -> f32) -> TerrainSnapshot {
         let n = (half * 2.0 / sample) as usize + 1;
         let mut samples = Vec::with_capacity(n * n);
@@ -2784,6 +3131,7 @@ mod tests {
             grid: n,
             centre: Vec2::ZERO,
             floors: std::sync::Arc::new(floors),
+            banks: std::sync::Arc::default(),
         }
     }
 
@@ -3285,6 +3633,7 @@ mod tests {
             grid: 4,
             centre,
             floors: std::sync::Arc::default(),
+            banks: std::sync::Arc::default(),
         };
 
         let mid = field.ground_at(centre.x, centre.y);
@@ -3349,6 +3698,7 @@ mod tests {
             grid: n,
             centre: Vec2::ZERO,
             floors: std::sync::Arc::new(floors),
+            banks: std::sync::Arc::default(),
         };
 
         // Within one rung there is no envelope at all: the finest relieved level has
@@ -3570,6 +3920,7 @@ mod tests {
                 grid: n,
                 centre: Vec2::ZERO,
                 floors: std::sync::Arc::new(floors),
+                banks: std::sync::Arc::default(),
             },
             ..Default::default()
         }

@@ -428,6 +428,9 @@ pub mod palette {
     /// end. The sky's ambient still reaches the open approach, so the opening
     /// stays lighter than the tunnel without anything modelling it.
     pub const TUNNEL: u32 = 0x6E_6B_66;
+    /// A quay wall: weathered brick and stone above a canal, darker than the
+    /// street on top of it so the edge reads from across the water.
+    pub const QUAY_WALL: u32 = 0x7A_6A_5C;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
     /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
@@ -1463,6 +1466,10 @@ pub enum SurfaceGroup {
     /// and the same material, and splitting them would double the draw calls of
     /// every tunnel to describe a difference nobody can see.
     TunnelStructure,
+    /// The retaining wall between a canal's surface and the street beside it,
+    /// built by the client from the water it has placed (`map_geometry::quay_walls`)
+    /// rather than tessellated from the tile.
+    QuayWall,
 }
 
 impl SurfaceGroup {
@@ -1493,6 +1500,7 @@ impl SurfaceGroup {
             // A tunnel's carriageway is a carriageway: same texture, same white.
             Self::TunnelRoad(_) => 0xFF_FF_FF,
             Self::TunnelStructure => palette::TUNNEL,
+            Self::QuayWall => palette::QUAY_WALL,
             // Same colours the raster path cases with, so the two pipelines'
             // streets keep matching at the ring edge.
             Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
@@ -1550,6 +1558,8 @@ impl SurfaceGroup {
             // height offset (`is_sheet` is false above `Road`, so it gets none)
             // and it is indifferent to the few depth units it inherits.
             Self::TunnelRoad(_) | Self::TunnelStructure => GroundLayer::Standing,
+            // Vertical, and never coplanar with anything: the standing rung.
+            Self::QuayWall => GroundLayer::Standing,
             Self::Canopy | Self::Trunk | Self::Furniture => GroundLayer::Standing,
         }
     }

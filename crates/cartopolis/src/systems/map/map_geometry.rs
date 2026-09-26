@@ -1860,6 +1860,9 @@ fn spawn_geometry_task(
                             &tunnels,
                         );
                     }
+                    if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
+                        meshes.push(walls);
+                    }
                     placed = true;
                 }
                 lap.mark("ground");
@@ -3321,6 +3324,7 @@ fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
             | SurfaceGroup::Furniture
             | SurfaceGroup::TunnelRoad(_)
             | SurfaceGroup::TunnelStructure
+            | SurfaceGroup::QuayWall
     ) {
         return GroundDetailExtension {
             params: crate::systems::ground_detail::DETAIL_OPTED_OUT,
@@ -3837,7 +3841,11 @@ fn water_surface<G: MeasuredGround>(
     for p in positions.iter_mut() {
         let (wx, wz) = (origin.x + p[0], origin.y + p[2]);
         let level = terrain.water_surface_at(wx, wz).unwrap_or(fallback);
-        p[1] += level.max(terrain.at(wx, wz));
+        // Above the basemap, which reads the same canal-side ground: where the carve
+        // reached, that is the registered level to the bank; where a canal is too
+        // narrow for the field to have caught it, the water rises to the ground as
+        // it always did, and no wall stands there.
+        p[1] += level.max(terrain.sunk_at(wx, wz));
     }
     // The surface is no longer planar, so the normals earcut left behind describe a
     // shape that is not there any more.
@@ -3850,6 +3858,239 @@ fn water_surface<G: MeasuredGround>(
                     .to_array()
             })
             .collect();
+    }
+}
+
+/// Shortest step between a canal's surface and the street beside it that gets a
+/// wall. Below it the two meet as they always did — a ditch in a field, a lake
+/// shore, a canal too narrow for the field to have carved.
+const QUAY_WALL_MIN_M: f32 = 0.3;
+/// Tallest wall stood. Groningen's tallest registered quay wall is 4.45 m
+/// (`walls-have-a-measured-height.md`); past this a step is a bad join, not masonry.
+const QUAY_WALL_MAX_M: f32 = 8.0;
+/// How far a wall reaches below the water, so no sliver of sky shows between the
+/// two at a grazing angle.
+const QUAY_WALL_FOOT_M: f32 = 0.5;
+/// How far outside a water edge the "is there more water here" probe looks.
+const QUAY_PROBE_M: f32 = 0.4;
+
+/// The walls a cell's water stands against: a vertical face along every edge of
+/// its water where the street beside it is higher than the surface, from just
+/// under the water up to the street.
+///
+/// **What made a wall necessary is that the two sides stopped sharing a surface.**
+/// The water stands at its registered level ([`water_surface`]) and the street at
+/// the ground beside the water ([`TerrainSnapshot::land_at`]); on a Groningen
+/// canal that is two to five metres. Before the split the street sagged into the
+/// carve and the water climbed out of it, and the handset — whose field is four
+/// times coarser — drew every inner canal as a smeared ramp with no edge to it.
+///
+/// Built from the *drawn* water, after it is placed, so a wall meets the surface
+/// it bounds exactly; the register's rings only ever said how deep. Three kinds of
+/// outline edge are not banks and get nothing: an edge on the tile border (the
+/// canal goes on in the next cell), an edge with more of this cell's water just
+/// outside it (two water polygons meeting), and an edge whose street is within
+/// [`QUAY_WALL_MIN_M`] of the water.
+fn quay_walls<G: MeasuredGround>(
+    meshes: &[SurfaceMesh],
+    tile_m: f32,
+    origin: Vec2,
+    terrain: &G,
+) -> Option<SurfaceMesh> {
+    if !terrain.has_banks() {
+        return None;
+    }
+    let mut out = SurfaceMesh {
+        group: SurfaceGroup::QuayWall,
+        positions: Vec::new(),
+        indices: Vec::new(),
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        colors: Vec::new(),
+        rungs: Vec::new(),
+    };
+    for water in meshes.iter().filter(|m| m.group == SurfaceGroup::Water) {
+        let pos = &water.positions;
+        let tris: Vec<[u32; 3]> = water
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        if tris.is_empty() {
+            continue;
+        }
+        // Outline edges: used by one triangle. Keyed by the vertices' positions
+        // rather than their indices, because the refinement shares a midpoint
+        // between two triangles by index but separate polygons never share one.
+        let key = |i: u32| {
+            let p = pos[i as usize];
+            ((p[0] * 100.0).round() as i32, (p[2] * 100.0).round() as i32)
+        };
+        let mut edges: HashMap<((i32, i32), (i32, i32)), (u32, u32, u32, u32)> = HashMap::new();
+        for t in &tris {
+            for k in 0..3 {
+                let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                let (ka, kb) = (key(a), key(b));
+                let e = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                edges
+                    .entry(e)
+                    .and_modify(|v| v.3 += 1)
+                    .or_insert((a, b, c, 1));
+            }
+        }
+        let index = TriangleIndex::new(pos, &tris);
+        let on_border = |p: [f32; 3]| {
+            const EPS: f32 = 0.05;
+            (
+                p[0].abs() < EPS || (p[0] - tile_m).abs() < EPS,
+                p[2].abs() < EPS || (p[2] - tile_m).abs() < EPS,
+            )
+        };
+        for &(a, b, c, uses) in edges.values() {
+            if uses != 1 {
+                continue;
+            }
+            let (pa, pb, pc) = (pos[a as usize], pos[b as usize], pos[c as usize]);
+            let (ba, bb) = (on_border(pa), on_border(pb));
+            if (ba.0 && bb.0 && (pa[0] - pb[0]).abs() < 0.1)
+                || (ba.1 && bb.1 && (pa[2] - pb[2]).abs() < 0.1)
+            {
+                continue;
+            }
+            let along = Vec2::new(pb[0] - pa[0], pb[2] - pa[2]);
+            let len = along.length();
+            if len < 1e-3 {
+                continue;
+            }
+            // Away from the triangle's third vertex: out of the water.
+            let mut out_n = Vec2::new(-along.y, along.x) / len;
+            let mid = Vec2::new(pa[0] + pb[0], pa[2] + pb[2]) * 0.5;
+            if out_n.dot(Vec2::new(pc[0], pc[2]) - mid) > 0.0 {
+                out_n = -out_n;
+            }
+            if index.contains(mid + out_n * QUAY_PROBE_M) {
+                continue;
+            }
+            let street = |p: [f32; 3]| terrain.land_at(origin.x + p[0], origin.y + p[2]);
+            let (ta, tb) = (street(pa), street(pb));
+            let (ha, hb) = (ta - pa[1], tb - pb[1]);
+            if ha.max(hb) < QUAY_WALL_MIN_M || ha.min(hb) > QUAY_WALL_MAX_M {
+                continue;
+            }
+            let top = |t: f32, water_y: f32| t.clamp(water_y, water_y + QUAY_WALL_MAX_M);
+            let base = out.positions.len() as u32;
+            out.positions.extend_from_slice(&[
+                [pa[0], pa[1] - QUAY_WALL_FOOT_M, pa[2]],
+                [pb[0], pb[1] - QUAY_WALL_FOOT_M, pb[2]],
+                [pb[0], top(tb, pb[1]), pb[2]],
+                [pa[0], top(ta, pa[1]), pa[2]],
+            ]);
+            // Facing the water, whichever way round the outline runs.
+            let face = [-out_n.x, 0.0, -out_n.y];
+            out.normals.extend_from_slice(&[face; 4]);
+            let (v0, v1, v2) = (
+                Vec3::from_array(out.positions[base as usize]),
+                Vec3::from_array(out.positions[base as usize + 1]),
+                Vec3::from_array(out.positions[base as usize + 2]),
+            );
+            if (v1 - v0).cross(v2 - v0).dot(Vec3::from_array(face)) >= 0.0 {
+                out.indices.extend_from_slice(&[
+                    base,
+                    base + 1,
+                    base + 2,
+                    base,
+                    base + 2,
+                    base + 3,
+                ]);
+            } else {
+                out.indices.extend_from_slice(&[
+                    base,
+                    base + 2,
+                    base + 1,
+                    base,
+                    base + 3,
+                    base + 2,
+                ]);
+            }
+        }
+    }
+    (!out.indices.is_empty()).then_some(out)
+}
+
+/// A uniform grid over a mesh's triangles in the XZ plane, for "is this point on
+/// the water" asked once per outline edge.
+struct TriangleIndex<'a> {
+    pos: &'a [[f32; 3]],
+    tris: &'a [[u32; 3]],
+    min: Vec2,
+    cell: f32,
+    cols: usize,
+    rows: usize,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl<'a> TriangleIndex<'a> {
+    fn new(pos: &'a [[f32; 3]], tris: &'a [[u32; 3]]) -> Self {
+        const CELL_M: f32 = 16.0;
+        let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for p in pos {
+            min = min.min(Vec2::new(p[0], p[2]));
+            max = max.max(Vec2::new(p[0], p[2]));
+        }
+        let span = (max - min).max(Vec2::splat(1.0));
+        let cols = ((span.x / CELL_M).ceil() as usize).clamp(1, 1024);
+        let rows = ((span.y / CELL_M).ceil() as usize).clamp(1, 1024);
+        let cell = (span.x / cols as f32).max(span.y / rows as f32);
+        let mut index = Self {
+            pos,
+            tris,
+            min,
+            cell,
+            cols,
+            rows,
+            buckets: vec![Vec::new(); cols * rows],
+        };
+        for (i, t) in tris.iter().enumerate() {
+            let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+            for &v in t {
+                let p = pos[v as usize];
+                lo = lo.min(Vec2::new(p[0], p[2]));
+                hi = hi.max(Vec2::new(p[0], p[2]));
+            }
+            let (c0, r0) = index.bucket(lo);
+            let (c1, r1) = index.bucket(hi);
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    index.buckets[r * cols + c].push(i as u32);
+                }
+            }
+        }
+        index
+    }
+
+    fn bucket(&self, p: Vec2) -> (usize, usize) {
+        let q = (p - self.min) / self.cell;
+        (
+            (q.x.max(0.0) as usize).min(self.cols - 1),
+            (q.y.max(0.0) as usize).min(self.rows - 1),
+        )
+    }
+
+    fn contains(&self, p: Vec2) -> bool {
+        let (c, r) = self.bucket(p);
+        self.buckets[r * self.cols + c].iter().any(|&i| {
+            let t = self.tris[i as usize];
+            let v = |k: usize| {
+                let q = self.pos[t[k] as usize];
+                Vec2::new(q[0], q[2])
+            };
+            let (a, b, c) = (v(0), v(1), v(2));
+            let side = |p0: Vec2, p1: Vec2| (p1 - p0).perp_dot(p - p0);
+            let (d0, d1, d2) = (side(a, b), side(b, c), side(c, a));
+            let neg = d0 < 0.0 || d1 < 0.0 || d2 < 0.0;
+            let pos = d0 > 0.0 || d1 > 0.0 || d2 > 0.0;
+            !(neg && pos)
+        })
     }
 }
 
@@ -4011,8 +4252,13 @@ fn stand_on_terrain<G: MeasuredGround>(
     // the lift invisible to the refinement, so a land parcel of two triangles
     // interpolated nine metres across a chord while the road beside it followed
     // the taper, and the ground tore open along the buried road.
+    // Stood on the ground *beside* the water rather than the carved field, so a
+    // street runs level to the quay instead of sagging into the canal; the step
+    // left at the edge is what `quay_walls` closes. The same field everywhere a
+    // canal is not near.
+    let land = terrain.land();
     let lidded = cartopolis_geo::tunnels::Lidded {
-        ground: &**terrain,
+        ground: &land,
         around: &|x, z| fill_target(terrain, tunnels, x, z),
         weight: &|p| tunnels.fill_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
@@ -4056,7 +4302,7 @@ fn stand_on_terrain<G: MeasuredGround>(
             .map(|p| {
                 let (x, z) = (origin.x + p[0], origin.y + p[2]);
                 let w = tunnels.fill_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
-                let n = terrain.normal_at(x, z);
+                let n = terrain.land_normal_at(x, z);
                 n.lerp(Vec3::Y, w).normalize_or(Vec3::Y).to_array()
             })
             .collect();
@@ -4137,6 +4383,94 @@ mod tests {
         let src = include_str!("../../../../../assets/shaders/water.wgsl");
         let decl = format!("const RING_RADIUS_CELLS: f32 = {CELL_RADIUS}.0;");
         assert!(src.contains(&decl), "water.wgsl must declare `{decl}`");
+    }
+
+    /// The ground of `terrain::tests::canal` as a placement: a 20 m canal at −3 m
+    /// in a street at +2 m.
+    fn canal_ground() -> crate::systems::terrain::GroundPlacement {
+        let water = crate::systems::water_levels::WaterLevelField::build_for_test(
+            -3.0,
+            &[
+                [-10.0, -300.0],
+                [10.0, -300.0],
+                [10.0, 300.0],
+                [-10.0, 300.0],
+            ],
+        );
+        let n = 65;
+        let samples: Vec<f32> = (0..n * n)
+            .map(|i| {
+                let x = -100.0 + (i % n) as f32 * 3.125;
+                if x.abs() < 10.0 {
+                    -3.5
+                } else {
+                    2.0
+                }
+            })
+            .collect();
+        crate::systems::terrain::GroundPlacement::for_test(
+            crate::systems::terrain::TerrainSnapshot::from_samples_for_test(samples, n, 100.0),
+            water,
+        )
+    }
+
+    /// A placed water rectangle `x0..x1` × `z0..z1` at `y`.
+    fn water_rect(x0: f32, x1: f32, z0: f32, z1: f32, y: f32) -> SurfaceMesh {
+        SurfaceMesh {
+            group: SurfaceGroup::Water,
+            positions: vec![[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            rungs: Vec::new(),
+        }
+    }
+
+    /// Each bank of a canal gets a wall from under the water to the street, facing
+    /// the water; the ends where the canal runs on into the next tile get none.
+    #[test]
+    fn a_canal_gets_a_wall_on_each_bank_and_none_across_its_ends() {
+        let ground = canal_ground();
+        // The tile runs z 0..90 (inside the ±100 m field), so the canal's two
+        // short edges are on its border.
+        let meshes = vec![water_rect(-10.0, 10.0, 0.0, 90.0, -3.0)];
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground).expect("walls");
+        assert_eq!(walls.group, SurfaceGroup::QuayWall);
+        assert_eq!(walls.positions.len(), 8, "two banks, one quad each");
+        for (p, n) in walls.positions.iter().zip(&walls.normals) {
+            assert!(p[0].abs() > 9.99, "a wall off the bank at x = {}", p[0]);
+            let is_top = p[1] > 0.0;
+            let want = if is_top { 2.0 } else { -3.0 - QUAY_WALL_FOOT_M };
+            assert!((p[1] - want).abs() < 1e-3, "height {} want {want}", p[1]);
+            // Facing into the canal.
+            assert!(n[0] * p[0] < 0.0, "normal {n:?} at x = {}", p[0]);
+        }
+        // Every triangle faces the way its normal says.
+        for t in walls.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from_array(walls.positions[t[k] as usize]));
+            let n = Vec3::from_array(walls.normals[t[0] as usize]);
+            assert!((b - a).cross(c - a).dot(n) > 0.0);
+        }
+    }
+
+    /// Where two water polygons meet there is water on both sides of the edge, and
+    /// no wall; a canal the field is too coarse to have carved has nothing to hold.
+    #[test]
+    fn no_wall_between_two_waters_or_where_the_street_is_the_water() {
+        let ground = canal_ground();
+        let meshes = vec![
+            water_rect(-10.0, 0.0, 0.0, 90.0, -3.0),
+            water_rect(0.0, 10.0, 0.0, 90.0, -3.0),
+        ];
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground).expect("walls");
+        assert!(
+            walls.positions.iter().all(|p| p[0].abs() > 9.99),
+            "a wall down the middle of the canal"
+        );
+        // The same outline with its surface at the street: nothing to stand.
+        let level = vec![water_rect(-10.0, 10.0, 0.0, 90.0, 2.0)];
+        assert!(quay_walls(&level, 90.0, Vec2::ZERO, &ground).is_none());
     }
 
     /// A square deck, `span` metres on a side, with its south-west corner at the
