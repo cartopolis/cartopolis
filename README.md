@@ -37,13 +37,14 @@ Blocking, reporting and account deletion are enforced on the server, and a web c
 
 | | |
 |---|---|
-| ![A building selected, with its register card](docs/img/building.png) | ![Two people meeting in the street, chatting](docs/img/meet.png) |
-| _Select a building: what the public registers hold about it._ | _Meet people in the place itself, and talk about it there._ |
-| ![A planned route across town](docs/img/route.png) | ![The interface over the city](docs/img/chrome.png) |
-| _Routes on foot, by bike or by car._ | _Runs on modest hardware: quality adapts to the device._ |
-| ![The same streets at dusk](docs/img/city-dusk.png) | ![Earth from orbit](docs/img/globe.png) |
-| _Real sun position and weather, through the day._ | _From one street to the whole planet, without a loading screen._ |
-| ![The atmosphere from 120 km](docs/img/horizon.png) | |
+| ![Bird's-eye over Groningen's canal ring](docs/img/canals.png) | ![The southern ring road in its cut beside DUO](docs/img/tunnel.png) |
+| _The canal ring, its quays and bridges — water, ground and buildings from the registers._ | _The southern ring road sunk into its cut beside DUO, on the measured ground._ |
+| ![The main station and rail yard from above](docs/img/station.png) | ![The Grote Markt and the Martinitoren](docs/img/grote-markt.png) |
+| _The main station, its tracks and the rail yard._ | _The Grote Markt and the Martinitoren (1482)._ |
+| ![Forum Groningen beside the Martinitoren](docs/img/forum.png) | ![The town hall selected, with its register card](docs/img/building.png) |
+| _Forum Groningen (2020) on the Nieuwe Markt._ | _Select a building — here the town hall — and read what the public registers hold about it._ |
+| ![Two people meeting on the Grote Markt](docs/img/meet.png) | ![Earth from orbit](docs/img/globe.png) |
+| _Meet people in the place itself, and talk about it there._ | _From one street to the whole planet, without a loading screen._ |
 
 _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every time._
 

@@ -51,7 +51,56 @@ fog = 0.10
 clouds = 0.25
 
 [[shot]]
+name = "canals"
+description = "Bird's-eye over the Diepenring: the canal ring, its quays and bridges, and the city packed against them"
+at = [53.2150, 6.5555, 220]
+look_at = [53.2195, 6.5610]
+time = 10.5
+fog = 0.08
+clouds = 0.2
+
+[[shot]]
+name = "tunnel"
+description = "The southern ring beside DUO: the sunken carriageway in its cut and the lid over it, on measured ground"
+at = [53.2043, 6.5738, 95]
+look_at = [53.2062, 6.5782]
+time = 11.5
+fog = 0.06
+clouds = 0.2
+
+[[shot]]
+name = "station"
+description = "Groningen's main station from above: the tracks, the platforms and the rail yard running east"
+at = [53.2078, 6.5595, 260]
+look_at = [53.2107, 6.5680]
+time = 11.0
+fog = 0.08
+clouds = 0.2
+
+# Landmarks. Each `look_at` is the building's centroid from its BAG outline, so
+# the camera is aimed at the register's own idea of where the building is.
+
+[[shot]]
+name = "grote-markt"
+description = "The Grote Markt from its south-west corner, across the square to the Martinitoren (1482)"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 15.5
+fog = 0.06
+clouds = 0.25
+
+[[shot]]
+name = "forum"
+description = "Forum Groningen (2020), the library and cultural centre on the Nieuwe Markt, from the south-east"
+at = [53.2175, 6.5725, 70]
+look_at = [53.21881, 6.56981]
+time = 11.5
+fog = 0.06
+clouds = 0.2
+
+[[shot]]
 name = "city-dusk"
+group = "extras"
 description = "The same streets at sunset — the day/night curves and warm sun"
 at = [53.2160, 6.5680, 550]
 look = [-22.0, 285.0]
@@ -62,15 +111,19 @@ clouds = 0.45
 
 [[shot]]
 name = "building"
-description = "One building and what the public registers say about it: the BAG card and the glass highlight"
+description = "The town hall (1813, a national monument) and what the public registers say about it: the BAG card and the glass highlight"
 # `--ui building` selects the building nearest the avatar, so the avatar is the
 # pointer here. Avatar mode: altitude is the follow distance (capped at 25 m by
 # the harness), `look` the orbit elevation and azimuth around the avatar — and
 # the elevation is *positive* for a camera above the avatar: a negative one puts
 # it under the pavement looking up at the underside of the ground.
 mode = "avatar"
-at = [53.21905, 6.56880, 25]
-look = [50.0, 110.0]
+# The avatar stands a few metres off the Stadhuis's east corner — the first
+# vertex of its register outline, which is what "nearest" measures — so the pick
+# does not depend on which BAG cell happens to land first. The camera is out
+# over the Grote Markt, east of it, looking back at the facade.
+at = [53.21855, 6.56730, 25]
+look = [28.0, 100.0]
 time = 11.0
 fog = 0.08
 clouds = 0.2
@@ -93,6 +146,7 @@ ui = ["chat"]
 
 [[shot]]
 name = "route"
+group = "extras"
 description = "Planned route across town with the navigation panel open (ADR-037)"
 # Centred east of the route's midpoint: the planner panel covers the right third
 # of the frame, so the line has to sit left of centre to stay visible.
@@ -106,6 +160,7 @@ ui = ["route"]
 
 [[shot]]
 name = "chrome"
+group = "extras"
 # The interface itself, which nothing in this set documented: `route` is the only
 # other preset that opens a panel, and it is framed for the *line* rather than for
 # the chrome. Settings ▸ Graphics is the densest screen in the app — headings,
@@ -124,6 +179,7 @@ ui = ["graphics"]
 
 [[shot]]
 name = "horizon"
+group = "extras"
 description = "Tilted view from 120 km — atmosphere limb over the map tier"
 at = [53.0000, 6.5665, 120000]
 look = [-8.0, 0.0]
