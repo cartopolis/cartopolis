@@ -95,6 +95,10 @@ pub mod road_stitch;
 // above removes the overlaps it can reach, and this removes the curvature that made
 // an overlap visible at all.
 pub mod road_grade;
+// How high every road stands, solved on the network: one height per node, so
+// two roads that meet cannot disagree there, and bridges and tunnels are one
+// operation at two levels.
+pub mod road_levels;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;
