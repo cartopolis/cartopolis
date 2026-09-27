@@ -137,6 +137,29 @@ impl DeckPlate<'_> {
     }
 }
 
+/// How many samples into a deck from its abutment the ground is held at the
+/// deck's top: the abutment the structure rests on. Two at atlas's 2.86 m is
+/// about six metres, which the client's 3.125 m lattice cannot interpolate away
+/// at the joint. Three held nine metres under a sixty-metre deck and crowded the
+/// road passing beneath it, whose ground and ribbon then followed a drop steep
+/// enough to part: the verge poked through the Europaweg (2026-09-27).
+pub const ABUTMENT_SAMPLES: usize = 2;
+
+/// The eight samples around `i` on an `n`-wide grid; `i` must not be on its
+/// border.
+fn neighbours8(i: usize, n: usize) -> [usize; 8] {
+    [
+        i - 1,
+        i + 1,
+        i - n,
+        i + n,
+        i - n - 1,
+        i - n + 1,
+        i + n - 1,
+        i + n + 1,
+    ]
+}
+
 /// [`deck_masks`]: where the approaches run, how high the structure stands over
 /// the ground (`NaN` off every deck), and its measured top in NAP (`NaN` where
 /// the survey has none).
@@ -393,6 +416,10 @@ pub fn grade(
     crate::road_grade::dilate_mask(&mut road, n, crate::road_grade::DEFAULT_MARGIN_SAMPLES);
     let mut pins = vec![f32::NAN; n * n];
     if ramp.len() == n * n && lift.len() == n * n {
+        // The approach corridor as drawn, before it is widened: what touches the
+        // deck here is the abutment, where the widened one also runs along the
+        // deck's sides.
+        let core = ramp.clone();
         crate::road_grade::dilate_mask(&mut ramp, n, crate::road_grade::DEFAULT_MARGIN_SAMPLES);
         // A dilated approach may have grown over the structure.
         for i in 0..n * n {
@@ -433,34 +460,45 @@ pub fn grade(
         // between the two is drawn by interpolating them: the last metres of road
         // bent down under the deck edge, visibly, at the Europaplein
         // (2026-09-27). A bridge rests on a solid abutment there, so the deck
-        // samples touching an abutment pin are held at the deck's own top, and
-        // the ground drops away one sample further in.
-        let abutment: Vec<usize> = (1..n - 1)
+        // samples within [`ABUTMENT_SAMPLES`] of an abutment pin are held at the
+        // deck's own top, and the ground drops away beyond them. One sample was
+        // not enough: the client resamples these tiles onto its own lattice, and
+        // a plateau one sample wide is interpolated away into the drop beside it,
+        // which left the approach a few tenths below the deck at its joint.
+        let mut band: Vec<usize> = (1..n - 1)
             .flat_map(|z| (1..n - 1).map(move |x| z * n + x))
             .filter(|&i| {
                 lift[i].is_finite()
-                    && [
-                        i - 1,
-                        i + 1,
-                        i - n,
-                        i + n,
-                        i - n - 1,
-                        i - n + 1,
-                        i + n - 1,
-                        i + n + 1,
-                    ]
-                    .into_iter()
-                    .any(|k| ramp[k] && pins[k].is_finite())
+                    && neighbours8(i, n)
+                        .into_iter()
+                        .any(|k| core[k] && pins[k].is_finite())
             })
             .collect();
-        for i in abutment {
-            let held = match top.get(i) {
-                Some(&t) if t.is_finite() => t,
-                _ => raw[i] + lift[i],
-            };
-            if held.is_finite() {
-                pins[i] = held;
-                raw[i] = held;
+        let mut held = vec![false; n * n];
+        for layer in 0..ABUTMENT_SAMPLES {
+            if layer > 0 {
+                band = band
+                    .iter()
+                    .flat_map(|&i| [i - 1, i + 1, i - n, i + n])
+                    .filter(|&k| k % n != 0 && k % n != n - 1 && k / n != 0 && k / n != n - 1)
+                    .filter(|&k| lift[k].is_finite() && !held[k])
+                    .collect();
+                band.sort_unstable();
+                band.dedup();
+            }
+            for &i in &band {
+                if held[i] {
+                    continue;
+                }
+                held[i] = true;
+                let at = match top.get(i) {
+                    Some(&t) if t.is_finite() => t,
+                    _ => raw[i] + lift[i],
+                };
+                if at.is_finite() {
+                    pins[i] = at;
+                    raw[i] = at;
+                }
             }
         }
     }
@@ -554,14 +592,21 @@ mod tests {
             (first_deck - 7.0).abs() < 1e-4,
             "the ground under the deck's end is {first_deck}, so the road bends down to it"
         );
-        // Past the abutment the ground falls away to what the deck spans. The
-        // approach corridor's smoothing reached in under the deck before this
-        // too (6.38 m at the first sample, 2.38 m six in); the abutment moves
-        // that one sample, it does not fill the span.
-        let inner = g[15 * n + 21];
-        assert!(inner < 7.0, "nothing falls away past the abutment: {inner}");
-        let span = g[15 * n + 26];
-        assert!(span < 3.0, "the ground the deck spans was raised to {span}");
+        // The whole abutment holds, deep enough to survive a resample…
+        for x in 20..20 + ABUTMENT_SAMPLES {
+            let held = g[15 * n + x];
+            assert!(
+                (held - 7.0).abs() < 1e-4,
+                "sample {x} under the deck's end is {held}"
+            );
+        }
+        // …and then the ground falls away to what the deck spans. It is held
+        // from the abutment, not from the widened corridor, which also runs
+        // along the deck's sides and would bury the road passing under it.
+        let past = g[15 * n + 20 + ABUTMENT_SAMPLES];
+        assert!(past < 7.0, "nothing falls away past the abutment: {past}");
+        let span = g[15 * n + 27];
+        assert!(span < 2.5, "the ground the deck spans was raised to {span}");
     }
 
     #[test]
