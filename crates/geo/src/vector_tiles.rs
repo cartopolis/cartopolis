@@ -2732,6 +2732,13 @@ fn street_decks(tile: &TileData, tile_m: f32, areas: &[BridgeDeck]) -> Vec<Bridg
                     if crate::tunnels::polyline_len(&part) < STREET_DECK_MIN_M && !clipped {
                         continue;
                     }
+                    // Back to the way's own bends before it is buffered. One
+                    // rectangle per two-metre sample meets its neighbour on an edge
+                    // computed twice, and after rounding the two copies disagree by
+                    // a millimetre: the union came back full of zero-width spikes
+                    // and slits, and the fascia hung a sliver of wall from every one
+                    // (the Europaplein deck, 2026-09-27).
+                    let part = without_collinear(&part);
                     for s in part.windows(2) {
                         let (a, b) = (s[0], s[1]);
                         let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
@@ -2792,12 +2799,15 @@ fn street_decks(tile: &TileData, tile_m: f32, areas: &[BridgeDeck]) -> Vec<Bridg
     for shape in overlay.overlay(OverlayRule::Difference, FillRule::NonZero) {
         let rings: Vec<Vec<[f32; 2]>> = shape
             .iter()
-            .filter(|c| c.len() >= 3)
             .map(|c| {
-                let mut ring: Vec<[f32; 2]> = c
-                    .iter()
-                    .map(|p| [p.x as f32 / 1000.0, p.y as f32 / 1000.0])
-                    .collect();
+                without_spikes(
+                    c.iter()
+                        .map(|p| [p.x as f32 / 1000.0, p.y as f32 / 1000.0])
+                        .collect(),
+                )
+            })
+            .filter(|r| r.len() >= 3)
+            .map(|mut ring| {
                 ring.push(ring[0]);
                 ring
             })
@@ -2862,6 +2872,64 @@ fn street_decks(tile: &TileData, tile_m: f32, areas: &[BridgeDeck]) -> Vec<Bridg
         });
     }
     decks
+}
+
+/// An open ring with its zero-width spikes removed: every vertex the outline
+/// runs out to and straight back from.
+///
+/// Where two carriageways' square-cut ends meet at an angle, the union of their
+/// buffers keeps the sliver between them as a slit a few centimetres wide, and
+/// the fascia is extruded from every edge of the ring — so the Europaplein deck
+/// hung a sliver of wall from each (2026-09-27). A spike covers no ground, so
+/// dropping it changes nothing the deck stands over.
+fn without_spikes(mut ring: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    loop {
+        let n = ring.len();
+        if n < 3 {
+            return ring;
+        }
+        let spike = (0..n).find(|&k| {
+            let (a, b, c) = (ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+            let (lu, lv) = (u[0].hypot(u[1]), v[0].hypot(v[1]));
+            lu < 1e-3
+                || lv < 1e-3
+                || (u[0] * v[0] + u[1] * v[1] < 0.0
+                    && (u[0] * v[1] - u[1] * v[0]).abs() < 0.01 * lu * lv)
+        });
+        match spike {
+            Some(k) => {
+                ring.remove(k);
+            }
+            None => return ring,
+        }
+    }
+}
+
+/// A polyline with the vertices it runs straight through dropped: the ends, and
+/// every vertex where the direction turns by more than about a twentieth of a
+/// degree.
+fn without_collinear(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut out: Vec<[f32; 2]> = Vec::with_capacity(pts.len());
+    for &p in pts {
+        if out
+            .last()
+            .is_some_and(|q| (q[0] - p[0]).hypot(q[1] - p[1]) < 1e-3)
+        {
+            continue;
+        }
+        if out.len() >= 2 {
+            let (a, b) = (out[out.len() - 2], out[out.len() - 1]);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1]], [p[0] - b[0], p[1] - b[1]]);
+            let turn = (u[0] * v[1] - u[1] * v[0]) / (u[0].hypot(u[1]) * v[0].hypot(v[1]));
+            let ahead = u[0] * v[0] + u[1] * v[1] > 0.0;
+            if ahead && turn.abs() < 1e-3 {
+                out.pop();
+            }
+        }
+        out.push(p);
+    }
+    out
 }
 
 /// How far outside a deck's outline a surveyed wall may run and still be that
@@ -6560,6 +6628,22 @@ mod tests {
             di >= areas.len(),
             "the flyover's deck is an outline after all"
         );
+        // A clean outline: no edge that runs out and straight back. Those are the
+        // zero-width spikes a union of abutting rectangles leaves, and the fascia
+        // is extruded from every one of them.
+        for d in &decks[areas.len()..] {
+            for ring in &d.rings {
+                let pts = &ring[..ring.len() - 1];
+                for k in 0..pts.len() {
+                    let (a, b, c) = (pts[k], pts[(k + 1) % pts.len()], pts[(k + 2) % pts.len()]);
+                    let (u, v) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+                    let back = u[0] * v[0] + u[1] * v[1] < 0.0
+                        && (u[0] * v[1] - u[1] * v[0]).abs()
+                            < 0.01 * u[0].hypot(u[1]) * v[0].hypot(v[1]);
+                    assert!(!back, "a deck's outline doubles back on itself at {b:?}");
+                }
+            }
+        }
         let roads = super::tessellate_roads(&tile, tile_m, &mut decks, None, false).expect("roads");
         assert!(
             roads.on_deck.iter().any(|(d, _)| *d as usize == di),
