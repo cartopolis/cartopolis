@@ -689,13 +689,50 @@ pub fn render_mvt_sized(
     size: u32,
     source_m: f32,
 ) -> Result<Vec<u8>, String> {
+    render_mvt_overlaid(tile, sub, size, source_m, &[])
+}
+
+/// A polygon painted into the raster from outside the tile body — the registered
+/// crop parcels (`crate::crops`), which are not in any vector tile. Rings are in
+/// the **source tile's** unit square (0..1 across, y down), outer first, holes
+/// after; one flat colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayFill {
+    pub rings: Vec<Vec<[f32; 2]>>,
+    pub rgb: u32,
+}
+
+/// [`render_mvt_sized`] with [`OverlayFill`]s painted over the `land` layer and
+/// under everything after it — water, sites, streets and buildings — which is
+/// where a field sits on the ground stack too.
+///
+/// The meshed ground below `FLAT_GROUND_ON_M` and this image above it are the
+/// same map at two distances; without the overlay a field kept its crop's tone
+/// only while the camera was low enough to be drawing meshes, and the whole
+/// countryside turned back to one green on the way up.
+pub fn render_mvt_overlaid(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    overlay: &[OverlayFill],
+) -> Result<Vec<u8>, String> {
     // Cull only when overzooming: at `factor == 1` the window is the whole tile,
     // so every feature passes and the bounds scan is pure overhead.
-    render_mvt_culled(tile, sub, size, source_m, sub.factor > 1)
+    render_mvt_banded(
+        tile,
+        sub,
+        size,
+        source_m,
+        sub.factor > 1,
+        raster_bands(size),
+        overlay,
+    )
 }
 
 /// [`render_mvt_sized`] with the off-screen-feature cull switchable, so a test can
 /// assert the two produce identical pixels.
+#[cfg(test)]
 fn render_mvt_culled(
     tile: &TileData,
     sub: SubTile,
@@ -703,7 +740,7 @@ fn render_mvt_culled(
     source_m: f32,
     cull: bool,
 ) -> Result<Vec<u8>, String> {
-    render_mvt_banded(tile, sub, size, source_m, cull, raster_bands(size))
+    render_mvt_banded(tile, sub, size, source_m, cull, raster_bands(size), &[])
 }
 
 /// Rows a band renders beyond its own span and then discards.
@@ -760,7 +797,7 @@ pub(crate) fn render_mvt_serial(
     size: u32,
     source_m: f32,
 ) -> Result<Vec<u8>, String> {
-    render_mvt_banded(tile, sub, size, source_m, sub.factor > 1, 1)
+    render_mvt_banded(tile, sub, size, source_m, sub.factor > 1, 1, &[])
 }
 
 /// [`render_mvt_culled`] over a stated number of horizontal bands.
@@ -789,9 +826,10 @@ fn render_mvt_banded(
     source_m: f32,
     cull: bool,
     bands: u32,
+    overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
     if bands <= 1 {
-        return render_rows(tile, sub, size, source_m, cull, 0, size);
+        return render_rows(tile, sub, size, source_m, cull, 0, size, overlay);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -806,7 +844,7 @@ fn render_mvt_banded(
                         if h == 0 {
                             return Ok(Vec::new());
                         }
-                        render_rows(tile, sub, size, source_m, cull, y0, h)
+                        render_rows(tile, sub, size, source_m, cull, y0, h, overlay)
                     })
                 })
                 .collect();
@@ -826,7 +864,7 @@ fn render_mvt_banded(
     }
 
     #[cfg(target_arch = "wasm32")]
-    render_rows(tile, sub, size, source_m, cull, 0, size)
+    render_rows(tile, sub, size, source_m, cull, 0, size, overlay)
 }
 
 /// `rows` rows of the raster, starting at `y0`. `size` stays the whole tile's
@@ -840,6 +878,7 @@ fn render_rows(
     cull: bool,
     want_y0: u32,
     want_rows: u32,
+    overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
     // **Bleed, because a band edge is not neutral.** The first version of this
     // assumed a pixel's anti-aliased coverage depends only on the path inside
@@ -884,7 +923,24 @@ fn render_rows(
         ..Paint::default()
     };
 
+    // The overlay goes down as the first thing after `land`, whatever the tile
+    // holds: `land` is first in `PAINT_ORDER`, so this is the top of the second
+    // pass — or after the loop, for an order that ever ends at `land`.
+    let overlay_transform = Transform::from_row(
+        px * f,
+        0.0,
+        0.0,
+        px * f,
+        -(sub.x as f32) * px,
+        -(sub.y as f32) * px - y0 as f32,
+    );
+    let mut overlay_pending = !overlay.is_empty();
+
     for (layer_name, draw) in PAINT_ORDER {
+        if overlay_pending && *layer_name != "land" {
+            paint_overlay(&mut pixmap, &mut paint, overlay, &overlay_transform);
+            overlay_pending = false;
+        }
         // Timed per pass (not per layer — `streets` and `buildings` are each two
         // passes with very different costs) so `dump_paint_split` attributes the
         // real loop, not a reconstruction of it. See `perf::passes`.
@@ -1150,6 +1206,9 @@ fn render_rows(
         #[cfg(test)]
         crate::perf::passes::record(pass_label, pass_t0.elapsed());
     }
+    if overlay_pending {
+        paint_overlay(&mut pixmap, &mut paint, overlay, &overlay_transform);
+    }
 
     // Fully opaque throughout (opaque background, opaque paints), so tiny-skia's
     // premultiplied buffer is already straight RGBA.
@@ -1160,6 +1219,38 @@ fn render_rows(
     let from = top as usize * stride;
     let to = from + want_rows as usize * stride;
     Ok(data[from..to].to_vec())
+}
+
+/// Fill each [`OverlayFill`] in its own colour, one even-odd path per polygon so
+/// a hole stays open. `transform` maps the source tile's unit square to pixels.
+fn paint_overlay(
+    pixmap: &mut Pixmap,
+    paint: &mut Paint<'static>,
+    overlay: &[OverlayFill],
+    transform: &Transform,
+) {
+    for fill in overlay {
+        let mut pb = PathBuilder::new();
+        for ring in &fill.rings {
+            let mut pts = ring.iter();
+            let Some(first) = pts.next() else {
+                continue;
+            };
+            if ring.len() < 3 {
+                continue;
+            }
+            pb.move_to(first[0], first[1]);
+            for p in pts {
+                pb.line_to(p[0], p[1]);
+            }
+            pb.close();
+        }
+        let Some(path) = pb.finish() else {
+            continue;
+        };
+        paint.shader = shader(fill.rgb);
+        pixmap.fill_path(&path, paint, FillRule::EvenOdd, *transform, None);
+    }
 }
 
 /// Axis-aligned bounds `(min_x, min_y, max_x, max_y)` of a geometry in tile-extent
@@ -6835,6 +6926,87 @@ mod tests {
     /// anti-alias slack wrong and a road or a building edge that should bleed in
     /// from just outside the window goes missing, which on the map reads as a seam
     /// along a tile border and is exactly what a rendering change must not do.
+    /// A crop parcel painted into the basemap shows where it lies, stays out of
+    /// the rest of the tile, lands in the same place in every band and in an
+    /// overzoomed window, and sits *under* the streets and the water.
+    #[test]
+    fn an_overlay_fill_lands_under_the_streets_and_nowhere_else() {
+        let tile = crate::testdata::groningen();
+        const RED: u32 = 0xFF_00_00;
+        let is_red = |px: &[u8]| px[0] == 0xFF && px[1] == 0 && px[2] == 0;
+        let left_half = [OverlayFill {
+            rings: vec![vec![[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]]],
+            rgb: RED,
+        }];
+        let n = TILE_PX as usize;
+        for sub in [
+            SubTile::WHOLE,
+            SubTile {
+                factor: 2,
+                x: 0,
+                y: 1,
+            },
+        ] {
+            let one = render_mvt_banded(
+                &tile,
+                sub,
+                TILE_PX,
+                NOMINAL_Z14_TILE_M,
+                false,
+                1,
+                &left_half,
+            )
+            .expect("renders");
+            let banded = render_mvt_banded(
+                &tile,
+                sub,
+                TILE_PX,
+                NOMINAL_Z14_TILE_M,
+                false,
+                4,
+                &left_half,
+            )
+            .expect("renders");
+            let red_in = |rgba: &[u8], x0: usize, x1: usize| {
+                (0..n)
+                    .flat_map(|y| (x0..x1).map(move |x| (y * n + x) * 4))
+                    .filter(|&i| is_red(&rgba[i..i + 4]))
+                    .count()
+            };
+            // The unit square's left half is the whole of this window for the
+            // overzoomed one (x = 0 of 2), and its left half for the whole tile.
+            let (inside, outside) = if sub.factor == 1 {
+                (0..n / 2 - 2, n / 2 + 2..n)
+            } else {
+                (0..n, 0..0)
+            };
+            for rgba in [&one, &banded] {
+                let covered = red_in(rgba, inside.start, inside.end);
+                let area = n * inside.len();
+                assert!(
+                    covered > area / 10,
+                    "{sub:?}: the fill is missing ({covered} of {area})"
+                );
+                assert!(covered < area, "{sub:?}: the fill went over the streets");
+                assert_eq!(
+                    red_in(rgba, outside.start, outside.end),
+                    0,
+                    "{sub:?}: fill outside itself"
+                );
+            }
+            // Banding moves no overlay pixel.
+            let differ = one
+                .chunks(4)
+                .zip(banded.chunks(4))
+                .filter(|(a, b)| is_red(a) != is_red(b))
+                .count();
+            assert!(
+                differ < n,
+                "{sub:?}: {differ} pixels changed between banded and single"
+            );
+        }
+    }
+
     #[test]
     fn banding_the_raster_changes_no_geometry() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
@@ -6842,13 +7014,13 @@ mod tests {
         // exercised against a non-zero sub-tile shift as well as against zero.
         for (factor, x, y) in [(1, 0, 0), (4, 2, 1), (8, 3, 5)] {
             let sub = SubTile { factor, x, y };
-            let whole = render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1)
+            let whole = render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1, &[])
                 .expect("whole render");
             // 7 is in the list on purpose: it does not divide TILE_PX, so the
             // last band is short and the row arithmetic has to survive it.
             for bands in [2u32, 3, 4, 7] {
                 let split =
-                    render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, bands)
+                    render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, bands, &[])
                         .expect("banded render");
                 assert_eq!(
                     split.len(),
@@ -7011,8 +7183,17 @@ mod tests {
     fn dump_paint_split() {
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
         // Serial: `perf::passes` is thread-local — see `render_mvt_serial`.
-        let whole =
-            || render_mvt_banded(&tile, SubTile::WHOLE, TILE_PX, NOMINAL_Z14_TILE_M, false, 1);
+        let whole = || {
+            render_mvt_banded(
+                &tile,
+                SubTile::WHOLE,
+                TILE_PX,
+                NOMINAL_Z14_TILE_M,
+                false,
+                1,
+                &[],
+            )
+        };
         for _ in 0..2 {
             whole().expect("warmup");
         }

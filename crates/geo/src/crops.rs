@@ -33,8 +33,8 @@
 //!   variant here and the parser drops it.
 //! * **Season.** A tulip field is red for a fortnight in April and bare earth for
 //!   the rest of the year; the register records the crop, not the flower. Every
-//!   tone here is a muted, year-round one in the same pale cartographic family as
-//!   the rest of the map (`scatter.rs` says why nothing here is saturated).
+//!   tone here is a year-round one — the crop's leaf, straw or soil — distinct
+//!   enough between families to read which crop a field grows ([`rgb`]).
 //! * **Geometry.** No furrows, no crop height, no rows. Flat fills.
 
 use crate::flat_fill::{build_flat_fills, FlatFill};
@@ -82,17 +82,18 @@ impl CropCategory {
     /// The tone a parcel of this category draws in when its crop code is not one
     /// of the curated ones below.
     ///
-    /// Pale, like the rest of the map. These are wide fills over whole provinces:
-    /// a saturated field would be the loudest thing on screen from any altitude.
+    /// Grassland stays near the map's own green, because it is half the country
+    /// and repainting it would recolour every province; the others are the
+    /// ground's own tones — soil, heath — rather than a crop's.
     #[must_use]
     pub fn rgb(self) -> u32 {
         match self {
             Self::Grassland => 0xC9_DB_BB,
             // Worked ground with nothing more said about it: soil showing
             // through, warmer and paler than any growing crop.
-            Self::Arable => 0xD9_CE_B5,
-            Self::Nature => 0xC9_C6_A4,
-            Self::Fallow => 0xD4_CC_BC,
+            Self::Arable => 0xD4_C2_A0,
+            Self::Nature => 0xBD_C2_9A,
+            Self::Fallow => 0xDC_D0_B8,
             Self::Other => 0xD1_CE_C6,
         }
     }
@@ -122,6 +123,14 @@ impl CropCategory {
 /// sample taken on 2026-08-30 (`docs/notes/crop-parcels.md` has the method). Every
 /// code below was read off the live service; a code that looks like it belongs to
 /// a family here but was not observed is deliberately absent rather than guessed.
+///
+/// **The families are meant to be told apart at a glance**, which the first
+/// palette was not: it kept every crop in the map's pale cartographic range, and
+/// potatoes, maize and pasture came out within a few steps of one green
+/// (reported 2026-09-27, the first time the layer was seen on a real map). Each
+/// arable family now sits at least 30 apart in RGB from every other and from
+/// pasture — `the_crop_families_can_be_told_apart` holds that — while staying a
+/// field's own colour: straw, soil, leaf, blossom.
 #[must_use]
 pub fn rgb(category: CropCategory, code: u32) -> u32 {
     match code {
@@ -129,49 +138,50 @@ pub fn rgb(category: CropCategory, code: u32) -> u32 {
         // Permanent pasture: the default green of the countryside.
         265 => 0xC9_DB_BB,
         // A ley is reseeded and reads fresher than old pasture.
-        266 => 0xD6_E3_C4,
+        266 => 0xD3_E6_B8,
         // Natural and semi-natural grassland under an agricultural claim: rough,
         // yellower, unmown.
         331 | 332 | 1926 => 0xC6_D1_A9,
         // ---- Cereals ---------------------------------------------------
         // Wheat, barley, oats, rye. Straw gold — the one crop whose colour
         // everybody already knows.
-        233 | 234 | 235 | 236 | 238 | 670 | 7129 | 7130 => 0xE1_D3_A4,
+        233 | 234 | 235 | 236 | 238 | 670 | 7129 | 7130 => 0xE8_C8_78,
         // ---- Maize -----------------------------------------------------
-        // Two and a half metres of dense green; the darkest field in the country.
-        259 | 316 | 317 | 814 | 1935 => 0xB4_C5_95,
+        // Two and a half metres of dense, yellowish green.
+        259 | 316 | 317 | 814 | 1935 => 0x86_B0_5A,
         // ---- Potatoes --------------------------------------------------
-        2014 | 2015 | 2016 | 2017 | 6632 => 0xC1_D1_A2,
+        // Ridged earth between the haulm rows: the brown field.
+        2014 | 2015 | 2016 | 2017 | 6632 => 0xB9_A0_6E,
         // ---- Root crops ------------------------------------------------
-        // Sugar beet, red beet, chicory root, carrots: low dense canopy over
-        // visible soil.
-        256 | 511 | 2741 | 2783 | 2785 | 2787 => 0xBC_CB_B0,
+        // Sugar beet, red beet, chicory root, carrots: a low, dense, blue-green
+        // leaf canopy.
+        256 | 511 | 2741 | 2783 | 2785 | 2787 => 0x93_B8_A0,
         // ---- Onions ----------------------------------------------------
-        // Blue-green over open ground between the rows.
-        1932 | 1933 | 6660 | 6664 => 0xCE_D6_BE,
+        // Grey-blue over open ground between the rows.
+        1932 | 1933 | 6660 | 6664 => 0xAF_C3_C8,
         // ---- Oilseed and fibre -----------------------------------------
         // Rape and flax. Rape is famously yellow for two weeks in May and green
-        // either side of it; this is the year-round tone, not the fortnight.
-        666 | 1922 | 1923 | 3736 => 0xD9_DB_98,
+        // either side of it; a lime yellow, greener than the cereals.
+        666 | 1922 | 1923 | 3736 => 0xD4_E2_6A,
         // ---- Legumes and fodder ----------------------------------------
-        244 | 258 | 311 | 426 => 0xC7_D8_AE,
+        244 | 258 | 311 | 426 => 0xA9_CC_8A,
         // ---- Cover crops -----------------------------------------------
         // `groenbemesting, vanggewas`: sown to be ploughed in. Uniform young
         // green, and the second most numerous thing on arable land after the
         // crop itself.
-        6751 | 6755 | 6762 | 6783 | 6785 | 7126 => 0xCF_DE_B8,
+        6751 | 6755 | 6762 | 6783 | 6785 | 7126 => 0xC6_E0_A6,
         // ---- Flower bulbs ----------------------------------------------
         // Tulip, hyacinth, narcissus, lily, dahlia, gladiolus and the rest. A
-        // faint lilac-grey: enough to mark the bulb country apart from the arable
-        // around it, without painting a bloom that is only there in April.
-        997..=1006 | 1012 | 1015 | 6803 => 0xD6_C7_C9,
+        // soft pink: the bulb country apart from the arable around it, without
+        // painting one bloom's colour that is only there in April.
+        997..=1006 | 1012 | 1015 | 6803 => 0xD7_A9_C4,
         // ---- Nursery stock ---------------------------------------------
         // Avenue trees, fruit-tree rootstocks, hedging: rows of young trees on
         // open ground.
-        1067 | 1071 | 1072 | 1077 | 1078 | 1079 | 1093 => 0xBE_C7_9F,
+        1067 | 1071 | 1072 | 1077 | 1078 | 1079 | 1093 => 0x9A_AE_7C,
         // ---- Orchard ---------------------------------------------------
-        // Apples and pears: standing trees, the deepest green here after maize.
-        1096 | 1097 | 1098 => 0xB0_C3_94,
+        // Apples and pears: standing trees, the deepest green here.
+        1096 | 1097 | 1098 => 0x6E_9C_6A,
         // ---- Green fallow ----------------------------------------------
         // Registered as arable and lying fallow, so it takes the fallow tone
         // rather than the worked-ground one.
@@ -199,6 +209,43 @@ pub fn build_crop_meshes(parcels: &[CropParcel], max_bytes: Option<usize>) -> Ve
         })
         .collect();
     build_flat_fills(&fills, SurfaceGroup::Crop, max_bytes)
+}
+
+/// Make the crop parcels and the rest of a cell's ground a partition: every
+/// sheet *above* `Crop` on the ground stack (woods, sand, water, paving, the
+/// road sheet) is cut out of the parcels, and the parcels are then cut out of
+/// every sheet *below* (`Built`, `Grass`).
+///
+/// **The ladder alone does not hold this pair.** A parcel is almost always laid
+/// over OSM's `farmland`/`meadow`, which is `Grass`, so every field in the
+/// country was two opaque sheets over one piece of ground. Flat, the half-step
+/// rung between them was enough; with relief on, each sheet is bent onto the
+/// measured ground against its own triangles and the two disagree by up to
+/// `CREASE_SAG_M` — measured on the Deck on 2026-09-26 as every field drawn in
+/// blotches of its crop's tone and the grass under it. The rule
+/// `the-ground-stack.md` has for this is the one applied here: remove the
+/// overlap rather than order it.
+///
+/// `meshes` holds the cell's other flat ground; anything in it that is not a
+/// sheet (trees, furniture, tunnels) neither cuts nor is cut.
+pub fn cut_into_ground(meshes: &mut Vec<SurfaceMesh>, crops: &mut Vec<SurfaceMesh>) {
+    if crops.is_empty() {
+        return;
+    }
+    let crop = SurfaceGroup::Crop.layer();
+    let (mut below, rest): (Vec<_>, Vec<_>) = std::mem::take(meshes).into_iter().partition(|m| {
+        let l = m.group.layer();
+        l.is_sheet() && l < crop
+    });
+    let (above, rest): (Vec<_>, Vec<_>) = rest.into_iter().partition(|m| {
+        let l = m.group.layer();
+        l.is_sheet() && l > crop
+    });
+    crate::road_stitch::cut_under_roads(crops, &above);
+    crate::road_stitch::cut_under_roads(&mut below, crops);
+    meshes.extend(below);
+    meshes.extend(above);
+    meshes.extend(rest);
 }
 
 /// The arable parcels' triangles, for the near-field grass keep-out
@@ -253,6 +300,63 @@ mod tests {
             code,
             rings: vec![vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]]],
         }
+    }
+
+    fn area(meshes: &[SurfaceMesh], group: SurfaceGroup) -> f32 {
+        meshes
+            .iter()
+            .filter(|m| m.group == group)
+            .flat_map(|m| {
+                m.indices.chunks_exact(3).map(move |t| {
+                    let p = |i: u32| m.positions[i as usize];
+                    let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                    ((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])).abs() / 2.0
+                })
+            })
+            .sum()
+    }
+
+    fn sheet(group: SurfaceGroup, x0: f32, x1: f32) -> Vec<SurfaceMesh> {
+        let rings = vec![vec![[x0, x0], [x1, x0], [x1, x1], [x0, x1]]];
+        build_flat_fills(
+            &[FlatFill {
+                rings: &rings,
+                rgb: 0,
+            }],
+            group,
+            None,
+        )
+    }
+
+    /// The grass under a field goes, the field under a canal goes, and nothing
+    /// else changes size: after the cut no two sheets share ground.
+    #[test]
+    fn crops_and_the_ground_around_them_become_a_partition() {
+        let mut meshes = sheet(SurfaceGroup::Grass, 0.0, 100.0);
+        meshes.extend(sheet(SurfaceGroup::Water, 50.0, 70.0));
+        let mut crops = build_crop_meshes(&[square(CropCategory::Arable, 2014, 60.0)], None);
+        cut_into_ground(&mut meshes, &mut crops);
+        let (grass, water, crop) = (
+            area(&meshes, SurfaceGroup::Grass),
+            area(&meshes, SurfaceGroup::Water),
+            area(&crops, SurfaceGroup::Crop),
+        );
+        // Field 60×60 less the 10×10 corner of canal lying over it.
+        assert!((crop - 3500.0).abs() < 1.0, "crop {crop}");
+        assert!((water - 400.0).abs() < 1.0, "water {water}");
+        // The grass keeps only what neither the field nor the canal covers…
+        // except that the canal is *above* grass and was never cut out of it:
+        // that pair is the ground fills' own partition (`tessellate_surfaces`),
+        // not this one. So: 100² − the field's 3500.
+        assert!((grass - 6500.0).abs() < 1.0, "grass {grass}");
+    }
+
+    #[test]
+    fn a_cell_with_no_parcels_is_left_alone() {
+        let mut meshes = sheet(SurfaceGroup::Grass, 0.0, 100.0);
+        let before = area(&meshes, SurfaceGroup::Grass);
+        cut_into_ground(&mut meshes, &mut Vec::new());
+        assert_eq!(area(&meshes, SurfaceGroup::Grass), before);
     }
 
     #[test]
@@ -343,6 +447,35 @@ mod tests {
                     rgb(CropCategory::Arable, *b),
                     "crops {a} and {b} share a tone"
                 );
+            }
+        }
+    }
+
+    /// Different is not enough: the first palette passed the test above with
+    /// potatoes, maize and pasture a few steps apart in one pale green, and
+    /// nobody could tell them apart on the map. Every arable family, and
+    /// pasture, is at least `MIN` apart in RGB from every other.
+    #[test]
+    fn the_crop_families_can_be_told_apart() {
+        const MIN: f32 = 30.0;
+        let families = [265, 233, 259, 2014, 256, 6660, 666, 244, 1004, 1071, 1096];
+        let dist = |a: u32, b: u32| {
+            let ch = |v: u32, s: u32| ((v >> s) & 0xFF) as f32;
+            [16, 8, 0]
+                .iter()
+                .map(|&s| (ch(a, s) - ch(b, s)).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        };
+        let mut all: Vec<(u32, u32)> = families
+            .iter()
+            .map(|&c| (c, rgb(CropCategory::Arable, c)))
+            .collect();
+        all.push((0, CropCategory::Arable.rgb()));
+        for (i, (a, ca)) in all.iter().enumerate() {
+            for (b, cb) in &all[i + 1..] {
+                let d = dist(*ca, *cb);
+                assert!(d >= MIN, "crops {a} and {b} are only {d:.0} apart");
             }
         }
     }

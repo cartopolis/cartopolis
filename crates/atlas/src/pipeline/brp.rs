@@ -11,10 +11,15 @@
 //!   the Shortbread water layers already draw; a parcel filled over one is land
 //!   where the register says water. Its wire position (5) stays reserved in
 //!   [`CATEGORIES`] so nothing re-uses it for a form that *is* drawn.
-//! * **A parcel is binned whole, on its centroid.** A quarter of the fields a
-//!   farmland cell owns leave it, so the paving's "outer ring inside the cell"
-//!   rule would delete a quarter of the country's fields. Exactly one cell draws
-//!   each parcel, overhang included.
+//! * **A parcel crossing a cell edge is cut along it**, and each cell gets the
+//!   piece inside it. A quarter of a farmland cell's fields cross its edge, so the
+//!   paving's "drop what leaves the cell" rule would delete a quarter of the
+//!   country's fields. They used to be binned whole on their centroid instead,
+//!   which drew them, but left the neighbouring cell unaware of the overhang: the
+//!   client cuts each cell's grass out from under the fields it knows about
+//!   (`cartopolis_geo::crops::cut_into_ground`), and grass under a field another
+//!   cell owned stayed, drawn in blotches through it once relief was on. A cell's
+//!   own edge is a straight line of latitude or longitude, so the cut is exact.
 //!
 //! Data: RVO BRP Gewaspercelen via PDOK — Public Domain Mark 1.0.
 
@@ -22,7 +27,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{json, Value};
 
-use super::geom::{lat_lng_rings, polygon_rings};
+use super::geom::{lat_lng_rings, polygon_rings, ring_area, round, M_PER_DEG};
 use super::http::{get_json, query};
 use super::rd::wgs84_bbox;
 use super::tile::{cell_path, lat_lng_to_cell, sorted_cells, Cell, CACHE_ZOOM};
@@ -57,35 +62,119 @@ const SIMPLIFY_M: f64 = 0.5;
 /// Below this a parcel is a sliver — a digitising artefact along a ditch.
 const MIN_AREA_M2: f64 = 1.0;
 
-/// The cell a parcel belongs to: the one holding its outer ring's area centroid,
-/// falling back to the vertex mean for a ring with no area. `ring` is
-/// `[lat, lng]`, open.
-fn owner(ring: &[[f64; 2]]) -> Option<Cell> {
-    let n = ring.len();
-    if n < 3 {
-        return None;
+/// A cell's extent as `[south, north, west, east]` in degrees.
+fn cell_bounds((x, y): Cell) -> [f64; 4] {
+    let (north, west) = cartopolis_core::tile_to_lat_lng(x, y, CACHE_ZOOM);
+    let (south, east) = cartopolis_core::tile_to_lat_lng(x + 1, y + 1, CACHE_ZOOM);
+    [south, north, west, east]
+}
+
+/// Sutherland–Hodgman against a lat/lng rectangle: the part of an open
+/// `[lat, lng]` ring inside `[south, north, west, east]`. Exact for a concave
+/// ring against a convex window, which a cell is; where the ring leaves and
+/// re-enters along one edge the result carries a zero-width run along that edge,
+/// which earcut and the fill tolerate.
+fn clip_ring(ring: &[[f64; 2]], [south, north, west, east]: [f64; 4]) -> Vec<[f64; 2]> {
+    // (axis, bound, keep-the-side-above)
+    let planes = [
+        (0, south, true),
+        (0, north, false),
+        (1, west, true),
+        (1, east, false),
+    ];
+    let mut pts = ring.to_vec();
+    for (axis, bound, above) in planes {
+        if pts.len() < 3 {
+            return Vec::new();
+        }
+        let inside = |p: &[f64; 2]| {
+            if above {
+                p[axis] >= bound
+            } else {
+                p[axis] <= bound
+            }
+        };
+        let mut out = Vec::with_capacity(pts.len() + 4);
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()];
+            let (ia, ib) = (inside(&a), inside(&b));
+            if ia {
+                out.push(a);
+            }
+            if ia != ib {
+                let t = (bound - a[axis]) / (b[axis] - a[axis]);
+                let other = 1 - axis;
+                let mut p = [0.0; 2];
+                p[axis] = bound;
+                p[other] = a[other] + t * (b[other] - a[other]);
+                out.push(p);
+            }
+        }
+        pts = out;
     }
-    // Relative to the first vertex, so the products keep their precision.
-    let [lat0, lng0] = ring[0];
-    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
-    for i in 0..n {
-        let [y1, x1] = [ring[i][0] - lat0, ring[i][1] - lng0];
-        let [y2, x2] = [ring[(i + 1) % n][0] - lat0, ring[(i + 1) % n][1] - lng0];
-        let cross = x1 * y2 - x2 * y1;
-        a += cross;
-        cx += (x1 + x2) * cross;
-        cy += (y1 + y2) * cross;
+    let mut out: Vec<[f64; 2]> = pts
+        .iter()
+        .map(|p| [round(p[0], 7), round(p[1], 7)])
+        .collect();
+    out.dedup();
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
     }
-    let (lat, lng) = if a.abs() > 1e-18 {
-        (lat0 + cy / (3.0 * a), lng0 + cx / (3.0 * a))
-    } else {
-        let k = n as f64;
-        (
-            ring.iter().map(|p| p[0]).sum::<f64>() / k,
-            ring.iter().map(|p| p[1]).sum::<f64>() / k,
-        )
+    out
+}
+
+/// Area of an open `[lat, lng]` ring in square metres, for the sliver test.
+fn area_m2(ring: &[[f64; 2]]) -> f64 {
+    let Some(&[lat0, lng0]) = ring.first() else {
+        return 0.0;
     };
-    Some(lat_lng_to_cell(lat, lng))
+    let scale = lat0.to_radians().cos() * M_PER_DEG;
+    let m: Vec<[f64; 2]> = ring
+        .iter()
+        .map(|&[lat, lng]| [(lng - lng0) * scale, (lat - lat0) * M_PER_DEG])
+        .collect();
+    ring_area(&m)
+}
+
+/// One parcel's rings as the piece each cell draws. A parcel inside one cell —
+/// three in four of them — goes through untouched.
+fn pieces(rings: Vec<Vec<[f64; 2]>>) -> Vec<(Cell, Vec<Vec<[f64; 2]>>)> {
+    let Some(outer) = rings.first().filter(|r| r.len() >= 3) else {
+        return Vec::new();
+    };
+    let (mut s, mut n, mut w, mut e) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for &[lat, lng] in outer {
+        s = s.min(lat);
+        n = n.max(lat);
+        w = w.min(lng);
+        e = e.max(lng);
+    }
+    // Tile y grows southward, so the north-west corner has the smallest x and y.
+    let (x0, y0) = lat_lng_to_cell(n, w);
+    let (x1, y1) = lat_lng_to_cell(s, e);
+    if (x0, y0) == (x1, y1) {
+        return vec![((x0, y0), rings)];
+    }
+    let mut out = Vec::new();
+    for x in x0..=x1 {
+        for y in y0..=y1 {
+            let bounds = cell_bounds((x, y));
+            let clipped = clip_ring(outer, bounds);
+            if clipped.len() < 3 || area_m2(&clipped) < MIN_AREA_M2 {
+                continue;
+            }
+            let mut piece = vec![clipped];
+            piece.extend(
+                rings[1..]
+                    .iter()
+                    .map(|h| clip_ring(h, bounds))
+                    .filter(|h| h.len() >= 3),
+            );
+            out.push(((x, y), piece));
+        }
+    }
+    out
 }
 
 /// One feature's parcels as `(cell, wire record)`, or the reason it is not
@@ -111,11 +200,9 @@ fn parcels_of(feat: &Value) -> Result<Vec<(Cell, Value)>, Skip> {
         .unwrap_or(0);
     let mut out = Vec::new();
     for poly in polygon_rings(&feat["geometry"]) {
-        let rings = lat_lng_rings(&poly, SIMPLIFY_M, MIN_AREA_M2);
-        let Some(cell) = rings.first().and_then(|r| owner(r)) else {
-            continue;
-        };
-        out.push((cell, json!([ci, code, rings])));
+        for (cell, rings) in pieces(lat_lng_rings(&poly, SIMPLIFY_M, MIN_AREA_M2)) {
+            out.push((cell, json!([ci, code, rings])));
+        }
     }
     if out.is_empty() {
         Err(Skip::Sliver)
@@ -322,25 +409,69 @@ mod tests {
         );
     }
 
-    /// Binned on the centroid, not on the first vertex: a field whose first
-    /// corner sits across a cell edge still belongs to the cell it mostly covers.
+    /// A field across a cell edge becomes one piece per cell, meeting exactly on
+    /// the edge and adding up to the whole field — so each cell knows every
+    /// field on its ground, and none is drawn twice.
     #[test]
-    fn a_straddling_field_belongs_to_its_centroid() {
-        // Find a cell edge, then start a long field just west of it.
-        let (cx, _) = lat_lng_to_cell(53.25, 6.5);
-        let mut edge = 6.5;
-        while lat_lng_to_cell(53.25, edge).0 == cx {
-            edge += 0.000_1;
-        }
+    fn a_straddling_field_is_cut_at_the_cell_edge() {
+        let (cx, cy) = lat_lng_to_cell(53.2505, 6.5);
+        let [.., east] = cell_bounds((cx, cy));
         let ring = vec![
-            [edge - 0.000_2, 53.25],
-            [edge + 0.01, 53.25],
-            [edge + 0.01, 53.251],
-            [edge - 0.000_2, 53.251],
-            [edge - 0.000_2, 53.25],
+            [east - 0.002, 53.25],
+            [east + 0.01, 53.25],
+            [east + 0.01, 53.251],
+            [east - 0.002, 53.251],
+            [east - 0.002, 53.25],
         ];
+        let whole = area_m2(&[
+            [53.25, east - 0.002],
+            [53.25, east + 0.01],
+            [53.251, east + 0.01],
+            [53.251, east - 0.002],
+        ]);
         let parcels = parcels_of(&feature("Bouwland", json!(259), vec![ring])).unwrap();
-        assert_eq!(parcels[0].0 .0, cx + 1);
+        let cells: Vec<Cell> = parcels.iter().map(|(c, _)| *c).collect();
+        assert_eq!(cells, vec![(cx, cy), (cx + 1, cy)]);
+        let mut total = 0.0;
+        for (cell, rec) in &parcels {
+            let [_, _, w, e] = cell_bounds(*cell);
+            let outer: Vec<[f64; 2]> = serde_json::from_value(rec[2][0].clone()).unwrap();
+            assert!(
+                outer.iter().all(|p| p[1] >= w - 1e-7 && p[1] <= e + 1e-7),
+                "{cell:?} holds ground outside itself"
+            );
+            total += area_m2(&outer);
+        }
+        assert!(
+            (total - whole).abs() < 1.0,
+            "pieces {total} m², field {whole} m²"
+        );
+    }
+
+    /// A hole survives the cut in the cell that holds it.
+    #[test]
+    fn a_hole_stays_with_its_piece() {
+        let (cx, cy) = lat_lng_to_cell(53.2505, 6.5);
+        let [.., east] = cell_bounds((cx, cy));
+        let outer = vec![
+            [east - 0.004, 53.25],
+            [east + 0.004, 53.25],
+            [east + 0.004, 53.252],
+            [east - 0.004, 53.252],
+            [east - 0.004, 53.25],
+        ];
+        let hole = vec![
+            [east - 0.003, 53.2505],
+            [east - 0.002, 53.2505],
+            [east - 0.002, 53.2515],
+            [east - 0.003, 53.2515],
+            [east - 0.003, 53.2505],
+        ];
+        let parcels = parcels_of(&feature("Bouwland", json!(259), vec![outer, hole])).unwrap();
+        let west_piece = parcels.iter().find(|(c, _)| *c == (cx, cy)).unwrap();
+        let east_piece = parcels.iter().find(|(c, _)| *c == (cx + 1, cy)).unwrap();
+        assert_eq!(west_piece.1[2].as_array().unwrap().len(), 2);
+        assert_eq!(east_piece.1[2].as_array().unwrap().len(), 1);
     }
 
     #[test]

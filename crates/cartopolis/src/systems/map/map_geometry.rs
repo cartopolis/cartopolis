@@ -1157,8 +1157,8 @@ fn spawn_geometry_task(
             // …and the cell's registered crop parcels, which ride along for the
             // same reason: they are merged into this cell's meshes, and the
             // arable ones are a keep-out the grass area is built against. Empty
-            // outside the coverage, which is everywhere until the BRP extractor
-            // (not yet written; it belongs in atlas's `pipeline/`) has run.
+            // outside the coverage, i.e. wherever atlas's `brp` dataset has not
+            // been run.
             let crop_cell = crate::systems::crops::load_crop_cell(cell.0, cell.1).await;
             // …and the cell's navigation marks, on the same terms and with two
             // gates of their own (`systems::nav_marks`). The water one reads the
@@ -1290,12 +1290,11 @@ fn spawn_geometry_task(
                                 &crop_cell, cell.0, cell.1, tile_m,
                             );
                             cell_places.surveyed.4 = parcels.len();
-                            // Held back past the cut below for the reason
-                            // `the-ground-stack.md` gives: a parcel and a
-                            // carriageway do not share ground the way a verge and
-                            // one do, so `Crop` is the one ground layer the road
-                            // cut leaves alone. Appended after it, untouched.
-                            let crop_meshes = cartopolis_geo::crops::build_crop_meshes(
+                            // Held back past the road cut below and partitioned
+                            // against the whole finished ground in one pass of
+                            // its own (`crops::cut_into_ground`) once the roads
+                            // and the paving are in.
+                            let mut crop_meshes = cartopolis_geo::crops::build_crop_meshes(
                                 &parcels, mesh_bytes,
                             );
                             lap.mark("paving");
@@ -1362,12 +1361,15 @@ fn spawn_geometry_task(
                             // `take` above makes this the empty vector on the
                             // ordinary path rather than a second copy.
                             meshes.extend(std::mem::take(&mut paving_meshes));
-                            // And the crop parcels rejoin here, on both paths and
-                            // uncut either way — they are held back only so the
-                            // road cut above does not see them, never to be
-                            // dropped. Position in this vector means nothing: a
-                            // sheet's place in the ground stack is its group's
-                            // rung, not its order here.
+                            // And the crop parcels rejoin here, on both paths,
+                            // with the ground made a partition around them: the
+                            // grass under a field comes out, and the field under
+                            // a canal, a wood or a road does. Without it every
+                            // field was two sheets over one piece of ground and
+                            // drew in blotches once relief bent them apart.
+                            // Position in this vector means nothing: a sheet's
+                            // place in the ground stack is its group's rung.
+                            cartopolis_geo::crops::cut_into_ground(&mut meshes, &mut crop_meshes);
                             meshes.extend(crop_meshes);
                             // The roads that are *not* on the road sheet, because
                             // they run under it (`cartopolis_geo::tunnels`). Built

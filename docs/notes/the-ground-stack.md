@@ -149,8 +149,14 @@ machinery** (`road_stitch::cut_under_roads`, called from `map_geometry` once
 `tessellate_roads` has answered). The paragraph above is about a layer overlapping
 *itself*, which is still the extractor's promise; this is about it overlapping a
 different source — see the relief section below. The roads go in as
-blockers and come back untouched. `Crop` is not cut, because a parcel and a
-carriageway do not share ground the way a verge and one do.
+blockers and come back untouched.
+
+**`Crop` joined the partition on 2026-09-27** (`crops::cut_into_ground`, after
+the road cut): every sheet above it is cut out of the parcels, and the parcels
+out of `Built` and `Grass`. It had been left out on the reasoning that a parcel
+and a carriageway do not share ground — true, and beside the point, because a
+parcel and the `Grass` of OSM's `farmland` share *all* of it. The first capture
+with relief on drew every field in blotches of the two.
 
 **And so are the ground fills, through the same call.** That pair was described
 here as settled and was not: `tessellate_surfaces` cuts the fills against each

@@ -132,17 +132,14 @@ pub fn parse_crop_cell(text: &str) -> Result<CropCell, String> {
 
 /// This cell's parcels in the local metre frame, ready to triangulate.
 ///
-/// **A parcel is projected and drawn whole, vertices outside the cell included.**
-/// That is the one place this layer departs from the surveyed paving, which drops
-/// any surface whose outer ring leaves its cell. A pavement is small and belongs
-/// to the cell holding its first vertex; a field is hectares across, and 22 % of
-/// the parcels a Groningen farmland cell owns leave it — 24 % over Flevoland,
-/// measured 2026-08-30 — so the same rule would delete a quarter of the
-/// country's fields. The
-/// extractor bins each parcel once, on its centroid, and exactly one cell draws
-/// it. The overhang is a few hundred metres of flat fill over a neighbour that is
-/// drawing the same ground in the same tone, which is invisible; a hole in
-/// Flevoland is not.
+/// **Projected unclamped.** Where the surveyed paving drops any surface whose
+/// outer ring leaves its cell, the extractor cuts a field crossing a cell edge
+/// along it (atlas's `brp::pieces`) — 22 % of a Groningen farmland cell's
+/// parcels cross one, 24 % over Flevoland, measured 2026-08-30 — so each cell
+/// holds exactly the ground it covers and cuts its own grass against all of it
+/// (`crops::cut_into_ground`). A cell written by an older extractor, which binned
+/// whole parcels on their centroid, still draws: its overhang lands over the
+/// neighbour, as it always did.
 #[must_use]
 pub fn crop_parcels(cell: &CropCell, cx: i64, cy: i64, tile_m: f32) -> Vec<CropParcel> {
     let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
@@ -193,6 +190,79 @@ const PARCELS: CellSource<CropCell> = CellSource {
 
 pub(crate) async fn load_crop_cell(cx: i64, cy: i64) -> CropCell {
     PARCELS.load(cx, cy).await
+}
+
+/// Coarsest source zoom the basemap paints fields into. A z12 tile is sixteen
+/// parcel cells, ~6 km across, where a field is still a few pixels of a 512 px
+/// raster; one level up is 64 cells for a mosaic of one-pixel specks, and those
+/// tiles are only drawn from high enough that the countryside reads as one tone
+/// anyway.
+const RASTER_MIN_ZOOM: u32 = 12;
+
+/// How long the basemap holds its first tiles for the coverage answer. A tile
+/// drawn before it is drawn without fields and keeps that picture — on disk as
+/// well — until it next leaves the ring, so the wait is the same one
+/// `map_geometry` gives its cells (`COVERAGE_WAIT_S`), for the same reason.
+const RASTER_WAIT_S: f32 = 3.0;
+
+/// Whether the basemap may start drawing: the coverage has answered, or it has
+/// been waited on long enough. Only ever holds at start-up.
+pub(crate) fn raster_ready() -> bool {
+    static SINCE: std::sync::OnceLock<bevy::platform::time::Instant> = std::sync::OnceLock::new();
+    COVERAGE.revision() != 0
+        || SINCE
+            .get_or_init(bevy::platform::time::Instant::now)
+            .elapsed()
+            .as_secs_f32()
+            > RASTER_WAIT_S
+}
+
+/// The parcels over one basemap source tile, in that tile's unit square and in
+/// each crop's tone — what `tile_loader` hands the rasteriser to paint over the
+/// land (`vector_tiles::render_mvt_overlaid`), so the fields keep their colour
+/// above the altitude where the ground stops being meshed.
+///
+/// Empty below [`RASTER_MIN_ZOOM`], and for every cell the host does not cover.
+pub(crate) async fn raster_overlay(
+    source: cartopolis_core::TileKey,
+) -> Vec<cartopolis_geo::vector_tiles::OverlayFill> {
+    if source.z < RASTER_MIN_ZOOM || source.z > BRP_ZOOM {
+        return Vec::new();
+    }
+    let shift = BRP_ZOOM - source.z;
+    let (x0, y0) = (source.x << shift, source.y << shift);
+    let span = 1i64 << shift;
+    let mut out = Vec::new();
+    for cx in x0..x0 + span {
+        for cy in y0..y0 + span {
+            if !COVERAGE.covers(cx, cy) {
+                continue;
+            }
+            let cell = load_crop_cell(cx, cy).await;
+            out.extend(overlay_fills(&cell, source));
+        }
+    }
+    out
+}
+
+/// One cell's parcels as fills in `source`'s unit square.
+fn overlay_fills(
+    cell: &CropCell,
+    source: cartopolis_core::TileKey,
+) -> impl Iterator<Item = cartopolis_geo::vector_tiles::OverlayFill> + '_ {
+    let to_unit = move |&(lat, lng): &(f64, f64)| {
+        let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, source.z);
+        [(fx - source.x as f64) as f32, (fy - source.y as f64) as f32]
+    };
+    cell.parcels.iter().map(move |(category, code, rings)| {
+        cartopolis_geo::vector_tiles::OverlayFill {
+            rings: rings
+                .iter()
+                .map(|r| r.iter().map(to_unit).collect())
+                .collect(),
+            rgb: cartopolis_geo::crops::rgb(*category, *code),
+        }
+    })
 }
 
 #[cfg(test)]

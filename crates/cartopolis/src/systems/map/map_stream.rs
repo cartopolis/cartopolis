@@ -1831,7 +1831,13 @@ pub fn update_map_stream(
         let results = stream.tiles.sink();
         let live_gen = stream.gen_shared.clone();
         let mut jobs: Vec<TileKey> = Vec::new();
-        while let Some(key) = stream.tiles.next_job(now) {
+        // Held at start-up until the crop register's coverage has answered (or
+        // `crops::RASTER_WAIT_S` has passed): a tile drawn before it is drawn
+        // without its fields, and is kept that way on disk too.
+        while let Some(key) = crate::systems::crops::raster_ready()
+            .then(|| stream.tiles.next_job(now))
+            .flatten()
+        {
             jobs.push(key);
         }
         for key in jobs {

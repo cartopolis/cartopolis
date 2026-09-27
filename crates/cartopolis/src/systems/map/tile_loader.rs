@@ -138,6 +138,9 @@ pub enum TilePayload {
         /// Carried so [`parse_shared`] can key on it, which is what makes the up
         /// to 64 sub-tiles of one ancestor a single parse rather than 64.
         source: TileKey,
+        /// The registered crop parcels over `source`, painted over its land
+        /// (`crops::raster_overlay`). Empty outside the BRP coverage.
+        crops: Arc<Vec<vector_tiles::OverlayFill>>,
     },
 }
 
@@ -157,11 +160,21 @@ impl TilePayload {
         use crate::systems::vector_tiles;
         match self {
             TilePayload::Raster(bytes) => decode_tile_image(&bytes),
-            TilePayload::Vector { bytes, sub, source } => {
+            TilePayload::Vector {
+                bytes,
+                sub,
+                source,
+                crops,
+            } => {
                 let tile = parse_shared(source, &bytes)?;
-                let rgba =
-                    vector_tiles::render_mvt_sized(&tile, sub, size, source_ground_m(source))
-                        .map_err(|e| e.to_string())?;
+                let rgba = vector_tiles::render_mvt_overlaid(
+                    &tile,
+                    sub,
+                    size,
+                    source_ground_m(source),
+                    &crops,
+                )
+                .map_err(|e| e.to_string())?;
                 let mut img = image::RgbaImage::from_raw(size, size, rgba)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
                 pack_land_alpha(&mut img, vector_tiles::ocean_mask_sized(&tile, sub, size));
@@ -222,12 +235,25 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     if cfg!(target_arch = "wasm32") {
         return None;
     }
-    let TilePayload::Vector { bytes, .. } = payload else {
+    let TilePayload::Vector { bytes, crops, .. } = payload else {
         return None;
     };
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
+    // The crops are drawn into the same pixels, so they are part of what the
+    // picture is of: a field re-registered next year, or a tile first drawn
+    // before the host served the register at all, must not be read back.
+    for fill in crops.iter() {
+        fill.rgb.hash(&mut h);
+        for ring in &fill.rings {
+            ring.len().hash(&mut h);
+            for p in ring {
+                p[0].to_bits().hash(&mut h);
+                p[1].to_bits().hash(&mut h);
+            }
+        }
+    }
     Some(format!(
         "rendered/{}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
         env!("CARTO_RENDER_FINGERPRINT"),
@@ -367,7 +393,13 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
         return Ok(TilePayload::Raster(bytes));
     }
 
-    Ok(TilePayload::Vector { bytes, sub, source })
+    let crops = Arc::new(crate::systems::crops::raster_overlay(source).await);
+    Ok(TilePayload::Vector {
+        bytes,
+        sub,
+        source,
+        crops,
+    })
 }
 
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
@@ -521,6 +553,7 @@ mod tests {
             bytes: Arc::new(fixture()),
             sub: crate::systems::vector_tiles::SubTile::WHOLE,
             source: key,
+            crops: Arc::default(),
         };
         let size = 256;
         let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
@@ -547,11 +580,13 @@ mod tests {
             bytes: Arc::new(fixture()),
             sub: crate::systems::vector_tiles::SubTile::WHOLE,
             source: key,
+            crops: Arc::default(),
         };
         let b = TilePayload::Vector {
             bytes: Arc::new(other),
             sub: crate::systems::vector_tiles::SubTile::WHOLE,
             source: key,
+            crops: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
@@ -560,6 +595,21 @@ mod tests {
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
             rendered_cache_key(&key, &a, 512)
+        );
+        // …and a tile drawn with crop fields over it is not the one drawn
+        // without them.
+        let with_crops = TilePayload::Vector {
+            bytes: Arc::new(fixture()),
+            sub: crate::systems::vector_tiles::SubTile::WHOLE,
+            source: key,
+            crops: Arc::new(vec![crate::systems::vector_tiles::OverlayFill {
+                rings: vec![vec![[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]]],
+                rgb: 0xE1_D3_A4,
+            }]),
+        };
+        assert_ne!(
+            rendered_cache_key(&key, &a, 256),
+            rendered_cache_key(&key, &with_crops, 256)
         );
     }
 

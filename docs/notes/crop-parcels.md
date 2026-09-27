@@ -62,9 +62,14 @@ counts across four sampled regions: `Landschapselement` 1616, `Grasland` 1428,
 2026-08-30, binning each parcel to the cell containing its centroid and then
 asking whether any vertex falls outside that cell: **22 %** over the Groningen
 farmland cell and **24 %** over Flevoland. Copying the rule would delete a
-quarter of the country's fields, so a parcel is projected and drawn *whole* by
-the one cell that owns it — hence `surveyed::cell_local_unclamped`. The overhang
-is flat fill over a neighbour drawing the same ground in the same tone.
+quarter of the country's fields. The first extractor-less design drew each
+parcel *whole* from the cell owning its centroid; since 2026-09-27 the extractor
+**cuts a parcel along every cell edge it crosses** (`brp::pieces`, exact because
+a cell edge is a line of constant latitude or longitude) and each cell gets its
+own piece. The reason is the partition below: a cell can only cut its grass out
+from under fields it has been told about, and an overhang from the neighbour was
+grass left under a field. Over the Groningen area that is 2,573 parcels → 3,015
+pieces across 51 cells.
 
 ## The honest limit
 
@@ -88,14 +93,41 @@ the table was read off the live service; one that looks like it belongs to a
 family but was not observed is absent rather than guessed.
 
 **No season.** A tulip field is red for a fortnight in April; the register records
-the crop, not the flower. Every tone is a muted year-round one.
+the crop, not the flower. Every tone is a year-round one.
 
-## Depth
+**The tones were too pale to tell apart, and are not any more.** The first
+palette kept every crop in the map's pale cartographic range, so potatoes
+(`#C1D1A2`), maize (`#B4C595`) and pasture (`#C9DBBB`) read as one green on the
+first real capture (2026-09-26, Deck). Since 2026-09-27 each arable family is at
+least 30 apart in RGB from every other and from pasture — straw-gold cereals,
+deep-green maize, earth-brown potatoes, blue-green beet, lime rapeseed, pink
+bulbs — and `the_crop_families_can_be_told_apart` holds the distance. Pasture
+stays near the map's own green on purpose: it is half the country.
 
-`SurfaceGroup::Crop` sits at rung **2.5**, `y_offset` **−0.0080** — half a step
-above `Grass` (2.0 / −0.0085) and below `Forest` (3.0 / −0.0075). Half the usual
-step because a parcel only ever overlaps `Grass`: the register covers farmland,
-which OSM draws as grass, and it is never coplanar with a wood or a beach. At
-`DEPTH_BIAS_STEP` that is 32 ULP of margin. **Unverified on real hardware** — the
-`--flicker` instrument is what would confirm it, and it needs a host serving
-`/brp/coverage.json` before there is anything to photograph.
+## Depth, and why the ladder was not enough
+
+`SurfaceGroup::Crop` sits at rung **2.5**, half a step above `Grass` and below
+`Forest`. That held nothing once relief was on: measured on the Deck on
+2026-09-26, every field drew in blotches of its own tone and the grass under it,
+because each sheet is bent onto the measured ground against its own triangles
+and the two disagree by up to `CREASE_SAG_M` (`the-ground-stack.md`). So since
+2026-09-27 the overlap is removed rather than ordered:
+`cartopolis_geo::crops::cut_into_ground` cuts every sheet *above* `Crop` (woods,
+sand, water, paving, the road sheet) out of the parcels, and the parcels out of
+`Built` and `Grass`. The rung is now the backstop the ground-stack note says a
+rung is.
+
+## Seen from above
+
+Above `map_geometry::FLAT_GROUND_ON_M` (250 m) the ground is the basemap image
+rather than meshes, and that image is painted from the vector tile alone — so
+until 2026-09-27 every field went back to one green on the way up, which is most
+of the altitudes anyone looks at farmland from. `tile_loader` now loads the
+parcel cells under each basemap source tile of z12–z14
+(`crops::raster_overlay`) and `vector_tiles::render_mvt_overlaid` paints them
+straight after the `land` layer, under water, streets and buildings. Two things
+travel with it: the parcels are part of the rendered-tile cache key (a tile drawn
+before the host served the register must not be read back afterwards), and
+`map_stream` holds its first dispatch until the coverage manifest has answered,
+up to `crops::RASTER_WAIT_S` (3 s) — the same wait `map_geometry` gives its
+cells. z11 and coarser get no fields: 64 cells a tile, for one-pixel specks.
