@@ -64,7 +64,7 @@ One codebase, three builds:
 
 - **Browser** — open **[cartopolis.org](https://cartopolis.org)**. Nothing to install; needs a WebGPU-capable browser.
 - **Desktop** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/cartopolis/releases), or build from source (macOS included). This is the fastest and most capable of the three. The published binaries need a CPU with **AVX2 and FMA** — roughly 2013 or newer; on anything older, build from source.
-- **Android** — an APK at **[cartopolis.org/apk](https://cartopolis.org/apk/)** (arm64, Android 9+); the page walks through the dialogs Android shows for an app that did not come from the Play Store. Early days: it is the map viewer only, and the least-tested of the three. [What that means](docs/notes/android-build.md).
+- **Android** — an APK at **[cartopolis.org/apk](https://cartopolis.org/apk/)** (arm64, Android 9+); the page walks through the dialogs Android shows for an app that did not come from the Play Store. It is the whole client — the map, and signing in to a server to share the world with other people — and the least-tested of the three. [What that means](docs/notes/android-build.md).
 
 Where the platforms differ, one API hides it (`platform/`).
 
