@@ -2864,6 +2864,103 @@ fn street_decks(tile: &TileData, tile_m: f32, areas: &[BridgeDeck]) -> Vec<Bridg
     decks
 }
 
+/// How far outside a deck's outline a surveyed wall may run and still be that
+/// deck's own parapet or screen, metres. Wide, because a deck built from the
+/// ways ([`street_decks`]) is only the carriageways' drawn width: the real
+/// Europaplein viaduct carries shoulders and a slip lane besides, and its
+/// parapets stood 14 m from the carriageway's centre line, nine past the deck.
+pub const DECK_WALL_REACH_M: f32 = 10.0;
+
+/// How far from an approach's centre line a surveyed wall may run and still be
+/// that ramp's own retaining wall or screen, metres: half a dual carriageway and
+/// its verge.
+pub const APPROACH_WALL_REACH_M: f32 = 14.0;
+
+/// Tallest measured wall on a deck or beside a ramp that is taken to stand where
+/// it is drawn rather than to be the structure's own, metres: a canal bridge's
+/// parapet measures about one.
+pub const BRIDGE_WALL_MAX_M: f32 = 1.5;
+
+/// Whether a surveyed **wall** belongs to a bridge — a parapet or noise screen on
+/// its deck, a retaining wall or screen along the ramp up to it — and so cannot
+/// be drawn the way every other boundary is.
+///
+/// A boundary is a box standing *up from the ground* by its measured height, and
+/// the 3D product measures a wall from its lowest foot to its top. For a
+/// structure's own walls both halves of that are wrong: the viaduct's screens
+/// over Groningen's Europaplein measured 7–9.5 m and were 170–270 m slabs
+/// standing on the Europaweg under the deck, and its unmeasured parapets were
+/// 48 m walls across the same road at ground level (2026-09-26). It is the
+/// bridge's version of [`crate::tunnels::wall_of_a_sunken_road`], and it answers
+/// the same way: the line is sampled, and it is the bridge's when most of it lies
+/// on a deck (widened by [`DECK_WALL_REACH_M`]) or beside a ramp that climbs to
+/// one. Only a wall with no measurement or one taller than [`BRIDGE_WALL_MAX_M`]
+/// qualifies: a measured metre on a canal bridge is its parapet, standing where
+/// it is drawn, and a low wall by a ramp is a garden wall. An unmeasured one
+/// counts on the ramp too: OSM's bridge way routinely stops short of the
+/// structure, and the Europaplein's parapets ran half off the deck and stood
+/// as 2 m slabs on the Europaweg.
+#[must_use]
+pub fn wall_of_a_bridge(
+    decks: &[BridgeDeck],
+    approaches: &[Approach],
+    line: &[[f32; 2]],
+    height_m: Option<f32>,
+) -> bool {
+    if line.len() < 2 || decks.is_empty() {
+        return false;
+    }
+    if height_m.is_some_and(|h| h <= BRIDGE_WALL_MAX_M) {
+        return false;
+    }
+    let on_deck = |p: [f32; 2]| {
+        decks.iter().any(|d| {
+            p[0] >= d.min[0] - DECK_WALL_REACH_M
+                && p[0] <= d.max[0] + DECK_WALL_REACH_M
+                && p[1] >= d.min[1] - DECK_WALL_REACH_M
+                && p[1] <= d.max[1] + DECK_WALL_REACH_M
+                && (d.contains(p)
+                    || d.rings.iter().any(|r| {
+                        r.windows(2)
+                            .any(|e| segment_distance(p, e[0], e[1]) <= DECK_WALL_REACH_M)
+                    }))
+        })
+    };
+    let by_ramp = |p: [f32; 2]| {
+        approaches.iter().any(|a| {
+            a.points
+                .windows(2)
+                .any(|e| segment_distance(p, e[0], e[1]) <= APPROACH_WALL_REACH_M)
+        })
+    };
+    let (mut samples, mut near) = (0usize, 0usize);
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let steps = ((b[0] - a[0]).hypot(b[1] - a[1]) / 1.5).ceil().max(1.0) as usize;
+        for k in 0..=steps {
+            let t = k as f32 / steps as f32;
+            let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            samples += 1;
+            if on_deck(p) || by_ramp(p) {
+                near += 1;
+            }
+        }
+    }
+    near * 5 >= samples * 3
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dz * dz;
+    let t = if len2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t)
+}
+
 /// How far a ribbon may be pushed past the end of its centre line, in metres, to
 /// fill the notch at a junction.
 ///
@@ -6478,6 +6575,57 @@ mod tests {
             ramp >= 40.0,
             "the flyover's longest approach is {ramp:.1} m"
         );
+    }
+
+    /// **A bridge's own walls are not drawn standing on the road under it.** The
+    /// Europaplein viaduct's screens measured 7–9.5 m from the Europaweg to their
+    /// top and its parapets were unmeasured 48 m walls along the deck; both stood
+    /// on the road the deck crosses (2026-09-26). A measured metre on a deck is a
+    /// canal bridge's parapet and stays, and so does a low wall beside a ramp.
+    #[test]
+    fn a_bridge_keeps_its_walls_off_the_road_beneath() {
+        // A 60 × 30 m deck along x, and a ramp running on east from it.
+        let ring = vec![
+            [0.0, 0.0],
+            [60.0, 0.0],
+            [60.0, 30.0],
+            [0.0, 30.0],
+            [0.0, 0.0],
+        ];
+        let deck = BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![ring],
+            min: [0.0, 0.0],
+            max: [60.0, 30.0],
+        };
+        let decks = [deck];
+        let ramp = [Approach {
+            deck: 0,
+            points: vec![[60.0, 15.0], [220.0, 15.0]],
+        }];
+        let along_deck = [[0.0, 1.0], [60.0, 1.0]];
+        let along_ramp = [[40.0, 5.0], [220.0, 5.0]];
+        let elsewhere = [[0.0, 80.0], [60.0, 80.0]];
+        // Beside the deck, past the drawn carriageway: a wide viaduct's parapet.
+        let beside_deck = [[0.0, -9.0], [60.0, -9.0]];
+
+        assert!(wall_of_a_bridge(&decks, &ramp, &along_deck, None));
+        assert!(wall_of_a_bridge(&decks, &ramp, &along_deck, Some(9.5)));
+        assert!(wall_of_a_bridge(&decks, &ramp, &beside_deck, None));
+        assert!(
+            !wall_of_a_bridge(&decks, &ramp, &along_deck, Some(1.0)),
+            "a measured parapet on a deck stays"
+        );
+        assert!(wall_of_a_bridge(&decks, &ramp, &along_ramp, Some(7.0)));
+        assert!(
+            wall_of_a_bridge(&decks, &ramp, &along_ramp, None),
+            "an unmeasured parapet running on past the bridge way is the bridge's"
+        );
+        assert!(!wall_of_a_bridge(&decks, &ramp, &along_ramp, Some(1.2)));
+        assert!(wall_of_a_bridge(&decks, &ramp, &along_ramp, Some(2.4)));
+        assert!(!wall_of_a_bridge(&decks, &ramp, &elsewhere, Some(9.0)));
+        assert!(!wall_of_a_bridge(&[], &[], &along_deck, None));
     }
 
     /// **A bridge's approach runs along the road beyond its abutment**, not only

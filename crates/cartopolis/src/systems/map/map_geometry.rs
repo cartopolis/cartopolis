@@ -1602,6 +1602,59 @@ fn spawn_geometry_task(
                                                 );
                                             }
                                         }
+                                        // …and a raised bridge's parapets and
+                                        // screens, which stood on the road under
+                                        // the deck (`vector_tiles::wall_of_a_bridge`).
+                                        // Raised only, and only where atlas has
+                                        // already measured the decks: around a
+                                        // canal bridge that lies flat the same
+                                        // walls are the quay and the gardens, and
+                                        // the rule took 209 of them out of the
+                                        // city centre's cell (2026-09-27).
+                                        let raised: Vec<usize> = atlas_decks
+                                            .as_deref()
+                                            .and_then(|a| {
+                                                crate::systems::terrain_tiles::match_atlas_decks(
+                                                    &decks, tile_m, a,
+                                                )
+                                            })
+                                            .map(|m| {
+                                                m.iter()
+                                                    .enumerate()
+                                                    .filter(|(_, d)| {
+                                                        d.height
+                                                            >= cartopolis_geo::terrain_grade::MIN_LIFT_M
+                                                    })
+                                                    .map(|(i, _)| i)
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                        if !raised.is_empty() {
+                                            let raised_decks: Vec<_> =
+                                                raised.iter().map(|&i| decks[i].clone()).collect();
+                                            let raised_ramps: Vec<_> = approaches
+                                                .iter()
+                                                .filter(|a| raised.contains(&(a.deck as usize)))
+                                                .cloned()
+                                                .collect();
+                                            let before = lines.len();
+                                            lines.retain(|l| {
+                                                l.kind != furniture::LineKind::Wall
+                                                    || !vector_tiles::wall_of_a_bridge(
+                                                        &raised_decks,
+                                                        &raised_ramps,
+                                                        &l.points,
+                                                        l.height_m,
+                                                    )
+                                            });
+                                            if lines.len() < before {
+                                                tracing::info!(
+                                                    cell = ?cell,
+                                                    dropped = before - lines.len(),
+                                                    "surveyed walls of a bridge left to the deck"
+                                                );
+                                            }
+                                        }
                                         cell_places.surveyed.2 = lines.len();
                                         meshes.extend(furniture::build_line_meshes(
                                             &lines, mesh_bytes,
