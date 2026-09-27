@@ -739,6 +739,53 @@ pub fn drive_route_solver(
         .detach();
 }
 
+/// Where a detached solve leaves its answer: empty until it lands.
+#[cfg(mcp)]
+pub(crate) type DetachedSolve = Arc<Mutex<Option<Result<Route, RouteError>>>>;
+
+/// Solve a route for something other than the Route panel: an agent walking the
+/// avatar along streets rather than through buildings (`mcp::agent`).
+///
+/// The same fetch, graph build and search the panel runs, with a cache and a
+/// progress counter of its own — so it neither replaces a route somebody has on
+/// screen nor waits behind one. A raster basemap has no geometry to route on and
+/// answers `NoData` at once.
+#[cfg(mcp)]
+pub(crate) fn solve_detached(
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: TravelMode,
+    template: String,
+) -> DetachedSolve {
+    let sink: DetachedSolve = Arc::new(Mutex::new(None));
+    if tile_source_kind(&template) != TileSourceKind::Vector {
+        if let Ok(mut g) = sink.lock() {
+            *g = Some(Err(RouteError::NoData));
+        }
+        return sink;
+    }
+    let out = sink.clone();
+    IoTaskPool::get()
+        .spawn(async move {
+            let progress = (AtomicUsize::new(0), AtomicUsize::new(0));
+            let cache: Arc<GraphCache> = Arc::new(Mutex::new(None));
+            let publish = move |result| {
+                if let Ok(mut g) = out.lock() {
+                    *g = Some(result);
+                }
+            };
+            match fetch_corridor(from, to, &template, &progress, &cache).await {
+                Err(e) => publish(Err(e)),
+                Ok(input) => crate::platform::workers::submit(
+                    "agent route",
+                    Box::new(move || publish(build_and_search(input, from, to, mode, &cache))),
+                ),
+            }
+        })
+        .detach();
+    sink
+}
+
 /// Hand a finished solve to the main thread. Stamped with the request's `seq` so a
 /// result the user has already superseded is discarded rather than drawn.
 fn publish_solve(sink: &Mutex<Option<SolveJob>>, seq: u64, result: Result<Route, RouteError>) {

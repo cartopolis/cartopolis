@@ -226,6 +226,7 @@ pub fn render_settings_panel(
             crate::systems::mcp::Serving::Failed(why) => EditorServing::Failed(why),
         });
         editor.token = mcp.token().unwrap_or_default();
+        (editor.allow, editor.allow_pinned) = mcp.allow();
     }
 
     // Edited as plain values and written back only on a real change. All three of
@@ -307,6 +308,10 @@ pub fn render_settings_panel(
     #[cfg(mcp)]
     if editor.regenerate {
         mcp.regenerate();
+    }
+    #[cfg(mcp)]
+    if let Some(list) = editor.allow_edited.take() {
+        mcp.set_allow(list);
     }
 
     if delete_account {
@@ -690,6 +695,15 @@ struct EditorRow {
     /// Set by the button; acted on after the panel closes its borrow.
     #[cfg(mcp)]
     regenerate: bool,
+    /// Whose chat an agent may read, as typed (`mcp::agent::Audience`), and
+    /// whether `--mcp-allow` fixed it for this run.
+    #[cfg(mcp)]
+    allow: String,
+    #[cfg(mcp)]
+    allow_pinned: bool,
+    /// The list after an edit this frame; written back after the panel.
+    #[cfg(mcp)]
+    allow_edited: Option<String>,
 }
 
 /// The mirror of `mcp::Serving`, so this file does not need that module's types
@@ -818,6 +832,46 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
         ui,
         "Regenerating stops any editor that is already connected.",
     );
+
+    // Whose words the agent reads. Worded around the risk rather than the
+    // mechanism: the person filling this in is deciding who gets to put text in
+    // front of their model.
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new("People the agent may hear")
+            .size(theme::SIZE_CHIP)
+            .color(theme::TEXT_DIM),
+    );
+    if editor.allow_pinned {
+        ui.label(
+            egui::RichText::new(if editor.allow.is_empty() {
+                "nobody"
+            } else {
+                &editor.allow
+            })
+            .size(theme::SIZE_MONO)
+            .monospace()
+            .color(theme::CREAM),
+        );
+        theme::note(ui, "Set by --mcp-allow for this run.");
+    } else {
+        let mut text = editor.allow.clone();
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .id(egui::Id::new("mcp_allow"))
+                .hint_text("usernames, separated by commas")
+                .desired_width(f32::INFINITY),
+        );
+        if edit.changed() {
+            editor.allow_edited = Some(text);
+        }
+        theme::note(
+            ui,
+            "An agent driving this client reads chat only from these accounts; everyone \
+             else's lines are withheld from it. Anything it reads can try to instruct it, \
+             so leave strangers off. * lets everyone through.",
+        );
+    }
 }
 
 /// The map this device has downloaded, and the button that throws it away.

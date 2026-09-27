@@ -302,6 +302,27 @@ impl Engine {
         self.peers.iter()
     }
 
+    /// The direct chat with `username`, if this device is in one. Never a group,
+    /// whatever the group happens to be called — the distinction
+    /// [`Self::start_direct`] already makes.
+    #[must_use]
+    pub fn direct_with(&self, username: &str) -> Option<&Vec<u8>> {
+        self.peers
+            .iter()
+            .find(|(g, p)| !self.groups.contains(*g) && p.eq_ignore_ascii_case(username))
+            .map(|(g, _)| g)
+    }
+
+    /// Whether a chat is a group, and its label: the other person for a direct
+    /// chat, the name its creator gave it for a group.
+    #[cfg(mcp)]
+    #[must_use]
+    pub fn describe(&self, group: &[u8]) -> Option<(bool, &str)> {
+        self.peers
+            .get(group)
+            .map(|p| (self.groups.contains(group), p.as_str()))
+    }
+
     fn request(&mut self) -> u32 {
         let id = REQUEST_BASE | (self.next_request & 0xFFFF);
         self.next_request = self.next_request.wrapping_add(1);
@@ -434,11 +455,7 @@ impl Engine {
         if username.is_empty() || username.eq_ignore_ascii_case(self.username()) {
             return;
         }
-        if let Some((g, _)) = self
-            .peers
-            .iter()
-            .find(|(g, p)| !self.groups.contains(*g) && p.eq_ignore_ascii_case(&username))
-        {
+        if let Some(g) = self.direct_with(&username) {
             events.push(Event::Opened {
                 group: g.clone(),
                 peer: username,
@@ -1101,6 +1118,28 @@ pub struct PrivateChats {
     watch: Option<crate::platform::location::LocationWatch>,
     /// Per chat being shared with: when and where the last update was sent.
     last_sent: std::collections::HashMap<String, (u64, f64, f64)>,
+}
+
+/// What an agent reading the chat over MCP needs to know about a private chat
+/// (`systems::mcp::agent`) — which chat is the direct one with a person, and
+/// which are groups whose names somebody else chose.
+#[cfg(mcp)]
+impl PrivateChats {
+    /// See [`Engine::direct_with`]. `None` too when there is no engine, i.e.
+    /// before a session has come up.
+    #[must_use]
+    pub fn direct_with(&self, username: &str) -> Option<Vec<u8>> {
+        self.engine.as_ref()?.direct_with(username).cloned()
+    }
+
+    /// See [`Engine::describe`].
+    #[must_use]
+    pub fn describe(&self, group: &[u8]) -> Option<(bool, String)> {
+        self.engine
+            .as_ref()?
+            .describe(group)
+            .map(|(is_group, label)| (is_group, label.to_string()))
+    }
 }
 
 /// A live share sends at most this often while the phone moves…

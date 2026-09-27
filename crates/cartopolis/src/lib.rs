@@ -49,6 +49,24 @@ pub(crate) const ASSET_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub(crate) const ASSET_ROOT: &str = "assets";
 
+/// Where the assets are read from at run time: [`ASSET_ROOT`], unless
+/// `CARTO_ASSET_ROOT` names another directory (desktop only).
+///
+/// The override is for a binary that has been copied away from the checkout
+/// that built it. The agent-driven client on the Steam Deck runs from a
+/// directory of its own, and the compiled-in path points into a shared build
+/// slot — where the next agent's sync would swap the shaders and models out
+/// from under a binary built against the old ones.
+pub(crate) fn asset_root() -> String {
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    if let Ok(dir) = std::env::var("CARTO_ASSET_ROOT") {
+        if !dir.trim().is_empty() {
+            return dir;
+        }
+    }
+    ASSET_ROOT.to_string()
+}
+
 use big_space::prelude::{BigSpace, GridCell};
 use components::Avatar;
 use resources::{
@@ -266,10 +284,27 @@ struct Cli {
     /// This is the shape for a machine nobody is sitting at. The cost a scripted
     /// capture pays is almost entirely *start-up* — the binary, the assets, the
     /// shader compiles, then a tile fill — and a process that stays up pays it
-    /// once instead of once per viewpoint. Implies `--offline` and `--mcp-listen`.
+    /// once instead of once per viewpoint. Implies `--mcp-listen`, and offline
+    /// unless `--connect` names a server — with one, the run signs in and an
+    /// agent can walk, talk and build as that account (`systems::mcp::agent`).
     #[cfg(mcp)]
     #[arg(long)]
     mcp_headless: bool,
+
+    /// Whose chat an agent driving this client may read: usernames separated by
+    /// commas, or `*` for everyone. Everybody else's lines are withheld from it.
+    /// Overrides Settings ▸ General ▸ Editor access for this run; with neither,
+    /// the agent hears nobody.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "NAMES")]
+    mcp_allow: Option<String>,
+
+    /// Accept MCP requests addressed to this host name too (repeatable). For a
+    /// client reached through a forward, whose requests carry the forward's
+    /// name — the DNS-rebinding guard refuses any other.
+    #[cfg(mcp)]
+    #[arg(long, value_name = "HOST")]
+    mcp_host: Vec<String>,
 
     /// Offscreen surface size for `--mcp-headless`, `WxH`. Ignored when there is
     /// a window, where the window *is* the surface.
@@ -1527,7 +1562,10 @@ fn run_client() {
         // capture is: no config, no listener, no Settings row, nothing to switch.
         harness.is_some() || cli.no_mcp,
     ) {
-        Ok(c) => c,
+        Ok(c) => c.map(|mut c| {
+            c.hosts = cli.mcp_host.clone();
+            c
+        }),
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
@@ -1570,7 +1608,7 @@ fn run_client() {
     if !scripted {
         systems::desktop_integration::ensure_desktop_integration();
     }
-    let asset_dir = ASSET_ROOT.to_string();
+    let asset_dir = asset_root();
     let plugins = DefaultPlugins.build();
     // Desktop uses the custom `tracing_subscriber` above, so drop Bevy's LogPlugin
     // there. On wasm keep it: it wires logs + panics to the browser console and does
@@ -2066,6 +2104,9 @@ fn run_client() {
         // What the on-screen navigation controls asked for this frame
         // (`systems::map_osd`); read by `free_camera::camera_controls`.
         .init_resource::<systems::map_osd::OsdInput>()
+        // …and what an agent driving this client asked for (`systems::mcp`);
+        // read beside it by `avatar::handle_avatar_movement`.
+        .init_resource::<avatar::AgentWalk>()
         // The user's own preferences — units, turn chimes, keep-screen-on, the
         // quality preset. Distinct from `DevPanelState` (a debugging surface) and
         // from `LayerPrefs` (what is drawn); this is what the Settings panel owns,
@@ -2261,7 +2302,16 @@ fn run_client() {
     // The web build used to be excluded here outright — it was the Phase-1 viewer
     // with no transport to a sim at all. It has one now (a WebSocket carrier), so
     // it takes this path like any other build.
-    if !(cli.offline || scripted) {
+    //
+    // A windowless run is "scripted" and stays offline — except `--mcp-headless`
+    // told a server. That run is not a capture: it is an account an agent drives
+    // (`systems::mcp::agent`), and signing in is the whole of how it gets an
+    // avatar to walk and a voice to talk with.
+    #[cfg(mcp)]
+    let signs_in = cli.mcp_headless && cli.connect.is_some();
+    #[cfg(not(mcp))]
+    let signs_in = false;
+    if !cli.offline && (!scripted || signs_in) {
         use systems::session::{SessionKind, SessionRequest};
         let login = login::resolve(cli.login.as_deref());
         // `Some` = enter this; `None` = open onto the offline map, which is where
@@ -2526,6 +2576,39 @@ fn run_client() {
         let auth = systems::mcp::McpAuth(std::sync::Arc::new(std::sync::RwLock::new(token)));
         let (tx, rx) = futures_channel::mpsc::unbounded();
         let headless = cfg.headless;
+        // Whose chat the agent may read: the flag for this run, else what Settings
+        // remembers, else nobody (`mcp::agent::Audience`).
+        let audience = match &cli.mcp_allow {
+            Some(list) => systems::mcp::agent::Audience {
+                pinned: true,
+                ..systems::mcp::agent::Audience::parse(list)
+            },
+            None => systems::mcp::agent::Audience::parse(
+                app.world()
+                    .resource::<systems::user_store::UserStore>()
+                    .data
+                    .mcp_allow
+                    .as_deref()
+                    .unwrap_or(""),
+            ),
+        };
+        tracing::info!(can_hear = %audience.describe(), "mcp: agent allow-list");
+        app.insert_resource(audience)
+            .init_resource::<systems::mcp::agent::AgentState>()
+            .add_systems(
+                Update,
+                (
+                    // After the pump, which is what drains the agent's requests
+                    // off the server thread's queue.
+                    systems::mcp::agent::serve.after(systems::mcp::pump),
+                    // A walk is a travel wish, so it is aimed before the movement
+                    // system reads it — and after the mode toggle, which would
+                    // otherwise take back the Follow camera a walk needs.
+                    systems::mcp::agent::steer
+                        .after(systems::free_camera::camera_mode_toggle)
+                        .before(avatar::handle_avatar_movement),
+                ),
+            );
         app.insert_resource(cfg.clone())
             .insert_resource(auth)
             .insert_resource(systems::mcp::JobSender(tx))

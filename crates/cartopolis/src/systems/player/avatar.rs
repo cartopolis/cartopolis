@@ -289,7 +289,7 @@ fn avatar_asset_exists(scene_rel: &str) -> bool {
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
-        std::path::Path::new(crate::ASSET_ROOT)
+        std::path::Path::new(&crate::asset_root())
             .join(scene_rel)
             .is_file()
     }
@@ -1860,6 +1860,27 @@ pub fn smooth_online_avatar_display(
     }
 }
 
+/// A travel wish from neither the keys nor the stick: an agent walking this
+/// avatar over MCP (`systems::mcp::agent`).
+///
+/// **The third input source, and deliberately the weakest.** It is read by
+/// [`handle_avatar_movement`] beside the keyboard and the on-screen stick, so a
+/// walk an agent asked for runs through exactly the ramp, the facing, the
+/// collision and — online — the intent a person's walk does, and it cannot
+/// behave differently from one. Anybody at the keys wins: a held key or a
+/// pushed stick replaces it for that frame.
+///
+/// A world direction rather than a camera-relative one like the other two: an
+/// agent is steering toward a place, not pushing a stick in front of a screen
+/// it may not be looking at. Rewritten every frame by the thing steering, and
+/// zero when nothing is.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq)]
+pub struct AgentWalk {
+    /// Unit travel direction on world XZ, or zero for "not walking".
+    pub dir: Vec3,
+    pub gait: locomotion::Gait,
+}
+
 pub fn handle_avatar_movement(
     online: Option<Res<crate::resources::OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -1868,6 +1889,7 @@ pub fn handle_avatar_movement(
     // this is last frame's push: a constant frame of latency on a held
     // translation control, not jitter.
     osd: Res<crate::systems::map_osd::OsdInput>,
+    agent: Res<AgentWalk>,
     time: Res<Time>,
     mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
@@ -1993,13 +2015,23 @@ pub fn handle_avatar_movement(
     // (`locomotion::speed_for_throttle`).
     let keys = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
     let from_keys = keys.length_squared() > 1e-8;
-    let (wish, throttle) = travel_wish(az, keys, osd.walk);
-    let has_input = wish.length_squared() > 1e-8;
+    let (mut wish, throttle) = travel_wish(az, keys, osd.walk);
+    let from_person = wish.length_squared() > 1e-8;
     let walk_speed = if from_keys {
         avatar_state.gait.speed()
+    } else if from_person {
+        locomotion::speed_for_throttle(throttle)
+    } else if agent.dir.length_squared() > 1e-8 {
+        // Nobody at the controls: an agent's walk. Its gait is the avatar's gait
+        // for the frame, so the clip and the speed agree the way they do when
+        // somebody holds Shift.
+        wish = agent.dir;
+        avatar_state.gait = agent.gait;
+        agent.gait.speed()
     } else {
         locomotion::speed_for_throttle(throttle)
     };
+    let has_input = wish.length_squared() > 1e-8;
     avatar_state.is_walking = has_input;
     // Face the way we're travelling, in both run modes. The wish direction — not
     // the camera — is the target, so A/D turn the avatar a quarter turn and S

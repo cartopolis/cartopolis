@@ -142,6 +142,13 @@ pub struct UserData {
     /// screen to read it off.
     #[serde(default)]
     pub mcp_token: Option<String>,
+    /// Whose words an agent driving this client may read (`systems::mcp::agent`):
+    /// usernames separated by commas, or `*` for everyone. `None` and the empty
+    /// string both mean nobody — the agent then sees how many lines arrived and
+    /// never what they said. Edited in Settings ▸ General ▸ Editor access;
+    /// `--mcp-allow` overrides it for a run.
+    #[serde(default)]
+    pub mcp_allow: Option<String>,
 }
 
 /// Snapshot of the sky switchers in the HUD — the sun's Auto/☀/🌙 (plus the dev

@@ -145,8 +145,20 @@ takes any run out of it.
 cargo run -p cartopolis                        # already serving on 127.0.0.1:4750
 cargo run -p cartopolis -- --no-mcp            # not this run
 cargo run -p cartopolis -- --mcp-headless      # no window; the shape for a VPS
+cargo run -p cartopolis -- --mcp-headless --connect HOST --mcp-allow jeroen   # an account an agent drives
 bun tools/mcp.ts state                         # the same surface from a shell
 ```
+
+**Signed in, the client is also somebody an agent can be** (`systems::dev::mcp::agent`):
+`me`, `read_chat`, `say`, `walk_to`, `teleport`, `build`, `set_script` and the
+rest act as the account through the channels a person's actions use, so the
+server's ownership and rate checks apply unchanged. **What the agent reads is the
+risk**, so chat reaches it only from `--mcp-allow` / Settings ▸ Editor access.
+That list is empty by default, and `view` drops the chrome (the chat overlay)
+while it is narrower than everyone. A public line counts only with an avatar
+behind it (`ChatLine::sender_is_account`), because `vfSay` speaks under a prim
+name anyone can choose. The `viberfox` bot on the Deck is this, reached through
+a single-port tunnel: `docs/guides/deck-bot.md`.
 
 **It is not a second screenshot path.** `view` pushes a `ShotSpec` onto the shot
 harness below, which owns the only cycle that places a camera, waits for every

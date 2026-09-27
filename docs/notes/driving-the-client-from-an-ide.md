@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant"]
-updated: 2026-09-16
+triggers: [mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection"]
+updated: 2026-09-27
 ---
 
 # Driving the client from an editor
@@ -161,12 +161,90 @@ megabyte PNGs on the game wire beside the 20 Hz snapshot stream, and it does not
 work **offline**, which is the mode most of this is used in. Worth revisiting if
 the thing being driven is ever a phone behind NAT.
 
+## Being somebody: the agent half (2026-09-27)
+
+Signed in to a server, the client is also an account an agent can *be*:
+`me`, `read_chat`, `say`, `walk_to`, `teleport`, `emote`, `build`, `set_script`,
+`script_output`, `touch`, `delete_objects`, `my_builds`, `scripting_guide`
+(`systems::dev::mcp::agent`). Every action goes out through the channel a
+person's does — a walk is a travel wish (`avatar::AgentWalk`, the third input
+source beside the keys and the stick), a line is a `ChatSend` or a sealed private
+message, a build is `/api/content/import` under the account's own session — so an
+agent can do nothing the account could not do by hand, and the server's
+ownership and rate checks are the ones that apply. `--mcp-headless --connect`
+is the shape for a machine nobody sits at; before this, a headless run was always
+offline.
+
+**The risk is what the agent reads, not what it does.** Anything it reads can
+try to instruct it, so chat reaches it only from the accounts on the allow-list
+(`--mcp-allow`, or Settings ▸ General ▸ Editor access). The list is empty by
+default. Everybody else's lines are counted and withheld, names included,
+because a username is text somebody chose. The filter is in the client, not the
+server: a person and their agent can share one account, the person still sees
+everything on screen, and only the agent's view is narrowed. The threat is to
+the owner's own model, and the owner's own client is on their side.
+
+Two holes had to be closed before a name was worth filtering on, and both were
+live for every user, not only for agents:
+
+- **A scripted object speaks under its own name.** `vfSay` arrives as local chat
+  with `sender_id == 0` and the prim's name as the sender. Anybody who builds can
+  name a prim after the one account on the list. `ChatLine::sender_is_account`
+  is the test, and public lines only count with a real avatar behind them.
+- **A private line's sender was its own claim.** The name inside an MLS entry
+  comes from the credential the sending device minted, and the server registers
+  devices without looking inside their key packages. So `mallory` could mint a
+  credential saying `jeroen`. `private_chat::Engine::on_deliver` now drops an
+  entry whose credential disagrees with the account the server took it from.
+  This fixes the messenger for everyone, not just the agent.
+
+**A picture is the residual.** `view` hides the chrome whenever the client is
+online and the list is narrower than everyone, because the chat overlay draws
+every line from everybody. What is left in a capture, such as a sign somebody
+built or a prim's name, cannot be filtered. That is why the session driving a
+bot should hold no other keys. Walking, building and chat need an avatar, so
+they refuse on an offline client rather than half-working.
+
+**A walk follows a route, not a line.** The first version walked straight at the
+goal and, on its first real test, got 14 m across the Grote Markt's neighbourhood
+before a building stopped it. `walk_to` a place now solves a foot route with the
+Route panel's own pipeline (`navigation::solve_detached`: its own graph cache,
+so it never disturbs a route somebody has on screen) and steers corner to
+corner. It falls back to a straight line only when no route comes back. The stuck
+test is *movement* (5 s without moving a metre), not closeness, because a route
+bends away from its goal as often as towards it. A walk is capped at 2 km. A person can
+only be walked up to once they have spoken in public, because avatars carry no
+names on the wire. And nothing can be shown to one player only, so a card game
+with hidden hands cannot be scripted. `scripting_guide` says so, and builds the
+rest of itself from `cartopolis_core::script_api`, so it cannot drift.
+
+## The bot on the Steam Deck
+
+`viberfox` is an ordinary account driven this way, running headless on the
+Deck's GPU. The Deck's ssh endpoint is a **rootless podman container** (`arch`),
+so its root cannot touch the Deck's netfilter. The first plan, a firewall rule
+admitting only the VPS to the MCP port, is not available there. What replaced
+it needs no root anywhere:
+
+- The client runs as its own user (`viberbot`) inside that container, from its
+  own copy of the binary and `assets/` (`CARTO_ASSET_ROOT`; the compiled-in path
+  points into a build slot another agent will resync). It serves on
+  **`127.0.0.1:4760`**: loopback, and not 4750, which other agents' clients on
+  the Deck use.
+- The VPS holds an ssh key that the Deck's `viberbot` accepts **only for a
+  tunnel to that one port** (`restrict,port-forwarding,permitopen=…`, no shell).
+  A unit on the VPS holds the tunnel open and publishes it on the agent Docker
+  network's gateway, so a container on that network reaches the bot at
+  `http://172.19.0.1:4750/mcp` with the bearer token, and nothing else. The
+  client accepts that `Host` because of `--mcp-host`.
+
+So an agent environment that should drive the bot gets the URL and the token and
+**no ssh key**. The setup, the unit names and how to undo each piece are in
+`docs/guides/deck-bot.md`.
+
 ## What is not built yet
 
-Authoring (`build` / `edit` / `scene` / `script` over the existing content
-document), avatar control, and the geometry checker that would answer "does
-anything float or intersect" without a render. The seam for avatar control is
-already in the tree and is not a new one: `map_osd::OsdInput` is a second input
-source that `avatar::handle_avatar_movement` reads beside the keyboard, and an
-agent's wish vector belongs in the same place — which gets it right in both run
-modes, since that system owns the ramp online and offline alike.
+The geometry checker that would answer "does anything float or intersect"
+without a render, and a server-side record of an
+account's prim ids (export drops them by design, so `my_builds` is this
+installation's memory of what it made).

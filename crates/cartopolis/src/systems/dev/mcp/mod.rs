@@ -48,6 +48,7 @@
 //! respect: running off the end of its list parks the camera operator instead of
 //! quitting (`ShotHarness::live`).
 
+pub mod agent;
 pub mod overlay;
 pub mod server;
 
@@ -113,6 +114,11 @@ pub struct Config {
     /// `user.json` carried from a desktop with the switch off would otherwise
     /// leave a capture server answering nothing, with no way to say so.
     pub forced: bool,
+    /// More `Host` header values to accept besides the listen address itself
+    /// (`--mcp-host`). A client reached through a forward — the Steam Deck's,
+    /// behind a port on the VPS — is asked for by the *forward's* name, which the
+    /// DNS-rebinding guard would otherwise refuse as a stranger.
+    pub hosts: Vec<String>,
 }
 
 impl Config {
@@ -166,6 +172,7 @@ impl Config {
             // remembered preference — the same rule the sky flags follow
             // (`user_store::SkyCliOverrides`).
             forced: headless || listen.is_some(),
+            hosts: Vec::new(),
         }))
     }
 }
@@ -306,6 +313,9 @@ pub enum Request {
     State,
     /// Place the camera, wait for the world, photograph it.
     View(Box<ViewRequest>),
+    /// Something the signed-in account does: talk, walk, build
+    /// ([`agent`]).
+    Agent(agent::AgentRequest),
 }
 
 /// One `view` / `view_here` call.
@@ -355,6 +365,7 @@ impl ImageFormat {
 pub enum Reply {
     State(Box<WorldState>),
     View(Box<ViewReply>),
+    Agent(Box<agent::AgentReply>),
     /// The call could not be carried out. The string is written to be shown to
     /// whoever asked, because it is.
     Error(String),
@@ -437,6 +448,9 @@ pub enum Outcome {
 pub struct McpBridge {
     jobs: UnboundedReceiver<Job>,
     waiting: Vec<Waiting>,
+    /// Agent requests drained this frame, for [`agent::serve`] — a queue of
+    /// their own so the pump does not need that system's dozen parameters.
+    agent: Vec<(agent::AgentRequest, oneshot::Sender<Reply>)>,
     /// Newest last. Bounded — this is a readout, not a record.
     pub log: VecDeque<Entry>,
     pub listen: SocketAddr,
@@ -462,6 +476,7 @@ impl McpBridge {
         Self {
             jobs,
             waiting: Vec::new(),
+            agent: Vec::new(),
             log: VecDeque::new(),
             listen,
             served: 0,
@@ -511,6 +526,7 @@ pub struct EditorAccess<'w> {
     pub running: Option<Res<'w, server::Running>>,
     pub trouble: Option<Res<'w, McpTrouble>>,
     pub store: Option<ResMut<'w, crate::systems::user_store::UserStore>>,
+    pub audience: Option<ResMut<'w, agent::Audience>>,
 }
 
 /// What the Editor access row has to say about the listener right now.
@@ -556,6 +572,37 @@ impl EditorAccess<'_> {
         store.data.mcp_token = Some(minted);
         store.dirty = true;
     }
+
+    /// Whose chat the agent may read, as the person typed it — the list is
+    /// stored raw so a half-typed `jeroen,` keeps its comma — and whether a flag
+    /// fixed it for this run.
+    pub fn allow(&self) -> (String, bool) {
+        match self.audience.as_deref() {
+            Some(a) if a.pinned => (a.to_list(), true),
+            _ => (
+                self.store
+                    .as_deref()
+                    .and_then(|s| s.data.mcp_allow.clone())
+                    .unwrap_or_default(),
+                false,
+            ),
+        }
+    }
+
+    /// Change the list, in the store and in the filter at once, so the agent
+    /// stops hearing somebody the moment they are taken off.
+    pub fn set_allow(&mut self, list: String) {
+        if self.audience.as_deref().is_some_and(|a| a.pinned) {
+            return;
+        }
+        if let Some(audience) = self.audience.as_deref_mut() {
+            *audience = agent::Audience::parse(&list);
+        }
+        if let Some(store) = self.store.as_deref_mut() {
+            store.data.mcp_allow = Some(list);
+            store.dirty = true;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -579,8 +626,16 @@ pub fn pump(
     globe: Res<GlobeState>,
     frames: Res<FrameStats>,
     real: Res<Time<Real>>,
+    audience: Res<agent::Audience>,
+    session: Res<crate::systems::session::SessionState>,
 ) {
     let now = real.elapsed_secs_f64();
+    // **A picture is text the allow-list cannot filter.** The chrome carries the
+    // chat overlay — speech bubbles and the transcript, i.e. every line from
+    // everybody — so a capture with it on is a way round `agent::Audience`.
+    // Online, and with a list narrower than everyone, the chrome is left out
+    // whatever the call asked for. Offline there is no chat to leak.
+    let chrome_leaks = session.is_online() && !audience.everyone;
     loop {
         // `Err` is both "nothing queued" and "the sender is gone"; neither has
         // anything more to give this frame.
@@ -601,7 +656,11 @@ pub fn pump(
                 bridge.note("state".into(), detail, Outcome::Done, now);
                 let _ = job.reply.send(Reply::State(Box::new(state)));
             }
-            Request::View(req) => {
+            Request::Agent(req) => bridge.agent.push((req, job.reply)),
+            Request::View(mut req) => {
+                if chrome_leaks {
+                    req.hide_ui = Some(true);
+                }
                 let label = format!("view #{}", bridge.served);
                 match push_view(&mut harness, &req, &camera, &cam_state, &anchor, &globe) {
                     Ok(spec_index) => {

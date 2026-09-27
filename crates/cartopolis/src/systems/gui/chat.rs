@@ -41,6 +41,8 @@ pub struct ChatState {
     /// client whose watch disagrees. `sent_at_ms` stays on the wire for the log
     /// and for ordering; this is what the picture runs on.
     pub clock: f64,
+    /// The [`ChatLine::seq`] the next line will get.
+    pub next_seq: u64,
     /// This client's avatar id (from `ServerHelloAck`), to tag own lines.
     pub my_id: Option<u64>,
     /// People this account blocks, exactly as the server last reported them
@@ -174,6 +176,30 @@ pub struct ChatLine {
     /// time a bubble shows. Only for showing: everything that fades or orders
     /// runs on [`Self::arrived`].
     pub at_ms: u64,
+    /// Arrival order across every channel, starting at 1 and never reused.
+    ///
+    /// [`Self::arrived`] cannot serve as a cursor: every line that lands on one
+    /// frame shares it, and it only moves while the overlay runs. An agent
+    /// reading the chat over MCP (`systems::mcp::agent`) asks for "everything
+    /// after the last line I saw", which needs a number no two lines share.
+    #[cfg_attr(not(mcp), allow(dead_code))]
+    pub seq: u64,
+}
+
+#[cfg(mcp)]
+impl ChatLine {
+    /// Whether the name on this line is one the **server** vouches for.
+    ///
+    /// A line on a public channel with `sender_id == 0` is a scripted object
+    /// speaking (`vfSay`), and its name is the object's name — which anybody who
+    /// builds can set to anything, including somebody else's username. Private
+    /// lines carry no avatar id but are checked against the account the server
+    /// delivered them from (`private_chat::Engine::on_deliver`). So this is the
+    /// test anything that *trusts* a sender name has to pass first.
+    #[must_use]
+    pub fn sender_is_account(&self, channel: &str) -> bool {
+        self.sender_id != 0 || ChatState::is_private(channel)
+    }
 }
 
 impl Default for ChatState {
@@ -196,6 +222,7 @@ impl Default for ChatState {
             shout: false,
             join_input: String::new(),
             clock: 0.0,
+            next_seq: 1,
             my_id: None,
             blocked: Vec::new(),
             report: None,
@@ -372,6 +399,8 @@ impl ChatState {
         point: Option<cartopolis_core::point::Point>,
     ) {
         let arrived = self.clock;
+        let seq = self.next_seq;
+        self.next_seq += 1;
         let idx = self.channel_index(channel);
         let lines = &mut self.channels[idx].lines;
         lines.push(ChatLine {
@@ -385,6 +414,7 @@ impl ChatState {
                 .duration_since(web_time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
+            seq,
         });
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
