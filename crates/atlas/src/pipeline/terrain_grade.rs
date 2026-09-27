@@ -572,10 +572,6 @@ impl<'a> Grader<'a> {
                 let s = tile_m / cell.tile_m;
                 let off = [dx as f32 * tile_m, dy as f32 * tile_m];
                 for run in &cell.runs {
-                    // Tunnels keep their own plan until they move onto this.
-                    if run.level < 0 {
-                        continue;
-                    }
                     let points: Vec<[f32; 2]> = run
                         .points
                         .iter()
@@ -600,9 +596,31 @@ impl<'a> Grader<'a> {
                             })
                         })
                         .flatten();
+                    // **Under a lid the road only has a ceiling**: the land around
+                    // less a level's depth, as `tunnels` has always put it — and
+                    // where the survey saw down into an open trench, that too,
+                    // since then it measured the road.
+                    let depth =
+                        if matches!(run.class, cartopolis_geo::road_texture::RoadClass::Path) {
+                            cartopolis_geo::tunnels::PATH_DEPTH_M
+                        } else {
+                            cartopolis_geo::tunnels::LEVEL_DEPTH_M
+                        };
                     let heights = points
                         .iter()
                         .map(|&p| {
+                            if run.level < 0 {
+                                let lid = lid_level(&sample, p);
+                                let here = sample(p);
+                                if !lid.is_finite() {
+                                    return Height::Unknown;
+                                }
+                                return Height::AtMost {
+                                    ceiling: lid - depth,
+                                    measured: (here.is_finite() && here < lid - 2.0)
+                                        .then_some(here),
+                                };
+                            }
                             if let Some(plate) = carried {
                                 let local = [p[0] - plate.world[0], p[1] - plate.world[1]];
                                 if let Some(t) = plate.top_at(local) {
@@ -711,6 +729,32 @@ pub fn grade_area(
     write_decks(ctx, &grader.deck_heights)?;
     write_road_heights(ctx, &grader.road_heights)?;
     Ok((graded, grader.decks_measured, grader.decks_lifted))
+}
+
+/// The level of the land around `p` — what a lid over a tunnel is filled back to:
+/// the 80th percentile of sixteen samples, eight at 30 m and eight at 60 m, the
+/// client's `TerrainSnapshot::lid_level` on the raw survey (missing samples
+/// skipped). NaN where none of them was measured.
+fn lid_level(sample: &dyn Fn([f32; 2]) -> f32, p: [f32; 2]) -> f32 {
+    let radius = cartopolis_geo::tunnels::DATUM_M;
+    let mut ring: Vec<f32> = (0..16)
+        .map(|k| {
+            let a = std::f32::consts::TAU * (k % 8) as f32 / 8.0
+                + if k >= 8 {
+                    std::f32::consts::PI / 8.0
+                } else {
+                    0.0
+                };
+            let r = if k >= 8 { radius * 2.0 } else { radius };
+            sample([p[0] + r * a.cos(), p[1] + r * a.sin()])
+        })
+        .filter(|v| v.is_finite())
+        .collect();
+    if ring.is_empty() {
+        return f32::NAN;
+    }
+    ring.sort_by(f32::total_cmp);
+    ring[(ring.len() * 12) / 16]
 }
 
 /// Every graded tile's street heights, solved on the network

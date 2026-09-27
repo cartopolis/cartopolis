@@ -38,7 +38,8 @@ use bevy::prelude::*;
 use cartopolis_geo::tunnels::Tunnel;
 
 /// How far back up a tunnel is lifted at one place — see
-/// [`cartopolis_geo::tunnels::lift_for`], which is where it lives.
+/// [`cartopolis_geo::tunnels::lift_for`], which is where it lives — as
+/// [`lift_for_road`], which takes no lift for a corridor already measured.
 ///
 /// One function because four places computed it — the drawn mesh, the walkable
 /// floor, the nearest-tunnel metric and the shot harness — and three of them had
@@ -47,7 +48,7 @@ use cartopolis_geo::tunnels::Tunnel;
 /// in the shared crate rather than here for the fifth caller: the harness draws
 /// the same tunnels from the same tiles and cannot depend on this crate, so a copy
 /// there is a copy that drifts (`docs/notes/harness-and-client-agree.md`).
-pub use cartopolis_geo::tunnels::lift_for;
+pub use cartopolis_geo::tunnels::lift_for_road;
 
 /// One cell's tunnels, as the worker built them: tile-local metres.
 #[derive(Default)]
@@ -426,7 +427,10 @@ impl Tunnels {
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            .filter_map(|b| b.road_under(at).map(|y| y + lift_for(-y, dug(p))))
+            .filter_map(|b| {
+                b.road_under(at)
+                    .map(|y| y + lift_for_road(b.measured, -y, dug(p)))
+            })
             .min_by(f32::total_cmp)
     }
 
@@ -455,7 +459,8 @@ impl Tunnels {
             .filter(|t| t.covered_weight(at, COVER_REACH_M) > 0.0)
             .filter_map(|t| {
                 t.road_near(at, COVER_REACH_M).map(|y| {
-                    y + lift_for(-y, dug) + t.clearance - cartopolis_geo::tunnels::CEILING_MAX_Y
+                    y + lift_for_road(t.measured, -y, dug) + t.clearance
+                        - cartopolis_geo::tunnels::CEILING_MAX_Y
                 })
             })
             .reduce(f32::max)
@@ -485,7 +490,9 @@ impl Tunnels {
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            .filter_map(|b| b.road_under(at))
+            // A measured corridor's depth is already the road's own: it owes
+            // nothing to what the survey dug, so it asks for no lift at all.
+            .filter_map(|b| b.road_under(at).map(|y| if b.measured { 0.0 } else { y }))
             .min_by(f32::total_cmp)
             .map(|y| -y)
     }
@@ -512,7 +519,7 @@ impl Tunnels {
                 // beside it — it read −7.00 over a cut the measured ground puts
                 // nine metres down — and a number that contradicts the capture it
                 // is attached to is worse than no number.
-                (d, y + lift_for(-y, dug(p)))
+                (d, y + lift_for_road(b.measured, -y, dug(p)))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }

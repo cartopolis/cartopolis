@@ -349,6 +349,8 @@ pub struct WorldDriveLine {
     /// [`cartopolis_geo::traffic::DriveLine::deck`]. Parallel to `points`, and
     /// every operation on one must keep it so.
     pub deck: Vec<f32>,
+    /// See [`cartopolis_geo::traffic::DriveLine::deck_measured`].
+    pub deck_measured: bool,
     /// This way is flagged `bridge`, so its height comes from `DeckPlates` —
     /// which is measured, and so arrives some frames after the cell does.
     pub on_deck: bool,
@@ -523,6 +525,7 @@ impl DriveNetwork {
                     uses: l.uses,
                     cumulative,
                     deck,
+                    deck_measured: l.deck_measured,
                     on_deck: l.on_deck,
                 })
             })
@@ -1107,6 +1110,7 @@ pub fn drive_traffic(
             continue;
         };
         let on_deck = line.is_some_and(|l| l.on_deck);
+        let deck_measured = line.is_some_and(|l| l.deck_measured);
 
         // ── Draw ─────────────────────────────────────────────────────────────
         //
@@ -1150,7 +1154,7 @@ pub fn drive_traffic(
             // the lift the car gets and the lift its road got are one number.
             let dug = terrain.surrounding(pos.x, pos.y, cartopolis_geo::tunnels::DATUM_M)
                 - terrain.at(pos.x, pos.y);
-            deck + cartopolis_geo::tunnels::lift_for(-deck, dug)
+            deck + cartopolis_geo::tunnels::lift_for_road(deck_measured, -deck, dug)
         } else {
             0.0
         };
@@ -1453,6 +1457,7 @@ mod tests {
                 walk: true,
             },
             deck: vec![0.0; points.len()],
+            deck_measured: false,
             on_deck: false,
         }
     }

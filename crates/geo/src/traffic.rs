@@ -102,6 +102,10 @@ pub struct DriveLine {
     /// `DeckPlates::lift_at` made in the other direction, hoisting an underpass
     /// onto the viaduct above it.
     pub deck: Vec<f32>,
+    /// Whether [`deck`](Self::deck) came off corridors whose depth is the road's
+    /// own solved height relative to the ground (`tunnels::Tunnel::measured`),
+    /// so a consumer takes no lift for what the survey dug.
+    pub deck_measured: bool,
     /// Whether this way is flagged `bridge`.
     ///
     /// A deck's height is a *measurement* — `map_geometry::resolve_bridge_decks`
@@ -294,6 +298,7 @@ pub fn extract_drive_lines(
                     walk,
                 },
                 deck,
+                deck_measured: mine.iter().any(|s| s.measured),
                 on_deck,
             };
             if candidate.length() < MIN_DRIVE_LEN_M {

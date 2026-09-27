@@ -1228,6 +1228,9 @@ fn spawn_geometry_task(
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
                 let mut levels: Option<Arc<cartopolis_geo::road_levels::LevelMap>> = None;
+                // The same runs with their heights (NAP), for the tunnels.
+                let mut levelled: Vec<(cartopolis_geo::road_levels::StreetRun, Vec<f32>)> =
+                    Vec::new();
                 let mut approaches = Vec::new();
                 // Needs no tile: the piers are the register's, and only become
                 // anything once a deck over them is measured.
@@ -1261,7 +1264,8 @@ fn spawn_geometry_task(
                         let mut map = cartopolis_geo::road_levels::LevelMap::default();
                         for run in cartopolis_geo::road_levels::street_runs(&tile, tile_m) {
                             if let Some(ys) = heights.runs.get(&run.key) {
-                                map.add(run.level, run.half_w, run.points, ys.clone());
+                                map.add(run.level, run.half_w, run.points.clone(), ys.clone());
+                                levelled.push((run, ys.clone()));
                             }
                         }
                         if !map.is_empty() {
@@ -1404,9 +1408,42 @@ fn spawn_geometry_task(
                             // stack. The corridors it hands back travel with the
                             // cell so the ground can be opened at the entrance and
                             // the avatar can find the floor down there.
-                            let tunnels = cartopolis_geo::tunnels::build_tunnels(
-                                &tile, tile_m, mesh_bytes,
-                            );
+                            // **From the solved heights where there are any**, so a
+                            // tunnel, its ramps and the roads either side are one
+                            // profile solved on the network (`road_levels`). Needs
+                            // the ground to express those heights against; a cell
+                            // placed later on the main thread keeps the old plan.
+                            let tunnels = match ground.as_ref() {
+                                Some((g, origin)) if !levelled.is_empty() => {
+                                    use crate::systems::terrain::MeasuredGround as _;
+                                    let datum = g.datum_m();
+                                    let ys: Vec<Vec<f32>> = levelled
+                                        .iter()
+                                        .map(|(_, ys)| ys.iter().map(|y| y - datum).collect())
+                                        .collect();
+                                    let runs: Vec<cartopolis_geo::tunnels::LevelledRun<'_>> =
+                                        levelled
+                                            .iter()
+                                            .zip(&ys)
+                                            .map(|((run, _), ys)| {
+                                                cartopolis_geo::tunnels::LevelledRun { run, ys }
+                                            })
+                                            .collect();
+                                    cartopolis_geo::tunnels::build_tunnels_on_levels(
+                                        &runs,
+                                        &|p| g.at(origin.x + p[0], origin.y + p[1]),
+                                        &|p| {
+                                            g.lid_level(
+                                                origin.x + p[0],
+                                                origin.y + p[1],
+                                                cartopolis_geo::tunnels::DATUM_M,
+                                            )
+                                        },
+                                        mesh_bytes,
+                                    )
+                                }
+                                _ => cartopolis_geo::tunnels::build_tunnels(&tile, tile_m, mesh_bytes),
+                            };
                             // The ground over an open approach has to go, or the
                             // entrance is roofed by the sheet the tunnel was cut into
                             // and there is no way in. Cut here, on this worker,
