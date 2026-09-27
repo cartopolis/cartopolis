@@ -1,10 +1,56 @@
 ---
 topic: bridge-heights
-triggers: [height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
-updated: 2026-09-26
+triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain]
+updated: 2026-09-27
 ---
 
 # Where a bridge's height comes from, and what it costs
+
+## Roads carry their own height now, and the ground follows them (2026-09-27)
+
+Everything from "The flat road network is the real constraint" down to the
+abutment band was one approach: the road had no height of its own, and a joint
+was the *terrain field* bent towards a deck — raised along the approach, held at
+the deck's top under its end. It could not be made exact. The field is a
+raster sampled every 2.86 m by atlas and resampled onto 3.125 m by the client,
+so where a deck met its road the road's height was an interpolation that
+included the ground the deck spans. Every fix moved the error: the Europaplein
+kept a step of a few tenths at each joint through four of them.
+
+`cartopolis_geo::road_levels` makes the road the thing with a height. Streets
+are runs with a level (0 ground, 1 bridge, -1 tunnel); ways that meet share a
+node (a dangle meets what it lands on, two through-lines only at the same level
+— the routing graph's rule), and a node has one height, so the deck and the
+road off its end are the same number at the joint by construction. Atlas solves
+it per tile over the same 350 m window it grades, which makes a ramp across a
+tile edge one ramp:
+
+- **Measured wherever the survey has it.** A ground road reads the raw bare
+  ground under it — which contains the real embankments — and a span on a lifted
+  deck is fixed to the deck's surveyed top end to end. A hole in the bare ground
+  (a structure AHN cut out: the Europaplein's is ~200 m where OSM tags 60 m of
+  bridge) is left unknown and bridged along the network from both sides.
+- **One operation for embankments and cuttings.** Outliers go by a median along
+  the network, gaps are interpolated, and the grade is limited by the midpoint of
+  the tightest upper and lower envelopes (6 % for roads, 10 % paths, 2.5 % rail);
+  fixed heights are then honoured exactly. A deck pulls its approach up and a
+  tunnel floor would pull its approach down by the same code.
+- **The ground is laid to the roads**, not the roads draped on the ground:
+  `terrain_grade::conform_to_roads` puts it 5 cm under each ground-level road
+  and its verge and blends back to the survey over a 1:2 shoulder. The old road
+  flattening and ramp raising are not run by atlas any more.
+
+Atlas publishes `roads/14/x/y.bin` (`RoadHeights`, CRH1) keyed by run name: FNV
+over the run's points in tile units, because atlas and the client each work
+out a tile's size in metres for themselves. The client matches its runs by name
+and stands road ribbons and casings on their street's height (`OnRoads`). Over
+Groningen the Europaplein span runs 8.20 → 9.24 m and the roads off its ends
+start at exactly those numbers.
+
+Not yet on it: **tunnels** keep their own ramp planning (`tunnels.rs`), and the
+client's own grading where atlas has not graded still flattens and ramps the
+old way. Cars, the route line and the avatar still read the terrain and the
+deck, which agree with the road to within the conform's 5 cm.
 
 ## The tiles do not carry it
 
