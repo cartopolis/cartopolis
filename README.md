@@ -43,6 +43,10 @@ Blocking, reporting and account deletion are enforced on the server, and a web c
 | _The main station, its tracks and the rail yard._ | _The Grote Markt and the Martinitoren (1482)._ |
 | ![Forum Groningen beside the Martinitoren](docs/img/forum.png) | ![The town hall selected, with its register card](docs/img/building.png) |
 | _Forum Groningen (2020) on the Nieuwe Markt._ | _Select a building — here the town hall — and read what the public registers hold about it._ |
+| ![Groningen from 3 km south-west](docs/img/skyline.png) | ![The whole city from 1.2 km up](docs/img/city-far.png) |
+| _The old town from 3 km out, the Martinitoren above it._ | _The whole city from above: the rings, the canals and the land around._ |
+| ![Eemshaven's harbour basins and wind turbines](docs/img/eemshaven.png) | ![Eemshaven from over the Wadden Sea](docs/img/eemshaven-sea.png) |
+| _Eemshaven: harbour basins, quays, power stations and wind turbines._ | _The same port from over the Wadden Sea._ |
 | ![Two people meeting on the Grote Markt](docs/img/meet.png) | ![Earth from orbit](docs/img/globe.png) |
 | _Meet people in the place itself, and talk about it there._ | _From one street to the whole planet, without a loading screen._ |
 

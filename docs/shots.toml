@@ -111,18 +111,18 @@ clouds = 0.3
 
 [[shot]]
 name = "city-far"
-description = "The city from 6 km north-east and 2 km up: the ring roads, the canals and the flat land around"
-at = [53.2620, 6.6250, 2200]
+description = "The city from 4 km north-east and 1.2 km up: the ring roads, the canals and the flat land around"
+at = [53.2450, 6.6050, 1200]
 look_at = [53.2150, 6.5650]
 time = 11.0
-fog = 0.08
+fog = 0.0
 clouds = 0.3
 
 [[shot]]
 name = "eemshaven"
-description = "Eemshaven from the south-west: the harbour basins, the power stations and the sea behind"
-at = [53.4230, 6.8050, 450]
-look_at = [53.4470, 6.8450]
+description = "Over Eemshaven's harbour basins towards the sea: quays, the power stations and the wind turbines"
+at = [53.4380, 6.8120, 180]
+look_at = [53.4500, 6.8450]
 time = 12.0
 fog = 0.06
 clouds = 0.3
@@ -130,8 +130,8 @@ clouds = 0.3
 [[shot]]
 name = "eemshaven-sea"
 description = "Eemshaven from over the Wadden Sea, looking back at the port"
-at = [53.4750, 6.8700, 250]
-look_at = [53.4460, 6.8400]
+at = [53.4600, 6.8550, 120]
+look_at = [53.4450, 6.8400]
 time = 15.0
 fog = 0.06
 clouds = 0.3

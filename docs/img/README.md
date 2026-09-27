@@ -3,7 +3,8 @@
 Images used by the docs and the top-level README.
 
 The named files — `city.png`, `canals.png`, `tunnel.png`, `station.png`, `grote-markt.png`,
-`forum.png`, `building.png`, `meet.png`, `globe.png` — are **generated**, one per entry in
+`forum.png`, `building.png`, `skyline.png`, `city-far.png`, `eemshaven.png`,
+`eemshaven-sea.png`, `meet.png`, `globe.png` — are **generated**, one per entry in
 [`docs/shots.toml`](../shots.toml). Regenerate them all with:
 
 ```bash
