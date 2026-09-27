@@ -672,6 +672,7 @@ mod tests {
                     half_w: 10.0,
                     clearance: 4.8,
                     covered: vec![true; 2],
+                    measured: false,
                 }],
                 openings: vec![vec![
                     [-10.0, 0.0],

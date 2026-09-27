@@ -49,9 +49,10 @@
 //!    is what turns a deck's height into an embankment on the road leading to it
 //!    and a tunnel's floor into a cutting — the same operation for both, which is
 //!    the point: a bridge and a tunnel are one road at two levels.
-//! 6. **Fixed heights are honoured exactly**: the result is clamped between the
-//!    envelopes the fixed heights alone allow, which pins them and grades
-//!    everything around them.
+//! 6. **Fixed heights are honoured exactly, and ceilings kept under**: the result
+//!    is clamped between the envelopes the fixed heights and the ceilings allow,
+//!    which pins the one, keeps the other and grades everything around them —
+//!    embankments up from the decks, cuttings down to the tunnels.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -64,9 +65,15 @@ pub enum Height {
     /// A measurement, smoothed against its neighbours in proportion to `weight`
     /// (larger holds it more firmly).
     Measured { y: f32, weight: f32 },
-    /// The height the road has here, exactly — a deck's surveyed top, a tunnel's
-    /// floor.
+    /// The height the road has here, exactly — a deck's surveyed top.
     Fixed(f32),
+    /// The highest the road may be here, with whatever was measured of it: under
+    /// a tunnel's lid, the lid less the headroom and the roof. A ceiling and not a
+    /// fixed height, because that is all a lid says — a short underpass is not
+    /// obliged to sit at a full level's depth, only to clear what is over it — and
+    /// the ramp down to it is then the grade limit working from the ceiling, the
+    /// mirror of an embankment working from a deck.
+    AtMost { ceiling: f32, measured: Option<f32> },
 }
 
 /// One road line going in.
@@ -157,6 +164,7 @@ pub fn solve(lines: &[Line]) -> Solved {
     // What is known at each node.
     let mut fixed: Vec<Option<f32>> = vec![None; n];
     let mut measured: Vec<Option<(f32, f32)>> = vec![None; n];
+    let mut ceiling: Vec<f32> = vec![f32::INFINITY; n];
     {
         let mut fixed_sum = vec![(0.0f32, 0u32); n];
         let mut meas_sum = vec![(0.0f32, 0.0f32); n];
@@ -171,6 +179,18 @@ pub fn solve(lines: &[Line]) -> Solved {
                     Height::Measured { y, weight } if y.is_finite() && weight > 0.0 => {
                         meas_sum[node].0 += y * weight;
                         meas_sum[node].1 += weight;
+                    }
+                    Height::AtMost {
+                        ceiling: c,
+                        measured: m,
+                    } => {
+                        if c.is_finite() {
+                            ceiling[node] = ceiling[node].min(c);
+                        }
+                        if let Some(y) = m.filter(|y| y.is_finite()) {
+                            meas_sum[node].0 += y;
+                            meas_sum[node].1 += 1.0;
+                        }
                     }
                     _ => {}
                 }
@@ -271,11 +291,26 @@ pub fn solve(lines: &[Line]) -> Solved {
         y[i] = 0.5 * (upper[i] + lower[i]);
     }
 
-    // 6. Honour the fixed heights exactly, grading everything around them.
+    // 6. Honour the fixed heights exactly and keep under every ceiling, grading
+    // everything around them: the upper bound is the tighter of what the pins and
+    // the ceilings allow, the lower bound what the pins alone do.
     let pins: Vec<(usize, f32)> = (0..n).filter_map(|i| fixed[i].map(|f| (i, f))).collect();
-    if !pins.is_empty() {
-        let hi = net.envelope(&pins, Envelope::Upper);
-        let lo = net.envelope(&pins, Envelope::Lower);
+    let tops: Vec<(usize, f32)> = pins
+        .iter()
+        .copied()
+        .chain(
+            (0..n)
+                .filter(|&i| ceiling[i].is_finite())
+                .map(|i| (i, ceiling[i])),
+        )
+        .collect();
+    if !tops.is_empty() {
+        let hi = net.envelope(&tops, Envelope::Upper);
+        let lo = if pins.is_empty() {
+            vec![f32::NEG_INFINITY; n]
+        } else {
+            net.envelope(&pins, Envelope::Lower)
+        };
         for i in 0..n {
             y[i] = if lo[i] > hi[i] {
                 // Two fixed heights closer than the grade allows: meet between.
@@ -935,7 +970,10 @@ mod tests {
     /// into a cutting at the grade.
     #[test]
     fn a_tunnel_grades_its_approach_downwards() {
-        let bore = line(straight(0.0, 200.0, 0.0), -1, |_| Height::Fixed(-7.0));
+        let bore = line(straight(0.0, 200.0, 0.0), -1, |_| Height::AtMost {
+            ceiling: -7.0,
+            measured: None,
+        });
         let pts = straight(200.0, 500.0, 0.0);
         let road = line(pts.clone(), 0, |_| Height::Measured {
             y: 0.0,
@@ -943,13 +981,48 @@ mod tests {
         });
         let s = solve(&[bore, road]);
         let ys = &s.heights[1];
-        assert_eq!(ys[0], -7.0);
+        assert!((ys[0] + 7.0).abs() < 1e-4, "the portal is at {}", ys[0]);
+        assert!(
+            s.heights[0].iter().all(|&y| y <= -7.0 + 1e-4),
+            "the bore rose over its ceiling"
+        );
         assert!(slope(ys, &pts) <= G + 1e-4);
         assert!(
             ys.iter().all(|&y| y <= 1e-4),
             "a cutting rose above the ground"
         );
         assert!(ys.last().unwrap().abs() < 0.05);
+    }
+
+    /// **An underpass shorter than its ramps still clears what is over it**, and
+    /// the ramps run out onto the roads either side. Under a lid the road is only
+    /// bounded, so a 30 m underpass is not dragged to a tunnel's full level.
+    #[test]
+    fn a_short_underpass_ramps_out_both_ways() {
+        let before = densify(&[[-300.0, 0.0], [0.0, 0.0]], 2.0);
+        let under = line(densify(&[[0.0, 0.0], [30.0, 0.0]], 2.0), -1, |_| {
+            Height::AtMost {
+                ceiling: -5.5,
+                measured: None,
+            }
+        });
+        let after = densify(&[[30.0, 0.0], [330.0, 0.0]], 2.0);
+        let ground = |_| Height::Measured {
+            y: 0.0,
+            weight: 1.0,
+        };
+        let s = solve(&[
+            line(before.clone(), 0, ground),
+            under,
+            line(after.clone(), 0, ground),
+        ]);
+        assert!(s.heights[1].iter().all(|&y| y <= -5.5 + 1e-4));
+        assert!(
+            s.heights[1].iter().all(|&y| y >= -5.6),
+            "dug deeper than it needed to"
+        );
+        assert!(slope(&s.heights[0], &before) <= G + 1e-4);
+        assert!(s.heights[0][0].abs() < 0.05 && s.heights[2].last().unwrap().abs() < 0.05);
     }
 
     /// **A road passing under a bridge does not join it.** They cross at a point

@@ -209,6 +209,11 @@ pub struct Tunnel {
     /// of ground that is now whole. [`covered_weight`](Self::covered_weight) is
     /// how a ground mesh asks whether to believe the survey here.
     pub covered: Vec<bool>,
+    /// Whether `road_y` is the road's own solved height relative to the ground
+    /// under it (`crate::road_levels`), rather than the convention a consumer
+    /// lifts back by what the survey dug. A measured depth takes no lift:
+    /// [`lift_for_road`].
+    pub measured: bool,
 }
 
 impl Tunnel {
@@ -456,6 +461,8 @@ pub struct SunkenWay {
     /// Half the carriageway, so a point beside the corridor can be told from one
     /// on it.
     pub half_w: f32,
+    /// See [`Tunnel::measured`].
+    pub measured: bool,
 }
 
 impl SunkenWay {
@@ -531,6 +538,19 @@ pub const DATUM_M: f32 = 30.0;
 #[must_use]
 pub fn lift_for(depth: f32, dug: f32) -> f32 {
     dug.max(0.0).min(depth.max(0.0))
+}
+
+/// [`lift_for`] for a corridor that may already be measured: a depth solved on
+/// the road network (`crate::road_levels`) is the road's own height relative to
+/// the ground under it, and lifting it by what the survey dug would count the
+/// survey twice.
+#[must_use]
+pub fn lift_for_road(measured: bool, depth: f32, dug: f32) -> f32 {
+    if measured {
+        0.0
+    } else {
+        lift_for(depth, dug)
+    }
 }
 
 /// What the height survey says about one place, in whatever frame the caller's
@@ -1881,7 +1901,7 @@ const DOWN: [f32; 3] = [0.0, -1.0, 0.0];
 /// spread a single huge one (`docs/notes/upload-bursts.md`).
 #[must_use]
 pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> TunnelTessellation {
-    let mut out = TunnelTessellation::default();
+    let out = TunnelTessellation::default();
     let Some(meta) = tile.layer("streets") else {
         return out;
     };
@@ -1957,26 +1977,6 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         })
         .collect();
     let approaches = find_approaches(tile, tile_m, &lines, &entrances, &classes);
-
-    // **One deck builder per class, not one for the tile.** A tunnel's carriageway
-    // is the surface road continued, so it wants that road's own texture: gravel
-    // under a footpath, tarmac and lane markings under a trunk road. This was a
-    // single builder and a single `Option<RoadClass>` set by whichever tunnel came
-    // first, so a cell with a cycle underpass and a motorway tunnel drew both as
-    // whichever it met first — visibly, over Groningen's ring, as a motorway
-    // surfaced like a towpath (2026-09-20).
-    let mut decks: Vec<(RoadClass, Build)> = Vec::new();
-    // The class the open deck buffer is drawing markings for. A batch takes the
-    // class of the run that opened it, exactly as the ground road sheet's
-    // per-group meshes do — the alternative is a mesh per class per cell, for a
-    // difference that is which dashes are painted on a carriageway nobody sees
-    // two of at once.
-
-    let mut shell = Build::default();
-    let mut meshes: Vec<SurfaceMesh> = Vec::new();
-    // Openings carry the corridor they came out of until the merge below has had
-    // its say — see [`merge_parallel_openings`].
-    let mut openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)> = Vec::new();
 
     // **Every run's profile is resolved before any of it is built**, because a
     // cutting takes its depth from the lids at its two ends and cannot be planned
@@ -2270,7 +2270,180 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
         }
     }
 
-    for plan in &plans {
+    emit_plans(&plans, max_bytes, false)
+}
+
+/// One street run and its solved heights, as [`build_tunnels_on_levels`] takes it.
+pub struct LevelledRun<'a> {
+    pub run: &'a crate::road_levels::StreetRun,
+    /// The run's solved height at each of its points, in the caller's frame —
+    /// the frame `here` and `lid` answer in.
+    pub ys: &'a [f32],
+}
+
+/// How far below the ground under it a road must run to be built as a sunken
+/// stretch — walls either side and the ground opened over it — metres. The
+/// ground is laid 5 cm under an ordinary road (`terrain_grade::UNDER_ROAD_M`), so
+/// this is well clear of that and well short of any real cutting.
+pub const SUNK_M: f32 = 0.3;
+
+/// Tunnels, ramps and cuttings from the heights the road network was solved to
+/// (`crate::road_levels`), instead of from a plan invented here.
+///
+/// **What the heights retire.** [`build_tunnels`] decides every depth itself:
+/// which ends are entrances ([`open_ends`]), how much ramp fits on the road
+/// beyond each portal ([`find_approaches`]), how deep a run too short for its
+/// ramps may go ([`depth_for_run`]), what a cutting between two lids is held at
+/// ([`bridge_short_gaps`]) — all within one tile, so a ramp crossing a tile edge
+/// was held at full depth where the border cut it. A solved height already
+/// answers every one of those, on the network over the tile and its neighbours:
+/// a tunnel's lid is a ceiling its road stays under, and the ramp down to it is
+/// the grade limit working from that ceiling, the mirror of an embankment up to
+/// a deck.
+///
+/// So this only reads the heights. Every tunnel run is a corridor at its solved
+/// depth below the ground under it (`here`), lidded wherever a roof fits under
+/// the land around it (`lid`, the level a lid is filled back to); every
+/// ground-level run contributes the stretches that run more than [`SUNK_M`]
+/// under the ground — the ramps and the cuttings — open to the sky. The meshes,
+/// corridors and openings are then [`build_tunnels`]' own, and the depths are
+/// marked measured so nothing lifts them again.
+#[must_use]
+pub fn build_tunnels_on_levels(
+    runs: &[LevelledRun<'_>],
+    here: &dyn Fn([f32; 2]) -> f32,
+    lid: &dyn Fn([f32; 2]) -> f32,
+    max_bytes: Option<usize>,
+) -> TunnelTessellation {
+    let clearance_of = |class: RoadClass| {
+        if matches!(class, RoadClass::Path) {
+            PATH_CLEARANCE_M
+        } else {
+            CLEARANCE_M
+        }
+    };
+    let travelled_of = |centre: &[[f32; 2]]| -> Vec<f32> {
+        let mut out = Vec::with_capacity(centre.len());
+        let mut total = 0.0f32;
+        for (i, p) in centre.iter().enumerate() {
+            if i > 0 {
+                total += (p[0] - centre[i - 1][0]).hypot(p[1] - centre[i - 1][1]);
+            }
+            out.push(total);
+        }
+        out
+    };
+    let usable: Vec<&LevelledRun<'_>> = runs
+        .iter()
+        .filter(|r| r.ys.len() == r.run.points.len() && r.run.points.len() >= 2)
+        .collect();
+
+    // A tunnel end opens onto sky when the line ends there, the border did not cut
+    // it, and no second tunnel run ends on the same point — the rule
+    // `build_tunnels` applies, on the same lines.
+    let bores: Vec<&LevelledRun<'_>> = usable.iter().copied().filter(|r| r.run.level < 0).collect();
+    let bore_lines: Vec<Vec<[f32; 2]>> = bores.iter().map(|r| r.run.points.clone()).collect();
+    let unshared = open_ends(&bore_lines);
+
+    let mut plans: Vec<Plan> = Vec::new();
+    for (b, u) in bores.iter().zip(&unshared) {
+        let centre = b.run.points.clone();
+        let clearance = clearance_of(b.run.class);
+        let road_y: Vec<f32> = centre
+            .iter()
+            .zip(b.ys)
+            .map(|(&p, &y)| y - here(p))
+            .collect();
+        // A roof where one fits under the land around: the ceiling at least as far
+        // under the lid as `build_tunnels` keeps it under the ground.
+        let roofed: Vec<bool> = centre
+            .iter()
+            .zip(b.ys)
+            .map(|(&p, &y)| y + clearance <= lid(p) + CEILING_MAX_Y)
+            .collect();
+        plans.push(Plan {
+            travelled: travelled_of(&centre),
+            centre,
+            road_y,
+            roofed,
+            class: b.run.class,
+            half: b.run.half_w,
+            clearance,
+            feature: b.run.feature,
+            mouth: [!b.run.cut[0] && u[0], !b.run.cut[1] && u[1]],
+        });
+    }
+
+    // The ramps and cuttings: every stretch of a ground-level road that runs under
+    // the ground, with one vertex either side so the corridor starts at the
+    // surface rather than already below it.
+    for r in usable.iter().filter(|r| r.run.level == 0) {
+        let pts = &r.run.points;
+        let depth: Vec<f32> = pts.iter().zip(r.ys).map(|(&p, &y)| here(p) - y).collect();
+        let mut i = 0;
+        while i < pts.len() {
+            if depth[i] <= SUNK_M {
+                i += 1;
+                continue;
+            }
+            let start = i.saturating_sub(1);
+            let mut end = i;
+            while end + 1 < pts.len() && depth[end + 1] > SUNK_M {
+                end += 1;
+            }
+            let end = (end + 1).min(pts.len() - 1);
+            i = end + 1;
+            if end <= start {
+                continue;
+            }
+            let centre: Vec<[f32; 2]> = pts[start..=end].to_vec();
+            let road_y: Vec<f32> = (start..=end).map(|k| r.ys[k] - here(pts[k])).collect();
+            plans.push(Plan {
+                travelled: travelled_of(&centre),
+                roofed: vec![false; centre.len()],
+                centre,
+                road_y,
+                class: r.run.class,
+                half: r.run.half_w,
+                clearance: clearance_of(r.run.class),
+                feature: r.run.feature,
+                mouth: [false; 2],
+            });
+        }
+    }
+
+    emit_plans(&plans, max_bytes, true)
+}
+
+/// Build the meshes, corridors and openings for a set of settled plans — the half
+/// of the tunnel builder that does not care where the depths came from.
+///
+/// `measured` says the plans' deck levels are already the road's own height
+/// relative to the ground under it (`build_tunnels_on_levels`), rather than the
+/// convention that placement lifts back by whatever the survey dug.
+fn emit_plans(plans: &[Plan], max_bytes: Option<usize>, measured: bool) -> TunnelTessellation {
+    let mut out = TunnelTessellation::default();
+    // **One deck builder per class, not one for the tile.** A tunnel's carriageway
+    // is the surface road continued, so it wants that road's own texture: gravel
+    // under a footpath, tarmac and lane markings under a trunk road. This was a
+    // single builder and a single `Option<RoadClass>` set by whichever tunnel came
+    // first, so a cell with a cycle underpass and a motorway tunnel drew both as
+    // whichever it met first — visibly, over Groningen's ring, as a motorway
+    // surfaced like a towpath (2026-09-20).
+    let mut decks: Vec<(RoadClass, Build)> = Vec::new();
+    // The class the open deck buffer is drawing markings for. A batch takes the
+    // class of the run that opened it, exactly as the ground road sheet's
+    // per-group meshes do — the alternative is a mesh per class per cell, for a
+    // difference that is which dashes are painted on a carriageway nobody sees
+    // two of at once.
+
+    let mut shell = Build::default();
+    let mut meshes: Vec<SurfaceMesh> = Vec::new();
+    // Openings carry the corridor they came out of until the merge below has had
+    // its say — see [`merge_parallel_openings`].
+    let mut openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)> = Vec::new();
+
+    for plan in plans {
         let Plan {
             centre,
             travelled,
@@ -2543,6 +2716,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
             half_w: half,
             clearance,
             covered: roofed.clone(),
+            measured,
         });
         // The same corridor, keyed to its street, for the drive network. Only
         // where it is genuinely below the surface: a flagged way that never
@@ -2553,6 +2727,7 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
                 centre: centre.clone(),
                 road_y: road_y.clone(),
                 half_w: half,
+                measured,
             });
         }
 
@@ -3143,6 +3318,76 @@ mod terrain_tests {
 
     /// One straight tunnel 200 m long, 10 m wide, its deck 7 m down, with
     /// `covered` as given per vertex.
+    /// **A tunnel built from solved heights**: the bore is lidded where the roof
+    /// fits, the road running up out of it is an open ramp whose ground is opened,
+    /// and everything is marked measured so nothing lifts it again.
+    #[test]
+    fn a_tunnel_is_built_from_solved_heights() {
+        use super::{build_tunnels_on_levels, LevelledRun, RoadClass, SurfaceGroup};
+        use crate::road_levels::{densify, StreetRun};
+        let run = |level: i8, from: f32, to: f32, feature: usize| StreetRun {
+            key: 0,
+            feature,
+            level,
+            class: RoadClass::Carriageway,
+            half_w: 5.0,
+            points: densify(&[[from, 0.0], [to, 0.0]], 3.0),
+            cut: [false; 2],
+        };
+        let bore = run(-1, 0.0, 200.0, 0);
+        let ramp = run(0, 200.0, 400.0, 1);
+        let bore_ys: Vec<f32> = bore.points.iter().map(|_| -7.0).collect();
+        // Up at 6 % from -7 m at the portal to the ground 117 m on.
+        let ramp_ys: Vec<f32> = ramp
+            .points
+            .iter()
+            .map(|p| (-7.0 + (p[0] - 200.0) * 0.06).min(0.0))
+            .collect();
+        let out = build_tunnels_on_levels(
+            &[
+                LevelledRun {
+                    run: &bore,
+                    ys: &bore_ys,
+                },
+                LevelledRun {
+                    run: &ramp,
+                    ys: &ramp_ys,
+                },
+            ],
+            &|_| 0.0,
+            &|_| 0.0,
+            None,
+        );
+        assert!(out.tunnels.iter().all(|t| t.measured));
+        assert!(out.sunken.iter().all(|w| w.measured));
+        let lidded = out
+            .tunnels
+            .iter()
+            .find(|t| t.covered.iter().any(|&c| c))
+            .expect("no lid");
+        assert!((lidded.road_under([100.0, 0.0]).unwrap() + 7.0).abs() < 1e-4);
+        assert!(
+            out.openings
+                .iter()
+                .any(|ring| ring.iter().any(|p| p[0] > 250.0)),
+            "the ramp's ground was not opened"
+        );
+        assert!(
+            !out.openings
+                .iter()
+                .any(|ring| ring.iter().any(|p| p[0] > 330.0)),
+            "the ground was opened past where the ramp surfaces"
+        );
+        assert!(out
+            .meshes
+            .iter()
+            .any(|m| matches!(m.group, SurfaceGroup::TunnelRoad(_))));
+        assert!(out
+            .meshes
+            .iter()
+            .any(|m| m.group == SurfaceGroup::TunnelStructure));
+    }
+
     fn bore(covered: [bool; 3]) -> Tunnel {
         Tunnel {
             centre: vec![[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]],
@@ -3150,6 +3395,7 @@ mod terrain_tests {
             half_w: 5.0,
             clearance: super::CLEARANCE_M,
             covered: covered.to_vec(),
+            measured: false,
         }
     }
 
@@ -3919,6 +4165,7 @@ mod tests {
             half_w: 6.0,
             clearance: CLEARANCE_M,
             covered: vec![true; 2],
+            measured: false,
         };
         assert_eq!(tunnel.road_under([50.0, 0.0]), Some(-7.0));
         assert_eq!(tunnel.road_under([50.0, 5.9]), Some(-7.0));
@@ -4442,6 +4689,7 @@ mod tests {
             half_w: 6.0,
             clearance: CLEARANCE_M,
             covered: vec![false, true, true],
+            measured: false,
         };
         let taper = 30.0;
         assert_eq!(

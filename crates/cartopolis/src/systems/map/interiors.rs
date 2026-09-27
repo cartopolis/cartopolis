@@ -1049,6 +1049,7 @@ mod tests {
             half_w: 6.0,
             clearance: 4.8,
             covered: vec![true; 2],
+            measured: false,
         };
         // The opening: a corridor over the first 30 m, where the rising deck
         // leaves no room for a roof.
