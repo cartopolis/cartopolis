@@ -2452,6 +2452,9 @@ pub fn render_data_layers_panel(
                 ui.small(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );
+                // CC BY, so a licence condition like the municipal lines above.
+                // Static: every map drawn off the default host has it underneath.
+                ui.small("Land cover © ESA WorldCover 2021 (CC BY 4.0), via VersaTiles");
                 ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
                 // Not gated on a coverage manifest the way the four above are:
                 // this register is fetched by the client itself and has no

@@ -92,12 +92,12 @@ impl CropCategory {
     #[must_use]
     pub fn rgb(self) -> u32 {
         match self {
-            Self::Grassland => 0x9C_B2_7A,
+            Self::Grassland => 0x90_B2_66,
             // Worked ground with nothing more said about it: soil showing
             // through, warmer and paler than any growing crop.
-            Self::Arable => 0xB9_A3_82,
-            Self::Nature => 0x9C_9F_76,
-            Self::Fallow => 0xC4_B6_97,
+            Self::Arable => 0xBC_A0_78,
+            Self::Nature => 0x90_A0_70,
+            Self::Fallow => 0xC8_B6_90,
             Self::Other => 0xB2_AE_9C,
         }
     }
@@ -140,52 +140,52 @@ pub fn rgb(category: CropCategory, code: u32) -> u32 {
     match code {
         // ---- Grassland -------------------------------------------------
         // Permanent pasture: the default green of the countryside.
-        265 => 0x9C_B2_7A,
+        265 => 0x90_B2_66,
         // A ley is reseeded and reads fresher than old pasture.
-        266 => 0xAA_C4_82,
+        266 => 0xA0_C2_78,
         // Natural and semi-natural grassland under an agricultural claim: rough,
         // yellower, unmown.
-        331 | 332 | 1926 => 0xB0_B3_86,
+        331 | 332 | 1926 => 0xAC_B2_7A,
         // ---- Cereals ---------------------------------------------------
         // Wheat, barley, oats, rye. Straw gold — the one crop whose colour
         // everybody already knows.
-        233 | 234 | 235 | 236 | 238 | 670 | 7129 | 7130 => 0xD4_B2_66,
+        233 | 234 | 235 | 236 | 238 | 670 | 7129 | 7130 => 0xD8_B2_5C,
         // ---- Maize -----------------------------------------------------
         // Two and a half metres of dense, yellowish green.
-        259 | 316 | 317 | 814 | 1935 => 0x7A_9A_50,
+        259 | 316 | 317 | 814 | 1935 => 0x70_98_4A,
         // ---- Potatoes --------------------------------------------------
         // Ridged earth between the haulm rows: the brown field.
-        2014 | 2015 | 2016 | 2017 | 6632 => 0x95_7A_58,
+        2014 | 2015 | 2016 | 2017 | 6632 => 0x9A_76_50,
         // ---- Root crops ------------------------------------------------
         // Sugar beet, red beet, chicory root, carrots: a low, dense, blue-green
         // leaf canopy.
-        256 | 511 | 2741 | 2783 | 2785 | 2787 => 0x5F_95_80,
+        256 | 511 | 2741 | 2783 | 2785 | 2787 => 0x4F_9A_80,
         // ---- Onions ----------------------------------------------------
         // Grey-blue over open ground between the rows.
-        1932 | 1933 | 6660 | 6664 => 0xA7_AD_A8,
+        1932 | 1933 | 6660 | 6664 => 0xA2_AC_A8,
         // ---- Oilseed and fibre -----------------------------------------
         // Rape and flax. Rape is famously yellow for two weeks in May and green
         // either side of it; a lime yellow, greener than the cereals.
-        666 | 1922 | 1923 | 3736 => 0xC4_CE_4E,
+        666 | 1922 | 1923 | 3736 => 0xC4_CC_50,
         // ---- Legumes and fodder ----------------------------------------
-        244 | 258 | 311 | 426 => 0x8E_C0_5A,
+        244 | 258 | 311 | 426 => 0x78_C4_54,
         // ---- Cover crops -----------------------------------------------
         // `groenbemesting, vanggewas`: sown to be ploughed in. Uniform young
         // green, and the second most numerous thing on arable land after the
         // crop itself.
-        6751 | 6755 | 6762 | 6783 | 6785 | 7126 => 0xB4_CC_8E,
+        6751 | 6755 | 6762 | 6783 | 6785 | 7126 => 0xB0_D0_80,
         // ---- Flower bulbs ----------------------------------------------
         // Tulip, hyacinth, narcissus, lily, dahlia, gladiolus and the rest. A
         // soft pink: the bulb country apart from the arable around it, without
         // painting one bloom's colour that is only there in April.
-        997..=1006 | 1012 | 1015 | 6803 => 0xC4_93_AC,
+        997..=1006 | 1012 | 1015 | 6803 => 0xCC_8C_B0,
         // ---- Nursery stock ---------------------------------------------
         // Avenue trees, fruit-tree rootstocks, hedging: rows of young trees on
         // open ground.
-        1067 | 1071 | 1072 | 1077 | 1078 | 1079 | 1093 => 0x84_8A_6E,
+        1067 | 1071 | 1072 | 1077 | 1078 | 1079 | 1093 => 0x84_8A_66,
         // ---- Orchard ---------------------------------------------------
         // Apples and pears: standing trees, the deepest green here.
-        1096 | 1097 | 1098 => 0x55_7A_4C,
+        1096 | 1097 | 1098 => 0x4A_7A_40,
         // ---- Green fallow ----------------------------------------------
         // Registered as arable and lying fallow, so it takes the fallow tone
         // rather than the worked-ground one.

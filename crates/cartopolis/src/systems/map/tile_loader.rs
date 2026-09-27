@@ -141,6 +141,9 @@ pub enum TilePayload {
         /// The registered crop parcels over `source`, painted over its land
         /// (`crops::raster_overlay`). Empty outside the BRP coverage.
         crops: Arc<Vec<vector_tiles::OverlayFill>>,
+        /// The land cover under `source`, painted under everything
+        /// ([`landcover_underlay`]). Empty where the host serves none.
+        underlay: Arc<Vec<vector_tiles::OverlayFill>>,
     },
 }
 
@@ -165,13 +168,15 @@ impl TilePayload {
                 sub,
                 source,
                 crops,
+                underlay,
             } => {
                 let tile = parse_shared(source, &bytes)?;
-                let rgba = vector_tiles::render_mvt_overlaid(
+                let rgba = vector_tiles::render_mvt_layered(
                     &tile,
                     sub,
                     size,
                     source_ground_m(source),
+                    &underlay,
                     &crops,
                 )
                 .map_err(|e| e.to_string())?;
@@ -235,25 +240,25 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     if cfg!(target_arch = "wasm32") {
         return None;
     }
-    let TilePayload::Vector { bytes, crops, .. } = payload else {
+    let TilePayload::Vector {
+        bytes,
+        crops,
+        underlay,
+        ..
+    } = payload
+    else {
         return None;
     };
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hash;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     // The crops are drawn into the same pixels, so they are part of what the
     // picture is of: a field re-registered next year, or a tile first drawn
-    // before the host served the register at all, must not be read back.
-    for fill in crops.iter() {
-        fill.rgb.hash(&mut h);
-        for ring in &fill.rings {
-            ring.len().hash(&mut h);
-            for p in ring {
-                p[0].to_bits().hash(&mut h);
-                p[1].to_bits().hash(&mut h);
-            }
-        }
-    }
+    // before the host served the register at all, must not be read back. The
+    // land cover likewise.
+    hash_fills(&mut h, crops);
+    hash_fills(&mut h, underlay);
+    use std::hash::Hasher;
     Some(format!(
         "rendered/{}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
         env!("CARTO_RENDER_FINGERPRINT"),
@@ -277,12 +282,16 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
     if cfg!(target_arch = "wasm32") {
         return None;
     }
-    let GlobeTilePayload::Vector { bytes, .. } = payload else {
+    let GlobeTilePayload::Vector {
+        bytes, underlay, ..
+    } = payload
+    else {
         return None;
     };
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
+    hash_fills(&mut h, underlay);
     Some(format!(
         "rendered-globe/{}/{size}/{}/{}/{}-{:016x}.png",
         env!("CARTO_RENDER_FINGERPRINT"),
@@ -291,6 +300,21 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
         key.y,
         h.finish()
     ))
+}
+
+/// Fold painted-in fills into a rendered-tile cache key.
+fn hash_fills(h: &mut impl std::hash::Hasher, fills: &[vector_tiles::OverlayFill]) {
+    use std::hash::Hash;
+    for fill in fills {
+        fill.rgb.hash(h);
+        for ring in &fill.rings {
+            ring.len().hash(h);
+            for p in ring {
+                p[0].to_bits().hash(h);
+                p[1].to_bits().hash(h);
+            }
+        }
+    }
 }
 
 /// A stored tile back to pixels, if it decodes to the size that was asked for.
@@ -394,12 +418,68 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
     }
 
     let crops = Arc::new(crate::systems::crops::raster_overlay(source).await);
+    let underlay = Arc::new(landcover_underlay(source, template).await);
     Ok(TilePayload::Vector {
         bytes,
         sub,
         source,
         crops,
+        underlay,
     })
+}
+
+/// Where the land-cover tiles are, for a map served from `template`.
+///
+/// VersaTiles serves each archive as its own tile set on one host
+/// (`/tiles/osm/…`, `/tiles/landcover/…`), so the land cover is found by naming
+/// the other set. `CARTO_LANDCOVER_URL` overrides it and `off` disables it; a
+/// template that is not a VersaTiles `osm` set has no land cover to find.
+fn landcover_template(template: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(url) = std::env::var("CARTO_LANDCOVER_URL") {
+        return (!url.is_empty() && url != "off").then_some(url);
+    }
+    let effective = if template.is_empty() {
+        cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE
+    } else {
+        template
+    };
+    effective
+        .contains("/tiles/osm/")
+        .then(|| effective.replacen("/tiles/osm/", "/tiles/landcover/", 1))
+}
+
+/// The land cover under `source`, as fills in its unit square
+/// (`vector_tiles::landcover_fills`). A source deeper than the set's last zoom
+/// reads its ancestor at that zoom. Any failure — a host without the set, a 404
+/// over open ocean or Antarctica — is an empty underlay, i.e. the paper the map
+/// always had.
+async fn landcover_underlay(source: TileKey, template: &str) -> Vec<vector_tiles::OverlayFill> {
+    let Some(lc) = landcover_template(template) else {
+        return Vec::new();
+    };
+    let lz = source.z.min(vector_tiles::LANDCOVER_MAX_ZOOM);
+    let shift = source.z - lz;
+    let (ax, ay) = (source.x >> shift, source.y >> shift);
+    let ancestor = TileKey::new(ax, ay, lz);
+    let Ok(bytes) = load_tile_image(&ancestor, &lc).await else {
+        return Vec::new();
+    };
+    if bytes.is_empty() || vector_tiles::looks_like_raster(&bytes) {
+        return Vec::new();
+    }
+    match vector_tiles::TileData::parse(&bytes) {
+        Ok(tile) => vector_tiles::landcover_fills(
+            &tile,
+            shift,
+            (source.x - (ax << shift)) as u32,
+            (source.y - (ay << shift)) as u32,
+        ),
+        Err(e) => {
+            tracing::warn!(tile = %ancestor.to_path(), error = %e, "land cover tile did not parse");
+            Vec::new()
+        }
+    }
 }
 
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
@@ -446,7 +526,13 @@ pub async fn fetch_globe_tile_payload(
     if vector_tiles::looks_like_raster(&bytes) {
         return Ok(GlobeTilePayload::Raster(bytes));
     }
-    Ok(GlobeTilePayload::Vector { bytes, sub, source })
+    let underlay = Arc::new(landcover_underlay(source, template).await);
+    Ok(GlobeTilePayload::Vector {
+        bytes,
+        sub,
+        source,
+        underlay,
+    })
 }
 
 /// A fetched globe tile body, still undecoded. The globe's twin of [`TilePayload`],
@@ -459,6 +545,9 @@ pub enum GlobeTilePayload {
         /// The ancestor the bytes are, for [`parse_shared`]. The globe overzooms
         /// too, and its quadtree wants a *lot* of tiles at once.
         source: TileKey,
+        /// The land cover, painted under everything ([`landcover_underlay`]).
+        /// This is most of what the globe shows: below z8 the map has no land.
+        underlay: Arc<Vec<crate::systems::vector_tiles::OverlayFill>>,
     },
 }
 
@@ -481,15 +570,26 @@ impl GlobeTilePayload {
                 paint_water_alpha_by_colour(&mut rgba);
                 Ok((rgba, true))
             }
-            GlobeTilePayload::Vector { bytes, sub, source } => {
+            GlobeTilePayload::Vector {
+                bytes,
+                sub,
+                source,
+                underlay,
+            } => {
                 // One parse for both passes — and, through `parse_shared`, one for
                 // every other tile magnified from the same ancestor. The render and
                 // the mask read the same layers, and each used to open its own
                 // `Reader` over this body.
                 let tile = parse_shared(source, &bytes)?;
-                let pixels =
-                    vector_tiles::render_mvt_sized(&tile, sub, size, source_ground_m(source))
-                        .map_err(|e| e.to_string())?;
+                let pixels = vector_tiles::render_mvt_layered(
+                    &tile,
+                    sub,
+                    size,
+                    source_ground_m(source),
+                    &underlay,
+                    &[],
+                )
+                .map_err(|e| e.to_string())?;
                 let mut rgba = image::RgbaImage::from_raw(size, size, pixels)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
                 match vector_tiles::ocean_mask_sized(&tile, sub, size) {
@@ -554,6 +654,7 @@ mod tests {
             sub: crate::systems::vector_tiles::SubTile::WHOLE,
             source: key,
             crops: Arc::default(),
+            underlay: Arc::default(),
         };
         let size = 256;
         let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
@@ -581,12 +682,14 @@ mod tests {
             sub: crate::systems::vector_tiles::SubTile::WHOLE,
             source: key,
             crops: Arc::default(),
+            underlay: Arc::default(),
         };
         let b = TilePayload::Vector {
             bytes: Arc::new(other),
             sub: crate::systems::vector_tiles::SubTile::WHOLE,
             source: key,
             crops: Arc::default(),
+            underlay: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
@@ -606,6 +709,7 @@ mod tests {
                 rings: vec![vec![[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]]],
                 rgb: 0xE1_D3_A4,
             }]),
+            underlay: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),

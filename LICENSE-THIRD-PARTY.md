@@ -60,6 +60,13 @@ license: ODbL 1.0 (data); the VersaTiles tooling is MIT
 url: https://versatiles.org/
 notice: Vector tiles from VersaTiles in the Shortbread schema, derived from OpenStreetMap data.
 
+## ESA WorldCover (via VersaTiles landcover-vectors)
+
+role: Land cover under the map — the globe and every far view, where the OSM tiles carry no land use
+license: CC BY 4.0
+url: https://esa-worldcover.org/en/data-access
+notice: © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.
+
 ## Overpass API
 
 role: Live OSM queries — building footprints and points of interest

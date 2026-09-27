@@ -353,20 +353,19 @@ impl SubTile {
 /// high-contrast cartography reads as noise once it is lit and viewed at a grazing
 /// angle. Sits under the same lighting as everything else.
 ///
-/// **Earth under a map, not paper and not a game** (2026-09-27). Two ends have
-/// been tried and both were withdrawn: pale cartographic paper (grass at
-/// `#D2DEC6`, value 0.87, saturation 0.11), which lit by the sun rendered the
-/// countryside as white with grey lines on it; and a game green at saturation
-/// 0.54 (bc1dfdb, reverted in dc01bc5), which read as confetti. The land tones
-/// here sit between — the value of real ground seen from the air (0.55–0.80),
-/// the muted olive, khaki and soil hues of it (saturation 0.15–0.30) — while
-/// the roads, water and built land stay the map's. Built land is kept *lighter*
-/// and greyer than the fields around it, which is also what a town looks like
-/// from a plane.
+/// **Between realistic and game-like** (2026-09-27). Two ends have been tried
+/// and both were withdrawn: pale cartographic paper (grass at `#D2DEC6`, value
+/// 0.87, saturation 0.11), which lit by the sun rendered the countryside and the
+/// globe white with grey lines on them; and a game green at saturation 0.54
+/// (bc1dfdb, reverted in dc01bc5), which read as confetti. The greens here sit
+/// at the value of real ground seen from the air (0.45–0.75) and at saturation
+/// ~0.4, one step short of the game palette — while the roads, water and built
+/// land stay the map's. Built land is kept *lighter* and greyer than the fields
+/// around it, which is also what a town looks like from a plane.
 pub mod palette {
     /// Land nothing more is known about — and, at globe zooms, all land. A dry
     /// khaki rather than paper white, so the planet reads as ground.
-    pub const PAPER: u32 = 0xC6_C2_A8;
+    pub const PAPER: u32 = 0xC8_C1_A0;
     /// Water as the raster basemap paints it — and, more to the point, what the
     /// *shaded* water of `systems::water` looks like from far enough that its
     /// waves have merged, the same contract [`FOREST_CANOPIED`] has with the
@@ -416,26 +415,29 @@ pub mod palette {
     /// edge is the price. `tile_loader`'s
     /// `the_basemaps_water_paint_reads_as_fully_water` holds the line.
     pub const WATER: u32 = 0x2C_48_62;
-    pub const FOREST: u32 = 0x8A_9C_72;
+    pub const FOREST: u32 = 0x6E_90_58;
     /// Meadow olive: a muted green at the value of mown grass from the air.
-    pub const GRASS: u32 = 0xA9_B8_88;
+    pub const GRASS: u32 = 0x9C_BA_72;
     /// Canopy tone: one step down the [`FOREST`] hue ramp, at the same muted
     /// saturation — a game green here reads as confetti (see the module note).
-    pub const CANOPY: u32 = 0x71_87_5A;
+    pub const CANOPY: u32 = 0x5E_82_48;
     /// Second canopy tone, alternated per instance. Two tones buy depth without
     /// costing a light.
-    pub const CANOPY_DEEP: u32 = 0x60_74_4C;
+    pub const CANOPY_DEEP: u32 = 0x4F_70_3C;
     /// Trunks are a warm grey-brown kept *below* the canopy's value: a trunk
     /// brighter than the leaves over it is the inversion dc01bc5 describes, and
     /// a saturated brown at walking distance is the loudest colour on the map.
-    pub const TRUNK: u32 = 0x85_7A_6A;
+    pub const TRUNK: u32 = 0x75_6B_5C;
     /// What a forest polygon looks like from far enough that the individual trees
     /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover —
     /// `mix(FOREST, CANOPY, 0.65)`, computed, not matched by eye. The fill ramps
     /// to this as the trees fade out, so the aggregate brightness does not step
     /// when the geometry goes away.
-    pub const FOREST_CANOPIED: u32 = 0x7A_8E_62;
-    pub const SAND: u32 = 0xD6_C9_A2;
+    pub const FOREST_CANOPIED: u32 = 0x64_87_4E;
+    pub const SAND: u32 = 0xDC_C8_94;
+    /// Glaciers and ice caps, from the land cover — a cool white, the one
+    /// near-white left on the land, because from orbit it is the one that is.
+    pub const ICE: u32 = 0xEE_F1_F2;
     /// A tunnel's walls and roof. Darker than any surface in this palette on
     /// purpose: it is the one thing here that is never lit by the sun, and a
     /// concrete the tone of a pavement reads as a white box with a hole at each
@@ -517,25 +519,45 @@ enum Draw {
 /// One entry per painted layer, **bottom first**. This table is the map's design;
 /// the label layers (`*_labels`, `addresses`, `pois`) are deliberately absent —
 /// see the module docs on why text waits for a glyph pipeline.
+/// The land table: what colour each `land` kind is painted, **for both land
+/// sources** — OSM's `land` layer and the land cover under it
+/// ([`landcover_rgb`]). One table so a forest is one green whichever of the two
+/// drew it, and the hand-over between them (z8–z10) is invisible.
+///
+/// Kinds are grouped the way `land_group` groups them for the meshed ground up
+/// close — scrub, heath and marsh are grass there, bare rock is sand — so this
+/// image and those meshes agree at the ring edge too. That grouping is also why
+/// `bare_rock` and `scree` are here: the mesh drew them as sand while this image
+/// fell through to the grass default.
+const LAND_KINDS: &[(&str, u32)] = &[
+    ("forest", palette::FOREST),
+    ("wood", palette::FOREST),
+    ("grass", palette::GRASS),
+    ("grassland", palette::GRASS),
+    ("meadow", palette::GRASS),
+    ("park", palette::GRASS),
+    ("garden", palette::GRASS),
+    ("farmland", palette::GRASS),
+    ("scrub", palette::GRASS),
+    ("heath", palette::GRASS),
+    ("marsh", palette::GRASS),
+    ("sand", palette::SAND),
+    ("beach", palette::SAND),
+    ("bare_rock", palette::SAND),
+    ("scree", palette::SAND),
+    ("shingle", palette::SAND),
+    ("glacier", palette::ICE),
+    ("residential", palette::RESIDENTIAL),
+    ("industrial", palette::INDUSTRIAL),
+    ("commercial", palette::INDUSTRIAL),
+];
+
 const PAINT_ORDER: &[(&str, Draw)] = &[
     (
         "land",
         Draw::FillByKind {
             default: palette::GRASS,
-            kinds: &[
-                ("forest", palette::FOREST),
-                ("wood", palette::FOREST),
-                ("grass", palette::GRASS),
-                ("meadow", palette::GRASS),
-                ("park", palette::GRASS),
-                ("garden", palette::GRASS),
-                ("farmland", palette::GRASS),
-                ("sand", palette::SAND),
-                ("beach", palette::SAND),
-                ("residential", palette::RESIDENTIAL),
-                ("industrial", palette::INDUSTRIAL),
-                ("commercial", palette::INDUSTRIAL),
-            ],
+            kinds: LAND_KINDS,
         },
     ),
     ("sites", Draw::Fill(palette::SITE)),
@@ -716,6 +738,88 @@ pub struct OverlayFill {
     pub rgb: u32,
 }
 
+/// Deepest zoom the land-cover tile set is published at. A deeper source tile
+/// reads its ancestor at this zoom ([`landcover_fills`]).
+pub const LANDCOVER_MAX_ZOOM: u32 = 10;
+
+/// The tone a land-cover class is painted in, or `None` for one this map does
+/// not draw (open water, which the map's own water layers own).
+///
+/// The land cover is VersaTiles' `landcover-vectors`, ESA WorldCover 2021
+/// classified into Shortbread-style `kind`s. It exists because the OSM tiles
+/// carry **no `land` layer below z7–z8**: from orbit every continent was the
+/// bare [`palette::PAPER`], and no palette could make the globe look like Earth.
+/// It reads the same [`LAND_KINDS`] table as the OSM land, so the two are one
+/// map style; only built-up land takes the far band's tone, since the land
+/// cover is only ever the far picture.
+#[must_use]
+pub fn landcover_rgb(kind: &str) -> Option<u32> {
+    match kind {
+        "water" => None,
+        "residential" => Some(palette::RESIDENTIAL_FAR),
+        k => LAND_KINDS
+            .iter()
+            .find(|(name, _)| *name == k)
+            .map(|(_, rgb)| *rgb),
+    }
+}
+
+/// A land-cover tile's classes as [`OverlayFill`]s in a source tile's unit
+/// square, for [`render_mvt_layered`]'s underlay.
+///
+/// `shift` is how many zooms the source tile sits below the land-cover tile and
+/// `(ox, oy)` is its index within it — (0, 0, 0) when they are the same tile.
+/// Rings that land wholly off the source tile are dropped, since a z14 tile reads
+/// a z10 ancestor and would otherwise paint 256 tiles' worth of polygons to keep
+/// one.
+#[must_use]
+pub fn landcover_fills(tile: &TileData, shift: u32, ox: u32, oy: u32) -> Vec<OverlayFill> {
+    let k = (1u32 << shift.min(16)) as f32;
+    let mut out = Vec::new();
+    for layer_name in ["land", "water_polygons"] {
+        let Some(meta) = tile.layer(layer_name) else {
+            continue;
+        };
+        let extent = TileData::extent(meta);
+        let to_unit = 1.0 / extent;
+        for feature in tile.features(meta) {
+            let Some(rgb) = kind_of(feature).and_then(landcover_rgb) else {
+                continue;
+            };
+            let polys: Vec<&geo_types::Polygon<f32>> = match &feature.geometry {
+                Geometry::Polygon(p) => vec![p],
+                Geometry::MultiPolygon(mp) => mp.iter().collect(),
+                _ => continue,
+            };
+            for poly in polys {
+                let rings: Vec<Vec<[f32; 2]>> = clipped_rings(poly, to_unit, extent)
+                    .into_iter()
+                    .map(|r| {
+                        r.into_iter()
+                            .map(|p| [p[0] * k - ox as f32, p[1] * k - oy as f32])
+                            .collect()
+                    })
+                    .collect();
+                let Some(outer) = rings.first() else {
+                    continue;
+                };
+                let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for p in outer {
+                    for a in 0..2 {
+                        lo[a] = lo[a].min(p[a]);
+                        hi[a] = hi[a].max(p[a]);
+                    }
+                }
+                if hi[0] < 0.0 || hi[1] < 0.0 || lo[0] > 1.0 || lo[1] > 1.0 {
+                    continue;
+                }
+                out.push(OverlayFill { rings, rgb });
+            }
+        }
+    }
+    out
+}
+
 /// [`render_mvt_sized`] with [`OverlayFill`]s painted over the `land` layer and
 /// under everything after it — water, sites, streets and buildings — which is
 /// where a field sits on the ground stack too.
@@ -731,6 +835,20 @@ pub fn render_mvt_overlaid(
     source_m: f32,
     overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
+    render_mvt_layered(tile, sub, size, source_m, &[], overlay)
+}
+
+/// [`render_mvt_overlaid`] with an `underlay` as well: fills painted straight
+/// onto the blank paper, under every layer of the tile — the land cover
+/// ([`landcover_fills`]), which is what the paper would otherwise show through.
+pub fn render_mvt_layered(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    underlay: &[OverlayFill],
+    overlay: &[OverlayFill],
+) -> Result<Vec<u8>, String> {
     // Cull only when overzooming: at `factor == 1` the window is the whole tile,
     // so every feature passes and the bounds scan is pure overhead.
     render_mvt_banded(
@@ -740,6 +858,7 @@ pub fn render_mvt_overlaid(
         source_m,
         sub.factor > 1,
         raster_bands(size),
+        underlay,
         overlay,
     )
 }
@@ -754,7 +873,16 @@ fn render_mvt_culled(
     source_m: f32,
     cull: bool,
 ) -> Result<Vec<u8>, String> {
-    render_mvt_banded(tile, sub, size, source_m, cull, raster_bands(size), &[])
+    render_mvt_banded(
+        tile,
+        sub,
+        size,
+        source_m,
+        cull,
+        raster_bands(size),
+        &[],
+        &[],
+    )
 }
 
 /// Rows a band renders beyond its own span and then discards.
@@ -811,7 +939,7 @@ pub(crate) fn render_mvt_serial(
     size: u32,
     source_m: f32,
 ) -> Result<Vec<u8>, String> {
-    render_mvt_banded(tile, sub, size, source_m, sub.factor > 1, 1, &[])
+    render_mvt_banded(tile, sub, size, source_m, sub.factor > 1, 1, &[], &[])
 }
 
 /// [`render_mvt_culled`] over a stated number of horizontal bands.
@@ -840,10 +968,11 @@ fn render_mvt_banded(
     source_m: f32,
     cull: bool,
     bands: u32,
+    underlay: &[OverlayFill],
     overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
     if bands <= 1 {
-        return render_rows(tile, sub, size, source_m, cull, 0, size, overlay);
+        return render_rows(tile, sub, size, source_m, cull, 0, size, underlay, overlay);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -858,7 +987,7 @@ fn render_mvt_banded(
                         if h == 0 {
                             return Ok(Vec::new());
                         }
-                        render_rows(tile, sub, size, source_m, cull, y0, h, overlay)
+                        render_rows(tile, sub, size, source_m, cull, y0, h, underlay, overlay)
                     })
                 })
                 .collect();
@@ -878,7 +1007,7 @@ fn render_mvt_banded(
     }
 
     #[cfg(target_arch = "wasm32")]
-    render_rows(tile, sub, size, source_m, cull, 0, size, overlay)
+    render_rows(tile, sub, size, source_m, cull, 0, size, underlay, overlay)
 }
 
 /// `rows` rows of the raster, starting at `y0`. `size` stays the whole tile's
@@ -892,6 +1021,7 @@ fn render_rows(
     cull: bool,
     want_y0: u32,
     want_rows: u32,
+    underlay: &[OverlayFill],
     overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
     // **Bleed, because a band edge is not neutral.** The first version of this
@@ -949,6 +1079,9 @@ fn render_rows(
         -(sub.y as f32) * px - y0 as f32,
     );
     let mut overlay_pending = !overlay.is_empty();
+    // The land cover goes down first of all, on the bare paper: every layer of
+    // the tile paints over it, so it only shows where the map says nothing.
+    paint_overlay(&mut pixmap, &mut paint, underlay, &overlay_transform);
 
     for (layer_name, draw) in PAINT_ORDER {
         if overlay_pending && *layer_name != "land" {
@@ -7667,6 +7800,7 @@ mod tests {
                 NOMINAL_Z14_TILE_M,
                 false,
                 1,
+                &[],
                 &left_half,
             )
             .expect("renders");
@@ -7677,6 +7811,7 @@ mod tests {
                 NOMINAL_Z14_TILE_M,
                 false,
                 4,
+                &[],
                 &left_half,
             )
             .expect("renders");
@@ -7727,14 +7862,23 @@ mod tests {
         // exercised against a non-zero sub-tile shift as well as against zero.
         for (factor, x, y) in [(1, 0, 0), (4, 2, 1), (8, 3, 5)] {
             let sub = SubTile { factor, x, y };
-            let whole = render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1, &[])
-                .expect("whole render");
+            let whole =
+                render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, 1, &[], &[])
+                    .expect("whole render");
             // 7 is in the list on purpose: it does not divide TILE_PX, so the
             // last band is short and the row arithmetic has to survive it.
             for bands in [2u32, 3, 4, 7] {
-                let split =
-                    render_mvt_banded(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false, bands, &[])
-                        .expect("banded render");
+                let split = render_mvt_banded(
+                    &tile,
+                    sub,
+                    TILE_PX,
+                    NOMINAL_Z14_TILE_M,
+                    false,
+                    bands,
+                    &[],
+                    &[],
+                )
+                .expect("banded render");
                 assert_eq!(
                     split.len(),
                     whole.len(),
@@ -7909,6 +8053,7 @@ mod tests {
                 NOMINAL_Z14_TILE_M,
                 false,
                 1,
+                &[],
                 &[],
             )
         };
