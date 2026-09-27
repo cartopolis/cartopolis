@@ -1368,34 +1368,53 @@ fn render_rows(
     Ok(data[from..to].to_vec())
 }
 
-/// Fill each [`OverlayFill`] in its own colour, one even-odd path per polygon so
-/// a hole stays open. `transform` maps the source tile's unit square to pixels.
+/// Fill each [`OverlayFill`] in its own colour. `transform` maps the source
+/// tile's unit square to pixels.
+///
+/// **One even-odd path per colour, not per polygon.** Both callers hand over a
+/// partition — crop parcels, and land-cover classes, which are cut from one
+/// classified raster — so no two fills of a colour overlap, and even-odd within
+/// the merged path still opens every hole. Per polygon it was a `fill_path` for
+/// each of the ~1,000 land-cover polygons in a tile, and the orbit smoke stopped
+/// settling inside its 60 s: the basemap drained at about one tile a second.
+/// Colours are painted in the order they first appear, which keeps a
+/// deterministic raster.
 fn paint_overlay(
     pixmap: &mut Pixmap,
     paint: &mut Paint<'static>,
     overlay: &[OverlayFill],
     transform: &Transform,
 ) {
+    let mut batches: Vec<(u32, PathBuilder)> = Vec::new();
     for fill in overlay {
-        let mut pb = PathBuilder::new();
+        let at = match batches.iter().position(|(rgb, _)| *rgb == fill.rgb) {
+            Some(i) => i,
+            None => {
+                batches.push((fill.rgb, PathBuilder::new()));
+                batches.len() - 1
+            }
+        };
+        let pb = &mut batches[at].1;
         for ring in &fill.rings {
+            if ring.len() < 3 {
+                continue;
+            }
             let mut pts = ring.iter();
             let Some(first) = pts.next() else {
                 continue;
             };
-            if ring.len() < 3 {
-                continue;
-            }
             pb.move_to(first[0], first[1]);
             for p in pts {
                 pb.line_to(p[0], p[1]);
             }
             pb.close();
         }
+    }
+    for (rgb, pb) in batches {
         let Some(path) = pb.finish() else {
             continue;
         };
-        paint.shader = shader(fill.rgb);
+        paint.shader = shader(rgb);
         pixmap.fill_path(&path, paint, FillRule::EvenOdd, *transform, None);
     }
 }
