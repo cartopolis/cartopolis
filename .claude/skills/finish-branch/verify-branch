@@ -160,6 +160,11 @@ gate_owner="gate-$(basename "$root")"
 gate_slot=""
 release_gate_slot() {
     [ -n "$gate_slot" ] && python3 "$registry" release --owner "$gate_owner" >/dev/null 2>&1
+    # A claim file naming the gate outlives the lease and makes `carto-slots
+    # claim` refuse the slot to everybody for six hours. On 2026-09-27 one left
+    # behind after a finished gate kept the next gate waiting on a free slot.
+    [ -n "${slot_path:-}" ] && [ "$(head -1 "$slot_path/.slot-claim" 2>/dev/null)" = "$gate_owner" ] \
+        && : > "$slot_path/.slot-claim"
     gate_slot=""
 }
 if [ "$steps" != "fmt" ] && [ -z "${CARTO_GATE_NO_SLOT:-}" ] && [ -x "$registry" ] \
