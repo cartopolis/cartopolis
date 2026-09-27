@@ -36,7 +36,8 @@ use std::collections::HashMap;
 
 use cartopolis_core::world::{lat_lng_to_tile_frac, tile_frac_to_lat_lng, tile_to_meters};
 use cartopolis_geo::deck_profile::{DeckMeasure, DeckProfile};
-use cartopolis_geo::terrain_grade::{self, DeckPlate, Lattice};
+use cartopolis_geo::road_levels::{self, Height, RoadHeights, StreetRun};
+use cartopolis_geo::terrain_grade::{self, ConformRoad, DeckPlate, Lattice};
 use cartopolis_geo::terrain_tile::{TerrainTile, DENSE_GRID};
 use cartopolis_geo::vector_tiles::{self, BridgeDeck, TileData};
 
@@ -124,7 +125,9 @@ struct Deck {
 struct Cell {
     /// The metres its tile-local coordinates were built at.
     tile_m: f32,
-    roads: Vec<[[f32; 2]; 3]>,
+    /// Its streets as the client draws them, for the road network the heights
+    /// are solved on (`road_levels`).
+    runs: Vec<StreetRun>,
     decks: Vec<Deck>,
 }
 
@@ -140,6 +143,9 @@ pub struct Grader<'a> {
     /// Every deck measured, per cell, as its published record — see
     /// [`write_decks`].
     pub deck_heights: HashMap<(i64, i64), Vec<serde_json::Value>>,
+    /// Every graded tile's own street runs with their solved heights — see
+    /// [`write_road_heights`].
+    pub road_heights: HashMap<(i64, i64), RoadHeights>,
     /// Decks measured, and how many were lifted.
     pub decks_measured: usize,
     pub decks_lifted: usize,
@@ -155,6 +161,7 @@ impl<'a> Grader<'a> {
             raw: HashMap::new(),
             water: HashMap::new(),
             deck_heights: HashMap::new(),
+            road_heights: HashMap::new(),
             decks_measured: 0,
             decks_lifted: 0,
         }
@@ -227,14 +234,14 @@ impl<'a> Grader<'a> {
         let tile_m = tile_to_meters(14, lat) as f32;
         let mut cell = Cell {
             tile_m,
-            roads: Vec::new(),
+            runs: Vec::new(),
             decks: Vec::new(),
         };
         if let Some(bytes) = self.vector.mvt(x, y)? {
             let tile = TileData::parse(&bytes)?;
             let mut decks = vector_tiles::tessellate_bridges(&tile, tile_m)?;
             let roads = vector_tiles::tessellate_roads(&tile, tile_m, &mut decks, None, false)?;
-            cell.roads = terrain_grade::road_triangles(&roads.ground);
+            cell.runs = road_levels::street_runs(&tile, tile_m);
             self.deck_heights.entry((x, y)).or_default();
             for (i, deck) in decks.into_iter().enumerate() {
                 let measured = self.measure_deck(x, y, tile_m, &deck)?;
@@ -437,7 +444,6 @@ impl<'a> Grader<'a> {
         // tile's metres (a neighbour a row north is a few parts in ten thousand
         // wider).
         let reach = (k + last - 1) / last;
-        let mut road = vec![false; n * n];
         #[allow(clippy::type_complexity)]
         let mut scaled: Vec<(
             BridgeDeck,
@@ -453,18 +459,6 @@ impl<'a> Grader<'a> {
                 let cell = &self.cells[&(tx + dx, ty + dy)];
                 let s = tile_m / cell.tile_m;
                 let off = [dx as f32 * tile_m, dy as f32 * tile_m];
-                let tris: Vec<[[f32; 2]; 3]> = cell
-                    .roads
-                    .iter()
-                    .map(|t| t.map(|p| [off[0] + p[0] * s, off[1] + p[1] * s]))
-                    .collect();
-                cartopolis_geo::road_grade::mark_roads(
-                    &mut road,
-                    n,
-                    (lattice.origin[0], lattice.origin[1]),
-                    step,
-                    &tris,
-                );
                 for d in &cell.decks {
                     let sc = |p: [f32; 2]| [p[0] * s, p[1] * s];
                     let deck = BridgeDeck {
@@ -508,8 +502,6 @@ impl<'a> Grader<'a> {
                 },
             )
             .collect();
-        let terrain_grade::DeckMasks { ramp, lift, top } =
-            terrain_grade::deck_masks(&plates, lattice);
 
         // The water, from the water dataset's cells under the window.
         let mut rings: Vec<(f32, Vec<[f32; 2]>)> = Vec::new();
@@ -537,7 +529,136 @@ impl<'a> Grader<'a> {
             v.is_finite().then_some(v)
         };
 
-        terrain_grade::grade(&mut raw, lattice, &level_at, road, ramp, &lift, &top);
+        // **The roads' own heights, solved on the network** (`road_levels`) from
+        // the raw survey — before anything is filled or carved, so a hole is read
+        // as a hole: the road over or under a structure the survey cut out, which
+        // the network bridges from both sides.
+        let sample = |p: [f32; 2]| -> f32 {
+            let fx = (p[0] - lattice.origin[0]) / step;
+            let fz = (p[1] - lattice.origin[1]) / step;
+            let (x0, z0) = (fx.floor(), fz.floor());
+            let (tx_, tz_) = (fx - x0, fz - z0);
+            let (mut sum, mut w) = (0.0f32, 0.0f32);
+            for (ox, oz, wt) in [
+                (0, 0, (1.0 - tx_) * (1.0 - tz_)),
+                (1, 0, tx_ * (1.0 - tz_)),
+                (0, 1, (1.0 - tx_) * tz_),
+                (1, 1, tx_ * tz_),
+            ] {
+                let (x, z) = (x0 as i64 + ox, z0 as i64 + oz);
+                if x < 0 || z < 0 || x >= n as i64 || z >= n as i64 {
+                    continue;
+                }
+                let v = raw[z as usize * n + x as usize];
+                if v.is_finite() && wt > 0.0 {
+                    sum += v * wt;
+                    w += wt;
+                }
+            }
+            if w > 1e-6 {
+                sum / w
+            } else {
+                f32::NAN
+            }
+        };
+        let mut lines: Vec<road_levels::Line> = Vec::new();
+        // (this tile's own run, its key, its half-width, its level) per line.
+        let mut owners: Vec<(bool, u64, f32, i8)> = Vec::new();
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                let Some(cell) = self.cells.get(&(tx + dx, ty + dy)) else {
+                    continue;
+                };
+                let s = tile_m / cell.tile_m;
+                let off = [dx as f32 * tile_m, dy as f32 * tile_m];
+                for run in &cell.runs {
+                    // Tunnels keep their own plan until they move onto this.
+                    if run.level < 0 {
+                        continue;
+                    }
+                    let points: Vec<[f32; 2]> = run
+                        .points
+                        .iter()
+                        .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
+                        .collect();
+                    // **A span rides its deck end to end.** The deck a street's
+                    // own span was built from ends exactly where the span does,
+                    // so its last point sits on the deck's edge and may test
+                    // either side of it; asked point by point, the joint lost its
+                    // pin. Any point on a lifted deck puts the whole run on it,
+                    // at the deck's surveyed top under each point.
+                    let carried = (run.level > 0)
+                        .then(|| {
+                            plates.iter().find(|plate| {
+                                plate.top_at([0.0, 0.0]).is_some()
+                                    && points.iter().any(|&p| {
+                                        plate.deck.contains([
+                                            p[0] - plate.world[0],
+                                            p[1] - plate.world[1],
+                                        ])
+                                    })
+                            })
+                        })
+                        .flatten();
+                    let heights = points
+                        .iter()
+                        .map(|&p| {
+                            if let Some(plate) = carried {
+                                let local = [p[0] - plate.world[0], p[1] - plate.world[1]];
+                                if let Some(t) = plate.top_at(local) {
+                                    return Height::Fixed(t);
+                                }
+                            }
+                            let v = sample(p);
+                            if v.is_finite() {
+                                Height::Measured { y: v, weight: 1.0 }
+                            } else {
+                                Height::Unknown
+                            }
+                        })
+                        .collect();
+                    lines.push(road_levels::Line {
+                        points,
+                        heights,
+                        level: run.level,
+                        max_grade: road_levels::max_grade(run.class),
+                        cut: run.cut,
+                    });
+                    owners.push((dx == 0 && dy == 0, run.key, run.half_w, run.level));
+                }
+            }
+        }
+        let solved = road_levels::solve(&lines);
+        let own = self.road_heights.entry((tx, ty)).or_default();
+        for ((mine, key, _, _), ys) in owners.iter().zip(&solved.heights) {
+            if *mine {
+                own.runs.insert(*key, ys.clone());
+            }
+        }
+
+        // Water carved and holes filled as before; the roads are not flattened
+        // into the ground any more — the ground is laid to them.
+        terrain_grade::grade(
+            &mut raw,
+            lattice,
+            &level_at,
+            Vec::new(),
+            Vec::new(),
+            &[],
+            &[],
+        );
+        let conform: Vec<ConformRoad<'_>> = lines
+            .iter()
+            .zip(&owners)
+            .zip(&solved.heights)
+            .filter(|((_, o), _)| o.3 == 0)
+            .map(|((l, o), ys)| ConformRoad {
+                points: &l.points,
+                ys,
+                half_w: o.2,
+            })
+            .collect();
+        terrain_grade::conform_to_roads(&mut raw, lattice, &conform);
 
         let k = k as usize;
         let mut heights = Vec::with_capacity(DENSE_GRID * DENSE_GRID);
@@ -588,7 +709,30 @@ pub fn grade_area(
         grader.decks_lifted
     ));
     write_decks(ctx, &grader.deck_heights)?;
+    write_road_heights(ctx, &grader.road_heights)?;
     Ok((graded, grader.decks_measured, grader.decks_lifted))
+}
+
+/// Every graded tile's street heights, solved on the network
+/// (`road_levels`): `roads/14/x/y.bin` in [`RoadHeights`]' format, keyed by
+/// the run names the client derives from the same tile, plus
+/// `roads/coverage.json`.
+fn write_road_heights(ctx: &Ctx, roads: &HashMap<(i64, i64), RoadHeights>) -> Outcome<()> {
+    let mut cells = Vec::new();
+    for (&(x, y), heights) in roads {
+        ctx.write_bytes_gzipped(&format!("roads/14/{x}/{y}.bin"), &heights.encode())?;
+        cells.push([x, y]);
+    }
+    cells.sort_unstable();
+    ctx.write_json(
+        "roads/coverage.json",
+        &serde_json::json!({
+            "attribution": "AHN (Rijkswaterstaat / Het Waterschapshuis), CC0; © OpenStreetMap contributors",
+            "cells": cells,
+            "name": ctx.name,
+            "zoom": 14,
+        }),
+    )
 }
 
 /// The deck heights measured while grading, per z14 cell, for the client to

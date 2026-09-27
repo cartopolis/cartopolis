@@ -265,6 +265,117 @@ pub fn deck_masks(plates: &[DeckPlate<'_>], lattice: Lattice) -> DeckMasks {
     DeckMasks { ramp, lift, top }
 }
 
+/// How far below a road's own height the ground under it is laid, metres: the
+/// road's surface is drawn at its height and the ground just under it, so the two
+/// never fight for the same depth.
+pub const UNDER_ROAD_M: f32 = 0.05;
+
+/// The verge either side of a carriageway that is held at the road's height before
+/// the ground starts to fall away, metres.
+pub const VERGE_M: f32 = 1.0;
+
+/// The shoulder an embankment or a cutting blends back to the measured ground
+/// over, per metre it has to make up: one in two, the slope of a Dutch road
+/// embankment.
+pub const SHOULDER_RUN: f32 = 2.0;
+
+/// Shortest and longest shoulder, metres.
+pub const SHOULDER_MIN_M: f32 = 2.0;
+pub const SHOULDER_MAX_M: f32 = 30.0;
+
+/// One road the ground is conformed to: its densified centre line, its height
+/// at each point, and half its width.
+pub struct ConformRoad<'a> {
+    pub points: &'a [[f32; 2]],
+    pub ys: &'a [f32],
+    pub half_w: f32,
+}
+
+/// Lay the ground to the roads: under each carriageway and its verge, just below
+/// the road's own height; beyond, blending back to the measured ground over a
+/// shoulder as wide as the height it makes up needs (`road_levels`).
+///
+/// **The opposite direction from [`grade`]'s**, which moved the road with the
+/// ground: here the road's height is decided first, on the network, and the
+/// ground follows it — so an embankment is the ground under a road that climbs,
+/// and the joint with a deck is wherever the road meets it, not a raster
+/// approximation of it. The nearest road decides each sample, so a junction is
+/// the roads' shared height and two roads side by side each hold their own strip.
+pub fn conform_to_roads(raw: &mut [f32], lattice: Lattice, roads: &[ConformRoad<'_>]) -> usize {
+    let n = lattice.n;
+    if n < 2 || raw.len() < n * n || lattice.step <= 0.0 {
+        return 0;
+    }
+    // Per sample: the nearest road's (distance past its carriageway, height).
+    let mut best: Vec<(f32, f32)> = vec![(f32::INFINITY, 0.0); n * n];
+    let [ox, oz] = lattice.origin;
+    let step = lattice.step;
+    for road in roads {
+        if road.points.len() != road.ys.len() {
+            continue;
+        }
+        let reach = road.half_w + VERGE_M + SHOULDER_MAX_M;
+        for (s, w) in road.points.windows(2).enumerate() {
+            let (a, b) = (w[0], w[1]);
+            let (ya, yb) = (road.ys[s], road.ys[s + 1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dz * dz;
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = |v: f32, o: f32| ((v - o) / step).floor() as i64;
+            let (x0, x1) = (
+                idx(a[0].min(b[0]) - reach, ox).max(0),
+                idx(a[0].max(b[0]) + reach, ox).min(n as i64 - 1) + 1,
+            );
+            let (z0, z1) = (
+                idx(a[1].min(b[1]) - reach, oz).max(0),
+                idx(a[1].max(b[1]) + reach, oz).min(n as i64 - 1) + 1,
+            );
+            for z in z0..=z1.min(n as i64 - 1) {
+                for x in x0..=x1.min(n as i64 - 1) {
+                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                    let i = z as usize * n + x as usize;
+                    let [px, pz] = lattice.at(x as usize, z as usize);
+                    let t = if len2 > 1e-9 {
+                        (((px - a[0]) * dx + (pz - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let d = (px - a[0] - dx * t).hypot(pz - a[1] - dz * t) - road.half_w;
+                    if d < best[i].0 {
+                        best[i] = (d, ya + (yb - ya) * t);
+                    }
+                }
+            }
+        }
+    }
+    let mut changed = 0;
+    for i in 0..n * n {
+        let (d, y) = best[i];
+        if !d.is_finite() {
+            continue;
+        }
+        let road_ground = y - UNDER_ROAD_M;
+        let natural = raw[i];
+        let target = if d <= VERGE_M || !natural.is_finite() {
+            road_ground
+        } else {
+            let shoulder = (SHOULDER_RUN * (natural - road_ground).abs())
+                .clamp(SHOULDER_MIN_M, SHOULDER_MAX_M);
+            let t = ((d - VERGE_M) / shoulder).clamp(0.0, 1.0);
+            if t >= 1.0 {
+                continue;
+            }
+            let s = t * t * (3.0 - 2.0 * t);
+            road_ground + (natural - road_ground) * s
+        };
+        if raw[i] != target {
+            raw[i] = target;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// A cell's road-sheet triangles in its own tile-local XZ.
 ///
 /// **The ribbons, not the tunnels.** A tunnel's carriageway is metres below the
@@ -607,6 +718,50 @@ mod tests {
         assert!(past < 7.0, "nothing falls away past the abutment: {past}");
         let span = g[15 * n + 27];
         assert!(span < 2.5, "the ground the deck spans was raised to {span}");
+    }
+
+    /// **The ground follows the road, not the other way round.** A road standing
+    /// five metres over flat ground gets the ground just under it across its
+    /// carriageway and verge, an embankment falling away beside it, and the
+    /// measured ground untouched further out.
+    #[test]
+    fn the_ground_is_laid_to_the_road() {
+        let l = Lattice {
+            n: 101,
+            origin: [-50.0, -50.0],
+            step: 1.0,
+        };
+        let mut g = vec![0.0f32; l.n * l.n];
+        let pts = [[-50.0, 0.0], [50.0, 0.0]];
+        let ys = [5.0, 5.0];
+        conform_to_roads(
+            &mut g,
+            l,
+            &[ConformRoad {
+                points: &pts,
+                ys: &ys,
+                half_w: 4.0,
+            }],
+        );
+        let at = |z: usize| g[(50 + z) * l.n + 50];
+        assert!(
+            (at(0) - (5.0 - UNDER_ROAD_M)).abs() < 1e-4,
+            "under the road: {}",
+            at(0)
+        );
+        assert!(
+            (at(5) - (5.0 - UNDER_ROAD_M)).abs() < 1e-4,
+            "on the verge: {}",
+            at(5)
+        );
+        assert!(at(9) > 0.5 && at(9) < 4.9, "no slope beside it: {}", at(9));
+        assert!(at(40).abs() < 1e-6, "the ground far off moved: {}", at(40));
+        for z in 5..45 {
+            assert!(
+                at(z + 1) <= at(z) + 1e-4,
+                "the embankment rises away from the road at {z}"
+            );
+        }
     }
 
     #[test]
