@@ -377,6 +377,11 @@ impl Slab {
 /// field. If *both* edges would cover it — a field taller than the free space —
 /// bottom wins, because at least the caret is then above the keyboard rather
 /// than below it.
+///
+/// A field that gets out of the way itself says so with [`field_makes_room`],
+/// and the caller then passes `None` here: the flip is for fields that cannot
+/// move, and for one that can it only puts the keys over what it was lifted
+/// to reveal.
 fn layout(viewport: egui::Rect, min_key_h: f32, field: Option<egui::Rect>) -> Slab {
     let n = ROW_COUNT;
     let max_h = viewport.height() * MAX_HEIGHT_FRACTION;
@@ -431,6 +436,32 @@ pub fn expected_height(viewport: egui::Rect, ui_scale: f32, display_scale: f32) 
         .rect
         .height()
         + EDGE_MARGIN
+}
+
+/// Declare, for this pass, that `field` lifts itself above the keys while they
+/// are up, so the keyboard stays on the bottom edge instead of flipping to the
+/// top to dodge it.
+///
+/// For a composer pinned to the bottom of a panel — the chat thread's. It can
+/// only lift *after* the keyboard is open (a panel takes its size from the
+/// previous frame), so on the frame the field is tapped it still sits where
+/// the keys will land. Without this that one frame flips the keyboard to the
+/// top, over the conversation, and the flip is re-decided every frame, so the
+/// keys stay up there until the field has moved. Call it every frame the field
+/// is drawn; the claim lapses with the pass it was made in.
+pub fn field_makes_room(ctx: &egui::Context, field: egui::Id) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(makes_room_key(), (field, pass)));
+}
+
+fn makes_room_key() -> egui::Id {
+    egui::Id::new("onscreen_keyboard_makes_room")
+}
+
+/// Has `field` claimed [`field_makes_room`] in the current pass?
+fn makes_room(ctx: &egui::Context, field: egui::Id) -> bool {
+    ctx.data(|d| d.get_temp::<(egui::Id, u64)>(makes_room_key()))
+        .is_some_and(|(id, pass)| id == field && pass == ctx.cumulative_pass_nr())
 }
 
 // ─── Resource ─────────────────────────────────────────────────────────────────
@@ -690,6 +721,7 @@ impl OnScreenKeyboard {
         // is ordered after the panels: `read_response` reads the *current* pass.
         let field = kb
             .target
+            .filter(|&id| !makes_room(ctx, id))
             .and_then(|id| ctx.read_response(id))
             .map(|r| r.rect);
         let slab = layout(viewport, min_key_h, field);
@@ -1002,6 +1034,11 @@ mod tests {
         /// the modal appear *after* the keyboard, which is the case that decides
         /// the `Order` rather than the raise.
         backdrop: bool,
+        /// Where the card sits. Centred by default; a test pins it to the bottom
+        /// edge to put the field where the keys land.
+        anchor: (egui::Align2, egui::Vec2),
+        /// Does the card claim [`field_makes_room`] for its field?
+        makes_room: bool,
     }
 
     impl Harness {
@@ -1024,6 +1061,8 @@ mod tests {
                 next_touch: 1,
                 backdrop_clicks: 0,
                 backdrop: true,
+                anchor: (egui::Align2::CENTER_CENTER, egui::Vec2::ZERO),
+                makes_room: false,
             }
         }
 
@@ -1063,6 +1102,7 @@ mod tests {
 
             let card_id = egui::Id::new("sign_in_card");
             let text = &mut self.text;
+            let makes_room = self.makes_room;
             let mut field = egui::Rect::NOTHING;
             egui::Window::new("sign in")
                 .id(card_id)
@@ -1071,15 +1111,18 @@ mod tests {
                 .resizable(false)
                 .movable(false)
                 .collapsible(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .anchor(self.anchor.0, self.anchor.1)
                 .show(&self.ctx, |ui| {
                     ui.set_width(220.0);
                     egui::ScrollArea::vertical()
                         .max_height(220.0)
                         .show(ui, |ui| {
-                            field = ui
-                                .add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY))
-                                .rect;
+                            let resp = ui
+                                .add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                            field = resp.rect;
+                            if makes_room {
+                                field_makes_room(ui.ctx(), resp.id);
+                            }
                         });
                 });
             // The card raises itself every frame; the keyboard has to raise itself
@@ -1584,6 +1627,35 @@ mod tests {
             with_low.rect.top() < vp.center().y,
             "it should flip to the top"
         );
+    }
+
+    /// The chat thread's composer, pinned to the bottom of its panel: tapping it
+    /// put the keys at the **top**, over the conversation, because on the frame
+    /// the keyboard opens the field has not lifted yet. A field that claims
+    /// [`field_makes_room`] keeps the keys on the bottom edge; one that does not
+    /// still gets the flip, which is right for a field that cannot move.
+    #[test]
+    fn a_field_that_makes_room_keeps_the_keys_at_the_bottom() {
+        for makes_room in [false, true] {
+            let mut h = Harness::new();
+            h.backdrop = false;
+            h.makes_room = makes_room;
+            h.anchor = (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0));
+            h.frame(Vec::new());
+            h.frame(Vec::new());
+
+            h.tap(h.field.center());
+            assert!(
+                h.kb.is_open(),
+                "tapping the field did not open the keyboard"
+            );
+            let slab = h.kb.slab().expect("open keyboard has no slab");
+            let at_bottom = slab.top() > h.screen.center().y;
+            assert_eq!(
+                at_bottom, makes_room,
+                "makes_room = {makes_room}: keyboard at {slab:?}"
+            );
+        }
     }
 
     /// A viewport too short for four 48 dp rows must still produce a usable

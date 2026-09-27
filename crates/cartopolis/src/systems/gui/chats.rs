@@ -536,6 +536,7 @@ pub fn render_chats_panel(
     mut right_panel: ResMut<RightPanel>,
     mut voice: ResMut<crate::systems::voice::VoiceState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
+    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
     // The report dialog is not part of the panel: it hangs off names in the
     // overlay and over avatars too, and must stay up with the panel shut.
@@ -558,6 +559,10 @@ pub fn render_chats_panel(
     let viewport_w = egui.viewport_pts().x;
     let mut open_flag = true;
     let now = now_ms();
+    // The composer sits on the panel's bottom edge, which is where the
+    // on-screen keys land, so while they are up the band lifts itself clear of
+    // them (and says so to the keyboard, in `compose_row`).
+    let lift = crate::systems::chat_overlay::keyboard_reserve(&egui, keyboard.is_open());
 
     // The design's screen is solid ink (`.phone`), not the glass the other
     // panels use: a conversation is read, and a map showing through the text
@@ -571,7 +576,7 @@ pub fn render_chats_panel(
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
             match view.open.clone() {
                 None => list_screen(ui, &mut chat, &mut view, &mut voice, &mut act, now),
-                Some(key) => chat_screen(ui, &mut chat, &mut view, &key, &mut act, now),
+                Some(key) => chat_screen(ui, &mut chat, &mut view, &key, &mut act, now, lift),
             }
         });
     if !open_flag {
@@ -970,6 +975,7 @@ fn chat_screen(
     key: &str,
     act: &mut Actions,
     now: u64,
+    lift: f32,
 ) {
     let Some(channel) = chat.channels.iter().find(|c| c.key == key) else {
         act.back = true;
@@ -1014,7 +1020,7 @@ fn chat_screen(
             );
             ui.add_space(10.0);
             composer(ui, chat, view, key, kind, act, now);
-            ui.add_space(6.0);
+            ui.add_space(6.0 + lift);
         });
 
     let group = kind != ChatKind::Private || !channel_is_direct(chat, key);
@@ -1526,6 +1532,9 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
                     .inner
                 })
                 .inner;
+            // Both callers lift this field above the on-screen keys (the
+            // panel's band, the World sheet), so the keys belong on the bottom.
+            crate::systems::onscreen_keyboard::field_makes_room(ui.ctx(), field.id);
             if claim {
                 field.request_focus();
             }
