@@ -55,11 +55,14 @@ use cartopolis_core::TileKey;
 /// is seamless and only deep space reads planetary. Surface-only, so the
 /// atmosphere limb stays bright.
 ///
-/// 0.55 was set against the paper-white palette. Since the ground went to earth
-/// tones (2026-09-27, `palette`) the land already averages ~0.5, so 0.55 on top
-/// of that sank it into the atmosphere's blue and the continents lost their edge
-/// against the sea; 0.75 lands it near the real ~0.35.
-const GLOBE_DEEP_ALBEDO: f32 = 0.75;
+/// **1.0 since 2026-09-27, i.e. no darkening.** 0.55 was set against the
+/// paper-white palette. The land tones now come from aerial imagery and the
+/// land cover (`vector_tiles::palette`, `landcover_fills`), so they are already
+/// the ground's real albedo, and any tint on top only sank them further under
+/// the atmosphere's blue: measured on the Deck from 14,000 km, the Sahara drew
+/// (133,126,138) at 0.75 — bluer than it was red. Kept, ramp and all, so a
+/// brighter basemap source can still be damped here.
+const GLOBE_DEEP_ALBEDO: f32 = 1.0;
 /// Change in the ramped albedo worth rewriting the globe materials for.
 const ALBEDO_UPDATE_STEP: f32 = 0.03;
 
@@ -1047,9 +1050,21 @@ pub const SPACE_FULL_ALT: f32 = 3_000_000.0;
 
 /// Atmosphere density multiplier at the globe threshold (`space_factor` 0). Low
 /// so the aerial-perspective wash lifts off the detailed map at low orbit; it
-/// ramps up toward `1/SPACE_ATMOSPHERE_THICKNESS` in deep space, where the fuller
+/// ramps up toward [`SPACE_ATMOSPHERE_DENSITY`] in deep space, where the fuller
 /// column is what makes the limb glow. See `update_globe_visibility`.
 const ATMOSPHERE_DENSITY_NEAR: f32 = 0.12;
+
+/// Atmosphere density multiplier in deep space (`space_factor` 1).
+///
+/// It was `1 / SPACE_ATMOSPHERE_THICKNESS` — 0.4, the one Earth column spread
+/// over the taller shell — and that washed the disc out: measured on the Deck
+/// from 14,000 km with realistic land tones, the in-scattered blue outweighed
+/// the ground, the Sahara drew grey-lavender and central Africa blue-grey. At
+/// 0.15 the same frame draws the Sahara tan (166,150,129), the Congo green and
+/// the sea dark blue, and the limb still glows, because the limb's path through
+/// the 2.5× shell is long enough that it needs little density to read. 0.06 was
+/// tried too and flattens the disc into a map with no air over it.
+const SPACE_ATMOSPHERE_DENSITY: f32 = 0.15;
 
 /// Below this altitude the atmosphere is held at full Earth density: this same
 /// planet `Atmosphere` is the city's sky dome and its dawn/dusk colour, tuned
@@ -1328,8 +1343,8 @@ pub fn update_globe_visibility(
         // up from 0, so the inner and outer lerps meet continuously.
         let alt = globe.altitude_m(cell, tf) as f32;
         let city_fade = crate::utils::sun::smoothstep(CITY_ATMOSPHERE_ALT, GLOBE_SHOW_ALT, alt);
-        let density = (1.0f32.lerp(ATMOSPHERE_DENSITY_NEAR, city_fade))
-            .lerp(1.0 / SPACE_ATMOSPHERE_THICKNESS, sf);
+        let density =
+            (1.0f32.lerp(ATMOSPHERE_DENSITY_NEAR, city_fade)).lerp(SPACE_ATMOSPHERE_DENSITY, sf);
         // The medium is an asset; rewriting it rebuilds its falloff/phase LUTs, so
         // re-derive it only when the density has actually drifted (a handful of
         // times across a full zoom, not every frame).

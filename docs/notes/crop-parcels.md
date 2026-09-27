@@ -1,7 +1,7 @@
 ---
 topic: crop-parcels
 triggers: [crops.rs, brp.rs, BRP, gewaspercelen, gewascode, RVO, brpgewas, "crop parcels", "farmland", SurfaceGroup::Crop, turf.rs, arable]
-updated: 2026-09-26
+updated: 2026-09-27
 ---
 
 # Crop parcels (RVO BRP)
@@ -93,16 +93,27 @@ the table was read off the live service; one that looks like it belongs to a
 family but was not observed is absent rather than guessed.
 
 **No season.** A tulip field is red for a fortnight in April; the register records
-the crop, not the flower. Every tone is a year-round one.
+the crop, not the flower. Every tone is a year-round one, and the bulb fields
+are the sandy soil they stand in.
 
 **The tones were too pale to tell apart, and are not any more.** The first
 palette kept every crop in the map's pale cartographic range, so potatoes
 (`#C1D1A2`), maize (`#B4C595`) and pasture (`#C9DBBB`) read as one green on the
-first real capture (2026-09-26, Deck). Since 2026-09-27 each arable family is at
-least 30 apart in RGB from every other and from pasture — straw-gold cereals,
-deep-green maize, earth-brown potatoes, blue-green beet, lime rapeseed, pink
-bulbs — and `the_crop_families_can_be_told_apart` holds the distance. Pasture
-stays near the map's own green on purpose: it is half the country.
+first real capture (2026-09-26, Deck). Since 2026-09-27 the tones are taken from
+aerial imagery, like the rest of the ground (`land-cover.md`), and each arable
+family is at least 30 apart in RGB from every other and from pasture —
+`the_crop_families_can_be_told_apart` holds the distance.
+
+**A palette alone cannot vary the Groningen countryside.** Counted 2026-09-27
+over the whole coverage (51 cells): 2,524 of 3,015 pieces are one crop,
+permanent pasture (265), then 228 natural grassland (331), 99 ley (266), 39
+code 1926 and 22 maize. So `crops::field_rgb` leans each field drier or lusher
+off a hash of its first vertex (`field_seed`, micro-degrees, so the mesh and the
+basemap derive the same seed). The ends mirror each other about 1.0, so a run of
+fields averages back to the crop's tone. Grassland takes the full swing; other
+categories take a third of it. A parcel the extractor cut at a cell edge is two
+pieces with two seeds, and so can change shade along that edge. The fix is a
+parcel id on the wire, which the extractor does not write yet.
 
 ## Depth, and why the ladder was not enough
 

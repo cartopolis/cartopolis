@@ -7934,8 +7934,15 @@ mod tests {
                 // with them it measured 12 at seven bands, in at most 21 bytes of
                 // any row and 399 of the tile. The seam bounds below are
                 // unchanged and all hold.
+                //
+                // Raised 12 → 16 on 2026-09-27, when the land took realistic
+                // tones. The residue is a fraction of the contrast across the
+                // edge being rounded, and tarmac against a dark aerial green
+                // is more contrast than it was against pale paper: the same
+                // seven bands measured 15. The seam and row bounds below are
+                // unchanged and hold.
                 assert!(
-                    max_delta <= 12,
+                    max_delta <= 16,
                     "factor {factor} in {bands} bands moved a channel by {max_delta}/255 — past anti-aliasing, so a band lost or gained geometry"
                 );
                 // Scaled by the number of seams, because that is what the residue
