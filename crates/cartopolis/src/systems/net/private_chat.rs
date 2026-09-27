@@ -990,6 +990,25 @@ impl Engine {
             return;
         }
         match self.device.receive(&group, message) {
+            // **The name inside the entry is the sender's own claim.** An MLS
+            // credential is written by the device that made it, and the server
+            // registers devices without looking inside their key packages — so
+            // an account called `mallory` can mint a credential that says
+            // `jeroen`, and every line it sends would be shown under that name.
+            // `sender` is the account the server took the entry from, which is
+            // the one name here nobody can choose. The two must agree, and an
+            // entry where they do not is dropped rather than shown with a
+            // warning: the ratchet has already moved past it, and a line from
+            // somebody pretending to be somebody else has nothing in it worth
+            // reading.
+            Ok(Received::Message { from, .. }) if !from.username.eq_ignore_ascii_case(sender) => {
+                tracing::warn!(
+                    claimed = %from.username,
+                    account = %sender,
+                    seq,
+                    "dropped a private-chat entry whose sender claims another account's name"
+                );
+            }
             Ok(Received::Message { from, bytes }) => match Payload::decode(&bytes) {
                 Ok(Payload::Location {
                     latitude,
