@@ -65,10 +65,12 @@ name = "building"
 description = "One building and what the public registers say about it: the BAG card and the glass highlight"
 # `--ui building` selects the building nearest the avatar, so the avatar is the
 # pointer here. Avatar mode: altitude is the follow distance (capped at 25 m by
-# the harness), `look` the orbit elevation and azimuth around the avatar.
+# the harness), `look` the orbit elevation and azimuth around the avatar — and
+# the elevation is *positive* for a camera above the avatar: a negative one puts
+# it under the pavement looking up at the underside of the ground.
 mode = "avatar"
 at = [53.21905, 6.56880, 25]
-look = [-30.0, 200.0]
+look = [50.0, 110.0]
 time = 11.0
 fog = 0.08
 clouds = 0.2
@@ -81,8 +83,8 @@ description = "Two people meeting in the street and talking — the shared world
 # `--ui chat` seeds an exchange and stands a second speaker beside the avatar;
 # every scripted run is offline, so this is the only way to photograph it.
 mode = "avatar"
-at = [53.2194, 6.5665, 9]
-look = [-12.0, 200.0]
+at = [53.21860, 6.56760, 8]
+look = [12.0, 200.0]
 time = 12.0
 fog = 0.08
 clouds = 0.2

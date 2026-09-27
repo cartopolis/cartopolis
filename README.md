@@ -1,33 +1,44 @@
 # Cartopolis
 
-**An open digital twin of your city — one place where the municipality and its residents look at the same street.**
+**A social map of the real world — see how a place is built, and talk about it with the people who are there.**
 
-![Groningen city centre, built from the public registers](docs/img/city.png)
+![Groningen city centre, built from open public data](docs/img/city.png)
 
-Plans, permits and public works are hard to talk about on paper. A drawing means one thing to the planner who made it and another to the neighbour who has to live next to it, and a consultation evening only reaches the people who can make it that night. Cartopolis puts everyone in the same place instead: a walkable 3D copy of the real city, built straight from the public registers, that opens in a browser or on a phone with nothing to install.
+A map tells you where things are. It does not tell you what a building is, when it was built or what is planned for the empty lot next to it, and it has nowhere to ask. Cartopolis is a walkable 3D copy of the real world, built from open public data — the buildings, the roads, the ground, the trees and street lights, the tram that is actually due — and it is shared: the people looking at a place can meet there, talk about it and point each other at it. Like a map, but social.
 
-- **For municipalities and governments** — a twin assembled from the base registers you already maintain, not from a separate modelling project, and self-hosted on your own servers under an open-source licence.
-- **For residents** — the city as they know it, down to the building they live in: click it and see what the registers say about it. Share a view as a link and the person who opens it stands exactly where you stood.
-- **Between the two** — people meet in the twin as avatars and talk there, by text or by voice, about the place they are both looking at.
+It opens in a browser or on a phone with nothing to install, it is free and open source, and anyone can run their own.
 
-## What it does today
+## A view on public infrastructure
 
-**Built from the registers, not modelled by hand.** Every building comes from the [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) and its measured LoD2.2 shape from [3DBAG](https://3dbag.nl/); the ground is the [AHN](https://www.ahn.nl/) height survey; street trees, street lighting, pavements and garden boundaries come from the national and municipal object registers; the basemap can be switched to [PDOK](https://www.pdok.nl/)'s 25 cm aerial photography. When a register is updated, the twin is regenerated from it rather than redrawn.
+**Built from the registers, not modelled by hand.** Every building comes from the [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) and its measured LoD2.2 shape from [3DBAG](https://3dbag.nl/); the ground is the [AHN](https://www.ahn.nl/) height survey; street trees, street lighting, pavements and garden boundaries come from the national and municipal object registers; the basemap can be switched to [PDOK](https://www.pdok.nl/)'s 25 cm aerial photography; departure boards and vehicle positions come from the live transit feed. When a register changes, the world is regenerated from it rather than redrawn.
 
-**Every building answers questions.** Select one and a card shows what the public record holds — year of construction, use, number of units, floor area, status, monument listing, district and every address in it — while the building itself turns to glass so you can see its footprint on the street. Walk inside and its storeys are there, reached by stairs.
+**Every building answers questions.** Select one and a card shows what the public record holds — year of construction, use, number of units, floor area, status, monument listing, district and every address in it — while the building itself turns to glass so you can see where it stands. Walk inside and its storeys are there, reached by stairs.
 
-**A proposal can stand where it would be built.** An architect's IFC model can replace a building's surveyed shell; objects and 3D models can be placed, shaped and scripted in the world; and a whole set of content can be exported and imported as a document through an HTTP API, so a plan can be staged, reviewed and taken down again without touching anything else.
+**The rest of the world around it.** The sun stands where it really stands, the weather is the real forecast, and a route planner finds the way on foot, by bike or by car. Keep going up and the street gives way to the whole planet, in one continuous space.
 
-**A place to meet, not only to look.** An authoritative server keeps everyone in one shared world. People see each other's avatars, talk in local text chat and proximity voice, and keep private conversations end-to-end encrypted. Blocking, reporting and account deletion are enforced on the server, and a web console lets the operator manage accounts and run the data pipelines.
+## A place to share what you know about a place
 
-**The living city around it.** The sun stands where it really stands, the weather is the real forecast, the departure boards show the tram that is actually due, and a route planner finds the way on foot, by bike or by car. Keep going up and the city gives way to the whole planet, in one continuous space.
+**Talk where you stand.** An authoritative server keeps everyone in one shared world. People see each other's avatars and talk in local chat — scoped by how far away someone is standing, so the conversation belongs to the place — in proximity voice, across the whole world, or in private conversations that are end-to-end encrypted.
+
+**Point at it.** A link carries a place *and* the way you were looking at it, and whoever opens it — in the browser or in the app — stands exactly where you stood. Saved places keep a photo, and are organised in folders of pins on the map.
+
+**Put something there.** Objects and 3D models can be placed, shaped and scripted in the world; an architect's IFC model can replace a building's surveyed shell; and a whole set of content can be exported and imported as a document through an HTTP API — so a proposal can stand where it would be built, be looked at by the people it concerns, and be taken down again.
+
+Blocking, reporting and account deletion are enforced on the server, and a web console lets an operator manage accounts and run the data pipelines.
+
+## Who it is for
+
+- **Anyone curious about where they live** — what that building is, what the registers say about it, what is due at the stop around the corner.
+- **Neighbours and communities** — a shared place to meet, point at things and talk about them, rather than a comment thread with no map.
+- **Municipalities and governments** — a twin assembled from the base registers they already maintain, a way to put a plan in front of the people it affects, and a server they can host themselves.
+- **Planners, architects and builders** — somewhere to stand a design in its real surroundings and let other people walk around it.
 
 ## Screenshots
 
 | | |
 |---|---|
 | ![A building selected, with its register card](docs/img/building.png) | ![Two people meeting in the street, chatting](docs/img/meet.png) |
-| _Select a building: what the public registers hold about it._ | _Residents and officials meet in the place itself._ |
+| _Select a building: what the public registers hold about it._ | _Meet people in the place itself, and talk about it there._ |
 | ![A planned route across town](docs/img/route.png) | ![The interface over the city](docs/img/chrome.png) |
 | _Routes on foot, by bike or by car._ | _Runs on modest hardware: quality adapts to the device._ |
 | ![The same streets at dusk](docs/img/city-dusk.png) | ![Earth from orbit](docs/img/globe.png) |
@@ -40,7 +51,7 @@ _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](d
 
 The map, the sky, the weather, routing and the shared world work anywhere on Earth. The register-based detail — measured buildings and their records, ground relief, surveyed street objects, aerial photography and live transit — comes from **Dutch** open data, and today covers the **Netherlands**; municipal registers add more where a city publishes them (Groningen does). Elsewhere those layers degrade rather than break: the ground goes flat, buildings are raised from their OpenStreetMap footprints, and the departure boards stay empty. Each register is one pipeline in [`crates/atlas`](crates/atlas), so bringing in another country's is a pipeline, not a rewrite.
 
-It is written in Rust on the [Bevy](https://bevy.org/) engine, runs in the browser, on the desktop and on Android from one codebase, and is free and open source.
+It is written in Rust on the [Bevy](https://bevy.org/) engine, runs in the browser, on the desktop and on Android from one codebase.
 
 ## Try it
 
