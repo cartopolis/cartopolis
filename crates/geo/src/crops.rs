@@ -49,6 +49,10 @@ pub struct CropParcel {
     /// the whole reason it is a number and not an enum: the list runs to hundreds
     /// of crops and grows every year.
     pub code: u32,
+    /// Which way this field's tone leans ([`field_rgb`]), from [`field_seed`].
+    /// Taken from the parcel's lat/lng rather than from `rings`, because the
+    /// basemap paints the same field from lat/lng and the two must agree.
+    pub seed: u32,
     /// Outer ring first, holes after. Open rings — no repeated closing vertex.
     pub rings: Vec<Vec<[f32; 2]>>,
 }
@@ -88,13 +92,13 @@ impl CropCategory {
     #[must_use]
     pub fn rgb(self) -> u32 {
         match self {
-            Self::Grassland => 0xC9_DB_BB,
+            Self::Grassland => 0x9C_B2_7A,
             // Worked ground with nothing more said about it: soil showing
             // through, warmer and paler than any growing crop.
-            Self::Arable => 0xD4_C2_A0,
-            Self::Nature => 0xBD_C2_9A,
-            Self::Fallow => 0xDC_D0_B8,
-            Self::Other => 0xD1_CE_C6,
+            Self::Arable => 0xB9_A3_82,
+            Self::Nature => 0x9C_9F_76,
+            Self::Fallow => 0xC4_B6_97,
+            Self::Other => 0xB2_AE_9C,
         }
     }
 
@@ -136,52 +140,52 @@ pub fn rgb(category: CropCategory, code: u32) -> u32 {
     match code {
         // ---- Grassland -------------------------------------------------
         // Permanent pasture: the default green of the countryside.
-        265 => 0xC9_DB_BB,
+        265 => 0x9C_B2_7A,
         // A ley is reseeded and reads fresher than old pasture.
-        266 => 0xD3_E6_B8,
+        266 => 0xAA_C4_82,
         // Natural and semi-natural grassland under an agricultural claim: rough,
         // yellower, unmown.
-        331 | 332 | 1926 => 0xC6_D1_A9,
+        331 | 332 | 1926 => 0xB0_B3_86,
         // ---- Cereals ---------------------------------------------------
         // Wheat, barley, oats, rye. Straw gold — the one crop whose colour
         // everybody already knows.
-        233 | 234 | 235 | 236 | 238 | 670 | 7129 | 7130 => 0xE8_C8_78,
+        233 | 234 | 235 | 236 | 238 | 670 | 7129 | 7130 => 0xD4_B2_66,
         // ---- Maize -----------------------------------------------------
         // Two and a half metres of dense, yellowish green.
-        259 | 316 | 317 | 814 | 1935 => 0x86_B0_5A,
+        259 | 316 | 317 | 814 | 1935 => 0x7A_9A_50,
         // ---- Potatoes --------------------------------------------------
         // Ridged earth between the haulm rows: the brown field.
-        2014 | 2015 | 2016 | 2017 | 6632 => 0xB9_A0_6E,
+        2014 | 2015 | 2016 | 2017 | 6632 => 0x95_7A_58,
         // ---- Root crops ------------------------------------------------
         // Sugar beet, red beet, chicory root, carrots: a low, dense, blue-green
         // leaf canopy.
-        256 | 511 | 2741 | 2783 | 2785 | 2787 => 0x93_B8_A0,
+        256 | 511 | 2741 | 2783 | 2785 | 2787 => 0x5F_95_80,
         // ---- Onions ----------------------------------------------------
         // Grey-blue over open ground between the rows.
-        1932 | 1933 | 6660 | 6664 => 0xAF_C3_C8,
+        1932 | 1933 | 6660 | 6664 => 0xA7_AD_A8,
         // ---- Oilseed and fibre -----------------------------------------
         // Rape and flax. Rape is famously yellow for two weeks in May and green
         // either side of it; a lime yellow, greener than the cereals.
-        666 | 1922 | 1923 | 3736 => 0xD4_E2_6A,
+        666 | 1922 | 1923 | 3736 => 0xC4_CE_4E,
         // ---- Legumes and fodder ----------------------------------------
-        244 | 258 | 311 | 426 => 0xA9_CC_8A,
+        244 | 258 | 311 | 426 => 0x8E_C0_5A,
         // ---- Cover crops -----------------------------------------------
         // `groenbemesting, vanggewas`: sown to be ploughed in. Uniform young
         // green, and the second most numerous thing on arable land after the
         // crop itself.
-        6751 | 6755 | 6762 | 6783 | 6785 | 7126 => 0xC6_E0_A6,
+        6751 | 6755 | 6762 | 6783 | 6785 | 7126 => 0xB4_CC_8E,
         // ---- Flower bulbs ----------------------------------------------
         // Tulip, hyacinth, narcissus, lily, dahlia, gladiolus and the rest. A
         // soft pink: the bulb country apart from the arable around it, without
         // painting one bloom's colour that is only there in April.
-        997..=1006 | 1012 | 1015 | 6803 => 0xD7_A9_C4,
+        997..=1006 | 1012 | 1015 | 6803 => 0xC4_93_AC,
         // ---- Nursery stock ---------------------------------------------
         // Avenue trees, fruit-tree rootstocks, hedging: rows of young trees on
         // open ground.
-        1067 | 1071 | 1072 | 1077 | 1078 | 1079 | 1093 => 0x9A_AE_7C,
+        1067 | 1071 | 1072 | 1077 | 1078 | 1079 | 1093 => 0x84_8A_6E,
         // ---- Orchard ---------------------------------------------------
         // Apples and pears: standing trees, the deepest green here.
-        1096 | 1097 | 1098 => 0x6E_9C_6A,
+        1096 | 1097 | 1098 => 0x55_7A_4C,
         // ---- Green fallow ----------------------------------------------
         // Registered as arable and lying fallow, so it takes the fallow tone
         // rather than the worked-ground one.
@@ -192,6 +196,59 @@ pub fn rgb(category: CropCategory, code: u32) -> u32 {
         1936 => palette::FOREST,
         _ => category.rgb(),
     }
+}
+
+/// A field's seed for [`field_rgb`]: a hash of its first outer vertex, in
+/// micro-degrees so the mesh and the basemap — which both start from the same
+/// lat/lng — cannot round it differently.
+#[must_use]
+pub fn field_seed(lat: f64, lng: f64) -> u32 {
+    let q = |v: f64| (v * 1e6).round() as i64 as u64;
+    let mut h = q(lat).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ q(lng);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 29;
+    h as u32
+}
+
+/// The tone one field is actually drawn in: its crop's ([`rgb`]), leaned a
+/// little drier or lusher per field.
+///
+/// **Without it the countryside is one colour whatever the palette says.** Over
+/// the Groningen coverage 2,524 of 3,015 pieces are one crop — permanent pasture,
+/// code 265 (counted 2026-09-27) — so a crop palette, however well separated,
+/// paints the whole box one green. What makes grassland read as a patchwork from
+/// the air is that neighbouring fields were mown, grazed and fertilised on
+/// different days: some straw-yellow, some deep green. Grassland takes the full
+/// swing; other categories a third of it, since their crop already carries the
+/// variety.
+///
+/// A parcel that crosses a cell edge is two pieces with two seeds, so it can
+/// change tone along that edge. Keying on a parcel id instead needs one on the
+/// wire, which the extractor does not write yet.
+#[must_use]
+pub fn field_rgb(category: CropCategory, code: u32, seed: u32) -> u32 {
+    let base = rgb(category, code);
+    let swing = match category {
+        CropCategory::Grassland => 1.0,
+        _ => 0.35,
+    };
+    // Uniform in [-1, 1]: negative leans lush, positive leans dry.
+    let t = ((seed >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0;
+    // The two ends as per-channel multipliers, mirror images about 1.0 so a
+    // run of fields averages back to the crop's own tone. Dry lifts red and
+    // drops blue (hay); lush is the reverse, a cooler fresh sward.
+    const DRY: [f32; 3] = [1.10, 1.05, 0.90];
+    const LUSH: [f32; 3] = [0.90, 0.95, 1.10];
+    let end = if t >= 0.0 { DRY } else { LUSH };
+    let k = t.abs() * swing;
+    let mut out = 0u32;
+    for (i, shift) in [16, 8, 0].into_iter().enumerate() {
+        let c = ((base >> shift) & 0xFF) as f32;
+        let m = 1.0 + (end[i] - 1.0) * k;
+        out |= ((c * m).round().clamp(0.0, 255.0) as u32) << shift;
+    }
+    out
 }
 
 /// Triangulate a cell's parcels into merged meshes, each no larger than
@@ -205,7 +262,7 @@ pub fn build_crop_meshes(parcels: &[CropParcel], max_bytes: Option<usize>) -> Ve
         .iter()
         .map(|p| FlatFill {
             rings: &p.rings,
-            rgb: rgb(p.category, p.code),
+            rgb: field_rgb(p.category, p.code, p.seed),
         })
         .collect();
     build_flat_fills(&fills, SurfaceGroup::Crop, max_bytes)
@@ -298,6 +355,7 @@ mod tests {
         CropParcel {
             category,
             code,
+            seed: 0,
             rings: vec![vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]]],
         }
     }
@@ -480,6 +538,31 @@ mod tests {
         }
     }
 
+    /// A run of pasture fields must not come out one colour — that is the whole
+    /// reason `field_rgb` exists — and must still average to pasture, or the
+    /// countryside drifts off the tone the palette chose for it.
+    #[test]
+    fn neighbouring_pastures_differ_and_average_to_pasture() {
+        let base = rgb(CropCategory::Grassland, 265);
+        let tones: Vec<u32> = (0..200)
+            .map(|i| {
+                let seed = field_seed(53.25 + f64::from(i) * 1e-3, 6.6);
+                field_rgb(CropCategory::Grassland, 265, seed)
+            })
+            .collect();
+        let distinct: std::collections::HashSet<_> = tones.iter().collect();
+        assert!(distinct.len() > 40, "only {} tones", distinct.len());
+        for shift in [16, 8, 0] {
+            let ch = |v: u32| f64::from((v >> shift) & 0xFF);
+            let mean = tones.iter().map(|&t| ch(t)).sum::<f64>() / tones.len() as f64;
+            assert!(
+                (mean - ch(base)).abs() < 8.0,
+                "channel {shift} averages {mean:.0} against {}",
+                ch(base)
+            );
+        }
+    }
+
     /// Grass grows on a meadow and not on a ploughed field. This is the value-1
     /// defect the layer fixes, so it is asserted at the source of the answer as
     /// well as in `turf`.
@@ -501,6 +584,7 @@ mod tests {
         let parcel = CropParcel {
             category: CropCategory::Arable,
             code: 2014,
+            seed: 0,
             rings: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
         };
         assert!(build_crop_meshes(&[parcel], None).is_empty());

@@ -54,7 +54,12 @@ use cartopolis_core::TileKey;
 /// the globe replaces those tiles exactly at the boundary. Ramped, the boundary
 /// is seamless and only deep space reads planetary. Surface-only, so the
 /// atmosphere limb stays bright.
-const GLOBE_DEEP_ALBEDO: f32 = 0.55;
+///
+/// 0.55 was set against the paper-white palette. Since the ground went to earth
+/// tones (2026-09-27, `palette`) the land already averages ~0.5, so 0.55 on top
+/// of that sank it into the atmosphere's blue and the continents lost their edge
+/// against the sea; 0.75 lands it near the real ~0.35.
+const GLOBE_DEEP_ALBEDO: f32 = 0.75;
 /// Change in the ramped albedo worth rewriting the globe materials for.
 const ALBEDO_UPDATE_STEP: f32 = 0.03;
 

@@ -161,6 +161,7 @@ pub fn crop_parcels(cell: &CropCell, cx: i64, cy: i64, tile_m: f32) -> Vec<CropP
             Some(CropParcel {
                 category: *category,
                 code: *code,
+                seed: seed_of(rings),
                 rings: local,
             })
         })
@@ -257,9 +258,18 @@ fn overlay_fills(
                 .iter()
                 .map(|r| r.iter().map(to_unit).collect())
                 .collect(),
-            rgb: cartopolis_geo::crops::rgb(*category, *code),
+            rgb: cartopolis_geo::crops::field_rgb(*category, *code, seed_of(rings)),
         }
     })
+}
+
+/// A piece's [`cartopolis_geo::crops::field_seed`], off its first outer vertex
+/// as the host sent it — the one input the mesh and the basemap share.
+fn seed_of(rings: &[Vec<(f64, f64)>]) -> u32 {
+    rings
+        .first()
+        .and_then(|r| r.first())
+        .map_or(0, |&(lat, lng)| cartopolis_geo::crops::field_seed(lat, lng))
 }
 
 #[cfg(test)]

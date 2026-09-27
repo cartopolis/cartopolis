@@ -352,8 +352,21 @@ impl SubTile {
 /// is a texture on the ground of a 3D world, not a map you read at arm's length —
 /// high-contrast cartography reads as noise once it is lit and viewed at a grazing
 /// angle. Sits under the same lighting as everything else.
+///
+/// **Earth under a map, not paper and not a game** (2026-09-27). Two ends have
+/// been tried and both were withdrawn: pale cartographic paper (grass at
+/// `#D2DEC6`, value 0.87, saturation 0.11), which lit by the sun rendered the
+/// countryside as white with grey lines on it; and a game green at saturation
+/// 0.54 (bc1dfdb, reverted in dc01bc5), which read as confetti. The land tones
+/// here sit between — the value of real ground seen from the air (0.55–0.80),
+/// the muted olive, khaki and soil hues of it (saturation 0.15–0.30) — while
+/// the roads, water and built land stay the map's. Built land is kept *lighter*
+/// and greyer than the fields around it, which is also what a town looks like
+/// from a plane.
 pub mod palette {
-    pub const PAPER: u32 = 0xEE_EA_E2;
+    /// Land nothing more is known about — and, at globe zooms, all land. A dry
+    /// khaki rather than paper white, so the planet reads as ground.
+    pub const PAPER: u32 = 0xC6_C2_A8;
     /// Water as the raster basemap paints it — and, more to the point, what the
     /// *shaded* water of `systems::water` looks like from far enough that its
     /// waves have merged, the same contract [`FOREST_CANOPIED`] has with the
@@ -403,25 +416,26 @@ pub mod palette {
     /// edge is the price. `tile_loader`'s
     /// `the_basemaps_water_paint_reads_as_fully_water` holds the line.
     pub const WATER: u32 = 0x2C_48_62;
-    pub const FOREST: u32 = 0xC3_D3_BB;
-    pub const GRASS: u32 = 0xD2_DE_C6;
-    /// Canopy tone: one step down the [`FOREST`] hue ramp. The map is pale
-    /// cartographic paper, so a saturated green here reads as confetti scattered
-    /// on a pastel drawing rather than as trees — see `systems::vegetation`.
-    pub const CANOPY: u32 = 0xA9_BF_9E;
+    pub const FOREST: u32 = 0x8A_9C_72;
+    /// Meadow olive: a muted green at the value of mown grass from the air.
+    pub const GRASS: u32 = 0xA9_B8_88;
+    /// Canopy tone: one step down the [`FOREST`] hue ramp, at the same muted
+    /// saturation — a game green here reads as confetti (see the module note).
+    pub const CANOPY: u32 = 0x71_87_5A;
     /// Second canopy tone, alternated per instance. Two tones buy depth without
     /// costing a light.
-    pub const CANOPY_DEEP: u32 = 0x93_AC_8A;
-    /// Trunks are a warm grey in the [`BUILDING_EDGE`] family, deliberately *not*
-    /// brown: at walking distance a saturated brown is the loudest colour on the
-    /// whole map.
-    pub const TRUNK: u32 = 0xB0_A5_94;
+    pub const CANOPY_DEEP: u32 = 0x60_74_4C;
+    /// Trunks are a warm grey-brown kept *below* the canopy's value: a trunk
+    /// brighter than the leaves over it is the inversion dc01bc5 describes, and
+    /// a saturated brown at walking distance is the loudest colour on the map.
+    pub const TRUNK: u32 = 0x85_7A_6A;
     /// What a forest polygon looks like from far enough that the individual trees
-    /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover. The
-    /// fill ramps to this as the trees fade out, so the aggregate brightness does
-    /// not step when the geometry goes away.
-    pub const FOREST_CANOPIED: u32 = 0xB2_C6_A8;
-    pub const SAND: u32 = 0xE6_DC_C2;
+    /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover —
+    /// `mix(FOREST, CANOPY, 0.65)`, computed, not matched by eye. The fill ramps
+    /// to this as the trees fade out, so the aggregate brightness does not step
+    /// when the geometry goes away.
+    pub const FOREST_CANOPIED: u32 = 0x7A_8E_62;
+    pub const SAND: u32 = 0xD6_C9_A2;
     /// A tunnel's walls and roof. Darker than any surface in this palette on
     /// purpose: it is the one thing here that is never lit by the sun, and a
     /// concrete the tone of a pavement reads as a white box with a hole at each
@@ -431,8 +445,8 @@ pub mod palette {
     /// A quay wall: weathered brick and stone above a canal, darker than the
     /// street on top of it so the edge reads from across the water.
     pub const QUAY_WALL: u32 = 0x7A_6A_5C;
-    pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
-    pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
+    pub const RESIDENTIAL: u32 = 0xD0_CA_BD;
+    pub const INDUSTRIAL: u32 = 0xCA_C6_C0;
     /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
     /// [`INDUSTRIAL`] sit within a few counts of [`GRASS`] on purpose — streets
     /// and buildings carry the figure there — but from ~z12 out those are
@@ -440,11 +454,11 @@ pub mod palette {
     /// rendered as one near-uniform green sheet with no visible cities. These are
     /// the same land uses a hue step warmer and darker, used by the far style
     /// band (`FAR_STYLE_TILE_M`) so a town reads as a town from the air.
-    pub const RESIDENTIAL_FAR: u32 = 0xDE_D4_C2;
-    pub const INDUSTRIAL_FAR: u32 = 0xD6_D1_CA;
-    pub const SITE: u32 = 0xE3_E0_D5;
-    pub const BUILDING: u32 = 0xD3_CC_C0;
-    pub const BUILDING_EDGE: u32 = 0xBE_B5_A6;
+    pub const RESIDENTIAL_FAR: u32 = 0xC6_BC_AA;
+    pub const INDUSTRIAL_FAR: u32 = 0xBE_B9_B1;
+    pub const SITE: u32 = 0xCC_C7_B8;
+    pub const BUILDING: u32 = 0xC0_B8_AA;
+    pub const BUILDING_EDGE: u32 = 0xA8_9F_90;
     pub const ROAD_FILL: u32 = 0xFC_FB_F8;
     pub const ROAD_CASING: u32 = 0xCB_C4_B6;
     pub const MOTORWAY_FILL: u32 = 0xF4_DF_B4;
@@ -7832,14 +7846,19 @@ mod tests {
             // pixel, by one, from a `bridges` outline wholly outside factor 4
             // (0,3). A feature the cull wrongly dropped is a different shape — a
             // run of pixels at the stroke's full contrast — and still fails.
+            //
+            // Counted in *pixels*, not in levels: how far that one edge pixel
+            // moves is the contrast between the stroke and the ground under it,
+            // which is a palette choice. The earthier ground of 2026-09-27 put
+            // the same pixel 5 levels off instead of 1.
             let differing = culled
-                .iter()
-                .zip(full.iter())
-                .filter(|(a, b)| a.abs_diff(**b) > 1)
+                .chunks_exact(4)
+                .zip(full.chunks_exact(4))
+                .filter(|(a, b)| a.iter().zip(b.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
                 .count();
-            assert_eq!(
-                differing, 0,
-                "factor {factor} ({x},{y}): culling changed {differing} bytes by more than rounding"
+            assert!(
+                differing <= 1,
+                "factor {factor} ({x},{y}): culling changed {differing} pixels by more than rounding"
             );
         }
     }

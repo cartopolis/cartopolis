@@ -792,6 +792,7 @@ mod tests {
         let parcel = |category| CropParcel {
             category,
             code: 265,
+            seed: 0,
             rings: vec![vec![
                 [hx - 30.0, hz - 30.0],
                 [hx + 30.0, hz - 30.0],
