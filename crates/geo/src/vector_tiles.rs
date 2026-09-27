@@ -353,19 +353,19 @@ impl SubTile {
 /// high-contrast cartography reads as noise once it is lit and viewed at a grazing
 /// angle. Sits under the same lighting as everything else.
 ///
-/// **Between realistic and game-like** (2026-09-27). Two ends have been tried
-/// and both were withdrawn: pale cartographic paper (grass at `#D2DEC6`, value
-/// 0.87, saturation 0.11), which lit by the sun rendered the countryside and the
-/// globe white with grey lines on them; and a game green at saturation 0.54
-/// (bc1dfdb, reverted in dc01bc5), which read as confetti. The greens here sit
-/// at the value of real ground seen from the air (0.45–0.75) and at saturation
-/// ~0.4, one step short of the game palette — while the roads, water and built
-/// land stay the map's. Built land is kept *lighter* and greyer than the fields
-/// around it, which is also what a town looks like from a plane.
+/// **Realistic: the ground as it looks from the air** (2026-09-27). Two styled
+/// ends were tried and withdrawn: pale cartographic paper (grass at `#D2DEC6`,
+/// value 0.87, saturation 0.11), which lit by the sun rendered the countryside
+/// and the globe white with grey lines on them; and a game green at saturation
+/// 0.54 (bc1dfdb, reverted in dc01bc5), which read as confetti. The land tones
+/// are now taken from aerial and satellite imagery — pasture, forest canopy,
+/// ripe grain, desert sand, the grey-brown of a town — while the roads, water
+/// and labels stay the map's. What this map adds over a photograph is the
+/// drawing, not the colour.
 pub mod palette {
     /// Land nothing more is known about — and, at globe zooms, all land. A dry
     /// khaki rather than paper white, so the planet reads as ground.
-    pub const PAPER: u32 = 0xC8_C1_A0;
+    pub const PAPER: u32 = 0xA0_9A_80;
     /// Water as the raster basemap paints it — and, more to the point, what the
     /// *shaded* water of `systems::water` looks like from far enough that its
     /// waves have merged, the same contract [`FOREST_CANOPIED`] has with the
@@ -415,29 +415,29 @@ pub mod palette {
     /// edge is the price. `tile_loader`'s
     /// `the_basemaps_water_paint_reads_as_fully_water` holds the line.
     pub const WATER: u32 = 0x2C_48_62;
-    pub const FOREST: u32 = 0x6E_90_58;
+    pub const FOREST: u32 = 0x4A_5A_36;
     /// Meadow olive: a muted green at the value of mown grass from the air.
-    pub const GRASS: u32 = 0x9C_BA_72;
+    pub const GRASS: u32 = 0x6E_8A_4C;
     /// Canopy tone: one step down the [`FOREST`] hue ramp, at the same muted
     /// saturation — a game green here reads as confetti (see the module note).
-    pub const CANOPY: u32 = 0x5E_82_48;
+    pub const CANOPY: u32 = 0x4A_6A_36;
     /// Second canopy tone, alternated per instance. Two tones buy depth without
     /// costing a light.
-    pub const CANOPY_DEEP: u32 = 0x4F_70_3C;
+    pub const CANOPY_DEEP: u32 = 0x3C_5A_2C;
     /// Trunks are a warm grey-brown kept *below* the canopy's value: a trunk
     /// brighter than the leaves over it is the inversion dc01bc5 describes, and
     /// a saturated brown at walking distance is the loudest colour on the map.
-    pub const TRUNK: u32 = 0x75_6B_5C;
+    pub const TRUNK: u32 = 0x5A_4E_40;
     /// What a forest polygon looks like from far enough that the individual trees
     /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover —
     /// `mix(FOREST, CANOPY, 0.65)`, computed, not matched by eye. The fill ramps
     /// to this as the trees fade out, so the aggregate brightness does not step
     /// when the geometry goes away.
-    pub const FOREST_CANOPIED: u32 = 0x64_87_4E;
-    pub const SAND: u32 = 0xDC_C8_94;
+    pub const FOREST_CANOPIED: u32 = 0x4A_64_36;
+    pub const SAND: u32 = 0xD6_C3_9A;
     /// Glaciers and ice caps, from the land cover — a cool white, the one
     /// near-white left on the land, because from orbit it is the one that is.
-    pub const ICE: u32 = 0xEE_F1_F2;
+    pub const ICE: u32 = 0xEE_F1_F4;
     /// A tunnel's walls and roof. Darker than any surface in this palette on
     /// purpose: it is the one thing here that is never lit by the sun, and a
     /// concrete the tone of a pavement reads as a white box with a hole at each
@@ -447,8 +447,8 @@ pub mod palette {
     /// A quay wall: weathered brick and stone above a canal, darker than the
     /// street on top of it so the edge reads from across the water.
     pub const QUAY_WALL: u32 = 0x7A_6A_5C;
-    pub const RESIDENTIAL: u32 = 0xD0_CA_BD;
-    pub const INDUSTRIAL: u32 = 0xCA_C6_C0;
+    pub const RESIDENTIAL: u32 = 0xAB_A6_9C;
+    pub const INDUSTRIAL: u32 = 0xA6_A4_A0;
     /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
     /// [`INDUSTRIAL`] sit within a few counts of [`GRASS`] on purpose — streets
     /// and buildings carry the figure there — but from ~z12 out those are
@@ -456,11 +456,11 @@ pub mod palette {
     /// rendered as one near-uniform green sheet with no visible cities. These are
     /// the same land uses a hue step warmer and darker, used by the far style
     /// band (`FAR_STYLE_TILE_M`) so a town reads as a town from the air.
-    pub const RESIDENTIAL_FAR: u32 = 0xC6_BC_AA;
-    pub const INDUSTRIAL_FAR: u32 = 0xBE_B9_B1;
-    pub const SITE: u32 = 0xCC_C7_B8;
-    pub const BUILDING: u32 = 0xC0_B8_AA;
-    pub const BUILDING_EDGE: u32 = 0xA8_9F_90;
+    pub const RESIDENTIAL_FAR: u32 = 0x92_8B_80;
+    pub const INDUSTRIAL_FAR: u32 = 0x8E_8C_88;
+    pub const SITE: u32 = 0xAD_A9_9E;
+    pub const BUILDING: u32 = 0x8F_85_7C;
+    pub const BUILDING_EDGE: u32 = 0x7A_70_68;
     pub const ROAD_FILL: u32 = 0xFC_FB_F8;
     pub const ROAD_CASING: u32 = 0xCB_C4_B6;
     pub const MOTORWAY_FILL: u32 = 0xF4_DF_B4;
