@@ -3489,6 +3489,13 @@ fn run_client() {
                 // leaving a "connected" notification over a client that isn't.
                 systems::background::apply_background_connection
                     .after(systems::session::drive_session),
+                // After the driver marks a session as come back, and after the
+                // avatar it brings back is in the grid, so the resume lands on
+                // the same frame the avatar appears.
+                systems::session::keep_avatar_across_reconnect
+                    .after(systems::session::drive_session)
+                    .after(attach_avatar_to_bigspace)
+                    .before(systems::geo_nav::apply_teleport),
             ),
         )
         // The two systems that make the app a well-behaved Android citizen: stop

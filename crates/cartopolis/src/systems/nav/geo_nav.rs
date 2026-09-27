@@ -2148,33 +2148,14 @@ pub fn apply_teleport(
     // stays put with state that agrees is recoverable by the next teleport, while
     // state that lies about where the avatar is never resolves on its own.
     if let Ok((mut cell, mut tf)) = avatars.single_mut() {
-        *cell = avatar_cell;
-        tf.translation = avatar_local;
-        avatar_state.position = avatar_local;
-        avatar_state.display_position = avatar_local;
-        // A jump ends a sit, immediately and without the slide: the bench that was
-        // being sat on belongs to the cells this teleport is about to retire, so
-        // easing off it would ease off a seat that is no longer anywhere
-        // (`resources::Seated` holds an offset, and after this the offset points at
-        // a place in the new city).
-        avatar_state.seated = None;
-        // Online, the sim owns this position, so ask it to place the avatar too
-        // (`NetMessage::Teleport`, protocol 17) — without this the next snapshot
-        // pulled the body straight back to where it was, which is what every
-        // online jump silently did before. The hold keeps the snapshots already
-        // in flight (still carrying the old position) from yanking the avatar
-        // back while the sim's confirmation is on its way
-        // (`network::adopt_local_pose`).
-        if let Some(sess) = &online {
-            sess.send(
-                "teleport",
-                cartopolis_core::NetMessage::Teleport {
-                    request_id: 0,
-                    position: avatar_local,
-                },
-            );
-            avatar_state.teleport_hold = Some(web_time::Instant::now());
-        }
+        place_avatar(
+            &mut cell,
+            &mut tf,
+            &mut avatar_state,
+            online.as_deref(),
+            avatar_cell,
+            avatar_local,
+        );
     } else {
         tracing::warn!(
             "geo_nav: teleported the camera but not the avatar — no avatar with a \
@@ -2325,6 +2306,47 @@ pub fn apply_teleport(
     }
 
     tracing::info!(lat, lng, "teleported to geo target");
+}
+
+/// Put the local avatar at `cell` + `local` and, online, ask the sim to put it
+/// there too. The avatar half of [`apply_teleport`], shared with
+/// `session::keep_avatar_across_reconnect`, which has to place the avatar without
+/// moving the camera.
+pub fn place_avatar(
+    cell: &mut GridCell,
+    tf: &mut Transform,
+    avatar_state: &mut AvatarState,
+    online: Option<&crate::resources::OnlineSession>,
+    avatar_cell: GridCell,
+    avatar_local: Vec3,
+) {
+    *cell = avatar_cell;
+    tf.translation = avatar_local;
+    avatar_state.position = avatar_local;
+    avatar_state.display_position = avatar_local;
+    // A jump ends a sit, immediately and without the slide: the bench that was
+    // being sat on belongs to the cells this teleport is about to retire, so
+    // easing off it would ease off a seat that is no longer anywhere
+    // (`resources::Seated` holds an offset, and after this the offset points at
+    // a place in the new city).
+    avatar_state.seated = None;
+    // Online, the sim owns this position, so ask it to place the avatar too
+    // (`NetMessage::Teleport`, protocol 17) — without this the next snapshot
+    // pulled the body straight back to where it was, which is what every
+    // online jump silently did before. The hold keeps the snapshots already
+    // in flight (still carrying the old position) from yanking the avatar
+    // back while the sim's confirmation is on its way
+    // (`network::adopt_local_pose`).
+    if let Some(sess) = online {
+        sess.send(
+            "teleport",
+            cartopolis_core::NetMessage::Teleport {
+                request_id: 0,
+                position: avatar_local,
+            },
+        );
+        avatar_state.teleport_hold = Some(web_time::Instant::now());
+    }
 }
 
 #[cfg(test)]

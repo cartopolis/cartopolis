@@ -25,15 +25,19 @@
 //! mode you are already in tears the session down and rebuilds it, which is what
 //! "Reconnect" means.
 
+use bevy::math::DVec3;
 use bevy::prelude::*;
+use big_space::prelude::{Grid, GridCell};
 use cartopolis_core::AuthCredential;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{Avatar, Prim, RemoteAvatar};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::{
-    AuthIdentity, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId, NetworkMailbox,
-    NetworkSyncState, OnlineSession, OsmTileUrlTemplate,
+    AuthIdentity, AvatarState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId, MapAnchor,
+    NetworkMailbox, NetworkSyncState, OnlineSession, OsmTileUrlTemplate,
 };
+use crate::systems::geo_nav;
 use crate::systems::network::{self, LinkState, LinkStatus};
 use crate::systems::user_store::UserStore;
 
@@ -166,6 +170,9 @@ pub struct SessionState {
     link: Option<LinkStatus>,
     /// A session that was lost rather than left, and is being got back.
     reconnect: Option<Reconnect>,
+    /// Set on the frame a lost session comes back, and taken by
+    /// [`keep_avatar_across_reconnect`] once it has put the avatar back.
+    resumed: bool,
 }
 
 /// Seconds to wait before each attempt to get a lost session back, counted from
@@ -300,6 +307,7 @@ pub fn drive_session(
 ) {
     if let Some(request) = session.request.take() {
         session.reconnect = None;
+        session.resumed = false;
         teardown(
             &mut commands,
             &mut session,
@@ -387,6 +395,7 @@ pub fn drive_session(
             session.status = SessionStatus::Online;
             if session.reconnect.take().is_some() {
                 info!(server = %session.mode.where_(), "session: reconnected");
+                session.resumed = true;
             }
             return;
         }
@@ -479,6 +488,69 @@ fn schedule_reconnect(
     session.mode = SessionMode::Remote { server };
     session.status = SessionStatus::Connecting;
     true
+}
+
+/// **A reconnect puts the avatar back where it was.** A lost session is torn down
+/// like any other, so the avatar is despawned with it, and the sim that takes the
+/// reconnect spawns a *new* avatar at the origin of its flat frame — which is the
+/// map anchor, i.e. wherever the last teleport landed. Switching to another app
+/// on the phone and back therefore dropped the avatar at that spot rather than
+/// where it had walked to.
+///
+/// So while a session has an avatar this remembers where it stands — as a
+/// latitude and longitude, because the map may re-anchor while the client waits
+/// to reconnect and a position in the old frame would then be the wrong place —
+/// and on the frame a lost session comes back it places the avatar there and
+/// tells the sim, through the same [`geo_nav::place_avatar`] a teleport uses.
+/// The camera is left alone: the view the person switched away from is still
+/// the view they come back to.
+///
+/// Only a *reconnect* does this. A sign-in the person asked for starts where the
+/// sim puts them, as it always has.
+///
+/// [`geo_nav::place_avatar`]: crate::systems::geo_nav::place_avatar
+pub fn keep_avatar_across_reconnect(
+    mut session: ResMut<SessionState>,
+    anchor: Res<MapAnchor>,
+    online: Option<Res<OnlineSession>>,
+    mut avatar_state: ResMut<AvatarState>,
+    mut avatars: Query<(&mut GridCell, &mut Transform), With<Avatar>>,
+    mut last: Local<Option<(f64, f64, f64)>>,
+) {
+    let (Some(anchor), Ok((mut cell, mut tf))) = (anchor.geo, avatars.single_mut()) else {
+        // No avatar: nothing to watch, and a resume waits for the one
+        // `sync_local_avatar` is about to spawn.
+        return;
+    };
+    let edge = f64::from(WORLD_CELL_EDGE);
+    if session.resumed {
+        session.resumed = false;
+        if let (Some((lat, lng, y)), Some(sess)) = (*last, online.as_deref()) {
+            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, lat, lng);
+            let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+                .translation_to_grid(DVec3::new(wx, y, wz));
+            geo_nav::place_avatar(
+                &mut cell,
+                &mut tf,
+                &mut avatar_state,
+                Some(sess),
+                to_cell,
+                to_local,
+            );
+            info!(lat, lng, "session: avatar put back where it was");
+        }
+    }
+    if !session.is_online() {
+        return;
+    }
+    // `AvatarState::position` is relative to the avatar's cell, which is what
+    // `place_avatar` writes; the cell is added back so a position past the first
+    // cell's edge is not remembered 10 km out.
+    let p = avatar_state.position;
+    let wx = cell.x as f64 * edge + f64::from(p.x);
+    let wz = cell.z as f64 * edge + f64::from(p.z);
+    let (lat, lng) = geo_nav::world_to_lat_lng(anchor, wx, wz);
+    *last = Some((lat, lng, f64::from(p.y)));
 }
 
 /// Open the link and install the resources that make the rest of the client
@@ -1126,5 +1198,64 @@ mod tests {
             app.world().resource::<AuthIdentity>().username.as_deref(),
             Some("alice")
         );
+    }
+
+    /// Switching apps on the phone drops the socket, and the sim that takes the
+    /// reconnect spawns a new avatar at the map anchor. The avatar must come back
+    /// where it had walked to — and the sim must be told, or the next snapshot
+    /// pulls it straight back to the anchor.
+    #[test]
+    fn a_reconnect_puts_the_avatar_back_where_it_was() {
+        let mut app = App::new();
+        app.init_resource::<SessionState>()
+            .init_resource::<AvatarState>()
+            .insert_resource(MapAnchor {
+                geo: Some((53.2194, 6.5665, 14)),
+            })
+            .add_systems(Update, keep_avatar_across_reconnect);
+        let (intent_tx, mut rx) = futures_channel::mpsc::unbounded();
+        app.insert_resource(OnlineSession { intent_tx });
+        app.world_mut().resource_mut::<SessionState>().status = SessionStatus::Online;
+
+        let walked = Vec3::new(120.0, 0.0, -80.0);
+        app.world_mut().resource_mut::<AvatarState>().position = walked;
+        let avatar = app
+            .world_mut()
+            .spawn((
+                Avatar,
+                GridCell::default(),
+                Transform::from_translation(walked),
+            ))
+            .id();
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "a live session placed its own avatar"
+        );
+
+        // Lost and got back: a new avatar, at the origin the sim spawns it on.
+        app.world_mut().despawn(avatar);
+        app.world_mut().resource_mut::<AvatarState>().position = Vec3::ZERO;
+        let avatar = app
+            .world_mut()
+            .spawn((Avatar, GridCell::default(), Transform::default()))
+            .id();
+        app.world_mut().resource_mut::<SessionState>().resumed = true;
+        app.update();
+
+        let at = app.world().resource::<AvatarState>().position;
+        assert!(
+            at.distance(walked) < 0.01,
+            "avatar at {at}, had walked to {walked}"
+        );
+        let drawn = app.world().get::<Transform>(avatar).unwrap().translation;
+        assert!(drawn.distance(walked) < 0.01, "avatar drawn at {drawn}");
+        match rx.try_recv() {
+            Ok(cartopolis_core::NetMessage::Teleport { position, .. }) => {
+                assert!(position.distance(walked) < 0.01, "sim told {position}");
+            }
+            _ => panic!("the sim was not told where the avatar is"),
+        }
+        assert!(!app.world().resource::<SessionState>().resumed);
     }
 }
