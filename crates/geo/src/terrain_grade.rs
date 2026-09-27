@@ -427,6 +427,42 @@ pub fn grade(
                 }
             }
         }
+        // **The abutment itself, under the deck's end.** Pinned only beside the
+        // deck, the ramp's last sample is at the top while the next one in —
+        // under the structure — is still the ground it spans, and everything
+        // between the two is drawn by interpolating them: the last metres of road
+        // bent down under the deck edge, visibly, at the Europaplein
+        // (2026-09-27). A bridge rests on a solid abutment there, so the deck
+        // samples touching an abutment pin are held at the deck's own top, and
+        // the ground drops away one sample further in.
+        let abutment: Vec<usize> = (1..n - 1)
+            .flat_map(|z| (1..n - 1).map(move |x| z * n + x))
+            .filter(|&i| {
+                lift[i].is_finite()
+                    && [
+                        i - 1,
+                        i + 1,
+                        i - n,
+                        i + n,
+                        i - n - 1,
+                        i - n + 1,
+                        i + n - 1,
+                        i + n + 1,
+                    ]
+                    .into_iter()
+                    .any(|k| ramp[k] && pins[k].is_finite())
+            })
+            .collect();
+        for i in abutment {
+            let held = match top.get(i) {
+                Some(&t) if t.is_finite() => t,
+                _ => raw[i] + lift[i],
+            };
+            if held.is_finite() {
+                pins[i] = held;
+                raw[i] = held;
+            }
+        }
     }
     out.raised = crate::road_grade::ramp_from_pins(
         raw,
@@ -482,6 +518,50 @@ mod tests {
         assert!((with_top - 7.0).abs() < 0.3, "{with_top}");
         let without = at_abutment(&[]);
         assert!(without > 10.0, "{without}");
+    }
+
+    /// **The road meets the deck level, not bending down under its edge.** The
+    /// ground under a deck is whatever it spans — here a valley at 1 m under a
+    /// 7 m top — and with only the samples beside the deck pinned, the field
+    /// between the last ramp sample and the first deck sample was a slope, which
+    /// the road's last metres were drawn on (the Europaplein, 2026-09-27). The
+    /// abutment under the deck's end holds the top; the valley starts after it.
+    #[test]
+    fn the_ground_under_a_decks_end_is_the_abutment() {
+        let l = lattice(31);
+        let n = l.n;
+        // The approach runs up to the deck; a street crosses under it further in.
+        let road: Vec<bool> = (0..n * n)
+            .map(|i| ((14..=16).contains(&(i / n)) && i % n < 20) || (24..=26).contains(&(i % n)))
+            .collect();
+        let ramp: Vec<bool> = (0..n * n).map(|i| i / n == 15 && i % n < 20).collect();
+        let deck = |i: usize| (13..=17).contains(&(i / n)) && i % n >= 20;
+        let lift: Vec<f32> = (0..n * n)
+            .map(|i| if deck(i) { 6.0 } else { f32::NAN })
+            .collect();
+        let top: Vec<f32> = (0..n * n)
+            .map(|i| if deck(i) { 7.0 } else { f32::NAN })
+            .collect();
+        let none = |_: f32, _: f32| None;
+        let mut g = vec![1.0f32; n * n];
+        grade(&mut g, l, &none, road, ramp, &lift, &top);
+        let (last_ramp, first_deck) = (g[15 * n + 19], g[15 * n + 20]);
+        assert!(
+            (last_ramp - 7.0).abs() < 0.3,
+            "ramp at the abutment {last_ramp}"
+        );
+        assert!(
+            (first_deck - 7.0).abs() < 1e-4,
+            "the ground under the deck's end is {first_deck}, so the road bends down to it"
+        );
+        // Past the abutment the ground falls away to what the deck spans. The
+        // approach corridor's smoothing reached in under the deck before this
+        // too (6.38 m at the first sample, 2.38 m six in); the abutment moves
+        // that one sample, it does not fill the span.
+        let inner = g[15 * n + 21];
+        assert!(inner < 7.0, "nothing falls away past the abutment: {inner}");
+        let span = g[15 * n + 26];
+        assert!(span < 3.0, "the ground the deck spans was raised to {span}");
     }
 
     #[test]
