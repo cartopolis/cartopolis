@@ -65,11 +65,50 @@ static COVERAGE: CoverageSlot = CoverageSlot::new("terrain", "/terrain/coverage.
 /// Where atlas publishes which cells it measured the bridge decks of.
 static DECKS: CoverageSlot = CoverageSlot::new("decks", "/decks/coverage.json", TILE_ZOOM);
 
+/// Where atlas publishes which cells it solved the road heights of
+/// (`cartopolis_geo::road_levels`).
+static ROADS: CoverageSlot = CoverageSlot::new("roads", "/roads/coverage.json", TILE_ZOOM);
+
 /// Keep the coverage question moving from startup, so it has usually answered
 /// before the first field is asked for.
 pub fn prefetch_terrain_coverage(time: Res<Time>) {
     COVERAGE.ensure(time.elapsed_secs_f64());
     DECKS.ensure(time.elapsed_secs_f64());
+    ROADS.ensure(time.elapsed_secs_f64());
+}
+
+/// The road heights atlas solved for a cell's streets while grading it, keyed by
+/// run (`road_levels::StreetRun::key`), or `None` where atlas has none.
+///
+/// **The road decides the ground now, not the other way round.** Every street
+/// stands at its own height, solved on the road network over the cell and its
+/// neighbours, so a deck and the road off its end meet at one number instead of
+/// at two interpolations of the terrain field (`docs/notes/bridge-heights.md`).
+/// A binary file, per grading run like the graded tiles, cached through the
+/// storage seam.
+pub(crate) async fn load_road_heights(
+    cx: i64,
+    cy: i64,
+) -> Option<cartopolis_geo::road_levels::RoadHeights> {
+    if !ROADS.covers(cx, cy) {
+        return None;
+    }
+    let stamp = COVERAGE.graded_stamp();
+    let key = format!("roads/{stamp}/{TILE_ZOOM}/{cx}/{cy}.bin");
+    let bytes = match storage::get(storage::Namespace::Cache, &key).await {
+        Some(b) => b,
+        None => {
+            let url = format!(
+                "{}/roads/{TILE_ZOOM}/{cx}/{cy}.bin?v={stamp}",
+                crate::systems::osm_buildings::tdbag_url()
+            );
+            let b = http::fetch_optional(http::Request::get(url)).await.ok()??;
+            cartopolis_geo::road_levels::RoadHeights::decode(&b).ok()?;
+            storage::put(storage::Namespace::Cache, &key, &b).await;
+            b
+        }
+    };
+    cartopolis_geo::road_levels::RoadHeights::decode(&bytes).ok()
 }
 
 /// One deck as atlas published it (`crates/atlas/src/pipeline/terrain_grade.rs::

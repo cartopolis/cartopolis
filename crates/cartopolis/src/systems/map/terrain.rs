@@ -843,11 +843,17 @@ fn water_surface_near(
 /// their height), and on the surface worker against a [`GroundPlacement`].
 pub trait MeasuredGround: std::ops::Deref<Target = TerrainSnapshot> {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32>;
+    /// The NAP height this field's zero stands for: an absolute height from
+    /// atlas (a road's, a deck's) minus this is a height in the field's frame.
+    fn datum_m(&self) -> f32;
 }
 
 impl MeasuredGround for TerrainField {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
         TerrainField::water_surface_at(self, wx, wz)
+    }
+    fn datum_m(&self) -> f32 {
+        self.datum_m
     }
 }
 
@@ -892,6 +898,9 @@ impl GroundPlacement {
 impl MeasuredGround for GroundPlacement {
     fn water_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
         water_surface_near(&self.water, self.datum_m, wx, wz)
+    }
+    fn datum_m(&self) -> f32 {
+        self.datum_m
     }
 }
 

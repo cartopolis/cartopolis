@@ -1159,6 +1159,7 @@ fn spawn_geometry_task(
             // been run.
             let crop_task = io.spawn(crate::systems::crops::load_crop_cell(cell.0, cell.1));
             let decks_task = io.spawn(crate::systems::terrain_tiles::load_atlas_decks(cell.0, cell.1));
+            let roads_task = io.spawn(crate::systems::terrain_tiles::load_road_heights(cell.0, cell.1));
             // The marks and crossings below decide whether to ask at all from the
             // tile body, so they start once it is here; everything else is
             // already on its way.
@@ -1206,6 +1207,7 @@ fn spawn_geometry_task(
             let paving = paving_task.await;
             let crop_cell = crop_task.await;
             let atlas_decks = decks_task.await;
+            let road_heights = roads_task.await;
             // The ground last, after every fetch: a job waiting for graded ground
             // has spent the wait downloading.
             let (ground, built_rev) = match ground {
@@ -1224,6 +1226,7 @@ fn spawn_geometry_task(
                 let mut grass = None;
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
+                let mut levels: Option<Arc<cartopolis_geo::road_levels::LevelMap>> = None;
                 let mut approaches = Vec::new();
                 // Needs no tile: the piers are the register's, and only become
                 // anything once a deck over them is measured.
@@ -1249,7 +1252,22 @@ fn spawn_geometry_task(
                     });
                 lap.mark("parse");
                 let outcome = match parsed {
-                    Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m, mesh_bytes) {
+                    Ok(tile) => {
+                    // The streets' own heights, where atlas solved them: matched
+                    // to this tile's runs by name, which both sides derive from
+                    // the same tile.
+                    if let Some(heights) = road_heights.as_ref() {
+                        let mut map = cartopolis_geo::road_levels::LevelMap::default();
+                        for run in cartopolis_geo::road_levels::street_runs(&tile, tile_m) {
+                            if let Some(ys) = heights.runs.get(&run.key) {
+                                map.add(run.level, run.half_w, run.points, ys.clone());
+                            }
+                        }
+                        if !map.is_empty() {
+                            levels = Some(Arc::new(map));
+                        }
+                    }
+                    match vector_tiles::tessellate_surfaces(&tile, tile_m, mesh_bytes) {
                         Ok(mut meshes) => {
                             lap.mark("fills");
                             // Decks first: the road tessellation needs them, since a
@@ -1871,7 +1889,8 @@ fn spawn_geometry_task(
                             tracing::warn!(cell = ?cell, error = %e, "surface tessellation failed");
                             None
                         }
-                    },
+                    }
+                    }
                     Err(e) => {
                         tracing::warn!(cell = ?cell, error = %e, "surface tile unusable");
                         None
@@ -1918,6 +1937,7 @@ fn spawn_geometry_task(
                             *origin,
                             ground,
                             &tunnels,
+                            levels.as_deref(),
                         );
                     }
                     if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
@@ -3754,6 +3774,7 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
                 Vec2::new(wx, wz),
                 terrain,
                 tunnels,
+                None,
             );
         }
     }
@@ -4223,6 +4244,7 @@ fn stand_on_terrain<G: MeasuredGround>(
     origin: Vec2,
     terrain: &G,
     tunnels: &crate::systems::tunnels::Tunnels,
+    levels: Option<&cartopolis_geo::road_levels::LevelMap>,
 ) {
     // A tunnel belongs here for the same reason a tree does, in both halves of what
     // this flag means. Its walls are vertical, so re-deriving their normals from the
@@ -4360,6 +4382,23 @@ fn stand_on_terrain<G: MeasuredGround>(
         around: &|x, z| fill_target(terrain, tunnels, x, z),
         weight: &|p| tunnels.fill_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
+    // **A road stands at its own height** where atlas solved one
+    // (`road_levels`), not on the ground: the ground was laid to the road there,
+    // and the road off a bridge's end meets the deck at the node they share.
+    // Refined against the same field, so a long straight road still has the
+    // vertices to follow its embankment.
+    let on_roads = levels
+        .filter(|_| matches!(group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)))
+        .map(|levels| OnRoads {
+            levels,
+            origin,
+            datum: terrain.datum_m(),
+            under: &lidded,
+        });
+    let field: &dyn cartopolis_geo::terrain_refine::GroundField = match &on_roads {
+        Some(f) => f,
+        None => &lidded,
+    };
     let t0 = bevy::platform::time::Instant::now();
     if !volumetric {
         crate::systems::terrain::refine_for_terrain(
@@ -4371,16 +4410,15 @@ fn stand_on_terrain<G: MeasuredGround>(
             rungs,
             terrain.ground_edge_m(),
             Some(crate::systems::terrain::Crease {
-                field: &lidded,
+                field,
                 origin: origin.to_array(),
             }),
         );
     }
     let t1 = bevy::platform::time::Instant::now();
     {
-        use cartopolis_geo::terrain_refine::GroundField as _;
         for p in positions.iter_mut() {
-            p[1] += lidded.at(origin.x + p[0], origin.y + p[2]);
+            p[1] += field.at(origin.x + p[0], origin.y + p[2]);
         }
     }
     let t2 = bevy::platform::time::Instant::now();
@@ -4410,6 +4448,33 @@ fn stand_on_terrain<G: MeasuredGround>(
         v[2] += t2.elapsed().as_micros() as u64;
         g.set(v);
     });
+}
+
+/// How far past a street's half-width a road surface still takes that street's
+/// height, metres: the kerb casing and the stub a junction pushes into the road
+/// it meets.
+const ROAD_REACH_M: f32 = 1.5;
+
+/// The ground a road surface stands on: its street's solved height where there
+/// is one (`road_levels`), the measured ground elsewhere.
+struct OnRoads<'a> {
+    levels: &'a cartopolis_geo::road_levels::LevelMap,
+    origin: Vec2,
+    datum: f32,
+    under: &'a dyn cartopolis_geo::terrain_refine::GroundField,
+}
+
+impl cartopolis_geo::terrain_refine::GroundField for OnRoads<'_> {
+    fn min_ground_edge_m(&self) -> f32 {
+        self.under.min_ground_edge_m()
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        let local = [x - self.origin.x, z - self.origin.y];
+        self.levels
+            .y_at(local, |level| level == 0, ROAD_REACH_M)
+            .map_or_else(|| self.under.at(x, z), |y| y - self.datum)
+    }
 }
 
 thread_local! {
