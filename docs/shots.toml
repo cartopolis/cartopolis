@@ -98,6 +98,44 @@ time = 11.5
 fog = 0.06
 clouds = 0.2
 
+# From a distance: the city as a whole, and the port on the Wadden Sea.
+
+[[shot]]
+name = "skyline"
+description = "Groningen from 3 km south-west: the whole old town and the Martinitoren above it"
+at = [53.1935, 6.5350, 450]
+look_at = [53.2180, 6.5665]
+time = 16.0
+fog = 0.10
+clouds = 0.3
+
+[[shot]]
+name = "city-far"
+description = "The city from 6 km north-east and 2 km up: the ring roads, the canals and the flat land around"
+at = [53.2620, 6.6250, 2200]
+look_at = [53.2150, 6.5650]
+time = 11.0
+fog = 0.08
+clouds = 0.3
+
+[[shot]]
+name = "eemshaven"
+description = "Eemshaven from the south-west: the harbour basins, the power stations and the sea behind"
+at = [53.4230, 6.8050, 450]
+look_at = [53.4470, 6.8450]
+time = 12.0
+fog = 0.06
+clouds = 0.3
+
+[[shot]]
+name = "eemshaven-sea"
+description = "Eemshaven from over the Wadden Sea, looking back at the port"
+at = [53.4750, 6.8700, 250]
+look_at = [53.4460, 6.8400]
+time = 15.0
+fog = 0.06
+clouds = 0.3
+
 [[shot]]
 name = "city-dusk"
 group = "extras"
