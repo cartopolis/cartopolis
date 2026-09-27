@@ -205,6 +205,15 @@ built or a prim's name, cannot be filtered. That is why the session driving a
 bot should hold no other keys. Walking, building and chat need an avatar, so
 they refuse on an offline client rather than half-working.
 
+**Staying in a conversation is a long poll.** Nothing wakes a model when a
+chat line arrives: a session acts only inside a turn. Checking on a timer
+(`/loop 1m`) costs a full turn a minute whether anybody spoke or not. So
+`read_chat` takes `wait_s` (at most 600). With nobody on the list saying
+anything new, the call is parked (`Pending::Chat`) and answered the frame a
+line lands, or at the timeout. An idle bot then costs about six short turns an
+hour and answers within a second. While the call waits, the model does
+nothing, because it is one open HTTP request.
+
 **A walk follows a route, not a line.** The first version walked straight at the
 goal and, on its first real test, got 14 m across the Grote Markt's neighbourhood
 before a building stopped it. `walk_to` a place now solves a foot route with the

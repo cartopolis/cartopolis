@@ -54,7 +54,7 @@ use crate::resources::{
     OsmTileUrlTemplate,
 };
 use crate::systems::avatar::AgentWalk;
-use crate::systems::chat::ChatState;
+use crate::systems::chat::{ChatLine, ChatState};
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
 use crate::systems::locomotion::Gait;
 use crate::systems::private_chat::{self, PrivateChats};
@@ -95,6 +95,11 @@ const SCRIPT_WAIT_S: f64 = 4.0;
 /// not arrived by then was refused (the world budget, a bad value) — the server
 /// answers a refused create to the sender only, and not in a form tied to it.
 const BUILD_WAIT_S: f64 = 10.0;
+
+/// Longest `read_chat` may wait for a line. Ten minutes: long enough that an
+/// idle conversation costs a model a handful of turns an hour, short enough that
+/// no connection in between gives up on the request first.
+const MAX_CHAT_WAIT_S: u32 = 600;
 
 /// Longest line the server keeps (`simulator::net::MAX_CHAT_LEN`).
 const MAX_LINE_CHARS: usize = 500;
@@ -186,6 +191,13 @@ pub struct ReadChatArgs {
     pub after: Option<u64>,
     #[schemars(description = "At most this many lines, newest kept. Default 50.")]
     pub limit: Option<usize>,
+    #[schemars(
+        description = "If nobody you can hear has said anything new, wait up to this many \
+                       seconds (at most 600) and answer the moment somebody does. This is how \
+                       to stay in a conversation: call it again with a wait after every reply, \
+                       and it costs nothing while it waits."
+    )]
+    pub wait_s: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -406,6 +418,12 @@ enum Pending {
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
+    /// A `read_chat` with a wait, until somebody on the list says something.
+    Chat {
+        args: ReadChatArgs,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
     /// A script saved, waiting for the compile verdict.
     Script {
         id: i64,
@@ -566,7 +584,7 @@ pub fn serve(
             bridge.note(label.into(), "working…".into(), Outcome::Working, now);
         }
     }
-    settle(&mut bridge, &mut state, &mut world, now);
+    settle(&mut bridge, &mut state, &audience, &mut world, now);
 }
 
 /// Steer a walk in progress: wait for its route, aim [`AgentWalk`] at the next
@@ -754,7 +772,25 @@ fn handle(
 ) -> Option<(oneshot::Sender<Reply>, AgentReply)> {
     let answer = match request {
         AgentRequest::Me => me(state, audience, w),
-        AgentRequest::ReadChat(args) => read_chat(state, audience, w, &args),
+        AgentRequest::ReadChat(args) => {
+            let after = args.after.unwrap_or(state.cursor);
+            let wait = f64::from(args.wait_s.unwrap_or(0).min(MAX_CHAT_WAIT_S));
+            if wait > 0.0 && !anything_to_hear(audience, w, after) {
+                // Park it: the answer is the next line worth reading, or the
+                // timeout. A long poll rather than a loop of short ones, so a
+                // model sitting in a conversation spends nothing while it waits.
+                state.pending.push(Pending::Chat {
+                    args: ReadChatArgs {
+                        after: Some(after),
+                        ..args
+                    },
+                    until: now + wait,
+                    reply,
+                });
+                return None;
+            }
+            read_chat(state, audience, w, &args)
+        }
         AgentRequest::Say(args) => {
             return say(state, audience, w, args, now, reply);
         }
@@ -957,6 +993,25 @@ fn public_names(w: &AgentWorld) -> Vec<(u64, String)> {
     out
 }
 
+/// Whether a line is one the agent may read: vouched for by the server, from
+/// somebody on the list, and not somebody this account blocks.
+fn audible(audience: &Audience, w: &AgentWorld, key: &str, line: &ChatLine) -> bool {
+    line.sender_is_account(key) && audience.hears(&line.sender) && !w.chat.is_blocked(&line.sender)
+}
+
+/// Whether anybody the agent may hear — other than itself — has said anything
+/// after `after`. What a waiting `read_chat` waits for.
+fn anything_to_hear(audience: &Audience, w: &AgentWorld, after: u64) -> bool {
+    let me = w.identity.username.as_deref();
+    w.chat.channels.iter().any(|c| {
+        c.lines.iter().any(|l| {
+            l.seq > after
+                && audible(audience, w, &c.key, l)
+                && !me.is_some_and(|m| l.sender.eq_ignore_ascii_case(m))
+        })
+    })
+}
+
 fn read_chat(
     state: &mut AgentState,
     audience: &Audience,
@@ -981,7 +1036,7 @@ fn read_chat(
     for (key, line) in lines {
         let vouched = line.sender_is_account(key);
         let own = vouched && me.is_some_and(|m| line.sender.eq_ignore_ascii_case(m));
-        if own || (vouched && audience.hears(&line.sender) && !w.chat.is_blocked(&line.sender)) {
+        if own || audible(audience, w, key, line) {
             shown.push((key, line, own));
         } else {
             withheld += 1;
@@ -1578,7 +1633,13 @@ fn my_builds(state: &AgentState, w: &AgentWorld) -> AgentReply {
 }
 
 /// Answer whatever was waiting and is now ready.
-fn settle(bridge: &mut McpBridge, state: &mut AgentState, w: &mut AgentWorld, now: f64) {
+fn settle(
+    bridge: &mut McpBridge,
+    state: &mut AgentState,
+    audience: &Audience,
+    w: &mut AgentWorld,
+    now: f64,
+) {
     let mut still = Vec::new();
     let mut built_changed = false;
     for pending in std::mem::take(&mut state.pending) {
@@ -1705,6 +1766,15 @@ fn settle(bridge: &mut McpBridge, state: &mut AgentState, w: &mut AgentWorld, no
                     }
                 };
                 finish(bridge, "build", answer, reply, now);
+            }
+            Pending::Chat { args, until, reply } => {
+                let after = args.after.unwrap_or(0);
+                if !anything_to_hear(audience, w, after) && now <= until {
+                    still.push(Pending::Chat { args, until, reply });
+                    continue;
+                }
+                let answer = read_chat(state, audience, w, &args);
+                finish(bridge, "read chat", answer, reply, now);
             }
             Pending::Script {
                 id,

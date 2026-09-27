@@ -405,7 +405,9 @@ impl Tools {
         description = "Read chat that arrived since you last read it: public chat near you, \
                        global chat, and private messages. Only people this client's owner \
                        has allowed are shown; lines from anyone else are counted and \
-                       withheld. Each line has a sequence number."
+                       withheld. Each line has a sequence number. With `wait_s` it waits \
+                       for the next line instead of answering 'nothing new' — the way to \
+                       stay in a conversation without checking over and over."
     )]
     async fn read_chat(
         &self,
