@@ -2917,7 +2917,23 @@ pub fn resolve_bridge_decks(
                 _ => h,
             })
             .collect();
-        let mut mesh = build_deck_mesh(&pending.decks, &levels, &heights, &shapes, deck_level);
+        // The ground under the deck in the slab's own frame; with no field yet,
+        // nothing is higher than a fascia.
+        let ground = |x: f32, z: f32| {
+            if terrain.is_ready() {
+                terrain.at(cell_world.x + x, cell_world.y + z) - deck_level
+            } else {
+                f32::NEG_INFINITY
+            }
+        };
+        let mut mesh = build_deck_mesh(
+            &pending.decks,
+            &levels,
+            &heights,
+            &shapes,
+            deck_level,
+            &ground,
+        );
         let piers = if terrain.is_ready() {
             add_piers(
                 &mut mesh,
@@ -3173,6 +3189,7 @@ fn build_deck_mesh(
     clearance: &[f32],
     shapes: &[Option<Arc<DeckShape>>],
     deck_level: f32,
+    ground: &dyn Fn(f32, f32) -> f32,
 ) -> SurfaceMesh {
     let mut out = deck_slab(&[], &[], &[]);
     for (i, deck) in decks.iter().enumerate() {
@@ -3204,6 +3221,27 @@ fn build_deck_mesh(
                 slab
             }
         };
+        // **The fascia stops at the ground.** It hangs a slab's thickness below
+        // the deck all the way round, ends included — and at an end the ground is
+        // the abutment, held at the deck's top, so the fascia there is a band of
+        // wall standing *on* the road where it meets the deck. Where a deck's end
+        // is several carriageways cut square at different points, it was a
+        // staircase of them across the joint (the Europaplein, 2026-09-27). Each
+        // fascia vertex below the surface is lifted to the ground where the
+        // ground is higher; buried, the face collapses to nothing.
+        let mut slab = slab;
+        for (p, n) in slab.positions.iter_mut().zip(&slab.normals) {
+            if n[1].abs() > 0.5 {
+                continue;
+            }
+            let surface = match shapes.get(i).and_then(Option::as_deref) {
+                Some(shape) => shape.world_y([p[0], p[2]]) - deck_level,
+                None => level,
+            };
+            if p[1] < surface - 1e-3 {
+                p[1] = p[1].max(ground(p[0], p[2]).min(surface));
+            }
+        }
         let base = out.positions.len() as u32;
         out.positions.extend(slab.positions);
         out.normals.extend(slab.normals);
@@ -4604,6 +4642,7 @@ mod tests {
             &[5.0],
             &[Some(shape.clone())],
             0.0,
+            &|_, _| f32::NEG_INFINITY,
         );
         let mut checked = 0;
         for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
@@ -4644,7 +4683,14 @@ mod tests {
         let deck = deck_at(40.0, 0.0, 0.0);
         let under = vec![[18.0, 18.0], [22.0, 18.0], [22.0, 22.0], [18.0, 22.0]];
         let away = vec![[80.0, 80.0], [84.0, 80.0], [84.0, 84.0], [80.0, 84.0]];
-        let mut mesh = build_deck_mesh(std::slice::from_ref(&deck), &[6.0], &[6.0], &[None], 1.0);
+        let mut mesh = build_deck_mesh(
+            std::slice::from_ref(&deck),
+            &[6.0],
+            &[6.0],
+            &[None],
+            1.0,
+            &|_, _| f32::NEG_INFINITY,
+        );
         let before = mesh.positions.len();
         let stood = add_piers(
             &mut mesh,
