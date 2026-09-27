@@ -3819,7 +3819,15 @@ pub fn tessellate_roads(
                 // deck outwards and a caller cannot tell which end of a run met
                 // the structure by looking at it.
                 for (pi, (on_deck, part)) in parts.iter().enumerate() {
-                    if on_deck.is_some() || part.len() < 2 {
+                    // A way that ends on its deck's edge leaves a stretch of
+                    // "ground" as long as the rounding. It points nowhere, so it
+                    // cannot be followed down the road, and standing in as the
+                    // approach it stopped `extend_approaches` from seeding the
+                    // real one: the Europaplein's west ramp went unfound.
+                    if on_deck.is_some()
+                        || part.len() < 2
+                        || crate::tunnels::polyline_len(part) < MIN_APPROACH_M
+                    {
                         continue;
                     }
                     // The deck is behind this run if the previous part is on one,
@@ -4110,6 +4118,10 @@ pub fn tessellate_roads(
 /// embankment meets the ground the ramp raises nothing, so the extra is free.
 const APPROACH_REACH_M: f32 = 160.0;
 
+/// Shortest ground stretch of a bridge-flagged way that counts as its approach,
+/// metres: below it the stretch is the rounding where the way meets its deck.
+const MIN_APPROACH_M: f32 = 0.5;
+
 /// The approaches, carried on along the roads beyond the structure.
 ///
 /// **OSM's bridge way stops at the abutment**, so the only approach
@@ -4372,6 +4384,9 @@ fn deck_at(decks: &[BridgeDeck], p: [f32; 2]) -> Option<usize> {
     decks.iter().position(|d| d.contains(p))
 }
 
+/// How often [`split_by_deck`] asks which deck a segment is over, metres.
+const DECK_PROBE_M: f32 = 1.0;
+
 /// How many times the deck boundary is bisected for. Twelve halvings put the seam
 /// within a fifty-metre segment's ten-thousandth — under a centimetre, which is an
 /// order of magnitude finer than the millimetre lattice `road_stitch` then snaps
@@ -4394,9 +4409,14 @@ const DECK_EDGE_BISECTIONS: u32 = 12;
 /// by bisecting on [`BridgeDeck::contains`] rather than by intersecting the ring,
 /// so a hole, a self-touching outline and two decks that abut are all one case.
 ///
-/// A segment that enters *and* leaves a deck between two vertices is still missed —
-/// both its ends agree — but that is a structure narrower than one vertex spacing,
-/// which at z14 is a structure too small to have a deck polygon in the first place.
+/// **Asked along each segment, not only at its vertices.** A segment that enters
+/// and leaves a deck between two vertices used to be missed — both its ends
+/// agree — on the grounds that a structure narrower than a vertex spacing has no
+/// deck. A deck built from a way ([`street_decks`]) can be exactly that narrow
+/// against a *different* way crossing it, and a long straight segment with both
+/// ends just off a deck is ordinary in a generalised tile. Every segment is probed
+/// each [`DECK_PROBE_M`], and a change of owner between two probes is bisected to
+/// the edge as before.
 fn split_by_deck(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<(Option<usize>, Vec<[f32; 2]>)> {
     let mut runs: Vec<(Option<usize>, Vec<[f32; 2]>)> = Vec::new();
     let Some(&first) = points.first() else {
@@ -4406,23 +4426,36 @@ fn split_by_deck(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<(Option<usize
     let mut cur: Vec<[f32; 2]> = vec![first];
     for w in points.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let next = deck_at(decks, b);
-        if next == owner {
-            cur.push(b);
-            continue;
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (len / DECK_PROBE_M).ceil().max(1.0) as usize;
+        let mut prev = a;
+        for k in 1..=steps {
+            #[allow(clippy::cast_precision_loss)]
+            let t = k as f32 / steps as f32;
+            let probe = if k == steps {
+                b
+            } else {
+                [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+            };
+            let next = deck_at(decks, probe);
+            if next != owner {
+                // The edge between them, shared exactly by the run that ends on it
+                // and the run that starts from it — one computation, so the two
+                // cannot land apart.
+                let edge = deck_edge_between(decks, prev, owner, probe);
+                cur.push(edge);
+                if cur.len() >= 2 {
+                    runs.push((owner, std::mem::take(&mut cur)));
+                } else {
+                    cur.clear();
+                }
+                cur.push(edge);
+                owner = next;
+            }
+            prev = probe;
         }
-        // The edge between them, shared exactly by the run that ends on it and the
-        // run that starts from it — one computation, so the two cannot land apart.
-        let edge = deck_edge_between(decks, a, owner, b);
-        cur.push(edge);
-        if cur.len() >= 2 {
-            runs.push((owner, std::mem::take(&mut cur)));
-        } else {
-            cur.clear();
-        }
-        cur.push(edge);
         cur.push(b);
-        owner = next;
     }
     if cur.len() >= 2 {
         runs.push((owner, cur));
@@ -6649,6 +6682,38 @@ mod tests {
             roads.on_deck.iter().any(|(d, _)| *d as usize == di),
             "no carriageway rides the flyover"
         );
+        // Both of the N7's own carriageways ride it, not only the slip lane.
+        // The midpoints of the westbound and eastbound spans, tile-local.
+        let c = [europaplein[0] + 6.4, europaplein[1] + 3.7];
+        for (name, mid) in [
+            ("westbound", [c[0] - 6.0, c[1] - 3.5]),
+            ("eastbound", [c[0] + 2.0, c[1] + 5.5]),
+        ] {
+            let carried = roads
+                .on_deck
+                .iter()
+                .filter(|(d, _)| *d as usize == di)
+                .any(|(_, m)| {
+                    m.indices.chunks(3).any(|t| {
+                        let p = [0, 1, 2].map(|k| m.positions[t[k] as usize]);
+                        let tri = [[p[0][0], p[0][2]], [p[1][0], p[1][2]], [p[2][0], p[2][2]]];
+                        let side = |a: [f32; 2], b: [f32; 2]| {
+                            (b[0] - a[0]) * (mid[1] - a[1]) - (b[1] - a[1]) * (mid[0] - a[0])
+                        };
+                        let (s0, s1, s2) = (
+                            side(tri[0], tri[1]),
+                            side(tri[1], tri[2]),
+                            side(tri[2], tri[0]),
+                        );
+                        (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0)
+                            || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0)
+                    })
+                });
+            assert!(
+                carried,
+                "the N7 {name} runs under its own deck instead of on it"
+            );
+        }
         let ramp = roads
             .approaches
             .iter()
@@ -6659,6 +6724,35 @@ mod tests {
             ramp >= 40.0,
             "the flyover's longest approach is {ramp:.1} m"
         );
+    }
+
+    /// **A segment that crosses a deck between two vertices is split onto it.**
+    /// Both ends are off the deck, so asked only at its vertices the whole
+    /// segment read as ground.
+    #[test]
+    fn a_segment_crossing_a_deck_between_its_vertices_rides_it() {
+        let ring = vec![
+            [0.0, -5.0],
+            [60.0, -5.0],
+            [60.0, 5.0],
+            [0.0, 5.0],
+            [0.0, -5.0],
+        ];
+        let deck = BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![ring],
+            min: [0.0, -5.0],
+            max: [60.0, 5.0],
+        };
+        for line in [[[-10.0, 0.0], [70.0, 0.0]], [[70.0, 0.0], [-10.0, 0.0]]] {
+            let on: f32 = split_by_deck(&line, std::slice::from_ref(&deck))
+                .iter()
+                .filter(|(o, _)| o.is_some())
+                .map(|(_, p)| crate::tunnels::polyline_len(p))
+                .sum();
+            assert!(on > 59.0, "only {on:.1} m of a 60 m span is on its deck");
+        }
     }
 
     /// **A bridge's own walls are not drawn standing on the road under it.** The
