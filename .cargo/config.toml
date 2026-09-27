@@ -83,6 +83,7 @@ shots = ["run", "-p", "cartopolis", "--", "--shots"]
 # Run the performance suite from `docs/perf.toml` — every scenario flown, settled,
 # captured and then measured twice. Extra flags pass through to the *binary*:
 #   cargo perf --only orbit
+#   cargo perf --repeat 3 --only orbit   # median and range, not one sample
 #
 # **The GPU-pass and allocation columns cannot be reached through this alias.** A
 # cargo alias appends, and this one ends in `--`, so `cargo perf --features perf`

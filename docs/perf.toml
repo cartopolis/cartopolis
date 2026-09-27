@@ -2,6 +2,7 @@
 #
 #     cargo perf                       # every scenario → /tmp/perf.json
 #     cargo perf --only orbit,city     # a subset
+#     cargo perf --repeat 3 --only orbit  # three flights: median and range per column
 #
 #     # + the GPU passes and allocation columns. NOT `cargo perf --features perf`:
 #     cargo run -p cartopolis --features perf -- --perf

@@ -51,8 +51,25 @@
 //! ```bash
 //! cargo perf                                    # every scenario → /tmp/perf.json
 //! cargo perf --only orbit                       # a subset
+//! cargo perf --repeat 3 --only orbit            # fly it three times: median and range
 //! cargo perf --features perf                    # + allocations and the GPU passes
 //! ```
+//!
+//! ## Repeats
+//!
+//! One flight is one sample, and one sample differenced against another is how
+//! every withdrawn result in `docs/notes/performance-suite.md` was produced. So
+//! the report never carries a bare number: each window is a [`WindowSummary`]
+//! whose columns are a [`Stat`] — runs, min, median, max — over however many
+//! flights `--repeat` asked for. `--repeat 1` (the default) gives `min == median
+//! == max`, by construction rather than by a special case.
+//!
+//! Repeats are flown **round-robin** (`a b c a b c`), not blocked (`a a b b`):
+//! the drift worth exposing is the shared box, and blocked repeats put a slow
+//! patch entirely inside one scenario's samples, where it reads as the scene.
+//! And a repeat's `load` window is **not a cold one** — the tiles are already in
+//! the process's memory and on disk — so `load` medians describe a re-teleport.
+//! `steady` is what the flag is for.
 
 use std::path::{Path, PathBuf};
 
@@ -200,6 +217,9 @@ pub struct PerfRun {
     pub steady_frames: Vec<u32>,
     pub out: PathBuf,
     pub size: String,
+    /// How many times each scenario is flown. `names` and `steady_frames` are
+    /// already expanded by it, round-robin; this is kept for the report.
+    pub repeat: u32,
 }
 
 /// Which window is open.
@@ -460,12 +480,226 @@ pub struct ReportMeta {
     /// debug assertions switch on `BigSpaceValidationPlugin`, which release
     /// compiles out entirely.
     pub debug_assertions: bool,
+    /// Flights per scenario (`--repeat`).
+    pub repeat: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Report {
     pub meta: ReportMeta,
-    pub windows: Vec<Window>,
+    /// One per `(scenario, phase)`, aggregated over the repeats. The individual
+    /// flights are in the `perf window` log lines, not here.
+    pub windows: Vec<WindowSummary>,
+}
+
+// ---------------------------------------------------------------------------
+// Aggregating repeats
+// ---------------------------------------------------------------------------
+
+/// One numeric column over the repeats of one window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Stat {
+    /// Flights that carried a value for *this column* — fewer than the window's
+    /// `runs` when a diagnostic was absent in some of them. Absent is not zero.
+    pub runs: u32,
+    pub min: f64,
+    /// The middle sample; for an even count, the mean of the two middle ones —
+    /// the ordinary definition, so a reader recomputing it by hand from the
+    /// `perf window` lines gets the same number.
+    pub median: f64,
+    pub max: f64,
+}
+
+impl Stat {
+    /// `None` when no flight carried a value.
+    #[must_use]
+    pub fn of(values: impl IntoIterator<Item = f64>) -> Option<Stat> {
+        let mut v: Vec<f64> = values.into_iter().collect();
+        if v.is_empty() {
+            return None;
+        }
+        v.sort_by(f64::total_cmp);
+        let n = v.len();
+        let median = if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2.0
+        };
+        Some(Stat {
+            runs: n as u32,
+            min: v[0],
+            median,
+            max: v[n - 1],
+        })
+    }
+}
+
+/// One render pass over the repeats of one window.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GpuPassSummary {
+    pub path: String,
+    /// Flights in which this pass reported at all.
+    pub runs: u32,
+    pub gpu_ms: Option<Stat>,
+    pub cpu_ms: Option<Stat>,
+    pub fragment_invocations: Option<Stat>,
+    /// Min of the per-flight mins, max of the per-flight maxes, and every frame
+    /// sampled across them. See [`GpuPass::frag_min`].
+    pub frag_min: Option<f64>,
+    pub frag_max: Option<f64>,
+    pub frag_samples: u32,
+}
+
+/// One system's per-frame cost over the repeats of one window.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SystemSummary {
+    pub name: String,
+    /// Its `runs` is the flights in which it made the window's top list.
+    pub ms_per_frame: Stat,
+}
+
+/// One `(scenario, phase)` window over every flight of it. The columns are
+/// [`Window`]'s, each as a [`Stat`]; see there for what each one means.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WindowSummary {
+    pub scenario: String,
+    pub phase: String,
+    /// Flights aggregated here.
+    pub runs: u32,
+    /// How many of them passed [`Window::quiet`].
+    pub quiet_runs: u32,
+    /// How many of them actually settled rather than running out of `wait`.
+    pub settled_runs: u32,
+    pub worker_threads: usize,
+    pub frames: Stat,
+    pub wall_s: Stat,
+    pub fps: Option<Stat>,
+    pub frame_time_ms: Option<Stat>,
+    pub process_cpu_percent: Option<Stat>,
+    pub process_mem_percent: Option<Stat>,
+    pub entity_count: Option<Stat>,
+    pub mesh_slabs: Option<Stat>,
+    pub mesh_slab_mb: Option<Stat>,
+    pub upload_kb: Stat,
+    pub worker_jobs: Stat,
+    pub worker_busy_ms: Stat,
+    pub worker_wait_ms: Stat,
+    pub worker_utilisation: Stat,
+    pub stalls: Stat,
+    pub stalled_ms: Stat,
+    pub mesh_added_per_frame: Stat,
+    pub resident_kb: Stat,
+    pub resident_image_kb: Stat,
+    pub resident_mesh_kb: Stat,
+    pub draws: Stat,
+    pub tris_total: Stat,
+    pub gpu_passes: Vec<GpuPassSummary>,
+    /// Dearest first by median.
+    pub systems: Vec<SystemSummary>,
+}
+
+/// Group flights by `(scenario, phase)` and aggregate each group.
+///
+/// Output order is first appearance, which for a run is manifest order with
+/// `load` before `steady` — the same order a single-flight report has always
+/// had.
+#[must_use]
+pub fn summarise(samples: &[Window]) -> Vec<WindowSummary> {
+    let mut groups: Vec<(&str, &str, Vec<&Window>)> = Vec::new();
+    for w in samples {
+        match groups
+            .iter_mut()
+            .find(|(s, p, _)| *s == w.scenario && *p == w.phase)
+        {
+            Some((_, _, g)) => g.push(w),
+            None => groups.push((&w.scenario, &w.phase, vec![w])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(scenario, phase, g)| summarise_group(scenario, phase, &g))
+        .collect()
+}
+
+fn summarise_group(scenario: &str, phase: &str, g: &[&Window]) -> WindowSummary {
+    // A group is never empty, so a column every flight carries always has a
+    // value; `unwrap_or_default` only satisfies the type.
+    let all = |f: fn(&Window) -> f64| Stat::of(g.iter().map(|w| f(w))).unwrap_or_default();
+    let some = |f: fn(&Window) -> Option<f64>| Stat::of(g.iter().filter_map(|w| f(w)));
+
+    let mut passes: Vec<(String, Vec<&GpuPass>)> = Vec::new();
+    for pass in g.iter().flat_map(|w| &w.gpu_passes) {
+        match passes.iter_mut().find(|(p, _)| *p == pass.path) {
+            Some((_, v)) => v.push(pass),
+            None => passes.push((pass.path.clone(), vec![pass])),
+        }
+    }
+    let mut gpu_passes: Vec<GpuPassSummary> = passes
+        .into_iter()
+        .map(|(path, v)| GpuPassSummary {
+            path,
+            runs: v.len() as u32,
+            gpu_ms: Stat::of(v.iter().filter_map(|p| p.gpu_ms)),
+            cpu_ms: Stat::of(v.iter().filter_map(|p| p.cpu_ms)),
+            fragment_invocations: Stat::of(v.iter().filter_map(|p| p.fragment_invocations)),
+            frag_min: v.iter().filter_map(|p| p.frag_min).reduce(f64::min),
+            frag_max: v.iter().filter_map(|p| p.frag_max).reduce(f64::max),
+            frag_samples: v.iter().map(|p| p.frag_samples).sum(),
+        })
+        .collect();
+    // By fill, as `gpu_passes` sorts a single window; no statistics last.
+    gpu_passes.sort_by(|a, b| {
+        let key = |p: &GpuPassSummary| p.fragment_invocations.map_or(-1.0, |s| s.median);
+        key(b).total_cmp(&key(a))
+    });
+
+    let mut sys: Vec<(String, Vec<f64>)> = Vec::new();
+    for s in g.iter().flat_map(|w| &w.systems) {
+        match sys.iter_mut().find(|(n, _)| *n == s.name) {
+            Some((_, v)) => v.push(s.ms_per_frame),
+            None => sys.push((s.name.clone(), vec![s.ms_per_frame])),
+        }
+    }
+    let mut systems: Vec<SystemSummary> = sys
+        .into_iter()
+        .filter_map(|(name, v)| {
+            Stat::of(v).map(|ms_per_frame| SystemSummary { name, ms_per_frame })
+        })
+        .collect();
+    systems.sort_by(|a, b| b.ms_per_frame.median.total_cmp(&a.ms_per_frame.median));
+
+    WindowSummary {
+        scenario: scenario.to_string(),
+        phase: phase.to_string(),
+        runs: g.len() as u32,
+        quiet_runs: g.iter().filter(|w| w.quiet).count() as u32,
+        settled_runs: g.iter().filter(|w| w.settled).count() as u32,
+        worker_threads: g.iter().map(|w| w.worker_threads).max().unwrap_or(0),
+        frames: all(|w| f64::from(w.frames)),
+        wall_s: all(|w| f64::from(w.wall_s)),
+        fps: some(|w| w.fps),
+        frame_time_ms: some(|w| w.frame_time_ms),
+        process_cpu_percent: some(|w| w.process_cpu_percent),
+        process_mem_percent: some(|w| w.process_mem_percent),
+        entity_count: some(|w| w.entity_count),
+        mesh_slabs: some(|w| w.mesh_slabs),
+        mesh_slab_mb: some(|w| w.mesh_slab_mb),
+        upload_kb: all(|w| w.upload_kb as f64),
+        worker_jobs: all(|w| w.worker_jobs as f64),
+        worker_busy_ms: all(|w| w.worker_busy_ms as f64),
+        worker_wait_ms: all(|w| w.worker_wait_ms as f64),
+        worker_utilisation: all(|w| f64::from(w.worker_utilisation)),
+        stalls: all(|w| w.stalls as f64),
+        stalled_ms: all(|w| w.stalled_ms as f64),
+        mesh_added_per_frame: all(|w| w.mesh_added_per_frame),
+        resident_kb: all(|w| w.resident_kb as f64),
+        resident_image_kb: all(|w| w.resident_image_kb as f64),
+        resident_mesh_kb: all(|w| w.resident_mesh_kb as f64),
+        draws: all(|w| w.draws as f64),
+        tris_total: all(|w| w.tris_total as f64),
+        gpu_passes,
+        systems,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,17 +779,34 @@ pub fn build(
     only: &[String],
     size_override: Option<&str>,
     steady_frames_override: Option<u32>,
+    repeat: u32,
     out: PathBuf,
 ) -> Result<(ShotHarness, PerfRun), String> {
     use crate::systems::shot_harness::{parse_size, DEFAULT_SETTLE, DEFAULT_WAIT};
 
+    if repeat == 0 {
+        return Err("--repeat wants at least 1".into());
+    }
     let manifest = PerfManifest::load(manifest_path)?;
     let selected = manifest.select(only)?;
     let default_frames = manifest.steady_frames.unwrap_or(DEFAULT_STEADY_FRAMES);
 
-    let shots: Vec<ShotSpec> = selected
+    // Round-robin, `a b c a b c`: see the module doc for why not `a a b b`.
+    let flights: Vec<(u32, &PerfScenario)> = (1..=repeat)
+        .flat_map(|r| selected.iter().map(move |s| (r, *s)))
+        .collect();
+
+    let shots: Vec<ShotSpec> = flights
         .iter()
-        .map(|s| {
+        .map(|&(r, s)| {
+            // A single flight keeps the name it has always had; repeats each get
+            // their own, since a picture per flight is what explains a spread
+            // that turns out to be "a tile had not arrived that time".
+            let png = if repeat == 1 {
+                format!("perf-{}.png", s.name)
+            } else {
+                format!("perf-{}-r{r}.png", s.name)
+            };
             let look = s.look.unwrap_or([-90.0, 0.0]);
             ShotSpec {
                 lat: s.at[0],
@@ -570,7 +821,7 @@ pub fn build(
                 // the scene behind is how "the avatar isn't rendering" cost a year
                 // — but beside the report rather than in `docs/img`, which belongs
                 // to `cargo shots`.
-                out: Some(std::env::temp_dir().join(format!("perf-{}.png", s.name))),
+                out: Some(std::env::temp_dir().join(png)),
                 mode: s.mode.clone(),
                 // Chrome is part of the cost: egui is a full-resolution pass over
                 // the swapchain every frame, so a suite that hid the UI would
@@ -620,10 +871,10 @@ pub fn build(
         windowed: false,
     };
     let run = PerfRun {
-        names: selected.iter().map(|s| s.name.clone()).collect(),
-        steady_frames: selected
+        names: flights.iter().map(|(_, s)| s.name.clone()).collect(),
+        steady_frames: flights
             .iter()
-            .map(|s| {
+            .map(|(_, s)| {
                 steady_frames_override
                     .or(s.steady_frames)
                     .unwrap_or(default_frames)
@@ -631,6 +882,7 @@ pub fn build(
             .collect(),
         out,
         size: format!("{}x{}", parsed.x, parsed.y),
+        repeat,
     };
     Ok((harness, run))
 }
@@ -981,6 +1233,26 @@ fn log_window(w: &Window) {
     }
 }
 
+/// One aggregated window as a log line, beside the per-flight `perf window`
+/// lines it was computed from.
+fn log_summary(w: &WindowSummary) {
+    let range = |s: Option<Stat>, p: usize| {
+        s.map(|s| format!("{:.p$} ({:.p$}..{:.p$})", s.median, s.min, s.max, p = p))
+            .unwrap_or_else(|| "-".into())
+    };
+    tracing::info!(
+        scenario = %w.scenario,
+        phase = %w.phase,
+        runs = w.runs,
+        quiet_runs = w.quiet_runs,
+        settled_runs = w.settled_runs,
+        frame_ms = range(w.frame_time_ms, 1),
+        fps = range(w.fps, 1),
+        draws = range(Some(w.draws), 0),
+        "perf summary"
+    );
+}
+
 /// Write the report. Called once, from the last scenario's steady window.
 fn finish(
     run: &PerfRun,
@@ -1000,9 +1272,13 @@ fn finish(
             size: run.size.clone(),
             perf_feature: cfg!(feature = "perf"),
             debug_assertions: cfg!(debug_assertions),
+            repeat: run.repeat,
         },
-        windows: std::mem::take(&mut perf.samples),
+        windows: summarise(&std::mem::take(&mut perf.samples)),
     };
+    for w in &report.windows {
+        log_summary(w);
+    }
     match serde_json::to_string_pretty(&report) {
         Ok(json) => match std::fs::write(&run.out, json) {
             Ok(()) => tracing::info!(
@@ -1082,6 +1358,171 @@ mod tests {
                 s.name
             );
         }
+    }
+
+    fn flight(scenario: &str, phase: &str, frame_ms: Option<f64>, draws: usize) -> Window {
+        Window {
+            scenario: scenario.into(),
+            phase: phase.into(),
+            frame_time_ms: frame_ms,
+            draws,
+            ..Default::default()
+        }
+    }
+
+    fn pass(path: &str, frag: f64, lo: f64, hi: f64, n: u32) -> GpuPass {
+        GpuPass {
+            path: path.into(),
+            gpu_ms: None,
+            cpu_ms: None,
+            fragment_invocations: Some(frag),
+            frag_min: Some(lo),
+            frag_max: Some(hi),
+            frag_samples: n,
+        }
+    }
+
+    #[test]
+    fn three_flights_give_one_window_with_the_middle_as_median() {
+        let s = summarise(&[
+            flight("orbit", "steady", Some(30.0), 10),
+            flight("orbit", "steady", Some(10.0), 12),
+            flight("orbit", "steady", Some(20.0), 11),
+        ]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].runs, 3);
+        let ft = s[0].frame_time_ms.unwrap();
+        assert_eq!((ft.runs, ft.min, ft.median, ft.max), (3, 10.0, 20.0, 30.0));
+        assert_eq!(
+            (s[0].draws.min, s[0].draws.median, s[0].draws.max),
+            (10.0, 11.0, 12.0)
+        );
+    }
+
+    #[test]
+    fn one_flight_is_its_own_min_median_and_max() {
+        let s = summarise(&[flight("orbit", "load", Some(7.5), 3)]);
+        let ft = s[0].frame_time_ms.unwrap();
+        assert_eq!(s[0].runs, 1);
+        assert_eq!((ft.runs, ft.min, ft.median, ft.max), (1, 7.5, 7.5, 7.5));
+    }
+
+    #[test]
+    fn an_even_count_takes_the_mean_of_the_middle_two() {
+        let s = Stat::of([4.0, 1.0, 3.0, 2.0]).unwrap();
+        assert_eq!((s.runs, s.min, s.median, s.max), (4, 1.0, 2.5, 4.0));
+    }
+
+    #[test]
+    fn an_absent_column_is_not_counted_as_zero() {
+        let s = summarise(&[
+            flight("orbit", "steady", Some(10.0), 1),
+            flight("orbit", "steady", None, 1),
+            flight("orbit", "steady", Some(20.0), 1),
+        ]);
+        let ft = s[0].frame_time_ms.unwrap();
+        assert_eq!((ft.runs, ft.min, ft.median, ft.max), (2, 10.0, 15.0, 20.0));
+        // Never measured in any flight: absent, not a zero.
+        assert!(s[0].fps.is_none());
+    }
+
+    #[test]
+    fn windows_keep_first_appearance_order() {
+        // Round-robin order, as `build` flies two repeats of two scenarios.
+        let s = summarise(&[
+            flight("a", "load", None, 0),
+            flight("a", "steady", None, 0),
+            flight("b", "load", None, 0),
+            flight("b", "steady", None, 0),
+            flight("a", "load", None, 0),
+            flight("a", "steady", None, 0),
+            flight("b", "load", None, 0),
+            flight("b", "steady", None, 0),
+        ]);
+        let order: Vec<(&str, &str, u32)> = s
+            .iter()
+            .map(|w| (w.scenario.as_str(), w.phase.as_str(), w.runs))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("a", "load", 2),
+                ("a", "steady", 2),
+                ("b", "load", 2),
+                ("b", "steady", 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn gpu_passes_merge_by_path_and_widen_the_fill_range() {
+        let mut one = flight("orbit", "steady", None, 0);
+        one.gpu_passes = vec![
+            pass("render/main", 100.0, 90.0, 110.0, 5),
+            pass("render/ui", 5.0, 5.0, 5.0, 5),
+        ];
+        let mut two = flight("orbit", "steady", None, 0);
+        two.gpu_passes = vec![pass("render/main", 120.0, 80.0, 130.0, 6)];
+        let s = summarise(&[one, two]);
+        let main = &s[0].gpu_passes[0];
+        assert_eq!(main.path, "render/main");
+        assert_eq!(main.runs, 2);
+        assert_eq!(
+            (main.frag_min, main.frag_max, main.frag_samples),
+            (Some(80.0), Some(130.0), 11)
+        );
+        assert_eq!(main.fragment_invocations.unwrap().median, 110.0);
+        let ui = &s[0].gpu_passes[1];
+        assert_eq!((ui.path.as_str(), ui.runs), ("render/ui", 1));
+    }
+
+    #[test]
+    fn repeats_fly_round_robin_and_name_each_picture() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("perf.toml");
+        std::fs::write(
+            &manifest,
+            "[[scenario]]\nname = \"a\"\nat = [53.2, 6.5, 1000]\n\
+             [[scenario]]\nname = \"b\"\nat = [53.2, 6.5, 2000]\n",
+        )
+        .unwrap();
+        let out = dir.path().join("perf.json");
+        let (harness, run) = build(&manifest, &[], None, None, 2, out.clone()).unwrap();
+        assert_eq!(run.names, ["a", "b", "a", "b"]);
+        assert_eq!(run.steady_frames.len(), 4);
+        assert_eq!(run.repeat, 2);
+        let pngs: Vec<String> = harness
+            .shots
+            .iter()
+            .map(|s| {
+                s.out
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            pngs,
+            [
+                "perf-a-r1.png",
+                "perf-b-r1.png",
+                "perf-a-r2.png",
+                "perf-b-r2.png"
+            ]
+        );
+
+        // One flight keeps the name it always had.
+        let (harness, run) = build(&manifest, &["a".into()], None, None, 1, out.clone()).unwrap();
+        assert_eq!(run.names, ["a"]);
+        assert_eq!(
+            harness.shots[0].out.as_ref().unwrap().file_name().unwrap(),
+            "perf-a.png"
+        );
+
+        assert!(build(&manifest, &[], None, None, 0, out).is_err());
     }
 
     #[test]

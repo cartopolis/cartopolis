@@ -3,8 +3,9 @@ topic: performance-suite
 triggers: ["cargo perf", perf.toml, "performance suite", "battery", "power", "hot",
   "slow", "profiling", "fragment shader invocations", "overdraw", "gpu time",
   RenderDiagnosticsPlugin, MeshAllocatorDiagnosticPlugin, SystemInformationDiagnosticsPlugin,
-  "residency", "resident_kb", quiet, "steady window", "perf feature"]
-updated: 2026-09-07
+  "residency", "resident_kb", quiet, "steady window", "perf feature", "--repeat",
+  median, spread]
+updated: 2026-09-27
 ---
 
 # Measuring what the client costs, and what a measurement here is worth
@@ -79,6 +80,34 @@ than the shells, and produced a clean-looking table saying that turning the clou
 So the window samples every frame and reports `frag_min`, `frag_max` and the
 sample count. `frag_min != frag_max` means the scene has more than one steady
 state, and that differencing two runs is meaningless until that is understood.
+
+### And neither is a point sample of anything else: `--repeat N`
+
+The same argument holds for every other column *across launches* — identical
+builds have measured 25 % apart (below), and the render survey's within-group
+spread was wider than every between-group difference it was after. So
+`cargo perf --repeat N` flies each selected scenario N times in one launch and
+the report carries no bare numbers: each `(scenario, phase)` window is one
+`WindowSummary`, and every column in it is `{runs, min, median, max}`. The
+individual flights stay in the `perf window` log lines; a `perf summary` line per
+aggregated window gives the median and range of frame time and fps.
+
+Decided, so nobody has to re-derive them (2026-09-27):
+
+- **Round-robin, not blocked** (`a b a b`, not `a a b b`). The drift worth
+  exposing is the shared box; blocked repeats put a slow patch inside one
+  scenario's samples, where it reads as the scene.
+- **An even count's median is the mean of the middle two** — the ordinary
+  definition, so a median recomputed by hand from the log lines matches the JSON.
+- **A column absent in some flights aggregates over the rest and says so**
+  (`Stat::runs`); absent in all of them, it is absent. Never zero.
+- `--repeat 1` is the default and reports `min == median == max`; its PNG keeps
+  the name `perf-<scenario>.png`, while repeats write `perf-<scenario>-r<n>.png`.
+
+**Caveat: a repeat's `load` window is not a cold one.** The tiles are already in
+the process's memory cache and on disk, so repeats 2..N re-stream from warm and
+`load` medians describe a re-teleport, not a cold start. `steady` is unaffected,
+and is what the flag is for.
 
 ## The two windows, and why `quiet` exists
 

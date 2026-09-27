@@ -137,6 +137,13 @@ struct Cli {
     #[arg(long, value_name = "N")]
     perf_frames: Option<u32>,
 
+    /// Fly every `--perf` scenario N times in one launch, round-robin, and report
+    /// each window's columns as runs, min, median and max rather than as one
+    /// sample. A single flight differenced against another is how every withdrawn
+    /// performance result here was made.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    repeat: u32,
+
     /// Restrict a `--shots` run to these preset names (comma-separated).
     #[arg(long, value_name = "NAMES", value_delimiter = ',')]
     only: Vec<String>,
@@ -362,12 +369,17 @@ fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
             &cli.only,
             cli.size.as_deref(),
             cli.perf_frames,
+            cli.repeat,
             cli.perf_out
                 .clone()
                 .unwrap_or_else(|| std::env::temp_dir().join("perf.json")),
         )
         .map_err(|e| format!("--perf: {e}"))?;
         return Ok((Some(harness), Some(run)));
+    }
+    // Refused rather than ignored, as `--only` outside `--shots` is below.
+    if cli.repeat != 1 {
+        return Err("--repeat repeats the scenarios of a --perf run".into());
     }
     if let Some(manifest) = cli.shots.clone() {
         if cli.shot.is_some() {
