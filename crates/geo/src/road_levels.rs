@@ -80,7 +80,17 @@ pub struct Line {
     pub level: i8,
     /// The steepest this road may climb, rise over run.
     pub max_grade: f32,
+    /// Whether each end was cut by a tile border rather than being where the
+    /// road ends. A cut end is joined to the matching cut end of the same road in
+    /// the next tile — see [`BORDER_JOIN_M`].
+    pub cut: [bool; 2],
 }
+
+/// How far apart two cut ends at a tile border may be and still be one road,
+/// metres. Each tile quantises its own copy of a line to its own lattice, so the
+/// two halves of a road crossing a border are cut at points a few decimetres
+/// apart rather than at one point.
+pub const BORDER_JOIN_M: f32 = 1.0;
 
 /// How firmly measurements are smoothed: the weight each neighbour carries against
 /// a measurement of weight 1.
@@ -358,6 +368,59 @@ impl Net {
                 }
             }
         }
+        // Cut ends at a tile border: join each to the nearest cut end of another
+        // line at the same level within reach.
+        let cut_ends: Vec<(usize, [f32; 2], i8)> = lines
+            .iter()
+            .enumerate()
+            .flat_map(|(li, l)| {
+                let last = l.points.len().saturating_sub(1);
+                [(0usize, 0usize), (1, last)]
+                    .into_iter()
+                    .filter(move |&(k, _)| l.cut[k] && !l.points.is_empty())
+                    .map(move |(_, vi)| (li, vi))
+            })
+            .map(|(li, vi)| (ids[li][vi], lines[li].points[vi], lines[li].level))
+            .collect();
+        let cell = |p: [f32; 2]| {
+            #[allow(clippy::cast_possible_truncation)]
+            (
+                (p[0] / BORDER_JOIN_M).floor() as i64,
+                (p[1] / BORDER_JOIN_M).floor() as i64,
+            )
+        };
+        let mut buckets: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        for (k, &(_, p, _)) in cut_ends.iter().enumerate() {
+            buckets.entry(cell(p)).or_default().push(k);
+        }
+        for (k, &(id, p, level)) in cut_ends.iter().enumerate() {
+            let (cx, cz) = cell(p);
+            let mut best: Option<(f32, usize)> = None;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    for &o in buckets.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                        let (oid, q, olevel) = cut_ends[o];
+                        if o == k
+                            || olevel != level
+                            || find(&mut parent, oid) == find(&mut parent, id)
+                        {
+                            continue;
+                        }
+                        let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+                        if d <= BORDER_JOIN_M && best.is_none_or(|(bd, _)| d < bd) {
+                            best = Some((d, oid));
+                        }
+                    }
+                }
+            }
+            if let Some((_, oid)) = best {
+                let (ra, rb) = (find(&mut parent, id), find(&mut parent, oid));
+                if ra != rb {
+                    parent[ra] = rb;
+                }
+            }
+        }
+
         let mut compact: HashMap<usize, usize> = HashMap::new();
         let mut node_of: Vec<Vec<usize>> = Vec::with_capacity(lines.len());
         for li in 0..lines.len() {
@@ -495,6 +558,303 @@ impl Ord for Item {
     }
 }
 
+// ─── Streets as a tile draws them ────────────────────────────────────────────
+
+/// How far apart the points of a [`StreetRun`] are, in tile units: about three
+/// metres at z14. In units rather than metres so atlas and the client — which
+/// each work out a tile's size for themselves — densify a run into exactly the
+/// same points, which is what lets one's heights be read against the other's.
+pub const DENSIFY_UNITS: f32 = 8.0;
+
+/// One run of a street as a tile draws it: a `streets` line clipped to the tile
+/// and densified, with its level and a key that names it.
+#[derive(Clone, Debug)]
+pub struct StreetRun {
+    /// Names this run: the same tile read by atlas and by the client gives the
+    /// same key. See [`run_key`].
+    pub key: u64,
+    /// Index into the tile's `streets` features.
+    pub feature: usize,
+    /// 0 on the ground, 1 on a bridge, -1 in a tunnel.
+    pub level: i8,
+    pub class: crate::road_texture::RoadClass,
+    /// Half the carriageway, metres.
+    pub half_w: f32,
+    /// Densified centre line, tile-local metres.
+    pub points: Vec<[f32; 2]>,
+    /// Whether each end was cut by the tile border.
+    pub cut: [bool; 2],
+}
+
+/// The steepest a road of this class is built to climb, rise over run: the
+/// tunnels' long-standing 6 % for roads and 10 % for paths, and a railway's much
+/// gentler 2.5 %.
+#[must_use]
+pub fn max_grade(class: crate::road_texture::RoadClass) -> f32 {
+    use crate::road_texture::RoadClass;
+    match class {
+        RoadClass::Path => 0.10,
+        RoadClass::Rail => 0.025,
+        _ => 0.06,
+    }
+}
+
+/// Every drawn street in a tile as [`StreetRun`]s. Tunnels are included at
+/// level -1 and building passages at 0, as the ground-level ways they are.
+#[must_use]
+pub fn street_runs(tile: &crate::vector_tiles::TileData, tile_m: f32) -> Vec<StreetRun> {
+    use crate::vector_tiles::{clip_polyline, drawn_street, flag_of, street_shape, TileData};
+    let mut out = Vec::new();
+    let Some(meta) = tile.layer("streets") else {
+        return out;
+    };
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
+    let scale = tile_m / extent;
+    let passages = crate::tunnels::building_passages(tile, features);
+    for (fi, feature) in features.iter().enumerate() {
+        let (shape, level) = match drawn_street(feature) {
+            Some(s) => (s, i8::from(flag_of(feature, "bridge"))),
+            None => match street_shape(feature) {
+                Some(s) if passages.contains(&fi) => (s, 0),
+                Some(s) => (s, -1),
+                None => continue,
+            },
+        };
+        let (class, half_w) = shape;
+        let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
+            geo_types::Geometry::LineString(ls) => vec![ls],
+            geo_types::Geometry::MultiLineString(mls) => mls.iter().collect(),
+            _ => continue,
+        };
+        for ls in lines {
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x, c.y])
+                    .collect();
+            let (Some(&head), Some(&tail)) = (pts.first(), pts.last()) else {
+                continue;
+            };
+            for run in clip_polyline(&pts, 0.0, extent) {
+                if run.len() < 2 {
+                    continue;
+                }
+                let cut = [run.first() != Some(&head), run.last() != Some(&tail)];
+                let key = run_key(level, &run);
+                let points = densify(&run, DENSIFY_UNITS)
+                    .into_iter()
+                    .map(|p| [p[0] * scale, p[1] * scale])
+                    .collect();
+                out.push(StreetRun {
+                    key,
+                    feature: fi,
+                    level,
+                    class,
+                    half_w,
+                    points,
+                    cut,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// A run's name: FNV-1a over its level and its points in tile units, to a
+/// sixteenth of a unit.
+///
+/// Spelled out rather than `std::hash`, whose output is not promised to be stable
+/// between Rust releases — and atlas and the client are built separately.
+#[must_use]
+pub fn run_key(level: i8, tile_units: &[[f32; 2]]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    eat(&level.to_le_bytes());
+    for p in tile_units {
+        for v in p {
+            #[allow(clippy::cast_possible_truncation)]
+            eat(&((v * 16.0).round() as i32).to_le_bytes());
+        }
+    }
+    h
+}
+
+// ─── The published heights ───────────────────────────────────────────────────
+
+/// Solved heights per run, as atlas publishes them for one tile: the height at
+/// each of the run's densified points, keyed by [`StreetRun::key`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RoadHeights {
+    pub runs: HashMap<u64, Vec<f32>>,
+}
+
+/// The format's first four bytes.
+const MAGIC: &[u8; 4] = b"CRH1";
+
+impl RoadHeights {
+    /// `CRH1`, a `u32` run count, then per run a `u64` key, a `u32` point count
+    /// and that many heights as `i32` centimetres. Little-endian throughout.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut keys: Vec<&u64> = self.runs.keys().collect();
+        keys.sort_unstable();
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        #[allow(clippy::cast_possible_truncation)]
+        out.extend_from_slice(&(keys.len() as u32).to_le_bytes());
+        for k in keys {
+            let ys = &self.runs[k];
+            out.extend_from_slice(&k.to_le_bytes());
+            #[allow(clippy::cast_possible_truncation)]
+            out.extend_from_slice(&(ys.len() as u32).to_le_bytes());
+            for y in ys {
+                #[allow(clippy::cast_possible_truncation)]
+                out.extend_from_slice(&((y * 100.0).round() as i32).to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// The inverse of [`Self::encode`].
+    ///
+    /// # Errors
+    /// A wrong magic or a truncated body.
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let mut at = 0usize;
+        let mut take = |n: usize| -> Result<&[u8], String> {
+            let s = bytes
+                .get(at..at + n)
+                .ok_or_else(|| "road heights truncated".to_string())?;
+            at += n;
+            Ok(s)
+        };
+        if take(4)? != MAGIC {
+            return Err("not a road heights file".into());
+        }
+        let u32_of = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let count = u32_of(take(4)?);
+        let mut runs = HashMap::new();
+        for _ in 0..count {
+            let k = take(8)?;
+            let key = u64::from_le_bytes([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]]);
+            let n = u32_of(take(4)?) as usize;
+            let mut ys = Vec::with_capacity(n);
+            for _ in 0..n {
+                let b = take(4)?;
+                #[allow(clippy::cast_precision_loss)]
+                ys.push(i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 100.0);
+            }
+            runs.insert(key, ys);
+        }
+        Ok(Self { runs })
+    }
+}
+
+// ─── Asking for a height ─────────────────────────────────────────────────────
+
+/// Solved runs, asked "how high is the road at this point".
+///
+/// The answer is the nearest run of an accepted level whose carriageway covers
+/// the point, interpolated along it — the clamped projection `tunnels` asks its
+/// corridors, so a chain of segments behaves as one corridor with rounded ends.
+#[derive(Clone, Debug, Default)]
+pub struct LevelMap {
+    lines: Vec<MapLine>,
+    buckets: HashMap<(i32, i32), Vec<(u32, u32)>>,
+}
+
+#[derive(Clone, Debug)]
+struct MapLine {
+    level: i8,
+    half_w: f32,
+    points: Vec<[f32; 2]>,
+    ys: Vec<f32>,
+}
+
+/// Bucket edge for [`LevelMap`], metres.
+const BUCKET_M: f32 = 16.0;
+
+impl LevelMap {
+    /// Add a run's points and heights. Mismatched lengths are ignored.
+    pub fn add(&mut self, level: i8, half_w: f32, points: Vec<[f32; 2]>, ys: Vec<f32>) {
+        if points.len() != ys.len() || points.len() < 2 {
+            return;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let li = self.lines.len() as u32;
+        let reach = half_w + BUCKET_M;
+        for (si, w) in points.windows(2).enumerate() {
+            let (a, b) = (w[0], w[1]);
+            let lo = [a[0].min(b[0]) - reach, a[1].min(b[1]) - reach];
+            let hi = [a[0].max(b[0]) + reach, a[1].max(b[1]) + reach];
+            #[allow(clippy::cast_possible_truncation)]
+            let cell = |v: f32| (v / BUCKET_M).floor() as i32;
+            for x in cell(lo[0])..=cell(hi[0]) {
+                for z in cell(lo[1])..=cell(hi[1]) {
+                    #[allow(clippy::cast_possible_truncation)]
+                    self.buckets
+                        .entry((x, z))
+                        .or_default()
+                        .push((li, si as u32));
+                }
+            }
+        }
+        self.lines.push(MapLine {
+            level,
+            half_w,
+            points,
+            ys,
+        });
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// The road's height at `p` on the nearest run of an accepted level within
+    /// its half-width plus `reach`, or `None`.
+    #[must_use]
+    pub fn y_at(&self, p: [f32; 2], accept: impl Fn(i8) -> bool, reach: f32) -> Option<f32> {
+        #[allow(clippy::cast_possible_truncation)]
+        let key = (
+            (p[0] / BUCKET_M).floor() as i32,
+            (p[1] / BUCKET_M).floor() as i32,
+        );
+        let mut best: Option<(f32, f32)> = None;
+        for &(li, si) in self.buckets.get(&key).into_iter().flatten() {
+            let line = &self.lines[li as usize];
+            if !accept(line.level) {
+                continue;
+            }
+            let si = si as usize;
+            let (a, b) = (line.points[si], line.points[si + 1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dz * dz;
+            let t = if len2 > 1e-9 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let d = (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t);
+            if d > line.half_w + reach {
+                continue;
+            }
+            let y = line.ys[si] + (line.ys[si + 1] - line.ys[si]) * t;
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, y));
+            }
+        }
+        best.map(|(_, y)| y)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,6 +868,7 @@ mod tests {
             heights,
             level,
             max_grade: G,
+            cut: [false; 2],
         }
     }
 
@@ -650,5 +1011,83 @@ mod tests {
         let s = solve(&[road]);
         let mid = s.heights[0][pts.iter().position(|p| p[0] >= 50.0).unwrap()];
         assert!((mid - 1.5).abs() < 0.2, "the gap reads {mid}");
+    }
+
+    /// **A road cut by a tile border is still one road.** The two halves end a
+    /// few decimetres apart, each tile having quantised its own copy; joined, a
+    /// deck in one tile grades the approach that runs on into the next.
+    #[test]
+    fn a_road_across_a_tile_border_is_joined() {
+        let span = line(straight(0.0, 60.0, 0.0), 1, |_| Height::Fixed(8.0));
+        let mut near = line(straight(60.0, 100.0, 0.0), 0, |_| Height::Measured {
+            y: 0.0,
+            weight: 1.0,
+        });
+        near.cut[1] = true;
+        let mut far = line(straight(100.3, 400.0, 0.2), 0, |_| Height::Measured {
+            y: 0.0,
+            weight: 1.0,
+        });
+        far.cut[0] = true;
+        let s = solve(&[span, near, far]);
+        let (end, start) = (*s.heights[1].last().unwrap(), s.heights[2][0]);
+        assert_eq!(end, start, "the halves meet at two heights");
+        assert!(end > 5.0, "the ramp stopped at the border: {end}");
+    }
+
+    /// **The runs a tile yields are named the same way every time**, and the
+    /// ring fixture's Europaplein flyover comes out on a bridge.
+    #[test]
+    fn a_tiles_runs_are_named_and_levelled() {
+        let tile = crate::testdata::groningen_ring();
+        let a = street_runs(&tile, 1465.3);
+        let b = street_runs(&tile, 1465.0);
+        assert!(!a.is_empty());
+        assert_eq!(
+            a.iter().map(|r| r.key).collect::<Vec<_>>(),
+            b.iter().map(|r| r.key).collect::<Vec<_>>(),
+            "a run's key depends on the tile's size in metres"
+        );
+        assert_eq!(
+            a.iter().map(|r| r.points.len()).collect::<Vec<_>>(),
+            b.iter().map(|r| r.points.len()).collect::<Vec<_>>(),
+            "a run densifies differently with the tile's size in metres"
+        );
+        let flyover = [1247.9f32, 125.7];
+        assert!(
+            a.iter().any(|r| r.level == 1
+                && r.points
+                    .iter()
+                    .any(|p| (p[0] - flyover[0]).hypot(p[1] - flyover[1]) < 20.0)),
+            "no bridge run at the Europaplein"
+        );
+        assert!(
+            a.iter().any(|r| r.level == -1),
+            "the ring's tunnels are missing"
+        );
+    }
+
+    #[test]
+    fn road_heights_survive_the_wire() {
+        let mut h = RoadHeights::default();
+        h.runs.insert(7, vec![1.25, -3.5, 8.0]);
+        h.runs.insert(u64::MAX, vec![0.0, 0.01]);
+        let back = RoadHeights::decode(&h.encode()).expect("decodes");
+        assert_eq!(back, h);
+        assert!(RoadHeights::decode(b"nope").is_err());
+    }
+
+    /// The lookup answers on the carriageway and not beside it, and only for the
+    /// levels asked about — the road under a flyover must not read the deck.
+    #[test]
+    fn a_level_map_answers_on_the_road_at_its_level() {
+        let mut m = LevelMap::default();
+        m.add(0, 4.0, vec![[0.0, 0.0], [100.0, 0.0]], vec![0.0, 10.0]);
+        m.add(1, 4.0, vec![[50.0, -50.0], [50.0, 50.0]], vec![7.0, 7.0]);
+        let ground = |l: i8| l == 0;
+        assert!((m.y_at([25.0, 1.0], ground, 0.0).unwrap() - 2.5).abs() < 1e-4);
+        assert!(m.y_at([25.0, 9.0], ground, 0.0).is_none());
+        assert!((m.y_at([50.0, 0.0], ground, 0.0).unwrap() - 5.0).abs() < 1e-4);
+        assert_eq!(m.y_at([50.0, 0.0], |l| l > 0, 0.0), Some(7.0));
     }
 }
