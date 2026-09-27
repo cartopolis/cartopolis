@@ -61,16 +61,33 @@ fog = 0.18
 clouds = 0.45
 
 [[shot]]
-name = "avatar"
-description = "Third-person avatar on the ground (follow camera frames the avatar)"
+name = "building"
+description = "One building and what the public registers say about it: the BAG card and the glass highlight"
+# `--ui building` selects the building nearest the avatar, so the avatar is the
+# pointer here. Avatar mode: altitude is the follow distance (capped at 25 m by
+# the harness), `look` the orbit elevation and azimuth around the avatar.
 mode = "avatar"
-# Altitude is the follow distance in avatar mode; 6 m put the camera inside the
-# building behind the avatar, so back off and look down a little more.
-at = [53.2194, 6.5665, 12]
-look = [-15.0, 110.0]
+at = [53.21905, 6.56880, 25]
+look = [-30.0, 200.0]
+time = 11.0
+fog = 0.08
+clouds = 0.2
+hide_ui = false
+ui = ["building"]
+
+[[shot]]
+name = "meet"
+description = "Two people meeting in the street and talking — the shared world, with the chat bubbles"
+# `--ui chat` seeds an exchange and stands a second speaker beside the avatar;
+# every scripted run is offline, so this is the only way to photograph it.
+mode = "avatar"
+at = [53.2194, 6.5665, 9]
+look = [-12.0, 200.0]
 time = 12.0
 fog = 0.08
 clouds = 0.2
+hide_ui = false
+ui = ["chat"]
 
 [[shot]]
 name = "route"

@@ -1,29 +1,46 @@
 # Cartopolis
 
-**A digital twin of the real world that you can walk around in.**
+**An open digital twin of your city — one place where the municipality and its residents look at the same street.**
 
-Cartopolis assembles a living 3D city out of open data. The streets, the buildings, the ground relief and the trees are real, imported from [OpenStreetMap](https://www.openstreetmap.org/) and public geodata registries. So is the weather, the position of the sun, and the tram that is genuinely due in four minutes. Stand on a pavement in a real place and keep going up — through the atmosphere, past the planet turning below you, into orbit — then drop back down anywhere on Earth. No loading screens, and no invented geography.
+![Groningen city centre, built from the public registers](docs/img/city.png)
 
-It is written in Rust on the [Bevy](https://bevy.org/) engine, runs in a browser, on the desktop and on Android, and is free and open source.
+Plans, permits and public works are hard to talk about on paper. A drawing means one thing to the planner who made it and another to the neighbour who has to live next to it, and a consultation evening only reaches the people who can make it that night. Cartopolis puts everyone in the same place instead: a walkable 3D copy of the real city, built straight from the public registers, that opens in a browser or on a phone with nothing to install.
 
-- **Real places, streamed** — the world loads around you as you move, anywhere on the planet.
-- **Pavement to orbit** — one continuous space, from a doorway to the whole globe.
-- **Raised from the map** — buildings from real footprints, measured terrain, routing, street names and points of interest.
-- **A sky that behaves** — physically-based atmosphere, day and night, sun, moon, stars and real forecast weather.
-- **Live city data** — departure boards and vehicle positions from the actual transit feed.
-- **Shared and editable** — an authoritative server keeps people, avatars and edits in sync; objects can be placed and reshaped in the world.
+- **For municipalities and governments** — a twin assembled from the base registers you already maintain, not from a separate modelling project, and self-hosted on your own servers under an open-source licence.
+- **For residents** — the city as they know it, down to the building they live in: click it and see what the registers say about it. Share a view as a link and the person who opens it stands exactly where you stood.
+- **Between the two** — people meet in the twin as avatars and talk there, by text or by voice, about the place they are both looking at.
 
-The map, the sky and the weather work anywhere on Earth. Three things do not, because they come from national open-data registries rather than a global one: **measured ground relief, high-detail (LoD2.2) buildings and live transit are the Netherlands only.** Everywhere else those degrade rather than break — the ground goes flat, buildings are extruded from their OpenStreetMap footprints, and the departure boards stay empty.
+## What it does today
+
+**Built from the registers, not modelled by hand.** Every building comes from the [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) and its measured LoD2.2 shape from [3DBAG](https://3dbag.nl/); the ground is the [AHN](https://www.ahn.nl/) height survey; street trees, street lighting, pavements and garden boundaries come from the national and municipal object registers; the basemap can be switched to [PDOK](https://www.pdok.nl/)'s 25 cm aerial photography. When a register is updated, the twin is regenerated from it rather than redrawn.
+
+**Every building answers questions.** Select one and a card shows what the public record holds — year of construction, use, number of units, floor area, status, monument listing, district and every address in it — while the building itself turns to glass so you can see its footprint on the street. Walk inside and its storeys are there, reached by stairs.
+
+**A proposal can stand where it would be built.** An architect's IFC model can replace a building's surveyed shell; objects and 3D models can be placed, shaped and scripted in the world; and a whole set of content can be exported and imported as a document through an HTTP API, so a plan can be staged, reviewed and taken down again without touching anything else.
+
+**A place to meet, not only to look.** An authoritative server keeps everyone in one shared world. People see each other's avatars, talk in local text chat and proximity voice, and keep private conversations end-to-end encrypted. Blocking, reporting and account deletion are enforced on the server, and a web console lets the operator manage accounts and run the data pipelines.
+
+**The living city around it.** The sun stands where it really stands, the weather is the real forecast, the departure boards show the tram that is actually due, and a route planner finds the way on foot, by bike or by car. Keep going up and the city gives way to the whole planet, in one continuous space.
 
 ## Screenshots
 
-| | | |
-|---|---|---|
-| ![Groningen city centre](docs/img/city.png) | ![The same streets at dusk](docs/img/city-dusk.png) | ![Third-person avatar](docs/img/avatar.png) |
-| ![Planned route](docs/img/route.png) | ![Atmosphere limb from 120 km](docs/img/horizon.png) | ![Earth from orbit](docs/img/globe.png) |
-| ![The interface over the city](docs/img/chrome.png) | | |
+| | |
+|---|---|
+| ![A building selected, with its register card](docs/img/building.png) | ![Two people meeting in the street, chatting](docs/img/meet.png) |
+| _Select a building: what the public registers hold about it._ | _Residents and officials meet in the place itself._ |
+| ![A planned route across town](docs/img/route.png) | ![The interface over the city](docs/img/chrome.png) |
+| _Routes on foot, by bike or by car._ | _Runs on modest hardware: quality adapts to the device._ |
+| ![The same streets at dusk](docs/img/city-dusk.png) | ![Earth from orbit](docs/img/globe.png) |
+| _Real sun position and weather, through the day._ | _From one street to the whole planet, without a loading screen._ |
+| ![The atmosphere from 120 km](docs/img/horizon.png) | |
 
 _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every time._
+
+## Where it works
+
+The map, the sky, the weather, routing and the shared world work anywhere on Earth. The register-based detail — measured buildings and their records, ground relief, surveyed street objects, aerial photography and live transit — comes from **Dutch** open data, and today covers the **Netherlands**; municipal registers add more where a city publishes them (Groningen does). Elsewhere those layers degrade rather than break: the ground goes flat, buildings are raised from their OpenStreetMap footprints, and the departure boards stay empty. Each register is one pipeline in [`crates/atlas`](crates/atlas), so bringing in another country's is a pipeline, not a rewrite.
+
+It is written in Rust on the [Bevy](https://bevy.org/) engine, runs in the browser, on the desktop and on Android from one codebase, and is free and open source.
 
 ## Try it
 
@@ -65,8 +82,11 @@ You need a Rust toolchain, a C compiler and a working GPU driver — details, re
 |-------|------|
 | `cartopolis_core` | Shared protocol types and tile/coordinate math |
 | `cartopolis_geo` | Bevy-free map geodata: MVT decode, road classes, tree scatter, the routing graph |
-| `cartopolis_simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
-| `cartopolis` | Bevy game client — rendering, ECS systems, UI |
+| `cartopolis_e2ee` | End-to-end encrypted private chats (MLS); the server relays sealed bytes it cannot open |
+| `cartopolis_simulator` | The shared-world server (Tokio + SQLite): avatars, chat, voice, objects, accounts; no Bevy |
+| `cartopolis_atlas` | The register pipelines (BAG, 3DBAG, AHN, BGT, …), the terrain server and the operator web console |
+| `cartopolis` | Bevy client — rendering, ECS systems, UI |
+| `cartopolis_android` | The Android app shell around the client |
 | `big_space` | Vendored floating-origin fork, for planet-scale coordinates |
 
 ## Licence
@@ -83,6 +103,8 @@ That covers the source. The map data, the geodata services, the avatars and the 
 - **Map data** — © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, under the ODbL. Building detail and POIs come from [Overpass](https://overpass-api.de/), place search and reverse geocoding from [Nominatim](https://nominatim.org/) — both self-hosted, and usable against the public instances under the [OSMF usage policies](https://operations.osmfoundation.org/policies/).
 - **Vector tiles** — [VersaTiles](https://versatiles.org/), in the [Shortbread](https://shortbread-tiles.org/) schema. Self-hosted mirror of their OSM-derived planet build.
 - **Buildings (LoD2.2)** — [3DBAG](https://3dbag.nl/) by the 3D geoinformation group, TU Delft, CC BY 4.0 — derived from the Kadaster's [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) registry and AHN, both via [PDOK](https://www.pdok.nl/). Netherlands only.
+- **Aerial photography** — [Beeldmateriaal Nederland](https://www.beeldmateriaal.nl/), served as Luchtfoto RGB by [PDOK](https://www.pdok.nl/), CC BY 4.0. Netherlands only.
+- **Street objects** — street trees, lighting and containers from [gemeente Groningen open data](https://data.groningen.nl/), CC BY 4.0. Groningen only.
 - **Elevation** — [AHN](https://www.ahn.nl/) height rasters (DTM/DSM), served by [PDOK](https://www.pdok.nl/), CC0. Netherlands only.
 - **Public transport** — live departures and vehicle positions from [OVapi](https://ovapi.nl/), the open key-free feed of Dutch [NDOV](https://ndovloket.nl/) operator data. Netherlands only.
 - **Weather** — forecasts from [MET Norway](https://api.met.no/), CC BY 4.0, and global cloud cover from the [NOAA Global Forecast System](https://nomads.ncep.noaa.gov/), public domain.
