@@ -18,12 +18,30 @@ agent container on the VPS ──http──▶ 172.19.0.1:4750  (VPS, agent Dock
 ```
 
 An agent environment that drives the bot needs **the URL and the token and
-nothing else**: no ssh key to the VPS or the Deck. Register it with
+nothing else**: no ssh key to the VPS or the Deck.
 
-```bash
-claude mcp add --transport http viberfox http://172.19.0.1:4750/mcp \
-    --header "Authorization: Bearer $(cat <token file>)"
-```
+## The agent that plays it: `viberfox-bot`
+
+A second Remote Control service in `/data/agent/docker-compose.yml`, beside
+`viberfox-agent`, shown in claude.ai/code as **viberfox-bot**. It reads what
+strangers write in chat, so it holds as little as possible:
+
+| What | Where |
+|---|---|
+| Its own claude.ai login | the `agent_bot-claude` volume, and no other volume of the other agent's |
+| Its instructions, MCP server and permissions | `/data/agent/bot/` (root-owned, mounted read-only): `CLAUDE.md`, `.mcp.json`, `.claude/settings.json` |
+| The MCP token | `/data/agent/bot.env` (0600), read by the `.mcp.json` header as `${VIBERFOX_MCP_TOKEN}` |
+| Network | `agent_bot`, its own. It reaches the tunnel and the internet, not the other agent containers |
+
+The session runs in `dontAsk` mode with only `mcp__viberfox` allowed. The shell,
+file reading and writing, the web and subagents are denied. Because the
+directory is read-only and root-owned, it cannot widen its own permissions.
+
+A new login (only if the volume is lost) is a manual step: `claude auth login`
+and the first-run trust and Remote Control prompts in
+`docker compose run --rm -it --entrypoint bash viberfox-bot`, then
+`docker compose up -d viberfox-bot`. Doing it from an agent session is refused
+by the permission check as creating an agent, and that refusal is correct.
 
 ## On the Deck (inside the `arch` container)
 
@@ -78,6 +96,8 @@ from outside the box. The unit restarts every 30 s while the Deck sleeps.
 ## Undoing it
 
 ```bash
+ssh host 'cd /data/agent && docker compose rm -sf viberfox-bot && docker volume rm agent_bot-claude \
+  && cp docker-compose.yml.bak-20260927-bot docker-compose.yml && sudo rm -r bot bot.env'
 ssh host 'sudo systemctl disable --now viberbot-mcp-tunnel && sudo rm -r /etc/systemd/system/viberbot-mcp-tunnel.service /etc/viberbot && sudo systemctl daemon-reload'
 ssh deck 'sudo systemctl disable --now viberbot && sudo rm /etc/systemd/system/viberbot.service && sudo systemctl daemon-reload \
   && sed -i "/viberbot-mcp-tunnel/d" ~/.ssh/authorized_keys && sudo userdel -r viberbot && rm -rf ~/bot-build'
