@@ -2311,6 +2311,10 @@ fn run_client() {
     let signs_in = cli.mcp_headless && cli.connect.is_some();
     #[cfg(not(mcp))]
     let signs_in = false;
+    // What this launch signed in with, kept so an agent can sign back in after
+    // signing out (`mcp::agent`, `sign_in`).
+    #[cfg(mcp)]
+    let mut launch_sign_in: Option<systems::session::SessionRequest> = None;
     if !cli.offline && (!scripted || signs_in) {
         use systems::session::{SessionKind, SessionRequest};
         let login = login::resolve(cli.login.as_deref());
@@ -2349,6 +2353,10 @@ fn run_client() {
             },
         };
         if let Some(request) = request {
+            #[cfg(mcp)]
+            if matches!(request, SessionRequest::Remote { .. }) {
+                launch_sign_in = Some(request.clone());
+            }
             app.world_mut()
                 .resource_mut::<systems::session::SessionState>()
                 .request(request);
@@ -2594,7 +2602,10 @@ fn run_client() {
         };
         tracing::info!(can_hear = %audience.describe(), "mcp: agent allow-list");
         app.insert_resource(audience)
-            .init_resource::<systems::mcp::agent::AgentState>()
+            .insert_resource(match launch_sign_in {
+                Some(request) => systems::mcp::agent::AgentState::signing_in_with(request),
+                None => systems::mcp::agent::AgentState::default(),
+            })
             .add_systems(
                 Update,
                 (

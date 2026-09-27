@@ -31,6 +31,7 @@ strangers write in chat, so it holds as little as possible:
 | Its own claude.ai login | the `agent_bot-claude` volume, and no other volume of the other agent's |
 | Its instructions, MCP server and permissions | `/data/agent/bot/` (root-owned, mounted read-only): `CLAUDE.md`, `.mcp.json`, `.claude/settings.json` |
 | The MCP token | `/data/agent/bot.env` (0600), read by the `.mcp.json` header as `${VIBERFOX_MCP_TOKEN}` |
+| Tool-call timeout | `"timeout": 660000` in `.mcp.json`. Without it Claude Code cuts every call at 60 s, and a waiting `read_chat` never returns |
 | Network | `agent_bot`, its own. It reaches the tunnel and the internet, not the other agent containers |
 
 The session runs in `dontAsk` mode with only `mcp__viberfox` allowed. The shell,
@@ -61,6 +62,12 @@ on the WireGuard address.
 The service listens on `127.0.0.1:4760`, not the default 4750, because other
 agents run clients on the Deck and 4750 is theirs. `--mcp-allow jeroen` is the
 allow-list. Change it in the unit and `systemctl restart viberbot`.
+
+**On and off.** The service is installed but **not enabled** (since
+2026-09-27), so it does not start at boot.
+`ssh deck 'sudo systemctl start viberbot'` brings the client up, and it signs in
+at launch. Its `sign_out` and `sign_in` tools take the avatar out of the world
+and back without stopping it. `stop` ends the process.
 
 **Updating the client** means copying a new binary and the `assets/` it was
 built with, together. The binary reads shaders and models from `assets/` at run

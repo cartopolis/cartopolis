@@ -241,6 +241,13 @@ pub struct ViewArgs {
                        on disk is always full resolution."
     )]
     pub max_edge_px: Option<u32>,
+    #[schemars(
+        description = "Return every measurement of the rendered world — triangle counts, \
+                       streamer state, lighting, about a hundred numbers — rather than the \
+                       handful that say where the picture was taken and whether the map had \
+                       finished loading. For diagnosing the renderer; costly otherwise."
+    )]
+    pub details: Option<bool>,
 }
 
 /// `view_here`'s arguments: everything `view` takes except where to stand.
@@ -260,6 +267,33 @@ pub struct ViewHereArgs {
     pub format: Option<String>,
     #[schemars(description = "Longest edge of the returned image in pixels. Default 1024.")]
     pub max_edge_px: Option<u32>,
+    #[schemars(description = "Return every measurement rather than the summary; see `view`.")]
+    pub details: Option<bool>,
+}
+
+/// The measurements a `view` returns unless asked for all of them: where the
+/// picture was taken and whether the world had finished loading.
+///
+/// The full row is about a hundred fields, and a bot taking a photo to show
+/// somebody a place read all of them every time — thousands of tokens of
+/// triangle counts per picture, none of it about the picture.
+const SUMMARY_METRICS: &[&str] = &[
+    "lat", "lng", "alt_m", "settled", "busy", "in_space", "frame_ms",
+];
+
+fn summarise(metrics: Option<serde_json::Value>, details: bool) -> Option<serde_json::Value> {
+    let metrics = metrics?;
+    if details {
+        return Some(metrics);
+    }
+    let serde_json::Value::Object(all) = metrics else {
+        return Some(metrics);
+    };
+    Some(serde_json::Value::Object(
+        all.into_iter()
+            .filter(|(k, _)| SUMMARY_METRICS.contains(&k.as_str()))
+            .collect(),
+    ))
 }
 
 #[tool_router]
@@ -323,10 +357,11 @@ impl Tools {
 
     #[tool(
         description = "Fly the camera somewhere, wait for the map to finish streaming, and \
-                       photograph it. Returns the image and every measurement taken of the \
-                       world in it — what was drawn, how many triangles, whether it had \
-                       finished loading. This is one call rather than a move and a capture \
-                       on purpose: two would let them disagree about which frame you got."
+                       photograph it. Returns the image, where it was taken and whether the \
+                       map had finished loading; `details` adds every measurement of the \
+                       world in it — what was drawn, how many triangles. This is one call \
+                       rather than a move and a capture on purpose: two would let them \
+                       disagree about which frame you got."
     )]
     async fn view(
         &self,
@@ -353,7 +388,7 @@ impl Tools {
             format: parse_format(args.format.as_deref())?,
             max_edge: args.max_edge_px.unwrap_or(DEFAULT_MAX_EDGE),
         };
-        self.capture(req).await
+        self.capture(req, args.details.unwrap_or(false)).await
     }
 
     #[tool(
@@ -384,7 +419,7 @@ impl Tools {
             format: parse_format(args.format.as_deref())?,
             max_edge: args.max_edge_px.unwrap_or(DEFAULT_MAX_EDGE),
         };
-        self.capture(req).await
+        self.capture(req, args.details.unwrap_or(false)).await
     }
 
     // ── Being somebody ─────────────────────────────────────────────────────
@@ -440,6 +475,22 @@ impl Tools {
         Parameters(args): Parameters<WalkArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::Walk(args)).await
+    }
+
+    #[tool(
+        description = "Sign the account out: the avatar leaves the world and nobody can see or \
+                       message it. The client keeps running, and `sign_in` brings it back."
+    )]
+    async fn sign_out(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::SignOut).await
+    }
+
+    #[tool(
+        description = "Sign back in after `sign_out`, with the account this client was \
+                       started with. Waits until the avatar is back, or says why not."
+    )]
+    async fn sign_in(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::SignIn).await
     }
 
     #[tool(description = "Stop walking.")]
@@ -549,7 +600,7 @@ impl Tools {
     }
 
     /// The shared tail of `view` and `view_here`.
-    async fn capture(&self, req: ViewRequest) -> Result<CallToolResult, ErrorData> {
+    async fn capture(&self, req: ViewRequest, details: bool) -> Result<CallToolResult, ErrorData> {
         match self.ask(Request::View(Box::new(req))).await? {
             Reply::View(reply) => {
                 let mut content = Vec::new();
@@ -573,7 +624,9 @@ impl Tools {
                 }
                 content.push(ContentBlock::text(summary));
                 let mut result = CallToolResult::success(content);
-                result.structured_content = reply.metrics.clone();
+                // A failed capture keeps every number: they are what explains it.
+                let details = details || reply.image.is_none();
+                result.structured_content = summarise(reply.metrics.clone(), details);
                 result.is_error = reply.image.is_none().then_some(true);
                 Ok(result)
             }

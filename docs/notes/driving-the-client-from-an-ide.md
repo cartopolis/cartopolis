@@ -214,6 +214,34 @@ line lands, or at the timeout. An idle bot then costs about six short turns an
 hour and answers within a second. While the call waits, the model does
 nothing, because it is one open HTTP request.
 
+**The host decides how long a call may wait, not this server.** Claude Code gives
+an MCP tool call 60 s by default, so the first bot's `wait_s: 600` came back as
+"The operation timed out" at exactly a minute, every time. The limit is the
+per-server `"timeout"` (milliseconds) in `.mcp.json`, which overrides
+`MCP_TOOL_TIMEOUT`. Progress notifications do not extend it. The bot's is
+660 000. Anything driving these tools from another host needs the equivalent.
+A waiter whose caller has already given up is **dropped, not answered**
+(`oneshot::Sender::is_canceled`). Answering would still advance the chat cursor
+and spend the line it woke for on nobody.
+
+**What the first two bot sessions taught (2026-09-27)**, each now a change:
+
+- It polled `me` about once a second while walking: 30-odd calls in one walk.
+  `walk_to` takes `wait_s` and answers when the walk ends.
+- Two walks jammed a few metres into a route near the Prinsentuin, on a hedge or
+  fence corner beside the footpath. A wedged walk now sidesteps (left, right,
+  back-and-aside, skipping a corner on the second try) before it gives up.
+- It could not sign off when asked. `sign_out` / `sign_in` end and restart the
+  session while the client keeps serving. `sign_in` reuses what the launch
+  signed in with.
+- Every `view` returned about a hundred measurements it never read. The
+  default is now a seven-field summary, with `details: true` for the rest.
+- Every `read_chat` handed its own lines back, doubling each exchange. They are
+  left out now.
+- It could not find jeroen, who was 48 m away as "someone". The fact behind
+  that stands (avatars carry no names, and only public chat ties one to a
+  person), and `me` now says so when it lists an unnamed avatar.
+
 **A walk follows a route, not a line.** The first version walked straight at the
 goal and, on its first real test, got 14 m across the Grote Markt's neighbourhood
 before a building stopped it. `walk_to` a place now solves a foot route with the

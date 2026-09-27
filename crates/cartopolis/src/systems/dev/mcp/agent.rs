@@ -78,6 +78,10 @@ const ARRIVE_PERSON_M: f32 = 2.5;
 /// the way that the route (or the straight line) does not get round.
 const STUCK_AFTER_S: f64 = 5.0;
 
+/// Sidesteps a wedged walk tries before it gives up, and how long each lasts.
+const UNSTICK_TRIES: u8 = 3;
+const SIDESTEP_S: f64 = 1.5;
+
 /// How long to wait for a walking route before going straight at the goal.
 const PLAN_WAIT_S: f64 = 30.0;
 
@@ -95,6 +99,9 @@ const SCRIPT_WAIT_S: f64 = 4.0;
 /// not arrived by then was refused (the world budget, a bad value) — the server
 /// answers a refused create to the sender only, and not in a form tied to it.
 const BUILD_WAIT_S: f64 = 10.0;
+
+/// How long `sign_in` waits for the session to come up before answering.
+const SIGN_IN_WAIT_S: f64 = 30.0;
 
 /// Longest `read_chat` may wait for a line. Ten minutes: long enough that an
 /// idle conversation costs a model a handful of turns an hour, short enough that
@@ -230,6 +237,12 @@ pub struct WalkArgs {
     pub person: Option<String>,
     #[schemars(description = "'walk' (default, 1.8 m/s), 'run' (6 m/s) or 'stroll'.")]
     pub pace: Option<String>,
+    #[schemars(
+        description = "Wait up to this many seconds (at most 600) for the walk to end, and \
+                       answer with how it ended — arrived, or stuck and where. Use this rather \
+                       than calling `me` over and over while walking."
+    )]
+    pub wait_s: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -303,6 +316,8 @@ pub enum AgentRequest {
     Touch(IdArgs),
     ScriptOutput(OutputArgs),
     MyBuilds,
+    SignOut,
+    SignIn,
 }
 
 impl AgentRequest {
@@ -322,6 +337,8 @@ impl AgentRequest {
             Self::Touch(_) => "touch",
             Self::ScriptOutput(_) => "script output",
             Self::MyBuilds => "my builds",
+            Self::SignOut => "sign out",
+            Self::SignIn => "sign in",
         }
     }
 }
@@ -372,6 +389,21 @@ pub struct AgentState {
     built: Vec<i64>,
     /// Where [`Self::built`] was loaded from; reloaded when that changes.
     built_key: Option<String>,
+    /// How this run signed in at launch, so `sign_in` can do it again after a
+    /// `sign_out`. `None` for a run that was not told a server, which then has
+    /// nothing to sign back in to.
+    sign_in: Option<crate::systems::session::SessionRequest>,
+}
+
+impl AgentState {
+    /// State for a run that signed in at launch with `request`.
+    #[must_use]
+    pub fn signing_in_with(request: crate::systems::session::SessionRequest) -> Self {
+        Self {
+            sign_in: Some(request),
+            ..Self::default()
+        }
+    }
 }
 
 struct Walk {
@@ -394,6 +426,10 @@ struct Walk {
     /// goal as often as towards it.
     moved_from: Vec2,
     moved_at: f64,
+    /// Sidesteps spent getting unstuck since the last corner reached, and the
+    /// one in progress: which way, and until when.
+    unstick: u8,
+    sidestep: Option<(Vec2, f64)>,
 }
 
 enum Goal {
@@ -415,6 +451,17 @@ enum Pending {
         /// Prims that already existed when the build was sent, so an identical
         /// object somebody made earlier is never mistaken for this one.
         before: std::collections::HashSet<i64>,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
+    /// A `walk_to` with a wait, until the walk ends one way or another.
+    Walking {
+        started: f64,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
+    /// A `sign_in`, until the session is up or has failed.
+    SigningIn {
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
@@ -455,7 +502,7 @@ pub struct AgentWorld<'w, 's> {
     chat: ResMut<'w, ChatState>,
     private: Res<'w, PrivateChats>,
     identity: Res<'w, AuthIdentity>,
-    session: Res<'w, SessionState>,
+    session: ResMut<'w, SessionState>,
     addr: Option<Res<'w, ConnectAddr>>,
     online: Option<Res<'w, OnlineSession>>,
     anchor: Res<'w, MapAnchor>,
@@ -668,6 +715,8 @@ pub fn steer(
         && to_world(&w.path[w.next]).is_some_and(|p| p.distance(here) < WAYPOINT_REACHED_M)
     {
         w.next += 1;
+        // Progress along the route earns the sidesteps back.
+        w.unstick = 0;
     }
     let aim = match w.path.get(w.next) {
         Some(p) if w.next + 1 < w.path.len() => to_world(p),
@@ -696,8 +745,38 @@ pub fn steer(
                     w.moved_from = here;
                     w.moved_at = now;
                 }
+                let last_leg = w.next + 1 >= w.path.len();
+                let stuck = now - w.moved_at > STUCK_AFTER_S;
+                if stuck && w.unstick < UNSTICK_TRIES && !(last_leg && d < 30.0) {
+                    // Wedged mid-route — the second bot lost two walks this way
+                    // a few metres from the start, on a hedge or a fence corner
+                    // the footpath runs past. Step aside, left then right, then
+                    // back and aside, and try again from there; on the second
+                    // try also give up on the corner it was aiming at.
+                    w.unstick += 1;
+                    let ahead = (aim - here).normalize_or_zero();
+                    let left = Vec2::new(ahead.y, -ahead.x);
+                    let dir = match w.unstick {
+                        1 => left,
+                        2 => -left,
+                        _ => (left - ahead).normalize_or_zero(),
+                    };
+                    if w.unstick == 2 && w.next + 1 < w.path.len() {
+                        w.next += 1;
+                    }
+                    w.sidestep = Some((dir, now + SIDESTEP_S));
+                    w.moved_from = here;
+                    w.moved_at = now;
+                }
+                if let Some((dir, until)) = w.sidestep {
+                    if now < until {
+                        walk.dir = Vec3::new(dir.x, 0.0, dir.y);
+                        walk.gait = w.gait;
+                        return;
+                    }
+                    w.sidestep = None;
+                }
                 if now - w.moved_at > STUCK_AFTER_S {
-                    let last_leg = w.next + 1 >= w.path.len();
                     Some(if last_leg && d < 30.0 {
                         // The route got there and only the last few metres, off
                         // the path, are blocked: the spot is inside a building
@@ -794,7 +873,23 @@ fn handle(
         AgentRequest::Say(args) => {
             return say(state, audience, w, args, now, reply);
         }
-        AgentRequest::Walk(args) => walk(state, audience, w, &args, now),
+        AgentRequest::Walk(args) => {
+            let answer = walk(state, audience, w, &args, now);
+            let wait = f64::from(args.wait_s.unwrap_or(0).min(MAX_CHAT_WAIT_S));
+            if answer.error || wait <= 0.0 {
+                answer
+            } else {
+                // Hold the answer until the walk has ended: an agent that only
+                // hears "walking" polls `me` every second to find out when,
+                // which the first bot did thirty times on one walk.
+                state.pending.push(Pending::Walking {
+                    started: now,
+                    until: now + wait,
+                    reply,
+                });
+                return None;
+            }
+        }
         AgentRequest::Stop => {
             let was = state.walk.take().is_some();
             state.walk_ended = was.then(|| "stopped when asked".to_string());
@@ -890,6 +985,37 @@ fn handle(
         },
         AgentRequest::ScriptOutput(args) => script_output(state, w, &args),
         AgentRequest::MyBuilds => my_builds(state, w),
+        AgentRequest::SignOut => {
+            if !w.session.is_online() && !w.session.status.is_busy() {
+                AgentReply::ok("Already signed out.", json!({ "online": false }))
+            } else {
+                state.walk = None;
+                w.session
+                    .request(crate::systems::session::SessionRequest::Offline);
+                AgentReply::ok(
+                    "Signed out: the avatar has left the world and nobody can see or \
+                     message it. This client keeps running, and `sign_in` brings it back.",
+                    json!({ "online": false }),
+                )
+            }
+        }
+        AgentRequest::SignIn => {
+            if w.session.is_online() {
+                AgentReply::ok("Already signed in.", json!({ "online": true }))
+            } else if let Some(request) = state.sign_in.clone() {
+                w.session.request(request);
+                state.pending.push(Pending::SigningIn {
+                    until: now + SIGN_IN_WAIT_S,
+                    reply,
+                });
+                return None;
+            } else {
+                AgentReply::refuse(
+                    "This client was not started with a server to sign in to, so there is \
+                     nothing to sign back in with. Its owner signs it in from the menu.",
+                )
+            }
+        }
     };
     Some((reply, answer))
 }
@@ -919,7 +1045,9 @@ fn me(state: &AgentState, audience: &Audience, w: &AgentWorld) -> AgentReply {
                 .unwrap_or_else(|| "someone".into());
             (d, name)
         })
-        .filter(|(d, _)| *d <= 300.0)
+        // Offline there is nobody: whatever `RemoteAvatar` is still standing
+        // is the frame the session ended on, not a person.
+        .filter(|(d, _)| online && *d <= 300.0)
         .collect();
     people.sort_by(|a, b| a.0.total_cmp(&b.0));
     people.truncate(12);
@@ -956,6 +1084,15 @@ fn me(state: &AgentState, audience: &Audience, w: &AgentWorld) -> AgentReply {
             .map(|(d, n)| format!("{n} {d:.0} m"))
             .collect();
         text.push_str(&format!(" People within 300 m: {}.", list.join(", ")));
+        // The second bot spent a conversation asking where jeroen was while he
+        // stood 48 m away as "someone". Say how a name gets attached.
+        if people.iter().any(|(_, n)| n == "someone") {
+            text.push_str(
+                " Avatars carry no names: somebody shows by name only after they have said \
+                 something in public chat (local or global), and a private message does not \
+                 count. Ask them to.",
+            );
+        }
     }
     text.push_str(&format!(" You can hear: {}.", audience.describe()));
     AgentReply::ok(
@@ -1036,7 +1173,12 @@ fn read_chat(
     for (key, line) in lines {
         let vouched = line.sender_is_account(key);
         let own = vouched && me.is_some_and(|m| line.sender.eq_ignore_ascii_case(m));
-        if own || audible(audience, w, key, line) {
+        if own {
+            // The agent's own lines are already in its conversation; handing
+            // them back doubled every exchange in the first bot's transcript.
+            continue;
+        }
+        if audible(audience, w, key, line) {
             shown.push((key, line, own));
         } else {
             withheld += 1;
@@ -1292,6 +1434,8 @@ fn walk(
         started: now,
         moved_from: here,
         moved_at: now,
+        unstick: 0,
+        sidestep: None,
     });
     state.walk_ended = None;
     w.camera.mode = CameraMode::Avatar;
@@ -1767,6 +1911,63 @@ fn settle(
                 };
                 finish(bridge, "build", answer, reply, now);
             }
+            // A caller that gave up — its own timeout, a closed session — is
+            // dropped rather than answered. Answering would still *act*: a
+            // `read_chat` advances the cursor, so the line it woke for would be
+            // spent on nobody and missing from the next call.
+            Pending::Walking { reply, .. }
+            | Pending::SigningIn { reply, .. }
+            | Pending::Chat { reply, .. }
+                if reply.is_canceled() => {}
+            Pending::Walking {
+                started,
+                until,
+                reply,
+            } => {
+                if state.walk.is_some() && now <= until {
+                    still.push(Pending::Walking {
+                        started,
+                        until,
+                        reply,
+                    });
+                    continue;
+                }
+                let took = now - started;
+                let answer = match (&state.walk, &state.walk_ended) {
+                    (Some(_), _) => AgentReply::ok(
+                        format!(
+                            "Still walking after {took:.0} s. Call `walk_to` again with the same \
+                             place and a wait to keep going, or `me` for where you are."
+                        ),
+                        json!({ "walking": true, "after_s": took }),
+                    ),
+                    (None, Some(how)) => AgentReply {
+                        text: format!("{} after {took:.0} s.", capitalise(how)),
+                        data: json!({ "walking": false, "ended": how, "after_s": took }),
+                        error: !(how.starts_with("arrived") || how.starts_with("stopped when")),
+                    },
+                    (None, None) => AgentReply::ok("The walk ended.", json!({ "walking": false })),
+                };
+                finish(bridge, "walk", answer, reply, now);
+            }
+            Pending::SigningIn { until, reply } => {
+                let answer = if w.session.is_online() {
+                    AgentReply::ok(
+                        "Signed in: the avatar is back in the world.",
+                        json!({ "online": true }),
+                    )
+                } else if let Some(why) = w.session.error.clone() {
+                    AgentReply::refuse(format!("Could not sign in: {why}"))
+                } else if now > until {
+                    AgentReply::refuse(format!(
+                        "Still not signed in after {SIGN_IN_WAIT_S:.0} s; `me` says when it is."
+                    ))
+                } else {
+                    still.push(Pending::SigningIn { until, reply });
+                    continue;
+                };
+                finish(bridge, "sign in", answer, reply, now);
+            }
             Pending::Chat { args, until, reply } => {
                 let after = args.after.unwrap_or(0);
                 if !anything_to_hear(audience, w, after) && now <= until {
@@ -1843,6 +2044,14 @@ fn finish(
         now,
     );
     let _ = reply.send(Reply::Agent(Box::new(answer)));
+}
+
+fn capitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
 }
 
 fn first_line(text: &str) -> String {
