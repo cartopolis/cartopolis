@@ -1228,9 +1228,6 @@ fn spawn_geometry_task(
                 let mut decks = Vec::new();
                 let mut deck_roads = Vec::new();
                 let mut levels: Option<Arc<cartopolis_geo::road_levels::LevelMap>> = None;
-                // The same runs with their heights (NAP), for the tunnels.
-                let mut levelled: Vec<(cartopolis_geo::road_levels::StreetRun, Vec<f32>)> =
-                    Vec::new();
                 let mut approaches = Vec::new();
                 // Needs no tile: the piers are the register's, and only become
                 // anything once a deck over them is measured.
@@ -1264,8 +1261,7 @@ fn spawn_geometry_task(
                         let mut map = cartopolis_geo::road_levels::LevelMap::default();
                         for run in cartopolis_geo::road_levels::street_runs(&tile, tile_m) {
                             if let Some(ys) = heights.runs.get(&run.key) {
-                                map.add(run.level, run.half_w, run.points.clone(), ys.clone());
-                                levelled.push((run, ys.clone()));
+                                map.add(run.level, run.half_w, run.points, ys.clone());
                             }
                         }
                         if !map.is_empty() {
@@ -1413,33 +1409,31 @@ fn spawn_geometry_task(
                             // profile solved on the network (`road_levels`). Needs
                             // the ground to express those heights against; a cell
                             // placed later on the main thread keeps the old plan.
-                            let tunnels = match ground.as_ref() {
-                                Some((g, origin)) if !levelled.is_empty() => {
+                            let tunnels = match (ground.as_ref(), levels.as_deref()) {
+                                (Some((g, origin)), Some(map)) => {
                                     use crate::systems::terrain::MeasuredGround as _;
-                                    let datum = g.datum_m();
-                                    let ys: Vec<Vec<f32>> = levelled
-                                        .iter()
-                                        .map(|(_, ys)| ys.iter().map(|y| y - datum).collect())
-                                        .collect();
-                                    let runs: Vec<cartopolis_geo::tunnels::LevelledRun<'_>> =
-                                        levelled
-                                            .iter()
-                                            .zip(&ys)
-                                            .map(|((run, _), ys)| {
-                                                cartopolis_geo::tunnels::LevelledRun { run, ys }
-                                            })
-                                            .collect();
-                                    cartopolis_geo::tunnels::build_tunnels_on_levels(
-                                        &runs,
-                                        &|p| g.at(origin.x + p[0], origin.y + p[1]),
-                                        &|p| {
+                                    cartopolis_geo::tunnels::build_tunnels_measured(
+                                        &tile,
+                                        tile_m,
+                                        mesh_bytes,
+                                        &cartopolis_geo::tunnels::MeasuredDepths {
+                                        levels: map,
+                                        datum: g.datum_m(),
+                                        around: &|p| {
+                                            g.surrounding(
+                                                origin.x + p[0],
+                                                origin.y + p[1],
+                                                cartopolis_geo::tunnels::DATUM_M,
+                                            )
+                                        },
+                                        lid: &|p| {
                                             g.lid_level(
                                                 origin.x + p[0],
                                                 origin.y + p[1],
                                                 cartopolis_geo::tunnels::DATUM_M,
                                             )
                                         },
-                                        mesh_bytes,
+                                        },
                                     )
                                 }
                                 _ => cartopolis_geo::tunnels::build_tunnels(&tile, tile_m, mesh_bytes),

@@ -490,9 +490,12 @@ impl Tunnels {
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            // A measured corridor's depth is already the road's own: it owes
-            // nothing to what the survey dug, so it asks for no lift at all.
-            .filter_map(|b| b.road_under(at).map(|y| if b.measured { 0.0 } else { y }))
+            // A measured corridor is placed by the whole of what the survey dug
+            // (`lift_for_road`): as deep as anything, so the cap never bites.
+            .filter_map(|b| {
+                b.road_under(at)
+                    .map(|y| if b.measured { f32::NEG_INFINITY } else { y })
+            })
             .min_by(f32::total_cmp)
             .map(|y| -y)
     }

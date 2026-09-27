@@ -301,7 +301,15 @@ pub struct ConformRoad<'a> {
 /// and the joint with a deck is wherever the road meets it, not a raster
 /// approximation of it. The nearest road decides each sample, so a junction is
 /// the roads' shared height and two roads side by side each hold their own strip.
-pub fn conform_to_roads(raw: &mut [f32], lattice: Lattice, roads: &[ConformRoad<'_>]) -> usize {
+///
+/// `leave` names the ground not to touch: a tunnel's ramps and cuttings, which the
+/// client opens and walls itself, and which would otherwise sit in sloped banks.
+pub fn conform_to_roads(
+    raw: &mut [f32],
+    lattice: Lattice,
+    roads: &[ConformRoad<'_>],
+    leave: &dyn Fn([f32; 2]) -> bool,
+) -> usize {
     let n = lattice.n;
     if n < 2 || raw.len() < n * n || lattice.step <= 0.0 {
         return 0;
@@ -351,7 +359,7 @@ pub fn conform_to_roads(raw: &mut [f32], lattice: Lattice, roads: &[ConformRoad<
     let mut changed = 0;
     for i in 0..n * n {
         let (d, y) = best[i];
-        if !d.is_finite() {
+        if !d.is_finite() || leave(lattice.at(i % n, i / n)) {
             continue;
         }
         let road_ground = y - UNDER_ROAD_M;
@@ -742,6 +750,7 @@ mod tests {
                 ys: &ys,
                 half_w: 4.0,
             }],
+            &|_| false,
         );
         let at = |z: usize| g[(50 + z) * l.n + 50];
         assert!(

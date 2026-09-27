@@ -128,6 +128,9 @@ struct Cell {
     /// Its streets as the client draws them, for the road network the heights
     /// are solved on (`road_levels`).
     runs: Vec<StreetRun>,
+    /// Its tunnels' corridors as the client lays them out — lids, ramps and
+    /// cuttings — whose ground the client opens and walls itself.
+    tunnels: Vec<(Vec<[f32; 2]>, f32)>,
     decks: Vec<Deck>,
 }
 
@@ -235,6 +238,7 @@ impl<'a> Grader<'a> {
         let mut cell = Cell {
             tile_m,
             runs: Vec::new(),
+            tunnels: Vec::new(),
             decks: Vec::new(),
         };
         if let Some(bytes) = self.vector.mvt(x, y)? {
@@ -242,6 +246,11 @@ impl<'a> Grader<'a> {
             let mut decks = vector_tiles::tessellate_bridges(&tile, tile_m)?;
             let roads = vector_tiles::tessellate_roads(&tile, tile_m, &mut decks, None, false)?;
             cell.runs = road_levels::street_runs(&tile, tile_m);
+            cell.tunnels = cartopolis_geo::tunnels::build_tunnels(&tile, tile_m, None)
+                .tunnels
+                .into_iter()
+                .map(|t| (t.centre, t.half_w))
+                .collect();
             self.deck_heights.entry((x, y)).or_default();
             for (i, deck) in decks.into_iter().enumerate() {
                 let measured = self.measure_deck(x, y, tile_m, &deck)?;
@@ -561,6 +570,45 @@ impl<'a> Grader<'a> {
                 f32::NAN
             }
         };
+        // **Over a tunnel the survey may be stale.** Groningen's ring was flown as
+        // an open trench and has a lid on it now, so a street crossing the lid
+        // would read the trench floor nine metres down. Where a road runs over a
+        // tunnel's corridor its ground is the lid — the land around — as the
+        // client's own fill (`tunnels::Lidded`) has always put it back.
+        let mut bores: Vec<(Vec<[f32; 2]>, f32)> = Vec::new();
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                let Some(cell) = self.cells.get(&(tx + dx, ty + dy)) else {
+                    continue;
+                };
+                let s = tile_m / cell.tile_m;
+                let off = [dx as f32 * tile_m, dy as f32 * tile_m];
+                for run in cell.runs.iter().filter(|r| r.level < 0) {
+                    bores.push((
+                        run.points
+                            .iter()
+                            .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
+                            .collect(),
+                        run.half_w * s,
+                    ));
+                }
+            }
+        }
+        let over_a_bore = |p: [f32; 2]| {
+            bores.iter().any(|(pts, half)| {
+                pts.windows(2).any(|w| {
+                    let (a, b) = (w[0], w[1]);
+                    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                    let len2 = dx * dx + dz * dz;
+                    let t = if len2 > 1e-9 {
+                        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= half + LID_REACH_M
+                })
+            })
+        };
         let mut lines: Vec<road_levels::Line> = Vec::new();
         // (this tile's own run, its key, its half-width, its level) per line.
         let mut owners: Vec<(bool, u64, f32, i8)> = Vec::new();
@@ -627,7 +675,11 @@ impl<'a> Grader<'a> {
                                     return Height::Fixed(t);
                                 }
                             }
-                            let v = sample(p);
+                            let v = if over_a_bore(p) {
+                                lid_level(&sample, p)
+                            } else {
+                                sample(p)
+                            };
                             if v.is_finite() {
                                 Height::Measured { y: v, weight: 1.0 }
                             } else {
@@ -676,7 +728,42 @@ impl<'a> Grader<'a> {
                 half_w: o.2,
             })
             .collect();
-        terrain_grade::conform_to_roads(&mut raw, lattice, &conform);
+        // Not inside a tunnel's corridors: the client cuts that ground away over the
+        // ramps and cuttings and stands its own walls there.
+        let mut corridors: Vec<(Vec<[f32; 2]>, f32)> = Vec::new();
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                let Some(cell) = self.cells.get(&(tx + dx, ty + dy)) else {
+                    continue;
+                };
+                let s = tile_m / cell.tile_m;
+                let off = [dx as f32 * tile_m, dy as f32 * tile_m];
+                for (pts, half) in &cell.tunnels {
+                    corridors.push((
+                        pts.iter()
+                            .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
+                            .collect(),
+                        half * s + cartopolis_geo::tunnels::WALL_REACH_M,
+                    ));
+                }
+            }
+        }
+        let in_a_corridor = |p: [f32; 2]| {
+            corridors.iter().any(|(pts, half)| {
+                pts.windows(2).any(|w| {
+                    let (a, b) = (w[0], w[1]);
+                    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                    let len2 = dx * dx + dz * dz;
+                    let t = if len2 > 1e-9 {
+                        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= *half
+                })
+            })
+        };
+        terrain_grade::conform_to_roads(&mut raw, lattice, &conform, &in_a_corridor);
 
         let k = k as usize;
         let mut heights = Vec::with_capacity(DENSE_GRID * DENSE_GRID);
@@ -730,6 +817,10 @@ pub fn grade_area(
     write_road_heights(ctx, &grader.road_heights)?;
     Ok((graded, grader.decks_measured, grader.decks_lifted))
 }
+
+/// How far past a tunnel's carriageway a road crossing over it stands on the
+/// lid rather than on the survey, metres: the tunnel's walls and a margin.
+const LID_REACH_M: f32 = 4.0;
 
 /// The level of the land around `p` — what a lid over a tunnel is filled back to:
 /// the 80th percentile of sixteen samples, eight at 30 m and eight at 60 m, the
