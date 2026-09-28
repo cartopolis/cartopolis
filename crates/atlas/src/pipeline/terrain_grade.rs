@@ -938,12 +938,12 @@ impl<'a> Grader<'a> {
                     "tile": [tx, ty],
                 }));
             }
-            // A tunnel wholly under a lifted deck is a road under a span, and has
-            // nothing to build.
+            // A tunnel that runs under a lifted deck is a road under a span
+            // there, measured like any road, and may rightly build nothing.
             let under_a_span: std::collections::HashSet<u64> = owners
                 .iter()
                 .zip(&span)
-                .filter(|((mine, ..), sp)| *mine && !sp.is_empty() && sp.iter().all(|&b| b))
+                .filter(|((mine, ..), sp)| *mine && sp.contains(&true))
                 .map(|((_, key, ..), _)| *key)
                 .collect();
             for (r, p) in own_runs.iter().zip(&profiles) {
