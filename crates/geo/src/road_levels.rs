@@ -1475,7 +1475,8 @@ mod tests {
         assert!(old.land.is_empty());
 
         // And walls, after the land.
-        h.walls.insert(7, vec![[f32::NAN; 2], [6.5, 0.0], [7.0, 3.25]]);
+        h.walls
+            .insert(7, vec![[f32::NAN; 2], [6.5, 0.0], [7.0, 3.25]]);
         let back = RoadHeights::decode(&h.encode()).expect("decodes");
         let w = &back.walls[&7];
         assert!(w[0][0].is_nan() && w[1] == [6.5, 0.0] && w[2] == [7.0, 3.25]);
@@ -1511,7 +1512,10 @@ mod tests {
             with_land += 1;
             let walls = heights.walls.get(&run.key);
             for (i, ((p, y), g)) in run.points.iter().zip(ys).zip(land).enumerate() {
-                let w = walls.and_then(|w| w.get(i)).copied().unwrap_or([f32::NAN; 2]);
+                let w = walls
+                    .and_then(|w| w.get(i))
+                    .copied()
+                    .unwrap_or([f32::NAN; 2]);
                 println!(
                     "P,{},{},{:.2},{:.2},{:.2},{:.2},{:?},{:.1},{:.1}",
                     run.key, run.level, p[0], p[1], y, g, run.class, w[0], w[1]

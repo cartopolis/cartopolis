@@ -2994,11 +2994,17 @@ mod tests {
             "no floor out to the wall"
         );
         let ring = &out.openings[0];
-        let (lo, hi) = ring
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
-        assert!((hi - 8.5).abs() < 1e-3, "opening reaches {hi}, not past the wall");
-        assert!((lo + 5.5).abs() < 1e-3, "opening reaches {lo} on the bank side");
+        let (lo, hi) = ring.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+            (lo.min(p[1]), hi.max(p[1]))
+        });
+        assert!(
+            (hi - 8.5).abs() < 1e-3,
+            "opening reaches {hi}, not past the wall"
+        );
+        assert!(
+            (lo + 5.5).abs() < 1e-3,
+            "opening reaches {lo} on the bank side"
+        );
     }
 
     /// **A trench wider than the bore it runs into is closed where they meet**,
@@ -3029,9 +3035,7 @@ mod tests {
         for side in [1.0f32, -1.0] {
             assert!(
                 shell.positions.iter().zip(&shell.normals).any(|(p, n)| {
-                    (p[0] - 60.0).abs() < 1e-3
-                        && (p[2] * side - 8.0).abs() < 1e-3
-                        && n[0] < -0.99
+                    (p[0] - 60.0).abs() < 1e-3 && (p[2] * side - 8.0).abs() < 1e-3 && n[0] < -0.99
                 }),
                 "no wing on the {side} side where the ramp meets the bore"
             );
