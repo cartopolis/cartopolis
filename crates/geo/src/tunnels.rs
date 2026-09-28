@@ -1329,6 +1329,180 @@ fn simplified(
     )
 }
 
+/// Widest gap between two carriageways' edges that is a median rather than
+/// ground between two roads, metres. A Dutch dual carriageway in a cutting
+/// keeps a barrier and a verge between its halves; twelve metres takes a wide
+/// one and stops short of a road beside it.
+const MEDIAN_GAP_M: f32 = 12.0;
+
+/// Height of the barrier down the middle of a median, metres.
+const BARRIER_M: f32 = 0.8;
+
+/// How far under the carriageways a median's floor is laid, metres, so the
+/// decks either side win the depth test where they overlap it.
+const MEDIAN_FLOOR_M: f32 = 0.03;
+
+/// The other half of the road a segment's side faces across a median.
+#[derive(Clone, Copy, Debug)]
+struct Partner {
+    plan: usize,
+}
+
+/// For every open segment of every plan, which side (left, right) faces the
+/// other half of its road across a median.
+///
+/// **One trench, not two.** A dual carriageway is two ways in OSM and so two
+/// structures here, each walled on both sides — so an open cutting drew two
+/// walls the full depth of the cutting standing face to face down its middle,
+/// with a slot of void between them where the photograph of the DUO cutting
+/// shows one floor and a barrier (2026-09-28). The opening over the median was
+/// already one hole (`merge_parallel_openings`); this is what lets the walls and
+/// the floor agree with it. Same class, parallel, open on both sides, and edges
+/// no more than [`MEDIAN_GAP_M`] apart.
+fn medians(plans: &[Plan]) -> Vec<Vec<[Option<Partner>; 2]>> {
+    let mut out: Vec<Vec<[Option<Partner>; 2]>> = plans
+        .iter()
+        .map(|p| vec![[None; 2]; p.centre.len().saturating_sub(1)])
+        .collect();
+    for (pi, a) in plans.iter().enumerate() {
+        for i in 0..a.centre.len().saturating_sub(1) {
+            if a.roofed[i] && a.roofed[i + 1] {
+                continue;
+            }
+            let (p0, p1) = (a.centre[i], a.centre[i + 1]);
+            let (dx, dz) = (p1[0] - p0[0], p1[1] - p0[1]);
+            let len = dx.hypot(dz);
+            if len <= 1e-3 {
+                continue;
+            }
+            let dir = [dx / len, dz / len];
+            let left = [-dir[1], dir[0]];
+            let mid = [(p0[0] + p1[0]) * 0.5, (p0[1] + p1[1]) * 0.5];
+            let mut best: Option<(f32, usize, bool)> = None;
+            for (pj, b) in plans.iter().enumerate() {
+                if pj == pi || b.class != a.class {
+                    continue;
+                }
+                for k in 0..b.centre.len().saturating_sub(1) {
+                    if b.roofed[k] && b.roofed[k + 1] {
+                        continue;
+                    }
+                    let (q0, q1) = (b.centre[k], b.centre[k + 1]);
+                    let (ex, ez) = (q1[0] - q0[0], q1[1] - q0[1]);
+                    let blen = ex.hypot(ez);
+                    if blen <= 1e-3 || ((dir[0] * ex + dir[1] * ez) / blen).abs() < JOIN_COS {
+                        continue;
+                    }
+                    let Some((d, t)) = project(q0, q1, mid) else {
+                        continue;
+                    };
+                    let gap = d - a.half - b.half;
+                    if !(0.0..=MEDIAN_GAP_M).contains(&gap) {
+                        continue;
+                    }
+                    let q = [q0[0] + ex * t, q0[1] + ez * t];
+                    let on_left = (q[0] - mid[0]) * left[0] + (q[1] - mid[1]) * left[1] > 0.0;
+                    if best.is_none_or(|(bd, ..)| d < bd) {
+                        best = Some((d, pj, on_left));
+                    }
+                }
+            }
+            if let Some((_, pj, on_left)) = best {
+                out[pi][i][usize::from(!on_left)] = Some(Partner { plan: pj });
+            }
+        }
+    }
+    out
+}
+
+/// The nearest point on a plan's centre line to `p`, and the road height there.
+fn nearest_on(plan: &Plan, p: [f32; 2]) -> Option<([f32; 2], f32)> {
+    let mut best: Option<(f32, [f32; 2], f32)> = None;
+    for k in 0..plan.centre.len().saturating_sub(1) {
+        let (a, b) = (plan.centre[k], plan.centre[k + 1]);
+        let Some((d, t)) = project(a, b, p) else {
+            continue;
+        };
+        if best.is_none_or(|(bd, ..)| d < bd) {
+            let q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            let y = plan.road_y[k] + (plan.road_y[k + 1] - plan.road_y[k]) * t;
+            best = Some((d, q, y));
+        }
+    }
+    best.map(|(_, q, y)| (q, y))
+}
+
+/// The floor across a median, and the barrier down its middle, for segment `i`
+/// of `a` on its `side` (0 left, 1 right), facing `b`.
+fn median_floor(shell: &mut Build, a: &Plan, i: usize, side: usize, b: &Plan) {
+    let sides = offset_sides(&a.centre, a.half);
+    let edge = if side == 0 {
+        sides.left[i]
+    } else {
+        sides.right[i]
+    };
+    let (ya0, ya1) = (a.road_y[i], a.road_y[i + 1]);
+    let (Some((q0, yb0)), Some((q1, yb1))) = (nearest_on(b, edge[0]), nearest_on(b, edge[1]))
+    else {
+        return;
+    };
+    // The partner's edge facing back across the median.
+    let toward = |q: [f32; 2], e: [f32; 2]| {
+        let (dx, dz) = (e[0] - q[0], e[1] - q[1]);
+        let len = dx.hypot(dz).max(1e-6);
+        [q[0] + dx / len * b.half, q[1] + dz / len * b.half]
+    };
+    let (f0, f1) = (toward(q0, edge[0]), toward(q1, edge[1]));
+    // Where the two halves touch there is no median to floor, and a strip of no
+    // width is a sliver wound whichever way rounding puts it.
+    let width = |e: [f32; 2], f: [f32; 2]| (e[0] - f[0]).hypot(e[1] - f[1]);
+    if width(edge[0], f0).min(width(edge[1], f1)) < 0.1 {
+        return;
+    }
+    let floor = [
+        [edge[0][0], ya0 - MEDIAN_FLOOR_M, edge[0][1]],
+        [edge[1][0], ya1 - MEDIAN_FLOOR_M, edge[1][1]],
+        [f1[0], yb1 - MEDIAN_FLOOR_M, f1[1]],
+        [f0[0], yb0 - MEDIAN_FLOOR_M, f0[1]],
+    ];
+    let quad = if faces_up(edge[0], edge[1], f1) {
+        floor
+    } else {
+        [floor[1], floor[0], floor[3], floor[2]]
+    };
+    shell.quad(
+        quad,
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        UP,
+        0.0,
+    );
+    // The barrier: both faces, down the middle of the median.
+    let mid = |e: [f32; 2], f: [f32; 2], ya: f32, yb: f32| {
+        ([(e[0] + f[0]) * 0.5, (e[1] + f[1]) * 0.5], (ya + yb) * 0.5)
+    };
+    let ((m0, h0), (m1, h1)) = (mid(edge[0], f0, ya0, yb0), mid(edge[1], f1, ya1, yb1));
+    for left in [true, false] {
+        let n = wall_normal(m0, m1, left);
+        let (lo0, lo1, hi0, hi1) = (
+            [m0[0], h0, m0[1]],
+            [m1[0], h1, m1[1]],
+            [m0[0], h0 + BARRIER_M, m0[1]],
+            [m1[0], h1 + BARRIER_M, m1[1]],
+        );
+        let face = if left {
+            [lo1, lo0, hi0, hi1]
+        } else {
+            [lo0, lo1, hi1, hi0]
+        };
+        shell.quad(
+            face,
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            n,
+            0.0,
+        );
+    }
+}
+
 /// Build the meshes, corridors and openings for a set of settled plans.
 fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
     let mut out = TunnelTessellation::default();
@@ -1345,8 +1519,10 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
     // Openings carry the corridor they came out of until the merge below has had
     // its say — see [`merge_parallel_openings`].
     let mut openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)> = Vec::new();
+    let facing = medians(plans);
 
-    for plan in plans {
+    for (pi, plan) in plans.iter().enumerate() {
+        let facing = &facing[pi];
         let Plan {
             centre,
             travelled,
@@ -1418,30 +1594,36 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
             // tops ran out of the canal as long thin slivers (2026-09-23).
             let covered = roofed[i] && roofed[i + 1];
             let (t0, t1) = (top(i, covered), top(i + 1, covered));
-            let n_left = wall_normal(l0, l1, true);
-            shell.quad(
-                [
-                    [l1[0], y1, l1[1]],
-                    [l0[0], y0, l0[1]],
-                    [l0[0], t0, l0[1]],
-                    [l1[0], t1, l1[1]],
-                ],
-                [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
-                n_left,
-                0.0,
-            );
-            let n_right = wall_normal(r0, r1, false);
-            shell.quad(
-                [
-                    [r0[0], y0, r0[1]],
-                    [r1[0], y1, r1[1]],
-                    [r1[0], t1, r1[1]],
-                    [r0[0], t0, r0[1]],
-                ],
-                [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
-                n_right,
-                0.0,
-            );
+            // Not on a side that faces the other half of the road across a
+            // median: that is one trench, and its floor is laid below.
+            if facing[i][0].is_none() {
+                let n_left = wall_normal(l0, l1, true);
+                shell.quad(
+                    [
+                        [l1[0], y1, l1[1]],
+                        [l0[0], y0, l0[1]],
+                        [l0[0], t0, l0[1]],
+                        [l1[0], t1, l1[1]],
+                    ],
+                    [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
+                    n_left,
+                    0.0,
+                );
+            }
+            if facing[i][1].is_none() {
+                let n_right = wall_normal(r0, r1, false);
+                shell.quad(
+                    [
+                        [r0[0], y0, r0[1]],
+                        [r1[0], y1, r1[1]],
+                        [r1[0], t1, r1[1]],
+                        [r0[0], t0, r0[1]],
+                    ],
+                    [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
+                    n_right,
+                    0.0,
+                );
+            }
 
             // Roof, wound to face *down*: wound like the deck it faced the earth
             // above it and was culled from underneath — a lid you could see the
@@ -1475,10 +1657,14 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
                 let next_l = sides.left[i + 1][0];
                 let next_r = sides.right[i + 1][0];
                 let roof = roofed[i + 1];
-                for (a, b, u) in [(l1, next_l, 0.0), (next_r, r1, 1.0)] {
+                for (side, (a, b, u)) in [(l1, next_l, 0.0), (next_r, r1, 1.0)]
+                    .into_iter()
+                    .enumerate()
+                {
                     if !faces_up(p, a, b) {
                         continue;
                     }
+                    let open_median = facing[i][side].is_some() || facing[i + 1][side].is_some();
                     deck.tri(
                         [[p[0], y, p[1]], [a[0], y, a[1]], [b[0], y, b[1]]],
                         [[0.5, v], [u, v], [u, v]],
@@ -1496,6 +1682,9 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
                     // A vertical quad closing the gap between the two offset
                     // points, facing back toward the centre of the bend. Without
                     // it a bend is a slot you can see the void through.
+                    if open_median {
+                        continue;
+                    }
                     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
                     let len = dx.hypot(dz).max(1e-6);
                     let t = top(i + 1, roof);
@@ -1652,6 +1841,17 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
             }
             if shell.positions.len() * VERTEX_BYTES >= limit && !shell.is_empty() {
                 meshes.push(std::mem::take(&mut shell).into_mesh(SurfaceGroup::TunnelStructure));
+            }
+        }
+    }
+
+    // The floor across every median, laid once from the lower-numbered half.
+    for (pi, plan) in plans.iter().enumerate() {
+        for (i, sides) in facing[pi].iter().enumerate() {
+            for (side, partner) in sides.iter().enumerate() {
+                if let Some(p) = partner.filter(|p| p.plan > pi) {
+                    median_floor(&mut shell, plan, i, side, &plans[p.plan]);
+                }
             }
         }
     }
@@ -2339,6 +2539,57 @@ mod tests {
             "a level-0 cutting was roofed"
         );
         assert_eq!(out.openings.len(), 1);
+    }
+
+    /// **Two halves of one road in a cutting share its floor.** Twelve metres
+    /// apart, five metres down: the walls stand on the outside of each, and
+    /// between them there is a floor under the road and a barrier no taller than
+    /// a barrier — not two walls the depth of the cutting with a void between, as
+    /// the DUO cutting was drawn until 2026-09-28.
+    #[test]
+    fn a_dual_carriageway_in_a_cutting_shares_its_floor() {
+        let runs = [
+            run(0, [0.0, 0.0], [120.0, 0.0], 0),
+            run(0, [0.0, 12.0], [120.0, 12.0], 1),
+        ];
+        let profiles: Vec<Option<Profile>> = runs
+            .iter()
+            .map(|r| {
+                Some(Profile {
+                    road: vec![-5.0; r.points.len()],
+                    land: vec![0.0; r.points.len()],
+                })
+            })
+            .collect();
+        let out = build_structures(&runs, &profiles, None);
+        let shell = out
+            .meshes
+            .iter()
+            .find(|m| m.group == SurfaceGroup::TunnelStructure)
+            .expect("walls");
+        let between = shell
+            .positions
+            .iter()
+            .filter(|p| p[2] > 5.5 && p[2] < 6.5)
+            .map(|p| p[1])
+            .fold(f32::MIN, f32::max);
+        assert!(
+            between <= -5.0 + BARRIER_M + 1e-3,
+            "something {between} m high stands in the median"
+        );
+        assert!(
+            shell.normals.iter().any(|n| n[1] > 0.99),
+            "no floor was laid across the median"
+        );
+        let outer = shell
+            .positions
+            .iter()
+            .filter(|p| p[2] < -4.9 || p[2] > 16.9)
+            .map(|p| p[1]);
+        assert!(
+            outer.fold(f32::MIN, f32::max) >= -1e-3,
+            "the outer walls do not reach the land"
+        );
     }
 
     /// **A roofed deck keeps its headroom under the land.**

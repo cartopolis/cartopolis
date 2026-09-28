@@ -3287,6 +3287,8 @@ pub fn drive_capture(
         let left = frames.saturating_sub(1);
         progress.exit_in = Some(left);
         if left == 0 {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::systems::aerial_reference::wait_all();
             // The one place the harness gets to have an opinion about the world it
             // photographed. Without `--expect` this is always Success and only a
             // render failure can fail the run — which is exactly why a caller that

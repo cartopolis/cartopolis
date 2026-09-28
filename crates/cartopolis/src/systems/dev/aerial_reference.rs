@@ -56,7 +56,7 @@ pub fn spawn_write(path: PathBuf, view: View) {
         tracing::info!(path = %path.display(), "aerial reference: outside the imagery, none written");
         return;
     }
-    std::thread::spawn(move || match render(view) {
+    let handle = std::thread::spawn(move || match render(view) {
         Ok(img) => match img.save(&path) {
             Ok(()) => tracing::info!(path = %path.display(), "aerial reference: saved"),
             Err(e) => {
@@ -67,6 +67,28 @@ pub fn spawn_write(path: PathBuf, view: View) {
             tracing::warn!(path = %path.display(), error = %e, "aerial reference: not fetched")
         }
     });
+    PENDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(handle);
+}
+
+/// References still being fetched.
+static PENDING: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Wait for every reference still being fetched. The harness calls this before it
+/// exits: the last capture's reference is started a frame before the run ends,
+/// and a process that leaves takes its threads with it.
+pub fn wait_all() {
+    let handles = std::mem::take(
+        &mut *PENDING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for h in handles {
+        let _ = h.join();
+    }
 }
 
 /// A point in world pixels at zoom `z` (Web Mercator, north-west origin).
