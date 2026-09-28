@@ -178,6 +178,19 @@ pub struct SkyPrefs {
     /// The clock in hours, 0–24. `Some` only in [`SunMode::Manual`].
     #[serde(default)]
     pub time_of_day: Option<f32>,
+    /// The moon's age in days. `Some` only in [`SunMode::Manual`], for the same
+    /// reason as `time_of_day`: every other mode derives it from the real date.
+    /// Without it a hand-set moon phase came back as the full-moon default.
+    #[serde(default)]
+    pub moon_age_days: Option<f32>,
+    /// "Run the day" — Manual's quick cycle. Off by default; only acts in Manual.
+    #[serde(default)]
+    pub auto_cycle: bool,
+    /// Real seconds per loop of the quick cycle. Defaulted to
+    /// `DevPanelState::default`'s 10, not to serde's 0 (which the cycle clamps to
+    /// a 0.1 s day).
+    #[serde(default = "default_cycle_seconds")]
+    pub cycle_seconds: f32,
     /// Live met.no weather drives cloud/fog/rain (the HUD's weather "Auto").
     #[serde(default)]
     pub weather_live: bool,
@@ -328,6 +341,12 @@ fn detail_default() -> bool {
 /// value, kept in step by hand because that struct is not `Deserialize`.
 fn default_fog() -> f32 {
     0.15
+}
+
+/// `#[serde(default)]` for [`SkyPrefs::cycle_seconds`], in step by hand with
+/// `DevPanelState::default`.
+fn default_cycle_seconds() -> f32 {
+    10.0
 }
 
 /// `#[serde(default)]` for [`SkyPrefs::clouds`] — see that field for why a bare
@@ -1145,6 +1164,11 @@ pub fn restore_sky_prefs(
         if let Some(t) = p.time_of_day {
             dev.time_of_day = t.rem_euclid(24.0);
         }
+        if let Some(m) = p.moon_age_days {
+            dev.moon_age_days = m.rem_euclid(crate::utils::sun::LUNAR_CYCLE_DAYS);
+        }
+        dev.auto_cycle = p.auto_cycle;
+        dev.cycle_seconds = p.cycle_seconds.clamp(0.1, 3600.0);
     }
     if !cli.weather_live {
         weather.live = p.weather_live;
@@ -1267,6 +1291,9 @@ mod tests {
         let prefs = SkyPrefs {
             sun_mode: SunMode::Night,
             time_of_day: None,
+            moon_age_days: Some(3.5),
+            auto_cycle: true,
+            cycle_seconds: 42.0,
             weather_live: false,
             fog_density: 0.3,
             cloud_cover: 0.5,
@@ -1303,6 +1330,8 @@ mod tests {
             "and the same for fog: {}",
             p.fog_density
         );
+        assert!(!p.auto_cycle && p.moon_age_days.is_none());
+        assert!((p.cycle_seconds - default_cycle_seconds()).abs() < f32::EPSILON);
     }
 
     /// The autosave must never write the document before a restore has read it.

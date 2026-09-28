@@ -173,7 +173,26 @@ pub struct SessionState {
     /// Set on the frame a lost session comes back, and taken by
     /// [`keep_avatar_across_reconnect`] once it has put the avatar back.
     resumed: bool,
+    /// Set when the app comes back to the foreground; [`drive_session`] turns it
+    /// into a [`LinkProbe`] on its next run.
+    probe_wanted: bool,
+    probe: Option<LinkProbe>,
 }
+
+/// A link being watched for silence after the app came back to the screen.
+#[derive(Clone, Copy)]
+struct LinkProbe {
+    /// `Time<Real>` seconds at which silence counts as a dead link.
+    deadline: f64,
+    /// `NetworkMailbox::received` when the watch began.
+    seen: u64,
+}
+
+/// How long a resumed link may say nothing before it is treated as lost. The sim
+/// stops snapshots while the app is away and starts them again the moment
+/// presence returns, at 20 Hz — so a live link is heard from within a tick or
+/// two, and this is generous for a slow mobile round trip.
+const RESUME_SILENCE_S: f64 = 6.0;
 
 /// Seconds to wait before each attempt to get a lost session back, counted from
 /// the failure before it. The first is immediate because the common loss is the
@@ -202,6 +221,56 @@ struct Reconnect {
 impl SessionState {
     pub fn is_online(&self) -> bool {
         self.status == SessionStatus::Online
+    }
+
+    /// The app is back on the screen: check the connection still answers.
+    ///
+    /// A suspended app carries no traffic, and Android can take the network away
+    /// without the socket ever reporting it — the link stays "online", nothing
+    /// arrives and nothing is retried, which reads as a frozen client. A live
+    /// link is heard from within a tick of presence returning; one that is not
+    /// is dropped and re-established by the ordinary reconnect path.
+    pub fn check_link_after_resume(&mut self) {
+        if self.is_online() && self.link.is_some() {
+            self.probe_wanted = true;
+        }
+    }
+
+    /// A session that was lost rather than left, and is being got back — the gap
+    /// in which the client is offline only because the phone took the socket.
+    pub fn is_reconnecting(&self) -> bool {
+        self.reconnect.as_ref().is_some_and(|r| r.due.is_some())
+    }
+
+    /// Put the state a lost session leaves behind, for tests of what reads it.
+    #[cfg(test)]
+    pub fn lose_session_for_test(&mut self) {
+        self.reconnect = Some(Reconnect {
+            server: "127.0.0.1:1".into(),
+            auth: ConnectAuth {
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: String::new(),
+                },
+                persist_token: true,
+            },
+            attempts: 0,
+            due: Some(0.0),
+        });
+        self.status = SessionStatus::Connecting;
+    }
+
+    /// The lost session came back: what `drive_session` leaves on that frame.
+    #[cfg(test)]
+    pub fn resume_for_test(&mut self) {
+        self.reconnect = None;
+        self.resumed = true;
+        self.status = SessionStatus::Online;
+    }
+
+    /// Nothing lost and nothing being got back: a fresh sign-in is a fresh start.
+    pub fn is_settled_offline(&self) -> bool {
+        self.status == SessionStatus::Offline && self.reconnect.is_none()
     }
 
     /// Try to get a lost session back now rather than when its back-off says.
@@ -297,6 +366,7 @@ pub fn drive_session(
     tile_url: Res<OsmTileUrlTemplate>,
     time: Res<Time<Real>>,
     auth: Option<Res<ConnectAuth>>,
+    mailbox: Option<Res<NetworkMailbox>>,
     mut game_state: ResMut<GameState>,
     mut local_sim_id: ResMut<LocalAvatarSimId>,
     mut identity: ResMut<AuthIdentity>,
@@ -308,6 +378,8 @@ pub fn drive_session(
     if let Some(request) = session.request.take() {
         session.reconnect = None;
         session.resumed = false;
+        session.probe = None;
+        session.probe_wanted = false;
         teardown(
             &mut commands,
             &mut session,
@@ -397,7 +469,27 @@ pub fn drive_session(
                 info!(server = %session.mode.where_(), "session: reconnected");
                 session.resumed = true;
             }
-            return;
+            let received = mailbox
+                .as_ref()
+                .map_or(0, |m| m.received.load(std::sync::atomic::Ordering::Relaxed));
+            if std::mem::take(&mut session.probe_wanted) {
+                session.probe = Some(LinkProbe {
+                    deadline: now + RESUME_SILENCE_S,
+                    seen: received,
+                });
+            }
+            match session.probe {
+                Some(p) if received != p.seen => {
+                    session.probe = None;
+                    return;
+                }
+                Some(p) if now >= p.deadline => {
+                    warn!(server = %session.mode.where_(), "session: silent since resume, reconnecting");
+                    session.probe = None;
+                }
+                _ => return,
+            }
+            Some("connection went silent".to_string())
         }
         LinkState::Rejected(message) => {
             // Refused: the token has expired or the account is gone, and trying
@@ -597,6 +689,8 @@ fn teardown(
     avatars: &Query<Entity, With<Avatar>>,
 ) {
     session.link = None;
+    session.probe = None;
+    session.probe_wanted = false;
     session.mode = SessionMode::Offline;
     session.status = SessionStatus::Offline;
 
@@ -846,9 +940,7 @@ mod tests {
         let (intent_tx, _rx) = futures_channel::mpsc::unbounded();
         let (_tx, out_rx) = std::sync::mpsc::channel();
         app.insert_resource(OnlineSession { intent_tx });
-        app.insert_resource(NetworkMailbox {
-            rx: std::sync::Mutex::new(out_rx),
-        });
+        app.insert_resource(NetworkMailbox::new(out_rx));
         app.insert_resource(NetworkSyncState {
             received_initial_world: true,
         });
@@ -1198,6 +1290,104 @@ mod tests {
             app.world().resource::<AuthIdentity>().username.as_deref(),
             Some("alice")
         );
+    }
+
+    fn sign_in_alice(app: &mut App, addr: &str) {
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Remote {
+                server: addr.to_string(),
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: "hunter22".into(),
+                },
+                persist_token: true,
+            });
+        pump(app, "the password sign-in", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+    }
+
+    /// Android can take the network away while the app is suspended without the
+    /// socket ever reporting it. Nothing arrives after the app comes back, and
+    /// the client must notice that itself and sign back in.
+    #[test]
+    fn a_link_that_stays_silent_after_resume_is_reconnected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("world.db").to_str().unwrap().to_string();
+        let (_rt, handle) = boot_sim(&db, "127.0.0.1:0");
+
+        // No `apply_network_snapshot`: nothing is ever read off the link, which is
+        // what a half-open socket looks like from this side.
+        let mut app = App::new();
+        app.init_resource::<SessionState>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<GameState>()
+            .init_resource::<LocalAvatarSimId>()
+            .init_resource::<AuthIdentity>()
+            .init_resource::<crate::systems::chat::ChatState>()
+            .init_resource::<OsmTileUrlTemplate>()
+            .insert_resource(UserStore::default())
+            .add_systems(Update, drive_session);
+        sign_in_alice(&mut app, &handle.local_addr.to_string());
+
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .check_link_after_resume();
+        app.update();
+        assert!(app.world().resource::<SessionState>().is_online());
+
+        let later = bevy::platform::time::Instant::now()
+            + std::time::Duration::from_secs_f64(RESUME_SILENCE_S + 1.0);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_instant(later);
+        app.update();
+        assert!(
+            app.world().resource::<SessionState>().is_reconnecting(),
+            "a link silent for {RESUME_SILENCE_S} s after resume was left standing"
+        );
+    }
+
+    /// The other half: a link that answers is left alone.
+    #[test]
+    fn a_link_that_answers_after_resume_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("world.db").to_str().unwrap().to_string();
+        let (_rt, handle) = boot_sim(&db, "127.0.0.1:0");
+
+        let mut app = client_app(UserStore::default());
+        sign_in_alice(&mut app, &handle.local_addr.to_string());
+        pump(&mut app, "the first snapshot", |w| {
+            w.resource::<NetworkMailbox>()
+                .received
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        });
+
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .check_link_after_resume();
+        let received_before = app
+            .world()
+            .resource::<NetworkMailbox>()
+            .received
+            .load(std::sync::atomic::Ordering::Relaxed);
+        pump(&mut app, "traffic after resume", |w| {
+            w.resource::<NetworkMailbox>()
+                .received
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > received_before + 1
+        });
+
+        let later = bevy::platform::time::Instant::now()
+            + std::time::Duration::from_secs_f64(RESUME_SILENCE_S + 1.0);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_instant(later);
+        app.update();
+        let session = app.world().resource::<SessionState>();
+        assert!(session.is_online() && !session.is_reconnecting());
     }
 
     /// Switching apps on the phone drops the socket, and the sim that takes the

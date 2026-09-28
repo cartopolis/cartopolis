@@ -1719,9 +1719,19 @@ pub struct LocalAvatarSimId(pub Option<u64>);
 #[derive(Resource)]
 pub struct NetworkMailbox {
     pub rx: Mutex<std::sync::mpsc::Receiver<NetMessage>>,
+    /// Messages drained so far. `session::drive_session` reads it to tell a link
+    /// that has gone quiet from one that is merely idle.
+    pub received: std::sync::atomic::AtomicU64,
 }
 
 impl NetworkMailbox {
+    pub fn new(rx: std::sync::mpsc::Receiver<NetMessage>) -> Self {
+        Self {
+            rx: Mutex::new(rx),
+            received: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     pub fn lock_rx(&self) -> MutexGuard<'_, std::sync::mpsc::Receiver<NetMessage>> {
         self.rx.lock().expect("network mailbox mutex poisoned")
     }

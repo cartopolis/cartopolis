@@ -731,6 +731,10 @@ impl DataLayers {
             sun_mode: dev.sun_mode,
             time_of_day: (dev.sun_mode == crate::resources::SunMode::Manual)
                 .then_some(dev.time_of_day),
+            moon_age_days: (dev.sun_mode == crate::resources::SunMode::Manual)
+                .then_some(dev.moon_age_days),
+            auto_cycle: dev.auto_cycle,
+            cycle_seconds: dev.cycle_seconds,
             weather_live,
             fog_density,
             cloud_cover,

@@ -4255,6 +4255,7 @@ fn quiesce_while_backgrounded(
                 // that was down in the background. Coming back is when to try.
                 if let Some(state) = session_state.as_deref_mut() {
                     state.retry_now();
+                    state.check_link_after_resume();
                 }
             }
             bevy::window::AppLifecycle::Idle => {}

@@ -1247,7 +1247,16 @@ pub fn camera_mode_toggle(
     // on the way out. Device tracking (`systems::locate`) used to be exempted for
     // the same reason and no longer needs to be — the locate button takes no
     // camera mode at all now, so there is nothing here for it to fight.
-    if !follow && !driver.active && camera_state.mode == CameraMode::Avatar {
+    //
+    // Not during a reconnect, though: the loss was the phone's, the session is on
+    // its way back, and dropping to Fly here threw away the person's camera mode
+    // (and, with `follow_on_sign_in`, forced Follow on return whichever mode they
+    // had left it in). The camera sits where the avatar last was until it is back.
+    if !follow
+        && !driver.active
+        && !session.is_reconnecting()
+        && camera_state.mode == CameraMode::Avatar
+    {
         enter_mode(&mut camera_state, CameraMode::Free);
         camera_state.mode = CameraMode::Free;
     }
@@ -1296,8 +1305,13 @@ pub fn camera_mode_toggle(
 /// early, while the handshake takes as long as a network round trip. That is the
 /// intended reading of "signed in means following": the saved location still
 /// decides *where* the world comes back, only not through which camera.
+///
+/// A session that *comes back* after being lost is not a sign-in: it leaves the
+/// camera mode alone, so a phone returning from the background lands in the mode
+/// it was in rather than being thrown into Follow.
 pub fn follow_on_sign_in(
     mut was_available: Local<bool>,
+    mut was_reconnecting: Local<bool>,
     session: Res<crate::systems::session::SessionState>,
     driver: Res<crate::systems::driver::DriverState>,
     mut camera_state: ResMut<CameraState>,
@@ -1306,7 +1320,15 @@ pub fn follow_on_sign_in(
     let available = follow_available(&session, !avatars.is_empty());
     let arrived = available && !*was_available;
     *was_available = available;
-    if !arrived || driver.active {
+    *was_reconnecting |= session.is_reconnecting();
+    if session.is_settled_offline() {
+        *was_reconnecting = false;
+    }
+    if !arrived {
+        return;
+    }
+    let resumed = std::mem::take(&mut *was_reconnecting);
+    if resumed || driver.active {
         return;
     }
     enter_mode(&mut camera_state, CameraMode::Avatar);
@@ -2838,6 +2860,74 @@ mod tests {
         go_online(&mut app);
         app.update();
         app.world_mut().resource_mut::<SessionState>().status = SessionStatus::Offline;
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Free;
+        app.update();
+        go_online(&mut app);
+        app.update();
+        assert_eq!(mode(&app), CameraMode::Avatar);
+    }
+
+    /// A session the phone lost and got back is not a sign-in: the camera mode the
+    /// person had must survive the gap, whichever it was.
+    #[test]
+    fn a_reconnect_keeps_the_camera_mode() {
+        for kept in [CameraMode::Avatar, CameraMode::Free, CameraMode::Orbit] {
+            let mut app = sign_in_app();
+            go_online(&mut app);
+            app.update();
+            app.world_mut().resource_mut::<CameraState>().mode = kept;
+            app.update();
+
+            app.world_mut()
+                .resource_mut::<SessionState>()
+                .lose_session_for_test();
+            app.update();
+            app.update();
+            app.world_mut()
+                .resource_mut::<SessionState>()
+                .resume_for_test();
+            app.update();
+            assert_eq!(mode(&app), kept, "a reconnect changed the mode");
+        }
+    }
+
+    /// The gap itself must not drop Follow to Fly: that is what `camera_mode_toggle`
+    /// does to an offline client, and a reconnecting one is not offline by choice.
+    #[test]
+    fn the_reconnect_gap_does_not_drop_follow() {
+        let mut app = App::new();
+        app.init_resource::<CameraState>()
+            .init_resource::<SessionState>()
+            .init_resource::<DriverState>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<crate::systems::egui_manager::EguiManager>()
+            .add_systems(Update, camera_mode_toggle);
+        app.world_mut().spawn(Avatar);
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Avatar;
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .lose_session_for_test();
+        app.update();
+        assert_eq!(mode(&app), CameraMode::Avatar);
+
+        // Given up on, the client is offline for real and drops to Fly as ever.
+        app.world_mut().insert_resource(SessionState::default());
+        app.update();
+        assert_eq!(mode(&app), CameraMode::Free);
+    }
+
+    /// A refused reconnect must not make the next hand-typed sign-in look like a
+    /// resume.
+    #[test]
+    fn a_sign_in_after_a_failed_reconnect_lands_in_follow() {
+        let mut app = sign_in_app();
+        go_online(&mut app);
+        app.update();
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .lose_session_for_test();
+        app.update();
+        app.world_mut().insert_resource(SessionState::default());
         app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Free;
         app.update();
         go_online(&mut app);

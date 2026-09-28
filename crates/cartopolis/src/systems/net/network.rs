@@ -359,9 +359,7 @@ pub fn start_link(
     );
 
     Link {
-        mailbox: NetworkMailbox {
-            rx: Mutex::new(out_rx),
-        },
+        mailbox: NetworkMailbox::new(out_rx),
         session: OnlineSession { intent_tx },
         status,
     }
@@ -694,6 +692,8 @@ pub fn apply_network_snapshot(
             batch.push(msg);
         }
     }
+    mb.received
+        .fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let last_snapshot = batch
         .iter()
         .rposition(|m| matches!(m, NetMessage::WorldSnapshot { .. }));
