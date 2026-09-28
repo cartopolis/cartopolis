@@ -1001,15 +1001,21 @@ impl<'a> Grader<'a> {
         // is laid to the road like any road's.
         let in_a_structure = |p: [f32; 2]| {
             fills.iter().any(|line| {
+                let last = line.points.len().saturating_sub(2);
                 line.points.windows(2).enumerate().any(|(s, w)| {
                     let (a, b) = (w[0], w[1]);
                     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
                     let len2 = dx * dx + dz * dz;
                     let t = if len2 > 1e-9 {
-                        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                        ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2
                     } else {
                         0.0
                     };
+                    // Not past either end, as for the fill.
+                    if (s == 0 && t < 0.0) || (s == last && t > 1.0) {
+                        return false;
+                    }
+                    let t = t.clamp(0.0, 1.0);
                     line.reach(s, t, line.side_of(s, p)).is_some_and(|r| {
                         (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t)
                             <= r + cartopolis_geo::tunnels::WALL_REACH_M

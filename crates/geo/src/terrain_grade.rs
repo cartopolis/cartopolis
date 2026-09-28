@@ -467,6 +467,7 @@ pub fn fill_to_land(
             .filter(|w| w.is_finite())
             .fold(line.half_w, f32::max);
         let reach = widest + taper_m;
+        let last = line.points.len().saturating_sub(2);
         for (s, w) in line.points.windows(2).enumerate() {
             let (ga, gb) = (line.land[s], line.land[s + 1]);
             if !ga.is_finite() || !gb.is_finite() {
@@ -491,10 +492,20 @@ pub fn fill_to_land(
                     let i = z as usize * n + x as usize;
                     let [px, pz] = lattice.at(x as usize, z as usize);
                     let t = if len2 > 1e-9 {
-                        (((px - a[0]) * dx + (pz - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                        ((px - a[0]) * dx + (pz - a[1]) * dz) / len2
                     } else {
                         0.0
                     };
+                    // **Not past either end of the structure.** Beyond its end
+                    // the road carries on at grade or down a ramp the survey
+                    // already shows, and rounding the fill off around the end
+                    // raised the ground over that ramp back to the lid — the
+                    // mouth of every cycle underpass whose ramp is a slope,
+                    // not a walled cutting, was buried (2026-09-28).
+                    if (s == 0 && t < 0.0) || (s == last && t > 1.0) {
+                        continue;
+                    }
+                    let t = t.clamp(0.0, 1.0);
                     // From the wall, where it stands back from the road; and not
                     // at all on a side that is a bank.
                     let Some(reach_w) = line.reach(s, t, line.side_of(s, [px, pz])) else {
@@ -973,6 +984,52 @@ mod tests {
         );
         assert!((at(50, 5) - 2.0).abs() < 1e-4, "the land far off moved");
         assert!((at(95, 50) + 7.0).abs() < 1e-4, "the water was filled in");
+    }
+
+    /// **The fill stops at a structure's end.** Past a tunnel's mouth the ramp
+    /// out of it is the survey's own slope, and rounding the fill off around the
+    /// end raised it back to the lid and buried the mouth (2026-09-28). And a
+    /// side that is a bank is not filled at all.
+    #[test]
+    fn the_fill_stops_at_the_mouth_and_leaves_a_bank() {
+        let l = Lattice {
+            n: 101,
+            origin: [-50.0, -50.0],
+            step: 1.0,
+        };
+        let mut g = vec![-3.0f32; l.n * l.n];
+        // A bore from x = -50 to x = 0, walled on its left (+z), a bank on its
+        // right.
+        let pts = [[-50.0, 0.0], [0.0, 0.0]];
+        let land = [2.0, 2.0];
+        let walls = [[5.0, 0.0], [5.0, 0.0]];
+        fill_to_land(
+            &mut g,
+            l,
+            &[FillLine {
+                points: &pts,
+                land: &land,
+                half_w: 5.0,
+                walls: &walls,
+            }],
+            30.0,
+            &|_| false,
+        );
+        let at = |x: f32, z: f32| g[(z + 50.0) as usize * l.n + (x + 50.0) as usize];
+        assert!(
+            (at(-20.0, 3.0) - 2.0).abs() < 1e-4,
+            "not filled over the corridor"
+        );
+        assert!(
+            (at(5.0, 0.0) + 3.0).abs() < 1e-4,
+            "filled past the mouth: {}",
+            at(5.0, 0.0)
+        );
+        assert!(
+            (at(-20.0, -8.0) + 3.0).abs() < 1e-4,
+            "filled over the bank: {}",
+            at(-20.0, -8.0)
+        );
     }
 
     #[test]
