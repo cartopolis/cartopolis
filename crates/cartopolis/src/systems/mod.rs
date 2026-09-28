@@ -33,8 +33,8 @@ pub mod net;
 pub mod player;
 
 pub use dev::{
-    adaptive_quality, desktop_integration, dev_panel, diagnostics, frame_pacing, perf,
-    pipeline_health, render_census, shot_harness, shot_presets, upload_meter, window_icon,
+    desktop_integration, dev_panel, diagnostics, frame_pacing, perf, pipeline_health,
+    render_census, shot_harness, shot_presets, upload_meter, window_icon,
 };
 // Desktop only — a phone has no editor pointed at it and a browser tab cannot
 // listen on a socket (`build.rs` sets the cfg, `Cargo.toml` gates the

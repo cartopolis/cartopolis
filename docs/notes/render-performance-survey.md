@@ -697,6 +697,22 @@ into shadow cascades at 7191 km**, where no shadow can be resolved. Cheap in
 absolute terms — 8k triangles — but it is three passes over invisible geometry
 and nothing gates cascade submission on the tier.
 
+### No frame-rate governor on the clouds (decided 2026-09-28)
+
+From 2026-09-09 `systems::adaptive_quality` hid both cloud shells when the frame
+interval stayed over budget for 4 s, and brought them back only after 20 s under
+70 % of it. On the OnePlus 15 that meant **no clouds, ever**: the first seconds of
+every launch are loading frames (43–48 ms on a Steam Deck at the phone's
+resolution, where the settled scene then ran at ~15 ms), and the interval of a
+device paced to 60 fps cannot fall below 16.7 ms, so the 11.7 ms needed to take
+them back was unreachable. It also ran during scripted captures, so every slow
+`--shot` photographed a cloudless sky whatever `--clouds` said. The user's
+decision was that clouds are **on or off, and not dependent on fps**, so the
+governor was removed rather than repaired — it governed nothing else. What a
+cloudy frame costs on a handset is now visible as a frame rate, and the levers
+for it are the cloud shaders themselves (`CLOUDS_LOW`, the octave floor above),
+not a switch that takes the clouds away.
+
 ## A trap in the instrument itself
 
 **`--frames` sweeps only place the first viewpoint.** Every capture after the

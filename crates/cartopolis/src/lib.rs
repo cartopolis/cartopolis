@@ -2655,18 +2655,6 @@ fn run_client() {
     // Per-window OS icon via winit (Windows + Linux/X11; a no-op on Wayland and
     // macOS, which use the desktop file / .app bundle respectively). See
     // `systems::window_icon`.
-    // The honest half of the quality system: the static rung is a guess made
-    // before a renderer exists, and this corrects it from what the device actually
-    // manages. Registered unconditionally — it is a comparison per frame against
-    // stats `frame_pacing` already accumulates, and it is the only signal here that
-    // cannot be wrong about hardware nobody has tested.
-    app.init_resource::<systems::adaptive_quality::AdaptiveQuality>()
-        .add_systems(
-            Update,
-            systems::adaptive_quality::drive_adaptive_quality
-                .after(systems::frame_pacing::frame_stats),
-        );
-
     app.add_systems(Update, systems::window_icon::set_window_icon);
     // `CARTO_DBG_HIDE`: a bisecting switch that hides whole layers by name.
     app.add_systems(PostUpdate, systems::map_geometry::debug_hide_layers);

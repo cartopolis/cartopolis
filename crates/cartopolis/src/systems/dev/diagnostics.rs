@@ -80,14 +80,6 @@ pub(crate) struct DiagnosticsSources<'w, 's> {
     /// supports the part — so a report the user taps and sends is the only
     /// instrument, and it has to carry the number.
     frame: Res<'w, crate::resources::FrameStats>,
-    /// Whether this device has demoted itself, and how far
-    /// (`systems::adaptive_quality`).
-    ///
-    /// **The report is the only instrument that reaches a phone**, and a device
-    /// that quietly gave up an effect looks identical in a screenshot to one that
-    /// never had it. Without this line, "the clouds are missing on my phone" and
-    /// "my phone decided it could not afford the clouds" are the same bug report.
-    adaptive: Res<'w, crate::systems::adaptive_quality::AdaptiveQuality>,
     /// Draw and triangle counts for the frame the report is composed on.
     ///
     /// `counts()` resolves every mesh handle, so it is a real hitch on a dense
@@ -282,13 +274,6 @@ fn compose(s: &DiagnosticsSources) -> String {
         // Never a confident `0 fps`: the first whole second has not elapsed, which
         // is a different fact from a stalled renderer and must not read as one.
         out.push_str("(no full second sampled yet)\n");
-    }
-    if s.adaptive.step() > 0 {
-        out.push_str(&format!(
-            "  adaptive: this device gave up {} effect(s) after missing its frame \
-             budget — step 1 drops the globe cloud shell\n",
-            s.adaptive.step(),
-        ));
     }
     out.push_str(&format!(
         "  draws {} | tris {} total, {} shadow-casting ({} casters), {} buildings, {} lod22, \
