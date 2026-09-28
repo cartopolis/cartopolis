@@ -1,6 +1,6 @@
 ---
 topic: aerial-imagery
-triggers: [aerial.rs, map_stream.rs, tile_source.rs, Luchtfoto, PDOK, ortho25, orthoHR, "aerial", "satellite", "photo basemap", CARTO_AERIAL_LAYER, beeldmateriaal]
+triggers: [aerial.rs, aerial_reference.rs, --aerial-reference, map_stream.rs, tile_source.rs, Luchtfoto, PDOK, ortho25, orthoHR, "aerial", "satellite", "photo basemap", CARTO_AERIAL_LAYER, beeldmateriaal]
 updated: 2026-08-29
 ---
 
@@ -91,6 +91,18 @@ Mirroring is not affordable either: the Netherlands at z20 is on the order of
 78 million tiles at ~20 KB, i.e. **~1.5 TB**, on a VPS that also hosts nominatim,
 overpass and the tile server. `systems::coverage`'s `CoverageSlot` therefore
 gains no slot.
+
+## The same imagery is the shot harness's reference (2026-09-28)
+
+`--aerial-reference` (`systems::aerial_reference`) fetches this layer for every
+capture and writes `<shot>.aerial.jpg` beside it: the ground from the camera to
+the point it is aimed at, top-down, camera and line of sight marked. It uses the
+same template and envelope as the basemap, fetches on a thread of its own, and a
+failure is logged rather than failing the capture. Top-down on purpose: lining an
+oblique photograph up with a render would need a second camera model, and the
+questions it answers — is there a wall, a roof, a road, water here — read from
+above. The first use caught a cycle path the tunnel model had walled for a
+hundred metres, which every metric in the capture agreed with.
 
 ## What is still unjudged
 

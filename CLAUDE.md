@@ -258,6 +258,17 @@ it with `--expect 'flicker_px<=N'` in a pinned environment (`--time 12
 so the threshold sits above that floor, never at 0. Asserting `flicker_px`
 without `--flicker` is a startup error (it would gate a constant 0).
 
+**`--aerial-reference` is what a render of a real place is checked against.**
+Beside every capture it writes `<shot>.aerial.jpg`: PDOK's aerial photograph of
+the ground from the camera to the point it is aimed at, top-down, camera as a red
+dot, line of sight red, aim a yellow cross (`systems::aerial_reference`; manifest
+key `aerial_reference = true`; the Netherlands only). Use it whenever a capture is
+evidence that a structure, a road or the ground is *right*, not merely drawn: a
+render can be self-consistent in every metric and still show a trench where the
+photograph shows a path at grade — which is how the unified tunnels' first renders
+walled a cycle path across a park by Groningen's ring (2026-09-28), caught only by
+fetching the photograph by hand.
+
 **`--expect` turns the instrument into a gate.** `--expect 'settled==true'
 --expect 'globe_rendered>0'` (quote them — `>` is a shell redirect) asserts any
 `--dump-state` field on every capture and exits
