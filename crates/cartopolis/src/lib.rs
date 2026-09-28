@@ -4085,7 +4085,7 @@ mod flag_resolution_tests {
     /// **An explicit setting wins in both directions, and the second half is the
     /// one worth a test.** `CARTO_X=1` beating a preference is obvious;
     /// `CARTO_X=0` beating a preference that is *on* is what stops `setprop
-    /// debug.carto.ground_raymarch 0` from silently doing nothing, which for a
+    /// debug.carto.no_haze 0` from silently doing nothing, which for a
     /// debugging switch is the worst behaviour available.
     #[test]
     fn an_explicit_setting_overrides_the_preference() {
@@ -4151,8 +4151,6 @@ mod android_property_tests {
             "CARTO_NO_SHADOWS",
             "CARTO_NO_SPACE_RAYMARCH",
             "CARTO_NO_DUAL_SOURCE",
-            "CARTO_GROUND_RAYMARCH",
-            "CARTO_ATMO_EARTH_RADIUS",
             "CARTO_FPS_LOG",
             "CARTO_FPS_CAP",
             "CARTO_QUALITY",

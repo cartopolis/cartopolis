@@ -264,8 +264,8 @@ impl SkyPreference {
 /// the device, so the switches arrive as `debug.carto.*` system properties — i.e.
 /// through `adb`, i.e. through a cable and a second machine. On 2026-08-23 that
 /// was the whole distance between "the Adreno's sky is black" and knowing why:
-/// the instrument (`CARTO_GROUND_RAYMARCH`) had been built four days earlier and
-/// nobody holding the phone could switch it on.
+/// the instrument for it had been built four days earlier and nobody holding the
+/// phone could switch it on.
 ///
 /// So the same switches are a *preference* too. The precedent is
 /// [`AppPrefs::sky`] and [`AppPrefs::quality`], and the rule is the same one
@@ -280,10 +280,6 @@ impl SkyPreference {
 /// one table the UI, the lookup and the tests all read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DebugSwitches {
-    #[serde(default)]
-    pub ground_raymarch: bool,
-    #[serde(default)]
-    pub atmo_globe_radius: bool,
     #[serde(default)]
     pub no_atmosphere: bool,
     #[serde(default)]
@@ -303,25 +299,12 @@ pub struct DebugSwitches {
 impl DebugSwitches {
     /// Every switch, as `(env name, label, what it proves)`.
     ///
-    /// The order is the order a render problem is bisected in: the two that split
-    /// *this* sky bug first, then the layers, outermost first — and last the one
-    /// that adds an instrument rather than removing a layer. The help text is
-    /// written for somebody holding a phone with no log, so it says what the
-    /// answer *means* rather than what the switch does.
-    pub const SWITCHES: [(&'static str, &'static str, &'static str); 9] = [
-        (
-            "CARTO_GROUND_RAYMARCH",
-            "Raymarch the sky at ground level",
-            "Integrates the sky per pixel and never reads the sky-view or \
-             aerial-view lookup textures. If a black sky comes back with this on, \
-             those compute passes are the fault.",
-        ),
-        (
-            "CARTO_ATMO_GLOBE_RADIUS",
-            "Match the atmosphere to the globe's radius",
-            "Undoes the handset's step around an f32 cancellation. If the sky \
-             looks the same either way, that precision cliff was never the cause.",
-        ),
+    /// The order is the order a render problem is bisected in: the layers,
+    /// outermost first — and last the one that adds an instrument rather than
+    /// removing a layer. The help text is written for somebody holding a phone
+    /// with no log, so it says what the answer *means* rather than what the
+    /// switch does.
+    pub const SWITCHES: [(&'static str, &'static str, &'static str); 7] = [
         (
             "CARTO_NO_ATMOSPHERE",
             "No sky at all",
@@ -383,8 +366,6 @@ impl DebugSwitches {
     #[must_use]
     pub fn get(&self, env_name: &str) -> Option<bool> {
         Some(match env_name {
-            "CARTO_GROUND_RAYMARCH" => self.ground_raymarch,
-            "CARTO_ATMO_GLOBE_RADIUS" => self.atmo_globe_radius,
             "CARTO_NO_ATMOSPHERE" => self.no_atmosphere,
             "CARTO_NO_HAZE" => self.no_haze,
             "CARTO_NO_ENVMAP" => self.no_envmap,
@@ -399,8 +380,6 @@ impl DebugSwitches {
     /// The mutable half of [`Self::get`], for the checkbox that writes it.
     pub fn get_mut(&mut self, env_name: &str) -> Option<&mut bool> {
         Some(match env_name {
-            "CARTO_GROUND_RAYMARCH" => &mut self.ground_raymarch,
-            "CARTO_ATMO_GLOBE_RADIUS" => &mut self.atmo_globe_radius,
             "CARTO_NO_ATMOSPHERE" => &mut self.no_atmosphere,
             "CARTO_NO_HAZE" => &mut self.no_haze,
             "CARTO_NO_ENVMAP" => &mut self.no_envmap,
@@ -1824,8 +1803,8 @@ mod tests {
     fn a_switch_written_by_the_checkbox_is_read_by_the_flag() {
         let mut switches = DebugSwitches::default();
         assert!(!switches.any(), "nothing is on by default");
-        *switches.get_mut("CARTO_GROUND_RAYMARCH").expect("listed") = true;
-        assert_eq!(switches.get("CARTO_GROUND_RAYMARCH"), Some(true));
+        *switches.get_mut("CARTO_NO_OCEAN").expect("listed") = true;
+        assert_eq!(switches.get("CARTO_NO_OCEAN"), Some(true));
         assert_eq!(switches.get("CARTO_NO_HAZE"), Some(false));
         assert!(switches.any(), "the Settings header reports it");
     }
@@ -1889,7 +1868,7 @@ mod tests {
             // object that round-trips only while it is all-default proves nothing
             // about the nesting.
             debug_switches: DebugSwitches {
-                ground_raymarch: true,
+                no_ocean: true,
                 ..DebugSwitches::default()
             },
             // `false`, and this one defaults to *true*: a round trip that left it

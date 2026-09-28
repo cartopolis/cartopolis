@@ -757,22 +757,6 @@ pub fn bloom_intensity(space_factor: f32) -> f32 {
 /// with y = 0. Must match bevy_pbr's `Atmosphere::earth` constant.
 const EARTH_ATMOSPHERE_INNER_RADIUS: f32 = 6_360_000.0;
 
-/// Adapters whose driver was **measured** to miscompile the atmosphere's
-/// shaders, so Automatic sky picks the dome there. One entry per measurement —
-/// never a family or a version range guessed from one. The evidence standard
-/// for adding a line: an on-device probe result pinning the defect, recorded
-/// with a date in `docs/notes/adreno-atmosphere-miscompile.md`. The evidence
-/// for removing one: the atmosphere verified working on that adapter via the
-/// `SkyPreference::Full` override, which deliberately bypasses this list.
-fn driver_denies_atmosphere(adapter_name: &str) -> bool {
-    // OnePlus 15, driver 0842.x, compiler E031.50.19.27, measured 2026-08-29:
-    // black sky, sun disc at full strength. Since 2026-09-28 the suspect is
-    // the driver's copy of the `Atmosphere` uniform passed by value, which the
-    // patched shader no longer makes (`atmosphere_patch`, round 2). This line
-    // goes once Sky ▸ Full shows a blue sky on the device.
-    adapter_name.contains("Adreno (TM) 840")
-}
-
 /// Spawn the world [`BigSpace`] root with the camera as its [`FloatingOrigin`]
 /// (ADR-019). Other content currently spawns at the origin (cell 0) and renders
 /// correctly; geo-derived `GridCell` placement arrives with planet-scale streaming.
@@ -929,29 +913,16 @@ pub fn setup_camera(
     // will not draw: it still has to pass `float32_filterable`, because the
     // alternative to refusing is the bind-group validation failure described
     // above, which takes the whole app down.
-    // **…and one driver is denied by measurement, not by family.** The Adreno
-    // 840's driver (the only 840 driver that exists, 0842.x, compiler E031.50)
-    // draws the atmosphere as a black sky, measured over five instrumented
-    // device rounds (2026-08-27..29, `diag/adreno-sky-probe`). Those rounds
-    // were read at the time as a per-inline-site miscompile; re-read on
-    // 2026-09-28 they say the shader saw the camera above the air, which a
-    // by-value copy of the `Atmosphere` uniform would do on a driver that
-    // lays the copy out wrong — and `atmosphere_patch` no longer makes one
-    // (`docs/notes/adreno-atmosphere-miscompile.md`). Until the device shows
-    // that working, Automatic picks the dome here. This is the opposite of the
-    // deleted `gpu_affords_atmosphere` table: that predicted unmeasured
-    // hardware from a family name, this records one measured defect on one
-    // measured driver — and `SkyPreference::Full` still overrides it, so the
-    // atmosphere is one settings flip (and a restart) away, no rebuild.
-    let denied_driver = driver_denies_atmosphere(&adapter.name)
-        && prefs.sky != crate::resources::SkyPreference::Full;
+    //
+    // There is no per-driver deny list any more. The Adreno 840 was on one from
+    // 2026-08-29 to 2026-09-28 for a black sky that turned out to be bevy's
+    // shaders copying the `Atmosphere` struct, which that driver reads wrong —
+    // fixed on our side by `atmosphere_patch`, and confirmed on the phone
+    // (`docs/notes/adreno-atmosphere-struct-copy.md`).
     let want_sky = !crate::env_flag("CARTO_NO_ATMOSPHERE");
     let asked_for_dome = prefs.sky == crate::resources::SkyPreference::Simple;
-    let want_atmosphere = want_sky
-        && float32_filterable
-        && !asked_for_dome
-        && !denied_driver
-        && !crate::env_flag("CARTO_SKY_DOME");
+    let want_atmosphere =
+        want_sky && float32_filterable && !asked_for_dome && !crate::env_flag("CARTO_SKY_DOME");
     let want_envmap =
         want_atmosphere && prefs.sky_lighting_on() && !crate::env_flag("CARTO_NO_ENVMAP");
     let sky = if want_atmosphere {
@@ -973,7 +944,6 @@ pub fn setup_camera(
         ?sky,
         adapter = %adapter.name,
         float32_filterable,
-        denied_driver,
         preference = ?prefs.sky,
         forced_dome = crate::env_flag("CARTO_SKY_DOME"),
         no_atmosphere = crate::env_flag("CARTO_NO_ATMOSPHERE"),
@@ -2878,21 +2848,6 @@ mod tests {
     /// Bevy-local north for these tests: the anchor frame's +Y (see
     /// `GlobeState::north_axis_local`, which returns the real thing in-app).
     const NORTH: DVec3 = DVec3::Y;
-
-    /// The deny entry matches the adapter string the device actually reports
-    /// (see the `sky chosen` log lines in the note's evidence trail) and
-    /// nothing wider — an 8-series sibling or a desktop GPU must not be
-    /// swept in by a measurement made on one phone.
-    #[test]
-    fn the_driver_deny_list_matches_only_what_was_measured() {
-        assert!(driver_denies_atmosphere("Adreno (TM) 840"));
-        assert!(!driver_denies_atmosphere("Adreno (TM) 830"));
-        assert!(!driver_denies_atmosphere("Adreno (TM) 750"));
-        assert!(!driver_denies_atmosphere(
-            "llvmpipe (LLVM 20.1.2, 256 bits)"
-        ));
-        assert!(!driver_denies_atmosphere("NVIDIA GeForce RTX 4070"));
-    }
 
     /// Writing the *same* projection back must not mark the component changed.
     ///

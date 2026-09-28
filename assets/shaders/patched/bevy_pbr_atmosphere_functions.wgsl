@@ -136,7 +136,7 @@ fn sky_view_lut_uv_to_zenith_azimuth(r: f32, uv: vec2<f32>) -> vec2<f32> {
 // transmittance 1, a full-strength sun disc. That is the Adreno 840's picture,
 // and it fits every reading of the 2026-08 probe rounds, whose camera check
 // accepted up to twice the shell radius and whose live-ray check only ran for
-// a camera inside the shell (docs/notes/adreno-atmosphere-miscompile.md).
+// a camera inside the shell (docs/notes/adreno-atmosphere-struct-copy.md).
 // Reading each field through the uniform is the same value on any driver that
 // loads structs correctly. The by-value helpers stay for their other callers
 // (pbr_lighting.wgsl, volumetric_fog.wgsl), which bind no `atmosphere`
@@ -452,28 +452,24 @@ fn get_raymarch_segment(r: f32, mu: f32) -> RaymarchSegment {
 
     var segment: RaymarchSegment;
 
-    // PATCHED (cartopolis): the same three cases as upstream, written as selects
-    // instead of an if/else-if chain that merges into the raymarch loop. Adreno's
-    // shader compiler has a documented history of miscompiling exactly that shape
-    // (branches converging just before a loop), and this function feeding
-    // raymarch_atmosphere a zero-length segment is one of the two ways the sky
-    // renders black with a healthy sun disc.
-    let inside_planet = r < atmosphere.inner_radius;
-    let inside_atmosphere = r < atmosphere.outer_radius;
-    let misses_atmosphere = !inside_atmosphere && atmosphere_intersections.x < 0.0;
-    let far_end = select(atmosphere_intersections.y, ground_intersections.x, ray_intersects_ground(r, mu));
-
-    // Inside the atmosphere the march starts at the camera; outside it starts at
-    // the shell's entry point. Inside the planet (dead in practice - callers clamp
-    // to the surface) it starts at the far ground intersection, as upstream.
-    let start_above_ground = select(max(atmosphere_intersections.x, 0.0), 0.0, inside_atmosphere);
-    segment.start = select(start_above_ground, ground_intersections.y, inside_planet);
-    segment.end = select(far_end, atmosphere_intersections.y, inside_planet);
-
-    // A ray that never touches the shell marches nothing, as upstream's zero-init
-    // early return.
-    segment.start = select(segment.start, 0.0, misses_atmosphere);
-    segment.end = select(segment.end, 0.0, misses_atmosphere);
+    if r < atmosphere.inner_radius {
+        // Inside planet - start from bottom of atmosphere
+        segment.start = ground_intersections.y; // Use second intersection point with ground
+        segment.end = atmosphere_intersections.y;
+    } else if r < atmosphere.outer_radius {
+        // Inside atmosphere
+        segment.start = 0.0;
+        segment.end = select(atmosphere_intersections.y, ground_intersections.x, ray_intersects_ground(r, mu));
+    } else {
+        // Outside atmosphere
+        if atmosphere_intersections.x < 0.0 {
+            // No intersection with atmosphere
+            return segment;
+        }
+        // Start at atmosphere entry, end at exit or ground
+        segment.start = atmosphere_intersections.x;
+        segment.end = select(atmosphere_intersections.y, ground_intersections.x, ray_intersects_ground(r, mu));
+    }
 
     return segment;
 }
@@ -516,16 +512,7 @@ fn raymarch_atmosphere(
 
     var prev_t = t_start;
     var optical_depth = vec3(0.0);
-    // PATCHED (cartopolis): upstream marches `for (var s = 0.0; s < sample_count;
-    // s += 1.0)` - a float counter against a non-constant float bound, which runs
-    // ceil(sample_count) times on a correct compiler and is the other way this
-    // loop can degenerate to zero trips on a miscompiling one. An integer counter
-    // with an integer bound is the shape every driver gets right; the sample
-    // positions divide by the same float sample_count, so the arithmetic is
-    // unchanged.
-    let n_samples = max(1u, u32(ceil(sample_count)));
-    for (var i = 0u; i < n_samples; i += 1u) {
-        let s = f32(i);
+    for (var s = 0.0; s < sample_count; s += 1.0) {
         // Linear distribution from atmosphere entry to exit/ground
         let t_i = t_start + t_total * (s + MIDPOINT_RATIO) / sample_count;
         let dt_i = (t_i - prev_t);

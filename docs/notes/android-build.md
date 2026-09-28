@@ -1330,8 +1330,9 @@ shell setprop`. That was accurate and it was not enough: `adb` is a cable and a
 second machine, and this project's phone is usually somewhere the workstation is
 not.
 
-The bill came due on the Adreno 840 black sky. `CARTO_GROUND_RAYMARCH` was built
-on 2026-08-19 for exactly one question — is the sky-view LUT the fault, or the
+The bill came due on the Adreno 840 black sky. `CARTO_GROUND_RAYMARCH` (removed
+2026-09-28, with the bug it was built for) was built on 2026-08-19 for exactly one
+question — is the sky-view LUT the fault, or the
 whole pass? — and on 2026-08-23 that question was still open, because in four days
 nobody holding the device had been in a position to switch it on. The instrument
 existed, was correct, and was unreachable. Meanwhile the hypothesis it was built
