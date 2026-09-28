@@ -1981,8 +1981,11 @@ pub fn update_terrain_field(
     let sink = field.coarse_sink.clone();
     let datum = field.gen_datum.filter(|(g, _)| *g == gen).map(|(_, d)| d);
     field.coarse_job = Some(gen);
-    crate::platform::workers::submit_heavy(
+    // Near: the ground and building cells wait on this field (`holds_builds`), so
+    // it may not queue behind the cells it is holding up.
+    crate::platform::workers::submit_heavy_ranked(
         "terrain_field",
+        crate::platform::workers::NEAR,
         Box::new(move || {
             let started = bevy::platform::time::Instant::now();
             let (baked, approach) = bake(
@@ -2743,8 +2746,9 @@ pub fn update_fine_terrain(
         "fine terrain bake queued"
     );
     field.fine_job = Some((want, gen));
-    crate::platform::workers::submit(
+    crate::platform::workers::submit_ranked(
         "terrain_fine",
+        crate::platform::workers::NEAR,
         Box::new(move || {
             let baked = bake_fine(&job, anchor, want, datum, &water);
             let slope = baked.as_ref().map(|(_, _, s)| s.clone());

@@ -1455,8 +1455,11 @@ fn spawn_globe_tile(
                         }
                         None => None,
                     };
-                    crate::platform::workers::submit(
+                    // Far: a globe tile is never more urgent than the map under
+                    // the camera, and ageing keeps it from starving.
+                    crate::platform::workers::submit_ranked(
                         "globe",
+                        crate::platform::workers::FAR,
                         Box::new(move || {
                             let reused = stored.and_then(|png| {
                                 crate::systems::tile_loader::decode_rendered(&png, GLOBE_TILE_PX)
