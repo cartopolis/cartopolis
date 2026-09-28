@@ -270,6 +270,46 @@ pub fn resample(
 mod tests {
     use super::*;
 
+    /// The heights of one or more stored z14 tiles along a line, for reading a
+    /// ramp or a cutting off the survey beside what grading made of it:
+    /// `CARTO_CTT` (comma-separated paths, all of tile `CARTO_TILE` = "x,y") and
+    /// `CARTO_LINE` = "lat0,lng0,lat1,lng1".
+    #[test]
+    #[ignore = "diagnostic: needs stored tiles"]
+    fn print_terrain_along_a_line() {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k}"));
+        let tiles: Vec<TerrainTile> = env("CARTO_CTT")
+            .split(',')
+            .map(|p| TerrainTile::decode(&std::fs::read(p).expect("reads")).expect("decodes"))
+            .collect();
+        let xy: Vec<i64> = env("CARTO_TILE")
+            .split(',')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let l: Vec<f64> = env("CARTO_LINE")
+            .split(',')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        for k in 0..=40 {
+            let t = f64::from(k) / 40.0;
+            let (lat, lng) = (l[0] + (l[2] - l[0]) * t, l[1] + (l[3] - l[1]) * t);
+            let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, 14);
+            let row: Vec<String> = tiles
+                .iter()
+                .map(|tile| {
+                    let last = (tile.grid - 1) as f64;
+                    let col = ((fx - xy[0] as f64) * last).round() as usize;
+                    let r = ((fy - xy[1] as f64) * last).round() as usize;
+                    format!(
+                        "{:.2}",
+                        tile.at(col.min(tile.grid - 1), r.min(tile.grid - 1))
+                    )
+                })
+                .collect();
+            println!("{:5.1} {}", t * 100.0, row.join(" "));
+        }
+    }
+
     /// A dense tile thinned to the tile tree's grid keeps exactly the samples the
     /// two lattices share, corners included, and refuses a step that does not
     /// divide it.
