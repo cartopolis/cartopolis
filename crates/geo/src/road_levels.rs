@@ -1498,7 +1498,12 @@ mod tests {
             .parse()
             .unwrap();
         let heights = RoadHeights::decode(&bytes).expect("decodes");
-        let tile = crate::testdata::groningen_ring();
+        // `CARTO_MVT` for the tile the file belongs to; the ring fixture otherwise.
+        let tile = match std::env::var("CARTO_MVT") {
+            Ok(path) => crate::vector_tiles::TileData::parse(&std::fs::read(path).expect("reads"))
+                .expect("parses"),
+            Err(_) => crate::testdata::groningen_ring(),
+        };
         let runs = street_runs(&tile, tile_m);
         let (mut matched, mut with_land) = (0, 0);
         for run in &runs {
@@ -1506,10 +1511,14 @@ mod tests {
                 continue;
             };
             matched += 1;
-            let Some(land) = heights.land.get(&run.key) else {
-                continue;
+            let none = vec![f32::NAN; ys.len()];
+            let land = match heights.land.get(&run.key) {
+                Some(land) => {
+                    with_land += 1;
+                    land
+                }
+                None => &none,
             };
-            with_land += 1;
             let walls = heights.walls.get(&run.key);
             for (i, ((p, y), g)) in run.points.iter().zip(ys).zip(land).enumerate() {
                 let w = walls
@@ -1521,6 +1530,42 @@ mod tests {
                     run.key, run.level, p[0], p[1], y, g, run.class, w[0], w[1]
                 );
             }
+        }
+        // What the client builds from it: every structure, end to end, with its
+        // roof and its measured walls.
+        let profiles: Vec<Option<crate::tunnels::Profile>> = runs
+            .iter()
+            .map(|r| {
+                Some(crate::tunnels::Profile {
+                    road: heights.runs.get(&r.key)?.clone(),
+                    land: heights.land.get(&r.key)?.clone(),
+                    walls: heights.walls.get(&r.key).cloned().unwrap_or_default(),
+                })
+            })
+            .collect();
+        let built = crate::tunnels::build_structures(&runs, &profiles, None);
+        for t in &built.tunnels {
+            let (a, b) = (t.centre[0], t.centre[t.centre.len() - 1]);
+            let roofed: String = t
+                .covered
+                .iter()
+                .map(|&c| if c { 'R' } else { '.' })
+                .collect();
+            println!(
+                "T,{:.1},{:.1},{:.1},{:.1},{:.1},{roofed}",
+                a[0], a[1], b[0], b[1], t.half_w
+            );
+        }
+        for o in &built.openings {
+            let (lo, hi) = o
+                .iter()
+                .fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| {
+                    (
+                        [lo[0].min(p[0]), lo[1].min(p[1])],
+                        [hi[0].max(p[0]), hi[1].max(p[1])],
+                    )
+                });
+            println!("O,{:.1},{:.1},{:.1},{:.1}", lo[0], lo[1], hi[0], hi[1]);
         }
         // Every side of every structure point in the file: measured wall, bank,
         // or nothing measured.
