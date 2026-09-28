@@ -264,6 +264,14 @@ struct Cli {
     #[arg(long)]
     aerial: bool,
 
+    /// Beside every capture, write the aerial photograph of the ground it looks
+    /// at — `<shot>.aerial.jpg`, PDOK's Luchtfoto RGB with the camera and the
+    /// point it is aimed at drawn on (`systems::aerial_reference`). The check a
+    /// render of a real place is held to: whether the structure it draws is the
+    /// one that is there. The Netherlands only.
+    #[arg(long)]
+    aerial_reference: bool,
+
     /// Serve the Model Context Protocol somewhere other than the default
     /// `127.0.0.1:4750`, so an editor can drive this client: move the camera,
     /// photograph what it sees, read the scene's numbers (`systems::mcp`).
@@ -376,7 +384,10 @@ fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
             cli.dump_state.clone(),
             &cli.expect,
         )
-        .map(|h| (Some(h), None))
+        .map(|mut h| {
+            h.aerial_reference |= cli.aerial_reference;
+            (Some(h), None)
+        })
         .map_err(|e| format!("--shots: {e}"));
     }
     if !cli.only.is_empty() {
@@ -402,7 +413,10 @@ fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
         expect: &cli.expect,
         flicker: cli.flicker,
     })
-    .map(|h| (Some(h), None))
+    .map(|mut h| {
+        h.aerial_reference = cli.aerial_reference;
+        (Some(h), None)
+    })
     .map_err(|e| format!("--shot: {e}"))
 }
 

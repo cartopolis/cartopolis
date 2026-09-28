@@ -32,6 +32,8 @@ pub mod nav;
 pub mod net;
 pub mod player;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use dev::aerial_reference;
 pub use dev::{
     desktop_integration, dev_panel, diagnostics, frame_pacing, perf, pipeline_health,
     render_census, shot_harness, shot_presets, upload_meter, window_icon,

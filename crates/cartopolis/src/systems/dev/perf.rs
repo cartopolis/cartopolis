@@ -615,6 +615,7 @@ pub fn build(
         dump_state: None,
         expect: Vec::new(),
         flicker: false,
+        aerial_reference: false,
         live: false,
         windowed: false,
     };

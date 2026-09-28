@@ -114,6 +114,10 @@ pub struct Manifest {
     pub clouds: Option<f32>,
     #[serde(default)]
     pub rain: Option<f32>,
+    /// Write each capture's aerial photograph beside it — see
+    /// `ShotHarness::aerial_reference`.
+    #[serde(default)]
+    pub aerial_reference: Option<bool>,
     #[serde(default, rename = "shot")]
     pub shots: Vec<Preset>,
 }

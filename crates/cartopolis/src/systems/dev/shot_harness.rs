@@ -312,6 +312,12 @@ pub struct ShotHarness {
     /// centimetre nudge, honest geometry moves sub-pixel while a depth coin flip
     /// decorrelates completely; the difference *is* the flicker, measured.
     pub flicker: bool,
+    /// Write the aerial photograph of the ground each capture looks at beside it
+    /// (`<shot>.aerial.jpg`, `aerial_reference`), with the camera and where it
+    /// is aimed drawn on — so what the render shows can be checked against what
+    /// is there. Off unless `--aerial-reference` or the manifest's
+    /// `aerial_reference` asks.
+    pub aerial_reference: bool,
     /// **Viewpoints arrive while the app runs**, instead of being a list fixed on
     /// the command line — the MCP server pushing a [`ShotSpec`] per `view` call
     /// (`systems::mcp`).
@@ -1495,6 +1501,7 @@ impl ShotHarness {
             dump_state,
             expect,
             flicker,
+            aerial_reference: false,
             live: false,
             windowed: false,
         })
@@ -1527,6 +1534,7 @@ impl ShotHarness {
             dump_state: None,
             expect: Vec::new(),
             flicker: false,
+            aerial_reference: false,
             live: true,
             windowed,
         }
@@ -1625,6 +1633,7 @@ impl ShotHarness {
             // doubling each into a nudged twin would overwrite half the set.
             // The flicker instrument is the plain `--shot` path's.
             flicker: false,
+            aerial_reference: manifest.aerial_reference.unwrap_or(false),
             live: false,
             windowed: false,
         })
@@ -3558,6 +3567,32 @@ pub fn drive_capture(
             let t = cam_world.y / -fwd.y;
             Vec2::new(cam_world.x + fwd.x * t, cam_world.z + fwd.z * t)
         });
+        // The aerial photograph of what this capture looks at, beside it
+        // (`aerial_reference`). Aimed at the ground point in the middle of the
+        // view, or — looking at the horizon — at the ground 150 m ahead.
+        #[cfg(not(target_arch = "wasm32"))]
+        if harness.aerial_reference {
+            if let Some(anchor) = readouts.map_anchor.geo {
+                let flat = Vec2::new(fwd.x, fwd.z).normalize_or_zero();
+                let target = aim.unwrap_or(Vec2::new(cam_world.x, cam_world.z) + flat * 150.0);
+                let ll = |p: Vec2| {
+                    crate::systems::geo_nav::world_to_lat_lng(
+                        anchor,
+                        f64::from(p.x),
+                        f64::from(p.y),
+                    )
+                };
+                crate::systems::aerial_reference::spawn_write(
+                    harness
+                        .path_for(progress.index)
+                        .with_extension("aerial.jpg"),
+                    crate::systems::aerial_reference::View {
+                        camera: ll(Vec2::new(cam_world.x, cam_world.z)),
+                        aim: ll(target),
+                    },
+                );
+            }
+        }
         // Where the nearest tunnel actually goes under, as something you can type
         // into `--at`. See `Tunnels::nearest_entrance` for why this is a
         // reported number and not an arithmetic exercise at the call site.

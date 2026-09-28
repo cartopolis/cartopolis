@@ -1,5 +1,8 @@
 //! `systems::dev` — one file per concern; see systems/mod.rs for the map.
 
+/// The aerial photograph a capture is checked against (`--aerial-reference`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod aerial_reference;
 pub mod desktop_integration;
 pub mod dev_panel;
 pub mod diagnostics;
