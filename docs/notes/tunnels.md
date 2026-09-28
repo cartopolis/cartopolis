@@ -68,6 +68,20 @@ bridges, run the other way:
   showed a ramp five or six metres wide going down between grass slopes
   (2026-09-28). Where a trench is wider than the bore it runs into, a wing closes
   the gap between the two walls.
+- **The fill to the land stops at a structure's end.** It used to round off
+  around the end, and once a sloped ramp stopped being part of the structure
+  that raised the ground over it back to the lid 30 m out and buried the mouth.
+- **Under a lifted bridge deck a "tunnel" is a road under a span.** OSM tags a
+  path beneath a bridge as a tunnel as readily as one beneath an embankment;
+  read as a bore, the space under the ring's bridge by Kardinge was filled with
+  ten metres of grass. Atlas measures such points like any road — survey
+  height, bank land, survey walls — and the client never roofs a point atlas
+  measured walls for.
+- **A BGT retaining wall standing proud of flat paving is usually right.** The
+  surveyed walls layer draws the BGT's `scheiding` walls at their measured
+  height; beside a path at grade through an embankment they hold the
+  embankment back, and the survey (`print_terrain_along_a_line`) is how to tell
+  that apart from a ramp the ground failed to dig (portal 06, 2026-09-28).
 - **Atlas decides all of it** over its solve window and publishes the land beside
   the road heights (`roads/14/x/y.bin`, an `LND1` section after the runs that older
   readers never reach). The client builds the walls, roofs and openings from those
