@@ -3584,13 +3584,25 @@ pub fn drive_capture(
                         f64::from(p.y),
                     )
                 };
+                let pose = match projection {
+                    Projection::Perspective(p) => Some(crate::systems::aerial_reference::Pose {
+                        anchor,
+                        position: cam_world.to_array(),
+                        right: tf.right().to_array(),
+                        up: tf.up().to_array(),
+                        forward: fwd.to_array(),
+                        fov_y: p.fov,
+                        size: (harness.size.x, harness.size.y),
+                        ground_y: readouts.terrain.at(target.x, target.y),
+                    }),
+                    _ => None,
+                };
                 crate::systems::aerial_reference::spawn_write(
-                    harness
-                        .path_for(progress.index)
-                        .with_extension("aerial.jpg"),
+                    harness.path_for(progress.index),
                     crate::systems::aerial_reference::View {
                         camera: ll(Vec2::new(cam_world.x, cam_world.z)),
                         aim: ll(target),
+                        pose,
                     },
                 );
             }

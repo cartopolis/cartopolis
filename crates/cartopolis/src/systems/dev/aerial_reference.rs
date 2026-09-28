@@ -5,67 +5,108 @@
 //! the park beside Groningen's ring for a hundred metres: every number in the
 //! capture's metrics was self-consistent, the picture looked like a sunken path,
 //! and only an aerial photograph of the spot — fetched by hand, three tiles at a
-//! time — showed a path at grade across the grass. So the shot harness can write
+//! time — showed a path at grade across the grass. So the shot harness writes
 //! that photograph itself (`--aerial-reference`, or `aerial_reference = true` in
-//! a manifest): `<shot>.aerial.jpg`, PDOK's Luchtfoto RGB over the ground from
-//! the camera to the point it is aimed at, with the camera drawn as a red dot, the
-//! line of sight as a red line and the aim as a yellow cross.
+//! a manifest), twice over, from PDOK's Luchtfoto RGB:
 //!
-//! Top-down, deliberately: an oblique photograph would need a second camera model
-//! to line up with the render, and what it has to answer — is there a wall here,
-//! a roof, a road, water — reads from above. The imagery is the same layer the
-//! aerial basemap draws (`systems::aerial`), with the same envelope; outside it
-//! nothing is written, and a failure to fetch is logged rather than failing the
-//! capture it would only have been a reference for.
+//! - **`<shot>.aerial.jpg`, from the capture's own camera**: the same position,
+//!   orientation, field of view and size, every pixel's ray followed down to the
+//!   ground and the photograph sampled where it lands. Roads, cuttings, water and
+//!   openings sit exactly where the render put its own, so the two can be laid
+//!   side by side or flicked between. What stands up — buildings, trees, walls —
+//!   is flattened onto the ground the way an orthophoto always flattens it, and
+//!   the sky is a plain colour: this is a check of the *ground plan*, which is
+//!   what a structure below the ground either gets right or does not.
+//! - **`<shot>.aerial-map.jpg`, from above**: the ground from the camera to the
+//!   point it is aimed at, camera as a red dot, line of sight red, aim a yellow
+//!   cross — where the capture was taken from, at a glance.
 //!
-//! Native only, and off the frame: the tiles are fetched on a thread of its own,
-//! so a capture never waits on PDOK.
+//! The imagery is the same layer the aerial basemap draws (`systems::aerial`),
+//! with the same envelope; outside it nothing is written, and a failure to fetch
+//! is logged rather than failing the capture it would only have been a reference
+//! for. Native only, and off the frame: the tiles are fetched on a thread of its
+//! own, so a capture never waits on PDOK.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use image::{Rgb, RgbImage};
 
 /// Tile edge in pixels.
 const TILE_PX: f64 = 256.0;
 
-/// The finest zoom the reference is drawn at: about 18 cm a pixel at Groningen's
-/// latitude, well past what the 25 cm layer resolves.
+/// The finest zoom the references are drawn at: about 18 cm a pixel at
+/// Groningen's latitude, well past what the 25 cm layer resolves.
 const MAX_ZOOM: u32 = 19;
 
-/// The coarsest it steps down to when the camera is far from its aim.
+/// The coarsest they step down to.
 const MIN_ZOOM: u32 = 14;
 
-/// The widest the reference may be, pixels, before it drops a zoom level.
+/// The widest the top-down map may be, pixels, before it drops a zoom level.
 const MAX_SIDE_PX: f64 = 1400.0;
+
+/// The widest the mosaic behind the camera-matched view may be, pixels.
+const MAX_MOSAIC_PX: f64 = 3072.0;
 
 /// How much ground to show around the camera and the aim, metres.
 const MARGIN_M: f64 = 50.0;
 
+/// How far along the ground the camera-matched view is drawn, metres; beyond, it
+/// fades into haze, as a render's own distance does.
+const MAX_DIST_M: f32 = 900.0;
+
 /// What a reference is drawn around: where the camera is and where it looks, as
-/// latitude and longitude.
+/// latitude and longitude, and — for the camera-matched view — the camera itself.
 #[derive(Clone, Copy, Debug)]
 pub struct View {
     pub camera: (f64, f64),
     pub aim: (f64, f64),
+    pub pose: Option<Pose>,
 }
 
-/// Write the reference for `view` to `path` on a thread of its own. Nothing is
-/// written outside the imagery's envelope.
-pub fn spawn_write(path: PathBuf, view: View) {
+/// The capture's camera, in the anchored world frame the harness works in.
+#[derive(Clone, Copy, Debug)]
+pub struct Pose {
+    /// The map anchor the world frame is measured from
+    /// (`geo_nav::world_to_lat_lng`).
+    pub anchor: (f64, f64, u32),
+    pub position: [f32; 3],
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    pub forward: [f32; 3],
+    /// Vertical field of view, radians.
+    pub fov_y: f32,
+    /// The capture's size in pixels.
+    pub size: (u32, u32),
+    /// The height of the ground the photograph is laid on, world `y`: the
+    /// terrain under the aim.
+    pub ground_y: f32,
+}
+
+/// Write the references for the capture at `capture` on a thread of their own —
+/// `<stem>.aerial.jpg` from the camera when `view` has one, and
+/// `<stem>.aerial-map.jpg` from above. Nothing is written outside the imagery's
+/// envelope.
+pub fn spawn_write(capture: PathBuf, view: View) {
     if !crate::systems::aerial::covers(view.aim.0, view.aim.1) {
-        tracing::info!(path = %path.display(), "aerial reference: outside the imagery, none written");
+        tracing::info!(path = %capture.display(), "aerial reference: outside the imagery, none written");
         return;
     }
-    let handle = std::thread::spawn(move || match render(view) {
-        Ok(img) => match img.save(&path) {
-            Ok(()) => tracing::info!(path = %path.display(), "aerial reference: saved"),
+    let handle = std::thread::spawn(move || {
+        let save = |img: Result<RgbImage, String>, path: &Path| match img {
+            Ok(img) => match img.save(path) {
+                Ok(()) => tracing::info!(path = %path.display(), "aerial reference: saved"),
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "aerial reference: not saved")
+                }
+            },
             Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "aerial reference: not saved")
+                tracing::warn!(path = %path.display(), error = %e, "aerial reference: not fetched")
             }
-        },
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "aerial reference: not fetched")
+        };
+        if let Some(pose) = view.pose {
+            save(from_camera(pose), &capture.with_extension("aerial.jpg"));
         }
+        save(from_above(view), &capture.with_extension("aerial-map.jpg"));
     });
     PENDING
         .lock()
@@ -105,28 +146,34 @@ fn metres_per_px(lat: f64, z: u32) -> f64 {
     40_075_016.686 * lat.to_radians().cos() / (TILE_PX * f64::from(1u32 << z))
 }
 
-/// The zoom, and the pixel box at it, that shows both ends of `view` with
-/// [`MARGIN_M`] around them in no more than [`MAX_SIDE_PX`] a side.
-fn frame(view: View) -> (u32, [f64; 4]) {
+/// The zoom, and the pixel box at it, that shows every point of `pts` with
+/// `margin_m` around them in no more than `max_side` pixels a side.
+fn frame_points(pts: &[(f64, f64)], margin_m: f64, max_side: f64) -> (u32, [f64; 4]) {
+    let lat = pts.first().map_or(52.0, |p| p.0);
     let mut z = MAX_ZOOM;
     loop {
-        let (a, b) = (
-            world_px(view.camera.0, view.camera.1, z),
-            world_px(view.aim.0, view.aim.1, z),
-        );
-        let pad = MARGIN_M / metres_per_px(view.aim.0, z);
-        let (x0, y0) = (a.0.min(b.0) - pad, a.1.min(b.1) - pad);
-        let (x1, y1) = (a.0.max(b.0) + pad, a.1.max(b.1) + pad);
-        if (x1 - x0).max(y1 - y0) <= MAX_SIDE_PX || z == MIN_ZOOM {
-            return (z, [x0, y0, x1, y1]);
+        let pad = margin_m / metres_per_px(lat, z);
+        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for &(la, ln) in pts {
+            let (x, y) = world_px(la, ln, z);
+            b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        }
+        let b = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
+        if (b[2] - b[0]).max(b[3] - b[1]) <= max_side || z == MIN_ZOOM {
+            return (z, b);
         }
         z -= 1;
     }
 }
 
-/// Fetch, stitch, crop and mark the reference for `view`.
-fn render(view: View) -> Result<RgbImage, String> {
-    let (z, [x0, y0, x1, y1]) = frame(view);
+/// The top-down frame for `view`: both ends with [`MARGIN_M`] around them.
+fn frame(view: View) -> (u32, [f64; 4]) {
+    frame_points(&[view.camera, view.aim], MARGIN_M, MAX_SIDE_PX)
+}
+
+/// The photograph over the pixel box `[x0, y0, x1, y1]` at zoom `z`, stitched
+/// from its tiles.
+fn mosaic(z: u32, [x0, y0, x1, y1]: [f64; 4]) -> Result<RgbImage, String> {
     let (tx0, ty0) = ((x0 / TILE_PX).floor() as u32, (y0 / TILE_PX).floor() as u32);
     let (tx1, ty1) = ((x1 / TILE_PX).floor() as u32, (y1 / TILE_PX).floor() as u32);
     let (w, h) = ((x1 - x0).ceil() as u32, (y1 - y0).ceil() as u32);
@@ -153,11 +200,104 @@ fn render(view: View) -> Result<RgbImage, String> {
             }
         }
     }
+    Ok(out)
+}
+
+/// The top-down reference: the photograph around the camera and the aim,
+/// marked.
+fn from_above(view: View) -> Result<RgbImage, String> {
+    let (z, b) = frame(view);
+    let mut out = mosaic(z, b)?;
     let at = |ll: (f64, f64)| {
         let p = world_px(ll.0, ll.1, z);
-        (p.0 - x0, p.1 - y0)
+        (p.0 - b[0], p.1 - b[1])
     };
     mark(&mut out, at(view.camera), at(view.aim));
+    Ok(out)
+}
+
+/// Where the ray through pixel `(u, v)` of the capture meets the ground, world
+/// XZ, and how far along the ground it is — `None` above the horizon.
+fn ground_hit(pose: &Pose, u: f32, v: f32) -> Option<([f32; 2], f32)> {
+    let (w, h) = (pose.size.0 as f32, pose.size.1 as f32);
+    let t = (pose.fov_y * 0.5).tan();
+    let (nx, ny) = ((2.0 * u / w - 1.0) * t * w / h, (1.0 - 2.0 * v / h) * t);
+    let d = [
+        pose.forward[0] + pose.right[0] * nx + pose.up[0] * ny,
+        pose.forward[1] + pose.right[1] * nx + pose.up[1] * ny,
+        pose.forward[2] + pose.right[2] * nx + pose.up[2] * ny,
+    ];
+    if d[1] >= -1e-5 {
+        return None;
+    }
+    let s = (pose.ground_y - pose.position[1]) / d[1];
+    if s <= 0.0 {
+        return None;
+    }
+    let p = [pose.position[0] + d[0] * s, pose.position[2] + d[2] * s];
+    let along = (p[0] - pose.position[0]).hypot(p[1] - pose.position[2]);
+    Some((p, along))
+}
+
+/// The reference from the capture's own camera: every pixel's ray followed down
+/// to the ground and the photograph sampled where it lands.
+fn from_camera(pose: Pose) -> Result<RgbImage, String> {
+    let ll = |p: [f32; 2]| {
+        crate::systems::geo_nav::world_to_lat_lng(pose.anchor, f64::from(p[0]), f64::from(p[1]))
+    };
+    // The ground the view reaches, from a coarse grid of rays, and the camera's
+    // own foot.
+    let (w, h) = pose.size;
+    let mut reach: Vec<(f64, f64)> = vec![ll([pose.position[0], pose.position[2]])];
+    for j in 0..=32 {
+        for i in 0..=32 {
+            let (u, v) = (w as f32 * i as f32 / 32.0, h as f32 * j as f32 / 32.0);
+            if let Some((p, along)) = ground_hit(&pose, u, v) {
+                if along <= MAX_DIST_M {
+                    reach.push(ll(p));
+                }
+            }
+        }
+    }
+    let (z, b) = frame_points(&reach, 20.0, MAX_MOSAIC_PX);
+    let photo = mosaic(z, b)?;
+    let (pw, ph) = (photo.width() as f64, photo.height() as f64);
+    let sky = |v: f32| {
+        let k = (v / h as f32).clamp(0.0, 1.0);
+        Rgb([
+            (150.0 + 60.0 * k) as u8,
+            (185.0 + 40.0 * k) as u8,
+            (225.0 + 20.0 * k) as u8,
+        ])
+    };
+    let haze = Rgb([200u8, 210, 220]);
+    let mut out = RgbImage::new(w, h);
+    for v in 0..h {
+        for u in 0..w {
+            let (fu, fv) = (u as f32 + 0.5, v as f32 + 0.5);
+            let Some((p, along)) = ground_hit(&pose, fu, fv) else {
+                out.put_pixel(u, v, sky(fv));
+                continue;
+            };
+            let (lat, lng) = ll(p);
+            let (x, y) = world_px(lat, lng, z);
+            let (sx, sy) = (x - b[0], y - b[1]);
+            let c = if sx >= 0.0 && sy >= 0.0 && sx < pw && sy < ph {
+                *photo.get_pixel(sx as u32, sy as u32)
+            } else {
+                haze
+            };
+            // Fade into haze towards the edge of what was fetched, as distance
+            // fades a render.
+            let f = ((along - MAX_DIST_M * 0.7) / (MAX_DIST_M * 0.3)).clamp(0.0, 1.0);
+            let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - f) + f32::from(b) * f) as u8;
+            out.put_pixel(
+                u,
+                v,
+                Rgb([mix(c[0], haze[0]), mix(c[1], haze[1]), mix(c[2], haze[2])]),
+            );
+        }
+    }
     Ok(out)
 }
 
@@ -211,6 +351,7 @@ mod tests {
         let view = View {
             camera: (53.204932, 6.572974),
             aim: (53.20513, 6.573829),
+            pose: None,
         };
         let (z, [x0, y0, x1, y1]) = frame(view);
         assert_eq!(z, MAX_ZOOM);
@@ -228,6 +369,7 @@ mod tests {
         let view = View {
             camera: (53.18, 6.52),
             aim: (53.2053, 6.575),
+            pose: None,
         };
         let (z, [x0, y0, x1, y1]) = frame(view);
         assert!(z < MAX_ZOOM);
@@ -242,5 +384,36 @@ mod tests {
         assert_eq!(*img.get_pixel(40, 40), RED);
         assert_eq!(*img.get_pixel(100, 100), RED, "the line of sight is drawn");
         assert_eq!(*img.get_pixel(168, 152), YELLOW, "the aim is crossed");
+    }
+
+    /// **The camera-matched view looks where the camera looks.** Straight ahead
+    /// and down 45°, from 10 m up, the middle of the picture meets the ground 10 m
+    /// ahead; the top of a view pitched only slightly down is sky.
+    #[test]
+    fn the_rays_meet_the_ground_where_the_camera_looks() {
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let pose = Pose {
+            anchor: (53.2, 6.57, 14),
+            position: [0.0, 10.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, s, -s],
+            forward: [0.0, -s, -s],
+            fov_y: 60f32.to_radians(),
+            size: (100, 100),
+            ground_y: 0.0,
+        };
+        let (p, along) = ground_hit(&pose, 50.0, 50.0).expect("the middle hits the ground");
+        assert!(p[0].abs() < 1e-3 && (p[1] + 10.0).abs() < 1e-3, "{p:?}");
+        assert!((along - 10.0).abs() < 1e-3);
+        let level = Pose {
+            up: [0.0, 1.0, 0.0],
+            forward: [0.0, -0.05, -1.0],
+            ..pose
+        };
+        assert!(
+            ground_hit(&level, 50.0, 0.0).is_none(),
+            "the top of the view hit the ground"
+        );
+        assert!(ground_hit(&level, 50.0, 100.0).is_some());
     }
 }

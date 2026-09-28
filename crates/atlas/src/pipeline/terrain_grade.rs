@@ -149,6 +149,11 @@ pub struct Grader<'a> {
     /// Decks measured, and how many were lifted.
     pub decks_measured: usize,
     pub decks_lifted: usize,
+    /// Every tunnel mouth the graded tiles build, as published — see
+    /// [`write_mouths`].
+    pub mouths: Vec<serde_json::Value>,
+    /// Every tunnel the graded tiles have that no structure was built for.
+    pub unbuilt: Vec<serde_json::Value>,
 }
 
 impl<'a> Grader<'a> {
@@ -164,6 +169,8 @@ impl<'a> Grader<'a> {
             road_heights: HashMap::new(),
             decks_measured: 0,
             decks_lifted: 0,
+            mouths: Vec::new(),
+            unbuilt: Vec::new(),
         }
     }
 
@@ -823,6 +830,57 @@ impl<'a> Grader<'a> {
             }
         }
 
+        // **Every tunnel mouth this tile builds, and every tunnel it does not**,
+        // from the same plans the client draws — for the gallery that photographs
+        // each of them, and for the one number that says a tunnel went missing.
+        {
+            let own_runs = &self.cells[&(tx, ty)].runs;
+            let profiles: Vec<Option<cartopolis_geo::tunnels::Profile>> = own_runs
+                .iter()
+                .map(|r| {
+                    Some(cartopolis_geo::tunnels::Profile {
+                        road: own.runs.get(&r.key)?.clone(),
+                        land: own.land.get(&r.key)?.clone(),
+                    })
+                })
+                .collect();
+            let ll = |p: [f32; 2]| {
+                tile_frac_to_lat_lng(
+                    tx as f64 + f64::from(p[0] / tile_m),
+                    ty as f64 + f64::from(p[1] / tile_m),
+                    14,
+                )
+            };
+            let round = |v: f64| (v * 1e6).round() / 1e6;
+            for m in cartopolis_geo::tunnels::mouths(own_runs, &profiles) {
+                let (lat, lng) = ll(m.at);
+                // +z runs south, so north is -z.
+                let heading = f64::from(m.out[0].atan2(-m.out[1]))
+                    .to_degrees()
+                    .rem_euclid(360.0);
+                self.mouths.push(serde_json::json!({
+                    "lat": round(lat),
+                    "lng": round(lng),
+                    "out_deg": heading.round(),
+                    "depth": (f64::from(m.land_y - m.road_y) * 100.0).round() / 100.0,
+                    "tile": [tx, ty],
+                }));
+            }
+            for (r, p) in own_runs.iter().zip(&profiles) {
+                if r.level < 0
+                    && p.as_ref()
+                        .is_none_or(|p| p.land.iter().all(|g| !g.is_finite()))
+                {
+                    let (lat, lng) = ll(r.points[r.points.len() / 2]);
+                    self.unbuilt.push(serde_json::json!({
+                        "lat": round(lat),
+                        "lng": round(lng),
+                        "tile": [tx, ty],
+                    }));
+                }
+            }
+        }
+
         // The structures' stretches, each with its land.
         let mut stretches: Vec<(Vec<[f32; 2]>, Vec<f32>, f32)> = Vec::new();
         for ((l, o), (g, m)) in lines.iter().zip(&owners).zip(land.iter().zip(&inside)) {
@@ -954,6 +1012,7 @@ pub fn grade_area(
     ));
     write_decks(ctx, &grader.deck_heights)?;
     write_road_heights(ctx, &grader.road_heights)?;
+    write_mouths(ctx, &grader.mouths, &grader.unbuilt)?;
     Ok((graded, grader.decks_measured, grader.decks_lifted))
 }
 
@@ -1196,6 +1255,29 @@ fn write_road_heights(ctx: &Ctx, roads: &HashMap<(i64, i64), RoadHeights>) -> Ou
             "name": ctx.name,
             "zoom": 14,
         }),
+    )
+}
+
+/// `roads/mouths.json`: every tunnel mouth the graded tiles build — where the
+/// roof stops, the compass bearing out of the tunnel and how far the road there
+/// is under its land — and every tunnel that was built as no structure at all.
+/// The second list should be empty; a tunnel in it is one the map tags and the
+/// client will not draw. The first is what the shot gallery photographs
+/// (`tools/structure_shots.ts`), one camera per mouth, placed from the data
+/// rather than by hand.
+fn write_mouths(
+    ctx: &Ctx,
+    mouths: &[serde_json::Value],
+    unbuilt: &[serde_json::Value],
+) -> Outcome<()> {
+    ctx.log(format!(
+        "{} tunnelmonden, {} tunnels zonder bouwwerk",
+        mouths.len(),
+        unbuilt.len()
+    ));
+    ctx.write_json(
+        "roads/mouths.json",
+        &serde_json::json!({ "name": ctx.name, "mouths": mouths, "unbuilt": unbuilt }),
     )
 }
 

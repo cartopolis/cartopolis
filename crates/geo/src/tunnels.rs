@@ -1079,6 +1079,63 @@ pub fn build_tunnels(tile: &TileData, tile_m: f32, max_bytes: Option<usize>) -> 
     build_structures(&runs, &unmeasured_profiles(&runs), max_bytes)
 }
 
+/// One place a roof stops with sky beyond it — a tunnel mouth.
+#[derive(Clone, Copy, Debug)]
+pub struct Mouth {
+    /// Where the roof stops, on the centre line, tile-local metres.
+    pub at: [f32; 2],
+    /// Unit direction out of the tunnel, into the open.
+    pub out: [f32; 2],
+    /// The carriageway's height there, and the land's, in the profiles' frame.
+    pub road_y: f32,
+    pub land_y: f32,
+    /// The `streets` feature the tunnel is.
+    pub feature: usize,
+}
+
+/// Every tunnel mouth [`build_structures`] would draw a headwall over, from the
+/// same plans it draws them from — so a list of them, and a camera aimed at each,
+/// cannot disagree with the geometry about where they are.
+#[must_use]
+pub fn mouths(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Mouth> {
+    let mut out = Vec::new();
+    for p in plan(runs, profiles) {
+        let n = p.centre.len();
+        for k in 0..n {
+            if !p.roofed[k] {
+                continue;
+            }
+            let back_open = if k == 0 { p.mouth[0] } else { !p.roofed[k - 1] };
+            let ahead_open = if k + 1 == n {
+                p.mouth[1]
+            } else {
+                !p.roofed[k + 1]
+            };
+            let mut push = |from: [f32; 2], to: [f32; 2]| {
+                let (dx, dz) = (to[0] - from[0], to[1] - from[1]);
+                let len = dx.hypot(dz);
+                if len > 1e-6 {
+                    out.push(Mouth {
+                        at: p.centre[k],
+                        out: [dx / len, dz / len],
+                        road_y: p.road_y[k],
+                        land_y: p.land_y[k],
+                        feature: p.feature,
+                    });
+                }
+            };
+            // Out of the tunnel is away from its roofed neighbour.
+            if back_open && k + 1 < n && p.roofed[k + 1] {
+                push(p.centre[k + 1], p.centre[k]);
+            }
+            if ahead_open && k > 0 && p.roofed[k - 1] {
+                push(p.centre[k - 1], p.centre[k]);
+            }
+        }
+    }
+    out
+}
+
 /// Build every structure below the ground in one tile: `profiles` is parallel to
 /// `runs`, `None` for a run that is not part of one.
 ///
@@ -2508,6 +2565,21 @@ mod tests {
     }
 
     const SUNK_M_TEST: f32 = road_levels::SUNK_M;
+
+    /// **The mouths are where the headwalls are**, facing out of the tunnel: one
+    /// at each end of a tunnel with a ramp at each end.
+    #[test]
+    fn a_tunnel_has_a_mouth_at_each_end_facing_out() {
+        let runs = a_tunnel_and_its_roads();
+        let m = mouths(&runs, &unmeasured_profiles(&runs));
+        assert_eq!(m.len(), 2, "{m:?}");
+        for mouth in &m {
+            // The tunnel runs x = 0..200; out of it is towards the nearer end.
+            let expect = if mouth.at[0] < 100.0 { -1.0 } else { 1.0 };
+            assert!((mouth.out[0] - expect).abs() < 1e-3, "{mouth:?}");
+            assert!(mouth.road_y < mouth.land_y - 5.0);
+        }
+    }
 
     /// **The measured shape is drawn as measured.** A cutting the survey put nine
     /// metres under land two metres above the datum has its carriageway at −7 and
