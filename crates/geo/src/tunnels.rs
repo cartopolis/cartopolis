@@ -967,6 +967,11 @@ const DOWN: [f32; 3] = [0.0, -1.0, 0.0];
 pub struct Profile {
     pub road: Vec<f32>,
     pub land: Vec<f32>,
+    /// Where the walls stand at each point, left then right, as distances from
+    /// the centre line: `0` where that side has no wall because the ground rises
+    /// there as a bank, `NaN` where nothing was measured and the wall stands at
+    /// the carriageway's edge. Empty for none measured at all.
+    pub walls: Vec<[f32; 2]>,
 }
 
 /// One stretch of a run that is a structure, settled and ready to mesh.
@@ -979,6 +984,9 @@ struct Plan {
     travelled: Vec<f32>,
     road_y: Vec<f32>,
     land_y: Vec<f32>,
+    /// The measured walls at each vertex, as [`Profile::walls`] (`NaN` where
+    /// none were).
+    walls: Vec<[f32; 2]>,
     /// Whether each vertex has a roof over it.
     roofed: Vec<bool>,
     class: RoadClass,
@@ -1066,6 +1074,7 @@ pub fn unmeasured_profiles(runs: &[StreetRun]) -> Vec<Option<Profile>> {
                     .map(|&b| if b { 0.0 } else { f32::NAN })
                     .collect(),
                 road,
+                walls: Vec::new(),
             })
         })
         .collect()
@@ -1207,10 +1216,16 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
             if i - start < 2 {
                 continue;
             }
-            let (centre, road_y, land_y) = simplified(
+            let measured: Vec<[f32; 2]> = if profile.walls.len() == n {
+                profile.walls[start..i].to_vec()
+            } else {
+                vec![[f32::NAN; 2]; i - start]
+            };
+            let (centre, road_y, land_y, walls) = simplified(
                 &run.points[start..i],
                 &profile.road[start..i],
                 &profile.land[start..i],
+                &measured,
             );
             // **A roof goes on where the tiles say the road is under the ground
             // and one fits under the land** — its headroom plus a slab. The rest
@@ -1235,6 +1250,7 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
                 travelled,
                 road_y,
                 land_y,
+                walls,
                 roofed,
                 class: run.class,
                 half: run.half_w,
@@ -1354,7 +1370,19 @@ fn simplified(
     points: &[[f32; 2]],
     road: &[f32],
     land: &[f32],
-) -> (Vec<[f32; 2]>, Vec<f32>, Vec<f32>) {
+    walls: &[[f32; 2]],
+) -> (Vec<[f32; 2]>, Vec<f32>, Vec<f32>, Vec<[f32; 2]>) {
+    // A wall's kind — none, measured, at the carriageway — never changes between
+    // two kept points, and a measured one only within the tolerance.
+    let kind = |w: f32| {
+        if w.is_nan() {
+            0u8
+        } else if w > 0.0 {
+            1
+        } else {
+            2
+        }
+    };
     let n = points.len();
     let mut keep = vec![0usize];
     let mut anchor = 0usize;
@@ -1369,7 +1397,17 @@ fn simplified(
                 .clamp(0.0, 1.0);
             let off = (p[0] - (a[0] + (b[0] - a[0]) * t)).hypot(p[1] - (a[1] + (b[1] - a[1]) * t));
             let on = |v: &[f32]| (v[j] - (v[anchor] + (v[i] - v[anchor]) * t)).abs();
-            off <= SIMPLIFY_M && on(road) <= SIMPLIFY_M && on(land) <= SIMPLIFY_M
+            let wall = |s: usize| {
+                let (a, m, b) = (walls[anchor][s], walls[j][s], walls[i][s]);
+                kind(a) == kind(m)
+                    && kind(m) == kind(b)
+                    && (kind(m) != 1 || (m - (a + (b - a) * t)).abs() <= SIMPLIFY_M)
+            };
+            off <= SIMPLIFY_M
+                && on(road) <= SIMPLIFY_M
+                && on(land) <= SIMPLIFY_M
+                && wall(0)
+                && wall(1)
         });
         if !fits {
             keep.push(i - 1);
@@ -1383,6 +1421,7 @@ fn simplified(
         keep.iter().map(|&k| points[k]).collect(),
         keep.iter().map(|&k| road[k]).collect(),
         keep.iter().map(|&k| land[k]).collect(),
+        keep.iter().map(|&k| walls[k]).collect(),
     )
 }
 
@@ -1560,6 +1599,157 @@ fn median_floor(shell: &mut Build, a: &Plan, i: usize, side: usize, b: &Plan) {
     }
 }
 
+/// How far from the centre line side `s` of a plan's wall stands at vertex `k`,
+/// or `None` where that side is a bank and has no wall. Under a roof the walls
+/// are the carriageway's; where nothing was measured, likewise.
+fn reach(plan: &Plan, k: usize, s: usize, covered: bool) -> Option<f32> {
+    if covered {
+        return Some(plan.half);
+    }
+    let w = plan.walls.get(k).map_or(f32::NAN, |w| w[s]);
+    if w.is_nan() {
+        Some(plan.half)
+    } else if w > 0.0 {
+        Some(w.max(plan.half))
+    } else {
+        None
+    }
+}
+
+/// Each segment's two walls as plan lines, left then right: `None` on a side
+/// that is a bank (`reach`) or faces the other half of the road across a median
+/// ([`medians`]).
+fn wall_lines(plan: &Plan, facing: &[[Option<Partner>; 2]]) -> Vec<[Option<[[f32; 2]; 2]>; 2]> {
+    let c = &plan.centre;
+    (0..c.len().saturating_sub(1))
+        .map(|i| {
+            let (a, b) = (c[i], c[i + 1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dz).max(1e-6);
+            let n = [-dz / len, dx / len];
+            let covered = plan.roofed[i] && plan.roofed[i + 1];
+            let line = |s: usize| {
+                if facing[i][s].is_some() {
+                    return None;
+                }
+                let sg = if s == 0 { 1.0 } else { -1.0 };
+                let (o0, o1) = (reach(plan, i, s, covered)?, reach(plan, i + 1, s, covered)?);
+                Some([
+                    [a[0] + n[0] * sg * o0, a[1] + n[1] * sg * o0],
+                    [b[0] + n[0] * sg * o1, b[1] + n[1] * sg * o1],
+                ])
+            };
+            [line(0), line(1)]
+        })
+        .collect()
+}
+
+/// How far out each vertex's opening in the ground must reach, left then right:
+/// to its wall where the wall stands back from the carriageway, to the
+/// carriageway where it does not or where the side is a bank.
+fn reaches(plan: &Plan) -> Vec<[f32; 2]> {
+    (0..plan.centre.len())
+        .map(|k| {
+            let covered = plan.roofed[k];
+            [0, 1].map(|s| reach(plan, k, s, covered).unwrap_or(plan.half))
+        })
+        .collect()
+}
+
+/// Floor from a carriageway's edge out to a wall standing back from it, just
+/// under the road so the deck wins where the two meet.
+fn floor_strip(shell: &mut Build, edge: [[f32; 2]; 2], wall: [[f32; 2]; 2], y: [f32; 2]) {
+    let wide = |e: [f32; 2], w: [f32; 2]| (e[0] - w[0]).hypot(e[1] - w[1]) > 0.05;
+    if !wide(edge[0], wall[0]) && !wide(edge[1], wall[1]) {
+        return;
+    }
+    let (y0, y1) = (y[0] - MEDIAN_FLOOR_M, y[1] - MEDIAN_FLOOR_M);
+    let q = [
+        [edge[0][0], y0, edge[0][1]],
+        [edge[1][0], y1, edge[1][1]],
+        [wall[1][0], y1, wall[1][1]],
+        [wall[0][0], y0, wall[0][1]],
+    ];
+    let q = if faces_up(edge[0], edge[1], wall[1]) {
+        q
+    } else {
+        [q[1], q[0], q[3], q[2]]
+    };
+    shell.quad(q, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], UP, 0.0);
+}
+
+/// Where each plan's end wings start, per end and side: the distance from the
+/// centre line out to which whatever the end meets already walls the trench —
+/// the widest wall among the plans ending at the same point, on the same side —
+/// or `None` for no wing (a tile border, where the structure carries on, and a
+/// dead end, which has its own end wall).
+fn wing_starts(plans: &[Plan], facing: &[Vec<[Option<Partner>; 2]>]) -> Vec<[[Option<f32>; 2]; 2]> {
+    let key = |p: [f32; 2]| {
+        #[allow(clippy::cast_possible_truncation)]
+        ((p[0] * 100.0).round() as i64, (p[1] * 100.0).round() as i64)
+    };
+    let lines: Vec<_> = plans
+        .iter()
+        .zip(facing)
+        .map(|(p, f)| wall_lines(p, f))
+        .collect();
+    // Each plan's end: where it is, which end, and how far out each side's wall
+    // stands there (its half where it has none).
+    let reach_at = |pi: usize, k: usize| -> [f32; 2] {
+        let p = &plans[pi];
+        let (seg, v) = if k == 0 {
+            (0, 0)
+        } else {
+            (p.centre.len() - 2, p.centre.len() - 1)
+        };
+        [0, 1].map(|s| {
+            lines[pi][seg][s].map_or(p.half, |w| {
+                let q = w[usize::from(k == 1)];
+                (q[0] - p.centre[v][0]).hypot(q[1] - p.centre[v][1])
+            })
+        })
+    };
+    let mut at: std::collections::HashMap<(i64, i64), Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    for (pi, p) in plans.iter().enumerate() {
+        if p.centre.len() < 2 {
+            continue;
+        }
+        at.entry(key(p.centre[0])).or_default().push((pi, 0));
+        at.entry(key(p.centre[p.centre.len() - 1]))
+            .or_default()
+            .push((pi, 1));
+    }
+    plans
+        .iter()
+        .enumerate()
+        .map(|(pi, p)| {
+            if p.centre.len() < 2 {
+                return [[None; 2]; 2];
+            }
+            [0usize, 1].map(|k| {
+                if p.cut[k] || p.dead[k] {
+                    return [None; 2];
+                }
+                let v = if k == 0 { 0 } else { p.centre.len() - 1 };
+                let mut from = [p.half; 2];
+                for &(o, ko) in &at[&key(p.centre[v])] {
+                    if o == pi {
+                        continue;
+                    }
+                    let r = reach_at(o, ko);
+                    // Two plans running on through the point share their sides;
+                    // two meeting head to head, or leaving it back to back, swap
+                    // them.
+                    let r = if ko == k { [r[1], r[0]] } else { r };
+                    from = [from[0].max(r[0]), from[1].max(r[1])];
+                }
+                from.map(Some)
+            })
+        })
+        .collect()
+}
+
 /// Build the meshes, corridors and openings for a set of settled plans.
 fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
     let mut out = TunnelTessellation::default();
@@ -1577,6 +1767,7 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
     // its say — see [`merge_parallel_openings`].
     let mut openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)> = Vec::new();
     let facing = medians(plans);
+    let wings = wing_starts(plans, &facing);
 
     for (pi, plan) in plans.iter().enumerate() {
         let facing = &facing[pi];
@@ -1618,6 +1809,7 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
                 land_y[k]
             }
         };
+        let walls_of = wall_lines(plan, facing);
 
         for i in 0..sides.left.len() {
             let (l0, l1) = (sides.left[i][0], sides.left[i][1]);
@@ -1653,33 +1845,40 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
             let (t0, t1) = (top(i, covered), top(i + 1, covered));
             // Not on a side that faces the other half of the road across a
             // median: that is one trench, and its floor is laid below.
-            if facing[i][0].is_none() {
-                let n_left = wall_normal(l0, l1, true);
+            //
+            // **Where the survey put it** (`walls_of`, `Profile::walls`): past the
+            // carriageway where the trench is wider than the road, and not at all
+            // on a side where the ground comes down as a bank. Between the
+            // carriageway and a wall standing back from it is floor.
+            if let Some([w0, w1]) = walls_of[i][0] {
+                let n_left = wall_normal(w0, w1, true);
                 shell.quad(
                     [
-                        [l1[0], y1, l1[1]],
-                        [l0[0], y0, l0[1]],
-                        [l0[0], t0, l0[1]],
-                        [l1[0], t1, l1[1]],
+                        [w1[0], y1, w1[1]],
+                        [w0[0], y0, w0[1]],
+                        [w0[0], t0, w0[1]],
+                        [w1[0], t1, w1[1]],
                     ],
                     [[v1, 0.0], [v0, 0.0], [v0, 1.0], [v1, 1.0]],
                     n_left,
                     0.0,
                 );
+                floor_strip(&mut shell, [l0, l1], [w0, w1], [y0, y1]);
             }
-            if facing[i][1].is_none() {
-                let n_right = wall_normal(r0, r1, false);
+            if let Some([w0, w1]) = walls_of[i][1] {
+                let n_right = wall_normal(w0, w1, false);
                 shell.quad(
                     [
-                        [r0[0], y0, r0[1]],
-                        [r1[0], y1, r1[1]],
-                        [r1[0], t1, r1[1]],
-                        [r0[0], t0, r0[1]],
+                        [w0[0], y0, w0[1]],
+                        [w1[0], y1, w1[1]],
+                        [w1[0], t1, w1[1]],
+                        [w0[0], t0, w0[1]],
                     ],
                     [[v0, 0.0], [v1, 0.0], [v1, 1.0], [v0, 1.0]],
                     n_right,
                     0.0,
                 );
+                floor_strip(&mut shell, [r0, r1], [w0, w1], [y0, y1]);
             }
 
             // Roof, wound to face *down*: wound like the deck it faced the earth
@@ -1742,6 +1941,18 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
                     if open_median {
                         continue;
                     }
+                    // Between the two walls, where they stand, and the floor
+                    // between them and the carriageway's own notch.
+                    let (Some(wa), Some(wb)) = (walls_of[i][side], walls_of[i + 1][side]) else {
+                        continue;
+                    };
+                    let (wa, wb) = if side == 0 {
+                        (wa[1], wb[0])
+                    } else {
+                        (wb[0], wa[1])
+                    };
+                    floor_strip(&mut shell, [a, b], [wa, wb], [y, y]);
+                    let (a, b) = (wa, wb);
                     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
                     let len = dx.hypot(dz).max(1e-6);
                     let t = top(i + 1, roof);
@@ -1838,6 +2049,12 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
                 ],
             ),
         ] {
+            let seg = if k == 0 { 0 } else { last - 1 };
+            let end = usize::from(k == 1);
+            let (l, r) = (
+                walls_of[seg][0].map_or(l, |w| w[end]),
+                walls_of[seg][1].map_or(r, |w| w[end]),
+            );
             if !plan.dead[k] || road_y[v] >= land_y[v] - 0.05 {
                 continue;
             }
@@ -1860,12 +2077,63 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
             );
         }
 
+        // **A wing where a trench is wider than what it meets.** The ramp down to
+        // a cycle underpass stands its walls back where the survey has them, the
+        // bore it runs into is the width of its path, and between the two the
+        // opening has taken the ground away from over earth that has no mesh.
+        for (k, from) in wings[pi].iter().enumerate() {
+            let v = if k == 0 { 0 } else { n - 1 };
+            let seg = if k == 0 { 0 } else { n - 2 };
+            let inward = if k == 0 {
+                [centre[1][0] - centre[0][0], centre[1][1] - centre[0][1]]
+            } else {
+                [
+                    centre[n - 2][0] - centre[n - 1][0],
+                    centre[n - 2][1] - centre[n - 1][1],
+                ]
+            };
+            let len = inward[0].hypot(inward[1]).max(1e-6);
+            let face = [inward[0] / len, 0.0, inward[1] / len];
+            let normal = [-face[2], face[0]];
+            let sign = if k == 0 { 1.0 } else { -1.0 };
+            for (side, from) in from.iter().enumerate() {
+                let Some(from) = *from else { continue };
+                let Some(w) = walls_of[seg][side] else {
+                    continue;
+                };
+                let to = w[usize::from(k == 1)];
+                let p = centre[v];
+                let reach = (to[0] - p[0]).hypot(to[1] - p[1]);
+                if reach <= from + 0.05 {
+                    continue;
+                }
+                // The side's unit normal, pointing out toward the wall.
+                let s = if side == 0 { sign } else { -sign };
+                let at = |d: f32| [p[0] + normal[0] * s * d, p[1] + normal[1] * s * d];
+                let (l, r) = (at(from), to);
+                let forward = (r[0] - l[0]) * inward[1] - (r[1] - l[1]) * inward[0] > 0.0;
+                let (a, b) = if forward { (l, r) } else { (r, l) };
+                let (y, t) = (road_y[v], land_y[v]);
+                shell.quad(
+                    [
+                        [a[0], y, a[1]],
+                        [b[0], y, b[1]],
+                        [b[0], t, b[1]],
+                        [a[0], t, a[1]],
+                    ],
+                    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                    face,
+                    0.0,
+                );
+            }
+        }
+
         // The roofless stretches, as plan corridors for the caller to cut out of
         // the ground. Keyed on the roof being missing, so the hole and the absent
         // ceiling are decided by one test and cannot disagree about where the
         // opening is.
         openings.extend(
-            opening_rings(centre, roofed, half)
+            opening_rings(centre, roofed, half, &reaches(plan))
                 .into_iter()
                 .map(|ring| (class, half, ring)),
         );
@@ -2089,7 +2357,12 @@ fn wall_normal(a: [f32; 2], b: [f32; 2], left: bool) -> [f32; 3] {
 /// while the 200 m of open trench between them stayed roofed by grass. Every
 /// capture showed an unbroken park with a one-pixel line of tunnel wall standing
 /// 8 mm proud of it (2026-09-15).
-fn opening_rings(centre: &[[f32; 2]], roofed: &[bool], half: f32) -> Vec<Vec<[f32; 2]>> {
+fn opening_rings(
+    centre: &[[f32; 2]],
+    roofed: &[bool],
+    half: f32,
+    reaches: &[[f32; 2]],
+) -> Vec<Vec<[f32; 2]>> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < centre.len() {
@@ -2108,33 +2381,47 @@ fn opening_rings(centre: &[[f32; 2]], roofed: &[bool], half: f32) -> Vec<Vec<[f3
         let lo = start.saturating_sub(1);
         let hi = (i).min(centre.len() - 1);
         if hi > lo {
-            out.extend(mouth_ring(&centre[lo..=hi], half));
+            let reach: Vec<[f32; 2]> = if reaches.len() == centre.len() {
+                reaches[lo..=hi].to_vec()
+            } else {
+                vec![[half; 2]; hi + 1 - lo]
+            };
+            out.extend(mouth_ring(&centre[lo..=hi], &reach));
         }
     }
     out
 }
 
 /// One corridor as a closed ring, a little wider than the carriageway.
-fn mouth_ring(run: &[[f32; 2]], half: f32) -> Option<Vec<[f32; 2]>> {
-    if run.len() < 2 {
+fn mouth_ring(run: &[[f32; 2]], reach: &[[f32; 2]]) -> Option<Vec<[f32; 2]>> {
+    if run.len() < 2 || reach.len() != run.len() {
         return None;
     }
-    let run: Vec<[f32; 2]> = run.to_vec();
-    // A little wider than the carriageway: the walls stand at the carriageway
-    // edge and the ground has to come away from *outside* them, or a hairline of
-    // sheet is left standing on top of the wall.
-    let sides = offset_sides(&run, half + 0.5);
+    // A little wider than the walls: the ground has to come away from *outside*
+    // them, or a hairline of sheet is left standing on top of the wall. Per
+    // segment, each end at its own vertex's reach, like the walls themselves.
+    let mut left: Vec<[[f32; 2]; 2]> = Vec::with_capacity(run.len());
+    let mut right: Vec<[[f32; 2]; 2]> = Vec::with_capacity(run.len());
+    for i in 0..run.len() - 1 {
+        let (a, b) = (run[i], run[i + 1]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dz).max(1e-6);
+        let n = [-dz / len, dx / len];
+        let at = |p: [f32; 2], d: f32| [p[0] + n[0] * d, p[1] + n[1] * d];
+        left.push([at(a, reach[i][0] + 0.5), at(b, reach[i + 1][0] + 0.5)]);
+        right.push([at(a, -reach[i][1] - 0.5), at(b, -reach[i + 1][1] - 0.5)]);
+    }
     let mut ring: Vec<[f32; 2]> = Vec::with_capacity(run.len() * 2 + 1);
-    for s in &sides.left {
+    for s in &left {
         ring.push(s[0]);
     }
-    if let Some(last) = sides.left.last() {
+    if let Some(last) = left.last() {
         ring.push(last[1]);
     }
-    for s in sides.right.iter().rev() {
+    for s in right.iter().rev() {
         ring.push(s[1]);
     }
-    if let Some(first) = sides.right.first() {
+    if let Some(first) = right.first() {
         ring.push(first[0]);
     }
     let head = *ring.first()?;
@@ -2591,6 +2878,7 @@ mod tests {
         let profile = Profile {
             road: vec![-7.0; n],
             land: vec![2.0; n],
+            walls: Vec::new(),
         };
         let out = build_structures(&[r], &[Some(profile)], None);
         let walls = out
@@ -2630,6 +2918,7 @@ mod tests {
                 Some(Profile {
                     road: vec![-5.0; r.points.len()],
                     land: vec![0.0; r.points.len()],
+                    walls: Vec::new(),
                 })
             })
             .collect();
@@ -2662,6 +2951,91 @@ mod tests {
             outer.fold(f32::MIN, f32::max) >= -1e-3,
             "the outer walls do not reach the land"
         );
+    }
+
+    /// **The walls stand where the survey put them.** A ramp three metres down
+    /// whose trench is sixteen metres wide on one side of its line and a bank on
+    /// the other: a wall eight metres out on the left with floor between it and
+    /// the carriageway, nothing standing on the right, and the ground opened out
+    /// to the wall — not a slot the width of the road (2026-09-28).
+    #[test]
+    fn the_walls_stand_where_the_survey_put_them() {
+        let r = run(0, [0.0, 0.0], [60.0, 0.0], 0);
+        let n = r.points.len();
+        let profile = Profile {
+            road: vec![-3.0; n],
+            land: vec![0.0; n],
+            walls: vec![[8.0, 0.0]; n],
+        };
+        let out = build_structures(&[r], &[Some(profile)], None);
+        let shell = out
+            .meshes
+            .iter()
+            .find(|m| m.group == SurfaceGroup::TunnelStructure)
+            .expect("a wall");
+        // Left of a run heading east is +y (south) in this frame.
+        assert!(
+            shell
+                .positions
+                .iter()
+                .any(|p| (p[2] - 8.0).abs() < 1e-3 && p[1] > -1e-3),
+            "no wall at eight metres reaching the land"
+        );
+        assert!(
+            shell.positions.iter().all(|p| p[2] > -5.0 - 1e-3),
+            "something stands on the side that is a bank"
+        );
+        assert!(
+            shell
+                .positions
+                .iter()
+                .zip(&shell.normals)
+                .any(|(p, n)| n[1] > 0.99 && (p[2] - 8.0).abs() < 1e-3),
+            "no floor out to the wall"
+        );
+        let ring = &out.openings[0];
+        let (lo, hi) = ring
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+        assert!((hi - 8.5).abs() < 1e-3, "opening reaches {hi}, not past the wall");
+        assert!((lo + 5.5).abs() < 1e-3, "opening reaches {lo} on the bank side");
+    }
+
+    /// **A trench wider than the bore it runs into is closed where they meet**,
+    /// from the bore's walls out to its own, or the mouth shows the void behind
+    /// the earth the opening took away.
+    #[test]
+    fn a_wide_trench_meeting_a_narrow_bore_is_closed() {
+        let ramp = run(0, [0.0, 0.0], [60.0, 0.0], 0);
+        let bore = run(-1, [60.0, 0.0], [160.0, 0.0], 1);
+        let profiles = vec![
+            Some(Profile {
+                road: vec![-4.0; ramp.points.len()],
+                land: vec![0.0; ramp.points.len()],
+                walls: vec![[8.0, 8.0]; ramp.points.len()],
+            }),
+            Some(Profile {
+                road: vec![-7.0; bore.points.len()],
+                land: vec![0.0; bore.points.len()],
+                walls: Vec::new(),
+            }),
+        ];
+        let out = build_structures(&[ramp, bore], &profiles, None);
+        let shell = out
+            .meshes
+            .iter()
+            .find(|m| m.group == SurfaceGroup::TunnelStructure)
+            .expect("walls");
+        for side in [1.0f32, -1.0] {
+            assert!(
+                shell.positions.iter().zip(&shell.normals).any(|(p, n)| {
+                    (p[0] - 60.0).abs() < 1e-3
+                        && (p[2] * side - 8.0).abs() < 1e-3
+                        && n[0] < -0.99
+                }),
+                "no wing on the {side} side where the ramp meets the bore"
+            );
+        }
     }
 
     /// **A roofed deck keeps its headroom under the land.**
@@ -2867,6 +3241,7 @@ mod tests {
         let profile = Profile {
             road: vec![-7.0; n],
             land: vec![0.0; n],
+            walls: Vec::new(),
         };
         let out = build_structures(&[r], &[Some(profile)], None);
         let ends = out
@@ -3146,7 +3521,7 @@ mod tests {
     fn the_hole_in_the_ground_covers_exactly_the_stretch_with_no_roof() {
         let centre: Vec<[f32; 2]> = (0..=60).map(|i| [i as f32 * 10.0, 0.0]).collect();
         let roofed: Vec<bool> = (0..=60).map(|i| (12..=48).contains(&i)).collect();
-        let rings = opening_rings(&centre, &roofed, 6.0);
+        let rings = opening_rings(&centre, &roofed, 6.0, &[]);
         assert_eq!(
             rings.len(),
             2,
@@ -3156,7 +3531,7 @@ mod tests {
             assert!(ring.len() >= 4);
             assert_eq!(ring.first(), ring.last(), "the hole is not a closed ring");
         }
-        assert!(opening_rings(&centre[..2], &[true, true], 6.0).is_empty());
+        assert!(opening_rings(&centre[..2], &[true, true], 6.0, &[]).is_empty());
     }
 
     /// What the live tiles actually carry, read off the Groningen fixture: the

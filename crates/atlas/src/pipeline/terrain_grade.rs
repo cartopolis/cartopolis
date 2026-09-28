@@ -809,12 +809,46 @@ impl<'a> Grader<'a> {
         for (g, m) in land.iter_mut().zip(&inside) {
             smooth_land(g, m);
         }
+        // **Where the walls stand, and whether there are any**, from the survey
+        // either side of every open stretch — see `wall_side`. A stretch sloped on
+        // both sides is no structure at all: the survey's own slope is its
+        // ground, and the road is laid in it as any road is.
+        let mut walls: Vec<Vec<[f32; 2]>> = lines
+            .iter()
+            .map(|l| vec![[f32::NAN; 2]; l.points.len()])
+            .collect();
+        for (li, l) in lines.iter().enumerate() {
+            if l.level != 0 || !inside[li].iter().any(|&b| b) {
+                continue;
+            }
+            for vi in 0..l.points.len() {
+                if inside[li][vi] {
+                    walls[li][vi] = wall_sides(
+                        &sample,
+                        &l.points,
+                        vi,
+                        owners[li].2,
+                        solved.heights[li][vi],
+                        land[li][vi],
+                    );
+                }
+            }
+            smooth_walls(&mut walls[li], &inside[li]);
+            for vi in 0..l.points.len() {
+                if inside[li][vi] && walls[li][vi] == [0.0, 0.0] {
+                    inside[li][vi] = false;
+                    land[li][vi] = f32::NAN;
+                    walls[li][vi] = [f32::NAN; 2];
+                }
+            }
+        }
 
         let own = self.road_heights.entry((tx, ty)).or_default();
-        for (((mine, key, ..), ys), (g, m)) in owners
+        for ((((mine, key, ..), ys), (g, m)), w) in owners
             .iter()
             .zip(&solved.heights)
             .zip(land.iter().zip(&inside))
+            .zip(&walls)
         {
             if *mine {
                 own.runs.insert(*key, ys.clone());
@@ -824,6 +858,13 @@ impl<'a> Grader<'a> {
                         g.iter()
                             .zip(m)
                             .map(|(&v, &b)| if b { v } else { f32::NAN })
+                            .collect(),
+                    );
+                    own.walls.insert(
+                        *key,
+                        w.iter()
+                            .zip(m)
+                            .map(|(&v, &b)| if b { v } else { [f32::NAN; 2] })
                             .collect(),
                     );
                 }
@@ -841,6 +882,7 @@ impl<'a> Grader<'a> {
                     Some(cartopolis_geo::tunnels::Profile {
                         road: own.runs.get(&r.key)?.clone(),
                         land: own.land.get(&r.key)?.clone(),
+                        walls: own.walls.get(&r.key).cloned().unwrap_or_default(),
                     })
                 })
                 .collect();
@@ -882,8 +924,13 @@ impl<'a> Grader<'a> {
         }
 
         // The structures' stretches, each with its land.
-        let mut stretches: Vec<(Vec<[f32; 2]>, Vec<f32>, f32)> = Vec::new();
-        for ((l, o), (g, m)) in lines.iter().zip(&owners).zip(land.iter().zip(&inside)) {
+        let mut stretches: Vec<(Vec<[f32; 2]>, Vec<f32>, f32, Vec<[f32; 2]>)> = Vec::new();
+        for (((l, o), (g, m)), w) in lines
+            .iter()
+            .zip(&owners)
+            .zip(land.iter().zip(&inside))
+            .zip(&walls)
+        {
             let mut i = 0;
             while i < m.len() {
                 if !m[i] {
@@ -895,7 +942,12 @@ impl<'a> Grader<'a> {
                     i += 1;
                 }
                 if i - start >= 2 {
-                    stretches.push((l.points[start..i].to_vec(), g[start..i].to_vec(), o.2));
+                    stretches.push((
+                        l.points[start..i].to_vec(),
+                        g[start..i].to_vec(),
+                        o.2,
+                        w[start..i].to_vec(),
+                    ));
                 }
             }
         }
@@ -916,10 +968,11 @@ impl<'a> Grader<'a> {
         // over — but not in the water, whose bed was carved.
         let fills: Vec<terrain_grade::FillLine<'_>> = stretches
             .iter()
-            .map(|(pts, g, half)| terrain_grade::FillLine {
+            .map(|(pts, g, half, w)| terrain_grade::FillLine {
                 points: pts,
                 land: g,
                 half_w: *half,
+                walls: w,
             })
             .collect();
         terrain_grade::fill_to_land(
@@ -944,9 +997,11 @@ impl<'a> Grader<'a> {
                 half_w: o.2,
             })
             .collect();
+        // Out to the wall on a walled side; on a side that is a bank the ground
+        // is laid to the road like any road's.
         let in_a_structure = |p: [f32; 2]| {
-            stretches.iter().any(|(pts, _, half)| {
-                pts.windows(2).any(|w| {
+            fills.iter().any(|line| {
+                line.points.windows(2).enumerate().any(|(s, w)| {
                     let (a, b) = (w[0], w[1]);
                     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
                     let len2 = dx * dx + dz * dz;
@@ -955,8 +1010,10 @@ impl<'a> Grader<'a> {
                     } else {
                         0.0
                     };
-                    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t)
-                        <= *half + cartopolis_geo::tunnels::WALL_REACH_M
+                    line.reach(s, t, line.side_of(s, p)).is_some_and(|r| {
+                        (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t)
+                            <= r + cartopolis_geo::tunnels::WALL_REACH_M
+                    })
                 })
             })
         };
@@ -1024,6 +1081,107 @@ const LID_REACH_M: f32 = 4.0;
 /// the 80th percentile of sixteen samples, eight at 30 m and eight at 60 m, the
 /// client's `TerrainSnapshot::lid_level` on the raw survey (missing samples
 /// skipped). NaN where none of them was measured.
+/// How far past a carriageway's edge its wall is looked for, metres.
+const WALL_SEARCH_M: f32 = 15.0;
+
+/// The widest a rise from the road to the land may be and still be a wall,
+/// metres. The survey is read on its own lattice, about three metres at z14, so a
+/// vertical wall between two samples reads as a rise over one of them; a bank at
+/// one in two over a two-metre cut takes four.
+const WALL_RISE_M: f32 = 3.0;
+
+/// Where the walls beside point `i` of a line stand, as distances from its centre
+/// line, left then right: 0 where that side has none, because the ground rises
+/// there as a slope.
+///
+/// **The survey says whether there is a wall.** A wall takes the ground from the
+/// road to its land within a metre or two — and the bare-ground model has usually
+/// cut the wall out, leaving a hole that is skipped — while a bank rises over
+/// several metres. The wall stands just past the last ground still at the
+/// road's level, which is also how wide the trench is: a cycle underpass's ramp
+/// was drawn as a slot the width of the path's line in the middle of paving at
+/// street level, where the aerial photograph shows the whole ramp going down,
+/// five or six metres wide, between grass slopes (2026-09-28).
+fn wall_sides(
+    sample: &dyn Fn([f32; 2]) -> f32,
+    points: &[[f32; 2]],
+    i: usize,
+    half_w: f32,
+    road: f32,
+    land: f32,
+) -> [f32; 2] {
+    let depth = land - road;
+    if !(depth > road_levels::SUNK_M) {
+        return [f32::NAN; 2];
+    }
+    let (a, b) = (
+        points[i.saturating_sub(1)],
+        points[(i + 1).min(points.len() - 1)],
+    );
+    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+    let len = dx.hypot(dz);
+    if len <= 1e-6 {
+        return [f32::NAN; 2];
+    }
+    let n = [-dz / len, dx / len];
+    let p = points[i];
+    let (low, high) = (road + 0.5 * depth, road + 0.8 * depth);
+    let side = |s: f32| {
+        let mut last_low = half_w;
+        let mut d = half_w + 0.5;
+        while d <= half_w + WALL_SEARCH_M {
+            let v = sample([p[0] + n[0] * s * d, p[1] + n[1] * s * d]);
+            if v.is_finite() {
+                if v >= high {
+                    return if d - last_low <= WALL_RISE_M {
+                        last_low + 0.5
+                    } else {
+                        0.0
+                    };
+                }
+                if v < low {
+                    last_low = d;
+                }
+            }
+            d += 0.5;
+        }
+        0.0
+    };
+    [side(1.0), side(-1.0)]
+}
+
+/// Walls along a line with the single-point misreads taken out: on each side,
+/// whether there is a wall by majority over [`LAND_SMOOTH`] points either side,
+/// and where it stands by the median of the walled ones.
+fn smooth_walls(walls: &mut [[f32; 2]], inside: &[bool]) {
+    let src = walls.to_vec();
+    for i in 0..walls.len() {
+        if !inside[i] {
+            continue;
+        }
+        let (lo, hi) = (
+            i.saturating_sub(LAND_SMOOTH),
+            (i + LAND_SMOOTH + 1).min(walls.len()),
+        );
+        for s in 0..2 {
+            let known: Vec<f32> = (lo..hi)
+                .filter(|&k| inside[k] && src[k][s].is_finite())
+                .map(|k| src[k][s])
+                .collect();
+            if known.is_empty() {
+                continue;
+            }
+            let mut walled: Vec<f32> = known.iter().copied().filter(|&v| v > 0.0).collect();
+            walls[i][s] = if walled.len() * 2 > known.len() {
+                walled.sort_by(f32::total_cmp);
+                walled[walled.len() / 2]
+            } else {
+                0.0
+            };
+        }
+    }
+}
+
 /// Points either side a structure's land is smoothed over along its line.
 const LAND_SMOOTH: usize = 3;
 

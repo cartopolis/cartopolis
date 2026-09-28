@@ -960,6 +960,11 @@ pub struct RoadHeights {
     /// tunnel's lid is buried under; the stretch where it is present is the
     /// structure, decided once, over the whole window atlas solved.
     pub land: HashMap<u64, Vec<f32>>,
+    /// Where a structure's walls stand at each point, left then right, as
+    /// distances from the run's centre line: `0` for a side with no wall, where
+    /// the survey shows a slope, and `NaN` where nothing was measured and the
+    /// wall stands at the carriageway's edge. Only runs that have land.
+    pub walls: HashMap<u64, Vec<[f32; 2]>>,
 }
 
 /// The format's first four bytes.
@@ -969,6 +974,8 @@ const MAGIC: &[u8; 4] = b"CRH1";
 const LAND_MAGIC: &[u8; 4] = b"LND1";
 /// A land height that is absent, in the section's centimetres.
 const NO_LAND: i32 = i32::MIN;
+/// The wall sections' — left, then right.
+const WALL_MAGIC: [&[u8; 4]; 2] = [b"WLL1", b"WLR1"];
 
 impl RoadHeights {
     /// `CRH1`, a `u32` run count, then per run a `u64` key, a `u32` point count
@@ -1003,6 +1010,18 @@ impl RoadHeights {
         if !self.land.is_empty() {
             out.extend_from_slice(LAND_MAGIC);
             section(&mut out, &self.land);
+        }
+        for (side, magic) in WALL_MAGIC.iter().enumerate() {
+            if self.walls.is_empty() {
+                break;
+            }
+            let map: HashMap<u64, Vec<f32>> = self
+                .walls
+                .iter()
+                .map(|(k, w)| (*k, w.iter().map(|p| p[side]).collect()))
+                .collect();
+            out.extend_from_slice(*magic);
+            section(&mut out, &map);
         }
         out
     }
@@ -1058,11 +1077,30 @@ impl RoadHeights {
             return Err("not a road heights file".into());
         }
         let runs = r.section()?;
-        let land = match r.take(4) {
-            Ok(m) if m == LAND_MAGIC => r.section()?,
-            _ => HashMap::new(),
-        };
-        Ok(Self { runs, land })
+        // Then any of the optional sections, each named by its magic; a reader
+        // stops at the first it does not know.
+        let mut land = HashMap::new();
+        let mut sides: [HashMap<u64, Vec<f32>>; 2] = [HashMap::new(), HashMap::new()];
+        while let Ok(m) = r.take(4) {
+            if m == LAND_MAGIC {
+                land = r.section()?;
+            } else if m == WALL_MAGIC[0] {
+                sides[0] = r.section()?;
+            } else if m == WALL_MAGIC[1] {
+                sides[1] = r.section()?;
+            } else {
+                break;
+            }
+        }
+        let walls = sides[0]
+            .iter()
+            .filter_map(|(k, left)| {
+                let right = sides[1].get(k)?;
+                (right.len() == left.len())
+                    .then(|| (*k, left.iter().zip(right).map(|(&l, &r)| [l, r]).collect()))
+            })
+            .collect();
+        Ok(Self { runs, land, walls })
     }
 }
 
@@ -1435,6 +1473,13 @@ mod tests {
             .expect("the runs alone");
         assert_eq!(old.runs, h.runs);
         assert!(old.land.is_empty());
+
+        // And walls, after the land.
+        h.walls.insert(7, vec![[f32::NAN; 2], [6.5, 0.0], [7.0, 3.25]]);
+        let back = RoadHeights::decode(&h.encode()).expect("decodes");
+        let w = &back.walls[&7];
+        assert!(w[0][0].is_nan() && w[1] == [6.5, 0.0] && w[2] == [7.0, 3.25]);
+        assert_eq!(back.land[&7][2], 2.5);
     }
 
     /// The published heights along every structure in the ring fixture's tile,
@@ -1464,15 +1509,27 @@ mod tests {
                 continue;
             };
             with_land += 1;
-            for ((p, y), g) in run.points.iter().zip(ys).zip(land) {
+            let walls = heights.walls.get(&run.key);
+            for (i, ((p, y), g)) in run.points.iter().zip(ys).zip(land).enumerate() {
+                let w = walls.and_then(|w| w.get(i)).copied().unwrap_or([f32::NAN; 2]);
                 println!(
-                    "P,{},{},{:.2},{:.2},{:.2},{:.2},{:?}",
-                    run.key, run.level, p[0], p[1], y, g, run.class
+                    "P,{},{},{:.2},{:.2},{:.2},{:.2},{:?},{:.1},{:.1}",
+                    run.key, run.level, p[0], p[1], y, g, run.class, w[0], w[1]
                 );
             }
         }
+        // Every side of every structure point in the file: measured wall, bank,
+        // or nothing measured.
+        let (mut wall, mut bank, mut none) = (0, 0, 0);
+        for w in heights.walls.values().flatten().flatten() {
+            match *w {
+                v if v.is_nan() => none += 1,
+                v if v > 0.0 => wall += 1,
+                _ => bank += 1,
+            }
+        }
         eprintln!(
-            "runs {} matched {matched} with land {with_land}",
+            "runs {} matched {matched} with land {with_land}; sides: {wall} walled, {bank} banks, {none} unmeasured",
             runs.len()
         );
     }

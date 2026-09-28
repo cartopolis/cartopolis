@@ -1428,6 +1428,12 @@ fn spawn_geometry_task(
                                                 .then(|| cartopolis_geo::tunnels::Profile {
                                                     road: road.iter().map(|y| y - datum).collect(),
                                                     land: land.iter().map(|y| y - datum).collect(),
+                                                    walls: h
+                                                        .walls
+                                                        .get(&r.key)
+                                                        .filter(|w| w.len() == r.points.len())
+                                                        .cloned()
+                                                        .unwrap_or_default(),
                                                 })
                                             })
                                             .collect()

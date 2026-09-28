@@ -390,6 +390,41 @@ pub struct FillLine<'a> {
     pub points: &'a [[f32; 2]],
     pub land: &'a [f32],
     pub half_w: f32,
+    /// Where its walls stand at each point, left then right
+    /// (`road_levels::RoadHeights::walls`): `0` for a side that is a bank, `NaN`
+    /// for a wall at the carriageway. Empty for walls at the carriageway
+    /// throughout.
+    pub walls: &'a [[f32; 2]],
+}
+
+impl FillLine<'_> {
+    /// How far from the centre line the wall on `side` (0 left, 1 right) stands
+    /// at `t` along segment `seg`, or `None` where that side is a bank — the
+    /// ground there is the survey's slope and is not the structure's to fill.
+    #[must_use]
+    pub fn reach(&self, seg: usize, t: f32, side: usize) -> Option<f32> {
+        let at = |k: usize| {
+            let w = self.walls.get(k).map_or(f32::NAN, |w| w[side]);
+            if w.is_nan() {
+                Some(self.half_w)
+            } else if w > 0.0 {
+                Some(w.max(self.half_w))
+            } else {
+                None
+            }
+        };
+        let (a, b) = (at(seg)?, at(seg + 1)?);
+        Some(a + (b - a) * t)
+    }
+
+    /// Which side of segment `seg` the point `p` is on: 0 left, 1 right, in
+    /// the frame the tiles use (x east, y south).
+    #[must_use]
+    pub fn side_of(&self, seg: usize, p: [f32; 2]) -> usize {
+        let (a, b) = (self.points[seg], self.points[seg + 1]);
+        let cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        usize::from(cross < 0.0)
+    }
 }
 
 /// Put the ground over and beside every structure below the ground back to its
@@ -425,7 +460,13 @@ pub fn fill_to_land(
         if line.points.len() != line.land.len() {
             continue;
         }
-        let reach = line.half_w + taper_m;
+        let widest = line
+            .walls
+            .iter()
+            .flat_map(|w| w.iter().copied())
+            .filter(|w| w.is_finite())
+            .fold(line.half_w, f32::max);
+        let reach = widest + taper_m;
         for (s, w) in line.points.windows(2).enumerate() {
             let (ga, gb) = (line.land[s], line.land[s + 1]);
             if !ga.is_finite() || !gb.is_finite() {
@@ -454,7 +495,12 @@ pub fn fill_to_land(
                     } else {
                         0.0
                     };
-                    let d = (px - a[0] - dx * t).hypot(pz - a[1] - dz * t) - line.half_w;
+                    // From the wall, where it stands back from the road; and not
+                    // at all on a side that is a bank.
+                    let Some(reach_w) = line.reach(s, t, line.side_of(s, [px, pz])) else {
+                        continue;
+                    };
+                    let d = (px - a[0] - dx * t).hypot(pz - a[1] - dz * t) - reach_w;
                     let weight = if d <= 0.0 {
                         1.0
                     } else if d >= taper_m {
@@ -909,6 +955,7 @@ mod tests {
                 points: &pts,
                 land: &land,
                 half_w: 5.0,
+                walls: &[],
             }],
             30.0,
             &|p| p[0] > 40.0,

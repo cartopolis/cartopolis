@@ -53,6 +53,21 @@ bridges, run the other way:
   and a ramp crossing a tile border are one thing, and a road that is merely low —
   at the foot of a dike, in a street between gardens — is not walled, because
   nothing connects it to a tunnel.
+- **The survey says where the walls stand, and whether there are any** (atlas's
+  `wall_sides`, published as the `WLL1`/`WLR1` sections). A cutting's side is a
+  wall where the ground climbs from the road's level to its land within
+  `WALL_RISE_M` (3 m — the survey's own lattice spacing makes a vertical wall read
+  as a rise over one sample), and a bank where it climbs more gently. The wall
+  stands just past the last ground still at the road's level, so it is also how
+  wide the trench is; between it and the carriageway the client lays floor, and
+  the opening reaches out to it. A side that is a bank has no wall, is not filled
+  back to the land, and is laid to the road like any road's verge; a point that
+  is a bank on both sides is not a structure at all. The gallery found why: about
+  twenty cycle underpasses had their ramps drawn as a walled slot the width of
+  the path's line inside paving at street level, where every aerial photograph
+  showed a ramp five or six metres wide going down between grass slopes
+  (2026-09-28). Where a trench is wider than the bore it runs into, a wing closes
+  the gap between the two walls.
 - **Atlas decides all of it** over its solve window and publishes the land beside
   the road heights (`roads/14/x/y.bin`, an `LND1` section after the runs that older
   readers never reach). The client builds the walls, roofs and openings from those
