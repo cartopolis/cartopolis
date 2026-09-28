@@ -85,9 +85,11 @@ pub struct DriveLine {
     /// centre line — and so a walker can be put on the pavement *outside* it.
     pub half_width: f32,
     pub uses: Uses,
-    /// Height of the carriageway above the ground sheet at each point, parallel
-    /// to [`points`](Self::points). Zero on an ordinary street; negative through
-    /// a tunnel and the open cuttings between its lids.
+    /// Height of the carriageway at each point where the line runs through a
+    /// structure below the ground — a tunnel, its ramps, the cuttings between —
+    /// in the frame the structure is drawn in (`tunnels::SunkenWay::road_y`), and
+    /// `NaN` everywhere else, where a car stands on the ground. Parallel to
+    /// [`points`](Self::points).
     ///
     /// **Parallel arrays, and every operation on one must keep them so** — the
     /// same contract, and the same failure, as `Route::points` and
@@ -102,10 +104,6 @@ pub struct DriveLine {
     /// `DeckPlates::lift_at` made in the other direction, hoisting an underpass
     /// onto the viaduct above it.
     pub deck: Vec<f32>,
-    /// Whether [`deck`](Self::deck) came off corridors whose depth is the road's
-    /// own solved height relative to the ground (`tunnels::Tunnel::measured`),
-    /// so a consumer takes no lift for what the survey dug.
-    pub deck_measured: bool,
     /// Whether this way is flagged `bridge`.
     ///
     /// A deck's height is a *measurement* — `map_geometry::resolve_bridge_decks`
@@ -285,7 +283,8 @@ pub fn extract_drive_lines(
                 .map(|p| {
                     mine.iter()
                         .filter_map(|s| s.road_under(*p))
-                        .fold(0.0f32, f32::min)
+                        .reduce(f32::min)
+                        .unwrap_or(f32::NAN)
                 })
                 .collect();
             let candidate = DriveLine {
@@ -298,7 +297,6 @@ pub fn extract_drive_lines(
                     walk,
                 },
                 deck,
-                deck_measured: mine.iter().any(|s| s.measured),
                 on_deck,
             };
             if candidate.length() < MIN_DRIVE_LEN_M {

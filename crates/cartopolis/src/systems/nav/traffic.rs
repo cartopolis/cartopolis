@@ -345,12 +345,10 @@ pub struct WorldDriveLine {
     /// Cumulative length at each point, so a car can be advanced without walking
     /// the line from the start every frame.
     pub cumulative: Vec<f32>,
-    /// Carriageway height above the ground sheet at each point — see
-    /// [`cartopolis_geo::traffic::DriveLine::deck`]. Parallel to `points`, and
-    /// every operation on one must keep it so.
+    /// Carriageway height at each point through a structure below the ground,
+    /// `NaN` on the ground — see [`cartopolis_geo::traffic::DriveLine::deck`].
+    /// Parallel to `points`, and every operation on one must keep it so.
     pub deck: Vec<f32>,
-    /// See [`cartopolis_geo::traffic::DriveLine::deck_measured`].
-    pub deck_measured: bool,
     /// This way is flagged `bridge`, so its height comes from `DeckPlates` —
     /// which is measured, and so arrives some frames after the cell does.
     pub on_deck: bool,
@@ -388,9 +386,11 @@ impl WorldDriveLine {
         let (a, b) = (self.points[i], self.points[i + 1]);
         let seg = (b - a).length().max(1e-4);
         let t = ((s - self.cumulative[i]) / seg).clamp(0.0, 1.0);
+        // `NaN` off a structure, and so wherever either end is: a car on the
+        // last stretch out of a ramp stands on the ground it is coming up to.
         let deck = match (self.deck.get(i), self.deck.get(i + 1)) {
             (Some(y0), Some(y1)) => y0 + (y1 - y0) * t,
-            _ => 0.0,
+            _ => f32::NAN,
         };
         (a.lerp(b, t), (b - a) / seg, deck)
     }
@@ -515,7 +515,7 @@ impl DriveNetwork {
                 let deck = if l.deck.len() == points.len() {
                     l.deck
                 } else {
-                    vec![0.0; points.len()]
+                    vec![f32::NAN; points.len()]
                 };
                 (run > 1.0).then_some(WorldDriveLine {
                     points,
@@ -525,7 +525,6 @@ impl DriveNetwork {
                     uses: l.uses,
                     cumulative,
                     deck,
-                    deck_measured: l.deck_measured,
                     on_deck: l.on_deck,
                 })
             })
@@ -1110,7 +1109,6 @@ pub fn drive_traffic(
             continue;
         };
         let on_deck = line.is_some_and(|l| l.on_deck);
-        let deck_measured = line.is_some_and(|l| l.deck_measured);
 
         // ── Draw ─────────────────────────────────────────────────────────────
         //
@@ -1128,36 +1126,9 @@ pub fn drive_traffic(
         // **Under the ground where the road is under the ground.** `deck` is
         // this line's own carriageway height, resolved per feature, so a street
         // crossing over the ring keeps its traffic on the bridge rather than
-        // sampling the tunnel beneath it.
-        //
-        // The lift is the arithmetic `map_geometry::stand_on_terrain` does to the
-        // drawn deck, through the same `lift_for`: over an open cutting the
-        // survey has *already* dug the trench, so adding an invented seven metres
-        // to a measured nine would put the car nine metres under its own road.
-        // Two places computing one number is the failure this whole area keeps
-        // having, so they compute it with one function.
-        // **And the base is `at` too, on a sunken line.** The drawn deck stands on
-        // the coarse field (`stand_tunnel_on`), and the half-metre `ground_at`
-        // differs from it by metres exactly where a trench is — measured at the
-        // ring's east portal 2026-09-23: −14.9 against −10.8 under the lid, and
-        // −4.0 against −7.0 at the mouth, so cars drove 4 m inside the earth and
-        // queued 3 m above the deck, on the trench lip. A car on its own deck
-        // must ask the field its deck was drawn on.
-        let ground = if deck < 0.0 {
-            terrain.at(pos.x, pos.y)
-        } else {
-            terrain.ground_at(pos.x, pos.y)
-        };
-        let sunk = if deck < 0.0 {
-            // `at`, not `ground_at`, on both sides of the subtraction: this is
-            // the same difference `stand_tunnel_on` takes for the drawn deck, so
-            // the lift the car gets and the lift its road got are one number.
-            let dug = terrain.surrounding(pos.x, pos.y, cartopolis_geo::tunnels::DATUM_M)
-                - terrain.at(pos.x, pos.y);
-            deck + cartopolis_geo::tunnels::lift_for_road(deck_measured, -deck, dug)
-        } else {
-            0.0
-        };
+        // sampling the tunnel beneath it — and it is the height the structure is
+        // drawn at (`tunnels::SunkenWay`), so a car on it needs nothing added.
+        let ground = terrain.ground_at(pos.x, pos.y);
         // …and **over** it where the road is over it. A deck's height is
         // measured rather than tessellated, so it cannot travel on the line the
         // way the tunnel depth does; what travels is `on_deck`, and that is the
@@ -1170,7 +1141,8 @@ pub fn drive_traffic(
         // difference between the two (bridge research, 2026-09-23).
         let y = match on_deck.then(|| decks.top_at(pos)).flatten() {
             Some(top) => top + CAR_RIDE_HEIGHT,
-            None => ground + sunk + lift + CAR_RIDE_HEIGHT,
+            None if deck.is_finite() => deck + CAR_RIDE_HEIGHT,
+            None => ground + lift + CAR_RIDE_HEIGHT,
         };
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
@@ -1456,8 +1428,7 @@ mod tests {
                 drive: true,
                 walk: true,
             },
-            deck: vec![0.0; points.len()],
-            deck_measured: false,
+            deck: vec![f32::NAN; points.len()],
             on_deck: false,
         }
     }

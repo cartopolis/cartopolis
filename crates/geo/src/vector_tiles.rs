@@ -7015,7 +7015,6 @@ mod tests {
     #[test]
     fn an_approach_is_followed_down_both_branches_of_a_fork() {
         let line = |pts: Vec<[f32; 2]>| crate::tunnels::SurfaceLine {
-            feature: 0,
             pts,
             own: [true, true],
             bridge: false,

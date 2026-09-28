@@ -54,7 +54,7 @@ use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::scatter;
 use crate::systems::street_furniture::FurnitureLod;
 use crate::systems::street_labels::StreetLabelStore;
-use crate::systems::terrain::{MeasuredGround, TerrainField, TerrainSnapshot};
+use crate::systems::terrain::{MeasuredGround, TerrainField};
 use crate::systems::tile_loader::load_tile_image;
 use crate::systems::tunnels::CellTunnels;
 use crate::systems::turf::GrassArea;
@@ -1257,11 +1257,12 @@ fn spawn_geometry_task(
                     // The streets' own heights, where atlas solved them: matched
                     // to this tile's runs by name, which both sides derive from
                     // the same tile.
+                    let runs = cartopolis_geo::road_levels::street_runs(&tile, tile_m);
                     if let Some(heights) = road_heights.as_ref() {
                         let mut map = cartopolis_geo::road_levels::LevelMap::default();
-                        for run in cartopolis_geo::road_levels::street_runs(&tile, tile_m) {
+                        for run in &runs {
                             if let Some(ys) = heights.runs.get(&run.key) {
-                                map.add(run.level, run.half_w, run.points, ys.clone());
+                                map.add(run.level, run.half_w, run.points.clone(), ys.clone());
                             }
                         }
                         if !map.is_empty() {
@@ -1396,48 +1397,66 @@ fn spawn_geometry_task(
                             cartopolis_geo::crops::cut_into_ground(&mut meshes, &mut crop_meshes);
                             meshes.extend(crop_meshes);
                             // The roads that are *not* on the road sheet, because
-                            // they run under it (`cartopolis_geo::tunnels`). Built
-                            // here rather than inside `tessellate_roads` for the
-                            // reason the module note gives: a tunnel is a deck, two
-                            // walls and a roof at its own depth, and it owes the
-                            // ground a hole rather than a place in the coplanar
-                            // stack. The corridors it hands back travel with the
-                            // cell so the ground can be opened at the entrance and
-                            // the avatar can find the floor down there.
-                            // **From the solved heights where there are any**, so a
-                            // tunnel, its ramps and the roads either side are one
-                            // profile solved on the network (`road_levels`). Needs
-                            // the ground to express those heights against; a cell
-                            // placed later on the main thread keeps the old plan.
-                            let tunnels = match (ground.as_ref(), levels.as_deref()) {
-                                (Some((g, origin)), Some(map)) => {
-                                    use crate::systems::terrain::MeasuredGround as _;
-                                    cartopolis_geo::tunnels::build_tunnels_measured(
-                                        &tile,
-                                        tile_m,
-                                        mesh_bytes,
-                                        &cartopolis_geo::tunnels::MeasuredDepths {
-                                        levels: map,
-                                        datum: g.datum_m(),
-                                        around: &|p| {
-                                            g.surrounding(
-                                                origin.x + p[0],
-                                                origin.y + p[1],
-                                                cartopolis_geo::tunnels::DATUM_M,
-                                            )
-                                        },
-                                        lid: &|p| {
-                                            g.lid_level(
-                                                origin.x + p[0],
-                                                origin.y + p[1],
-                                                cartopolis_geo::tunnels::DATUM_M,
-                                            )
-                                        },
-                                        },
-                                    )
-                                }
-                                _ => cartopolis_geo::tunnels::build_tunnels(&tile, tile_m, mesh_bytes),
-                            };
+                            // they run below the ground (`cartopolis_geo::tunnels`):
+                            // a tunnel, its ramps and the cuttings between, each a
+                            // carriageway with walls and, under a lid, a roof — and
+                            // a hole in the ground over the open stretches, which
+                            // travels with the cell so the ground can be opened
+                            // and the avatar can find the floor down there.
+                            //
+                            // **Where atlas solved the roads, it also decided
+                            // which stretches are structures and published the land
+                            // each runs through** (`road_levels::structures`), so
+                            // the heights here are the drawn ones. Elsewhere — or
+                            // from an atlas that predates the land — the tile's own
+                            // runs are solved on flat land (`unmeasured_profiles`)
+                            // and stood on the level of the land around each point.
+                            let profiles: Vec<Option<cartopolis_geo::tunnels::Profile>> =
+                                match (road_heights.as_ref(), ground.as_ref()) {
+                                    (Some(h), Some((g, _)))
+                                        if !h.land.is_empty()
+                                            || !runs.iter().any(|r| r.level < 0) =>
+                                    {
+                                        use crate::systems::terrain::MeasuredGround as _;
+                                        let datum = g.datum_m();
+                                        runs.iter()
+                                            .map(|r| {
+                                                let (road, land) =
+                                                    (h.runs.get(&r.key)?, h.land.get(&r.key)?);
+                                                (road.len() == r.points.len()
+                                                    && land.len() == r.points.len())
+                                                .then(|| cartopolis_geo::tunnels::Profile {
+                                                    road: road.iter().map(|y| y - datum).collect(),
+                                                    land: land.iter().map(|y| y - datum).collect(),
+                                                })
+                                            })
+                                            .collect()
+                                    }
+                                    _ => {
+                                        let mut profiles =
+                                            cartopolis_geo::tunnels::unmeasured_profiles(&runs);
+                                        if let Some((g, origin)) = ground.as_ref() {
+                                            for (r, p) in runs.iter().zip(profiles.iter_mut()) {
+                                                let Some(p) = p else { continue };
+                                                for (k, q) in r.points.iter().enumerate() {
+                                                    let land = g.lid_level(
+                                                        origin.x + q[0],
+                                                        origin.y + q[1],
+                                                        cartopolis_geo::tunnels::DATUM_M,
+                                                    );
+                                                    p.road[k] += land;
+                                                    p.land[k] += land;
+                                                }
+                                            }
+                                        }
+                                        profiles
+                                    }
+                                };
+                            let tunnels = cartopolis_geo::tunnels::build_structures(
+                                &runs,
+                                &profiles,
+                                mesh_bytes,
+                            );
                             // The ground over an open approach has to go, or the
                             // entrance is roofed by the sheet the tunnel was cut into
                             // and there is no way in. Cut here, on this worker,
@@ -4034,7 +4053,7 @@ const QUAY_PROBE_M: f32 = 0.4;
 ///
 /// **What made a wall necessary is that the two sides stopped sharing a surface.**
 /// The water stands at its registered level ([`water_surface`]) and the street at
-/// the ground beside the water ([`TerrainSnapshot::land_at`]); on a Groningen
+/// the ground beside the water ([`TerrainSnapshot::land_at`](crate::systems::terrain::TerrainSnapshot::land_at)); on a Groningen
 /// canal that is two to five metres. Before the split the street sagged into the
 /// carve and the water climbed out of it, and the handset — whose field is four
 /// times coarser — drew every inner canal as a smeared ramp with no edge to it.
@@ -4248,26 +4267,14 @@ impl<'a> TriangleIndex<'a> {
     }
 }
 
+/// How far to reach for the land *around* a tunnel — see
+/// [`cartopolis_geo::tunnels::DATUM_M`], which is where it lives so every
+/// consumer reaches for the same distance.
+pub use cartopolis_geo::tunnels::DATUM_M as TUNNEL_DATUM_M;
+
 /// Ground surfaces get a fresh normal from the field's own slope; the vegetation
 /// groups keep theirs (a tree's normals describe the tree, not the hill).
 #[allow(clippy::too_many_arguments)]
-/// How far to reach for the land *around* a tunnel — see
-/// [`cartopolis_geo::tunnels::DATUM_M`], which is where it lives so the harness
-/// reaches for the same distance.
-pub use cartopolis_geo::tunnels::DATUM_M as TUNNEL_DATUM_M;
-
-/// What [`cartopolis_geo::tunnels`] asks of the streamed height field.
-struct FieldSurvey<'a>(&'a TerrainSnapshot);
-
-impl cartopolis_geo::tunnels::Survey for FieldSurvey<'_> {
-    fn here(&self, x: f32, z: f32) -> f32 {
-        self.0.at(x, z)
-    }
-    fn around(&self, x: f32, z: f32) -> f32 {
-        self.0.surrounding(x, z, TUNNEL_DATUM_M)
-    }
-}
-
 fn stand_on_terrain<G: MeasuredGround>(
     group: SurfaceGroup,
     positions: &mut Vec<[f32; 3]>,
@@ -4281,12 +4288,8 @@ fn stand_on_terrain<G: MeasuredGround>(
     tunnels: &crate::systems::tunnels::Tunnels,
     levels: Option<&cartopolis_geo::road_levels::LevelMap>,
 ) {
-    // A tunnel belongs here for the same reason a tree does, in both halves of what
-    // this flag means. Its walls are vertical, so re-deriving their normals from the
-    // ground's slope would light them as though they were the hillside they are cut
-    // into; and refining them against the field would split a wall quad into a grid
-    // to follow ground it is not standing on. Displacing every vertex by the field
-    // is still right, and is what carries the tunnel under a slope with it.
+    // Volumetric things keep their own normals and are not refined against the
+    // field: a tree's normals describe the tree, and a tunnel's walls are vertical.
     let volumetric = matches!(
         group,
         SurfaceGroup::Canopy
@@ -4295,90 +4298,27 @@ fn stand_on_terrain<G: MeasuredGround>(
             | SurfaceGroup::TunnelRoad(_)
             | SurfaceGroup::TunnelStructure
     );
-    // **A tunnel is not dug twice.** Its vertices are metres below the ground sheet,
-    // and over an open cut the measured ground sheet is already the trench floor —
-    // AHN's bare-ground model has no roof to hide the bottom of a cutting, so it
-    // measures it (the Groningen ring falls from +5.5 m to −3.6 m across forty
-    // metres). Displacing an invented seven metres by a measured nine puts the
-    // carriageway sixteen metres under the street, with the wall tops buried with
-    // it.
-    //
-    // So each vertex is lifted back by however much the measurement has *already*
-    // accounted for: `dug`, the drop from the land around the tunnel to the ground
-    // under it. Four cases and the same arithmetic settles all of them — a fully
-    // measured cut puts the deck exactly on the measured floor and the wall tops
-    // exactly at street level; a covered tunnel, where the laser sees the roof and
-    // `dug` is zero, keeps the full convention; a partly-measured cut absorbs what
-    // was measured and invents the rest; and outside the Netherlands the field is
-    // flat zero, so this is the old behaviour to the bit.
-    //
-    // **The cap is the depth under this vertex, not the deepest point of the mesh
-    // it happens to be in.** It was the latter until 2026-09-18, and a merged mesh
-    // is the whole tile's tunnels: every vertex in it was lifted by the deepest
-    // one's convention, so everything shallower rose too far. Almost all of a
-    // tunnel is shallower — `depth_at` spends about 117 m ramping at each end, and
-    // Groningen's runs arrive 172–242 m long — so forty metres in, where the
-    // tessellator wants 2.4 m of depth and the survey has already dug 6.4, the deck
-    // was lifted by the full 7 m and drawn four metres above the land beside it.
-    // That is the carriageway standing proud of the ground in the phone captures.
-    //
-    // `convention_depth` answers for the place rather than for the vertex's own
-    // height, which is what keeps a wall from shearing: the top of a wall quad sits
-    // at `WALL_TOP_Y` and would otherwise be capped at zero and left behind while
-    // the deck below it rose. Asking by position gives the whole section of tunnel
-    // at that (x, z) one lift, so its height is preserved and the clearance with
-    // it. A vertex outside every corridor — the notch triangles on the outside of a
-    // bend reach a hair past `half_w` — keeps the old mesh-wide cap, which for
-    // those is the right answer anyway.
+    // **A structure below the ground is built at its own heights**
+    // (`cartopolis_geo::tunnels::build_structures`): the road where the network
+    // put it and the walls up to the land, in this field's frame. Nothing lifts
+    // it — every earlier version drew an invented depth and lifted it back by
+    // what the survey had already dug, and four consumers had to repeat that
+    // arithmetic and agree.
     if matches!(
         group,
         SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
     ) {
-        // The tops of the walls and headwalls, before they are lifted: they sit
-        // at the tessellator's `WALL_TOP_Y` (0) and every other vertex is below.
-        let tops: Vec<bool> = positions.iter().map(|p| p[1] >= -1e-3).collect();
-        cartopolis_geo::tunnels::stand_tunnel_on(
-            positions,
-            origin.to_array(),
-            &FieldSurvey(&**terrain),
-            &|p| tunnels.convention_depth(Vec2::from_array(p)),
-        );
-        // **A wall reaches the ground it holds back.** Lifted with the deck, a
-        // wall's top lands the tunnel's convention depth above the deck, and
-        // where the survey dug deeper than that — 12.2 m under the ring's
-        // westbound lid against a 7 m convention — it stood five metres below
-        // the filled ground over the lid: a headwall floating in the mouth with
-        // earth-coloured sky above it, and torn banks along every cutting
-        // (2026-09-23). So a top is raised to the level the ground beside it is
-        // filled to, never lowered.
+        // **Under water the structure stays under the water.** The land a lid is
+        // buried under is the level of the quays around, and a canal over the
+        // lid is lower than that: the roof and walls under the Oude
+        // Winschoterdiep stood out of it as two dark wedges (2026-09-23). They
+        // are held below the registered surface; the deck is left where it is,
+        // so the traffic on it is unchanged.
         if group == SurfaceGroup::TunnelStructure {
-            // **Under water the structure stays under the water.** The ground
-            // beneath a canal is carved to the registered level less a bed, and
-            // `stand_tunnel_on` reads that dip as trench the survey already dug,
-            // so it lifted the tunnel under the Oude Winschoterdiep until its
-            // roof and wall tops stood above the water — two dark wedges running
-            // from the east mouth across the canal (bisected with
-            // CARTO_DBG_HIDE=tunnel, 2026-09-23). The roof and walls are held
-            // below the registered surface; the deck is left where it is, so the
-            // traffic on it is unchanged.
             for p in positions.iter_mut() {
                 let (x, z) = (origin.x + p[0], origin.y + p[2]);
                 if let Some(w) = terrain.water_surface_at(x, z) {
                     p[1] = p[1].min(w - UNDER_WATER_M);
-                }
-            }
-            for (p, top) in positions.iter_mut().zip(tops) {
-                if top {
-                    let (x, z) = (origin.x + p[0], origin.y + p[2]);
-                    // The ground as drawn there — the same blend `tunnels::Lidded`
-                    // takes — not the fill's target: toward the shallow top of a
-                    // ramp the fill has faded out, and a top raised to the target
-                    // stood four metres proud of the unfilled ground beside it, a
-                    // dark wedge along every ramp (measured 2026-09-23).
-                    let here = terrain.at(x, z);
-                    let w = tunnels.fill_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
-                    let ground = here + w * (fill_target(terrain, tunnels, x, z) - here);
-                    p[1] = p[1].max(ground);
                 }
             }
         }
@@ -4400,13 +4340,16 @@ fn stand_on_terrain<G: MeasuredGround>(
         );
         return;
     }
-    // **The ground these stand on is the measured ground with the lids back on
-    // it**, and that has to be one surface rather than a displacement and a later
-    // correction. Where a road has a lid the survey — flown before the lid was
-    // built — still shows the open trench; lifting the vertices afterwards left
-    // the lift invisible to the refinement, so a land parcel of two triangles
-    // interpolated nine metres across a chord while the road beside it followed
-    // the taper, and the ground tore open along the buried road.
+    // **The ground these stand on is the measured ground with the land put back
+    // over every lid and beside every wall**, and that has to be one surface
+    // rather than a displacement and a later correction. Where a road has a lid
+    // the survey — flown before the lid was built — still shows the open trench;
+    // lifting the vertices afterwards left the lift invisible to the refinement,
+    // so a land parcel of two triangles interpolated nine metres across a chord
+    // while the road beside it followed the taper, and the ground tore open along
+    // the buried road. The land is the structure's own — the level its walls
+    // reach and its lid is buried under — so the ground meets them; where atlas
+    // graded the ground it is already there and this changes nothing.
     // Stood on the ground *beside* the water rather than the carved field, so a
     // street runs level to the quay instead of sagging into the canal; the step
     // left at the edge is what `quay_walls` closes. The same field everywhere a
@@ -4414,7 +4357,7 @@ fn stand_on_terrain<G: MeasuredGround>(
     let land = terrain.land();
     let lidded = cartopolis_geo::tunnels::Lidded {
         ground: &land,
-        around: &|x, z| fill_target(terrain, tunnels, x, z),
+        around: &|x, z| tunnels.fill(Vec2::new(x, z), TUNNEL_DATUM_M).1,
         weight: &|p| tunnels.fill_weight(Vec2::from_array(p), TUNNEL_DATUM_M),
     };
     // **A road stands at its own height** where atlas solved one
@@ -4539,25 +4482,6 @@ pub(crate) fn point_along(pts: &[[f32; 2]], at: f32) -> [f32; 2] {
         walked += seg;
     }
     pts.last().copied().unwrap_or([0.0, 0.0])
-}
-
-/// The level the ground at `(x, z)` is filled to where it is filled at all: the
-/// middle of the land around (`TerrainField::lid_level`), and never below a
-/// lid's roof plus its slab (`Tunnels::cover_over`). One function, because the
-/// ground and the wall tops that meet it must agree.
-fn fill_target(
-    terrain: &crate::systems::terrain::TerrainSnapshot,
-    tunnels: &crate::systems::tunnels::Tunnels,
-    x: f32,
-    z: f32,
-) -> f32 {
-    let level = terrain.lid_level(x, z, TUNNEL_DATUM_M);
-    let here = terrain.at(x, z);
-    let dug = terrain.surrounding(x, z, TUNNEL_DATUM_M) - here;
-    match tunnels.cover_over(Vec2::new(x, z), dug) {
-        Some(cover) => level.max(here + cover),
-        None => level,
-    }
 }
 
 /// Seed for a cell's tree scatter. Stable for the cell's absolute tile coordinate,

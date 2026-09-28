@@ -38,7 +38,9 @@
 //!    line, or both are at the same level — the rule the routing graph already
 //!    uses (`grade-separation.md`): a street carrying on past a point never met
 //!    what crosses it there, and a bridge's vertex over the road beneath is not a
-//!    junction with it.
+//!    junction with it. A road that ends in nothing within [`TEE_M`] of another
+//!    meets it there too, vertex or not — the tiles generalise each way on its
+//!    own, so a tee rarely has a vertex on the road it tees into.
 //! 2. **Outliers are taken out** of the measurements with a median along the
 //!    network, so a lorry in the surface model or a tree over the lane does not
 //!    become a bump.
@@ -53,6 +55,14 @@
 //!    is clamped between the envelopes the fixed heights and the ceilings allow,
 //!    which pins the one, keeps the other and grades everything around them —
 //!    embankments up from the decks, cuttings down to the tunnels.
+//! 7. **Junctions at grade hold against a ceiling**: where the road out of a
+//!    tunnel meets another before it can climb back, the tunnel yields rather
+//!    than dragging the junction down.
+//!
+//! [`structures`] then says which points are part of a structure below the
+//! ground — the tunnels, and what they reach along the network that runs well
+//! under its land — which is how atlas decides where the walls, roofs and
+//! openings go (`crate::tunnels`).
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -118,6 +128,17 @@ pub const MEDIAN_RADIUS_M: f32 = 8.0;
 
 /// Two vertices closer than this are one point, metres.
 pub const SAME_POINT_M: f32 = 0.001;
+
+/// How close a road that ends in nothing must come to another road to meet it,
+/// metres (`Net::build`): onto its side at the same level, where the road it tees
+/// into has no vertex, or end to end at any level, where two ways mapped as
+/// touching were generalised apart. The tiles quantise to about a third of a
+/// metre at z14, and each feature is generalised on its own; a tunnel's line and
+/// the road out of its mouth were measured 0.8 m apart on the ring fixture.
+pub const TEE_M: f32 = 1.0;
+
+/// Bucket edge for finding the segment a road ends on, metres.
+const TEE_BUCKET_M: f32 = 8.0;
 
 /// Break a line into pieces no longer than `step`, keeping every original vertex.
 ///
@@ -304,6 +325,7 @@ pub fn solve(lines: &[Line]) -> Solved {
                 .map(|i| (i, ceiling[i])),
         )
         .collect();
+    let graded = y.clone();
     if !tops.is_empty() {
         let hi = net.envelope(&tops, Envelope::Upper);
         let lo = if pins.is_empty() {
@@ -321,6 +343,35 @@ pub fn solve(lines: &[Line]) -> Solved {
         }
     }
 
+    // 7. **A junction at grade holds its height against a tunnel's ceiling.** A
+    // ceiling says how deep a tunnel runs under its lid, not that every road
+    // near it must follow: where the road out of a mouth meets another road
+    // before it has had room to climb back up, the ramp belongs inside the
+    // tunnel, and the tunnel's mouth is shallower for it. Left to the grade
+    // limit alone, the ceiling dragged the junction and every road through it
+    // down into a cutting — a cycle underpass whose path met a street six metres
+    // from its mouth dug the street three metres into the ground. Pins still win:
+    // a deck is where the survey measured it.
+    if ceiling.iter().any(|c| c.is_finite()) {
+        let floors: Vec<(usize, f32)> = (0..n)
+            .filter(|&i| !net.under[i] && net.adj[i].len() >= 3)
+            .map(|i| (i, graded[i]))
+            .collect();
+        if !floors.is_empty() {
+            let up = net.envelope(&floors, Envelope::Lower);
+            let pinned = if pins.is_empty() {
+                vec![f32::INFINITY; n]
+            } else {
+                net.envelope(&pins, Envelope::Upper)
+            };
+            for i in 0..n {
+                if up[i] > y[i] {
+                    y[i] = up[i].min(pinned[i]);
+                }
+            }
+        }
+    }
+
     Solved {
         heights: lines
             .iter()
@@ -332,6 +383,84 @@ pub fn solve(lines: &[Line]) -> Solved {
             })
             .collect(),
     }
+}
+
+/// How far below the land a road must run before it is walled rather than laid
+/// in the ground, metres. Shallower, the ground follows the road down in a bank
+/// (`terrain_grade::conform_to_roads`); deeper, a bank would be wider than the
+/// street it serves and the road is a cutting with walls.
+pub const SUNK_M: f32 = 1.0;
+
+/// Which points of which lines belong to a structure below the ground — a
+/// tunnel, its ramps and the cuttings between — given the solved `road` height
+/// and the `land` it runs through at each point (the level of the land around,
+/// `NaN` where unknown). Parallel to `lines`.
+///
+/// **A structure grows out of a tunnel along the network.** Every point of a line
+/// below the ground (`level < 0`) is one, and from there it spreads through the
+/// points that meet it and run more than [`SUNK_M`] under their land. Two things
+/// are kept out that way. A road merely lower than its surroundings — at the foot
+/// of a dike, down a hillside, in a street between gardens — is not walled,
+/// because nothing connects it to a tunnel; and a road that crosses over a
+/// tunnel is not dragged into it, because it never shares a node with it
+/// (`Net::build`). What the tags could not say is what this finds: how far the
+/// ramps run, which untagged stretch between two lids is an open cutting, and
+/// where a cutting crosses a tile border.
+///
+/// The result is widened by one point along each line at both ends of a stretch,
+/// so the structure reaches the point where the road has come up to within
+/// [`SUNK_M`] of the land — its walls are then that short there, and the ground
+/// laid to the road beyond meets them.
+#[must_use]
+pub fn structures(lines: &[Line], road: &[Vec<f32>], land: &[Vec<f32>]) -> Vec<Vec<bool>> {
+    let net = Net::build(lines);
+    let n = net.nodes;
+    let mut seed = vec![false; n];
+    let mut pass = vec![false; n];
+    for (li, line) in lines.iter().enumerate() {
+        for vi in 0..line.points.len() {
+            let node = net.node_of[li][vi];
+            if line.level < 0 {
+                seed[node] = true;
+                pass[node] = true;
+            }
+            let (y, g) = (
+                road.get(li).and_then(|r| r.get(vi)).copied(),
+                land.get(li).and_then(|l| l.get(vi)).copied(),
+            );
+            if let (Some(y), Some(g)) = (y, g) {
+                if y.is_finite() && g.is_finite() && y < g - SUNK_M {
+                    pass[node] = true;
+                }
+            }
+        }
+    }
+    let mut reached = seed.clone();
+    let mut stack: Vec<usize> = (0..n).filter(|&i| seed[i]).collect();
+    while let Some(i) = stack.pop() {
+        for &(j, _, _) in &net.adj[i] {
+            if pass[j] && !reached[j] {
+                reached[j] = true;
+                stack.push(j);
+            }
+        }
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(li, l)| {
+            let inside: Vec<bool> = (0..l.points.len())
+                .map(|vi| reached[net.node_of[li][vi]])
+                .collect();
+            (0..inside.len())
+                .map(|i| {
+                    inside[i]
+                        || (i > 0 && inside[i - 1])
+                        || (i + 1 < inside.len() && inside[i + 1])
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -350,6 +479,8 @@ struct Net {
     node_of: Vec<Vec<usize>>,
     /// Per node: (neighbour, length, grade budget = length × max_grade).
     adj: Vec<Vec<(usize, f32, f32)>>,
+    /// Per node: whether a line below the ground (`level < 0`) has a vertex on it.
+    under: Vec<bool>,
 }
 
 impl Net {
@@ -482,10 +613,96 @@ impl Net {
                 adj[b].push((a, len, budget));
             }
         }
+
+        // **A road that ends on another road meets it, vertex or not.** The tiles
+        // are generalised per feature, so where a side road tees into a street
+        // the street keeps no vertex at the tee more often than not — the routing
+        // graph's `finish` exists for the same reason. Joined only at shared
+        // points, such a road is a dangle: a cycle path's ramp out of an underpass
+        // ended three metres down on the side of the road it runs into, which
+        // stayed on the ground. So an end that meets nothing else is tied to both
+        // ends of the nearest segment of another line within [`TEE_M`], as though
+        // the street had a vertex there — at its level, or at the end of a line at
+        // any level, which is how a tunnel meets the road out of its mouth.
+        let mut segs: HashMap<(i64, i64), Vec<(usize, usize)>> = HashMap::new();
+        let bucket = |p: [f32; 2]| {
+            #[allow(clippy::cast_possible_truncation)]
+            ((p[0] / TEE_BUCKET_M).floor() as i64, (p[1] / TEE_BUCKET_M).floor() as i64)
+        };
+        for (li, l) in lines.iter().enumerate() {
+            for vi in 1..l.points.len() {
+                let (p, q) = (l.points[vi - 1], l.points[vi]);
+                let (lo, hi) = (bucket([p[0].min(q[0]) - TEE_M, p[1].min(q[1]) - TEE_M]), bucket([p[0].max(q[0]) + TEE_M, p[1].max(q[1]) + TEE_M]));
+                for x in lo.0..=hi.0 {
+                    for z in lo.1..=hi.1 {
+                        segs.entry((x, z)).or_default().push((li, vi));
+                    }
+                }
+            }
+        }
+        let mut tees: Vec<(usize, usize, f32, f32)> = Vec::new();
+        for (li, l) in lines.iter().enumerate() {
+            let last = l.points.len().saturating_sub(1);
+            for (k, vi) in [(0usize, 0usize), (1, last)] {
+                let end = node_of[li][vi];
+                if l.cut[k] || l.points.len() < 2 || adj[end].len() != 1 {
+                    continue;
+                }
+                let p = l.points[vi];
+                let mut best: Option<(f32, usize, usize, f32)> = None;
+                for &(oi, ov) in segs.get(&bucket(p)).into_iter().flatten() {
+                    let other = &lines[oi];
+                    let (a, b) = (node_of[oi][ov - 1], node_of[oi][ov]);
+                    if a == end || b == end {
+                        continue;
+                    }
+                    let (s, e) = (other.points[ov - 1], other.points[ov]);
+                    let (dx, dz) = (e[0] - s[0], e[1] - s[1]);
+                    let len2 = dx * dx + dz * dz;
+                    if len2 <= 1e-9 {
+                        continue;
+                    }
+                    let t = (((p[0] - s[0]) * dx + (p[1] - s[1]) * dz) / len2).clamp(0.0, 1.0);
+                    let d = (p[0] - s[0] - dx * t).hypot(p[1] - s[1] - dz * t);
+                    // Across levels only end to end — a tunnel and the road
+                    // out of its mouth, a span and its approach — never onto the
+                    // side of a road passing over or under.
+                    let at_end = (ov == 1 && t <= 1e-3)
+                        || (ov + 1 == other.points.len() && t >= 1.0 - 1e-3);
+                    if other.level != l.level && !at_end {
+                        continue;
+                    }
+                    if d <= TEE_M && best.is_none_or(|(bd, ..)| d < bd) {
+                        best = Some((d, oi, ov, t));
+                    }
+                }
+                if let Some((_, oi, ov, t)) = best {
+                    let other = &lines[oi];
+                    let len = (other.points[ov][0] - other.points[ov - 1][0])
+                        .hypot(other.points[ov][1] - other.points[ov - 1][1]);
+                    let grade = other.max_grade.max(0.0);
+                    tees.push((end, node_of[oi][ov - 1], (t * len).max(0.01), grade));
+                    tees.push((end, node_of[oi][ov], ((1.0 - t) * len).max(0.01), grade));
+                }
+            }
+        }
+        for (a, b, len, grade) in tees {
+            adj[a].push((b, len, len * grade));
+            adj[b].push((a, len, len * grade));
+        }
+        let mut under = vec![false; nodes];
+        for (li, l) in lines.iter().enumerate() {
+            if l.level < 0 {
+                for &node in &node_of[li] {
+                    under[node] = true;
+                }
+            }
+        }
         Self {
             nodes,
             node_of,
             adj,
+            under,
         }
     }
 
@@ -723,71 +940,122 @@ pub fn run_key(level: i8, tile_units: &[[f32; 2]]) -> u64 {
 // ─── The published heights ───────────────────────────────────────────────────
 
 /// Solved heights per run, as atlas publishes them for one tile: the height at
-/// each of the run's densified points, keyed by [`StreetRun::key`].
+/// each of the run's densified points, keyed by [`StreetRun::key`] — and, for the
+/// runs that are part of a structure below the ground ([`structures`]), the
+/// level of the land at each point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoadHeights {
     pub runs: HashMap<u64, Vec<f32>>,
+    /// The land a run passes through, parallel to its heights, `NaN` at a point
+    /// that is not part of a structure. Only runs with at least one such point
+    /// are here. The land is what a cutting's walls reach up to and what a
+    /// tunnel's lid is buried under; the stretch where it is present is the
+    /// structure, decided once, over the whole window atlas solved.
+    pub land: HashMap<u64, Vec<f32>>,
 }
 
 /// The format's first four bytes.
 const MAGIC: &[u8; 4] = b"CRH1";
+/// The land section's, after the runs. A reader that predates it stops at the
+/// end of the runs and never sees it.
+const LAND_MAGIC: &[u8; 4] = b"LND1";
+/// A land height that is absent, in the section's centimetres.
+const NO_LAND: i32 = i32::MIN;
 
 impl RoadHeights {
     /// `CRH1`, a `u32` run count, then per run a `u64` key, a `u32` point count
-    /// and that many heights as `i32` centimetres. Little-endian throughout.
+    /// and that many heights as `i32` centimetres; then, when any run has land,
+    /// `LND1`, a `u32` count and per run a `u64` key, a `u32` point count and that
+    /// many land heights as `i32` centimetres, `i32::MIN` for none. Little-endian
+    /// throughout.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut keys: Vec<&u64> = self.runs.keys().collect();
-        keys.sort_unstable();
+        #[allow(clippy::cast_possible_truncation)]
+        fn section(out: &mut Vec<u8>, map: &HashMap<u64, Vec<f32>>) {
+            let mut keys: Vec<&u64> = map.keys().collect();
+            keys.sort_unstable();
+            out.extend_from_slice(&(keys.len() as u32).to_le_bytes());
+            for k in keys {
+                let ys = &map[k];
+                out.extend_from_slice(&k.to_le_bytes());
+                out.extend_from_slice(&(ys.len() as u32).to_le_bytes());
+                for y in ys {
+                    let v = if y.is_finite() {
+                        (y * 100.0).round() as i32
+                    } else {
+                        NO_LAND
+                    };
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
-        #[allow(clippy::cast_possible_truncation)]
-        out.extend_from_slice(&(keys.len() as u32).to_le_bytes());
-        for k in keys {
-            let ys = &self.runs[k];
-            out.extend_from_slice(&k.to_le_bytes());
-            #[allow(clippy::cast_possible_truncation)]
-            out.extend_from_slice(&(ys.len() as u32).to_le_bytes());
-            for y in ys {
-                #[allow(clippy::cast_possible_truncation)]
-                out.extend_from_slice(&((y * 100.0).round() as i32).to_le_bytes());
-            }
+        section(&mut out, &self.runs);
+        if !self.land.is_empty() {
+            out.extend_from_slice(LAND_MAGIC);
+            section(&mut out, &self.land);
         }
         out
     }
 
-    /// The inverse of [`Self::encode`].
+    /// The inverse of [`Self::encode`]. A file with no land section — one
+    /// written before there was one — reads as runs with no land.
     ///
     /// # Errors
     /// A wrong magic or a truncated body.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let mut at = 0usize;
-        let mut take = |n: usize| -> Result<&[u8], String> {
-            let s = bytes
-                .get(at..at + n)
-                .ok_or_else(|| "road heights truncated".to_string())?;
-            at += n;
-            Ok(s)
-        };
-        if take(4)? != MAGIC {
+        struct Reader<'a> {
+            bytes: &'a [u8],
+            at: usize,
+        }
+        impl<'a> Reader<'a> {
+            fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
+                let s = self
+                    .bytes
+                    .get(self.at..self.at + n)
+                    .ok_or_else(|| "road heights truncated".to_string())?;
+                self.at += n;
+                Ok(s)
+            }
+            fn u32(&mut self) -> Result<u32, String> {
+                let b = self.take(4)?;
+                Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            }
+            fn section(&mut self) -> Result<HashMap<u64, Vec<f32>>, String> {
+                let count = self.u32()?;
+                let mut map = HashMap::new();
+                for _ in 0..count {
+                    let k = self.take(8)?;
+                    let key =
+                        u64::from_le_bytes([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]]);
+                    let n = self.u32()? as usize;
+                    let mut ys = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let b = self.take(4)?;
+                        let v = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                        #[allow(clippy::cast_precision_loss)]
+                        ys.push(if v == NO_LAND {
+                            f32::NAN
+                        } else {
+                            v as f32 / 100.0
+                        });
+                    }
+                    map.insert(key, ys);
+                }
+                Ok(map)
+            }
+        }
+        let mut r = Reader { bytes, at: 0 };
+        if r.take(4)? != MAGIC {
             return Err("not a road heights file".into());
         }
-        let u32_of = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-        let count = u32_of(take(4)?);
-        let mut runs = HashMap::new();
-        for _ in 0..count {
-            let k = take(8)?;
-            let key = u64::from_le_bytes([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]]);
-            let n = u32_of(take(4)?) as usize;
-            let mut ys = Vec::with_capacity(n);
-            for _ in 0..n {
-                let b = take(4)?;
-                #[allow(clippy::cast_precision_loss)]
-                ys.push(i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 100.0);
-            }
-            runs.insert(key, ys);
-        }
-        Ok(Self { runs })
+        let runs = r.section()?;
+        let land = match r.take(4) {
+            Ok(m) if m == LAND_MAGIC => r.section()?,
+            _ => HashMap::new(),
+        };
+        Ok(Self { runs, land })
     }
 }
 
@@ -1148,6 +1416,112 @@ mod tests {
         let back = RoadHeights::decode(&h.encode()).expect("decodes");
         assert_eq!(back, h);
         assert!(RoadHeights::decode(b"nope").is_err());
+
+        // With land, which a reader that predates it must still read as runs.
+        h.land.insert(7, vec![f32::NAN, 2.0, 2.5]);
+        let bytes = h.encode();
+        let back = RoadHeights::decode(&bytes).expect("decodes");
+        assert_eq!(back.runs, h.runs);
+        let land = &back.land[&7];
+        assert!(land[0].is_nan() && land[1] == 2.0 && land[2] == 2.5);
+        let old = RoadHeights::decode(&bytes[..bytes.len() - (4 + 4 + 8 + 4 + 12)]).expect("the runs alone");
+        assert_eq!(old.runs, h.runs);
+        assert!(old.land.is_empty());
+    }
+
+    /// The published heights along every structure in the ring fixture's tile,
+    /// as `P,key,level,x,z,road,land` rows: `CARTO_ROADS_BIN=…/roads/14/8491/5321.bin`
+    /// from an atlas run, and `CARTO_ROADS_TILE_M` for the tile's size as atlas
+    /// took it. A side view of what atlas decided, which no render from above
+    /// can show.
+    #[test]
+    #[ignore = "diagnostic: needs an atlas run's output"]
+    fn print_published_profiles() {
+        let bytes = std::fs::read(std::env::var("CARTO_ROADS_BIN").expect("CARTO_ROADS_BIN")).expect("reads");
+        let tile_m: f32 = std::env::var("CARTO_ROADS_TILE_M").expect("CARTO_ROADS_TILE_M").parse().unwrap();
+        let heights = RoadHeights::decode(&bytes).expect("decodes");
+        let tile = crate::testdata::groningen_ring();
+        let runs = street_runs(&tile, tile_m);
+        let (mut matched, mut with_land) = (0, 0);
+        for run in &runs {
+            let Some(ys) = heights.runs.get(&run.key) else { continue };
+            matched += 1;
+            let Some(land) = heights.land.get(&run.key) else { continue };
+            with_land += 1;
+            for ((p, y), g) in run.points.iter().zip(ys).zip(land) {
+                println!("P,{},{},{:.2},{:.2},{:.2},{:.2}", run.key, run.level, p[0], p[1], y, g);
+            }
+        }
+        eprintln!("runs {} matched {matched} with land {with_land}", runs.len());
+    }
+
+    fn solved_structures(lines: &[Line], land: impl Fn([f32; 2]) -> f32) -> (Solved, Vec<Vec<bool>>) {
+        let s = solve(lines);
+        let land: Vec<Vec<f32>> = lines
+            .iter()
+            .map(|l| l.points.iter().map(|&p| land(p)).collect())
+            .collect();
+        let m = structures(lines, &s.heights, &land);
+        (s, m)
+    }
+
+    /// **A tunnel's ramps are part of it, and stop where the road has come up.**
+    #[test]
+    fn a_tunnel_reaches_out_along_its_ramps() {
+        let ground = |_| Height::Measured { y: 0.0, weight: 1.0 };
+        let lines = [
+            line(straight(-400.0, 0.0, 0.0), 0, ground),
+            line(straight(0.0, 200.0, 0.0), -1, |_| Height::AtMost {
+                ceiling: -7.0,
+                measured: None,
+            }),
+            line(straight(200.0, 600.0, 0.0), 0, ground),
+        ];
+        let (s, m) = solved_structures(&lines, |_| 0.0);
+        assert!(m[1].iter().all(|&b| b), "the tunnel is not a structure");
+        for (li, far) in [(0usize, 0usize), (2, lines[2].points.len() - 1)] {
+            assert!(!m[li][far], "the road 300 m out is walled");
+            let reach = m[li].iter().filter(|&&b| b).count();
+            // 6 m at 6 % is 100 m of ramp before it is within a metre of the
+            // land, at two metres a point, plus the point beyond.
+            assert!((48..=53).contains(&reach), "the ramp is {reach} points long");
+            for (y, &b) in s.heights[li].iter().zip(&m[li]) {
+                assert!(b || *y > -SUNK_M - 1e-3, "a road {y} m down is not walled");
+            }
+        }
+    }
+
+    /// **A road lower than the land beside it is not a cutting unless it leads
+    /// to a tunnel.** The foot of a dike, a hillside, a street between gardens:
+    /// the land around is metres higher and nothing is walled, because nothing
+    /// connects it to anything under the ground.
+    #[test]
+    fn a_road_below_a_dike_is_not_walled() {
+        let lines = [line(straight(0.0, 400.0, 0.0), 0, |_| Height::Measured {
+            y: 0.0,
+            weight: 1.0,
+        })];
+        let (_, m) = solved_structures(&lines, |_| 5.0);
+        assert!(m[0].iter().all(|&b| !b));
+    }
+
+    /// **A street crossing over a tunnel is not dragged into it**: the two
+    /// share a point and no node, as a flyover and the road under it do.
+    #[test]
+    fn a_street_over_a_tunnel_is_not_part_of_it() {
+        let lines = [
+            line(straight(-200.0, 200.0, 0.0), -1, |_| Height::AtMost {
+                ceiling: -7.0,
+                measured: None,
+            }),
+            line(densify(&[[0.0, -200.0], [0.0, 200.0]], 2.0), 0, |_| Height::Measured {
+                y: 0.0,
+                weight: 1.0,
+            }),
+        ];
+        let (s, m) = solved_structures(&lines, |_| 0.0);
+        assert!(m[1].iter().all(|&b| !b), "the street over the tunnel is walled");
+        assert!(s.heights[1].iter().all(|y| y.abs() < 1e-3));
     }
 
     /// The lookup answers on the carriageway and not beside it, and only for the

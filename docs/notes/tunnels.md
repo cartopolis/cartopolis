@@ -1,7 +1,7 @@
 ---
 topic: roads
-triggers: [tunnels.rs, tunnel, tunnel, entrance, cut_sheet, opening_digest, clipmap hole, basemap over a tunnel, building_passage, underground, drawn_street, street_shape, TunnelRoad, TunnelStructure, Tunnels, cut_ground, opening, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
-updated: 2026-09-23
+triggers: [tunnels.rs, tunnel, entrance, build_structures, unmeasured_profiles, road_levels::structures, fill_to_land, land, cutting, cut_sheet, opening_digest, clipmap hole, basemap over a tunnel, building_passage, underground, drawn_street, street_shape, TunnelRoad, TunnelStructure, Tunnels, cut_ground, opening, floor_lift, layer, "the tunnel isn't rendering", "drive through the tunnel"]
+updated: 2026-09-28
 ---
 
 # Tunnels: what the tiles know, and everything they do not
@@ -15,6 +15,66 @@ entrances: no carriageway, no markings, no name, nothing to walk into.
 That refusal was right about one thing and silent about the rest. Painting a
 tunnel **on the ground** rules a pale band across every junction it passes under,
 which is a lie about what is up there. Nothing ever drew it anywhere else.
+
+## Where a tunnel is, and how deep, is decided on the road network (2026-09-28)
+
+**Read this section first; much of what follows is the history of a planner that
+no longer exists.** From 2026-09-15 to 2026-09-28 `tunnels.rs` laid tunnels out
+from the tags alone — which ends were entrances, which surface way beyond a portal
+was its ramp (`find_approaches`), which untagged gap between two lids was a cutting
+(`bridge_short_gaps`) — at an invented depth, and then every consumer lifted the
+result back by whatever the survey had already dug (`lift_for`, `stand_tunnel_on`,
+`convention_depth`, `cover_over`, `road_under_measured`). The sections below record
+why each of those rules existed; the rules themselves are gone.
+
+What replaced them is the model [bridge-heights.md](bridge-heights.md) built for
+bridges, run the other way:
+
+- **Every street has a height solved on the network** (`road_levels::solve`). A
+  tunnel is a ceiling on its road — the land less a level's depth — and the grade
+  limit working from that ceiling is the ramp, exactly as it works up from a deck.
+- **Around a structure, every street also has the land it runs through**, the
+  level of the land around (`lid_level`, 80th percentile of sixteen samples at
+  30 and 60 m).
+- **A structure grows out of a tunnel along the network** (`road_levels::structures`):
+  every point below the ground, and from there every point it reaches that runs
+  more than `SUNK_M` (1 m) under its land. So a ramp, a cutting between two lids
+  and a ramp crossing a tile border are one thing, and a road that is merely low —
+  at the foot of a dike, in a street between gardens — is not walled, because
+  nothing connects it to a tunnel.
+- **Atlas decides all of it** over its solve window and publishes the land beside
+  the road heights (`roads/14/x/y.bin`, an `LND1` section after the runs that older
+  readers never reach). The client builds the walls, roofs and openings from those
+  numbers (`tunnels::build_structures`) at their final heights, and nothing lifts
+  them afterwards.
+- **Where atlas has not been**, the tile's own runs are solved on flat land
+  (`tunnels::unmeasured_profiles`) — the same solve with the survey taken out — and
+  stood on the land around each point. That cannot see past its own tile.
+- **The ground is one rule with three cases** (atlas's grading): at grade it is
+  laid to the road; under a span it stays; over and beside a structure below the
+  ground it is the land (`terrain_grade::fill_to_land`), which is also the height
+  the walls stop at. The client applies the same fill to ground atlas did not grade.
+
+Four things the network needed that the planner had papered over:
+
+- **A road that ends on another road meets it, vertex or not** (`road_levels::TEE_M`).
+  Shortbread generalises each feature on its own, so where a cycle path tees into
+  a street the street usually has no vertex there, and a tunnel's line and the road
+  out of its mouth were measured 0.8 m apart on the ring fixture. Joined only at
+  shared points, the ramp out of a cycle underpass ended three metres down on the
+  side of the street it runs into.
+- **A junction at grade holds its height against a ceiling.** With the tee joined,
+  the ceiling of a cycle underpass whose path met a street six metres from its
+  mouth dragged the street three metres into the ground. Junctions (three or more
+  segments, no tunnel through them) are now floors the ceilings yield to: where
+  the road out of a mouth meets another road before it can climb back, the ramp
+  moves inside the tunnel and its mouth opens earlier — what the planner did for
+  short approaches, arrived at by the solve.
+- **A short gap between two roofs is a seam in the tagging** (`MIN_OPEN_M`, 25 m),
+  and stays roofed.
+- **A road that ends in nothing below its land is closed by a wall.** A tunnel
+  into a garage the map does not draw, a stub of path: the end of the corridor
+  showed the void past the carriageway.
 
 ## The tiles carry one bit
 

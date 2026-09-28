@@ -1180,13 +1180,12 @@ pub fn apply_terrain_to_tiles(
         // late at a lid's edge, where the vector ground covers it anyway.
         let step = gs / divisions.max(1) as f32;
         let lift_at = |x: f32, z: f32| -> (f32, f32) {
-            let w = tunnels.fill_weight(Vec2::new(x, z), cartopolis_geo::tunnels::DATUM_M);
+            let (w, land) = tunnels.fill(Vec2::new(x, z), cartopolis_geo::tunnels::DATUM_M);
             if w <= 0.0 {
                 return (0.0, 0.0);
             }
             let here = field.at(x, z);
-            let around = field.lid_level(x, z, cartopolis_geo::tunnels::DATUM_M);
-            (w * (around - here).max(0.0), w)
+            (w * (land - here).max(0.0), w)
         };
         let lid = |wx: f32, wz: f32| -> (f32, f32) {
             if lids == 0 {
@@ -1208,15 +1207,14 @@ pub fn apply_terrain_to_tiles(
             // tunnel, it is a pale slope of basemap under the headwall, standing up
             // through the road (Groningen's ring by DUO, reported 2026-09-26). The
             // vector ground over a lid never comes out below the roof and its slab
-            // (`map_geometry::fill_target`, `Tunnels::cover_over`), so holding the
-            // basemap there — scaled by this vertex's own fill weight, as the vector
-            // ground's lift is — keeps it inside the lid and still under the ground.
+            // (`Tunnels::cover_at`), so holding the basemap there — scaled by this
+            // vertex's own fill weight, as the vector ground's lift is — keeps it
+            // inside the lid and still under the ground.
             let here = field.at(wx, wz);
-            let dug = field.surrounding(wx, wz, cartopolis_geo::tunnels::DATUM_M) - here;
             let roofed = tunnels
-                .cover_over(Vec2::new(wx, wz), dug)
+                .cover_at(Vec2::new(wx, wz))
                 .map_or(0.0, |cover| {
-                    here + w * cover.max(0.0) - field.floor_at(wx, wz, step)
+                    here + w * (cover - here).max(0.0) - field.floor_at(wx, wz, step)
                 });
             (least.max(roofed), w)
         };

@@ -495,10 +495,8 @@ fn support_level(
     at: Vec2,
     from: f32,
 ) -> f32 {
-    let deck = tunnels.road_under_measured(at, |p| {
-        terrain.surrounding(p.x, p.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
-            - terrain.at(p.x, p.y)
-    });
+    // The deck as drawn, over the ground field it is measured against here.
+    let deck = tunnels.road_under(at).map(|y| y - terrain.at(at.x, at.y));
     if !tunnels.over_opening(at) {
         let indoors = floors.support(at, from);
         if indoors <= from + STEP_UP_M {
@@ -1046,10 +1044,10 @@ mod tests {
         let tunnel = Tunnel {
             centre: vec![[0.0, 0.0], [200.0, 0.0]],
             road_y: vec![0.0, -7.0],
+            land_y: vec![0.0, 0.0],
             half_w: 6.0,
             clearance: 4.8,
             covered: vec![true; 2],
-            measured: false,
         };
         // The opening: a corridor over the first 30 m, where the rising deck
         // leaves no room for a roof.

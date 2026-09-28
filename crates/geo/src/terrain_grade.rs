@@ -384,6 +384,113 @@ pub fn conform_to_roads(
     changed
 }
 
+/// One stretch of a structure below the ground (`road_levels::structures`): its
+/// centre line, the land at each point, and half its width.
+pub struct FillLine<'a> {
+    pub points: &'a [[f32; 2]],
+    pub land: &'a [f32],
+    pub half_w: f32,
+}
+
+/// Put the ground over and beside every structure below the ground back to its
+/// land: the land itself over the corridor, blending back to what was measured
+/// over `taper_m` beyond it. Samples `keep` answers true for are left alone — the
+/// water, whose bed was carved and must stay under its surface.
+///
+/// **The survey is older than the map, and here the map wins.** Groningen's ring
+/// was flown as an open trench and has a lid on it now, so the survey digs nine
+/// metres out of ground that is whole; and beside the cuttings it still shows
+/// that trench's sloped banks, wider than the walls that hold the ground back
+/// today. Over a structure's own corridor the ground is cut away where it is open
+/// (the client takes it out) and is the lid where it is not; either way its level
+/// is the land's, which is also where the walls stop.
+///
+/// Returns how many samples changed.
+pub fn fill_to_land(
+    raw: &mut [f32],
+    lattice: Lattice,
+    lines: &[FillLine<'_>],
+    taper_m: f32,
+    keep: &dyn Fn([f32; 2]) -> bool,
+) -> usize {
+    let n = lattice.n;
+    if n < 2 || raw.len() < n * n || lattice.step <= 0.0 {
+        return 0;
+    }
+    // Per sample: the strongest weight and the land it pulls toward.
+    let mut best: Vec<(f32, f32)> = vec![(0.0, 0.0); n * n];
+    let [ox, oz] = lattice.origin;
+    let step = lattice.step;
+    for line in lines {
+        if line.points.len() != line.land.len() {
+            continue;
+        }
+        let reach = line.half_w + taper_m;
+        for (s, w) in line.points.windows(2).enumerate() {
+            let (ga, gb) = (line.land[s], line.land[s + 1]);
+            if !ga.is_finite() || !gb.is_finite() {
+                continue;
+            }
+            let (a, b) = (w[0], w[1]);
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dz * dz;
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = |v: f32, o: f32| ((v - o) / step).floor() as i64;
+            let (x0, x1) = (
+                idx(a[0].min(b[0]) - reach, ox).max(0),
+                idx(a[0].max(b[0]) + reach, ox).min(n as i64 - 1) + 1,
+            );
+            let (z0, z1) = (
+                idx(a[1].min(b[1]) - reach, oz).max(0),
+                idx(a[1].max(b[1]) + reach, oz).min(n as i64 - 1) + 1,
+            );
+            for z in z0..=z1.min(n as i64 - 1) {
+                for x in x0..=x1.min(n as i64 - 1) {
+                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                    let i = z as usize * n + x as usize;
+                    let [px, pz] = lattice.at(x as usize, z as usize);
+                    let t = if len2 > 1e-9 {
+                        (((px - a[0]) * dx + (pz - a[1]) * dz) / len2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let d = (px - a[0] - dx * t).hypot(pz - a[1] - dz * t) - line.half_w;
+                    let weight = if d <= 0.0 {
+                        1.0
+                    } else if d >= taper_m {
+                        0.0
+                    } else {
+                        // Smooth rather than linear, or the fill's edge is a crease.
+                        let u = 1.0 - d / taper_m;
+                        u * u * (3.0 - 2.0 * u)
+                    };
+                    if weight > best[i].0 {
+                        best[i] = (weight, ga + (gb - ga) * t);
+                    }
+                }
+            }
+        }
+    }
+    let mut changed = 0;
+    for i in 0..n * n {
+        let (w, land) = best[i];
+        if w <= 0.0 || keep(lattice.at(i % n, i / n)) {
+            continue;
+        }
+        let here = raw[i];
+        let target = if here.is_finite() {
+            here + w * (land - here)
+        } else {
+            land
+        };
+        if raw[i] != target {
+            raw[i] = target;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// A cell's road-sheet triangles in its own tile-local XZ.
 ///
 /// **The ribbons, not the tunnels.** A tunnel's carriageway is metres below the
@@ -771,6 +878,40 @@ mod tests {
                 "the embankment rises away from the road at {z}"
             );
         }
+    }
+
+    /// **The survey's old trench is put back to the land**, over a structure's
+    /// corridor and tapering out beside it, and the water is left where it was
+    /// carved.
+    #[test]
+    fn the_ground_over_a_structure_is_the_land() {
+        let l = Lattice {
+            n: 101,
+            origin: [-50.0, -50.0],
+            step: 1.0,
+        };
+        // A nine-metre trench twenty metres wide, in land at 2 m.
+        let mut g: Vec<f32> = (0..l.n * l.n)
+            .map(|i| if (40..=60).contains(&(i / l.n)) { -7.0 } else { 2.0 })
+            .collect();
+        let pts = [[-50.0, 0.0], [50.0, 0.0]];
+        let land = [2.0, 2.0];
+        fill_to_land(
+            &mut g,
+            l,
+            &[FillLine {
+                points: &pts,
+                land: &land,
+                half_w: 5.0,
+            }],
+            30.0,
+            &|p| p[0] > 40.0,
+        );
+        let at = |x: usize, z: usize| g[z * l.n + x];
+        assert!((at(50, 50) - 2.0).abs() < 1e-4, "over the corridor: {}", at(50, 50));
+        assert!(at(50, 58) > 0.0, "the trench beside the wall stayed dug: {}", at(50, 58));
+        assert!((at(50, 5) - 2.0).abs() < 1e-4, "the land far off moved");
+        assert!((at(95, 50) + 7.0).abs() < 1e-4, "the water was filled in");
     }
 
     #[test]

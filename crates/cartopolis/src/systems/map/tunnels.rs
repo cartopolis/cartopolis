@@ -37,19 +37,6 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use cartopolis_geo::tunnels::Tunnel;
 
-/// How far back up a tunnel is lifted at one place — see
-/// [`cartopolis_geo::tunnels::lift_for`], which is where it lives — as
-/// [`lift_for_road`], which takes no lift for a corridor already measured.
-///
-/// One function because four places computed it — the drawn mesh, the walkable
-/// floor, the nearest-tunnel metric and the shot harness — and three of them had
-/// their own idea of the cap. The drawn deck and the floor under it disagreeing is
-/// not a cosmetic difference; it is the avatar walking through the road. It sits
-/// in the shared crate rather than here for the fifth caller: the harness draws
-/// the same tunnels from the same tiles and cannot depend on this crate, so a copy
-/// there is a copy that drifts (`docs/notes/harness-and-client-agree.md`).
-pub use cartopolis_geo::tunnels::lift_for_road;
-
 /// One cell's tunnels, as the worker built them: tile-local metres.
 #[derive(Default)]
 pub struct CellTunnels {
@@ -62,7 +49,7 @@ pub struct CellTunnels {
     pub openings: Vec<Vec<[f32; 2]>>,
 }
 
-/// How far outside a covered corridor [`Tunnels::cover_over`] still holds the
+/// How far outside a covered corridor [`Tunnels::cover_at`] still holds the
 /// ground above the roof: half the widest median a dual carriageway is mapped
 /// with, so the strip between two lids is covered from both sides.
 const COVER_REACH_M: f32 = 6.0;
@@ -76,8 +63,8 @@ pub struct LidSnapshot {
 }
 
 impl LidSnapshot {
-    /// The ground at a point as the vector ground is drawn: the survey, filled
-    /// back over a lid or beside a deep cutting (`tunnels::Lidded` in
+    /// The ground at a point as the vector ground is drawn: the survey, put back
+    /// to the land over a lid and beside a wall (`tunnels::Lidded` in
     /// `map_geometry`). For things placed on the ground on a worker — trees, the
     /// grass mask — which stood on the survey's old trench floor, under the lid,
     /// until 2026-09-23.
@@ -89,23 +76,17 @@ impl LidSnapshot {
         ground: &crate::systems::terrain::TerrainSnapshot,
     ) -> f32 {
         let here = ground.at(x, z);
-        if self.tunnels.is_empty() {
-            return here;
-        }
-        let w = self
-            .tunnels
-            .iter()
-            .map(|t| t.fill_weight([x, z], cartopolis_geo::tunnels::DATUM_M))
-            .fold(0.0f32, f32::max);
+        let (w, land) = fill_of(&self.tunnels, [x, z]);
         if w <= 0.0 {
             return here;
         }
-        here + w * (ground.lid_level(x, z, cartopolis_geo::tunnels::DATUM_M) - here)
+        here + w * (land - here)
     }
 
     /// Whether a building with this footprint (world XZ) stands in a covered
     /// tunnel's old trench and so is not to be drawn —
-    /// [`cartopolis_geo::tunnels::stands_in_a_covered_trench`].
+    /// [`cartopolis_geo::tunnels::stands_in_a_covered_trench`], with how far the
+    /// survey's ground is under the structure's land as the depth of the trench.
     #[must_use]
     pub fn holds(
         &self,
@@ -120,12 +101,30 @@ impl LidSnapshot {
             &self.tunnels,
             &self.openings,
             &ring,
-            &|p| {
-                ground.surrounding(p[0], p[1], cartopolis_geo::tunnels::DATUM_M)
-                    - ground.at(p[0], p[1])
-            },
+            &|p| land_of(&self.tunnels, p).map_or(0.0, |g| g - ground.at(p[0], p[1])),
         )
     }
+}
+
+/// The strongest fill any of `tunnels` puts on `p`, and the land it fills to.
+fn fill_of<'a>(tunnels: impl IntoIterator<Item = &'a Tunnel>, p: [f32; 2]) -> (f32, f32) {
+    let mut best = (0.0f32, 0.0f32);
+    for t in tunnels {
+        let w = t.fill_weight(p, cartopolis_geo::tunnels::DATUM_M);
+        if w > best.0 {
+            best = (w, t.land_near(p).1);
+        }
+    }
+    best
+}
+
+/// The land of the structure nearest `p`, `None` with none streamed.
+fn land_of<'a>(tunnels: impl IntoIterator<Item = &'a Tunnel>, p: [f32; 2]) -> Option<f32> {
+    tunnels
+        .into_iter()
+        .map(|t| t.land_near(p))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, g)| g)
 }
 
 /// The measured terrain and the streamed tunnels together, for a system at
@@ -377,8 +376,8 @@ impl Tunnels {
         }
     }
 
-    /// The deepest carriageway among the streamed tunnels, metres below the ground
-    /// sheet (so zero or negative), for `--dump-state`.
+    /// How far the deepest carriageway among the streamed structures runs under
+    /// its land, metres (zero or negative), for `--dump-state`.
     ///
     /// **A picture cannot report this and that is the point.** A cut seen from
     /// above shows a road through a hole whether the road is one metre down or
@@ -391,7 +390,7 @@ impl Tunnels {
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            .flat_map(|b| b.road_y.iter().copied())
+            .flat_map(|b| b.road_y.iter().zip(&b.land_y).map(|(y, g)| y - g))
             .fold(0.0, f32::min)
     }
 
@@ -401,129 +400,82 @@ impl Tunnels {
         self.cells.values().map(|c| c.tunnels.len()).sum()
     }
 
-    /// The deck level under `p`, metres relative to the ground sheet, corrected
-    /// for the depth the terrain field has *already* dug. `None` where no tunnel's
-    /// carriageway is under it.
+    /// The carriageway's height under `p`, in the frame everything is drawn in,
+    /// or `None` where no structure's carriageway is under it — the height the
+    /// deck is drawn at, and so the floor the avatar stands on.
     ///
-    /// The **deepest** answer wins where two tunnels overlap in plan — a tunnel
-    /// under a tunnel is `layer=-2` under `layer=-1`, and the one you can be
-    /// standing on is the lower.
-    ///
-    /// **The floor has to move with the road, and the road moves.** A tunnel's deck
-    /// is metres below the ground sheet, and over an open cut the measured ground
-    /// sheet is the trench floor — so `map_geometry::stand_on_terrain` lifts the
-    /// drawn tunnel back up by what AHN accounts for. A collision floor that did not
-    /// do the same arithmetic would leave the avatar walking nine metres under the
-    /// carriageway it can see, which is the kind of disagreement that reads as the
-    /// tunnel being broken rather than as two places computing one number.
-    ///
-    /// `dug` answers "how far below the land around it is the measured ground
-    /// here", and is a closure because this crate must not know about
-    /// `TerrainField` — the cap is a property of the tunnel, so it is applied in
-    /// here where the tunnel is known rather than by the caller.
+    /// The **deepest** answer wins where two structures overlap in plan — a
+    /// tunnel under a tunnel — since the one you can be standing on is the lower.
     #[must_use]
-    pub fn road_under_measured(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<f32> {
+    pub fn road_under(&self, p: Vec2) -> Option<f32> {
         let at = [p.x, p.y];
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            .filter_map(|b| {
-                b.road_under(at)
-                    .map(|y| y + lift_for_road(b.measured, -y, dug(p)))
-            })
+            .filter_map(|b| b.road_under(at))
             .min_by(f32::total_cmp)
     }
 
-    /// The least height the ground at `p` may have over a lid, relative to the
-    /// survey's ground there (`here`, the frame `dug` is measured in): the drawn
-    /// roof plus a slab. `None` where `p` is over no covered stretch.
-    ///
-    /// **The fill's target is a guess about the land and the roof is not**, so the
-    /// roof wins. The fill goes to the middle of a ring of survey samples 30 m out,
-    /// and at a mouth part of that ring lies in the open trench beyond it; the
-    /// target came out below the roof, so the lid's ground sagged into the mouth
-    /// under the headwall and the roof's edges showed through the street and the
-    /// canal as thin lines (Deck captures of the ring's east portal, 2026-09-23).
+    /// The least height the ground may have at `p` over a roof: the roof and its
+    /// slab, over a covered stretch or within [`COVER_REACH_M`] beside one; `None`
+    /// elsewhere. The land over a roof is never below this by construction (a
+    /// roof goes on only where it fits under its land); what can come out below
+    /// it is a coarser sheet sagging toward a neighbour's lower fill.
     #[must_use]
-    pub fn cover_over(&self, p: Vec2, dug: f32) -> Option<f32> {
+    pub fn cover_at(&self, p: Vec2) -> Option<f32> {
         let at = [p.x, p.y];
         self.cells
             .values()
             .filter(|c| c.filled_bbox.is_some_and(|b| within(at, b, COVER_REACH_M)))
             .flat_map(|c| c.tunnels.iter())
-            // **Beside the lid as well as on it**: a dual carriageway is two
-            // corridors with a strip between them, and over that strip the fill
-            // could still come out below the inner walls' tops, which ran out of
-            // the ground the length of the ring's east lid as a wedge toward the
-            // canal (2026-09-23).
             .filter(|t| t.covered_weight(at, COVER_REACH_M) > 0.0)
             .filter_map(|t| {
-                t.road_near(at, COVER_REACH_M).map(|y| {
-                    y + lift_for_road(t.measured, -y, dug) + t.clearance
-                        - cartopolis_geo::tunnels::CEILING_MAX_Y
-                })
+                t.road_near(at, COVER_REACH_M)
+                    .map(|y| y + t.clearance - cartopolis_geo::tunnels::CEILING_MAX_Y)
             })
             .reduce(f32::max)
     }
 
-    /// How deep the tessellator put a carriageway under `p`, as a positive number
-    /// of metres, before the height survey is allowed to account for any of it.
-    /// `None` where no tunnel's corridor covers `p`.
-    ///
-    /// **The cap on the terrain lift is a property of the place, not of the mesh.**
-    /// `stand_on_terrain` used to take it from the deepest vertex in whichever
-    /// merged mesh it happened to be displacing and apply that one number to every
-    /// vertex in it, which over-lifts everything shallower — and almost all of a
-    /// tunnel is shallower, because [`depth_at`](cartopolis_geo::tunnels) spends
-    /// `LEVEL_DEPTH_M / MAX_GRADE` ≈ 117 m ramping at each end. Forty metres into
-    /// Groningen's ring, where the tessellator wants −2.4 m and the survey has
-    /// already dug 6.4, the deck was lifted by the full 7 and drawn four metres
-    /// *above* the land beside it. The runs there arrive 172–242 m long, so nearly
-    /// all of one is ramp.
-    ///
-    /// The deepest answer wins where two tunnels overlap in plan, matching
-    /// [`road_under_measured`](Self::road_under_measured): the one you could be
-    /// standing on is the lower.
+    /// How much the ground at `p` is put back to its structure's land, and that
+    /// land — [`cartopolis_geo::tunnels::Tunnel::fill_weight`] and
+    /// [`land_near`](cartopolis_geo::tunnels::Tunnel::land_near) of the structure
+    /// that fills it most. `(0, 0)` away from every structure.
     #[must_use]
-    pub fn convention_depth(&self, p: Vec2) -> Option<f32> {
+    pub fn fill(&self, p: Vec2, taper_m: f32) -> (f32, f32) {
         let at = [p.x, p.y];
-        self.cells
-            .values()
-            .flat_map(|c| c.tunnels.iter())
-            // A measured corridor is placed by the whole of what the survey dug
-            // (`lift_for_road`): as deep as anything, so the cap never bites.
-            .filter_map(|b| {
-                b.road_under(at)
-                    .map(|y| if b.measured { f32::NEG_INFINITY } else { y })
-            })
-            .min_by(f32::total_cmp)
-            .map(|y| -y)
+        let mut best = (0.0f32, 0.0f32);
+        for c in self.cells.values() {
+            match c.filled_bbox {
+                Some(b) if within(at, b, taper_m) => {}
+                _ => continue,
+            }
+            for (t, bounds) in c.tunnels.iter().zip(&c.filled) {
+                let Some(b) = bounds else { continue };
+                if !within(at, *b, taper_m) {
+                    continue;
+                }
+                let w = t.fill_weight(at, taper_m);
+                if w > best.0 {
+                    best = (w, t.land_near(at).1);
+                }
+            }
+        }
+        best
     }
 
-    /// The nearest tunnel to `p`: how far its carriageway is in plan, and how deep
-    /// the deck runs there. `None` when nothing is streamed.
+    /// The nearest structure to `p`: how far its carriageway is in plan, and how
+    /// far the road there runs under its land. `None` when nothing is streamed.
     ///
     /// **`deepest_road` is a global minimum and cannot answer "is *that* road
-    /// down there?"** It reports the deepest carriageway anywhere in the streamed
-    /// cells, so it reads −7.0 over a city with one tunnel in it while the road
-    /// in the frame sits on the ground — which is how a capture came to be
-    /// described as showing a trench when it showed a surface street beside one.
-    /// This answers for a place.
+    /// down there?"** — it reads −7 over a city with one tunnel in it while the
+    /// road in the frame sits on the ground. This answers for a place.
     #[must_use]
-    pub fn nearest_tunnel(&self, p: Vec2, dug: impl Fn(Vec2) -> f32) -> Option<(f32, f32)> {
+    pub fn nearest_tunnel(&self, p: Vec2) -> Option<(f32, f32)> {
         let at = [p.x, p.y];
         self.cells
             .values()
             .flat_map(|c| c.tunnels.iter())
-            .map(|b| {
-                let (d, y) = b.distance_to(at);
-                // The *drawn* depth, not the tessellator's convention. Reporting
-                // the raw `road_y` was a metric that disagreed with the picture
-                // beside it — it read −7.00 over a cut the measured ground puts
-                // nine metres down — and a number that contradicts the capture it
-                // is attached to is worse than no number.
-                (d, y + lift_for_road(b.measured, -y, dug(p)))
-            })
+            .map(|b| b.distance_to(at))
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
@@ -531,42 +483,43 @@ impl Tunnels {
     /// road is travelling there. Anchored world XZ, degrees clockwise from north.
     ///
     /// **This exists because aiming a camera at a tunnel by hand does not work.**
-    /// Over two days, cameras placed by converting the tessellator's tile-local
-    /// metres into a latitude and longitude landed 28, 42, 56, 62, 64, 103, 111,
-    /// 122, 136, 140 and 178 metres from the nearest tunnel — a park, a rail yard
-    /// and the side of an office block, each costing minutes of software
-    /// rendering to discover. Two hand-written conversions disagreed with each
-    /// other and both disagreed with the client. The client has never been
-    /// confused about where these are: they are in the same frame as the avatar.
-    /// So it answers, and `geo_nav::world_to_lat_lng` — the conversion everything
-    /// else already trusts — turns it into something to type into `--at`.
+    /// Over two days, cameras placed by converting tile-local metres into a
+    /// latitude and longitude by hand landed 28 to 178 metres from the nearest
+    /// tunnel. The client has never been confused about where these are: they are
+    /// in the same frame as the avatar. So it answers, and
+    /// `geo_nav::world_to_lat_lng` turns it into something to type into `--at`.
     ///
-    /// The entrance is the first vertex deep enough to take a roof, not the middle
-    /// of an opening: an opening is the stretch that has *not* reached depth, so
-    /// its centre is a road at lawn level, which is what four overhead captures
-    /// faithfully photographed.
+    /// The entrance is where the roof begins — the mouth — not the middle of an
+    /// opening, which is a road at lawn level.
     #[must_use]
     pub fn nearest_entrance(&self, from: Vec2) -> Option<(Vec2, f32)> {
         let mut best: Option<(f32, Vec2, f32)> = None;
         for b in self.cells.values().flat_map(|c| c.tunnels.iter()) {
-            let deepest = b.road_y.iter().copied().fold(0.0_f32, f32::min);
+            let deepest = b
+                .road_y
+                .iter()
+                .zip(&b.land_y)
+                .map(|(y, g)| y - g)
+                .fold(0.0_f32, f32::min);
             if deepest > -1.0 {
                 continue;
             }
-            let full = deepest + cartopolis_geo::tunnels::ROOF_AT_DEPTH_M;
-            let Some(k) = b.road_y.iter().position(|&y| y <= full) else {
+            // The first roofed vertex after an open one, or the roofed first
+            // vertex of a stretch that opens out of it at its far end.
+            let n = b.centre.len();
+            let mouth = (1..n)
+                .find(|&k| b.covered[k] && !b.covered[k - 1])
+                .map(|k| (k - 1, k))
+                .or_else(|| (1..n).find(|&k| !b.covered[k] && b.covered[k - 1]).map(|k| (k, k - 1)));
+            let Some((from_k, to_k)) = mouth else {
                 continue;
             };
-            if k == 0 || k >= b.centre.len() {
-                continue;
-            }
-            let (a, c) = (b.centre[k - 1], b.centre[k]);
+            let (a, c) = (b.centre[from_k], b.centre[to_k]);
             let at = Vec2::new(c[0], c[1]);
             // **The deepest tunnel, not the closest one.** Nearest picked a 41 m
             // service tunnel in a terraced street and reported it as *the*
             // entrance, which is true and useless: what a capture wants is the
-            // road tunnel, and depth is what tells a road tunnel from a duct. Ties
-            // go to the nearer of two, so this is still stable and still local.
+            // road tunnel, and depth is what tells a road tunnel from a duct.
             let d = deepest * 1000.0 + at.distance(from);
             if best.is_none_or(|(bd, _, _)| d < bd) {
                 // +z is south, so north is −dz.
@@ -679,10 +632,10 @@ mod tests {
                 tunnels: vec![Tunnel {
                     centre: vec![[0.0, 0.0], [0.0, 100.0]],
                     road_y: vec![0.0, -7.0],
+                    land_y: vec![0.0, 0.0],
                     half_w: 10.0,
                     clearance: 4.8,
                     covered: vec![true; 2],
-                    measured: false,
                 }],
                 openings: vec![vec![
                     [-10.0, 0.0],

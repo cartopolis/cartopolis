@@ -369,9 +369,8 @@ struct Cell {
     /// What `build_tunnels` decided, per tunnel — see `--check`.
     tunnels: Vec<Built>,
     /// The tunnels themselves, kept because the *ground* needs them: over a lid
-    /// the height survey is stale and has to be overridden
-    /// (`cartopolis_geo::tunnels::fill_over_lids`), and the tunnel's own mesh must
-    /// not be dug twice (`stand_tunnel_on`). Without these the harness drew a park
+    /// and beside a wall the height survey is stale and is put back to the land
+    /// (`cartopolis_geo::tunnels::Lidded`). Without these the harness drew a park
     /// where the client drew a trench, which is the one thing an instrument may
     /// not do.
     bores: Vec<cartopolis_geo::tunnels::Tunnel>,
@@ -1162,13 +1161,10 @@ impl terrain_refine::GroundField for Field {
     }
 }
 
-/// The two questions `cartopolis_geo::tunnels` asks of a height survey, answered
-/// off this field — the same pair the client answers off its streamed one.
-impl cartopolis_geo::tunnels::Survey for Field {
-    fn here(&self, x: f32, z: f32) -> f32 {
-        Field::at(self, x, z)
-    }
-
+impl Field {
+    /// The level of the land around a point — what a structure below the ground
+    /// with nothing measured is stood on, and what the ground over a lid is put
+    /// back to.
     fn around(&self, x: f32, z: f32) -> f32 {
         // The client's sampler, to the ring and the count: the highest of eight
         // points on a circle. A mean would be dragged down by the trench itself
@@ -1659,37 +1655,31 @@ fn to_bevy_mesh(
     };
     let mut rungs = Vec::new();
     if let Some(f) = field {
-        // **A tunnel is not ground and must not be treated as it.** Refining its
-        // walls against the field splits a vertical quad into a grid following a
-        // hillside it does not stand on, and displacing it by the field alone digs
-        // it twice — the survey has already measured the open trench, so an
-        // invented seven metres on top of a measured nine puts the carriageway
-        // sixteen metres under the street. The rules are the client's, in
-        // `cartopolis_geo::tunnels`, because a second copy of them here is exactly
-        // the drift this harness exists to rule out.
+        // **A structure is not ground and must not be treated as it.** Refining
+        // its walls against the field splits a vertical quad into a grid following
+        // a hillside it does not stand on, and displacing it by the field digs it
+        // twice where the survey measured the trench. Built with nothing measured
+        // (`build_tunnels`), it is relative to flat land, so it stands on the land
+        // around each point — the client's rule where atlas has not been.
         let origin = [cell_origin.x, cell_origin.z];
         if matches!(
             m.group,
             SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
         ) {
-            cartopolis_geo::tunnels::stand_tunnel_on(&mut positions, origin, f, &|p| {
-                bores
-                    .iter()
-                    .filter_map(|t| t.road_under([p[0] - origin[0], p[1] - origin[1]]))
-                    .min_by(f32::total_cmp)
-                    .map(|y| -y)
-            });
+            for p in &mut positions {
+                p[1] += f.around(origin[0] + p[0], origin[1] + p[2]);
+            }
         } else {
             // The measured ground with the lids back on it — one surface, so the
             // refinement resolves the lift as well as the landform. Applied after
             // refining instead, it tears the ground along every buried road.
             let lidded = cartopolis_geo::tunnels::Lidded {
                 ground: f,
-                around: &|x, z| <Field as cartopolis_geo::tunnels::Survey>::around(f, x, z),
+                around: &|x, z| f.around(x, z),
                 weight: &|p| {
                     let local = [p[0] - origin[0], p[1] - origin[1]];
                     bores.iter().fold(0.0f32, |best, t| {
-                        best.max(t.covered_weight(local, cartopolis_geo::tunnels::DATUM_M))
+                        best.max(t.fill_weight(local, cartopolis_geo::tunnels::DATUM_M))
                     })
                 },
             };

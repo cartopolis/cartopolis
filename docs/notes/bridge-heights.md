@@ -47,10 +47,17 @@ and stands road ribbons and casings on their street's height (`OnRoads`). Over
 Groningen the Europaplein span runs 8.20 → 9.24 m and the roads off its ends
 start at exactly those numbers.
 
-Not yet on it: **tunnels** keep their own ramp planning (`tunnels.rs`), and the
-client's own grading where atlas has not graded still flattens and ramps the
-old way. Cars, the route line and the avatar still read the terrain and the
-deck, which agree with the road to within the conform's 5 cm.
+**Tunnels are on it too since 2026-09-28** ([tunnels.md](tunnels.md), first
+section): a tunnel is a ceiling on its road as a deck is a pin, the structure
+around a road below its land is found on the same network
+(`road_levels::structures`), and atlas's grading is one rule with three cases —
+laid to the road at grade, left alone under a span, put back to the land over and
+beside a structure below the ground. What is still separate is the *shape* of
+the two structures: a deck is an area (OSM's bridge outline, or one built from
+the bridge ways), a tunnel a corridor along its road, and each has its own
+builder. The client's own grading where atlas has not graded still flattens and
+ramps the old way. Cars, the route line and the avatar still read the terrain and
+the deck, which agree with the road to within the conform's 5 cm.
 
 ## The tiles do not carry it
 

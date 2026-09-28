@@ -128,9 +128,6 @@ struct Cell {
     /// Its streets as the client draws them, for the road network the heights
     /// are solved on (`road_levels`).
     runs: Vec<StreetRun>,
-    /// Its tunnels' corridors as the client lays them out — lids, ramps and
-    /// cuttings — whose ground the client opens and walls itself.
-    tunnels: Vec<(Vec<[f32; 2]>, f32)>,
     decks: Vec<Deck>,
 }
 
@@ -238,7 +235,6 @@ impl<'a> Grader<'a> {
         let mut cell = Cell {
             tile_m,
             runs: Vec::new(),
-            tunnels: Vec::new(),
             decks: Vec::new(),
         };
         if let Some(bytes) = self.vector.mvt(x, y)? {
@@ -246,11 +242,6 @@ impl<'a> Grader<'a> {
             let mut decks = vector_tiles::tessellate_bridges(&tile, tile_m)?;
             let roads = vector_tiles::tessellate_roads(&tile, tile_m, &mut decks, None, false)?;
             cell.runs = road_levels::street_runs(&tile, tile_m);
-            cell.tunnels = cartopolis_geo::tunnels::build_tunnels(&tile, tile_m, None)
-                .tunnels
-                .into_iter()
-                .map(|t| (t.centre, t.half_w))
-                .collect();
             self.deck_heights.entry((x, y)).or_default();
             for (i, deck) in decks.into_iter().enumerate() {
                 let measured = self.measure_deck(x, y, tile_m, &deck)?;
@@ -610,8 +601,10 @@ impl<'a> Grader<'a> {
             })
         };
         let mut lines: Vec<road_levels::Line> = Vec::new();
-        // (this tile's own run, its key, its half-width, its level) per line.
-        let mut owners: Vec<(bool, u64, f32, i8)> = Vec::new();
+        // (this tile's own run, its key, its half-width, its level, its class)
+        // per line.
+        let mut owners: Vec<(bool, u64, f32, i8, cartopolis_geo::road_texture::RoadClass)> =
+            Vec::new();
         for dy in -reach..=reach {
             for dx in -reach..=reach {
                 let Some(cell) = self.cells.get(&(tx + dx, ty + dy)) else {
@@ -648,12 +641,7 @@ impl<'a> Grader<'a> {
                     // less a level's depth, as `tunnels` has always put it — and
                     // where the survey saw down into an open trench, that too,
                     // since then it measured the road.
-                    let depth =
-                        if matches!(run.class, cartopolis_geo::road_texture::RoadClass::Path) {
-                            cartopolis_geo::tunnels::PATH_DEPTH_M
-                        } else {
-                            cartopolis_geo::tunnels::LEVEL_DEPTH_M
-                        };
+                    let depth = cartopolis_geo::tunnels::level_depth(run.class);
                     let heights = points
                         .iter()
                         .map(|&p| {
@@ -694,15 +682,75 @@ impl<'a> Grader<'a> {
                         max_grade: road_levels::max_grade(run.class),
                         cut: run.cut,
                     });
-                    owners.push((dx == 0 && dy == 0, run.key, run.half_w, run.level));
+                    owners.push((dx == 0 && dy == 0, run.key, run.half_w, run.level, run.class));
                 }
             }
         }
         let solved = road_levels::solve(&lines);
+
+        // **The land each road runs through**, for deciding which stretches are
+        // structures below the ground and how high their walls reach: the level
+        // of the land around (`lid_level`), the same the lids are measured
+        // against. Only below a bridge's level — a deck's structure is its own.
+        // A point the survey has nothing around takes its neighbour's along the
+        // line, and a tunnel with none at all is a level's depth under its road.
+        let land: Vec<Vec<f32>> = lines
+            .iter()
+            .zip(&owners)
+            .zip(&solved.heights)
+            .map(|((l, o), ys)| {
+                if l.level > 0 {
+                    return vec![f32::NAN; l.points.len()];
+                }
+                let mut g: Vec<f32> = l.points.iter().map(|&p| lid_level(&sample, p)).collect();
+                fill_along(&mut g);
+                if g.iter().all(|v| !v.is_finite()) && l.level < 0 {
+                    g = ys
+                        .iter()
+                        .map(|y| y + cartopolis_geo::tunnels::level_depth(o.4))
+                        .collect();
+                }
+                g
+            })
+            .collect();
+        let inside = road_levels::structures(&lines, &solved.heights, &land);
+
         let own = self.road_heights.entry((tx, ty)).or_default();
-        for ((mine, key, _, _), ys) in owners.iter().zip(&solved.heights) {
+        for (((mine, key, ..), ys), (g, m)) in owners
+            .iter()
+            .zip(&solved.heights)
+            .zip(land.iter().zip(&inside))
+        {
             if *mine {
                 own.runs.insert(*key, ys.clone());
+                if m.iter().any(|&b| b) {
+                    own.land.insert(
+                        *key,
+                        g.iter()
+                            .zip(m)
+                            .map(|(&v, &b)| if b { v } else { f32::NAN })
+                            .collect(),
+                    );
+                }
+            }
+        }
+
+        // The structures' stretches, each with its land.
+        let mut stretches: Vec<(Vec<[f32; 2]>, Vec<f32>, f32)> = Vec::new();
+        for ((l, o), (g, m)) in lines.iter().zip(&owners).zip(land.iter().zip(&inside)) {
+            let mut i = 0;
+            while i < m.len() {
+                if !m[i] {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < m.len() && m[i] {
+                    i += 1;
+                }
+                if i - start >= 2 {
+                    stretches.push((l.points[start..i].to_vec(), g[start..i].to_vec(), o.2));
+                }
             }
         }
 
@@ -717,6 +765,28 @@ impl<'a> Grader<'a> {
             &[],
             &[],
         );
+        // **Below the land the ground is the land**: put back over every lid and
+        // beside every wall, where the survey still shows the trench it was flown
+        // over — but not in the water, whose bed was carved.
+        let fills: Vec<terrain_grade::FillLine<'_>> = stretches
+            .iter()
+            .map(|(pts, g, half)| terrain_grade::FillLine {
+                points: pts,
+                land: g,
+                half_w: *half,
+            })
+            .collect();
+        terrain_grade::fill_to_land(
+            &mut raw,
+            lattice,
+            &fills,
+            cartopolis_geo::tunnels::DATUM_M,
+            &|p| level_at(p[0], p[1]).is_some(),
+        );
+        // **At grade the ground is laid to the road.** Every stretch of every
+        // street at level 0 that is not a structure: the embankments up to the
+        // decks and the banks down to a shallow dip. Not inside a structure's
+        // corridor, which the client opens and walls itself.
         let conform: Vec<ConformRoad<'_>> = lines
             .iter()
             .zip(&owners)
@@ -728,28 +798,8 @@ impl<'a> Grader<'a> {
                 half_w: o.2,
             })
             .collect();
-        // Not inside a tunnel's corridors: the client cuts that ground away over the
-        // ramps and cuttings and stands its own walls there.
-        let mut corridors: Vec<(Vec<[f32; 2]>, f32)> = Vec::new();
-        for dy in -reach..=reach {
-            for dx in -reach..=reach {
-                let Some(cell) = self.cells.get(&(tx + dx, ty + dy)) else {
-                    continue;
-                };
-                let s = tile_m / cell.tile_m;
-                let off = [dx as f32 * tile_m, dy as f32 * tile_m];
-                for (pts, half) in &cell.tunnels {
-                    corridors.push((
-                        pts.iter()
-                            .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
-                            .collect(),
-                        half * s + cartopolis_geo::tunnels::WALL_REACH_M,
-                    ));
-                }
-            }
-        }
-        let in_a_corridor = |p: [f32; 2]| {
-            corridors.iter().any(|(pts, half)| {
+        let in_a_structure = |p: [f32; 2]| {
+            stretches.iter().any(|(pts, _, half)| {
                 pts.windows(2).any(|w| {
                     let (a, b) = (w[0], w[1]);
                     let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
@@ -759,11 +809,12 @@ impl<'a> Grader<'a> {
                     } else {
                         0.0
                     };
-                    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= *half
+                    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t)
+                        <= *half + cartopolis_geo::tunnels::WALL_REACH_M
                 })
             })
         };
-        terrain_grade::conform_to_roads(&mut raw, lattice, &conform, &in_a_corridor);
+        terrain_grade::conform_to_roads(&mut raw, lattice, &conform, &in_a_structure);
 
         let k = k as usize;
         let mut heights = Vec::with_capacity(DENSE_GRID * DENSE_GRID);
@@ -826,6 +877,27 @@ const LID_REACH_M: f32 = 4.0;
 /// the 80th percentile of sixteen samples, eight at 30 m and eight at 60 m, the
 /// client's `TerrainSnapshot::lid_level` on the raw survey (missing samples
 /// skipped). NaN where none of them was measured.
+/// Give each `NaN` in a line's values the nearest finite one along it. A line
+/// with none keeps its `NaN`s.
+fn fill_along(v: &mut [f32]) {
+    let mut last = f32::NAN;
+    for x in v.iter_mut() {
+        if x.is_finite() {
+            last = *x;
+        } else if last.is_finite() {
+            *x = last;
+        }
+    }
+    let mut next = f32::NAN;
+    for x in v.iter_mut().rev() {
+        if x.is_finite() {
+            next = *x;
+        } else if next.is_finite() {
+            *x = next;
+        }
+    }
+}
+
 fn lid_level(sample: &dyn Fn([f32; 2]) -> f32, p: [f32; 2]) -> f32 {
     let radius = cartopolis_geo::tunnels::DATUM_M;
     let mut ring: Vec<f32> = (0..16)

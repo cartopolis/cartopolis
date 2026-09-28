@@ -708,8 +708,8 @@ pub struct ShotMetrics {
     /// counts the *tunnels* — the floor-and-walls description the avatar walks in —
     /// rather than meshes, because that is the half a picture cannot show.
     pub tunnel_count: usize,
-    /// How deep the deepest streamed carriageway runs, metres below the ground
-    /// sheet. Zero with no tunnel in range; about −7 over a Dutch sunken road.
+    /// How deep the deepest streamed carriageway runs under its land, metres
+    /// (negative). Zero with no tunnel in range; about −7 over a Dutch sunken road.
     ///
     /// **A minimum over the whole map, so it says nothing about this view.** It
     /// reads −7.0 wherever one tunnel anywhere in the streamed cells reaches full
@@ -753,7 +753,8 @@ pub struct ShotMetrics {
     /// streets by construction — so the eye cannot tell a picture *of* a tunnel
     /// from a picture pointed fifty metres off one, and twice now it has not.
     pub tunnel_ahead_m: f32,
-    /// The deck level at that nearest tunnel, metres below the ground sheet.
+    /// How far the carriageway at that nearest tunnel runs under its land, metres
+    /// (negative).
     ///
     /// Read beside [`Self::tunnel_ahead_m`]: `ahead_m` near 0 with `ahead_deck_m`
     /// near −7 is a capture looking into a full-depth cut, and is the assertion a
@@ -3580,14 +3581,7 @@ pub fn drive_capture(
                 "tunnel entrance"
             );
         }
-        let nearest_tunnel = aim.and_then(|p| {
-            readouts.tunnels.nearest_tunnel(p, |q| {
-                readouts
-                    .terrain
-                    .surrounding(q.x, q.y, crate::systems::map_geometry::TUNNEL_DATUM_M)
-                    - readouts.terrain.at(q.x, q.y)
-            })
-        });
+        let nearest_tunnel = aim.and_then(|p| readouts.tunnels.nearest_tunnel(p));
         // Walked once here rather than twice in the struct literal below: the
         // descendant walk is the only metric that costs a traversal.
         let avatar_counts = readouts.avatar.counts();
