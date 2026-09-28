@@ -130,6 +130,24 @@ const MS_ECCENTRICITY: f32 = 0.5;
 // Domain-warp strength, in UV units of the low deck's field.
 const WARP: f32 = 0.28;
 
+// Evolution: the field churns as well as drifting. The wind alone carries the
+// whole pattern rigidly, which reads as a decal sliding across the sky; a real
+// deck reshapes as it goes. Both motions below are relative to the wind-carried
+// frame and both are free — an offset per sample, not another sample:
+//
+//   * the domain warp's own field moves across the wind at EVOLVE_WARP (warp-field
+//     units per second, one unit ≈ 6.5 km), so every billow's lean and curl
+//     slowly changes;
+//   * octave i of every fbm slides EVOLVE_DETAIL × i further than the base (in
+//     that octave's own units per second), so the fine edges roil while the mass
+//     they sit on holds. Octave 0 does not slide: the shape of a cloud is set by
+//     the wind, only its surface churns.
+//
+// Scaled to the wind's own time-lapse (CLOUD_WIND crosses the sky in under a
+// minute): an edge changes over ~15 s, a whole cloud over a minute or two.
+const EVOLVE_WARP: vec2<f32> = vec2<f32>(-0.0031, 0.0052);
+const EVOLVE_DETAIL: vec2<f32> = vec2<f32>(0.011, -0.007);
+
 // Detail LOD range, in metres of slant range. A pixel's footprint on the cloud
 // plane grows without bound toward the horizon, so the high octaves alias into
 // shimmer there. Fade them out with range instead.
@@ -186,7 +204,10 @@ fn value_noise(p: vec2<f32>) -> f32 {
 // contributes its *mean* (0.5) rather than dropping out, so the field's average —
 // and therefore the coverage threshold, and therefore how much sky is filled —
 // does not shift with range. Octave 0 is never muted.
-fn fbm(p: vec2<f32>, octaves: i32, billow_octaves: i32, detail: f32) -> f32 {
+//
+// `evolve` is the per-octave slide (see EVOLVE_DETAIL): octave i samples its noise
+// `evolve × i` away from where the wind put it.
+fn fbm(p: vec2<f32>, octaves: i32, billow_octaves: i32, detail: f32, evolve: vec2<f32>) -> f32 {
     var v = 0.0;
     var amp = 0.5;
     var norm = 0.0;
@@ -194,7 +215,7 @@ fn fbm(p: vec2<f32>, octaves: i32, billow_octaves: i32, detail: f32) -> f32 {
     let n = f32(octaves);
     for (var i = 0; i < octaves; i = i + 1) {
         let w = clamp((detail - f32(i) / n) * n + 1.0, 0.0, 1.0);
-        let raw = value_noise(q);
+        let raw = value_noise(q + evolve * f32(i));
         var s = raw;
         if i < billow_octaves {
             s = 1.0 - abs(2.0 * raw - 1.0);
@@ -263,12 +284,15 @@ fn sun_optical_depth(
     thresh: f32,
     soft: f32,
     detail: f32,
+    evolve: vec2<f32>,
 ) -> f32 {
     let run_m = thickness_m * sun.xz / max(sun.y, 0.20);
     let step = run_m * freq / f32(SUN_STEPS);
     var sum = 0.0;
     for (var i = 1; i <= SUN_STEPS; i = i + 1) {
-        let s = fbm(uv + step * f32(i), 3, 2, detail);
+        // The same churn as the visible field, or the self-shadow would stay put
+        // while the cloud casting it reshaped.
+        let s = fbm(uv + step * f32(i), 3, 2, detail, evolve);
         sum += smoothstep(thresh, thresh + soft, s);
     }
     // Mean coverage along the path × the deck's depth × the obliquity of the path
@@ -294,6 +318,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // the whole field on top of that.
     let anchor_m = params2.xy;
     let wind_m = params1.xy * params0.z;
+    // The churn on top of the wind (see EVOLVE_WARP / EVOLVE_DETAIL).
+    let evolve = EVOLVE_DETAIL * params0.z;
 
     // ---- low deck ---------------------------------------------------------
     let t_low = params0.w / dir.y;
@@ -310,15 +336,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef CLOUDS_LOW
     let uv_low = uv_low_base;
 #else
-    let w0 = fbm(uv_low_base * 0.45, 2, 0, detail_low) - 0.5;
-    let w1 = fbm(uv_low_base * 0.45 + vec2<f32>(5.2, 1.3), 2, 0, detail_low) - 0.5;
+    // The warp field moves on its own across the wind, which is what makes a
+    // cloud reshape rather than slide.
+    let warp_uv = uv_low_base * 0.45 + EVOLVE_WARP * params0.z;
+    let w0 = fbm(warp_uv, 2, 0, detail_low, evolve) - 0.5;
+    let w1 = fbm(warp_uv + vec2<f32>(5.2, 1.3), 2, 0, detail_low, evolve) - 0.5;
     let uv_low = uv_low_base + vec2<f32>(w0, w1) * WARP;
 #endif
 
     let shape_low = smoothstep(
         thresh,
         thresh + soft,
-        fbm(uv_low, OCT_LOW, OCT_LOW_BILLOW, detail_low),
+        fbm(uv_low, OCT_LOW, OCT_LOW_BILLOW, detail_low, evolve),
     );
 
     // ---- high deck --------------------------------------------------------
@@ -330,10 +359,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         1.0,
     );
     let thresh_high = 1.0 - cover * HIGH_COVER_SCALE;
+    // Cirrus streaks churn too, a little slower than the deck below them.
     let shape_high = smoothstep(
         thresh_high,
         thresh_high + soft,
-        fbm(uv_high, OCT_HIGH, 0, detail_high),
+        fbm(uv_high, OCT_HIGH, 0, detail_high, evolve * 0.7),
     );
 
     // ---- opacity ----------------------------------------------------------
@@ -357,7 +387,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sun = normalize(sun_dir.xyz);
     let cos_theta = dot(dir, sun);
 
-    let sun_od = sun_optical_depth(uv_low, sun, sun_dir.w, FREQ_LOW, thresh, soft, detail_low);
+    let sun_od = sun_optical_depth(uv_low, sun, sun_dir.w, FREQ_LOW, thresh, soft, detail_low, evolve);
     let ms = multi_scatter(sun_od, cos_theta);
     // Beer-Powder (Schneider, Nubis / Horizon Zero Dawn). The powder factor
     // darkens thin edges — the reason a cumulus reads as solid rather than as
