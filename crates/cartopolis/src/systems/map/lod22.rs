@@ -1093,6 +1093,7 @@ pub fn update_lod22(
         // and recording what a cell was *built* with is what makes the promotion
         // sweep above possible at all.
         let detail = door_detail(ring_distance((cx, cy), ccx, ccy));
+        let urgency = crate::platform::workers::urgency_for_ring(ring_distance((cx, cy), ccx, ccy));
         lod.built_detail.insert((cx, cy), detail);
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
@@ -1149,8 +1150,9 @@ pub fn update_lod22(
                     }
                     None => None,
                 };
-                crate::platform::workers::submit_heavy(
+                crate::platform::workers::submit_heavy_ranked(
                     "lod22",
+                    urgency,
                     Box::new(move || {
                         let built = build_lod22_from_body(
                             &body,

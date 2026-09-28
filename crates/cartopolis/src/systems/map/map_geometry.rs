@@ -1069,6 +1069,7 @@ fn spawn_geometry_task(
     // delivered.
     ground: GroundJob,
     origin: Vec2,
+    urgency: crate::platform::workers::Urgency,
     results: Arc<Mutex<Vec<(Cell, Tessellated)>>>,
     live: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -1220,7 +1221,7 @@ fn spawn_geometry_task(
             if !live.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
-            crate::platform::workers::submit_heavy("surfaces", Box::new(move || {
+            crate::platform::workers::submit_heavy_ranked("surfaces", urgency, Box::new(move || {
                 let mut lap = Lap::new();
                 let mut shore = None;
                 let mut grass = None;
@@ -2398,6 +2399,9 @@ pub fn update_map_surfaces(
             wants,
             ground,
             origin,
+            crate::platform::workers::urgency_for_ring(crate::platform::fetch_gate::ring_distance(
+                c, ccx, ccy,
+            )),
             sink.clone(),
             surfaces.stream.live(),
         );

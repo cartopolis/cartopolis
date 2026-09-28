@@ -185,6 +185,12 @@ where
         }
     }
 
+    /// Re-state the rank of every cell still waiting to start, for a streamer
+    /// whose view moved while they queued. See [`Dispatcher::reprice`].
+    pub fn reprice_queue(&mut self, rank_of: impl FnMut(&K) -> fetch_gate::Rank) {
+        self.dispatch.reprice(rank_of);
+    }
+
     /// The next cell allowed to start at `now`, or `None` at this stream's
     /// concurrency cap, inside its throttle, or refused by the global
     /// [`fetch_gate`]. Loop on it to fill the budget each frame.

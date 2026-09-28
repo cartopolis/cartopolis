@@ -125,6 +125,19 @@ impl<J> Dispatcher<J> {
         self.pending.len() != before
     }
 
+    /// Re-state the rank of every queued job from where the caller's view is now.
+    ///
+    /// A rank is decided when a job is queued, and a camera that keeps moving makes
+    /// it stale: the tile that was far when it was asked for is under the camera
+    /// now and still waits behind everything queued before it. Jobs keep their
+    /// arrival order among equals, so this changes *who is ahead*, never who has
+    /// been waiting longest.
+    pub fn reprice(&mut self, mut rank_of: impl FnMut(&J) -> Rank) {
+        for q in &mut self.pending {
+            q.rank = rank_of(&q.job);
+        }
+    }
+
     /// Take every job that has not started yet, leaving the in-flight count alone.
     ///
     /// For a caller that re-decides its whole work list each pass rather than
@@ -238,6 +251,16 @@ mod tests {
         }
         d.queue_ranked("fresh", 0);
         assert_eq!(d.next(0.0), Some("fresh"));
+    }
+
+    #[test]
+    fn repricing_lets_a_queued_job_overtake_older_ones() {
+        let mut d = dispatcher();
+        d.queue_ranked("old", 5);
+        d.queue_ranked("nowunder", 9);
+        d.reprice(|j| if *j == "nowunder" { 0 } else { 5 });
+        assert_eq!(d.next(0.0), Some("nowunder"));
+        assert_eq!(d.next(0.0), Some("old"));
     }
 
     #[test]

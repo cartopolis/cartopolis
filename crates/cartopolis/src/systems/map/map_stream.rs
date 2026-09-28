@@ -14,7 +14,7 @@ use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use bevy::camera::primitives::Aabb;
 
@@ -250,6 +250,15 @@ pub struct MapStream {
     /// The live anchor generation a fetch task compares against (main thread
     /// stores, task loads) — a re-anchor's stale in-flight fetches drop themselves.
     gen_shared: Arc<AtomicU32>,
+    /// The tiles the clipmap wants *now*, readable from a fetch or decode task.
+    ///
+    /// The generation says a tile is from the wrong anchor; this says it is from
+    /// the right one and nobody wants it any more. A fly-over retires a ring's
+    /// worth of tiles while their fetches are in flight (`forget` frees the slot
+    /// at once but cannot stop the task), and without this each one still spends a
+    /// worker on a ~50 ms decode and mip chain whose result is dropped on arrival
+    /// — work that queues in front of the tiles the camera is now over.
+    wanted_shared: Arc<RwLock<HashSet<TileKey>>>,
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
     placeholder: Option<Handle<crate::systems::ground_detail::GroundMaterial>>,
@@ -419,6 +428,9 @@ pub fn apply_reanchor(
     // would otherwise be treated as still-in-flight and never re-textured.
     stream.tiles.reset();
     stream.desired = DesiredTiles::default();
+    if let Ok(mut shared) = stream.wanted_shared.write() {
+        shared.clear();
+    }
     // Quad meshes are sized by tile metres *at the anchor latitude*; stale sizes
     // at a new latitude would leave gaps or overlaps between tiles.
     stream.quads.clear();
@@ -494,6 +506,9 @@ pub(crate) fn retear_tiles(stream: &mut MapStream, tiles: impl Iterator<Item = E
     stream.aerial_ready.clear();
     stream.tiles.reset();
     stream.desired = DesiredTiles::default();
+    if let Ok(mut shared) = stream.wanted_shared.write() {
+        shared.clear();
+    }
     stream.bump_fetch_generation();
 }
 
@@ -525,6 +540,7 @@ impl Default for MapStream {
                 despawns_per_frame: crate::quality::budget().per_frame(MAX_TILE_DESPAWNS_PER_FRAME),
             }),
             gen_shared: Arc::new(AtomicU32::new(0)),
+            wanted_shared: Arc::new(RwLock::new(HashSet::new())),
             quads: HashMap::new(),
             placeholder: None,
             desired: DesiredTiles::default(),
@@ -613,6 +629,18 @@ pub fn init_map_stream(
     );
 }
 
+/// Whether a tile task's result would still be used: from the live anchor and
+/// still in the clipmap's wanted set. A poisoned lock answers "yes" — decoding a
+/// tile nobody needs is a waste, dropping one somebody does is a hole.
+fn tile_still_wanted(
+    key: TileKey,
+    gen: u32,
+    live_gen: &AtomicU32,
+    wanted: &RwLock<HashSet<TileKey>>,
+) -> bool {
+    gen == live_gen.load(Ordering::Relaxed) && wanted.read().map_or(true, |w| w.contains(&key))
+}
+
 /// Spawn one ground-tile fetch+decode task (ADR-033 seam): gen-tagged so a
 /// re-anchor's stale in-flight fetch drops itself, then decode + mip-chain off the
 /// main thread and hand the finished pixels back for the render loop to upload.
@@ -622,6 +650,7 @@ fn spawn_map_tile(
     template: String,
     results: Arc<Mutex<Vec<(TileKey, Option<DecodedTile>)>>>,
     live_gen: Arc<AtomicU32>,
+    wanted: Arc<RwLock<HashSet<TileKey>>>,
 ) {
     // Two halves on two kinds of executor (ADR-033): the fetch is awaited here on
     // the `IoTaskPool` — on wasm that is the main thread, but awaiting a browser
@@ -650,6 +679,12 @@ fn spawn_map_tile(
             // also most of the time-to-first-map.
             let tile_px = crate::quality::budget().tile_px;
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
+                Ok(_) if !tile_still_wanted(key, gen, &live_gen, &wanted) => {
+                    // Retired or re-anchored while the fetch was in flight. Nothing
+                    // is listening for this key any more (`forget` already gave its
+                    // slot back), so push nothing: the decode below is the expensive
+                    // half and its result would be discarded.
+                }
                 Ok(payload) => {
                     // A tile drawn on an earlier visit is read here, where the
                     // storage read can be awaited, and decoded on the worker below
@@ -666,7 +701,14 @@ fn spawn_map_tile(
                         }
                         None => None,
                     };
-                    crate::platform::workers::submit("map_tiles", Box::new(move || {
+                    let wanted = wanted.clone();
+                    let live_gen = live_gen.clone();
+                    crate::platform::workers::submit_ranked("map_tiles", crate::platform::workers::BASEMAP, Box::new(move || {
+                        // Checked again on the worker: the job may have waited behind
+                        // others for a while since the check above.
+                        if !tile_still_wanted(key, gen, &live_gen, &wanted) {
+                            return;
+                        }
                         let reused = stored.and_then(|png| {
                             crate::systems::tile_loader::decode_rendered(&png, tile_px)
                         });
@@ -1443,6 +1485,29 @@ fn select_tiles(
     (wanted, order.into_iter().map(|(_, _, t)| t).collect())
 }
 
+/// A tile's rank: [`tile_rank`]'s near band, and behind it the tile's place in the
+/// current spawn order (coarse level first, then nearest).
+///
+/// The place matters because equal ranks keep *arrival* order, and arrival order
+/// belongs to the view a tile was first asked for in. A camera that keeps moving
+/// queued the newly-visible tiles behind ones that were wanted a second ago — the
+/// stall where what you are looking at waits on what you looked at. A tile that has
+/// left the wanted set has no place and takes the back of the queue.
+fn tile_rank_at(
+    tile: TileKey,
+    centres: &[(u32, i64, i64)],
+    place: Option<usize>,
+) -> fetch_gate::Rank {
+    let near = tile_rank(tile, centres);
+    if near <= fetch_gate::NEAR {
+        return near;
+    }
+    place.map_or(fetch_gate::ANY, |i| {
+        (fetch_gate::NEAR + 1)
+            .saturating_add(u32::try_from(i).unwrap_or(u32::MAX - 2 - fetch_gate::NEAR))
+    })
+}
+
 /// [`fetch_gate::NEAR`] for a tile in the 3×3 around its own level's centre, and
 /// [`fetch_gate::ANY`] for the rest of the clipmap.
 ///
@@ -1655,6 +1720,7 @@ pub fn update_map_stream(
         ]
     };
     let key = (centres, stream.fetch_generation, ring_bias, pose);
+    let mut view_changed = false;
     if stream.desired.key.as_ref() != Some(&key) {
         let budget = crate::quality::budget();
         let (fov, aspect) = match projection {
@@ -1689,11 +1755,16 @@ pub fn update_map_stream(
             );
             stream.current_zoom = finest;
         }
+        if let Ok(mut shared) = stream.wanted_shared.write() {
+            shared.clear();
+            shared.extend(wanted.keys().copied());
+        }
         stream.desired = DesiredTiles {
             key: Some(key),
             wanted,
             spawn_order,
         };
+        view_changed = true;
     }
 
     // Spawn newly-needed tiles and ask for their imagery, coarse-first (see
@@ -1715,6 +1786,21 @@ pub fn update_map_stream(
         .as_ref()
         .map(|(centres, _, _, _)| centres.clone())
         .unwrap_or_default();
+    // A queued tile was ranked for the view it was asked for in. When the view has
+    // moved, the queue is re-ranked to the new one, or a tile the camera is now over
+    // waits behind everything queued before it.
+    if view_changed {
+        let order: HashMap<TileKey, usize> = stream
+            .desired
+            .spawn_order
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (*k, i))
+            .collect();
+        stream
+            .tiles
+            .reprice_queue(|k| tile_rank_at(*k, &level_centres, order.get(k).copied()));
+    }
     for i in 0..stream.desired.spawn_order.len() {
         let key = stream.desired.spawn_order[i];
         let y = stream.desired.wanted[&key];
@@ -1726,7 +1812,7 @@ pub fn update_map_stream(
         // `fetch_gate`'s near reserve for the tiles a person is actually looking
         // at, and since equal ranks keep arrival order, the coarse-first sequence
         // survives inside both bands.
-        let rank = tile_rank(key, &level_centres);
+        let rank = tile_rank_at(key, &level_centres, Some(i));
         // `CellStream::request_ranked` de-dups and is also the retry pump — a
         // failed tile waits out `FETCH_RETRY_SECS` and stops being offered once
         // its attempts are spent, so there is no second retry loop.
@@ -1870,7 +1956,14 @@ pub fn update_map_stream(
             } else {
                 template.clone()
             };
-            spawn_map_tile(key, gen, template, results.clone(), live_gen.clone());
+            spawn_map_tile(
+                key,
+                gen,
+                template,
+                results.clone(),
+                live_gen.clone(),
+                stream.wanted_shared.clone(),
+            );
             queued += 1;
         }
     }
@@ -2295,6 +2388,18 @@ mod tests {
     }
 
     use crate::systems::vector_tiles::SubTile;
+
+    #[test]
+    fn a_tile_ranks_by_its_place_in_the_spawn_order_behind_the_near_band() {
+        let c = vec![(14, 100, 100)];
+        let near = TileKey::new(101, 99, 14);
+        let far = TileKey::new(110, 100, 14);
+        assert_eq!(tile_rank_at(near, &c, Some(50)), fetch_gate::NEAR);
+        let early = tile_rank_at(far, &c, Some(3));
+        let late = tile_rank_at(far, &c, Some(40));
+        assert!(fetch_gate::NEAR < early && early < late && late < fetch_gate::ANY);
+        assert_eq!(tile_rank_at(far, &c, None), fetch_gate::ANY);
+    }
 
     /// Each level's centre tile for a camera sitting on the anchor — the same
     /// arithmetic `update_map_stream` runs every frame.
