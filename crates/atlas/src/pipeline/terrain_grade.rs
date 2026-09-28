@@ -568,6 +568,22 @@ impl<'a> Grader<'a> {
                 f32::NAN
             }
         };
+        // **Under a lifted deck a road is under a span, not under the ground.**
+        // OSM tags a path beneath a bridge as a tunnel as readily as one beneath
+        // an embankment, and read as a bore it was given a lid at the level of
+        // the land around: under the ring's bridge by Kardinge that filled the
+        // space beneath the deck with ten metres of grass, where the photograph
+        // shows the path at grade between the abutments (2026-09-28). Such a
+        // point is measured like any road: its height from the survey, its land
+        // from its banks, its walls from the survey — and a point atlas measured
+        // walls for is not roofed by the client (`tunnels::plan`).
+        let spanned = |p: [f32; 2]| {
+            plates.iter().any(|plate| {
+                plate
+                    .deck
+                    .contains([p[0] - plate.world[0], p[1] - plate.world[1]])
+            })
+        };
         // **Over a tunnel the survey may be stale.** Groningen's ring was flown as
         // an open trench and has a lid on it now, so a street crossing the lid
         // would read the trench floor nine metres down, and a path across the
@@ -590,6 +606,9 @@ impl<'a> Grader<'a> {
                         .iter()
                         .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
                         .collect();
+                    if pts.iter().all(|&p| spanned(p)) {
+                        continue;
+                    }
                     let pad = run.half_w * s + LID_REACH_M + cartopolis_geo::tunnels::DATUM_M;
                     let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
                     for p in &pts {
@@ -660,6 +679,8 @@ impl<'a> Grader<'a> {
                 .collect()
         };
         let mut lines: Vec<road_levels::Line> = Vec::new();
+        // Per line, which of its points are a tunnel's under a lifted deck.
+        let mut span: Vec<Vec<bool>> = Vec::new();
         // (this tile's own run, its key, its half-width, its level, its class)
         // per line.
         let mut owners: Vec<(bool, u64, f32, i8, cartopolis_geo::road_texture::RoadClass)> =
@@ -709,7 +730,7 @@ impl<'a> Grader<'a> {
                     let heights = points
                         .iter()
                         .map(|&p| {
-                            if run.level < 0 {
+                            if run.level < 0 && !spanned(p) {
                                 let lid = lid_level(&sample, p);
                                 let here = sample(p);
                                 if !lid.is_finite() {
@@ -746,6 +767,12 @@ impl<'a> Grader<'a> {
                             }
                         })
                         .collect();
+                    span.push(
+                        points
+                            .iter()
+                            .map(|&p| run.level < 0 && spanned(p))
+                            .collect(),
+                    );
                     lines.push(road_levels::Line {
                         points,
                         heights,
@@ -783,19 +810,22 @@ impl<'a> Grader<'a> {
             .iter()
             .zip(&owners)
             .zip(&solved.heights)
-            .map(|((l, o), ys)| {
+            .zip(&span)
+            .map(|(((l, o), ys), sp)| {
                 if l.level > 0 {
                     return vec![f32::NAN; l.points.len()];
                 }
-                let mut g: Vec<f32> = if l.level < 0 {
-                    l.points.iter().map(|&p| lid_level(&sample, p)).collect()
-                } else {
-                    (0..l.points.len())
-                        .map(|i| bank_level(&sample, &l.points, i, o.2))
-                        .collect()
-                };
+                let mut g: Vec<f32> = (0..l.points.len())
+                    .map(|i| {
+                        if l.level < 0 && !sp[i] {
+                            lid_level(&sample, l.points[i])
+                        } else {
+                            bank_level(&sample, &l.points, i, o.2)
+                        }
+                    })
+                    .collect();
                 fill_along(&mut g);
-                if g.iter().all(|v| !v.is_finite()) && l.level < 0 {
+                if g.iter().all(|v| !v.is_finite()) && l.level < 0 && !sp.contains(&true) {
                     g = ys
                         .iter()
                         .map(|y| y + cartopolis_geo::tunnels::level_depth(o.4))
@@ -818,11 +848,11 @@ impl<'a> Grader<'a> {
             .map(|l| vec![[f32::NAN; 2]; l.points.len()])
             .collect();
         for (li, l) in lines.iter().enumerate() {
-            if l.level != 0 || !inside[li].iter().any(|&b| b) {
+            if l.level > 0 || !inside[li].iter().any(|&b| b) {
                 continue;
             }
             for vi in 0..l.points.len() {
-                if inside[li][vi] {
+                if inside[li][vi] && (l.level == 0 || span[li][vi]) {
                     walls[li][vi] = wall_sides(
                         &sample,
                         &l.points,
@@ -908,8 +938,17 @@ impl<'a> Grader<'a> {
                     "tile": [tx, ty],
                 }));
             }
+            // A tunnel wholly under a lifted deck is a road under a span, and has
+            // nothing to build.
+            let under_a_span: std::collections::HashSet<u64> = owners
+                .iter()
+                .zip(&span)
+                .filter(|((mine, ..), sp)| *mine && !sp.is_empty() && sp.iter().all(|&b| b))
+                .map(|((_, key, ..), _)| *key)
+                .collect();
             for (r, p) in own_runs.iter().zip(&profiles) {
                 if r.level < 0
+                    && !under_a_span.contains(&r.key)
                     && p.as_ref()
                         .is_none_or(|p| p.land.iter().all(|g| !g.is_finite()))
                 {

@@ -1231,10 +1231,19 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
             // and one fits under the land** — its headroom plus a slab. The rest
             // of a structure is open: the ramps, the cuttings, and the stretch of
             // a short underpass that never gets deep enough to take one.
+            //
+            // **And never where atlas measured walls**: it measures them only for
+            // a stretch open to the sky — a road at grade, or a tunnel's under a
+            // lifted deck, which is a road under a span (atlas's `spanned`).
             let roofed: Vec<bool> = road_y
                 .iter()
                 .zip(&land_y)
-                .map(|(&y, &g)| run.level < 0 && y + clearance <= g + CEILING_MAX_Y)
+                .zip(&walls)
+                .map(|((&y, &g), w)| {
+                    run.level < 0
+                        && !w.iter().any(|v| v.is_finite())
+                        && y + clearance <= g + CEILING_MAX_Y
+                })
                 .collect();
             let mut travelled = Vec::with_capacity(centre.len());
             let mut total = 0.0f32;
@@ -1300,7 +1309,10 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
                 .road_y
                 .iter()
                 .zip(&p.land_y)
-                .map(|(&y, &g)| y + p.clearance <= g + CEILING_MAX_Y)
+                .zip(&p.walls)
+                .map(|((&y, &g), w)| {
+                    !w.iter().any(|v| v.is_finite()) && y + p.clearance <= g + CEILING_MAX_Y
+                })
                 .collect();
         }
     }
@@ -3005,6 +3017,27 @@ mod tests {
             (lo + 5.5).abs() < 1e-3,
             "opening reaches {lo} on the bank side"
         );
+    }
+
+    /// **A tunnel under a span is open.** Atlas measures walls only for a
+    /// stretch open to the sky, which is how a path OSM tags as a tunnel beneath
+    /// a bridge reaches the client: deep under its land, and never to be given a
+    /// lid (2026-09-28).
+    #[test]
+    fn a_tunnel_under_a_span_is_not_roofed() {
+        let bore = run(-1, [0.0, 0.0], [60.0, 0.0], 0);
+        let n = bore.points.len();
+        let profile = Profile {
+            road: vec![-7.0; n],
+            land: vec![0.0; n],
+            walls: vec![[9.0, 9.0]; n],
+        };
+        let out = build_structures(&[bore], &[Some(profile)], None);
+        assert!(
+            out.tunnels.iter().all(|t| t.covered.iter().all(|c| !c)),
+            "a stretch atlas measured walls for was roofed"
+        );
+        assert!(!out.openings.is_empty(), "and its ground was not opened");
     }
 
     /// **A trench wider than the bore it runs into is closed where they meet**,
