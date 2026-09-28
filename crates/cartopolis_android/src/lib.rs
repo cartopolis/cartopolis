@@ -70,6 +70,11 @@ static ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// that finishes differently, a path not thought of): it leaves rather than
 /// starting an app that cannot draw, so the *next* launch gets a clean process.
 ///
+/// `run` returns only on an `AppExit`: winit ignores `MainEvent::Destroy`, so a
+/// destroyed activity never ends it. `java/.../MainActivity.java` covers that
+/// case by killing the process in `onDestroy`; without it this guard is what a
+/// relaunch trips over.
+///
 /// [`crate`-level]: crate
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]

@@ -210,7 +210,7 @@
              sit inside another element's attribute list. XML has no diagnostic
              kinder than "not well-formed" for it. -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="eu.garage44.cartopolis.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="user"

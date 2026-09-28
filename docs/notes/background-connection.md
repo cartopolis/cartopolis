@@ -133,7 +133,20 @@ the service still running and the notification still in the shade.
 
 `android_main` therefore ends the process when `run()` returns, and the
 once-per-process claim is now enforced rather than assumed
-(`crates/cartopolis_android/src/lib.rs`). Anything that wants the process to
+(`crates/cartopolis_android/src/lib.rs`).
+
+**That fix only covered the back gesture, and the 2026-09-28 report ("the app
+does not reopen at all") is the rest.** `run()` returns only when Bevy writes an
+`AppExit`. On `MainEvent::Destroy` winit 0.30's Android backend does nothing but
+`warn!("TODO: forward onDestroy notification to application")`, so an activity
+destroyed by anything else — swiped out of recents, reclaimed for memory — leaves
+`android_main` polling forever, the process alive, and the guard's `exit(0)` to
+fire on the *next* launch: the app opens and closes itself, and the tap after
+that works. `MainActivity` (a `NativeActivity` subclass, `java/`) now kills the
+process in `onDestroy`, which is the one place that is told. Not run on a device:
+this container has no JDK or SDK to build the APK, and the emulator lane is gone.
+
+Anything that wants the process to
 outlive its activity has to solve the window handle first; until then, a held
 connection is a thing that survives a screen going off, not a thing that
 survives Android reclaiming the activity.
