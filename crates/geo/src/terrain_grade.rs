@@ -892,7 +892,13 @@ mod tests {
         };
         // A nine-metre trench twenty metres wide, in land at 2 m.
         let mut g: Vec<f32> = (0..l.n * l.n)
-            .map(|i| if (40..=60).contains(&(i / l.n)) { -7.0 } else { 2.0 })
+            .map(|i| {
+                if (40..=60).contains(&(i / l.n)) {
+                    -7.0
+                } else {
+                    2.0
+                }
+            })
             .collect();
         let pts = [[-50.0, 0.0], [50.0, 0.0]];
         let land = [2.0, 2.0];
@@ -908,8 +914,16 @@ mod tests {
             &|p| p[0] > 40.0,
         );
         let at = |x: usize, z: usize| g[z * l.n + x];
-        assert!((at(50, 50) - 2.0).abs() < 1e-4, "over the corridor: {}", at(50, 50));
-        assert!(at(50, 58) > 0.0, "the trench beside the wall stayed dug: {}", at(50, 58));
+        assert!(
+            (at(50, 50) - 2.0).abs() < 1e-4,
+            "over the corridor: {}",
+            at(50, 50)
+        );
+        assert!(
+            at(50, 58) > 0.0,
+            "the trench beside the wall stayed dug: {}",
+            at(50, 58)
+        );
         assert!((at(50, 5) - 2.0).abs() < 1e-4, "the land far off moved");
         assert!((at(95, 50) + 7.0).abs() < 1e-4, "the water was filled in");
     }

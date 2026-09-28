@@ -563,10 +563,13 @@ impl<'a> Grader<'a> {
         };
         // **Over a tunnel the survey may be stale.** Groningen's ring was flown as
         // an open trench and has a lid on it now, so a street crossing the lid
-        // would read the trench floor nine metres down. Where a road runs over a
-        // tunnel's corridor its ground is the lid — the land around — as the
-        // client's own fill (`tunnels::Lidded`) has always put it back.
-        let mut bores: Vec<(Vec<[f32; 2]>, f32)> = Vec::new();
+        // would read the trench floor nine metres down, and a path across the
+        // park on top of it two to four. A road is measured on the ground as it
+        // is put back (`fill_to_land`): the lid over a tunnel's corridor, blending
+        // back to the survey over the same taper — but never lowered by it, and
+        // not by a tunnel the road itself runs into, whose ramp the survey
+        // measured truly.
+        let mut bores: Vec<(Vec<[f32; 2]>, f32, [f32; 4])> = Vec::new();
         for dy in -reach..=reach {
             for dx in -reach..=reach {
                 let Some(cell) = self.cells.get(&(tx + dx, ty + dy)) else {
@@ -575,30 +578,79 @@ impl<'a> Grader<'a> {
                 let s = tile_m / cell.tile_m;
                 let off = [dx as f32 * tile_m, dy as f32 * tile_m];
                 for run in cell.runs.iter().filter(|r| r.level < 0) {
+                    let pts: Vec<[f32; 2]> = run
+                        .points
+                        .iter()
+                        .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
+                        .collect();
+                    let pad = run.half_w * s + LID_REACH_M + cartopolis_geo::tunnels::DATUM_M;
+                    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                    for p in &pts {
+                        b = [
+                            b[0].min(p[0]),
+                            b[1].min(p[1]),
+                            b[2].max(p[0]),
+                            b[3].max(p[1]),
+                        ];
+                    }
                     bores.push((
-                        run.points
-                            .iter()
-                            .map(|p| [off[0] + p[0] * s, off[1] + p[1] * s])
-                            .collect(),
+                        pts,
                         run.half_w * s,
+                        [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad],
                     ));
                 }
             }
         }
-        let over_a_bore = |p: [f32; 2]| {
-            bores.iter().any(|(pts, half)| {
-                pts.windows(2).any(|w| {
-                    let (a, b) = (w[0], w[1]);
-                    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        // How much a point stands on a lid rather than on the survey: 1 within
+        // `LID_REACH_M` of a tunnel's carriageway, falling smoothly to 0 over the
+        // fill's taper, and 0 for the tunnels in `skip`.
+        let lid_weight = |p: [f32; 2], skip: &[usize]| -> f32 {
+            let mut best = 0.0f32;
+            for (bi, (pts, half, b)) in bores.iter().enumerate() {
+                if skip.contains(&bi) || p[0] < b[0] || p[1] < b[1] || p[0] > b[2] || p[1] > b[3] {
+                    continue;
+                }
+                for w in pts.windows(2) {
+                    let (a, c) = (w[0], w[1]);
+                    let (dx, dz) = (c[0] - a[0], c[1] - a[1]);
                     let len2 = dx * dx + dz * dz;
                     let t = if len2 > 1e-9 {
                         (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
                     } else {
                         0.0
                     };
-                    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) <= half + LID_REACH_M
+                    let d = (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dz * t) - half - LID_REACH_M;
+                    let wt = if d <= 0.0 {
+                        1.0
+                    } else if d >= cartopolis_geo::tunnels::DATUM_M {
+                        0.0
+                    } else {
+                        let u = 1.0 - d / cartopolis_geo::tunnels::DATUM_M;
+                        u * u * (3.0 - 2.0 * u)
+                    };
+                    best = best.max(wt);
+                }
+                if best >= 1.0 {
+                    break;
+                }
+            }
+            best
+        };
+        // The tunnels a line runs into: any whose line passes within a join's
+        // reach of either of its ends.
+        let runs_into = |points: &[[f32; 2]]| -> Vec<usize> {
+            let ends = [points[0], points[points.len() - 1]];
+            bores
+                .iter()
+                .enumerate()
+                .filter(|(_, (pts, ..))| {
+                    pts.iter().any(|q| {
+                        ends.iter()
+                            .any(|e| (q[0] - e[0]).hypot(q[1] - e[1]) <= road_levels::TEE_M)
+                    })
                 })
-            })
+                .map(|(bi, _)| bi)
+                .collect()
         };
         let mut lines: Vec<road_levels::Line> = Vec::new();
         // (this tile's own run, its key, its half-width, its level, its class)
@@ -642,6 +694,11 @@ impl<'a> Grader<'a> {
                     // where the survey saw down into an open trench, that too,
                     // since then it measured the road.
                     let depth = cartopolis_geo::tunnels::level_depth(run.class);
+                    let own_bores = if run.level == 0 {
+                        runs_into(&points)
+                    } else {
+                        Vec::new()
+                    };
                     let heights = points
                         .iter()
                         .map(|&p| {
@@ -663,10 +720,17 @@ impl<'a> Grader<'a> {
                                     return Height::Fixed(t);
                                 }
                             }
-                            let v = if over_a_bore(p) {
-                                lid_level(&sample, p)
+                            let here = sample(p);
+                            let w = lid_weight(p, &own_bores);
+                            let v = if w > 0.0 {
+                                let lid = lid_level(&sample, p);
+                                match (here.is_finite(), lid.is_finite()) {
+                                    (true, true) => here + w * (lid - here).max(0.0),
+                                    (false, true) => lid,
+                                    _ => here,
+                                }
                             } else {
-                                sample(p)
+                                here
                             };
                             if v.is_finite() {
                                 Height::Measured { y: v, weight: 1.0 }
@@ -682,19 +746,33 @@ impl<'a> Grader<'a> {
                         max_grade: road_levels::max_grade(run.class),
                         cut: run.cut,
                     });
-                    owners.push((dx == 0 && dy == 0, run.key, run.half_w, run.level, run.class));
+                    owners.push((
+                        dx == 0 && dy == 0,
+                        run.key,
+                        run.half_w,
+                        run.level,
+                        run.class,
+                    ));
                 }
             }
         }
         let solved = road_levels::solve(&lines);
 
         // **The land each road runs through**, for deciding which stretches are
-        // structures below the ground and how high their walls reach: the level
-        // of the land around (`lid_level`), the same the lids are measured
-        // against. Only below a bridge's level — a deck's structure is its own.
-        // A point the survey has nothing around takes its neighbour's along the
-        // line, and a tunnel with none at all is a level's depth under its road.
-        let land: Vec<Vec<f32>> = lines
+        // structures below the ground and how high their walls reach. Over a
+        // tunnel it is the lid — the level of the land around (`lid_level`), the
+        // same the ceilings are measured against. Beside any other road it is the
+        // **bank**: the higher of the ground either side just past where a wall
+        // would stand (`bank_level`), which is what a retaining wall holds back.
+        // Not the lid level there: a ring of samples 30 and 60 m out reaches the
+        // lids and embankments near a cutting, and read a cycle path across a
+        // park sloping down from the ring as nearly three metres under its land
+        // — it was walled for a hundred metres where the photograph shows it at
+        // grade (2026-09-28). Only below a bridge's level — a deck's structure is
+        // its own. A point the survey has nothing beside takes its neighbour's
+        // along the line, and a tunnel with none at all is a level's depth under
+        // its road.
+        let mut land: Vec<Vec<f32>> = lines
             .iter()
             .zip(&owners)
             .zip(&solved.heights)
@@ -702,7 +780,13 @@ impl<'a> Grader<'a> {
                 if l.level > 0 {
                     return vec![f32::NAN; l.points.len()];
                 }
-                let mut g: Vec<f32> = l.points.iter().map(|&p| lid_level(&sample, p)).collect();
+                let mut g: Vec<f32> = if l.level < 0 {
+                    l.points.iter().map(|&p| lid_level(&sample, p)).collect()
+                } else {
+                    (0..l.points.len())
+                        .map(|i| bank_level(&sample, &l.points, i, o.2))
+                        .collect()
+                };
                 fill_along(&mut g);
                 if g.iter().all(|v| !v.is_finite()) && l.level < 0 {
                     g = ys
@@ -713,7 +797,11 @@ impl<'a> Grader<'a> {
                 g
             })
             .collect();
-        let inside = road_levels::structures(&lines, &solved.heights, &land);
+        let mut inside = road_levels::structures(&lines, &solved.heights, &land);
+        in_the_same_trench(&lines, &owners, &solved.heights, &mut land, &mut inside);
+        for (g, m) in land.iter_mut().zip(&inside) {
+            smooth_land(g, m);
+        }
 
         let own = self.road_heights.entry((tx, ty)).or_default();
         for (((mine, key, ..), ys), (g, m)) in owners
@@ -877,6 +965,175 @@ const LID_REACH_M: f32 = 4.0;
 /// the 80th percentile of sixteen samples, eight at 30 m and eight at 60 m, the
 /// client's `TerrainSnapshot::lid_level` on the raw survey (missing samples
 /// skipped). NaN where none of them was measured.
+/// Points either side a structure's land is smoothed over along its line.
+const LAND_SMOOTH: usize = 3;
+
+/// A structure's land with the single-point misreads taken out: the median over
+/// [`LAND_SMOOTH`] points either side along the line, among the points that are
+/// part of the structure. A bank read into the survey's hole beside a wall, or
+/// onto the lane beside, is one point of road-level land in a run of land, and
+/// would put a notch the depth of the cutting into the top of its wall.
+fn smooth_land(land: &mut [f32], inside: &[bool]) {
+    let src = land.to_vec();
+    for i in 0..land.len() {
+        if !inside[i] {
+            continue;
+        }
+        let (lo, hi) = (
+            i.saturating_sub(LAND_SMOOTH),
+            (i + LAND_SMOOTH + 1).min(land.len()),
+        );
+        let mut v: Vec<f32> = (lo..hi)
+            .filter(|&k| inside[k] && src[k].is_finite())
+            .map(|k| src[k])
+            .collect();
+        if v.is_empty() {
+            continue;
+        }
+        v.sort_by(f32::total_cmp);
+        land[i] = v[v.len() / 2];
+    }
+}
+
+/// How far beside a structure another road may run and still be in its trench,
+/// metres between their centre lines.
+const TRENCH_WIDTH_M: f32 = 20.0;
+
+/// **A road beside a structure, at its depth, is in its trench.** The bank a
+/// road is measured against (`bank_level`) is the ground just past its own
+/// edge, and in a trench carrying a dual carriageway and a slip road, the lane
+/// beside one of them is another lane: over Groningen's ring one carriageway of a
+/// cutting was walled and its twin fifteen metres off was not, for eighty metres
+/// where a slip road ran between it and the wall. So a ground road that is not
+/// part of a structure, and runs within [`TRENCH_WIDTH_M`] of one at the same
+/// depth to within `SUNK_M` while well under that structure's land, joins it
+/// and takes its land. A path across the park beside a cutting is metres higher
+/// than the road in it, and stays out.
+fn in_the_same_trench(
+    lines: &[road_levels::Line],
+    owners: &[(bool, u64, f32, i8, cartopolis_geo::road_texture::RoadClass)],
+    road: &[Vec<f32>],
+    land: &mut [Vec<f32>],
+    inside: &mut [Vec<bool>],
+) {
+    // Every structure point, bucketed: (line, x, z, road, land).
+    let cell = |p: [f32; 2]| {
+        (
+            (p[0] / TRENCH_WIDTH_M).floor() as i64,
+            (p[1] / TRENCH_WIDTH_M).floor() as i64,
+        )
+    };
+    let mut near: HashMap<(i64, i64), Vec<(usize, [f32; 2], f32, f32)>> = HashMap::new();
+    for (li, l) in lines.iter().enumerate() {
+        for (vi, &p) in l.points.iter().enumerate() {
+            if inside[li][vi] && land[li][vi].is_finite() {
+                near.entry(cell(p))
+                    .or_default()
+                    .push((li, p, road[li][vi], land[li][vi]));
+            }
+        }
+    }
+    let sunk = road_levels::SUNK_M;
+    let mut add: Vec<(usize, usize, f32)> = Vec::new();
+    for (li, l) in lines.iter().enumerate() {
+        if l.level != 0 || owners[li].3 != 0 {
+            continue;
+        }
+        for (vi, &p) in l.points.iter().enumerate() {
+            if inside[li][vi] {
+                continue;
+            }
+            let y = road[li][vi];
+            let (cx, cz) = cell(p);
+            let mut best: Option<(f32, f32)> = None;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    for &(o, q, oy, og) in near.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                        let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+                        if o != li
+                            && d <= TRENCH_WIDTH_M
+                            && (oy - y).abs() <= sunk
+                            && y < og - sunk
+                            && best.is_none_or(|(bd, _)| d < bd)
+                        {
+                            best = Some((d, og));
+                        }
+                    }
+                }
+            }
+            if let Some((_, g)) = best {
+                add.push((li, vi, g));
+            }
+        }
+    }
+    for (li, vi, g) in add {
+        inside[li][vi] = true;
+        land[li][vi] = g;
+    }
+}
+
+/// Where a carriageway's bank is looked for, metres past its edge: from past a
+/// wall's own width, across whatever hole the survey left beside it.
+const BANK_M: [f32; 2] = [2.0, 20.0];
+
+/// How far past the first measured ground the bank is read, metres.
+const BANK_READ_M: f32 = 4.0;
+
+/// The ground a wall beside point `i` of a line would hold back.
+///
+/// On each side, the first measured ground past the carriageway (skipping the
+/// hole the survey's bare-ground model leaves where it cut a wall out), and the
+/// highest of it over the next [`BANK_READ_M`]; then the higher of the two
+/// sides — a dual carriageway's median lies in the trench with it, and the outer
+/// side is the land.
+///
+/// **Close, because a wall is abrupt and a slope is not.** A cutting's wall takes
+/// the ground from the road to the land within a metre or two; a path across a
+/// park that falls gently towards the ring is two and a half metres under the
+/// ground sixteen metres off and at grade beside itself, and read that far out it
+/// was walled for a hundred metres where the photograph shows none (2026-09-28).
+/// NaN where neither side was measured.
+fn bank_level(sample: &dyn Fn([f32; 2]) -> f32, points: &[[f32; 2]], i: usize, half_w: f32) -> f32 {
+    let (a, b) = (
+        points[i.saturating_sub(1)],
+        points[(i + 1).min(points.len() - 1)],
+    );
+    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+    let len = dx.hypot(dz);
+    if len <= 1e-6 {
+        return f32::NAN;
+    }
+    let n = [-dz / len, dx / len];
+    let p = points[i];
+    let at = |s: f32, d: f32| {
+        let r = s * (half_w + d);
+        sample([p[0] + n[0] * r, p[1] + n[1] * r])
+    };
+    let side = |s: f32| {
+        let mut d = BANK_M[0];
+        while d <= BANK_M[1] && !at(s, d).is_finite() {
+            d += 1.0;
+        }
+        let mut best = f32::NAN;
+        let end = d + BANK_READ_M;
+        while d <= end {
+            let v = at(s, d);
+            if v.is_finite() && !(best >= v) {
+                best = v;
+            }
+            d += 1.0;
+        }
+        best
+    };
+    let (l, r) = (side(1.0), side(-1.0));
+    match (l.is_finite(), r.is_finite()) {
+        (true, true) => l.max(r),
+        (true, false) => l,
+        (false, true) => r,
+        _ => f32::NAN,
+    }
+}
+
 /// Give each `NaN` in a line's values the nearest finite one along it. A line
 /// with none keeps its `NaN`s.
 fn fill_along(v: &mut [f32]) {

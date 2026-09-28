@@ -181,7 +181,10 @@ impl Tunnel {
     #[must_use]
     pub fn depth_near(&self, p: [f32; 2], reach: f32) -> Option<f32> {
         let half = self.half_w + reach;
-        Some(along_line(&self.centre, &self.road_y, half, p)? - along_line(&self.centre, &self.land_y, half, p)?)
+        Some(
+            along_line(&self.centre, &self.road_y, half, p)?
+                - along_line(&self.centre, &self.land_y, half, p)?,
+        )
     }
 
     /// How far `p` is from this tunnel's carriageway in plan, and how far the
@@ -220,7 +223,10 @@ impl Tunnel {
                 continue;
             };
             if d < best.0 {
-                best = (d, self.land_y[i] + (self.land_y[i + 1] - self.land_y[i]) * t);
+                best = (
+                    d,
+                    self.land_y[i] + (self.land_y[i + 1] - self.land_y[i]) * t,
+                );
             }
         }
         ((best.0 - self.half_w).max(0.0), best.1)
@@ -689,9 +695,9 @@ pub fn wall_of_a_sunken_road(
             let t = k as f32 / steps as f32;
             let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
             samples += 1;
-            let sunken = tunnels.iter().any(|tu| {
-                tu.depth_near(p, WALL_REACH_M).is_some_and(|d| d < -1.0)
-            });
+            let sunken = tunnels
+                .iter()
+                .any(|tu| tu.depth_near(p, WALL_REACH_M).is_some_and(|d| d < -1.0));
             if sunken || in_an_opening(openings, p) {
                 near += 1;
             }
@@ -1096,7 +1102,10 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
     // from one that meets another.
     let cell = |p: [f32; 2]| {
         #[allow(clippy::cast_possible_truncation)]
-        ((p[0] / road_levels::TEE_M).floor() as i64, (p[1] / road_levels::TEE_M).floor() as i64)
+        (
+            (p[0] / road_levels::TEE_M).floor() as i64,
+            (p[1] / road_levels::TEE_M).floor() as i64,
+        )
     };
     let mut near: std::collections::HashMap<(i64, i64), Vec<(usize, [f32; 2])>> =
         std::collections::HashMap::new();
@@ -1109,9 +1118,12 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
         let (cx, cz) = cell(p);
         !(-1..=1).any(|dx| {
             (-1..=1).any(|dz| {
-                near.get(&(cx + dx, cz + dz)).into_iter().flatten().any(|&(o, q)| {
-                    o != ri && (q[0] - p[0]).hypot(q[1] - p[1]) <= road_levels::TEE_M
-                })
+                near.get(&(cx + dx, cz + dz))
+                    .into_iter()
+                    .flatten()
+                    .any(|&(o, q)| {
+                        o != ri && (q[0] - p[0]).hypot(q[1] - p[1]) <= road_levels::TEE_M
+                    })
             })
         })
     };
@@ -1156,7 +1168,8 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
             let mut total = 0.0f32;
             for k in 0..centre.len() {
                 if k > 0 {
-                    total += (centre[k][0] - centre[k - 1][0]).hypot(centre[k][1] - centre[k - 1][1]);
+                    total +=
+                        (centre[k][0] - centre[k - 1][0]).hypot(centre[k][1] - centre[k - 1][1]);
                 }
                 travelled.push(total);
             }
@@ -1192,15 +1205,17 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
     // on the fixture two path tunnels end four metres apart, and opening that
     // punched a 5 × 4 m hole in the ground over what is plainly one tunnel.
     let roofed_ends: std::collections::HashMap<(i64, i64), usize> =
-        plans.iter().fold(std::collections::HashMap::new(), |mut m, p| {
-            let last = p.centre.len() - 1;
-            for v in [0, last] {
-                if p.roofed[v] {
-                    *m.entry(key(p.centre[v])).or_insert(0) += 1;
+        plans
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut m, p| {
+                let last = p.centre.len() - 1;
+                for v in [0, last] {
+                    if p.roofed[v] {
+                        *m.entry(key(p.centre[v])).or_insert(0) += 1;
+                    }
                 }
-            }
-            m
-        });
+                m
+            });
     for p in &mut plans {
         let last = p.centre.len() - 1;
         let between_roofs = p.roofed.iter().all(|r| !r)
@@ -1221,7 +1236,9 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
     for (pi, p) in plans.iter().enumerate() {
         let last = p.centre.len() - 1;
         ends.entry(key(p.centre[0])).or_default().push((pi, 0));
-        ends.entry(key(p.centre[last])).or_default().push((pi, last));
+        ends.entry(key(p.centre[last]))
+            .or_default()
+            .push((pi, last));
     }
     let halves: Vec<f32> = plans.iter().map(|p| p.half).collect();
     for (pi, p) in plans.iter_mut().enumerate() {
@@ -1559,12 +1576,20 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
         // into the structure.
         let last = n - 1;
         for (k, v, (l, r), inward) in [
-            (0usize, 0usize, (sides.left[0][0], sides.right[0][0]), [centre[1][0] - centre[0][0], centre[1][1] - centre[0][1]]),
+            (
+                0usize,
+                0usize,
+                (sides.left[0][0], sides.right[0][0]),
+                [centre[1][0] - centre[0][0], centre[1][1] - centre[0][1]],
+            ),
             (
                 1,
                 last,
                 (sides.left[last - 1][1], sides.right[last - 1][1]),
-                [centre[last - 1][0] - centre[last][0], centre[last - 1][1] - centre[last][1]],
+                [
+                    centre[last - 1][0] - centre[last][0],
+                    centre[last - 1][1] - centre[last][1],
+                ],
             ),
         ] {
             if !plan.dead[k] || road_y[v] >= land_y[v] - 0.05 {
@@ -1577,7 +1602,12 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
             let (p, q) = if forward { (l, r) } else { (r, l) };
             let y = road_y[v];
             shell.quad(
-                [[p[0], y, p[1]], [q[0], y, q[1]], [q[0], t, q[1]], [p[0], t, p[1]]],
+                [
+                    [p[0], y, p[1]],
+                    [q[0], y, q[1]],
+                    [q[0], t, q[1]],
+                    [p[0], t, p[1]],
+                ],
                 [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
                 face,
                 0.0,
@@ -2160,7 +2190,6 @@ fn cut_mesh(
     true
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2224,20 +2253,32 @@ mod tests {
     fn a_tunnel_and_its_ramps_are_one_structure() {
         let runs = a_tunnel_and_its_roads();
         let profiles = unmeasured_profiles(&runs);
-        assert!(profiles.iter().all(Option::is_some), "a road out of the tunnel is not part of it");
+        assert!(
+            profiles.iter().all(Option::is_some),
+            "a road out of the tunnel is not part of it"
+        );
         let out = build_structures(&runs, &profiles, None);
         let bore = out
             .tunnels
             .iter()
             .find(|t| t.covered.iter().any(|&c| c))
             .expect("the tunnel is roofed");
-        assert!(bore.covered.iter().all(|&c| c), "the tunnel has an open stretch");
         assert!(
-            bore.road_y.iter().all(|&y| (y + LEVEL_DEPTH_M).abs() < 0.05),
+            bore.covered.iter().all(|&c| c),
+            "the tunnel has an open stretch"
+        );
+        assert!(
+            bore.road_y
+                .iter()
+                .all(|&y| (y + LEVEL_DEPTH_M).abs() < 0.05),
             "the tunnel is not a level down: {:?}",
             bore.road_y
         );
-        let ramps: Vec<&Tunnel> = out.tunnels.iter().filter(|t| t.covered.iter().all(|&c| !c)).collect();
+        let ramps: Vec<&Tunnel> = out
+            .tunnels
+            .iter()
+            .filter(|t| t.covered.iter().all(|&c| !c))
+            .collect();
         assert_eq!(ramps.len(), 2, "expected a ramp at each end");
         for r in &ramps {
             let len: f32 = polyline_len(&r.centre);
@@ -2245,7 +2286,10 @@ mod tests {
             // top, plus the point beyond.
             assert!((95.0..125.0).contains(&len), "a ramp {len:.0} m long");
             let shallowest = r.road_y.iter().copied().fold(f32::MIN, f32::max);
-            assert!(shallowest > -SUNK_M_TEST - 0.01, "a ramp stops {shallowest:.2} m down");
+            assert!(
+                shallowest > -SUNK_M_TEST - 0.01,
+                "a ramp stops {shallowest:.2} m down"
+            );
         }
         assert_eq!(out.openings.len(), 2, "each ramp opens the ground over it");
         // One headwall per mouth: two quads whose top edge is at the land.
@@ -2256,7 +2300,11 @@ mod tests {
             .flat_map(|m| m.normals.iter())
             .filter(|n| n[0].abs() > 0.99)
             .count();
-        assert_eq!(heads, 2 * 6, "expected a headwall over each of the two mouths");
+        assert_eq!(
+            heads,
+            2 * 6,
+            "expected a headwall over each of the two mouths"
+        );
     }
 
     const SUNK_M_TEST: f32 = road_levels::SUNK_M;
@@ -2282,8 +2330,14 @@ mod tests {
             .positions
             .iter()
             .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
-        assert!((lo + 7.0).abs() < 1e-4 && (hi - 2.0).abs() < 1e-4, "walls span {lo}..{hi}");
-        assert!(out.tunnels[0].covered.iter().all(|&c| !c), "a level-0 cutting was roofed");
+        assert!(
+            (lo + 7.0).abs() < 1e-4 && (hi - 2.0).abs() < 1e-4,
+            "walls span {lo}..{hi}"
+        );
+        assert!(
+            out.tunnels[0].covered.iter().all(|&c| !c),
+            "a level-0 cutting was roofed"
+        );
         assert_eq!(out.openings.len(), 1);
     }
 
@@ -2381,7 +2435,10 @@ mod tests {
                 }
             }
         }
-        assert!(checked[0] > 0 && checked[1] > 0, "no tunnel faces to check: {checked:?}");
+        assert!(
+            checked[0] > 0 && checked[1] > 0,
+            "no tunnel faces to check: {checked:?}"
+        );
     }
 
     /// **Under a lid the walls stop at the ceiling.** Above it is earth, and a
@@ -2441,8 +2498,20 @@ mod tests {
                 .flat_map(|t| {
                     let n = t.centre.len() - 1;
                     [
-                        (t.centre[0], t.road_y[0], t.land_y[0], t.roofed[0] || t.cut[0], t.dead[0]),
-                        (t.centre[n], t.road_y[n], t.land_y[n], t.roofed[n] || t.cut[1], t.dead[1]),
+                        (
+                            t.centre[0],
+                            t.road_y[0],
+                            t.land_y[0],
+                            t.roofed[0] || t.cut[0],
+                            t.dead[0],
+                        ),
+                        (
+                            t.centre[n],
+                            t.road_y[n],
+                            t.land_y[n],
+                            t.roofed[n] || t.cut[1],
+                            t.dead[1],
+                        ),
                     ]
                 })
                 .collect();
@@ -2510,10 +2579,25 @@ mod tests {
                     .total_cmp(&(q[0] - over[0]).hypot(q[1] - over[1]))
             })
             .unwrap();
-        assert!(stands_in_a_covered_trench(&out.tunnels, &out.openings, over, 7.0));
-        assert!(!stands_in_a_covered_trench(&out.tunnels, &out.openings, over, 0.5));
+        assert!(stands_in_a_covered_trench(
+            &out.tunnels,
+            &out.openings,
+            over,
+            7.0
+        ));
+        assert!(!stands_in_a_covered_trench(
+            &out.tunnels,
+            &out.openings,
+            over,
+            0.5
+        ));
         let beside = [over[0] + 60.0, over[1] + 60.0];
-        assert!(!stands_in_a_covered_trench(&out.tunnels, &out.openings, beside, 7.0));
+        assert!(!stands_in_a_covered_trench(
+            &out.tunnels,
+            &out.openings,
+            beside,
+            7.0
+        ));
     }
 
     /// **The survey's own tunnel walls are recognised, and a wall elsewhere is
@@ -2538,7 +2622,11 @@ mod tests {
             );
         }
         let elsewhere = [[691.0f32, 656.0], [779.0, 578.0]];
-        assert!(!wall_of_a_sunken_road(&out.tunnels, &out.openings, &elsewhere));
+        assert!(!wall_of_a_sunken_road(
+            &out.tunnels,
+            &out.openings,
+            &elsewhere
+        ));
     }
 
     /// **No crown hangs over an open trench** once the caller's filter has run.
@@ -2553,7 +2641,12 @@ mod tests {
         assert!(trees.len() < before, "no tree was near an opening");
         for t in &trees {
             for ring in &out.openings {
-                assert!(!point_in_ring([t.x, t.z], ring), "a tree stands in an opening at {},{}", t.x, t.z);
+                assert!(
+                    !point_in_ring([t.x, t.z], ring),
+                    "a tree stands in an opening at {},{}",
+                    t.x,
+                    t.z
+                );
             }
         }
     }
@@ -2569,7 +2662,11 @@ mod tests {
             };
             let scale = tile_m / TileData::extent(meta);
             let ring = |p: &geo_types::Polygon<f32>| -> Vec<[f32; 2]> {
-                p.exterior().0.iter().map(|c| [c.x * scale, c.y * scale]).collect()
+                p.exterior()
+                    .0
+                    .iter()
+                    .map(|c| [c.x * scale, c.y * scale])
+                    .collect()
             };
             tile.features(meta)
                 .iter()
@@ -2587,7 +2684,8 @@ mod tests {
             for t in &out.tunnels {
                 for i in 0..t.centre.len().saturating_sub(1) {
                     let (a, b) = (t.centre[i], t.centre[i + 1]);
-                    let deep = (t.road_y[i] - t.land_y[i]).min(t.road_y[i + 1] - t.land_y[i + 1]) < -1.0;
+                    let deep =
+                        (t.road_y[i] - t.land_y[i]).min(t.road_y[i + 1] - t.land_y[i + 1]) < -1.0;
                     for f in [0.25f32, 0.5, 0.75] {
                         let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
                         if !pools.iter().any(|r| point_in_ring(p, r)) {
@@ -2596,13 +2694,19 @@ mod tests {
                         if t.covered[i] && t.covered[i + 1] {
                             covered_under_water += 1;
                         } else {
-                            assert!(!deep, "{name}: a sunken road at {p:?} runs open under water");
+                            assert!(
+                                !deep,
+                                "{name}: a sunken road at {p:?} runs open under water"
+                            );
                         }
                     }
                 }
             }
         }
-        assert!(covered_under_water > 0, "no tunnel passes under water in either fixture");
+        assert!(
+            covered_under_water > 0,
+            "no tunnel passes under water in either fixture"
+        );
     }
 
     /// **The ground may not be cut away over a roofed stretch.** The hole and the
@@ -2622,7 +2726,10 @@ mod tests {
                     for f in [0.1f32, 0.5, 0.9] {
                         let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
                         for ring in &out.openings {
-                            assert!(!point_in_ring(p, ring), "{name}: the ground is cut away over a lid at {p:?}");
+                            assert!(
+                                !point_in_ring(p, ring),
+                                "{name}: the ground is cut away over a lid at {p:?}"
+                            );
                         }
                     }
                 }
@@ -2642,7 +2749,10 @@ mod tests {
                 let len = polyline_len(&t.centre);
                 open += 1;
                 let deep = t.road_y.iter().zip(&t.land_y).any(|(y, g)| y - g < -3.0);
-                assert!(deep || len >= MIN_OPEN_M, "a {len:.0} m shallow stretch was opened");
+                assert!(
+                    deep || len >= MIN_OPEN_M,
+                    "a {len:.0} m shallow stretch was opened"
+                );
             } else {
                 lidded += 1;
             }
@@ -2714,7 +2824,11 @@ mod tests {
         let centre: Vec<[f32; 2]> = (0..=60).map(|i| [i as f32 * 10.0, 0.0]).collect();
         let roofed: Vec<bool> = (0..=60).map(|i| (12..=48).contains(&i)).collect();
         let rings = opening_rings(&centre, &roofed, 6.0);
-        assert_eq!(rings.len(), 2, "an open stretch at each end should open two holes");
+        assert_eq!(
+            rings.len(),
+            2,
+            "an open stretch at each end should open two holes"
+        );
         for ring in &rings {
             assert!(ring.len() >= 4);
             assert_eq!(ring.first(), ring.last(), "the hole is not a closed ring");
@@ -2733,15 +2847,23 @@ mod tests {
         let flagged = features.iter().filter(|f| flag_of(f, "tunnel")).count();
         let below = features.iter().filter(|f| underground(f)).count();
         assert!(flagged > 0, "no street in the fixture is flagged a tunnel");
-        assert_eq!(below, flagged, "`underground` is the bare flag — the tiles carry no `layer`");
+        assert_eq!(
+            below, flagged,
+            "`underground` is the bare flag — the tiles carry no `layer`"
+        );
         // **No `layer` anywhere in the layer**: if a tileset ever starts carrying
         // one, this fails and the depth convention has something better to read.
         assert!(
-            features.iter().all(|f| crate::vector_tiles::layer_of(f) == 0),
+            features
+                .iter()
+                .all(|f| crate::vector_tiles::layer_of(f) == 0),
             "a street carries a `layer` now"
         );
         let passages = building_passages(&tile, &features);
-        assert!(passages.len() < flagged, "every flagged way was called a building passage");
+        assert!(
+            passages.len() < flagged,
+            "every flagged way was called a building passage"
+        );
     }
 
     /// The cut must actually take ground away: a no-op here looks exactly like a
@@ -2763,7 +2885,13 @@ mod tests {
             rungs: Vec::new(),
         };
         let before = mesh_area(&mesh);
-        let opening = vec![[40.0, -10.0], [60.0, -10.0], [60.0, 110.0], [40.0, 110.0], [40.0, -10.0]];
+        let opening = vec![
+            [40.0, -10.0],
+            [60.0, -10.0],
+            [60.0, 110.0],
+            [40.0, 110.0],
+            [40.0, -10.0],
+        ];
         // **Both ways round**: an opening's winding follows its tunnel's direction.
         for reversed in [false, true] {
             let mut ring = opening.clone();
@@ -2799,7 +2927,13 @@ mod tests {
             rungs: Vec::new(),
         };
         let before = mesh_area(&sheet);
-        let opening = vec![[-10.0, -100.0], [10.0, -100.0], [10.0, 100.0], [-10.0, 100.0], [-10.0, -100.0]];
+        let opening = vec![
+            [-10.0, -100.0],
+            [10.0, -100.0],
+            [10.0, 100.0],
+            [-10.0, 100.0],
+            [-10.0, -100.0],
+        ];
         assert!(cut_sheet(&mut sheet, &[opening]));
         let gone = before - mesh_area(&sheet);
         assert!((gone - 20.0 * 184.0).abs() < 100.0, "{gone:.0} m² went");
@@ -2827,11 +2961,18 @@ mod tests {
         let taper = 30.0;
         assert_eq!(tunnel.fill_weight([75.0, 0.0], taper), 1.0);
         assert_eq!(tunnel.fill_weight([75.0, 5.0], taper), 1.0);
-        assert_eq!(tunnel.fill_weight([10.0, 0.0], taper), 0.0, "the shallow ramp was filled in");
+        assert_eq!(
+            tunnel.fill_weight([10.0, 0.0], taper),
+            0.0,
+            "the shallow ramp was filled in"
+        );
         assert_eq!(tunnel.fill_weight([75.0, 400.0], taper), 0.0);
         let near = tunnel.fill_weight([75.0, 12.0], taper);
         let far = tunnel.fill_weight([75.0, 30.0], taper);
-        assert!((0.0..1.0).contains(&near) && near > far, "{near} then {far}");
+        assert!(
+            (0.0..1.0).contains(&near) && near > far,
+            "{near} then {far}"
+        );
         assert_eq!(tunnel.land_near([75.0, 20.0]).1, 0.0);
     }
 
@@ -2864,11 +3005,17 @@ mod tests {
             around: &around,
             weight: &weight,
         };
-        assert!(field.at(100.0, 0.0).abs() < 1e-3, "the ground over a lid stayed down");
+        assert!(
+            field.at(100.0, 0.0).abs() < 1e-3,
+            "the ground over a lid stayed down"
+        );
         assert!((field.at(100.0, 5.0 + DATUM_M + 1.0) + 9.0).abs() < 1e-3);
         let chord = f32::midpoint(field.at(100.0, -50.0), field.at(100.0, 50.0));
         let sag = (field.at(100.0, 0.0) - chord).abs();
-        assert!(sag > crate::terrain_refine::CREASE_SAG_M, "the lid sags only {sag} m");
+        assert!(
+            sag > crate::terrain_refine::CREASE_SAG_M,
+            "the lid sags only {sag} m"
+        );
     }
 
     /// Plan area of a mesh's triangles.
@@ -2881,7 +3028,8 @@ mod tests {
                     m.positions[t[1] as usize],
                     m.positions[t[2] as usize],
                 ];
-                ((p[1][0] - p[0][0]) * (p[2][2] - p[0][2]) - (p[2][0] - p[0][0]) * (p[1][2] - p[0][2]))
+                ((p[1][0] - p[0][0]) * (p[2][2] - p[0][2])
+                    - (p[2][0] - p[0][0]) * (p[1][2] - p[0][2]))
                     .abs()
                     * 0.5
             })
@@ -2899,7 +3047,11 @@ mod tests {
         let ceiling = crate::vector_tiles::ROAD_DEPTH_RUNGS as f32;
         for m in &out.meshes {
             for &r in &m.rungs {
-                assert!((0.0..ceiling).contains(&r), "{:?} emitted rung {r}", m.group);
+                assert!(
+                    (0.0..ceiling).contains(&r),
+                    "{:?} emitted rung {r}",
+                    m.group
+                );
             }
             if matches!(m.group, SurfaceGroup::TunnelRoad(_)) {
                 assert!(m.rungs.iter().all(|&r| r == road_depth_rung(false)));
@@ -2921,7 +3073,11 @@ mod tests {
             None => crate::testdata::groningen_ring(),
         };
         let out = build_tunnels(&tile, ring_tile_m(), None);
-        println!("structures={} openings={}", out.tunnels.len(), out.openings.len());
+        println!(
+            "structures={} openings={}",
+            out.tunnels.len(),
+            out.openings.len()
+        );
         for (i, t) in out.tunnels.iter().enumerate() {
             println!(
                 "structure {i}: half_w={:.1} len={:.0} m from {:?}",
@@ -2932,7 +3088,8 @@ mod tests {
             let mut along = 0.0f32;
             for k in 0..t.centre.len() {
                 if k > 0 {
-                    along += (t.centre[k][0] - t.centre[k - 1][0]).hypot(t.centre[k][1] - t.centre[k - 1][1]);
+                    along += (t.centre[k][0] - t.centre[k - 1][0])
+                        .hypot(t.centre[k][1] - t.centre[k - 1][1]);
                 }
                 println!(
                     "  {along:6.0} m  road {:6.2}  land {:6.2}  {}",

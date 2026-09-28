@@ -33,9 +33,20 @@ bridges, run the other way:
 - **Every street has a height solved on the network** (`road_levels::solve`). A
   tunnel is a ceiling on its road — the land less a level's depth — and the grade
   limit working from that ceiling is the ramp, exactly as it works up from a deck.
-- **Around a structure, every street also has the land it runs through**, the
-  level of the land around (`lid_level`, 80th percentile of sixteen samples at
-  30 and 60 m).
+- **Around a structure, every street also has the land it runs through.** Over
+  a tunnel that is the lid, the level of the land around (`lid_level`, 80th
+  percentile of sixteen samples at 30 and 60 m). Beside any other road it is the
+  **bank**: on each side the first measured ground past the carriageway —
+  skipping the hole the bare-ground survey leaves where it cut a wall out — and
+  the highest of it over the next four metres; the higher side wins, so a dual
+  carriageway's median does not count (atlas's `bank_level`). Close on purpose:
+  a wall is abrupt and a slope is not. Read the ring way, 30–60 m out, a cycle
+  path across a park falling gently towards the ring came out nearly three
+  metres under its land and was walled for a hundred metres where the aerial
+  photograph shows it at grade (2026-09-28). A road in a structure's trench whose
+  own bank is another lane of it — a carriageway with a slip road between it and
+  the wall — takes the structure's land (`in_the_same_trench`), and the land is
+  median-smoothed along the line so one misread bank does not notch a wall.
 - **A structure grows out of a tunnel along the network** (`road_levels::structures`):
   every point below the ground, and from there every point it reaches that runs
   more than `SUNK_M` (1 m) under its land. So a ramp, a cutting between two lids
@@ -70,6 +81,13 @@ Four things the network needed that the planner had papered over:
   the road out of a mouth meets another road before it can climb back, the ramp
   moves inside the tunnel and its mouth opens earlier — what the planner did for
   short approaches, arrived at by the solve.
+  And a ceiling a junction lifts is lifted *before* anything is graded from it:
+  lifting the tunnel afterwards left the roads beyond graded from where it had
+  been, deeper than the tunnel they lead out of.
+- **A road near a lid is measured on the lid.** The survey still shows parts of
+  Groningen's ring as the trench it was flown over, so a road within reach of a
+  tunnel it does not run into is measured on the ground as atlas puts it back —
+  the lid, blending out over the same 30 m taper — and never lowered by it.
 - **A short gap between two roofs is a seam in the tagging** (`MIN_OPEN_M`, 25 m),
   and stays roofed.
 - **A road that ends in nothing below its land is closed by a wall.** A tunnel

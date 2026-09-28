@@ -510,7 +510,11 @@ impl Tunnels {
             let mouth = (1..n)
                 .find(|&k| b.covered[k] && !b.covered[k - 1])
                 .map(|k| (k - 1, k))
-                .or_else(|| (1..n).find(|&k| !b.covered[k] && b.covered[k - 1]).map(|k| (k, k - 1)));
+                .or_else(|| {
+                    (1..n)
+                        .find(|&k| !b.covered[k] && b.covered[k - 1])
+                        .map(|k| (k, k - 1))
+                });
             let Some((from_k, to_k)) = mouth else {
                 continue;
             };

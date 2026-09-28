@@ -1211,11 +1211,9 @@ pub fn apply_terrain_to_tiles(
             // vertex's own fill weight, as the vector ground's lift is — keeps it
             // inside the lid and still under the ground.
             let here = field.at(wx, wz);
-            let roofed = tunnels
-                .cover_at(Vec2::new(wx, wz))
-                .map_or(0.0, |cover| {
-                    here + w * (cover - here).max(0.0) - field.floor_at(wx, wz, step)
-                });
+            let roofed = tunnels.cover_at(Vec2::new(wx, wz)).map_or(0.0, |cover| {
+                here + w * (cover - here).max(0.0) - field.floor_at(wx, wz, step)
+            });
             (least.max(roofed), w)
         };
         let mesh = crate::systems::terrain::displaced_grid(
