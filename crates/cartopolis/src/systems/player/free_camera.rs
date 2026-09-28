@@ -766,8 +766,10 @@ const EARTH_ATMOSPHERE_INNER_RADIUS: f32 = 6_360_000.0;
 /// `SkyPreference::Full` override, which deliberately bypasses this list.
 fn driver_denies_atmosphere(adapter_name: &str) -> bool {
     // OnePlus 15, driver 0842.x, compiler E031.50.19.27, measured 2026-08-29:
-    // a per-inline-site miscompile collapses the sky's march limit while the
-    // identical arithmetic verifies correct inside the integrator.
+    // black sky, sun disc at full strength. Since 2026-09-28 the suspect is
+    // the driver's copy of the `Atmosphere` uniform passed by value, which the
+    // patched shader no longer makes (`atmosphere_patch`, round 2). This line
+    // goes once Sky ▸ Full shows a blue sky on the device.
     adapter_name.contains("Adreno (TM) 840")
 }
 
@@ -929,20 +931,18 @@ pub fn setup_camera(
     // above, which takes the whole app down.
     // **…and one driver is denied by measurement, not by family.** The Adreno
     // 840's driver (the only 840 driver that exists, 0842.x, compiler E031.50)
-    // miscompiles the atmosphere in a way five instrumented device rounds
-    // pinned but could not dodge (2026-08-27..29, `diag/adreno-sky-probe`,
-    // `docs/notes/adreno-atmosphere-miscompile.md`): every ingredient of the
-    // sky's march limit computes correctly inside the integrator — verified on
-    // the device, arm by arm, painted into the sky by a probe build — while
-    // the same arithmetic inlined into the *caller* returns <= 0, through four
-    // structurally different rewrites (branchy, select, step/mix, add/mul/
-    // min/max). A per-inline-site miscompile is not something an application
-    // dodges; every rewrite just moves it. So Automatic picks the dome here.
-    // This is the opposite of the deleted `gpu_affords_atmosphere` table: that
-    // predicted unmeasured hardware from a family name, this records one
-    // measured defect on one measured driver — and `SkyPreference::Full` still
-    // overrides it, so when Qualcomm ships a fixed driver the atmosphere is
-    // one settings flip away, no rebuild, and the fix is discoverable.
+    // draws the atmosphere as a black sky, measured over five instrumented
+    // device rounds (2026-08-27..29, `diag/adreno-sky-probe`). Those rounds
+    // were read at the time as a per-inline-site miscompile; re-read on
+    // 2026-09-28 they say the shader saw the camera above the air, which a
+    // by-value copy of the `Atmosphere` uniform would do on a driver that
+    // lays the copy out wrong — and `atmosphere_patch` no longer makes one
+    // (`docs/notes/adreno-atmosphere-miscompile.md`). Until the device shows
+    // that working, Automatic picks the dome here. This is the opposite of the
+    // deleted `gpu_affords_atmosphere` table: that predicted unmeasured
+    // hardware from a family name, this records one measured defect on one
+    // measured driver — and `SkyPreference::Full` still overrides it, so the
+    // atmosphere is one settings flip (and a restart) away, no rebuild.
     let denied_driver = driver_denies_atmosphere(&adapter.name)
         && prefs.sky != crate::resources::SkyPreference::Full;
     let want_sky = !crate::env_flag("CARTO_NO_ATMOSPHERE");

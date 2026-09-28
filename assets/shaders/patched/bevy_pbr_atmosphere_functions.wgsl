@@ -121,8 +121,47 @@ fn sky_view_lut_uv_to_zenith_azimuth(r: f32, uv: vec2<f32>) -> vec2<f32> {
 
 // LUT SAMPLING
 
+// PATCHED (cartopolis): nothing in the atmosphere passes may load the
+// `atmosphere` uniform as a whole struct. Upstream passes it by value —
+// `transmittance_lut_r_mu_to_uv(atmosphere, ..)` here,
+// `distance_to_top_atmosphere_boundary(atmosphere, ..)` in
+// max_atmosphere_distance, `clamp_to_surface(atmosphere, ..)` in
+// get_view_position — and naga compiles each of those to one load of the
+// entire `Atmosphere` struct. That struct packs `inner_radius` into the
+// padding of `ground_albedo: vec3` (byte 12, `outer_radius` at 16). A driver
+// that lays the loaded value out with the vec3 taken as 16 bytes reads
+// `inner_radius` as the outer radius, and clamp_to_surface then lifts a
+// camera anywhere inside the atmosphere to 1 m above its top — where "no air
+// overhead, march distance 0" is the *correct* answer: a black sky,
+// transmittance 1, a full-strength sun disc. That is the Adreno 840's picture,
+// and it fits every reading of the 2026-08 probe rounds, whose camera check
+// accepted up to twice the shell radius and whose live-ray check only ran for
+// a camera inside the shell (docs/notes/adreno-atmosphere-miscompile.md).
+// Reading each field through the uniform is the same value on any driver that
+// loads structs correctly. The by-value helpers stay for their other callers
+// (pbr_lighting.wgsl, volumetric_fog.wgsl), which bind no `atmosphere`
+// uniform of this module's and so cannot read this one.
+fn distance_to_top_of_atmosphere(r: f32, mu: f32) -> f32 {
+    let outer = atmosphere.outer_radius;
+    let positive_discriminant = max(r * r * (mu * mu - 1.0) + outer * outer, 0.0);
+    return max(-r * mu + sqrt(positive_discriminant), 0.0);
+}
+
+// bruneton_functions::transmittance_lut_r_mu_to_uv, reading the radii
+// through the uniform (see above).
+fn transmittance_lut_uv(r: f32, mu: f32) -> vec2<f32> {
+    let inner = atmosphere.inner_radius;
+    let outer = atmosphere.outer_radius;
+    let H = sqrt(outer * outer - inner * inner);
+    let rho = sqrt(max(r * r - inner * inner, 0.0));
+    let d = distance_to_top_of_atmosphere(r, mu);
+    let d_min = outer - r;
+    let d_max = rho + H;
+    return vec2<f32>((d - d_min) / (d_max - d_min), rho / H);
+}
+
 fn sample_transmittance_lut(r: f32, mu: f32) -> vec3<f32> {
-    let uv = transmittance_lut_r_mu_to_uv(atmosphere, r, mu);
+    let uv = transmittance_lut_uv(r, mu);
     return textureSampleLevel(transmittance_lut, atmosphere_lut_sampler, uv, 0.0).rgb;
 }
 
@@ -307,7 +346,9 @@ fn clamp_to_surface(atmosphere: Atmosphere, position: vec3<f32>) -> vec3<f32> {
 }
 
 fn max_atmosphere_distance(r: f32, mu: f32) -> f32 {
-    let t_top = distance_to_top_atmosphere_boundary(atmosphere, r, mu);
+    // PATCHED (cartopolis): the radius read through the uniform, not a
+    // by-value copy of the whole struct (see distance_to_top_of_atmosphere).
+    let t_top = distance_to_top_of_atmosphere(r, mu);
     let t_bottom = distance_to_bottom_atmosphere_boundary(r, mu);
     let hits = ray_intersects_ground(r, mu);
     return mix(t_top, t_bottom, f32(hits));
@@ -316,7 +357,17 @@ fn max_atmosphere_distance(r: f32, mu: f32) -> f32 {
 /// Returns the observer's position in the atmosphere
 fn get_view_position() -> vec3<f32> {
     let atmo_pos = (atmosphere.world_to_atmosphere * vec4(view.world_position, 1.0)).xyz;
-    return clamp_to_surface(atmosphere, atmo_pos);
+    // PATCHED (cartopolis): clamp_to_surface inlined, with the inner radius
+    // read through the uniform. This is the load that matters most: a wrong
+    // radius here moves the camera, and every pass that places the viewer —
+    // the sky-view and aerial-view LUTs, the sky, the sun disc, the
+    // environment map — inherits it (see distance_to_top_of_atmosphere).
+    let min_radius = atmosphere.inner_radius + EPSILON;
+    let r = length(atmo_pos);
+    if r < min_radius {
+        return normalize(atmo_pos) * min_radius;
+    }
+    return atmo_pos;
 }
 
 // We assume the `up` vector at the view position is the y axis, since the world is locally flat/level.

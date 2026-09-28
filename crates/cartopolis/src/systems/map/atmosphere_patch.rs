@@ -1,51 +1,49 @@
 //! A patched copy of bevy_pbr's `atmosphere/functions.wgsl`, swapped in at runtime.
 //!
 //! **Why this exists.** On the Adreno 840 (OnePlus 15) the atmosphere renders a
-//! black sky at ground level while the sun disc, the city lighting and the limb
-//! from orbit are all correct. Three facts pin the fault into one place. The sun
-//! disc rendering proves the `render_sky` pass runs, the transmittance LUT is
-//! sane and the result is not NaN — the measured state is `inscattering ≈ 0,
-//! transmittance ≈ 1`. Forcing `AtmosphereMode::Raymarched` at ground level
-//! (`CARTO_GROUND_RAYMARCH`) is *also* black, and the sky-view LUT compute pass
-//! is itself a call to `raymarch_atmosphere`, so both sky modes share one
-//! integrator and the fault is inside it. And on that handset's tier
-//! (`quality::Budget::balanced`, `space_raymarch: false`) orbit and ground run
-//! the *identical* LookupTexture path — the app's density ramp even keeps the
-//! optical column constant — so the fault is a function of the camera radius
-//! alone: broken at `r ≈ inner_radius`, correct at orbit.
+//! black sky inside the air while the sun disc and the city lighting look right
+//! — the measured state is `inscattering ≈ 0, transmittance ≈ 1`, in both sky
+//! modes, and it keys on the camera radius alone: broken inside the shell,
+//! right from orbit. `docs/notes/adreno-atmosphere-miscompile.md` has the
+//! whole record; the short version is two rounds of patching.
 //!
-//! What differs by `r` inside the integrator is which arm of
-//! `get_raymarch_segment` runs: ground takes the inside-the-atmosphere arm of an
-//! `if`/`else if`/`else` chain that merges straight into a raymarch loop written
-//! as `for (var s = 0.0; s < sample_count; s += 1.0)` — a float counter against
-//! a non-constant float bound. Qualcomm's shader compiler has a documented
-//! history of miscompiling exactly that shape (branches converging into a loop:
-//! ggml-org/llama.cpp#5186; Blender turned SPIR-V optimization off wholesale for
-//! Qualcomm over the same class of fault), and this driver was already caught
-//! miscompiling geometry on this same phone. A zero-trip loop or an empty
-//! segment returns exactly `{inscattering: 0, transmittance: 1}` — the measured
-//! state, with no second assumption.
+//! **Round 1 (2026-08-24): control-flow hardening, which did not fix it.** It
+//! assumed a Qualcomm miscompile of the integrator's shape (branches merging
+//! into a float-counted loop, ggml-org/llama.cpp#5186). The device stayed black,
+//! and five probe rounds after it ended in a deny-list entry. The hunks stay —
+//! they are arithmetic-identical and cost nothing:
 //!
-//! **What the patch changes.** The shader is a byte-for-byte copy of bevy_pbr
-//! 0.19.0's `functions.wgsl` with three hunks, each tagged `PATCHED
-//! (cartopolis)` so the next Bevy bump can diff it against upstream:
+//! 1. `get_raymarch_segment` computes the same three cases with `select`.
+//! 2. The raymarch loop counts with `u32` against `ceil(sample_count)`, the same
+//!    trip count upstream's float loop runs.
+//! 3. Both sky-view UV parameterizations guard their horizon term,
+//!    `sqrt(max(r*r - inner*inner, 0.0))`, as `bruneton_functions.wgsl` always
+//!    has.
 //!
-//! 1. `get_raymarch_segment` computes the same three cases with `select` instead
-//!    of the branch chain — no control-flow merge for a compiler to fumble.
-//! 2. The raymarch loop counts with `u32` against `ceil(sample_count)` — the
-//!    trip count is unchanged (upstream's float loop also runs
-//!    `ceil(sample_count)` times) and the sample positions still divide by the
-//!    float, so the arithmetic is identical on a correct compiler.
-//! 3. Both sky-view UV parameterizations guard their horizon term:
-//!    `sqrt(max(r*r - inner*inner, 0.0))`. At ground level that difference is a
-//!    handful of ulps from zero and an FMA-contraction difference reaches
-//!    `sqrt(negative)` → NaN → a NaN LUT coordinate. The sibling expression in
-//!    `bruneton_functions.wgsl` has carried this exact guard all along, which is
-//!    why the transmittance LUT (and with it the sun disc) never went black.
-//!    The on-device A/Bs argue this one was not the cause (the 4.5 km
-//!    inner-radius margin was black too), but the guard is what upstream should
-//!    have written, costs nothing, and covers the case where those A/B switches
-//!    never actually reached the device.
+//! **Round 2 (2026-09-28): no whole-struct load of the `atmosphere` uniform.**
+//! The probe rounds' own readings, re-read, say the shader sees the camera
+//! *above* the atmosphere (their camera check allowed up to twice the shell's
+//! radius; their live-ray check only ran for a camera inside it). Upstream's
+//! `get_view_position` passes the uniform by value to `clamp_to_surface`, and
+//! the `Atmosphere` struct packs `inner_radius` into the padding of a `vec3` —
+//! a driver that reads the copied struct with the `vec3` as 16 bytes gets the
+//! *outer* radius there and lifts every camera inside the air to 1 m above its
+//! top, where an empty sky is the correct answer. Three sites pass the struct
+//! by value, and all three now read the fields through the uniform instead:
+//!
+//! 4. `sample_transmittance_lut` uses a local copy of the transmittance-LUT
+//!    parameterization (`transmittance_lut_uv`).
+//! 5. `max_atmosphere_distance` takes the top-of-atmosphere distance from a
+//!    local copy (`distance_to_top_of_atmosphere`).
+//! 6. `get_view_position` inlines the surface clamp.
+//!
+//! Same values on a driver that loads structs correctly. **Unconfirmed on the
+//! device**: the Adreno 840 is still on the deny list in
+//! `free_camera::driver_denies_atmosphere` until Settings ▸ Graphics ▸ Sky ▸
+//! Full shows a blue sky there.
+//!
+//! Each hunk is tagged `PATCHED (cartopolis)` so the next Bevy bump can diff the
+//! file against upstream (bevy_pbr 0.19.1's `functions.wgsl`).
 //!
 //! **Why a runtime swap and not a fork.** The alternative is vendoring
 //! `bevy_pbr` — fifty thousand lines re-forked on every Bevy bump, a trade
@@ -111,7 +109,7 @@ pub fn patch_atmosphere_shader(mut shaders: ResMut<Assets<Shader>>, mut done: Lo
     *done = true;
     tracing::info!(
         "atmosphere functions.wgsl swapped for the patched copy \
-         (Adreno control-flow + horizon-sqrt hardening)"
+         (no whole-struct uniform loads, plus the Adreno control-flow hardening)"
     );
 }
 
@@ -119,9 +117,10 @@ pub fn patch_atmosphere_shader(mut shaders: ResMut<Assets<Shader>>, mut done: Lo
 mod tests {
     use super::*;
 
-    /// The patch is a copy of upstream with four tagged edit sites (the sqrt
-    /// guard lands in both sky-view UV functions). If the tags disappear — say
-    /// a Bevy bump re-copies the file and forgets the hunks — the swap silently
+    /// The patch is a copy of upstream with seven tagged edit sites (the sqrt
+    /// guard lands in both sky-view UV functions, and the struct-load hunk is
+    /// tagged at each of its three sites). If the tags disappear — say a Bevy
+    /// bump re-copies the file and forgets the hunks — the swap silently
     /// becomes a no-op that still logs success, which this pins against.
     #[test]
     fn the_patched_shader_carries_its_hunks() {
@@ -129,7 +128,7 @@ mod tests {
             PATCHED_FUNCTIONS_WGSL
                 .matches("PATCHED (cartopolis)")
                 .count(),
-            4
+            7
         );
         // The import path is the address the swap finds the stock module by;
         // the patched module must answer to the same one or nothing imports it.
@@ -146,6 +145,31 @@ mod tests {
         assert!(!PATCHED_FUNCTIONS_WGSL.contains("for (var s = 0.0; s < sample_count; s += 1.0) {"));
         assert!(!PATCHED_FUNCTIONS_WGSL
             .contains("sqrt(r * r - atmosphere.inner_radius * atmosphere.inner_radius);"));
+    }
+
+    /// No code in the module passes the `atmosphere` uniform by value — that
+    /// is a load of the whole struct, the thing the round-2 hunks exist to
+    /// remove. The hunk's own comment names the upstream calls, so this looks
+    /// only at code: every line with its `//` comment cut off.
+    #[test]
+    fn the_patched_shader_never_loads_the_uniform_whole() {
+        let code: String = PATCHED_FUNCTIONS_WGSL
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for by_value in [
+            "clamp_to_surface(atmosphere,",
+            "transmittance_lut_r_mu_to_uv(atmosphere,",
+            "distance_to_top_atmosphere_boundary(atmosphere,",
+            "calculate_visible_sun_ratio(atmosphere,",
+        ] {
+            assert!(!code.contains(by_value), "{by_value} is back");
+        }
+        // The helpers that replace them read the fields through the uniform.
+        assert!(code.contains("fn distance_to_top_of_atmosphere(r: f32, mu: f32)"));
+        assert!(code.contains("fn transmittance_lut_uv(r: f32, mu: f32)"));
+        assert!(code.contains("let min_radius = atmosphere.inner_radius + EPSILON;"));
     }
 
     /// naga_oil's preprocessor must read the patched source exactly as it reads
