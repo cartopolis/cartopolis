@@ -23,6 +23,18 @@
 #                              Caddy's, which is also what terminates it for the
 #                              browser — one certificate, one terminator, one
 #                              code path on the server.
+#   --calls-listen 51.195.91.181:4749
+#                              the call forwarder, UDP, on the public address:
+#                              the one exception to the rule above, and the
+#                              reason it is not one. What crosses it is WebRTC
+#                              — DTLS-SRTP around frames already sealed on the
+#                              caller's device with a key only the chat's
+#                              members hold (`docs/notes/calls.md`) — so there
+#                              is nothing on it in the clear to protect. It is
+#                              the host's own address, not a gateway, because
+#                              WebRTC advertises the bound address in the SDP
+#                              and clients have to be able to send to it;
+#                              Caddy carries no UDP.
 #
 # This used to be `--listen 0.0.0.0:4747`, published so desktop clients could
 # reach it, with a comment admitting the credentials crossed the network in the
@@ -48,10 +60,12 @@ WorkingDirectory=/data/cartopolis/sim
 ExecStart=/data/cartopolis/sim/simulator \
     --listen 127.0.0.1:4747 \
     --http-listen 172.17.0.1:4748 \
+    --calls-listen 51.195.91.181:4749 \
     --database-path /data/cartopolis/sim/data/world.db
 Restart=always
 RestartSec=3s
 Environment=RUST_LOG=info
+EnvironmentFile=/etc/cartopolis-sim.env
 
 # The world database is the only thing this service may write. `refinery`
 # migrations run on every start, so it needs write access to that directory and
