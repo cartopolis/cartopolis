@@ -781,6 +781,7 @@ pub fn erase_account_traces(
     // Devices, key packages and memberships go; the sealed logs stay, being
     // the other members' history (`e2ee::erase_account` says why that is safe).
     crate::e2ee::erase_account(conn, principal)?;
+    crate::contacts::erase_account(conn, principal)?;
     Ok(())
 }
 

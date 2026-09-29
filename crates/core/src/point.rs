@@ -1,7 +1,7 @@
 //! A **point**: a place in the world, seen from somewhere, sent into a chat.
 //!
 //! The one new kind of message the chat-and-world design rests on
-//! (`docs/design/chat-world/` on the `design/chat-world-mockup` branch): a spot,
+//! (`docs/mockups/chat-world/`): a spot,
 //! the camera view it was looked at from, a name and an optional line of text.
 //! Tapping one puts the receiver's camera where the sender's was.
 //!

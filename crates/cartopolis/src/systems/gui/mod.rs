@@ -5,6 +5,7 @@ pub mod building_card;
 pub mod chat;
 pub mod chat_overlay;
 pub mod chats;
+pub mod contacts;
 pub mod data_layers;
 pub mod dismiss;
 pub mod dock;

@@ -52,6 +52,12 @@ const CLAIM_BURST: u32 = 12;
 /// two WebRTC connections on the forwarder, which is the expensive thing a
 /// client could ask for in a loop.
 const MIN_CALL_JOIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Contacts: person lookups refill at one per this interval per connection, up
+/// to [`LOOKUP_BURST`] at once. A lookup says whether a username exists, so an
+/// unthrottled loop would list every account on the server.
+const MIN_LOOKUP_INTERVAL: Duration = Duration::from_millis(1000);
+/// Lookups one connection may make back to back.
+const LOOKUP_BURST: u32 = 10;
 
 /// Longest username the moderation messages will act on.
 ///
@@ -83,6 +89,106 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Build `account`'s contact state and hand it to every connection it has
+/// (`contacts`). Sent whole after anything in it changes, including a change
+/// the *other* person made, so each side's lists never need merging.
+fn push_contacts(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    chat: &crate::chat::ChatHub,
+    account: &str,
+) {
+    let msg = {
+        let Ok(c) = conn.lock() else { return };
+        let Ok(Some(me)) = crate::contacts::account_by_id(&c, account) else {
+            return;
+        };
+        match crate::contacts::state(&c, &me, &|a| chat.account_online(a), now_millis()) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read contacts");
+                return;
+            }
+        }
+    };
+    if let Ok(frame) = encode_app_frame(&msg) {
+        chat.deliver_to_account(account, &Bytes::from(frame));
+    }
+}
+
+/// The signed-in account, as `contacts` needs it.
+fn own_account(
+    c: &rusqlite::Connection,
+    principal: &str,
+) -> Result<crate::contacts::Account, crate::contacts::Refusal> {
+    crate::contacts::account_by_id(c, principal)?
+        .ok_or_else(|| crate::contacts::Refusal::Storage("this account is gone".into()))
+}
+
+/// Send a contact request from `principal` to `subject`; the outcome and the
+/// target's account id.
+fn contact_request(
+    c: &rusqlite::Connection,
+    principal: &str,
+    subject: &str,
+    met: Option<cartopolis_core::MetDto>,
+    link_code: Option<&str>,
+) -> Result<(crate::contacts::Sent, String), crate::contacts::Refusal> {
+    let me = own_account(c, principal)?;
+    let target = crate::contacts::account_by_name(c, subject)?
+        .ok_or_else(|| crate::contacts::Refusal::NoSuchPerson(subject.to_string()))?;
+    let sent = crate::contacts::request(c, &me, &target, met, link_code, now_millis())?;
+    Ok((sent, target.id))
+}
+
+/// The people near `principal`'s avatar worth listing on the contacts screen:
+/// the ones a request would reach, and the ones already connected to you.
+/// Somebody who takes requests only through their link is left off — the
+/// screen is an invitation to say hi, and they asked not to get one this way.
+fn nearby_people(
+    c: &rusqlite::Connection,
+    principal: &str,
+    near: Vec<(String, f32)>,
+) -> Vec<cartopolis_core::NearbyPersonDto> {
+    let Ok(me) = own_account(c, principal) else {
+        return Vec::new();
+    };
+    near.into_iter()
+        .filter_map(|(name, distance_m)| {
+            let them = crate::contacts::account_by_name(c, &name).ok()??;
+            let relation = crate::contacts::relation(c, &me.id, &them.id).ok()?;
+            let may_request = relation == cartopolis_core::Relation::Nobody
+                && crate::contacts::policy_allows(c, &me, &them, true, None)
+                    .ok()?
+                    .is_ok();
+            (may_request || relation != cartopolis_core::Relation::Nobody).then_some(
+                cartopolis_core::NearbyPersonDto {
+                    username: them.username,
+                    distance_m,
+                    relation,
+                    may_request,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Tell `account`'s contacts who are online about it: it came or went.
+fn push_contacts_to_contacts(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    chat: &crate::chat::ChatHub,
+    account: &str,
+) {
+    let ids = {
+        let Ok(c) = conn.lock() else { return };
+        crate::contacts::contact_ids(&c, account).unwrap_or_default()
+    };
+    for id in ids {
+        if chat.account_online(&id) {
+            push_contacts(conn, chat, &id);
+        }
+    }
 }
 
 /// Recent scrollback for a channel (empty on any lock/query error).
@@ -291,12 +397,18 @@ struct AvatarGuard {
     world: Arc<RwLock<SimWorld>>,
     chat: Arc<crate::chat::ChatHub>,
     avatar_id: u64,
+    /// The account and database, so the contacts who can see this account is
+    /// online hear that it went (`contacts`).
+    presence: Option<(String, Arc<Mutex<rusqlite::Connection>>)>,
 }
 
 impl Drop for AvatarGuard {
     fn drop(&mut self) {
         // Unregister on a never-registered id is a map remove of nothing.
         self.chat.unregister(self.avatar_id);
+        if let Some((account, conn)) = &self.presence {
+            push_contacts_to_contacts(conn, &self.chat, account);
+        }
         let avatar_id = self.avatar_id;
         if let Ok(mut w) = self.world.try_write() {
             w.remove_avatar(avatar_id);
@@ -443,6 +555,7 @@ pub async fn handle_connection<T: FrameTransport>(
         world: world.clone(),
         chat: chat.clone(),
         avatar_id,
+        presence: Some((principal.to_string(), conn.clone())),
     };
     tracing::info!(%principal, %username, avatar_id, "client authenticated");
     // Display name for chat (the ack moves `username`).
@@ -489,6 +602,11 @@ pub async fn handle_connection<T: FrameTransport>(
         usernames: blocked.clone(),
     })?;
     framed.send(Bytes::from(blocked_frame)).await?;
+    // Contacts: this connection's own list (through the inbox just registered,
+    // which is where every later update arrives too), and "online" to the
+    // contacts who can see it.
+    push_contacts(&conn, &chat, &principal_key);
+    push_contacts_to_contacts(&conn, &chat, &principal_key);
     for r in chat_history(&conn, GLOBAL_CHANNEL) {
         if blocked_lower.contains(&r.sender_name.to_lowercase()) {
             continue;
@@ -574,6 +692,9 @@ pub async fn handle_connection<T: FrameTransport>(
     // same shape as `script_store_gate` below.
     let mut claim_gate = Instant::now()
         .checked_sub(MIN_CLAIM_INTERVAL * CLAIM_BURST)
+        .unwrap_or_else(Instant::now);
+    let mut lookup_gate = Instant::now()
+        .checked_sub(MIN_LOOKUP_INTERVAL * LOOKUP_BURST)
         .unwrap_or_else(Instant::now);
 
     // This connection's place in a call (protocol 26). One call at a time;
@@ -1351,6 +1472,27 @@ pub async fn handle_connection<T: FrameTransport>(
                                 let subject = subject.trim().to_string();
                                 // Your own name means "my other devices".
                                 let except = if subject.eq_ignore_ascii_case(&display_name) { e2ee_device } else { None };
+                                // A private chat with somebody who is not a contact
+                                // starts as a request (`contacts`, rule 4): without
+                                // one between you, their devices cannot be added.
+                                let refused = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    match crate::contacts::account_by_name(&c, &subject) {
+                                        Ok(Some(target)) => match crate::contacts::may_invite(&c, &principal_key, &target.id) {
+                                            Ok(true) => None,
+                                            Ok(false) => Some(crate::contacts::Refusal::NotAContact(target.username).to_string()),
+                                            Err(e) => Some(e.to_string()),
+                                        },
+                                        // Nobody by that name: the empty answer below
+                                        // already says so.
+                                        _ => None,
+                                    }
+                                };
+                                if let Some(message) = refused {
+                                    let frame = encode_app_frame(&NetMessage::ServerError { request_id, code: 403, message })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                    return Ok(());
+                                }
                                 let packages = {
                                     let Ok(c) = conn.lock() else { return Ok(()) };
                                     crate::e2ee::claim_key_packages(&c, &subject, except).unwrap_or_default()
@@ -1462,6 +1604,22 @@ pub async fn handle_connection<T: FrameTransport>(
                             }
                             NetMessage::E2eeSend { request_id, group, epoch, commit, message, welcome } => {
                                 let Some(device) = e2ee_device else { return Ok(()) };
+                                // One message into a chat that is still a request
+                                // (`contacts`, rule 4). Commits are never held: a
+                                // device that misses one can read nothing again.
+                                let held = if commit {
+                                    Ok(())
+                                } else {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::contacts::may_send(&c, &principal_key, &group)
+                                };
+                                if let Err(refusal) = held {
+                                    let frame = encode_app_frame(&NetMessage::E2eeSent {
+                                        request_id, group, seq: None, refused: Some(refusal.to_string()),
+                                    })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                    return Ok(());
+                                }
                                 let result = {
                                     let Ok(c) = conn.lock() else { return Ok(()) };
                                     crate::e2ee::append(
@@ -1487,13 +1645,35 @@ pub async fn handle_connection<T: FrameTransport>(
                                             request_id, group: group.clone(), seq: Some(appended.entry.seq), refused: None,
                                         })?;
                                         framed.send(Bytes::from(ack)).await?;
+                                        // A chat with somebody who declined this
+                                        // sender's request: stored and acknowledged as
+                                        // usual, delivered to nobody but the sender
+                                        // (`contacts::silenced_by`), and they are taken
+                                        // straight back out of it if this entry added them.
+                                        let silenced = {
+                                            let Ok(c) = conn.lock() else { return Ok(()) };
+                                            let other = crate::contacts::silenced_by(&c, &principal_key, &group)
+                                                .ok()
+                                                .flatten();
+                                            if let Some(o) = &other {
+                                                let _ = crate::contacts::leave_direct_chat(&c, o, &principal_key);
+                                            }
+                                            other
+                                        };
+                                        let (members, invites) = match &silenced {
+                                            Some(o) => (
+                                                appended.members.into_iter().filter(|m| m != o).collect(),
+                                                Vec::new(),
+                                            ),
+                                            None => (appended.members, appended.invites),
+                                        };
                                         let e = appended.entry;
                                         let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeDeliver {
                                             group: e.group, seq: e.seq, sender: e.sender_name, device: e.device,
                                             sent_at_ms: e.sent_at_ms, commit: e.is_commit, message: e.message,
                                         })?);
-                                        chat.deliver_private(&appended.members, &display_name, commit, &frame);
-                                        for inv in appended.invites {
+                                        chat.deliver_private(&members, &display_name, commit, &frame);
+                                        for inv in invites {
                                             let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeInvite {
                                                 group: inv.group, from: inv.from, after: inv.after, welcome: inv.welcome,
                                             })?);
@@ -1541,6 +1721,154 @@ pub async fn handle_connection<T: FrameTransport>(
                                 }
                                 let done = encode_app_frame(&NetMessage::E2eeSynced { request_id })?;
                                 framed.send(Bytes::from(done)).await?;
+                            }
+                            // ── Contacts and message requests (protocol 27).
+                            // `contacts` holds the rules; these arms look people
+                            // up, apply them and push both sides' new state.
+                            NetMessage::RequestContact { request_id, username: subject, link_code } => {
+                                let subject = subject.trim().to_string();
+                                if subject.is_empty() || subject.chars().count() > MAX_USERNAME_LEN {
+                                    return Ok(());
+                                }
+                                let met = world.read().await.met(&display_name, &subject);
+                                let result = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    contact_request(&c, &principal_key, &subject, met, link_code.as_deref())
+                                };
+                                match result {
+                                    Ok((sent, target)) => {
+                                        push_contacts(&conn, &chat, &principal_key);
+                                        if sent != crate::contacts::Sent::Unchanged {
+                                            push_contacts(&conn, &chat, &target);
+                                        }
+                                    }
+                                    Err(refusal) => {
+                                        // "Only through their link" would confirm the
+                                        // account exists to somebody it asked not to be
+                                        // found by; unless you are standing next to it.
+                                        let refusal = match refusal {
+                                            crate::contacts::Refusal::OnlyLink(name) if met.is_none() => {
+                                                crate::contacts::Refusal::NoSuchPerson(name)
+                                            }
+                                            r => r,
+                                        };
+                                        let frame = encode_app_frame(&NetMessage::ServerError {
+                                            request_id, code: 403, message: refusal.to_string(),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                }
+                            }
+                            NetMessage::AnswerContact { request_id, username: subject, accept } => {
+                                let result = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    (|| {
+                                        let me = own_account(&c, &principal_key)?;
+                                        let from = crate::contacts::account_by_name(&c, &subject)?
+                                            .ok_or_else(|| crate::contacts::Refusal::NoRequest(subject.clone()))?;
+                                        crate::contacts::answer(&c, &me, &from, accept, now_millis())?;
+                                        Ok::<_, crate::contacts::Refusal>(from.id)
+                                    })()
+                                };
+                                match result {
+                                    Ok(from) => {
+                                        push_contacts(&conn, &chat, &principal_key);
+                                        // Only an acceptance is news to the sender: a
+                                        // decline must look like nothing happened.
+                                        if accept {
+                                            push_contacts(&conn, &chat, &from);
+                                        }
+                                    }
+                                    Err(refusal) => {
+                                        let frame = encode_app_frame(&NetMessage::ServerError {
+                                            request_id, code: 404, message: refusal.to_string(),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                }
+                            }
+                            NetMessage::RemoveContact { request_id: _, username: subject } => {
+                                let other = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    match crate::contacts::account_by_name(&c, &subject) {
+                                        Ok(Some(them)) => crate::contacts::remove(&c, &principal_key, &them.id)
+                                            .map(|()| them.id)
+                                            .ok(),
+                                        _ => None,
+                                    }
+                                };
+                                push_contacts(&conn, &chat, &principal_key);
+                                if let Some(other) = other {
+                                    push_contacts(&conn, &chat, &other);
+                                }
+                            }
+                            NetMessage::SetContactSettings {
+                                request_id: _, policy, show_online, notify_requests, separate_new_accounts, reset_link,
+                            } => {
+                                {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    if let Err(e) = crate::contacts::set_settings(
+                                        &c, &principal_key, policy, show_online, notify_requests, separate_new_accounts, reset_link,
+                                    ) {
+                                        tracing::warn!(error = %e, "contact settings write failed");
+                                    }
+                                }
+                                push_contacts(&conn, &chat, &principal_key);
+                                push_contacts_to_contacts(&conn, &chat, &principal_key);
+                            }
+                            NetMessage::LookupPerson { request_id, username: subject, avatar_id: tapped } => {
+                                let within_rate = {
+                                    let now = Instant::now();
+                                    let floor = now.checked_sub(MIN_LOOKUP_INTERVAL * LOOKUP_BURST).unwrap_or(now);
+                                    if lookup_gate < floor {
+                                        lookup_gate = floor;
+                                    }
+                                    let ok = lookup_gate <= now;
+                                    if ok {
+                                        lookup_gate += MIN_LOOKUP_INTERVAL;
+                                    }
+                                    ok
+                                };
+                                if !within_rate {
+                                    let frame = encode_app_frame(&NetMessage::ServerError {
+                                        request_id, code: 429, message: "too many lookups at once — try again in a moment".into(),
+                                    })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                    return Ok(());
+                                }
+                                let (name, met, distance) = {
+                                    let w = world.read().await;
+                                    let name = match (subject, tapped) {
+                                        (Some(n), _) => Some(n.trim().to_string()),
+                                        (None, Some(id)) => w.avatar_name(id),
+                                        (None, None) => None,
+                                    };
+                                    let met = name.as_deref().and_then(|n| w.met(&display_name, n));
+                                    let distance = name.as_deref().and_then(|n| w.distance_between(&display_name, n));
+                                    (name, met, distance)
+                                };
+                                let person = name.filter(|n| !n.is_empty() && n.chars().count() <= MAX_USERNAME_LEN).and_then(|n| {
+                                    let c = conn.lock().ok()?;
+                                    let me = own_account(&c, &principal_key).ok()?;
+                                    let them = crate::contacts::account_by_name(&c, &n).ok()??;
+                                    crate::contacts::person(&c, &me, &them, met, distance, now_millis()).ok()?
+                                });
+                                let frame = encode_app_frame(&NetMessage::PersonInfo { request_id, person })?;
+                                framed.send(Bytes::from(frame)).await?;
+                            }
+                            NetMessage::GetNearbyPeople { request_id } => {
+                                let near = world.read().await.near(&display_name);
+                                let people = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    nearby_people(&c, &principal_key, near)
+                                };
+                                let frame = encode_app_frame(&NetMessage::NearbyPeople { request_id, people })?;
+                                framed.send(Bytes::from(frame)).await?;
+                            }
+                            NetMessage::ContactsState { .. }
+                            | NetMessage::PersonInfo { .. }
+                            | NetMessage::NearbyPeople { .. } => {
+                                tracing::debug!("ignored server-to-client message from client");
                             }
                             NetMessage::E2eeDeviceStatus { .. }
                             | NetMessage::E2eeKeyPackages { .. }

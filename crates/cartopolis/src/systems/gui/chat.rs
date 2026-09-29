@@ -12,6 +12,7 @@
 
 use bevy::prelude::*;
 use cartopolis_core::{ChatScope, NetMessage, ReportReason};
+use std::collections::HashMap;
 
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::icons;
@@ -101,6 +102,17 @@ pub struct ChatState {
     /// the messenger's "+ → Send this view" and answered by `geo_nav`, which is
     /// what knows where the camera is.
     pub view_requests: Vec<String>,
+    /// First messages to people who are not contacts yet: (username, text).
+    /// Each is sent into the direct chat with that person the moment
+    /// `systems::private_chat` has opened it (`systems::contacts`).
+    pub private_hello: Vec<(String, String)>,
+    /// Every direct private chat this device is in: lowercase username ->
+    /// channel key. Kept by `systems::private_chat`, read by the contacts
+    /// screens to find the chat that goes with a person or a request.
+    pub direct: HashMap<String, String>,
+    /// Private chats to drop from this device, by channel key: a declined
+    /// request. Drained by `systems::private_chat`.
+    pub private_forget: Vec<String>,
 }
 
 /// Somebody else's phone, as last shared with a chat.
@@ -241,6 +253,9 @@ impl Default for ChatState {
             group_name_input: String::new(),
             group_members_input: String::new(),
             view_requests: Vec::new(),
+            private_hello: Vec::new(),
+            direct: HashMap::new(),
+            private_forget: Vec::new(),
         }
     }
 }

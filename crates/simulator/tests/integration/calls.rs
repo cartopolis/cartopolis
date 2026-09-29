@@ -25,6 +25,15 @@ async fn start(users: &[&str]) -> (SimHandle, tempfile::TempDir) {
         for u in users {
             ensure_account(&conn, u, "pw").unwrap();
         }
+        // Everyone a contact of everyone: a call rides a private chat, and a
+        // chat with somebody who is not a contact starts as a request
+        // (protocol 27, `contacts`).
+        conn.execute(
+            "INSERT INTO contacts (account, contact, since_ms)
+             SELECT a.id, b.id, 0 FROM accounts a, accounts b WHERE a.id <> b.id",
+            [],
+        )
+        .unwrap();
     }
     let config = SimConfig {
         database_path: db,

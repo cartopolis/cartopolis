@@ -111,6 +111,41 @@ pub struct SimWorld {
     /// rate, which is 20 disk writes a second per script for state that is
     /// re-derivable and changes again immediately.
     dirty: HashSet<i64>,
+    /// Who has been near whom, by lowercase username pair (sorted), for the
+    /// "people you have been near" request setting (`contacts`). Pruned to
+    /// [`MET_WINDOW_MS`] as it is written. In memory on purpose: it is an hour of
+    /// who-stood-where, which is exactly the kind of thing not to keep on disk.
+    met: HashMap<(String, String), cartopolis_core::MetDto>,
+    /// Seconds since the last pass over [`Self::met`].
+    meet_clock: f32,
+}
+
+/// Two avatars this close count as having met (`contacts`). Twice the Here
+/// chat's say radius: close enough to have been talking, loose enough that
+/// walking past each other on a square counts.
+pub const MEET_RADIUS_M: f32 = 2.0 * crate::chat::SAY_RADIUS_M;
+
+/// How long having been near somebody lets them send you a request.
+pub const MET_WINDOW_MS: u64 = 60 * 60 * 1000;
+
+/// How often the meetings are measured. Every avatar against every other is
+/// quadratic, and nobody meets anybody in under a couple of seconds.
+const MEET_SCAN_SECS: f32 = 2.0;
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn pair(a: &str, b: &str) -> (String, String) {
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 /// Furthest a `vfSensor` may see, whatever a script asks for.
@@ -174,6 +209,8 @@ impl SimWorld {
             scripted,
             owners,
             dirty: HashSet::new(),
+            met: HashMap::new(),
+            meet_clock: 0.0,
         }
     }
 
@@ -220,6 +257,89 @@ impl SimWorld {
         if let Some(a) = self.avatars.get_mut(&id) {
             a.name = name.to_string();
         }
+    }
+
+    /// Who an avatar is signed in as, once it has said.
+    #[must_use]
+    pub fn avatar_name(&self, id: u64) -> Option<String> {
+        self.avatars
+            .get(&id)
+            .filter(|a| a.name != "Someone")
+            .map(|a| a.name.clone())
+    }
+
+    /// Where and when `a` and `b` were last near each other, within the last
+    /// [`MET_WINDOW_MS`].
+    #[must_use]
+    pub fn met(&self, a: &str, b: &str) -> Option<cartopolis_core::MetDto> {
+        let m = self.met.get(&pair(a, b))?;
+        (wall_ms().saturating_sub(m.at_ms) <= MET_WINDOW_MS).then_some(*m)
+    }
+
+    /// Metres between two signed-in people's avatars now, if both are in the
+    /// world and located.
+    #[must_use]
+    pub fn distance_between(&self, a: &str, b: &str) -> Option<f32> {
+        let geo_of = |n: &str| {
+            self.avatars
+                .values()
+                .find(|av| av.name.eq_ignore_ascii_case(n))
+                .and_then(|av| av.geo)
+        };
+        let d = ground_distance_m(geo_of(a)?, geo_of(b)?);
+        d.is_finite().then_some(d)
+    }
+
+    /// Everybody within [`MEET_RADIUS_M`] of `name`'s avatar, nearest first.
+    #[must_use]
+    pub fn near(&self, name: &str) -> Vec<(String, f32)> {
+        let Some(me) = self
+            .avatars
+            .values()
+            .find(|av| av.name.eq_ignore_ascii_case(name))
+            .and_then(|av| av.geo)
+        else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, f32)> = self
+            .avatars
+            .values()
+            .filter(|av| av.name != "Someone" && !av.name.eq_ignore_ascii_case(name))
+            .filter_map(|av| Some((av.name.clone(), ground_distance_m(me, av.geo?))))
+            .filter(|(_, d)| *d <= MEET_RADIUS_M)
+            .collect();
+        out.sort_by(|a, b| a.1.total_cmp(&b.1));
+        out.dedup_by(|a, b| a.0.eq_ignore_ascii_case(&b.0));
+        out
+    }
+
+    /// Record every pair of located avatars within [`MEET_RADIUS_M`] of each
+    /// other, and forget meetings older than the window.
+    fn note_meetings(&mut self) {
+        let now = wall_ms();
+        let located: Vec<(&str, GeoAnchor)> = self
+            .avatars
+            .values()
+            .filter(|a| a.name != "Someone")
+            .filter_map(|a| Some((a.name.as_str(), a.geo?)))
+            .collect();
+        for (i, (a, ga)) in located.iter().enumerate() {
+            for (b, gb) in &located[i + 1..] {
+                if a.eq_ignore_ascii_case(b) || ground_distance_m(*ga, *gb) > MEET_RADIUS_M {
+                    continue;
+                }
+                self.met.insert(
+                    pair(a, b),
+                    cartopolis_core::MetDto {
+                        at_ms: now,
+                        latitude: (ga.latitude + gb.latitude) / 2.0,
+                        longitude: (ga.longitude + gb.longitude) / 2.0,
+                    },
+                );
+            }
+        }
+        self.met
+            .retain(|_, m| now.saturating_sub(m.at_ms) <= MET_WINDOW_MS);
     }
 
     /// Place an avatar (protocol 17, `NetMessage::Teleport`): the counterpart of
@@ -410,6 +530,11 @@ impl SimWorld {
     }
 
     pub fn step(&mut self, dt: f32) {
+        self.meet_clock += dt;
+        if self.meet_clock >= MEET_SCAN_SECS {
+            self.meet_clock = 0.0;
+            self.note_meetings();
+        }
         for av in self.avatars.values_mut() {
             let before = av.position;
             // Flight rides altitude (`motion::fly_altitude_factor`), applied here

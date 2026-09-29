@@ -2049,6 +2049,9 @@ pub struct ScriptedChat<'w, 's> {
     overlay: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
     /// The messenger's screens (`--ui chats` / `chatthread` / `chatworld`).
     chats: ResMut<'w, crate::systems::chats::ChatsView>,
+    /// The contacts screens (`--ui contacts` / `requests` / `request` /
+    /// `addcontact` / `privacy` / `personcard`).
+    contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     seeded: Query<'w, 's, Entity, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
     avatar: Query<
         'w,
@@ -2096,6 +2099,12 @@ const UI_ELEMENTS: &[&str] = &[
     "chatthread",
     "chatworld",
     "chatswitch",
+    "contacts",
+    "requests",
+    "request",
+    "addcontact",
+    "privacy",
+    "personcard",
     "sit",
     "building",
     "locate",
@@ -2239,6 +2248,48 @@ pub fn open_scripted_ui(
         }
         None => {
             crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats)
+        }
+    }
+    // The contacts screens (`systems::contacts`), over the same demo chats.
+    // `Some(None)` is the person card over the map rather than a panel screen.
+    use crate::systems::contacts::Sub;
+    let contacts_screen = if want("personcard") {
+        Some(None)
+    } else if want("privacy") {
+        Some(Some(Sub::Privacy))
+    } else if want("addcontact") {
+        Some(Some(Sub::Add))
+    } else if want("request") {
+        Some(Some(Sub::Request("jeroen".into())))
+    } else if want("requests") {
+        Some(Some(Sub::Requests))
+    } else if want("contacts") {
+        Some(Some(Sub::Contacts))
+    } else {
+        None
+    };
+    match contacts_screen {
+        Some(sub) => {
+            *right_panel = crate::systems::chats::seed_demo_chats(
+                &mut cards.chat.state,
+                &mut cards.chat.chats,
+                "list",
+            );
+            crate::systems::contacts::seed_demo(&mut cards.chat.contacts, &mut cards.chat.state);
+            cards.chat.chats.open = None;
+            if sub.is_none() {
+                *right_panel = crate::resources::RightPanel::None;
+                crate::systems::contacts::seed_demo_card(&mut cards.chat.contacts);
+            } else {
+                cards.chat.contacts.card = None;
+            }
+            cards.chat.chats.sub = sub;
+        }
+        None => {
+            if cards.chat.contacts.demo {
+                *cards.chat.contacts = crate::systems::contacts::Contacts::default();
+                cards.chat.chats.sub = None;
+            }
         }
     }
     if panels.is_empty() {

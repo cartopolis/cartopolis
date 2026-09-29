@@ -2335,6 +2335,8 @@ fn run_client() {
     app.init_resource::<systems::calls::Calls>();
     app.init_resource::<systems::chat_overlay::ChatOverlay>();
     app.init_resource::<systems::chats::ChatsView>();
+    app.init_resource::<systems::contacts::ContactsInbox>();
+    app.init_resource::<systems::contacts::Contacts>();
     app.init_resource::<systems::voice::VoiceState>();
     // Voice plays through the output device the soundscape already opened, as a
     // custom `Decodable` asset. Registering the type is what teaches bevy_audio
@@ -2781,6 +2783,11 @@ fn run_client() {
             // After the chats: a call reads the chat's epoch, which a commit
             // applied there this frame has just moved.
             systems::calls::drive_calls.after(systems::private_chat::drive_private_chats),
+            // Contacts, between the two: its first messages become private-chat
+            // starts the same frame their request is on record.
+            systems::contacts::drive_contacts
+                .after(network::apply_network_snapshot)
+                .before(systems::private_chat::drive_private_chats),
             // A chat's "+ → Send this view": the camera's view, as a point, queued
             // for the sealing above to pick up on its next pass.
             systems::geo_nav::answer_view_requests
@@ -3307,6 +3314,12 @@ fn run_client() {
                 // The buildings behind the prims. **After** `prim_picking`, which
                 // is what gets to say whether the click was already spent — see
                 // `picking::PrimClick`.
+                // A tap on another person's avatar opens their card; between the
+                // prims (which keep a tap on a prim in front) and the buildings
+                // (which must not take a tap the avatar took).
+                systems::contacts::tap_avatar
+                    .after(systems::picking::prim_picking)
+                    .before(systems::building_select::pick_building),
                 systems::building_select::pick_building.after(systems::picking::prim_picking),
                 systems::picking::render_marquee.after(systems::picking::update_marquee),
                 systems::picking::handle_delete_key,
@@ -3493,6 +3506,12 @@ fn run_client() {
                 // the on-screen keyboard (Phase 7d) for the composer's reason.
                 systems::chats::render_chat_world,
                 systems::chats::render_chats_switch,
+                // The person card and the first-message sheet (`systems::contacts`):
+                // the sheet is a text field too. This is the twentieth entry, which
+                // is Bevy's tuple limit; the next addition needs a nested tuple, and
+                // `every_root_ui_panel_is_in_the_chain` reads only up to the first
+                // nested chain call.
+                systems::contacts::render_person_card,
                 // Also after the camera has moved, so pins project onto this frame's view.
                 systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
                 // The device arrow: where the phone is, in the views where the

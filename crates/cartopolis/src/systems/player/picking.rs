@@ -61,6 +61,12 @@ impl PrimClick {
     pub fn took(&self) -> bool {
         self.took
     }
+
+    /// Spend this press on something that is not a prim — an avatar
+    /// (`contacts::tap_avatar`) — so the building behind it does not take it too.
+    pub fn claim(&mut self) {
+        self.took = true;
+    }
 }
 
 // ─── Primary picking ─────────────────────────────────────────────────────────

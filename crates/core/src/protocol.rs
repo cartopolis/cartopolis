@@ -123,6 +123,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "calls — CallJoin / CallJoined / CallOffer / CallAnswer / CallLeave / CallRoster: SDP signalling for a private chat's call, whose media goes over UDP to the simulator's forwarder sealed with keys from the chat (docs/notes/calls.md)",
     },
+    ProtocolRevision {
+        version: 27,
+        adr: "",
+        summary: "contacts and message requests — ContactsState / RequestContact / AnswerContact / RemoveContact / SetContactSettings / LookupPerson / PersonInfo / GetNearbyPeople / NearbyPeople; a private chat with somebody who is not a contact starts as a request (docs/notes/contacts.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -192,6 +197,15 @@ pub enum MessageKind {
     CallAnswer = 51,
     CallLeave = 52,
     CallRoster = 53,
+    ContactsState = 54,
+    RequestContact = 55,
+    AnswerContact = 56,
+    RemoveContact = 57,
+    SetContactSettings = 58,
+    LookupPerson = 59,
+    PersonInfo = 60,
+    GetNearbyPeople = 61,
+    NearbyPeople = 62,
 }
 
 impl MessageKind {
@@ -250,6 +264,15 @@ impl MessageKind {
             51 => Some(Self::CallAnswer),
             52 => Some(Self::CallLeave),
             53 => Some(Self::CallRoster),
+            54 => Some(Self::ContactsState),
+            55 => Some(Self::RequestContact),
+            56 => Some(Self::AnswerContact),
+            57 => Some(Self::RemoveContact),
+            58 => Some(Self::SetContactSettings),
+            59 => Some(Self::LookupPerson),
+            60 => Some(Self::PersonInfo),
+            61 => Some(Self::GetNearbyPeople),
+            62 => Some(Self::NearbyPeople),
             _ => None,
         }
     }
@@ -1061,6 +1084,74 @@ pub enum NetMessage {
         group: Vec<u8>,
         members: Vec<CallMember>,
     },
+
+    // ── Contacts and message requests (protocol 27, `docs/notes/contacts.md`) ─
+    //
+    // A contact is somebody you accepted, both ways round. Anybody else reaches
+    // you by a *request*: one knock, which you accept, decline or ignore. The
+    // server is what refuses — who may send you one, how many a new account may
+    // send, and that a private chat with somebody who is not a contact holds a
+    // single message until they accept — because a check in the client is a
+    // check a modified client skips.
+    /// Server: everything about this account's contacts, sent on connect and
+    /// again after anything in it changes (including by the other person).
+    /// The whole state rather than a delta, like `BlockedList`.
+    ContactsState {
+        contacts: Vec<ContactDto>,
+        /// Requests waiting for this account's answer.
+        incoming: Vec<ContactRequestDto>,
+        /// Requests this account sent that have not been accepted. A declined
+        /// one is listed here exactly as a waiting one is: a decline is silent.
+        outgoing: Vec<ContactRequestDto>,
+        settings: ContactSettings,
+    },
+    /// Client asks to become contacts with `username`. `link_code` is the code
+    /// from their contact link, which is accepted whatever their setting says.
+    /// Answered with a `ContactsState`, or a `ServerError` saying why not.
+    RequestContact {
+        request_id: u32,
+        username: String,
+        link_code: Option<String>,
+    },
+    /// Client accepts or declines a request from `username`.
+    AnswerContact {
+        request_id: u32,
+        username: String,
+        accept: bool,
+    },
+    /// Client stops being contacts with `username`, or withdraws a request it
+    /// sent them. Not a block: they can send a request again.
+    RemoveContact { request_id: u32, username: String },
+    /// Client changes who may reach it. `reset_link` issues a new link code,
+    /// so every copy of the old link stops working.
+    SetContactSettings {
+        request_id: u32,
+        policy: RequestPolicy,
+        show_online: bool,
+        notify_requests: bool,
+        separate_new_accounts: bool,
+        reset_link: bool,
+    },
+    /// Client asks about one person: by exact username, or by the avatar it
+    /// tapped (the client is never told whose an avatar is until it asks).
+    LookupPerson {
+        request_id: u32,
+        username: Option<String>,
+        avatar_id: Option<u64>,
+    },
+    /// Server: the answer. `person` is `None` when there is nobody to show —
+    /// no such account, or one that asked not to be found by name.
+    PersonInfo {
+        request_id: u32,
+        person: Option<PersonDto>,
+    },
+    /// Client asks who is near its avatar now, for the contacts screen.
+    GetNearbyPeople { request_id: u32 },
+    /// Server: people near the asker's avatar, nearest first.
+    NearbyPeople {
+        request_id: u32,
+        people: Vec<NearbyPersonDto>,
+    },
 }
 
 /// One track on a device's receiving connection ([`NetMessage::CallOffer`]).
@@ -1079,6 +1170,127 @@ pub struct CallMember {
     pub participant: u64,
     pub username: String,
     pub device: Uuid,
+}
+
+/// Who may send you a message request (`docs/notes/contacts.md`). Anyone with
+/// your contact link may, whatever this says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RequestPolicy {
+    /// Anybody, including by typing your username.
+    Anyone,
+    /// People who were near your avatar in the last hour, or who share a
+    /// contact with you.
+    #[default]
+    Near,
+    /// Nobody finds you by name or in the world; only your link works.
+    LinkOnly,
+}
+
+impl RequestPolicy {
+    /// The number stored in the database.
+    #[must_use]
+    pub fn to_db(self) -> i64 {
+        match self {
+            Self::Anyone => 0,
+            Self::Near => 1,
+            Self::LinkOnly => 2,
+        }
+    }
+
+    /// Read back what [`Self::to_db`] wrote; anything unknown is the default.
+    #[must_use]
+    pub fn from_db(v: i64) -> Self {
+        match v {
+            0 => Self::Anyone,
+            2 => Self::LinkOnly,
+            _ => Self::Near,
+        }
+    }
+}
+
+/// This account's own contact settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContactSettings {
+    pub policy: RequestPolicy,
+    /// Contacts can see whether this account is signed in.
+    pub show_online: bool,
+    /// Say so in the app when a request arrives.
+    pub notify_requests: bool,
+    /// Requests from accounts younger than a week wait in their own section.
+    pub separate_new_accounts: bool,
+    /// The code in this account's contact link.
+    pub link_code: String,
+}
+
+/// Where and when two people's avatars were last near each other, as the server
+/// saw it. Only ever sent to one of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MetDto {
+    pub at_ms: u64,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+/// One contact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContactDto {
+    pub username: String,
+    pub since_ms: u64,
+    /// Where you were when one of you sent the request, if you were near.
+    pub met: Option<MetDto>,
+    /// `None` when they do not show it.
+    pub online: Option<bool>,
+}
+
+/// One request, either way round.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContactRequestDto {
+    /// The other person.
+    pub username: String,
+    pub sent_at_ms: u64,
+    pub met: Option<MetDto>,
+    /// The other person's account is younger than a week.
+    pub new_account: bool,
+    /// When the other person's account was made.
+    pub joined_ms: u64,
+    /// Contacts you both have.
+    pub in_common: Vec<String>,
+}
+
+/// How the asker stands with a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Relation {
+    Nobody,
+    Me,
+    Contact,
+    /// The asker sent them a request (waiting, as far as the asker knows).
+    RequestSent,
+    /// They sent the asker a request.
+    RequestReceived,
+}
+
+/// What the person card shows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonDto {
+    pub username: String,
+    pub joined_ms: u64,
+    pub new_account: bool,
+    pub in_common: Vec<String>,
+    pub relation: Relation,
+    pub met: Option<MetDto>,
+    /// Metres between the two avatars now, when both are in the world.
+    pub distance_m: Option<f32>,
+    /// A request from the asker would be accepted by the server right now.
+    pub may_request: bool,
+}
+
+/// One person near the asker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NearbyPersonDto {
+    pub username: String,
+    pub distance_m: f32,
+    pub relation: Relation,
+    pub may_request: bool,
 }
 
 /// One device's key package, as handed out by [`NetMessage::E2eeKeyPackages`].
@@ -1255,6 +1467,15 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::CallAnswer { .. } => MessageKind::CallAnswer,
         NetMessage::CallLeave { .. } => MessageKind::CallLeave,
         NetMessage::CallRoster { .. } => MessageKind::CallRoster,
+        NetMessage::ContactsState { .. } => MessageKind::ContactsState,
+        NetMessage::RequestContact { .. } => MessageKind::RequestContact,
+        NetMessage::AnswerContact { .. } => MessageKind::AnswerContact,
+        NetMessage::RemoveContact { .. } => MessageKind::RemoveContact,
+        NetMessage::SetContactSettings { .. } => MessageKind::SetContactSettings,
+        NetMessage::LookupPerson { .. } => MessageKind::LookupPerson,
+        NetMessage::PersonInfo { .. } => MessageKind::PersonInfo,
+        NetMessage::GetNearbyPeople { .. } => MessageKind::GetNearbyPeople,
+        NetMessage::NearbyPeople { .. } => MessageKind::NearbyPeople,
     }
 }
 
@@ -1291,6 +1512,14 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::E2eeSynced { request_id } => *request_id,
         NetMessage::CallJoin { request_id, .. } => *request_id,
         NetMessage::CallJoined { request_id, .. } => *request_id,
+        NetMessage::RequestContact { request_id, .. } => *request_id,
+        NetMessage::AnswerContact { request_id, .. } => *request_id,
+        NetMessage::RemoveContact { request_id, .. } => *request_id,
+        NetMessage::SetContactSettings { request_id, .. } => *request_id,
+        NetMessage::LookupPerson { request_id, .. } => *request_id,
+        NetMessage::PersonInfo { request_id, .. } => *request_id,
+        NetMessage::GetNearbyPeople { request_id } => *request_id,
+        NetMessage::NearbyPeople { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -1751,7 +1980,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 52] = [
+        const ALL: [MessageKind; 61] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -1804,6 +2033,15 @@ mod tests {
             CallAnswer,
             CallLeave,
             CallRoster,
+            ContactsState,
+            RequestContact,
+            AnswerContact,
+            RemoveContact,
+            SetContactSettings,
+            LookupPerson,
+            PersonInfo,
+            GetNearbyPeople,
+            NearbyPeople,
         ];
         for k in ALL {
             assert_eq!(
@@ -1817,7 +2055,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(CallRoster as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(NearbyPeople as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

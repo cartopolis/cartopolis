@@ -1,6 +1,6 @@
 //! The messenger: a list of chats, and one chat at a time with two views of it
-//! (docs/notes/chats-and-world.md; the design is `docs/design/chat-world/v5`
-//! on the `design/chat-world-mockup` branch).
+//! (docs/notes/chats-and-world.md; the design is `docs/mockups/chat-world/v5`,
+//! and contacts are `v5-contacts` there and `systems::contacts` here).
 //!
 //! # Three screens, one state
 //!
@@ -34,8 +34,8 @@ use crate::systems::chat::{person_menu, ChatLine, ChatState, PersonAction, Repor
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::{icons, theme};
 
-// Every colour and size below is the design's (`docs/design/chat-world/
-// style.css` on the mockup branch), which is itself the app palette: `theme`
+// Every colour and size below is the design's (`docs/mockups/chat-world/
+// style.css`), which is itself the app palette: `theme`
 // already has ink, surface, raised, accent, brand and cream at the same values.
 
 /// The hairline around glass and the segmented control (`--gline`, white at
@@ -77,6 +77,8 @@ pub struct ChatsView {
     /// A scripted capture with no session behind it (`--ui chats`), the same
     /// switch `ChatOverlay::demo` is: it lets the screens draw offline.
     pub demo: bool,
+    /// A contacts screen shown instead of the list (`systems::contacts`).
+    pub sub: Option<crate::systems::contacts::Sub>,
 }
 
 impl ChatsView {
@@ -172,7 +174,7 @@ fn tone_for(name: &str) -> egui::Color32 {
 }
 
 /// A round initial, the stand-in for a picture of the person or the group.
-fn avatar(ui: &mut egui::Ui, name: &str, kind: ChatKind, size: f32) {
+pub(crate) fn avatar(ui: &mut egui::Ui, name: &str, kind: ChatKind, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     paint_avatar(ui.painter(), rect.center(), name, kind, size);
 }
@@ -351,7 +353,7 @@ fn segmented(
 
 /// A round button of the design's composer (`.circ`): raised, or the pale
 /// accent when it is the one that acts (`.circ.hot`).
-fn circle_button(
+pub(crate) fn circle_button(
     ui: &mut egui::Ui,
     icon: &str,
     hot: bool,
@@ -522,6 +524,8 @@ struct Actions {
     message: Option<String>,
     dismiss_notice: bool,
     call: Option<crate::systems::calls::CallRequest>,
+    /// Open a contacts screen.
+    sub: Option<crate::systems::contacts::Sub>,
 }
 
 /// What a private chat's header offers about the chat's call.
@@ -567,6 +571,8 @@ pub fn render_chats_panel(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut calls: ResMut<crate::systems::calls::Calls>,
+    mut contacts: ResMut<crate::systems::contacts::Contacts>,
+    identity: Res<crate::resources::AuthIdentity>,
 ) {
     // The report dialog is not part of the panel: it hangs off names in the
     // overlay and over avatars too, and must stay up with the panel shut.
@@ -604,11 +610,25 @@ pub fn render_chats_panel(
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
-            match view.open.clone() {
-                None => list_screen(ui, &mut chat, &mut view, &mut voice, &mut act, now),
-                Some(key) => {
+            let me = identity.username.clone().unwrap_or_default();
+            match (view.sub.clone(), view.open.clone()) {
+                (Some(sub), _) => crate::systems::contacts::screen(
+                    ui,
+                    &sub,
+                    &mut contacts,
+                    &mut chat,
+                    &mut view,
+                    online.as_deref(),
+                    &me,
+                ),
+                (None, None) => list_screen(
+                    ui, &mut chat, &mut view, &mut voice, &contacts, &mut act, now,
+                ),
+                (None, Some(key)) => {
                     let call = call_button(&calls, &key);
-                    chat_screen(ui, &mut chat, &mut view, &key, &mut act, now, lift, call);
+                    chat_screen(
+                        ui, &mut chat, &mut view, &contacts, &key, &mut act, now, lift, call,
+                    );
                 }
             }
         });
@@ -638,12 +658,21 @@ fn list_screen(
     chat: &mut ChatState,
     view: &mut ChatsView,
     voice: &mut crate::systems::voice::VoiceState,
+    contacts: &crate::systems::contacts::Contacts,
     act: &mut Actions,
     now: u64,
 ) {
     // The v1 inbox: the title bar, then the Chats | World toggle under it.
+    // Contacts hang off the title bar's people button (`v5-contacts`).
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Chats").size(28.0).color(theme::CREAM));
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Chats").size(28.0).color(theme::CREAM));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::round_button(ui, icons::APPEARANCE, "Contacts", false).clicked() {
+                act.sub = Some(crate::systems::contacts::Sub::Contacts);
+            }
+        });
+    });
     ui.add_space(10.0);
     if segmented(ui, "Chats", 0, false, false) == Some(true) {
         act.to_world = true;
@@ -697,11 +726,18 @@ fn list_screen(
         new_chat_section(ui, chat, act);
     }
 
+    // Message requests wait in one row above the chats, and the chats that
+    // are still requests are not in the list until they are accepted.
+    if crate::systems::contacts::requests_row(ui, contacts) {
+        act.sub = Some(crate::systems::contacts::Sub::Requests);
+    }
+    let requests = contacts.request_channels(chat);
+
     let rows = |filter: &dyn Fn(ChatKind) -> bool| -> Vec<Row> {
         let mut out: Vec<(u64, Row)> = chat
             .channels
             .iter()
-            .filter(|c| filter(kind_of(&c.key)))
+            .filter(|c| filter(kind_of(&c.key)) && !requests.contains(&c.key))
             .map(|c| {
                 let visible: Vec<&ChatLine> = c
                     .lines
@@ -1030,6 +1066,7 @@ fn chat_screen(
     ui: &mut egui::Ui,
     chat: &mut ChatState,
     view: &mut ChatsView,
+    contacts: &crate::systems::contacts::Contacts,
     key: &str,
     act: &mut Actions,
     now: u64,
@@ -1063,6 +1100,24 @@ fn chat_screen(
         egui::Stroke::new(1.0, GLINE),
     );
     ui.add_space(8.0);
+    // A chat that is still your request to somebody holds one message until
+    // they accept (`contacts`, enforced by the server); say so before the
+    // second one is refused.
+    let peer = chat
+        .direct
+        .iter()
+        .find(|(_, k)| k.as_str() == key)
+        .map(|(p, _)| p.clone());
+    if let Some(peer) = peer.filter(|p| contacts.sent_to(p)) {
+        theme::note(
+            ui,
+            &format!(
+                "Request sent. {peer} sees your first message in their requests; you can \
+                 write more once they accept."
+            ),
+        );
+        ui.add_space(6.0);
+    }
 
     // The text field sits in a bottom band of its own, so the thread above it
     // can take every point of height that is left and scroll. The band is the
@@ -1606,7 +1661,7 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
 }
 
 /// A raised block inside the ink panel, for the forms and menus.
-fn raised_frame() -> egui::Frame {
+pub(crate) fn raised_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(theme::SURFACE_RAISED)
         .stroke(egui::Stroke::new(1.0, GLINE))
@@ -1616,7 +1671,7 @@ fn raised_frame() -> egui::Frame {
 
 /// The design's floating glass (`.float-top`, `.sheet`): ink at 84 %, a
 /// hairline, round corners.
-fn glass_frame() -> egui::Frame {
+pub(crate) fn glass_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(theme::GLASS)
         .stroke(egui::Stroke::new(1.0, GLINE))
@@ -1636,6 +1691,10 @@ fn apply(
 ) {
     if act.dismiss_notice {
         chat.notice = None;
+    }
+    if let Some(sub) = act.sub {
+        view.sub = Some(sub);
+        view.new_chat = false;
     }
     if act.to_world || act.close {
         *right_panel = RightPanel::None;

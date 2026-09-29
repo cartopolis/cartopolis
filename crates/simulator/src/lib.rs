@@ -13,6 +13,7 @@ pub mod calls;
 pub mod chat;
 pub mod cli;
 pub mod config;
+pub mod contacts;
 pub mod content;
 pub mod db;
 pub mod e2ee;

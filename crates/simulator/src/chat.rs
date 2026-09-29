@@ -219,6 +219,23 @@ impl ChatHub {
         }
     }
 
+    /// Deliver a frame to every connection signed in as `account`
+    /// (`accounts.id`), whether or not it has a private-chat device — a
+    /// contact list is not sealed.
+    pub fn deliver_to_account(&self, account: &str, frame: &Bytes) {
+        for (id, c) in locked(&self.clients).iter() {
+            if c.account == account {
+                c.enqueue(*id, Lane::Text, frame.clone());
+            }
+        }
+    }
+
+    /// Whether any connection is signed in as `account`.
+    #[must_use]
+    pub fn account_online(&self, account: &str) -> bool {
+        locked(&self.clients).values().any(|c| c.account == account)
+    }
+
     /// Add or remove a block for a live connection, so it takes effect on the
     /// next message rather than the next login.
     pub fn set_blocked(&self, avatar_id: u64, username: &str, blocked: bool) {

@@ -148,6 +148,9 @@ postcard = { workspace = true }
 bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
+# The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no
+# dependencies of its own, so it builds on every lane, Android and wasm included.
+qrcodegen = "1.8"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
 # The client-intent channel behind `OnlineSession` — pure-Rust and wasm-safe,
 # unlike tokio's `sync::mpsc`, so the online session type compiles on the web

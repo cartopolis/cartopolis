@@ -302,6 +302,21 @@ impl Engine {
         self.peers.iter()
     }
 
+    /// Every direct chat this device is in, with who it is with.
+    pub fn directs(&self) -> impl Iterator<Item = (&Vec<u8>, &String)> {
+        self.peers.iter().filter(|(g, _)| !self.groups.contains(*g))
+    }
+
+    /// Drop a chat from this device: its keys, its cursor and its label. What
+    /// declining a request does locally — the server has already stopped
+    /// delivering it — and nothing is sent, so the other side sees no change.
+    pub fn forget(&mut self, group: &[u8]) {
+        self.cursors.remove(group);
+        self.peers.remove(group);
+        self.groups.remove(group);
+        self.device.forget(group);
+    }
+
     /// The direct chat with `username`, if this device is in one. Never a group,
     /// whatever the group happens to be called — the distinction
     /// [`Self::start_direct`] already makes.
@@ -1322,6 +1337,13 @@ pub fn drive_private_chats(
     for msg in inbox.0.drain(..) {
         engine.handle(msg, &mut out, &mut events);
     }
+    for key in std::mem::take(&mut chat.private_forget) {
+        if let Some(group) = group_of(&key) {
+            engine.forget(&group);
+            chat.drop_channel(&key);
+            private.dirty = true;
+        }
+    }
     for name in std::mem::take(&mut chat.private_start) {
         engine.start_direct(&name, &mut out, &mut events);
     }
@@ -1381,6 +1403,29 @@ pub fn drive_private_chats(
                 let key = channel_key(&group);
                 chat.open_channel(&key, &private_label(&peer));
                 chat.focus_channel(&key);
+                // A first message waiting for this chat to exist
+                // (`systems::contacts`): it goes in now, as the request's line.
+                if let Some(i) = chat
+                    .private_hello
+                    .iter()
+                    .position(|(who, _)| who.eq_ignore_ascii_case(&peer))
+                {
+                    let (_, text) = chat.private_hello.remove(i);
+                    match engine.send_text(&group, &text, now_ms(), &mut out) {
+                        Ok(()) => {
+                            let me = engine.username().to_string();
+                            let my_id = chat.my_id.unwrap_or(0);
+                            chat.receive(&key, my_id, me, text, None);
+                        }
+                        Err(e) => {
+                            chat.notice = Some(crate::systems::chat::ChatNotice {
+                                text: format!("not sent: {e}"),
+                                error: true,
+                            });
+                        }
+                    }
+                    private.dirty = true;
+                }
             }
             Event::Line {
                 group,
@@ -1432,6 +1477,16 @@ pub fn drive_private_chats(
     }
     for msg in out {
         online.send("private chat", msg);
+    }
+    // Which chat goes with which person, for the contacts screens. Rebuilt
+    // rather than patched: it is a handful of entries, and a patch would have
+    // to follow every way a chat comes and goes.
+    let direct: std::collections::HashMap<String, String> = engine
+        .directs()
+        .map(|(g, p)| (p.to_lowercase(), channel_key(g)))
+        .collect();
+    if chat.direct != direct {
+        chat.direct = direct;
     }
     if arrived || private.dirty {
         let bytes = engine.save();
@@ -1613,6 +1668,14 @@ mod loopback {
             for n in names {
                 cartopolis_simulator::ensure_account(&conn, n, "pw").unwrap();
             }
+            // Everyone a contact of everyone: a chat with a stranger starts as a
+            // request (protocol 27), which is `systems::contacts`' concern.
+            conn.execute(
+                "INSERT INTO contacts (account, contact, since_ms)
+                 SELECT a.id, b.id, 0 FROM accounts a, accounts b WHERE a.id <> b.id",
+                [],
+            )
+            .unwrap();
         }
         let handle =
             cartopolis_simulator::serve(std::sync::Arc::new(cartopolis_simulator::SimConfig {

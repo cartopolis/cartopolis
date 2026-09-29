@@ -67,6 +67,38 @@ pub fn web_link(lat: f64, lng: f64, alt: f64, look: Option<(f32, f32)>) -> Strin
     )
 }
 
+/// The query key a contact link carries (`systems::contacts`).
+pub const CONTACT_KEY: &str = "contact";
+
+/// A person's contact link: `https://cartopolis.org/go?contact=jeroen~3f9a1c7e22b0`.
+///
+/// On the `/go` path for the reason a place link is (it is the one path the
+/// app claims on Android, and the web client serves it), with the name and the
+/// code joined by `~`, which is not in any username and needs no escaping.
+/// Whoever holds it may send a request whatever the person's setting says;
+/// resetting the code in Contacts ▸ Add is how old copies stop working.
+pub fn contact_link(username: &str, code: &str) -> String {
+    format!("{WEB_ORIGIN}/{LINK_PATH}?{CONTACT_KEY}={username}~{code}")
+}
+
+/// The (username, code) a contact link carries, from either scheme and any
+/// host (see [`link_place`] for why the host is not checked).
+pub fn contact_from_link(input: &str) -> Option<(String, String)> {
+    if !is_link(input.trim()) {
+        return None;
+    }
+    let no_fragment = input.trim().split('#').next()?;
+    let (_, query) = no_fragment.split_once('?')?;
+    let value = query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case(CONTACT_KEY))
+        .map(|(_, v)| percent_decode(v))?;
+    let (user, code) = value.split_once('~')?;
+    let (user, code) = (user.trim(), code.trim());
+    (!user.is_empty() && !code.is_empty()).then(|| (user.to_string(), code.to_string()))
+}
+
 // There is deliberately no `app_link` beside `web_link`. The custom-scheme URL has
 // exactly one writer and it is not Rust: `index.html`'s loader builds
 // `cartopolis://go?place=…` in JavaScript, before any of this exists, because the
@@ -195,6 +227,22 @@ fn percent_decode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_contact_link_reads_back_as_the_name_and_code_it_was_made_from() {
+        let link = contact_link("sanne_k", "3f9a1c7e22b0");
+        assert_eq!(
+            contact_from_link(&link),
+            Some(("sanne_k".into(), "3f9a1c7e22b0".into()))
+        );
+        assert_eq!(
+            contact_from_link("cartopolis://go?contact=eva~abc#x"),
+            Some(("eva".into(), "abc".into()))
+        );
+        // A place link is not a contact link, and a bare name is not a link.
+        assert_eq!(contact_from_link(&web_link(53.2, 6.5, 100.0, None)), None);
+        assert_eq!(contact_from_link("eva~abc"), None);
+    }
 
     fn fix(input: &str) -> LocationFix {
         place_from_link(input).unwrap_or_else(|| panic!("{input} should name a place"))

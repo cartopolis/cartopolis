@@ -31,13 +31,30 @@ struct Server {
     _handle: cartopolis_simulator::SimHandle,
 }
 
+/// A server with these accounts, every one a contact of every other: most
+/// tests here are about encryption, and a private chat with somebody who is
+/// not a contact starts as a request (protocol 27), which is
+/// [`strangers_become_contacts_through_a_request_that_holds_one_message`]'s
+/// business.
 async fn start(users: &[&str]) -> Server {
+    start_with(users, true).await
+}
+
+async fn start_with(users: &[&str], contacts: bool) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("e2ee.db").to_str().unwrap().to_string();
     {
         let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
         for u in users {
             ensure_account(&conn, u, "pw").unwrap();
+        }
+        if contacts {
+            conn.execute(
+                "INSERT INTO contacts (account, contact, since_ms)
+                 SELECT a.id, b.id, 0 FROM accounts a, accounts b WHERE a.id <> b.id",
+                [],
+            )
+            .unwrap();
         }
     }
     let config = SimConfig {
@@ -417,4 +434,135 @@ async fn a_groups_worth_of_claims_goes_through_and_a_flood_is_refused_out_loud()
     assert_eq!(answered + refused, SENT, "every claim gets an answer");
     assert!(answered >= 12, "a group's worth goes through ({answered})");
     assert!(refused > 0, "a flood is refused, out loud");
+}
+
+/// The next `ContactsState` on `c`, as (contacts, incoming, outgoing) names.
+async fn contacts_state(c: &mut Client) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (state, _) = next_matching(c, PATIENT, |m| match m {
+        NetMessage::ContactsState {
+            contacts,
+            incoming,
+            outgoing,
+            ..
+        } => Some((
+            contacts.into_iter().map(|c| c.username).collect(),
+            incoming.into_iter().map(|r| r.username).collect(),
+            outgoing.into_iter().map(|r| r.username).collect(),
+        )),
+        _ => None,
+    })
+    .await
+    .expect("contacts state");
+    state
+}
+
+/// Protocol 27 end to end: a stranger cannot start a private chat; a request
+/// lets them, holds the chat to one message until it is answered, and
+/// accepting opens it up and makes both people contacts.
+#[tokio::test]
+async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
+    let s = start_with(&["alice", "bob"], false).await;
+    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut a = online(&s.addr, &mut alice).await;
+    let mut b = online(&s.addr, &mut bob).await;
+
+    // Bob takes requests from anyone; the default would need the two of them
+    // to have stood near each other, which a test with no avatars cannot do.
+    send(
+        &mut b,
+        &NetMessage::SetContactSettings {
+            request_id: 1,
+            policy: cartopolis_core::RequestPolicy::Anyone,
+            show_online: true,
+            notify_requests: false,
+            separate_new_accounts: true,
+            reset_link: false,
+        },
+    )
+    .await;
+    contacts_state(&mut b).await;
+
+    // No request yet: bob's keys are not handed out.
+    send(
+        &mut a,
+        &NetMessage::E2eeClaimKeyPackages {
+            request_id: 2,
+            username: "bob".into(),
+        },
+    )
+    .await;
+    let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::ServerError { code, .. } => Some(code),
+        NetMessage::E2eeKeyPackages { .. } => Some(0),
+        _ => None,
+    })
+    .await
+    .expect("claim answered");
+    assert_eq!(code, 403, "a stranger may not add bob to a chat");
+
+    send(
+        &mut a,
+        &NetMessage::RequestContact {
+            request_id: 3,
+            username: "bob".into(),
+            link_code: None,
+        },
+    )
+    .await;
+    let (_, _, outgoing) = contacts_state(&mut a).await;
+    assert_eq!(outgoing, vec!["bob".to_string()]);
+    let (_, incoming, _) = contacts_state(&mut b).await;
+    assert_eq!(incoming, vec!["alice".to_string()]);
+
+    // With a request on record the chat can start, and holds one message.
+    let group = start_direct(&mut a, &mut alice, "bob").await;
+    say(&mut a, &mut alice, &group, "hi, it's on until five").await;
+    let out = alice
+        .encrypt(
+            &group,
+            &Payload::Text {
+                body: "and another thing".into(),
+                sent_at_ms: 0,
+            },
+        )
+        .unwrap();
+    send(
+        &mut a,
+        &NetMessage::E2eeSend {
+            request_id: 9,
+            group: group.clone(),
+            epoch: out.epoch,
+            commit: false,
+            message: out.message,
+            welcome: None,
+        },
+    )
+    .await;
+    let ((seq, refused), _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::E2eeSent { seq, refused, .. } => Some((seq, refused)),
+        _ => None,
+    })
+    .await
+    .expect("second send answered");
+    assert_eq!(seq, None);
+    assert!(refused.unwrap().contains("waiting for bob"));
+
+    // Bob accepts: both are contacts, and alice may write again.
+    send(
+        &mut b,
+        &NetMessage::AnswerContact {
+            request_id: 4,
+            username: "alice".into(),
+            accept: true,
+        },
+    )
+    .await;
+    let (contacts, incoming, _) = contacts_state(&mut b).await;
+    assert_eq!(contacts, vec!["alice".to_string()]);
+    assert!(incoming.is_empty());
+    let (contacts, _, outgoing) = contacts_state(&mut a).await;
+    assert_eq!(contacts, vec!["bob".to_string()]);
+    assert!(outgoing.is_empty());
+    say(&mut a, &mut alice, &group, "great, see you there").await;
 }

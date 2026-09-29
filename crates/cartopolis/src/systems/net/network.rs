@@ -39,6 +39,8 @@ pub struct AuthWriteback<'w> {
     private: ResMut<'w, crate::systems::private_chat::PrivateInbox>,
     /// Call signalling, handed on to `calls::drive_calls` likewise.
     calls: ResMut<'w, crate::systems::calls::CallInbox>,
+    /// Contacts and message requests, handed on to `contacts::drive_contacts`.
+    contacts: ResMut<'w, crate::systems::contacts::ContactsInbox>,
 }
 use crate::systems::locomotion;
 use crate::systems::model_assets;
@@ -713,6 +715,10 @@ pub fn apply_network_snapshot(
         // The same for a call's refusal, and for the rest of its signalling.
         if crate::systems::calls::CallInbox::wants(&msg) {
             auth.calls.0.push(msg);
+            continue;
+        }
+        if crate::systems::contacts::ContactsInbox::wants(&msg) {
+            auth.contacts.0.push(msg);
             continue;
         }
         match msg {
