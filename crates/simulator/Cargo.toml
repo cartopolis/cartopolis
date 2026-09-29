@@ -83,6 +83,10 @@ uuid.workspace = true
 # put a second TLS stack in the tree to save two threads.
 ureq.workspace = true
 cartopolis_core = { path = "../core" }
+# The call forwarder (`calls`). Only the `sfu` half: sealing and opening media
+# is the `client` feature, which this crate must not link outside its tests,
+# for the reason `cartopolis_e2ee` stays out of it.
+cartopolis_calls = { path = "../calls", features = ["sfu"] }
 
 [dev-dependencies]
 tempfile = "3.0"
@@ -93,6 +97,8 @@ tokio-tungstenite.workspace = true
 # relays what MLS devices actually produce. Test-only, and it must stay that
 # way: the server binary does not link the code that could open a message.
 cartopolis_e2ee = { path = "../e2ee" }
+# And real calling devices for the calls suite, for the same reason.
+cartopolis_calls = { path = "../calls", features = ["sfu", "client"] }
 
 [lints]
 workspace = true

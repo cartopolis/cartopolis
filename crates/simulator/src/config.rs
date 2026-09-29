@@ -18,6 +18,16 @@ pub struct SimConfig {
     /// TLS in front of it is Caddy's.
     #[serde(default)]
     pub http_listen: Option<String>,
+    /// UDP address the call forwarder listens on (`docs/notes/calls.md`), or
+    /// `None` for a server without calls. Off by default for the same reason
+    /// `http_listen` is: the tests and every embedded `serve` get what they had.
+    #[serde(default)]
+    pub calls_listen: Option<String>,
+    /// `host:port` clients reach the forwarder at, when that is not the listen
+    /// address: behind Docker's NAT, or listening on `0.0.0.0`. WebRTC puts it
+    /// in the SDP as the one candidate, so it must be an address, not a name.
+    #[serde(default)]
+    pub calls_public_addr: Option<String>,
     #[serde(default = "default_db")]
     pub database_path: String,
     #[serde(default = "default_tick_hz")]
@@ -190,6 +200,8 @@ impl Default for SimConfig {
         Self {
             listen: default_listen(),
             http_listen: None,
+            calls_listen: None,
+            calls_public_addr: None,
             database_path: default_db(),
             tick_hz: default_tick_hz(),
             max_prims: default_max_prims(),
@@ -311,6 +323,12 @@ impl SimConfig {
         }
         if let Some(ref v) = cli.http_listen {
             self.http_listen = Some(v.clone());
+        }
+        if let Some(ref v) = cli.calls_listen {
+            self.calls_listen = Some(v.clone());
+        }
+        if let Some(ref v) = cli.calls_public_addr {
+            self.calls_public_addr = Some(v.clone());
         }
         if let Some(ref v) = cli.database_path {
             self.database_path.clone_from(v);

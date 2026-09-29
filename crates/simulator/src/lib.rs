@@ -9,6 +9,7 @@
 pub mod assets;
 pub mod auth;
 pub mod authoring;
+pub mod calls;
 pub mod chat;
 pub mod cli;
 pub mod config;
@@ -45,6 +46,9 @@ pub struct SimHandle {
     /// `SimConfig::http_listen` asked for one. `None` is the default and is what
     /// solo mode and the tests get.
     pub http_addr: Option<SocketAddr>,
+    /// Where the call forwarder's UDP socket is bound, when
+    /// `SimConfig::calls_listen` asked for one.
+    pub calls_addr: Option<SocketAddr>,
     tasks: tokio::task::JoinSet<&'static str>,
 }
 
@@ -104,10 +108,39 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let sessions = Arc::new(auth::Sessions::persistent(conn.clone()));
     let chat = Arc::new(chat::ChatHub::new());
 
+    // Bound here, before anything is accepted, for the reason `http_listen` is
+    // below: a bad address should fail `serve`, not a background task later.
+    let mut calls_addr = None;
+    let mut calls_task = None;
+    let calls = match config.calls_listen {
+        Some(ref listen) => {
+            let public = config
+                .calls_public_addr
+                .as_deref()
+                .map(str::parse::<SocketAddr>)
+                .transpose()
+                .context("calls_public_addr must be IP:port")?;
+            let (handle, bound, task) = calls::spawn(listen, public, chat.clone())
+                .await
+                .with_context(|| format!("bind calls_listen {listen}"))?;
+            tracing::info!(%bound, "calls listening (udp)");
+            calls_addr = Some(bound);
+            calls_task = Some(task);
+            Some(handle)
+        }
+        None => None,
+    };
+
     let (tx_snap, _) = broadcast::channel::<bytes::Bytes>(256);
     let script_handle = scripts_host.handle();
     // Each task returns a label so `task_ended` can say *which* one died.
     let mut tasks = tokio::task::JoinSet::new();
+    if let Some(task) = calls_task {
+        tasks.spawn(async move {
+            let _ = task.await;
+            "calls"
+        });
+    }
     {
         let world = world.clone();
         let config = config.clone();
@@ -153,6 +186,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             sessions: sessions.clone(),
             chat: chat.clone(),
             scripts: script_handle.clone(),
+            calls: calls.clone(),
             mailer,
             registration_throttle: Arc::new(http::RegistrationLimits::default()),
         };
@@ -197,6 +231,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             sessions,
             chat,
             script_handle,
+            calls,
         )
         .await;
         "accept loop"
@@ -205,6 +240,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     Ok(SimHandle {
         local_addr,
         http_addr,
+        calls_addr,
         tasks,
     })
 }
@@ -221,6 +257,7 @@ async fn accept_loop(
     sessions: Arc<auth::Sessions>,
     chat: Arc<chat::ChatHub>,
     scripts: scripting::ScriptHandle,
+    calls: Option<calls::CallsHandle>,
 ) {
     // Consecutive failures, for the backoff below. Reset by any success.
     let mut failures: u32 = 0;
@@ -269,6 +306,7 @@ async fn accept_loop(
         let sessions_c = sessions.clone();
         let chat_c = chat.clone();
         let scripts_c = scripts.clone();
+        let calls_c = calls.clone();
         tokio::spawn(async move {
             if let Err(e) = net::handle_connection(
                 net::tcp_frames(stream),
@@ -280,6 +318,7 @@ async fn accept_loop(
                 sessions_c,
                 chat_c,
                 scripts_c,
+                calls_c,
             )
             .await
             {

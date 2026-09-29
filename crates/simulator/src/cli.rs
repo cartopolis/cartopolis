@@ -15,6 +15,16 @@ pub struct SimCli {
         help = "HTTP listen address for the browser transport (/ws) and the admin API"
     )]
     pub http_listen: Option<String>,
+    #[arg(
+        long,
+        help = "UDP listen address for the call forwarder (off when absent)"
+    )]
+    pub calls_listen: Option<String>,
+    #[arg(
+        long,
+        help = "IP:port clients reach the call forwarder at, when not the listen address"
+    )]
+    pub calls_public_addr: Option<String>,
     /// Create-or-repair an admin account, then exit without serving.
     ///
     /// Takes the password from `CARTO_ADMIN_PASSWORD` rather than a flag: an

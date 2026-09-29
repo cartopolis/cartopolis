@@ -21,6 +21,7 @@
 
 mod auth_handshake;
 mod authoring;
+mod calls;
 mod chat;
 mod connection_teardown;
 mod http_surface;

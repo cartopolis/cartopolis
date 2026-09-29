@@ -12,6 +12,11 @@ const ADMIN_PASSWORD_ENV: &str = "CARTO_ADMIN_PASSWORD";
 /// server never publishes an unencrypted API to the network by accident.
 const DEV_HTTP_LISTEN: &str = "127.0.0.1:4748";
 
+/// Where the call forwarder goes when nobody said: loopback, next to the HTTP
+/// surface, so the documented dev loop can place a call between two clients
+/// on one machine.
+const DEV_CALLS_LISTEN: &str = "127.0.0.1:4749";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -62,10 +67,25 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The same default for calls, and the same leniency about a taken port.
+    if config.calls_listen.is_none() {
+        match std::net::UdpSocket::bind(DEV_CALLS_LISTEN) {
+            Ok(probe) => {
+                drop(probe);
+                config.calls_listen = Some(DEV_CALLS_LISTEN.to_string());
+            }
+            Err(e) => tracing::warn!(
+                "no --calls-listen given and {DEV_CALLS_LISTEN} is taken ({e}); \
+                 running without calls"
+            ),
+        }
+    }
+
     let config = Arc::new(config);
     tracing::info!(
         listen = %config.listen,
         http_listen = config.http_listen.as_deref().unwrap_or("(off)"),
+        calls_listen = config.calls_listen.as_deref().unwrap_or("(off)"),
         db = %config.database_path,
         tick_hz = config.tick_hz,
         max_prims = config.max_prims,

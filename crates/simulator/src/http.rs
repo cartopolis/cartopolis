@@ -59,6 +59,7 @@ pub struct HttpState {
     pub sessions: Arc<Sessions>,
     pub chat: Arc<crate::chat::ChatHub>,
     pub scripts: ScriptHandle,
+    pub calls: Option<crate::calls::CallsHandle>,
     pub mailer: Arc<Mailer>,
     /// Shared by the register and re-send paths, because they cost the same
     /// things and a limit only one of them applies is not a limit.
@@ -212,6 +213,7 @@ async fn ws_handler(
                 state.sessions,
                 state.chat,
                 state.scripts,
+                state.calls,
             )
             .await
             {

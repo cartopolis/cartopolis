@@ -20,9 +20,9 @@ use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use uuid::Uuid;
 
-type Client = Framed<TcpStream, LengthDelimitedCodec>;
+pub(super) type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
-const PATIENT: Duration = Duration::from_secs(3);
+pub(super) const PATIENT: Duration = Duration::from_secs(3);
 const QUIET: Duration = Duration::from_millis(700);
 
 struct Server {
@@ -53,7 +53,7 @@ async fn start(users: &[&str]) -> Server {
     }
 }
 
-async fn connect(addr: &str, username: &str) -> Client {
+pub(super) async fn connect(addr: &str, username: &str) -> Client {
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut c = Framed::new(
         stream,
@@ -78,14 +78,14 @@ async fn connect(addr: &str, username: &str) -> Client {
     c
 }
 
-async fn send(c: &mut Client, msg: &NetMessage) {
+pub(super) async fn send(c: &mut Client, msg: &NetMessage) {
     c.send(Bytes::from(encode_app_frame(msg).unwrap()))
         .await
         .unwrap();
 }
 
 /// Next frame matching `f`, with its raw bytes, or `None` after `window`.
-async fn next_matching<T>(
+pub(super) async fn next_matching<T>(
     c: &mut Client,
     window: Duration,
     mut f: impl FnMut(NetMessage) -> Option<T>,
@@ -106,7 +106,7 @@ async fn next_matching<T>(
 }
 
 /// Connect, register a device, and wait for the server to say it has.
-async fn online(addr: &str, dev: &mut Device) -> Client {
+pub(super) async fn online(addr: &str, dev: &mut Device) -> Client {
     let name = dev.identity().username.clone();
     let mut c = connect(addr, &name).await;
     send(
@@ -129,7 +129,7 @@ async fn online(addr: &str, dev: &mut Device) -> Client {
 
 /// Alice starts a direct chat with Bob and invites his device. Returns the
 /// chat's id; Alice's side is confirmed, Bob has an invitation on its way.
-async fn start_direct(a: &mut Client, alice: &mut Device, with: &str) -> Vec<u8> {
+pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str) -> Vec<u8> {
     send(
         a,
         &NetMessage::E2eeClaimKeyPackages {

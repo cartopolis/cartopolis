@@ -118,6 +118,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "private chats — E2eeRegisterDevice / ClaimKeyPackages / CreateGroup / Send / Sync and their answers; the server orders and relays MLS-sealed bytes it cannot open (docs/notes/encrypted-chat.md)",
     },
+    ProtocolRevision {
+        version: 26,
+        adr: "",
+        summary: "calls — CallJoin / CallJoined / CallOffer / CallAnswer / CallLeave / CallRoster: SDP signalling for a private chat's call, whose media goes over UDP to the simulator's forwarder sealed with keys from the chat (docs/notes/calls.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -181,6 +186,12 @@ pub enum MessageKind {
     E2eeSynced = 45,
     E2eeDeliver = 46,
     E2eeInvite = 47,
+    CallJoin = 48,
+    CallJoined = 49,
+    CallOffer = 50,
+    CallAnswer = 51,
+    CallLeave = 52,
+    CallRoster = 53,
 }
 
 impl MessageKind {
@@ -233,6 +244,12 @@ impl MessageKind {
             45 => Some(Self::E2eeSynced),
             46 => Some(Self::E2eeDeliver),
             47 => Some(Self::E2eeInvite),
+            48 => Some(Self::CallJoin),
+            49 => Some(Self::CallJoined),
+            50 => Some(Self::CallOffer),
+            51 => Some(Self::CallAnswer),
+            52 => Some(Self::CallLeave),
+            53 => Some(Self::CallRoster),
             _ => None,
         }
     }
@@ -999,6 +1016,69 @@ pub enum NetMessage {
         after: u64,
         welcome: Vec<u8>,
     },
+
+    // ── Calls (protocol 26, `docs/notes/calls.md`) ───────────────────────────
+    //
+    // Signalling only. The media goes over UDP to the simulator's forwarder,
+    // sealed on the sending device with a key from the chat's MLS group, so
+    // what the server learns here is what it already knew from the chat —
+    // who is in it — plus who is in a call and when. Each device keeps two
+    // connections to the forwarder, and each is offered by the side that sends
+    // on it: `CallJoin` carries the device's offer for what it sends,
+    // `CallOffer` the forwarder's for what it will receive.
+    /// Client joins (or starts) the call of private chat `group` with the SDP
+    /// offer for its sending connection. Only a member of the chat with a
+    /// registered device may join.
+    CallJoin {
+        request_id: u32,
+        group: Vec<u8>,
+        offer: String,
+    },
+    /// Server: in the call, with the forwarder's answer. `participant` is this
+    /// device's number in the call, which [`NetMessage::CallRoster`] and
+    /// [`CallTrack`] name people by.
+    CallJoined {
+        request_id: u32,
+        group: Vec<u8>,
+        participant: u64,
+        answer: String,
+    },
+    /// Server: an offer for this device's receiving connection — somebody's
+    /// microphone or camera was added or went away. Answered by `CallAnswer`.
+    CallOffer {
+        group: Vec<u8>,
+        sdp: String,
+        tracks: Vec<CallTrack>,
+    },
+    /// Client: the answer to the last `CallOffer`.
+    CallAnswer { group: Vec<u8>, sdp: String },
+    /// Client leaves the call. Closing the connection leaves it too.
+    CallLeave { group: Vec<u8> },
+    /// Server: who is in a chat's call, sent to every member's connected
+    /// devices whenever it changes. A roster this device is not in is the call
+    /// ringing; an empty one is the call over.
+    CallRoster {
+        group: Vec<u8>,
+        members: Vec<CallMember>,
+    },
+}
+
+/// One track on a device's receiving connection ([`NetMessage::CallOffer`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CallTrack {
+    /// The SDP media id it arrives under.
+    pub mid: String,
+    /// Whose it is, as [`CallMember::participant`] numbers them.
+    pub participant: u64,
+    pub video: bool,
+}
+
+/// One device in a call ([`NetMessage::CallRoster`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CallMember {
+    pub participant: u64,
+    pub username: String,
+    pub device: Uuid,
 }
 
 /// One device's key package, as handed out by [`NetMessage::E2eeKeyPackages`].
@@ -1169,6 +1249,12 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::E2eeSynced { .. } => MessageKind::E2eeSynced,
         NetMessage::E2eeDeliver { .. } => MessageKind::E2eeDeliver,
         NetMessage::E2eeInvite { .. } => MessageKind::E2eeInvite,
+        NetMessage::CallJoin { .. } => MessageKind::CallJoin,
+        NetMessage::CallJoined { .. } => MessageKind::CallJoined,
+        NetMessage::CallOffer { .. } => MessageKind::CallOffer,
+        NetMessage::CallAnswer { .. } => MessageKind::CallAnswer,
+        NetMessage::CallLeave { .. } => MessageKind::CallLeave,
+        NetMessage::CallRoster { .. } => MessageKind::CallRoster,
     }
 }
 
@@ -1203,6 +1289,8 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::E2eeSent { request_id, .. } => *request_id,
         NetMessage::E2eeSync { request_id, .. } => *request_id,
         NetMessage::E2eeSynced { request_id } => *request_id,
+        NetMessage::CallJoin { request_id, .. } => *request_id,
+        NetMessage::CallJoined { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -1562,6 +1650,51 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_call_app_frames() {
+        let group = vec![7u8; 16];
+        for m in [
+            NetMessage::CallJoin {
+                request_id: 3,
+                group: group.clone(),
+                offer: "v=0\r\n".into(),
+            },
+            NetMessage::CallJoined {
+                request_id: 3,
+                group: group.clone(),
+                participant: 12,
+                answer: "v=0\r\n".into(),
+            },
+            NetMessage::CallOffer {
+                group: group.clone(),
+                sdp: "v=0\r\n".into(),
+                tracks: vec![CallTrack {
+                    mid: "0".into(),
+                    participant: 11,
+                    video: true,
+                }],
+            },
+            NetMessage::CallAnswer {
+                group: group.clone(),
+                sdp: "v=0\r\n".into(),
+            },
+            NetMessage::CallLeave {
+                group: group.clone(),
+            },
+            NetMessage::CallRoster {
+                group,
+                members: vec![CallMember {
+                    participant: 11,
+                    username: "alice".into(),
+                    device: Uuid::from_u128(1),
+                }],
+            },
+        ] {
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
+    }
+
+    #[test]
     fn roundtrip_delete_prim_app_frame() {
         let m = NetMessage::DeletePrim {
             request_id: 125,
@@ -1618,7 +1751,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 46] = [
+        const ALL: [MessageKind; 52] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -1665,6 +1798,12 @@ mod tests {
             E2eeSynced,
             E2eeDeliver,
             E2eeInvite,
+            CallJoin,
+            CallJoined,
+            CallOffer,
+            CallAnswer,
+            CallLeave,
+            CallRoster,
         ];
         for k in ALL {
             assert_eq!(
@@ -1678,7 +1817,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(E2eeInvite as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(CallRoster as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

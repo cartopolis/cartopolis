@@ -154,6 +154,8 @@ struct Participant {
     down: Rtc,
     tracks_in: Vec<TrackIn>,
     tracks_out: Vec<TrackOut>,
+    /// Senders this participant does not receive ([`Sfu::ignore`]).
+    ignores: Vec<ParticipantId>,
     pending: Option<SdpPendingOffer>,
     alive: bool,
 }
@@ -239,6 +241,7 @@ impl Sfu {
             down,
             tracks_in: Vec::new(),
             tracks_out,
+            ignores: Vec::new(),
             pending: None,
             alive: true,
         });
@@ -273,6 +276,32 @@ impl Sfu {
             self.request_keyframe(from, mid, KeyframeRequestKind::Pli, now);
         }
         Ok(())
+    }
+
+    /// Stop forwarding `sender`'s media to `receiver`: a block. Its tracks
+    /// are withdrawn from `receiver`'s down connection at the next offer and
+    /// never offered again, so the refusal is here in the forwarder rather than
+    /// in the receiver's app, which could be rewritten to ignore it.
+    pub fn ignore(&mut self, receiver: ParticipantId, sender: ParticipantId) {
+        let Some(p) = self.participant_mut(receiver) else {
+            return;
+        };
+        if !p.ignores.contains(&sender) {
+            p.ignores.push(sender);
+        }
+        p.tracks_out.retain_mut(|t| {
+            if t.from != sender {
+                return true;
+            }
+            match t.state {
+                OutState::ToOpen => false,
+                OutState::Negotiating(m) | OutState::Open(m) => {
+                    t.state = OutState::ToStop(m);
+                    true
+                }
+                OutState::ToStop(_) | OutState::Stopping(_) => true,
+            }
+        });
     }
 
     /// Take a participant out of its call.
@@ -405,7 +434,7 @@ impl Sfu {
             for q in self
                 .participants
                 .iter_mut()
-                .filter(|q| q.alive && q.room == room && q.id != from)
+                .filter(|q| q.alive && q.room == room && q.id != from && !q.ignores.contains(&from))
             {
                 q.tracks_out.push(TrackOut {
                     from,
@@ -456,7 +485,7 @@ impl Sfu {
         for q in self
             .participants
             .iter_mut()
-            .filter(|q| q.alive && q.room == room && q.id != f.from)
+            .filter(|q| q.alive && q.room == room && q.id != f.from && !q.ignores.contains(&f.from))
         {
             let Some(mid) = q
                 .tracks_out

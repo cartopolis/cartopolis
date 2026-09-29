@@ -48,6 +48,11 @@ const MIN_CLAIM_INTERVAL: Duration = Duration::from_millis(500);
 /// Claims one connection may make back to back — a group's worth of people.
 const CLAIM_BURST: u32 = 12;
 
+/// Shortest gap between two `CallJoin`s from one connection. Each join builds
+/// two WebRTC connections on the forwarder, which is the expensive thing a
+/// client could ask for in a loop.
+const MIN_CALL_JOIN_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Longest username the moderation messages will act on.
 ///
 /// Same reasoning as `MAX_ROOM_LEN`: `SetBlocked`/`ReportUser` carry a `String`
@@ -370,6 +375,7 @@ pub async fn handle_connection<T: FrameTransport>(
     sessions: Arc<crate::auth::Sessions>,
     chat: Arc<crate::chat::ChatHub>,
     scripts: crate::scripting::ScriptHandle,
+    calls: Option<crate::calls::CallsHandle>,
 ) -> anyhow::Result<()> {
     let first = framed
         .next()
@@ -568,6 +574,14 @@ pub async fn handle_connection<T: FrameTransport>(
     // same shape as `script_store_gate` below.
     let mut claim_gate = Instant::now()
         .checked_sub(MIN_CLAIM_INTERVAL * CLAIM_BURST)
+        .unwrap_or_else(Instant::now);
+
+    // This connection's place in a call (protocol 26). One call at a time;
+    // dropping the seat leaves the call, which is also what happens when the
+    // connection ends and this goes out of scope.
+    let mut call_seat: Option<crate::calls::Seat> = None;
+    let mut last_call_join = Instant::now()
+        .checked_sub(MIN_CALL_JOIN_INTERVAL)
         .unwrap_or_else(Instant::now);
 
     let mut outcome: anyhow::Result<()> = Ok(());
@@ -1351,6 +1365,85 @@ pub async fn handle_connection<T: FrameTransport>(
                                 })?;
                                 framed.send(Bytes::from(frame)).await?;
                             }
+                            NetMessage::CallJoin { request_id, group, offer } => {
+                                let Some(device) = e2ee_device else { return Ok(()) };
+                                let refuse = |code: u32, message: &str| {
+                                    encode_app_frame(&NetMessage::ServerError {
+                                        request_id,
+                                        code,
+                                        message: message.to_string(),
+                                    })
+                                };
+                                let Some(ref handle) = calls else {
+                                    let frame = refuse(503, "calls are not available on this server")?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                    return Ok(());
+                                };
+                                if offer.len() > crate::calls::MAX_SDP_BYTES
+                                    || group.len() > crate::e2ee::MAX_GROUP_ID_BYTES
+                                {
+                                    framed.send(Bytes::from(refuse(413, "too large")?)).await?;
+                                    return Ok(());
+                                }
+                                if last_call_join.elapsed() < MIN_CALL_JOIN_INTERVAL {
+                                    framed.send(Bytes::from(refuse(429, "slow down")?)).await?;
+                                    return Ok(());
+                                }
+                                last_call_join = Instant::now();
+                                let (members, blocked) = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    // Fresh rather than `blocked_lower`, as the sync
+                                    // path does: a block made since connect holds.
+                                    let blocked: std::collections::HashSet<String> =
+                                        crate::db::blocked_usernames(&c, &principal_key)
+                                            .unwrap_or_default()
+                                            .into_iter()
+                                            .map(|u| u.to_lowercase())
+                                            .collect();
+                                    (crate::e2ee::members(&c, &group).unwrap_or_default(), blocked)
+                                };
+                                if !members.contains(&principal_key) {
+                                    framed.send(Bytes::from(refuse(403, "you are not in that chat")?)).await?;
+                                    return Ok(());
+                                }
+                                // One call per connection: joining another leaves this one.
+                                call_seat = None;
+                                let joined = handle
+                                    .join(crate::calls::Joiner {
+                                        group: group.clone(),
+                                        username: display_name.clone(),
+                                        device,
+                                        blocked,
+                                        members,
+                                        offer,
+                                    })
+                                    .await;
+                                match joined {
+                                    Ok((seat, answer)) => {
+                                        let participant = seat.participant;
+                                        call_seat = Some(seat);
+                                        let frame = encode_app_frame(&NetMessage::CallJoined {
+                                            request_id, group, participant, answer,
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                    Err(message) => {
+                                        framed.send(Bytes::from(refuse(409, &message)?)).await?;
+                                    }
+                                }
+                            }
+                            NetMessage::CallAnswer { group, sdp } => {
+                                if let (Some(handle), Some(seat)) = (&calls, &call_seat) {
+                                    if seat.group == group && sdp.len() <= crate::calls::MAX_SDP_BYTES {
+                                        handle.answer(seat, sdp);
+                                    }
+                                }
+                            }
+                            NetMessage::CallLeave { group } => {
+                                if call_seat.as_ref().is_some_and(|s| s.group == group) {
+                                    call_seat = None;
+                                }
+                            }
                             NetMessage::E2eeCreateGroup { request_id, group, direct_with } => {
                                 if e2ee_device.is_none() {
                                     return Ok(());
@@ -1455,7 +1548,10 @@ pub async fn handle_connection<T: FrameTransport>(
                             | NetMessage::E2eeSent { .. }
                             | NetMessage::E2eeSynced { .. }
                             | NetMessage::E2eeDeliver { .. }
-                            | NetMessage::E2eeInvite { .. } => {
+                            | NetMessage::E2eeInvite { .. }
+                            | NetMessage::CallJoined { .. }
+                            | NetMessage::CallOffer { .. }
+                            | NetMessage::CallRoster { .. } => {
                                 tracing::debug!("ignored server-to-client message from client");
                             }
                             NetMessage::PrimRemoved { .. }

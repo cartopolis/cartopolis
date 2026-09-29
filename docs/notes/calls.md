@@ -75,6 +75,23 @@ as it is: it is public, like nearby chat.
   flagged all 6 keyframes from the clear header; no sealed packet equalled its
   plaintext.
 
+## Running it
+
+`calls_listen` (UDP) turns calls on; the dev binary defaults it to
+`127.0.0.1:4749` as it does the HTTP port. `calls_public_addr` is the
+`IP:port` clients reach it at, and is required behind NAT or on `0.0.0.0`:
+WebRTC puts that address in the SDP as the one candidate, so it must be an
+address, not a hostname. The port is UDP and goes straight to the container —
+Caddy carries none of it — so a deployment publishes it in Docker and opens it
+in any firewall. `calls_addr` on `SimHandle` says what was bound.
+
+## Known gaps in the server
+
+- A block made during a call applies from the next join, not at once.
+- A device that connects while a call is already running learns of it only
+  when the roster next changes (someone joins or leaves).
+- Ringing reaches connected devices only; a closed app is `UnifiedPush`, later.
+
 ## Not yet known
 
 Echo cancellation on Android needs AAudio's `VOICE_COMMUNICATION` input preset,
