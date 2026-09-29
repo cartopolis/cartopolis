@@ -888,7 +888,12 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 white,
             );
         }
-        colliders.extend(square_collider(at + Vec2::new(ox, oz), 0.15, ground_at(at), 3.5));
+        colliders.extend(square_collider(
+            at + Vec2::new(ox, oz),
+            0.15,
+            ground_at(at),
+            3.5,
+        ));
     }
 
     for &(id, lat, lng) in &data.crossings {
@@ -936,7 +941,12 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             [0.07, 0.42, 0.07],
             linear(METAL),
         );
-        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.12, ground_at(p), 0.85));
+        colliders.extend(square_collider(
+            p + Vec2::new(ox, oz),
+            0.12,
+            ground_at(p),
+            0.85,
+        ));
     }
 
     for &(lat, lng) in &data.racks {
@@ -980,7 +990,12 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 metal,
             );
         }
-        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.8, ground_at(p), 1.0));
+        colliders.extend(square_collider(
+            p + Vec2::new(ox, oz),
+            0.8,
+            ground_at(p),
+            1.0,
+        ));
     }
 
     for &(lat, lng) in &data.billboards {
@@ -1022,7 +1037,12 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             [1.55, 1.05, 0.06],
             [0.92, 0.90, 0.86, 1.0],
         );
-        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.3, ground_at(p), 4.1));
+        colliders.extend(square_collider(
+            p + Vec2::new(ox, oz),
+            0.3,
+            ground_at(p),
+            4.1,
+        ));
     }
 
     // ── Linear features ──────────────────────────────────────────────────

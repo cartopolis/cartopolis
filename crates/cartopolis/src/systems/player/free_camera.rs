@@ -1709,10 +1709,7 @@ pub fn camera_controls(
             // footprints had no height, which is also why the camera could sit
             // inside any building the avatar flew past.
             let mut boom_scale = 1.0_f32;
-            if !locked
-                && !first_person
-                && rig.layers.buildings_enabled
-                && !rig.colliders.is_empty()
+            if !locked && !first_person && rig.layers.buildings_enabled && !rig.colliders.is_empty()
             {
                 if let Ok((cell, _)) = avatar_cells.single() {
                     let base = Vec2::new(
@@ -1856,7 +1853,10 @@ pub fn camera_controls(
                 if len > CAMERA_HEAD_MIN_M {
                     let base = Vec2::new(avatar_origin.x as f32, avatar_origin.z as f32);
                     let plan = |v: bevy::math::DVec3| {
-                        base + Vec2::new((v.x - avatar_origin.x) as f32, (v.z - avatar_origin.z) as f32)
+                        base + Vec2::new(
+                            (v.x - avatar_origin.x) as f32,
+                            (v.z - avatar_origin.z) as f32,
+                        )
                     };
                     let head_y = (head.y - avatar_origin.y) as f32;
                     let end_y = (new_world.y - avatar_origin.y) as f32;

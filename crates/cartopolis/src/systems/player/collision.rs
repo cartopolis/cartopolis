@@ -120,8 +120,8 @@ impl Body {
         Self { feet, ground }
     }
 
-    /// An avatar standing on the datum. What a test — or a caller with no height
-    /// to offer — means.
+    /// An avatar standing on the datum.
+    #[cfg(test)]
     #[must_use]
     pub fn standing() -> Self {
         Self::new(0.0, 0.0)
@@ -187,12 +187,6 @@ impl Footprint {
     /// Whether height `h` lies inside this footprint's vertical extent.
     fn spans(&self, h: f32) -> bool {
         h >= self.bottom && h <= self.top
-    }
-
-    /// The footprint's centre in XZ — where the ground under it is sampled from.
-    #[must_use]
-    pub fn centre(&self) -> Vec2 {
-        (self.min + self.max) * 0.5
     }
 
     /// Whether `p` is close enough to one of this building's doors to pass.
@@ -517,10 +511,7 @@ impl BuildingColliders {
     /// already indoors (or a building streamed in on top of it), and pulling the
     /// camera to zero there would jam it inside the avatar's head.
     pub fn segment_fraction(&self, from: Vec2, from_y: f32, to: Vec2, to_y: f32) -> Option<f32> {
-        if self
-            .iter()
-            .any(|f| f.spans(from_y) && f.contains(from))
-        {
+        if self.iter().any(|f| f.spans(from_y) && f.contains(from)) {
             return None;
         }
         let d = to - from;
@@ -800,7 +791,10 @@ pub fn eject_avatar_from_buildings(
     // (`floor_lift`), which is what keeps an avatar upstairs a resident of the
     // floor it is on rather than of the ground floor's walls.
     let ground_y = terrain.ground_at(tf.translation.x, tf.translation.z) + avatar_state.floor_lift;
-    let body = Body::new(tf.translation.y - crate::systems::avatar::GROUND_HEIGHT, ground_y);
+    let body = Body::new(
+        tf.translation.y - crate::systems::avatar::GROUND_HEIGHT,
+        ground_y,
+    );
     let base = Vec2::new(
         cell.x as f32 * WORLD_CELL_EDGE,
         cell.z as f32 * WORLD_CELL_EDGE,
@@ -977,7 +971,10 @@ mod tests {
     fn steer_clear_path_unchanged() {
         let c = colliders_with(unit_square());
         let wish = Vec2::new(1.0, 0.0);
-        assert_eq!(c.steer_velocity(Vec2::new(-50.0, -50.0), wish, Body::standing()), wish);
+        assert_eq!(
+            c.steer_velocity(Vec2::new(-50.0, -50.0), wish, Body::standing()),
+            wish
+        );
     }
 
     /// The bug this whole split exists for: the doorway let the avatar into a
@@ -1004,10 +1001,16 @@ mod tests {
         let c = colliders_with(hollow_square());
         // Outside, walking at a blank wall (the door is on the south side).
         let outside = Vec2::new(-6.0, 0.0);
-        assert_eq!(c.slide(outside, Vec2::new(-4.0, 0.0), Body::standing()), outside);
+        assert_eq!(
+            c.slide(outside, Vec2::new(-4.0, 0.0), Body::standing()),
+            outside
+        );
         // Inside, walking at the same wall from the room.
         let inside = Vec2::new(-4.0, 0.0);
-        assert_eq!(c.slide(inside, Vec2::new(-6.0, 0.0), Body::standing()), inside);
+        assert_eq!(
+            c.slide(inside, Vec2::new(-6.0, 0.0), Body::standing()),
+            inside
+        );
     }
 
     /// A wall has no thickness, so a point test would step over it. Crossing the
@@ -1040,7 +1043,10 @@ mod tests {
     #[test]
     fn nothing_ejects_an_avatar_that_is_simply_indoors() {
         let c = colliders_with(hollow_square());
-        assert_eq!(c.eject(Vec2::ZERO, EJECT_MARGIN, Body::standing()), Vec2::ZERO);
+        assert_eq!(
+            c.eject(Vec2::ZERO, EJECT_MARGIN, Body::standing()),
+            Vec2::ZERO
+        );
         assert_eq!(c.eject_dir(Vec2::ZERO, Body::standing()), None);
         // And a walk inside is steered by nothing at all.
         let wish = Vec2::new(1.0, 0.0);
@@ -1053,9 +1059,16 @@ mod tests {
     fn a_solid_building_is_unchanged_by_any_of_this() {
         let c = colliders_with(unit_square());
         let from = Vec2::new(0.0, -6.0);
-        assert_eq!(c.slide(from, Vec2::new(0.0, -4.0), Body::standing()), from, "still no way in");
+        assert_eq!(
+            c.slide(from, Vec2::new(0.0, -4.0), Body::standing()),
+            from,
+            "still no way in"
+        );
         let out = c.eject(Vec2::ZERO, EJECT_MARGIN, Body::standing());
-        assert!(!c.blocked(out, Body::standing()), "still ejected from inside");
+        assert!(
+            !c.blocked(out, Body::standing()),
+            "still ejected from inside"
+        );
     }
 
     #[test]
