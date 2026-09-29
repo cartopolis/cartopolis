@@ -11,6 +11,7 @@
 //! - `keys` (`client`): sealing and opening frames.
 //! - `opus` (`client`): the voice codec.
 //! - `link` (`client`, native): a device's connection to the forwarder.
+//! - `session` (`client`, native): a device's call, on a thread of its own.
 //! - `sfu` (`sfu`, native): the forwarder the simulator runs.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -23,6 +24,8 @@ pub mod keys;
 pub mod link;
 #[cfg(feature = "client")]
 pub mod opus;
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+pub mod session;
 #[cfg(all(feature = "sfu", not(target_arch = "wasm32")))]
 pub mod sfu;
 
