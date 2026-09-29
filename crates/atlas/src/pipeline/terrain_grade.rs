@@ -156,6 +156,9 @@ pub struct Grader<'a> {
     pub mouths: Vec<serde_json::Value>,
     /// Every tunnel the graded tiles have that no structure was built for.
     pub unbuilt: Vec<serde_json::Value>,
+    /// Every flaw `tunnels::audit` finds in the structures the graded tiles
+    /// build — see [`write_mouths`].
+    pub flaws: Vec<serde_json::Value>,
 }
 
 impl<'a> Grader<'a> {
@@ -174,6 +177,7 @@ impl<'a> Grader<'a> {
             decks_lifted: 0,
             mouths: Vec::new(),
             unbuilt: Vec::new(),
+            flaws: Vec::new(),
         }
     }
 
@@ -991,6 +995,15 @@ impl<'a> Grader<'a> {
                 )
             };
             let round = |v: f64| (v * 1e6).round() / 1e6;
+            for f in cartopolis_geo::tunnels::audit(own_runs, &profiles) {
+                let (lat, lng) = ll(f.at);
+                self.flaws.push(serde_json::json!({
+                    "kind": f.flaw.slug(),
+                    "lat": round(lat),
+                    "lng": round(lng),
+                    "tile": [tx, ty],
+                }));
+            }
             for m in cartopolis_geo::tunnels::mouths(own_runs, &profiles) {
                 let (lat, lng) = ll(m.at);
                 // +z runs south, so north is -z.
@@ -1181,7 +1194,7 @@ pub fn grade_area(
     ));
     write_decks(ctx, &grader.deck_heights)?;
     write_road_heights(ctx, &grader.road_heights)?;
-    write_mouths(ctx, &grader.mouths, &grader.unbuilt)?;
+    write_mouths(ctx, &grader.mouths, &grader.unbuilt, &grader.flaws)?;
     Ok((graded, grader.decks_measured, grader.decks_lifted))
 }
 
@@ -1557,19 +1570,41 @@ fn write_road_heights(ctx: &Ctx, roads: &HashMap<(i64, i64), RoadHeights>) -> Ou
 /// client will not draw. The first is what the shot gallery photographs
 /// (`tools/structure_shots.ts`), one camera per mouth, placed from the data
 /// rather than by hand.
+///
+/// And every flaw `tunnels::audit` finds, by kind: a street the opening of a
+/// structure cuts through, a roof lower than any underpass is, an open end that
+/// drops into nothing. Each was found once by eye and fixed by a rule, so the
+/// count per kind is what says a later change broke one again — logged with
+/// every run, and published so the gallery photographs those places too.
 fn write_mouths(
     ctx: &Ctx,
     mouths: &[serde_json::Value],
     unbuilt: &[serde_json::Value],
+    flaws: &[serde_json::Value],
 ) -> Outcome<()> {
+    let mut by_kind: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for f in flaws {
+        *by_kind
+            .entry(f["kind"].as_str().unwrap_or("?"))
+            .or_default() += 1;
+    }
     ctx.log(format!(
-        "{} tunnelmonden, {} tunnels zonder bouwwerk",
+        "{} tunnelmonden, {} tunnels zonder bouwwerk, gebreken: {}",
         mouths.len(),
-        unbuilt.len()
+        unbuilt.len(),
+        if by_kind.is_empty() {
+            "geen".to_string()
+        } else {
+            by_kind
+                .iter()
+                .map(|(k, n)| format!("{n} {k}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
     ));
     ctx.write_json(
         "roads/mouths.json",
-        &serde_json::json!({ "name": ctx.name, "mouths": mouths, "unbuilt": unbuilt }),
+        &serde_json::json!({ "name": ctx.name, "mouths": mouths, "unbuilt": unbuilt, "flaws": flaws }),
     )
 }
 

@@ -401,7 +401,7 @@ pub const SUNK_M: f32 = 1.0;
 /// `NaN` where unknown). Parallel to `lines`.
 ///
 /// **A structure grows out of a tunnel along the network.** Every point of a line
-/// below the ground (`level < 0`) is one, and from there it spreads through the
+/// below the ground (`level < 0`, and more than [`SUNK_M`] under its land) is one, and from there it spreads through the
 /// points that meet it and run more than [`SUNK_M`] under their land. Two things
 /// are kept out that way. A road merely lower than its surroundings — at the foot
 /// of a dike, down a hillside, in a street between gardens — is not walled,
@@ -424,14 +424,21 @@ pub fn structures(lines: &[Line], road: &[Vec<f32>], land: &[Vec<f32>]) -> Vec<V
     for (li, line) in lines.iter().enumerate() {
         for vi in 0..line.points.len() {
             let node = net.node_of[li][vi];
-            if line.level < 0 {
-                seed[node] = true;
-                pass[node] = true;
-            }
             let (y, g) = (
                 road.get(li).and_then(|r| r.get(vi)).copied(),
                 land.get(li).and_then(|l| l.get(vi)).copied(),
             );
+            // A tunnel's point seeds one only where it is below the ground:
+            // held within `SUNK_M` of its land — by a junction at grade a few
+            // metres on, or on flat land a network could not take lower — it is
+            // at grade in every way that could be drawn, and as a structure it
+            // opened the ground under the streets crossing it (`tunnels::audit`,
+            // 2026-09-29). Unknown heights are taken to be below.
+            let at_grade = matches!((y, g), (Some(y), Some(g)) if y.is_finite() && g.is_finite() && y >= g - SUNK_M);
+            if line.level < 0 && !at_grade {
+                seed[node] = true;
+                pass[node] = true;
+            }
             if let (Some(y), Some(g)) = (y, g) {
                 if y.is_finite() && g.is_finite() && y < g - SUNK_M {
                     pass[node] = true;

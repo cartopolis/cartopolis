@@ -1021,6 +1021,9 @@ struct Plan {
     /// Whether each end is a mouth — roofed here, and open to the sky beyond —
     /// and so needs a headwall.
     mouth: [bool; 2],
+    /// Whether each end is its street's own end, as against a point where the
+    /// street carries on as an ordinary road laid in the ground.
+    run_end: [bool; 2],
     /// Whether each end is where its road ends in nothing: no other street in the
     /// tile comes within [`road_levels::TEE_M`] of it, and the border did not cut
     /// it. A tunnel into a garage the map does not draw ends that way, and so does
@@ -1037,21 +1040,39 @@ const SIMPLIFY_M: f32 = 0.05;
 /// leaves no room for the headroom and a full slab, metres.
 pub const ROOF_SLAB_M: f32 = 0.3;
 
-/// The least headroom a street crossing over a tunnel roofs it with, metres.
-/// Less than that the path and the street are practically at one level — a
-/// crossing, not an underpass — and a ceiling held under the land would stand
-/// below the road. Not a person's height: where the network's grades pull a
-/// path up early, as a junction just past a dual carriageway does north of the
-/// ring at the Paterswoldseweg, the underpass is drawn low rather than cut
-/// through the road over it (2026-09-29).
-const MIN_HEADROOM_M: f32 = 1.0;
+/// The least headroom a street crossing over a tunnel roofs it with, metres —
+/// only enough that the ceiling cannot stand below the road. **A street is
+/// never cut in two to make room**: where the network puts a path too near the
+/// road it passes under — a junction at grade seven metres before a
+/// carriageway leaves no grade that gets under it, and north of the ring at
+/// the Paterswoldseweg one pulls a path up early — the underpass is drawn low,
+/// and [`audit`] reports it, rather than opening a slot across the carriageway
+/// that a car would then drive into (2026-09-29).
+const MIN_HEADROOM_M: f32 = 0.3;
 
-/// Which of a tunnel's points another street *at grade* crosses over — one
-/// above the ground is a bridge, which spans a cutting rather than roofing it: within that street's half-width and three metres — a run's point
-/// spacing, since an opening reaches one point into a roof — of where the two
-/// lines cross. A crossing at the other street's own end is not one — that is the
-/// road out of the mouth, or a street ending on the line.
-fn crossed_by_streets(runs: &[StreetRun], ri: usize, pts: &[[f32; 2]]) -> Vec<bool> {
+/// The headroom under which [`audit`] reports a roofed stretch: roofed so the
+/// street over it stays whole, but lower than any underpass is, so something —
+/// the network's grades, the land — is misread there.
+const AUDIT_HEADROOM_M: f32 = 1.0;
+
+/// Which of a tunnel's points a street *at grade* passes over: where that
+/// street's surface — its line and half-width, away from its own ends and
+/// outside every structure — would fall inside the opening an open stretch here
+/// cuts (`half` and the half-metre every opening is widened by), and one point
+/// either side, since an opening reaches one point into a roof.
+///
+/// **The flaw's own definition, not a line crossing.** Crossing lines missed a
+/// carriageway whose bend only grazed a cycle tunnel's line while its seven
+/// metres of surface lay across it. A street beside a cutting is outside the
+/// opening; one in the trench is part of the structure; one on a bridge is not
+/// at grade — so none of those roofs anything.
+fn crossed_by_streets(
+    runs: &[StreetRun],
+    profiles: &[Option<Profile>],
+    ri: usize,
+    pts: &[[f32; 2]],
+    half: f32,
+) -> Vec<bool> {
     let mut out = vec![false; pts.len()];
     if pts.len() < 2 {
         return out;
@@ -1069,30 +1090,64 @@ fn crossed_by_streets(runs: &[StreetRun], ri: usize, pts: &[[f32; 2]]) -> Vec<bo
         if oi == ri || o.level != 0 || o.points.len() < 2 {
             continue;
         }
-        let reach = o.half_w + 3.0;
+        let reach = half + 0.5 + o.half_w;
+        let land = profiles.get(oi).and_then(Option::as_ref).map(|p| &p.land);
         let (first, last) = (o.points[0], o.points[o.points.len() - 1]);
-        let near_end = |x: [f32; 2]| {
-            [first, last]
-                .iter()
-                .any(|e| (e[0] - x[0]).hypot(e[1] - x[1]) <= road_levels::TEE_M + reach)
-        };
-        for w in o.points.windows(2) {
-            if w[0][0].max(w[1][0]) < bb[0] - reach
-                || w[0][0].min(w[1][0]) > bb[2] + reach
-                || w[0][1].max(w[1][1]) < bb[1] - reach
-                || w[0][1].min(w[1][1]) > bb[3] + reach
+        for (m, &q) in o.points.iter().enumerate() {
+            if q[0] < bb[0] - reach
+                || q[0] > bb[2] + reach
+                || q[1] < bb[1] - reach
+                || q[1] > bb[3] + reach
             {
                 continue;
             }
+            // Near its own ends a street leads out of a ramp or tees into a
+            // cutting's side; and one whose end joins this structure is its road
+            // out, for as far as its surface could reach the opening.
+            let joins = |e: [f32; 2]| {
+                pts.iter()
+                    .any(|p| (p[0] - e[0]).hypot(p[1] - e[1]) <= road_levels::TEE_M + reach)
+            };
+            let near_end = |e: [f32; 2]| {
+                let d = (e[0] - q[0]).hypot(e[1] - q[1]);
+                d < 3.0 || joins(e) && d < reach + 3.0 + road_levels::TEE_M
+            };
+            if near_end(first)
+                || near_end(last)
+                || land.and_then(|l| l.get(m)).is_some_and(|g| g.is_finite())
+            {
+                continue;
+            }
+            // The street's heading here, to tell one crossing over from one
+            // merging alongside — the slip road beside a ramp of the ring.
+            let (a, b) = (
+                o.points[m.saturating_sub(1)],
+                o.points[(m + 1).min(o.points.len() - 1)],
+            );
+            let along = [b[0] - a[0], b[1] - a[1]];
+            let along_len = along[0].hypot(along[1]);
+            if along_len <= 1e-6 {
+                continue;
+            }
             for k in 0..pts.len() - 1 {
-                let Some(x) = crossing(pts[k], pts[k + 1], w[0], w[1]) else {
-                    continue;
-                };
-                if near_end(x) {
+                let seg = [pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]];
+                let seg_len = seg[0].hypot(seg[1]);
+                if seg_len <= 1e-6
+                    || ((along[0] * seg[0] + along[1] * seg[1]) / (along_len * seg_len)).abs()
+                        >= JOIN_COS
+                {
                     continue;
                 }
-                for (j, p) in pts.iter().enumerate() {
-                    if (p[0] - x[0]).hypot(p[1] - x[1]) <= reach {
+                let d = project(pts[k], pts[k + 1], q).map_or_else(
+                    || {
+                        (q[0] - pts[k][0])
+                            .hypot(q[1] - pts[k][1])
+                            .min((q[0] - pts[k + 1][0]).hypot(q[1] - pts[k + 1][1]))
+                    },
+                    |(d, _)| d,
+                );
+                if d <= reach {
+                    for j in k.saturating_sub(1)..=(k + 2).min(pts.len() - 1) {
                         out[j] = true;
                     }
                 }
@@ -1100,21 +1155,6 @@ fn crossed_by_streets(runs: &[StreetRun], ri: usize, pts: &[[f32; 2]]) -> Vec<bo
         }
     }
     out
-}
-
-/// Where segments `a b` and `c d` cross, if they do.
-fn crossing(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> Option<[f32; 2]> {
-    let r = [b[0] - a[0], b[1] - a[1]];
-    let s = [d[0] - c[0], d[1] - c[1]];
-    let den = r[0] * s[1] - r[1] * s[0];
-    if den.abs() < 1e-9 {
-        return None;
-    }
-    let q = [c[0] - a[0], c[1] - a[1]];
-    let t = (q[0] * s[1] - q[1] * s[0]) / den;
-    let u = (q[0] * r[1] - q[1] * r[0]) / den;
-    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u))
-        .then(|| [a[0] + r[0] * t, a[1] + r[1] * t])
 }
 
 /// Shortest open stretch between two roofs that is opened to the sky, metres.
@@ -1249,6 +1289,137 @@ pub fn mouths(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Mouth> {
     out
 }
 
+/// A shape a set of structures should never take, as [`audit`] finds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flaw {
+    /// An opening in the ground swallows a street at grade that is not part of
+    /// any structure: the slot a shallow underpass cut across the road over it.
+    SlotThroughStreet,
+    /// A roofed stretch whose ceiling stands under [`AUDIT_HEADROOM_M`] over its
+    /// road, or above its land.
+    CeilingOutOfPlace,
+    /// An open end below its land that no tile border, dead-end wall or other
+    /// structure's end meets: the carriageway falling off a cliff.
+    StepIntoNothing,
+}
+
+impl Flaw {
+    /// The name the published list and the gallery use.
+    #[must_use]
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::SlotThroughStreet => "slot-through-street",
+            Self::CeilingOutOfPlace => "ceiling-out-of-place",
+            Self::StepIntoNothing => "step-into-nothing",
+        }
+    }
+}
+
+/// One [`Flaw`] where [`audit`] found it, tile-local metres.
+#[derive(Clone, Copy, Debug)]
+pub struct Finding {
+    pub flaw: Flaw,
+    pub at: [f32; 2],
+}
+
+/// **Every shape the structures in a tile should never take**, from the same
+/// plans [`build_structures`] draws.
+///
+/// Each of these was found once by eye, in a render beside its aerial
+/// photograph, and fixed by a rule. A rule can be broken by the next one without
+/// any render being looked at, so atlas runs this over every tile it grades and
+/// says how many it found, and publishes where, so a change that brings one back
+/// is a number that moved rather than a picture nobody took.
+#[must_use]
+pub fn audit(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Finding> {
+    let plans = plan(runs, profiles);
+    let mut out = Vec::new();
+
+    // Ceilings.
+    for p in &plans {
+        for k in 0..p.centre.len() {
+            if p.roofed[k]
+                && (p.ceiling[k] < p.road_y[k] + AUDIT_HEADROOM_M - 0.01
+                    || p.ceiling[k] > p.land_y[k] + 0.01)
+            {
+                out.push(Finding {
+                    flaw: Flaw::CeilingOutOfPlace,
+                    at: p.centre[k],
+                });
+            }
+        }
+    }
+
+    // Open ends below the land with nothing beyond.
+    let ends: Vec<([f32; 2], f32, f32, bool)> = plans
+        .iter()
+        .flat_map(|p| {
+            let n = p.centre.len() - 1;
+            // An end where the street carries on is met by the street itself,
+            // laid in the ground from there — the survey's own slope, where a
+            // ramp's banks are banks rather than walls.
+            [(0usize, 0usize), (1, n)].map(|(k, v)| {
+                (
+                    p.centre[v],
+                    p.road_y[v],
+                    p.land_y[v],
+                    p.roofed[v] || p.cut[k] || p.dead[k] || !p.run_end[k],
+                )
+            })
+        })
+        .collect();
+    for (i, &(at, y, g, closed)) in ends.iter().enumerate() {
+        if closed || y > g - road_levels::SUNK_M - 0.01 {
+            continue;
+        }
+        let met = ends.iter().enumerate().any(|(j, &(q, oy, ..))| {
+            j != i
+                && (q[0] - at[0]).hypot(q[1] - at[1]) < road_levels::TEE_M
+                && (oy - y).abs() < 0.05
+        });
+        if !met {
+            out.push(Finding {
+                flaw: Flaw::StepIntoNothing,
+                at,
+            });
+        }
+    }
+
+    // Streets at grade inside an opening.
+    let openings = emit(&plans, None, &at_grade(runs, profiles)).openings;
+    let bounds: Vec<Bbox> = openings.iter().map(|r| bbox_of_ring(r)).collect();
+    for (ri, r) in runs.iter().enumerate() {
+        if r.level != 0 {
+            continue;
+        }
+        let land = profiles.get(ri).and_then(Option::as_ref).map(|p| &p.land);
+        let (first, last) = (r.points[0], r.points[r.points.len() - 1]);
+        for (k, &q) in r.points.iter().enumerate() {
+            // Its own ends are where a street leads out of a ramp, or tees into
+            // a cutting's side; only a street passing through counts.
+            let near_end = |e: [f32; 2]| (e[0] - q[0]).hypot(e[1] - q[1]) < 3.0;
+            if near_end(first)
+                || near_end(last)
+                || land.and_then(|l| l.get(k)).is_some_and(|g| g.is_finite())
+            {
+                continue;
+            }
+            let hit = openings
+                .iter()
+                .zip(&bounds)
+                .any(|(ring, b)| point_in_bbox(q, b) && point_in_ring(q, ring));
+            if hit {
+                out.push(Finding {
+                    flaw: Flaw::SlotThroughStreet,
+                    at: q,
+                });
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Build every structure below the ground in one tile: `profiles` is parallel to
 /// `runs`, `None` for a run that is not part of one.
 ///
@@ -1261,7 +1432,7 @@ pub fn build_structures(
     profiles: &[Option<Profile>],
     max_bytes: Option<usize>,
 ) -> TunnelTessellation {
-    emit(&plan(runs, profiles), max_bytes)
+    emit(&plan(runs, profiles), max_bytes, &at_grade(runs, profiles))
 }
 
 /// The stretches of each run that are structures, simplified, roofed where a
@@ -1328,19 +1499,13 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
             // Only where it changes the roof — a tunnel deep enough for one
             // already has it, and a flag that breaks the simplification there
             // would move every vertex of it for nothing.
-            let crossed: Vec<bool> = crossed_by_streets(runs, ri, &run.points[start..i])
-                .into_iter()
-                .zip(&profile.road[start..i])
-                .zip(&profile.land[start..i])
-                .map(|((c, &y), &g)| c && y + clearance > g + CEILING_MAX_Y)
-                .collect();
-            let (centre, road_y, land_y, walls, crossed) = simplified(
-                &run.points[start..i],
-                &profile.road[start..i],
-                &profile.land[start..i],
-                &measured,
-                &crossed,
-            );
+            let crossed: Vec<bool> =
+                crossed_by_streets(runs, profiles, ri, &run.points[start..i], run.half_w)
+                    .into_iter()
+                    .zip(&profile.road[start..i])
+                    .zip(&profile.land[start..i])
+                    .map(|((c, &y), &g)| c && y + clearance > g + CEILING_MAX_Y)
+                    .collect();
             // **A roof goes on where the tiles say the road is under the ground
             // and one fits under the land** — its headroom plus a slab. The rest
             // of a structure is open: the ramps, the cuttings, and the stretch of
@@ -1356,18 +1521,41 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
             // cut a slot through the road above the width of the path
             // (2026-09-29). There the ceiling is held under the land instead
             // (`Plan::ceiling`), and the headroom gives.
-            let roofed: Vec<bool> = road_y
+            //
+            // **Decided on every point, before simplifying**, and simplification
+            // keeps each point where the answer changes: decided on the kept
+            // vertices alone, a tunnel simplified to its two ends was roofed at
+            // the deep one and open at the other, and the whole stretch between
+            // them — a carriageway's width of it under the road — opened.
+            let roof_here: Vec<bool> = profile.road[start..i]
                 .iter()
-                .zip(&land_y)
-                .zip(&walls)
+                .zip(&profile.land[start..i])
+                .zip(&measured)
                 .zip(&crossed)
                 .map(|(((&y, &g), w), &over)| {
-                    run.level < 0
-                        && !w.iter().any(|v| v.is_finite())
-                        && (y + clearance <= g + CEILING_MAX_Y
-                            || over && g - ROOF_SLAB_M - y >= MIN_HEADROOM_M)
+                    // A street at grade over a cutting can only stand on a lid,
+                    // whatever the cutting's level and whatever walls atlas
+                    // measured beside it; a bridge over one is not at grade.
+                    (over && g - ROOF_SLAB_M - y >= MIN_HEADROOM_M)
+                        || run.level < 0
+                            && !w.iter().any(|v| v.is_finite())
+                            && y + clearance <= g + CEILING_MAX_Y
                 })
                 .collect();
+            let breaks: Vec<u8> = roof_here
+                .iter()
+                .zip(&crossed)
+                .map(|(&r, &c)| u8::from(r) | (u8::from(c) << 1))
+                .collect();
+            let (centre, road_y, land_y, walls, breaks) = simplified(
+                &run.points[start..i],
+                &profile.road[start..i],
+                &profile.land[start..i],
+                &measured,
+                &breaks,
+            );
+            let roofed: Vec<bool> = breaks.iter().map(|b| b & 1 == 1).collect();
+            let crossed: Vec<bool> = breaks.iter().map(|b| b & 2 == 2).collect();
             let ceiling: Vec<f32> = road_y
                 .iter()
                 .zip(&land_y)
@@ -1397,6 +1585,7 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
                 feature: run.feature,
                 cut: [start == 0 && run.cut[0], i == n && run.cut[1]],
                 mouth: [false; 2],
+                run_end: [start == 0, i == n],
                 dead: [
                     start == 0 && !run.cut[0] && alone(ri, run.points[0]),
                     i == n && !run.cut[1] && alone(ri, run.points[n - 1]),
@@ -1442,9 +1631,8 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
                 .zip(&p.walls)
                 .zip(&p.crossed)
                 .map(|(((&y, &g), w), &over)| {
-                    !w.iter().any(|v| v.is_finite())
-                        && (y + p.clearance <= g + CEILING_MAX_Y
-                            || over && g - ROOF_SLAB_M - y >= MIN_HEADROOM_M)
+                    (over && g - ROOF_SLAB_M - y >= MIN_HEADROOM_M)
+                        || !w.iter().any(|v| v.is_finite()) && y + p.clearance <= g + CEILING_MAX_Y
                 })
                 .collect();
         }
@@ -1516,8 +1704,8 @@ fn simplified(
     road: &[f32],
     land: &[f32],
     walls: &[[f32; 2]],
-    crossed: &[bool],
-) -> (Vec<[f32; 2]>, Vec<f32>, Vec<f32>, Vec<[f32; 2]>, Vec<bool>) {
+    breaks: &[u8],
+) -> (Vec<[f32; 2]>, Vec<f32>, Vec<f32>, Vec<[f32; 2]>, Vec<u8>) {
     // A wall's kind — none, measured, at the carriageway — never changes between
     // two kept points, and a measured one only within the tolerance.
     let kind = |w: f32| {
@@ -1554,8 +1742,8 @@ fn simplified(
                 && on(land) <= SIMPLIFY_M
                 && wall(0)
                 && wall(1)
-                && crossed[anchor] == crossed[j]
-                && crossed[j] == crossed[i]
+                && breaks[anchor] == breaks[j]
+                && breaks[j] == breaks[i]
         });
         if !fits {
             keep.push(i - 1);
@@ -1570,7 +1758,7 @@ fn simplified(
         keep.iter().map(|&k| road[k]).collect(),
         keep.iter().map(|&k| land[k]).collect(),
         keep.iter().map(|&k| walls[k]).collect(),
-        keep.iter().map(|&k| crossed[k]).collect(),
+        keep.iter().map(|&k| breaks[k]).collect(),
     )
 }
 
@@ -1900,7 +2088,30 @@ fn wing_starts(plans: &[Plan], facing: &[Vec<[Option<Partner>; 2]>]) -> Vec<[[Op
 }
 
 /// Build the meshes, corridors and openings for a set of settled plans.
-fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
+/// Every point of every street at grade that is not part of a structure, away
+/// from its own ends — what no opening may swallow ([`Flaw::SlotThroughStreet`]).
+fn at_grade(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<[f32; 2]> {
+    let mut out = Vec::new();
+    for (ri, r) in runs.iter().enumerate() {
+        if r.level != 0 || r.points.len() < 2 {
+            continue;
+        }
+        let land = profiles.get(ri).and_then(Option::as_ref).map(|p| &p.land);
+        let (first, last) = (r.points[0], r.points[r.points.len() - 1]);
+        for (k, &q) in r.points.iter().enumerate() {
+            let near_end = |e: [f32; 2]| (e[0] - q[0]).hypot(e[1] - q[1]) < 3.0;
+            if !(near_end(first)
+                || near_end(last)
+                || land.and_then(|l| l.get(k)).is_some_and(|g| g.is_finite()))
+            {
+                out.push(q);
+            }
+        }
+    }
+    out
+}
+
+fn emit(plans: &[Plan], max_bytes: Option<usize>, streets: &[[f32; 2]]) -> TunnelTessellation {
     let mut out = TunnelTessellation::default();
     // **One deck builder per class, not one for the tile.** A tunnel's carriageway
     // is the surface road continued, so it wants that road's own texture: gravel
@@ -2343,7 +2554,20 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>) -> TunnelTessellation {
     // carriageway is two ways in OSM and so two structures here, each opening
     // only its own width — which leaves the median standing as ground down the
     // middle of what is one box in the world.
-    out.openings = merge_parallel_openings(openings);
+    // What no merged opening may swallow: every roofed stretch, and every
+    // street at grade.
+    let mut keep_out: Vec<[f32; 2]> = streets.to_vec();
+    for p in plans {
+        for k in 0..p.centre.len().saturating_sub(1) {
+            if p.roofed[k] && p.roofed[k + 1] {
+                let (a, b) = (p.centre[k], p.centre[k + 1]);
+                for t in [0.1f32, 0.5, 0.9] {
+                    keep_out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+                }
+            }
+        }
+    }
+    out.openings = merge_parallel_openings(openings, &keep_out);
     out.meshes = meshes;
     out
 }
@@ -2375,7 +2599,10 @@ const JOIN_COS: f32 = 0.819;
 /// carriageway's halves are the same road: same class, same width, mapped as two
 /// ways. So that is the key, and a footpath can no longer be hulled into a trunk
 /// road however parallel it happens to run.
-fn merge_parallel_openings(openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)>) -> Vec<Vec<[f32; 2]>> {
+fn merge_parallel_openings(
+    openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)>,
+    keep_out: &[[f32; 2]],
+) -> Vec<Vec<[f32; 2]>> {
     let mut out: Vec<Vec<[f32; 2]>> = Vec::with_capacity(openings.len());
     let mut merged = vec![false; openings.len()];
     for i in 0..openings.len() {
@@ -2386,21 +2613,66 @@ fn merge_parallel_openings(openings: Vec<(RoadClass, f32, Vec<[f32; 2]>)>) -> Ve
         let mut ring = first.clone();
         for j in (i + 1)..openings.len() {
             let (other_class, other_half, ref other) = openings[j];
+            // **Not paths, and no wider apart than a median** (`MEDIAN_GAP_M`,
+            // the rule [`medians`] lays its floor by): two cycle ramps fifteen
+            // metres apart were parallel and the same class, and their hull
+            // swallowed the path between them (`audit`, 2026-09-29).
             if merged[j]
+                || class == RoadClass::Path
                 || other_class != class
                 || (other_half - half).abs() > 0.01
+                || ring_gap(&ring, other) > MEDIAN_GAP_M + 1.0
                 || !parallel_and_near(&ring, other)
             {
                 continue;
             }
             let mut both = ring.clone();
             both.extend_from_slice(other);
-            ring = convex_hull(&both);
+            let hull = convex_hull(&both);
+            // **A hull may not take what neither half had**: a roofed stretch
+            // or a street at grade between them. Two pieces of one slip road
+            // meeting in a V were parallel enough to merge, and their hull
+            // opened the lid at the V's point where a street crosses over
+            // (`audit`, 2026-09-29).
+            let hb = bbox_of_ring(&hull);
+            let swallows = keep_out.iter().any(|&q| {
+                point_in_bbox(q, &hb)
+                    && point_in_ring(q, &hull)
+                    && !point_in_ring(q, &ring)
+                    && !point_in_ring(q, other)
+            });
+            if swallows {
+                continue;
+            }
+            ring = hull;
             merged[j] = true;
         }
         out.push(ring);
     }
     out
+}
+
+/// The least distance between two rings' edges, metres.
+fn ring_gap(a: &[[f32; 2]], b: &[[f32; 2]]) -> f32 {
+    let to_edges = |p: [f32; 2], r: &[[f32; 2]]| {
+        (0..r.len())
+            .map(|i| {
+                let (s, e) = (r[i], r[(i + 1) % r.len()]);
+                project(s, e, p).map_or_else(
+                    || {
+                        (p[0] - s[0])
+                            .hypot(p[1] - s[1])
+                            .min((p[0] - e[0]).hypot(p[1] - e[1]))
+                    },
+                    |(d, _)| d,
+                )
+            })
+            .fold(f32::MAX, f32::min)
+    };
+    a.iter()
+        .map(|&p| to_edges(p, b))
+        .chain(b.iter().map(|&p| to_edges(p, a)))
+        .fold(f32::MAX, f32::min)
 }
 
 /// Whether two corridors run alongside each other closely enough, and in the same
@@ -3263,6 +3535,59 @@ mod tests {
         }
     }
 
+    /// The most low roofs either fixture had when [`audit`] was written
+    /// (2026-09-29): a ceiling on how far this can drift unnoticed.
+    const LOW_ROOFS_MAX: usize = 6;
+
+    /// **The fixtures cut no street and step into nothing** — on flat land, as a
+    /// tile with no atlas behind it is built. Low roofs are reported rather than
+    /// refused: on flat land a path junction at grade seven metres before a
+    /// carriageway leaves the underpass under it less than a metre of headroom,
+    /// and a low roof is the honest drawing of that (`MIN_HEADROOM_M`).
+    #[test]
+    fn the_fixtures_pass_the_audit() {
+        let mut tally = Vec::new();
+        for (tile, tile_m, name) in fixtures() {
+            let runs = road_levels::street_runs(&tile, tile_m);
+            let found = audit(&runs, &unmeasured_profiles(&runs));
+            for f in &found {
+                let street = runs.iter().find(|r| {
+                    r.points
+                        .iter()
+                        .any(|p| (p[0] - f.at[0]).hypot(p[1] - f.at[1]) < 0.01)
+                });
+                println!(
+                    "{name}: {:?} at {:?} on {:?}",
+                    f.flaw,
+                    f.at,
+                    street.map(|r| (
+                        r.level,
+                        r.class,
+                        r.half_w,
+                        r.points[0],
+                        r.points[r.points.len() - 1]
+                    ))
+                );
+            }
+            let broken = found
+                .iter()
+                .filter(|f| f.flaw != Flaw::CeilingOutOfPlace)
+                .count();
+            tally.push((name, broken, found.len() - broken));
+        }
+        println!("{tally:?}");
+        for (name, broken, low) in tally {
+            assert_eq!(
+                broken, 0,
+                "{name}: {broken} streets cut or steps into nothing"
+            );
+            assert!(
+                low <= LOW_ROOFS_MAX,
+                "{name}: {low} low roofs, more than {LOW_ROOFS_MAX}"
+            );
+        }
+    }
+
     /// **A roofed deck keeps its headroom under the land.**
     #[test]
     fn a_roofed_deck_keeps_its_headroom() {
@@ -3560,9 +3885,14 @@ mod tests {
         let tile = crate::testdata::groningen_ring();
         let out = build_tunnels(&tile, tile_m, None);
         let mut trees = crate::scatter::scatter_vegetation(&tile, tile_m, 7).expect("scatters");
-        let before = trees.len();
+        // The trees this filter used to find near an opening here stood by
+        // "tunnels" less than a metre under flat land, which are at grade now
+        // (`road_levels::structures`); the check that matters is below.
+        assert!(
+            !out.openings.is_empty(),
+            "the fixture cuts no opening to test against"
+        );
         trees.retain(|t| !near_an_opening(&out.openings, [t.x, t.z], t.radius * 0.8));
-        assert!(trees.len() < before, "no tree was near an opening");
         for t in &trees {
             for ring in &out.openings {
                 assert!(
@@ -3637,13 +3967,41 @@ mod tests {
     /// absent ceiling are decided by one test, so a roofed segment must not lie
     /// inside any opening — and `merge_parallel_openings`, which replaces two
     /// rings with their hull, is what could break that.
+    /// How many openings each fixture cuts, and their total area.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn print_opening_area() {
+        for (tile, tile_m, name) in fixtures() {
+            let out = build_tunnels(&tile, tile_m, None);
+            let area: f32 = out
+                .openings
+                .iter()
+                .map(|r| {
+                    let mut a = 0.0;
+                    for i in 0..r.len() {
+                        let (p, q) = (r[i], r[(i + 1) % r.len()]);
+                        a += p[0] * q[1] - q[0] * p[1];
+                    }
+                    (a * 0.5).abs()
+                })
+                .sum();
+            println!("OPEN {name} {} rings {area:.0} m2", out.openings.len());
+        }
+    }
+
     /// Every ring-fixture structure within 40 m of `CARTO_AT` = "x,z", vertex by
     /// vertex: road, land, ceiling and roof — for reading a failing geometry
     /// test's coordinates back to the structure it is about.
     #[test]
     #[ignore = "diagnostic"]
     fn print_tunnels_near_a_point() {
-        let out = build_tunnels(&crate::testdata::groningen_ring(), ring_tile_m(), None);
+        let (tile, tile_m) = if std::env::var("CARTO_FIXTURE").as_deref() == Ok("groningen") {
+            (crate::testdata::groningen(), 1471.0)
+        } else {
+            (crate::testdata::groningen_ring(), ring_tile_m())
+        };
+        let out = build_tunnels(&tile, tile_m, None);
+        let runs = road_levels::street_runs(&tile, tile_m);
         let q: Vec<f32> = std::env::var("CARTO_AT")
             .unwrap()
             .split(',')
@@ -3666,6 +4024,21 @@ mod tests {
                         if t.covered[k] { "R" } else { "." }
                     );
                 }
+            }
+        }
+        for r in &runs {
+            if r.points
+                .iter()
+                .any(|p| (p[0] - q[0]).hypot(p[1] - q[1]) < 15.0)
+            {
+                println!(
+                    "street level {} {:?} half {} {:?} .. {:?}",
+                    r.level,
+                    r.class,
+                    r.half_w,
+                    r.points[0],
+                    r.points[r.points.len() - 1]
+                );
             }
         }
     }
