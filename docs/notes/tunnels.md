@@ -78,6 +78,21 @@ bridges, run the other way:
   with nothing measured part way up is a wall however wide the hole it crosses.
   Grading needs the `bgt` cells in the published tree; without them it falls
   back to the line's own width.
+- **Every rule here is checked by `tunnels::audit`, not by eye alone.** It reads
+  the plans the builder draws and reports three kinds of flaw — a street at grade
+  an opening swallows (`slot-through-street`), a roof lower than a metre over
+  its road (`ceiling-out-of-place`), an open end below the land that nothing
+  meets (`step-into-nothing`). Atlas runs it over every graded tile, logs the
+  count per kind with the run (`gebreken: …`) and publishes each flaw's place in
+  `roads/mouths.json`, and `tools/structure_shots.ts` photographs every one
+  beside its aerial photograph. **A change to these rules should leave the
+  counts no higher**; the fixtures are held to no slots and no steps. First run
+  over Groningen, 2026-09-29: 18 slots, 19 steps, 20 low roofs, 3 tunnels built
+  as nothing, from 134 mouths.
+- **A structure only starts where a tunnel is really below the ground**
+  (`road_levels::structures`): a tunnel's point within `SUNK_M` of its land does
+  not seed one. On flat land those were half-metre "tunnels" whose openings cut
+  the streets crossing them.
 - **A tunnel is roofed wherever a street at grade crosses over it**
   (`tunnels::crossed_by_streets`), even where its headroom and a full slab do
   not both fit under the land: there the ceiling is held `ROOF_SLAB_M` under
