@@ -78,6 +78,14 @@ bridges, run the other way:
   with nothing measured part way up is a wall however wide the hole it crosses.
   Grading needs the `bgt` cells in the published tree; without them it falls
   back to the line's own width.
+- **A tunnel is roofed wherever a street at grade crosses over it**
+  (`tunnels::crossed_by_streets`), even where its headroom and a full slab do
+  not both fit under the land: there the ceiling is held `ROOF_SLAB_M` under
+  the land and the headroom gives, down to `MIN_HEADROOM_M`. Cycle underpasses
+  2–3 m under the road they pass below were left open and cut a slot across the
+  whole road (2026-09-29). A street on a bridge does not count — it spans a
+  cutting — and a tunnel deep enough for its roof anyway is left exactly as it
+  was, so the flag cannot move its vertices.
 - **The fill to the land stops at a structure's end.** It used to round off
   around the end, and once a sloped ramp stopped being part of the structure
   that raised the ground over it back to the lid 30 m out and buried the mouth.
