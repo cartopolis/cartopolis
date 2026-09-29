@@ -1172,6 +1172,38 @@ fn abandon_lost_surface(render_world: &mut World) {
     );
 }
 
+/// The release build's answer to a failing system: log it, but not every frame.
+///
+/// `ecs::error::warn` writes one line per failure, and a system that keeps
+/// failing fails on every frame. On the web each line is a synchronous
+/// `console.error` call into the browser: after a halted renderer
+/// ([`abandon_lost_surface`] removes `WindowSurfaces`, and bevy's
+/// `extract_windows` keeps running against it) that was 2,140 warnings in 50 s,
+/// most of what the console cost the main thread. The first occurrence of each
+/// distinct failure logs in full and then every 1,000th says how many there have
+/// been, so a stream is still visible as a stream.
+fn warn_once_per_failure(error: bevy::ecs::error::BevyError, ctx: bevy::ecs::error::ErrorContext) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let key = format!("{ctx}: {error}");
+    let count = {
+        let mut seen = SEEN
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = seen.entry(key).or_insert(0);
+        *count += 1;
+        *count
+    };
+    if count == 1 {
+        bevy::ecs::error::warn(error, ctx);
+    } else if count % 1000 == 0 {
+        tracing::warn!("{ctx} has failed {count} times: {error}");
+    }
+}
+
 /// Leave a halted renderer's explanation where the next launch will find it.
 ///
 /// Android only, because it is the only platform where nobody can read the log:
@@ -1532,7 +1564,7 @@ fn run_client() {
     // found. `warn` is deliberately not `error`: these are expected on the frame a
     // session ends, and a red line per frame trains people to ignore the log.
     if !cfg!(debug_assertions) {
-        app.set_error_handler(bevy::ecs::error::warn);
+        app.set_error_handler(warn_once_per_failure);
     }
     // The scripted capture is configured *before* the app is built: a preset
     // manifest can set the render size, and a windowless run needs that size to
