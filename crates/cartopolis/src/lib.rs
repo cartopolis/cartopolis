@@ -2167,6 +2167,7 @@ fn run_client() {
         .init_resource::<systems::rendering::MeshCache>()
         .init_resource::<systems::rendering::MaterialCache>()
         .init_resource::<AvatarChooserState>()
+        .init_resource::<systems::user_store::RestoredCameraMode>()
         // Which of the sky knobs below came from a flag, so `restore_sky_prefs`
         // leaves them alone (a flag is an instruction for this launch).
         .insert_resource(systems::user_store::SkyCliOverrides {

@@ -1300,11 +1300,12 @@ pub fn camera_mode_toggle(
 /// out, so writing the mode under it would be a no-op at best and would fight it
 /// at worst.
 ///
-/// It does overrule the camera mode `user_store::restore_saved_location` puts
-/// back on a launch that signs in from a remembered token — the restore lands
-/// early, while the handshake takes as long as a network round trip. That is the
-/// intended reading of "signed in means following": the saved location still
-/// decides *where* the world comes back, only not through which camera.
+/// The launch's first sign-in defers to the camera mode the startup restore put
+/// back (`user_store::RestoredCameraMode`): somebody who closed the app in Earth
+/// mode comes back in Earth mode, signed in or not. It used to overrule it — "signed
+/// in means following" — which meant every launch looked the same whatever the
+/// user had left it in. A restored Follow still lands in Follow here, since
+/// offline could not hold it. Later sign-ins in the same run are ordinary ones.
 ///
 /// A session that *comes back* after being lost is not a sign-in: it leaves the
 /// camera mode alone, so a phone returning from the background lands in the mode
@@ -1315,6 +1316,7 @@ pub fn follow_on_sign_in(
     session: Res<crate::systems::session::SessionState>,
     driver: Res<crate::systems::driver::DriverState>,
     mut camera_state: ResMut<CameraState>,
+    mut restored: ResMut<crate::systems::user_store::RestoredCameraMode>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     let available = follow_available(&session, !avatars.is_empty());
@@ -1328,7 +1330,11 @@ pub fn follow_on_sign_in(
         return;
     }
     let resumed = std::mem::take(&mut *was_reconnecting);
+    let remembered = restored.0.take();
     if resumed || driver.active {
+        return;
+    }
+    if remembered.is_some_and(|m| m != crate::systems::geo_nav::mode_name(CameraMode::Avatar)) {
         return;
     }
     enter_mode(&mut camera_state, CameraMode::Avatar);
@@ -2845,6 +2851,7 @@ mod tests {
         app.init_resource::<CameraState>()
             .init_resource::<SessionState>()
             .init_resource::<DriverState>()
+            .init_resource::<crate::systems::user_store::RestoredCameraMode>()
             .add_systems(Update, follow_on_sign_in);
         app.world_mut().spawn(Avatar);
         // Offline, and in the mode `camera_mode_toggle` drops an offline client
@@ -2895,6 +2902,26 @@ mod tests {
         go_online(&mut app);
         app.update();
         assert_eq!(mode(&app), CameraMode::Orbit);
+    }
+
+    /// The first sign-in of a launch comes back in the mode the user left — Earth
+    /// stays Earth — while a remembered Follow still lands in Follow.
+    #[test]
+    fn the_first_sign_in_keeps_the_remembered_mode() {
+        use crate::systems::user_store::RestoredCameraMode;
+        for (saved, map_mode, expect) in [
+            ("earth", CameraMode::Orbit, CameraMode::Orbit),
+            ("free", CameraMode::Free, CameraMode::Free),
+            ("avatar", CameraMode::Free, CameraMode::Avatar),
+        ] {
+            let mut app = sign_in_app();
+            app.world_mut().resource_mut::<CameraState>().mode = map_mode;
+            app.world_mut().resource_mut::<RestoredCameraMode>().0 = Some(saved.to_string());
+            go_online(&mut app);
+            app.update();
+            assert_eq!(mode(&app), expect, "saved {saved}");
+            assert!(app.world().resource::<RestoredCameraMode>().0.is_none());
+        }
     }
 
     /// Signing out and back in is a sign-in, so it lands in Follow again.

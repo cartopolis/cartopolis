@@ -597,17 +597,25 @@ fn schedule_reconnect(
 /// The camera is left alone: the view the person switched away from is still
 /// the view they come back to.
 ///
-/// Only a *reconnect* does this. A sign-in the person asked for starts where the
-/// sim puts them, as it always has.
+/// **The launch's first sign-in does the same from `user.json`** (`last_avatar`),
+/// so closing the app and opening it again finds the avatar where it was left
+/// rather than on the anchor's tile centre. Only while that spot is within
+/// [`geo_nav::SHORT_JUMP_M`] of the anchor: the restored camera re-anchored the
+/// map around it, and anything further means this launch deliberately started
+/// somewhere else (a place link, or a jump made before the session came up) —
+/// the avatar then starts there, where the camera is. A sign-in later in the
+/// same run starts where the sim puts them, as it always has.
 ///
 /// [`geo_nav::place_avatar`]: crate::systems::geo_nav::place_avatar
 pub fn keep_avatar_across_reconnect(
     mut session: ResMut<SessionState>,
     anchor: Res<MapAnchor>,
     online: Option<Res<OnlineSession>>,
+    mut store: ResMut<UserStore>,
     mut avatar_state: ResMut<AvatarState>,
     mut avatars: Query<(&mut GridCell, &mut Transform), With<Avatar>>,
     mut last: Local<Option<(f64, f64, f64)>>,
+    mut launch_restore_done: Local<bool>,
 ) {
     let (Some(anchor), Ok((mut cell, mut tf))) = (anchor.geo, avatars.single_mut()) else {
         // No avatar: nothing to watch, and a resume waits for the one
@@ -615,8 +623,39 @@ pub fn keep_avatar_across_reconnect(
         return;
     };
     let edge = f64::from(WORLD_CELL_EDGE);
+    if !session.resumed && !*launch_restore_done && session.is_online() {
+        *launch_restore_done = true;
+        let saved = store.data.last_avatar.filter(|a| {
+            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, a.lat, a.lng);
+            a.lat.is_finite() && a.lng.is_finite() && wx.hypot(wz) < geo_nav::SHORT_JUMP_M
+        });
+        if let (Some(a), Some(sess)) = (saved, online.as_deref()) {
+            let y = if a.y.is_finite() {
+                a.y.clamp(0.0, 10_000.0)
+            } else {
+                0.0
+            };
+            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, a.lat, a.lng);
+            let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+                .translation_to_grid(DVec3::new(wx, y, wz));
+            geo_nav::place_avatar(
+                &mut cell,
+                &mut tf,
+                &mut avatar_state,
+                Some(sess),
+                to_cell,
+                to_local,
+            );
+            info!(
+                lat = a.lat,
+                lng = a.lng,
+                "session: avatar put back where it was last launch"
+            );
+        }
+    }
     if session.resumed {
         session.resumed = false;
+        *launch_restore_done = true;
         if let (Some((lat, lng, y)), Some(sess)) = (*last, online.as_deref()) {
             let (wx, wz) = geo_nav::lat_lng_to_world(anchor, lat, lng);
             let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
@@ -643,6 +682,16 @@ pub fn keep_avatar_across_reconnect(
     let wz = cell.z as f64 * edge + f64::from(p.z);
     let (lat, lng) = geo_nav::world_to_lat_lng(anchor, wx, wz);
     *last = Some((lat, lng, f64::from(p.y)));
+    // Compared first so a standing avatar does not mark the store changed every
+    // frame; the autosave writes it with everything else.
+    let here = crate::systems::user_store::SavedAvatar {
+        lat,
+        lng,
+        y: f64::from(p.y),
+    };
+    if store.data.last_avatar != Some(here) {
+        store.data.last_avatar = Some(here);
+    }
 }
 
 /// Open the link and install the resources that make the rest of the client

@@ -76,6 +76,13 @@ pub struct UserData {
     pub version: u32,
     #[serde(default)]
     pub last_location: Option<SavedLocation>,
+    /// Where the local avatar was standing when a session last had one. Separate
+    /// from `last_location` because that is the *camera*, which in Follow sits a
+    /// boom's length behind the body and in Earth or Fly can be anywhere — and a
+    /// fresh sign-in otherwise lands the avatar on the anchor's tile centre
+    /// (`session::keep_avatar_across_reconnect`, which puts it back).
+    #[serde(default)]
+    pub last_avatar: Option<SavedAvatar>,
     /// The user's Home location — set from the status panel's Set Home button
     /// and jumped to by the nav bar's Home button. Camera pose included (like a
     /// bookmark) so Home returns to the exact view, not just the spot.
@@ -421,6 +428,28 @@ pub struct SavedLocation {
     #[serde(default)]
     pub pose: CameraPose,
 }
+
+/// Where the local avatar stood, as a place on Earth rather than a position in
+/// a frame: the map re-anchors between launches, so only lat/lng survives.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct SavedAvatar {
+    pub lat: f64,
+    pub lng: f64,
+    /// Height in the flat frame, so an avatar left flying comes back flying.
+    #[serde(default)]
+    pub y: f64,
+}
+
+/// The camera mode the startup restore put back, held until the launch's first
+/// sign-in reads it (`free_camera::follow_on_sign_in`).
+///
+/// Offline has no Follow, so a remembered Follow is dropped to Fly on the first
+/// frame and the autosave then records "free" — the live mode by the time the
+/// session comes up is no longer what the user left. This keeps what the *file*
+/// said. `None` when nothing was restored (a fresh install, or a launch link,
+/// which names a view of its own) and after the first sign-in has taken it.
+#[derive(Resource, Default)]
+pub struct RestoredCameraMode(pub Option<String>);
 
 /// A saved place.
 ///
@@ -1052,6 +1081,7 @@ pub fn restore_start_location(
     store: Res<UserStore>,
     mut nav: ResMut<GeoNavState>,
     map_anchor: Res<MapAnchor>,
+    mut restored_mode: ResMut<RestoredCameraMode>,
 ) {
     if *done {
         return;
@@ -1092,6 +1122,7 @@ pub fn restore_start_location(
         return;
     }
 
+    restored_mode.0 = Some(loc.pose.mode.clone()).filter(|m| !m.is_empty());
     // Silent: restoring where you were last time is the app putting the world
     // back, not the avatar going anywhere. Announcing it would whoosh at every
     // launch.
