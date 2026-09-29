@@ -1026,8 +1026,25 @@ impl<'a> Grader<'a> {
                 .filter(|((mine, ..), sp)| *mine && sp.contains(&true))
                 .map(|((_, key, ..), _)| *key)
                 .collect();
+            // And one that never runs below its land is at grade — a passage
+            // through a block, tagged a tunnel — and rightly builds nothing
+            // (`road_levels::structures`). Only a tunnel below the ground that
+            // got no structure is a tunnel gone missing.
+            let below: std::collections::HashSet<u64> = owners
+                .iter()
+                .enumerate()
+                .filter(|(li, (mine, ..))| {
+                    *mine
+                        && solved.heights[*li]
+                            .iter()
+                            .zip(&land[*li])
+                            .any(|(y, g)| !g.is_finite() || *y < g - road_levels::SUNK_M)
+                })
+                .map(|(_, (_, key, ..))| *key)
+                .collect();
             for (r, p) in own_runs.iter().zip(&profiles) {
                 if r.level < 0
+                    && below.contains(&r.key)
                     && !under_a_span.contains(&r.key)
                     && p.as_ref()
                         .is_none_or(|p| p.land.iter().all(|g| !g.is_finite()))
