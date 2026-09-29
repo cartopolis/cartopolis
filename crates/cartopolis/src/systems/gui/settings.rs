@@ -1326,6 +1326,22 @@ fn graphics_tab(
         .color(theme::TEXT_DIM),
     );
 
+    ui.add_space(6.0);
+    // Adapter-resolved like the shafts, but not gated on shadows: the occluders
+    // are whatever is darker than the sky in the finished frame.
+    tri_state(ui, &mut prefs.sun_rays, shafts_possible_adapter, "Sun rays");
+    ui.label(
+        egui::RichText::new(if shafts_possible_adapter {
+            "Sunbeams fanning out from the sun through gaps in the clouds and past \
+             buildings. One full-screen pass over the finished frame. Applies \
+             immediately."
+        } else {
+            "Needs a hardware graphics adapter — this one rasterises on the CPU."
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+
     ui.add_space(8.0);
     ui.separator();
     // **Neither of the two sections that used to close this tab is here any

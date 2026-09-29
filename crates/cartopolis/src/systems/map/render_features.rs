@@ -65,6 +65,7 @@ use crate::components::FreeCamera;
 use crate::resources::AppPrefs;
 use crate::systems::light_shafts::{self, ShaftVolume};
 use crate::systems::sky::SunLight;
+use crate::systems::sun_rays::SunRays;
 
 /// Steps the volumetric march takes between the near plane and what it hits.
 ///
@@ -85,12 +86,12 @@ pub fn apply_render_features(
     mut commands: Commands,
     prefs: Res<AppPrefs>,
     restricted: Res<RestrictedSampleCounts>,
-    camera: Query<(Entity, Has<VolumetricFog>, Has<Fxaa>), With<FreeCamera>>,
+    camera: Query<(Entity, Has<VolumetricFog>, Has<Fxaa>, Has<SunRays>), With<FreeCamera>>,
     sun: Query<(Entity, Has<VolumetricLight>), With<SunLight>>,
     volume: Query<Entity, With<ShaftVolume>>,
     root: Query<Entity, With<big_space::prelude::BigSpace>>,
 ) {
-    let Ok((cam, has_fog, has_fxaa)) = camera.single() else {
+    let Ok((cam, has_fog, has_fxaa, has_rays)) = camera.single() else {
         return;
     };
     let want_shafts = prefs.light_shafts_on();
@@ -120,6 +121,18 @@ pub fn apply_render_features(
             });
         } else {
             cmd.remove::<VolumetricFog>();
+        }
+    }
+
+    // The sunbeams are a pass over the finished frame and need nothing else
+    // (`systems::sun_rays`); `update_sun_rays` fills the component in.
+    let want_rays = prefs.sun_rays_on();
+    if want_rays != has_rays {
+        let mut cmd = commands.entity(cam);
+        if want_rays {
+            cmd.insert(SunRays::default());
+        } else {
+            cmd.remove::<SunRays>();
         }
     }
 

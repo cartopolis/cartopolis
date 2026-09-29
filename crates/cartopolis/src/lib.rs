@@ -2101,6 +2101,12 @@ fn run_client() {
         // shell is only spawned on the runs that need it.
         .add_plugins(MaterialPlugin::<systems::sky_dome::SkyDomeMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::CloudMaterial>::default())
+        // Sunbeams: a full-screen pass on the camera, switched by `render_features`.
+        .add_plugins(
+            bevy::core_pipeline::fullscreen_material::FullscreenMaterialPlugin::<
+                systems::sun_rays::SunRays,
+            >::default(),
+        )
         .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::particles::ParticleMaterial>::default())
@@ -3424,6 +3430,9 @@ fn run_client() {
                     // frame of shafts centred where the viewer used to be.
                     systems::light_shafts::follow_camera
                         .after(systems::free_camera::camera_controls),
+                    // Where the sun is on screen, for the sunbeams: after the camera
+                    // has moved, or the beams trail the turn by a frame.
+                    systems::sun_rays::update_sun_rays.after(systems::free_camera::camera_controls),
                 ),
                 sky::update_moon.after(systems::free_camera::camera_controls),
                 (

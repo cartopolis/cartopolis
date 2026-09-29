@@ -504,6 +504,17 @@ pub struct AppPrefs {
     /// above it as well as on the resolution.
     #[serde(default)]
     pub light_shafts: Option<bool>,
+    /// Sunbeams fanning out from the sun through the gaps in the clouds and past
+    /// the edges of buildings (`systems::sun_rays`). `None` asks the adapter —
+    /// see [`Self::sun_rays_on`].
+    ///
+    /// Separate from [`Self::light_shafts`] because it is a different effect with
+    /// a different price: a screen-space pass over the finished frame, one
+    /// fixed-length blur toward the sun, needing no shadow map. The shafts are
+    /// the air around you cut by the shadow map; these are what the eye expects
+    /// of a low sun behind broken cloud, which the shafts cannot draw at all.
+    #[serde(default)]
+    pub sun_rays: Option<bool>,
     /// Sky-driven image-based lighting: the cubemap that fills shadowed faces and
     /// gives water something to reflect. `None` follows the tier.
     ///
@@ -590,6 +601,7 @@ impl Default for AppPrefs {
             sky: SkyPreference::default(),
             shadows: None,
             light_shafts: None,
+            sun_rays: None,
             sky_lighting: None,
             background_connection: false,
             debug_switches: DebugSwitches::default(),
@@ -645,6 +657,21 @@ impl AppPrefs {
         };
         let possible = !caps.software_renderer && self.shadows_on();
         self.light_shafts.unwrap_or(possible) && possible
+    }
+
+    /// Sun rays, with `None` resolved against the adapter.
+    ///
+    /// On by default wherever the GPU is real. Unlike the shafts they need no
+    /// shadow map, so shadows do not gate them; a CPU rasteriser is refused
+    /// because a full-screen pass of two dozen taps a pixel is seconds a frame
+    /// there, and colour is no evidence on one anyway.
+    #[must_use]
+    pub fn sun_rays_on(&self) -> bool {
+        let Some(caps) = crate::quality::capabilities() else {
+            return false;
+        };
+        let possible = !caps.software_renderer;
+        self.sun_rays.unwrap_or(possible) && possible
     }
 
     /// The soundscape level, clamped. `user.json` is hand-editable and a
@@ -1869,6 +1896,7 @@ mod tests {
             // is the serde default and also means "ask the adapter", so a field
             // left unset would round-trip while proving nothing.
             light_shafts: Some(true),
+            sun_rays: Some(false),
             sky_lighting: Some(true),
             // Non-default, like everything else here: the field defaults to
             // `false`, so a round trip that left it `false` would pass with the

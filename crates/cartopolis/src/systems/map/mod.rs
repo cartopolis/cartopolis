@@ -28,12 +28,14 @@ pub mod interiors;
 // The fog volume the sun's light shafts are marched through; the camera and the
 // sun carry the other two halves (`free_camera::setup_camera`, `sky`).
 pub mod light_shafts;
+// Sunbeams through cloud gaps and past buildings: a pass over the finished frame.
 pub mod load_control;
 pub mod lod22;
 pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;
 pub mod model_assets;
+pub mod sun_rays;
 // The fetching half of the navigation marks (`cartopolis_geo::nav_marks` is the
 // pure one). Named for the layer rather than for Rijkswaterstaat, the way
 // `surveyed` and `crops` are.
