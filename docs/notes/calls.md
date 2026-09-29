@@ -75,6 +75,26 @@ as it is: it is public, like nearby chat.
   flagged all 6 keyframes from the clear header; no sealed packet equalled its
   plaintext.
 
+- **Video codec: `oxideav-vp8`, pure Rust, encoder and decoder** (2026-09-29,
+  ffmpeg 7.0.2 static as the reference). It decoded a libvpx realtime stream
+  (640×480, `-deadline realtime -cpu-used 8`) bit-identically to ffmpeg on 120
+  of 120 frames, at ~4.5 ms a frame; ffmpeg decoded its own output
+  bit-identically on 90 of 90. Encoding with trellis off: ~40 ms a frame at
+  320×240 (~490 kbit/s at 30 fps, 39 dB luma PSNR) and ~150–215 ms at 640×480,
+  on the VPS under load 15. Hence 320×240 at 15 fps, encoded off the audio
+  thread. libvpx (C, desktop only) or a phone's MediaCodec are the ways up.
+- **A late client was dropped, and was not dead.** str0m's ICE-lite side
+  prunes a pair after 15 s with no check and reports `Disconnected`; a join
+  answered on a slow frame arrives later than that. Both ends now give a
+  connection 30 s to come back (`media::RECONNECT_GRACE`). Found by two
+  headless clients calling each other on lavapipe.
+- **Headless call test** (2026-09-29): two `--mcp-headless` clients, one
+  calling over the MCP `call` tool, the other with `CARTO_ANSWER=1`, both with
+  the stand-in camera and tone: 50 audio frames a second each way, the test
+  pattern drawn in the call bar with the right colours. Video arrived at ~1
+  picture a second because a picture is sent once per app frame and lavapipe
+  renders about one; the session and forwarder are not the limit.
+
 ## Running it
 
 `calls_listen` (UDP) turns calls on; the dev binary defaults it to
