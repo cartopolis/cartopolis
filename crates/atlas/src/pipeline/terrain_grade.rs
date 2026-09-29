@@ -138,6 +138,8 @@ pub struct Grader<'a> {
     cells: HashMap<(i64, i64), Cell>,
     raw: HashMap<(i64, i64), Option<TerrainTile>>,
     water: HashMap<(i64, i64), Vec<(f32, Vec<(f64, f64)>)>>,
+    /// Each cell's surveyed road surfaces, as outer rings of (lat, lng).
+    paving: HashMap<(i64, i64), Vec<Vec<(f64, f64)>>>,
     /// Every deck measured, per cell: its centre in tile fractions and its
     /// clearance (0 for a flat one), for `decks/14/x/y.json`.
     /// Every deck measured, per cell, as its published record — see
@@ -165,6 +167,7 @@ impl<'a> Grader<'a> {
             cells: HashMap::new(),
             raw: HashMap::new(),
             water: HashMap::new(),
+            paving: HashMap::new(),
             deck_heights: HashMap::new(),
             road_heights: HashMap::new(),
             decks_measured: 0,
@@ -198,6 +201,41 @@ impl<'a> Grader<'a> {
         let row = ((fy - ty as f64) * last).round() as usize;
         let v = tile.at(col.min(tile.grid - 1), row.min(tile.grid - 1));
         v.is_finite().then_some(v)
+    }
+
+    /// A cell's surveyed road surfaces from the `bgt` dataset's output, outer
+    /// rings only; empty where that dataset has not run. Verges and traffic
+    /// islands are left out: nothing drives down them into a trench.
+    fn paving(&mut self, x: i64, y: i64) -> &[Vec<(f64, f64)>] {
+        let ctx = self.ctx;
+        self.paving.entry((x, y)).or_insert_with(|| {
+            let Some(bytes) = ctx.read_site(&format!("bgt/14/{x}/{y}.surfaces.json")) else {
+                return Vec::new();
+            };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                return Vec::new();
+            };
+            v["surfaces"]
+                .as_array()
+                .map(|all| {
+                    all.iter()
+                        .filter(|s| {
+                            !matches!(s.get(0).and_then(serde_json::Value::as_u64), Some(4 | 5))
+                        })
+                        .filter_map(|s| {
+                            let ring: Vec<(f64, f64)> = s
+                                .get(1)?
+                                .get(0)?
+                                .as_array()?
+                                .iter()
+                                .filter_map(|p| Some((p.get(0)?.as_f64()?, p.get(1)?.as_f64()?)))
+                                .collect();
+                            (ring.len() >= 3).then_some(ring)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
     }
 
     fn water(&mut self, x: i64, y: i64) -> &[(f32, Vec<(f64, f64)>)] {
@@ -530,6 +568,27 @@ impl<'a> Grader<'a> {
             }
         }
         let levels = terrain_grade::water_level_grid(&rings, lattice);
+
+        // **The surveyed paving under the window** (the BGT's road surfaces,
+        // `bgt`), for how wide a sunken road's trench is — see [`Paving`].
+        let mut paving = Paving::default();
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                for ring in self.paving(tx + dx, ty + dy).to_vec() {
+                    paving.push(
+                        ring.iter()
+                            .map(|&(la, ln)| {
+                                let (fx, fy) = lat_lng_to_tile_frac(la, ln, 14);
+                                [
+                                    ((fx - tx as f64) * f64::from(tile_m)) as f32,
+                                    ((fy - ty as f64) * f64::from(tile_m)) as f32,
+                                ]
+                            })
+                            .collect(),
+                    );
+                }
+            }
+        }
         let level_at = |x: f32, z: f32| {
             let (i, j) = lattice.index_of([x, z])?;
             let v = levels[j * n + i];
@@ -820,11 +879,19 @@ impl<'a> Grader<'a> {
                         if l.level < 0 && !sp[i] {
                             lid_level(&sample, l.points[i])
                         } else {
-                            bank_level(&sample, &l.points, i, o.2)
+                            bank_level(&sample, &l.points, i, paving.from(&l.points, i, o.2))
                         }
                     })
                     .collect();
                 fill_along(&mut g);
+                // **A street the survey has no bank for at all** — the ramp into
+                // the bike park under Groningen's station square, which AHN masks
+                // with the garage like a building — takes the level of the land
+                // around, as a lid does. Left without land it was never a
+                // structure, and the ramp the photograph shows was not there.
+                if l.level == 0 && g.iter().all(|v| !v.is_finite()) {
+                    g = l.points.iter().map(|&p| lid_level(&sample, p)).collect();
+                }
                 if g.iter().all(|v| !v.is_finite()) && l.level < 0 && !sp.contains(&true) {
                     g = ys
                         .iter()
@@ -857,7 +924,7 @@ impl<'a> Grader<'a> {
                         &sample,
                         &l.points,
                         vi,
-                        owners[li].2,
+                        paving.from(&l.points, vi, owners[li].2),
                         solved.heights[li][vi],
                         land[li][vi],
                     );
@@ -1151,7 +1218,7 @@ fn wall_sides(
     sample: &dyn Fn([f32; 2]) -> f32,
     points: &[[f32; 2]],
     i: usize,
-    half_w: f32,
+    from: [f32; 2],
     road: f32,
     land: f32,
 ) -> [f32; 2] {
@@ -1171,14 +1238,22 @@ fn wall_sides(
     let n = [-dz / len, dx / len];
     let p = points[i];
     let (low, high) = (road + 0.5 * depth, road + 0.8 * depth);
-    let side = |s: f32| {
+    let side = |s: f32, half_w: f32| {
         let mut last_low = half_w;
         let mut d = half_w + 0.5;
+        let mut seen = false;
+        // Whether anything was measured part way up since the last ground at
+        // the road's level. The survey is sampled bilinearly, so a bank always
+        // leaves some; a wall leaves none where the survey cut it out, however
+        // wide the hole — the ramp into the bike park under the station square
+        // is a hole the whole width of the ramp.
+        let mut part_way = false;
         while d <= half_w + WALL_SEARCH_M {
             let v = sample([p[0] + n[0] * s * d, p[1] + n[1] * s * d]);
             if v.is_finite() {
+                seen = true;
                 if v >= high {
-                    return if d - last_low <= WALL_RISE_M {
+                    return if !part_way || d - last_low <= WALL_RISE_M {
                         last_low + 0.5
                     } else {
                         0.0
@@ -1186,13 +1261,22 @@ fn wall_sides(
                 }
                 if v < low {
                     last_low = d;
+                    part_way = false;
+                } else {
+                    part_way = true;
                 }
             }
             d += 0.5;
         }
-        0.0
+        // Nothing measured on this side at all is not a bank: it is not known,
+        // and the wall stands at the carriageway.
+        if seen {
+            0.0
+        } else {
+            f32::NAN
+        }
     };
-    [side(1.0), side(-1.0)]
+    [side(1.0, from[0]), side(-1.0, from[1])]
 }
 
 /// Walls along a line with the single-point misreads taken out: on each side,
@@ -1355,7 +1439,12 @@ const BANK_READ_M: f32 = 4.0;
 /// ground sixteen metres off and at grade beside itself, and read that far out it
 /// was walled for a hundred metres where the photograph shows none (2026-09-28).
 /// NaN where neither side was measured.
-fn bank_level(sample: &dyn Fn([f32; 2]) -> f32, points: &[[f32; 2]], i: usize, half_w: f32) -> f32 {
+fn bank_level(
+    sample: &dyn Fn([f32; 2]) -> f32,
+    points: &[[f32; 2]],
+    i: usize,
+    from: [f32; 2],
+) -> f32 {
     let (a, b) = (
         points[i.saturating_sub(1)],
         points[(i + 1).min(points.len() - 1)],
@@ -1368,7 +1457,7 @@ fn bank_level(sample: &dyn Fn([f32; 2]) -> f32, points: &[[f32; 2]], i: usize, h
     let n = [-dz / len, dx / len];
     let p = points[i];
     let at = |s: f32, d: f32| {
-        let r = s * (half_w + d);
+        let r = s * (if s > 0.0 { from[0] } else { from[1] } + d);
         sample([p[0] + n[0] * r, p[1] + n[1] * r])
     };
     let side = |s: f32| {
@@ -1540,9 +1629,185 @@ fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
     inside
 }
 
+/// The surveyed road surfaces under a grading window, in its tile-local metres,
+/// bucketed for point lookups.
+///
+/// **A sunken road's trench is at least as wide as the surface it carries.**
+/// OSM draws a cycle path as a line two metres wide; the ramp it runs down into
+/// the bike park under Groningen's station square is ten, and the survey has a
+/// hole across all of it. Read from the edge of the line, the bank landed on
+/// the ramp itself and said the ramp was at grade, so it was never built
+/// (2026-09-29). The BGT surveys that surface to about 20 cm, so the bank and
+/// the walls are read from its edge outward.
+#[derive(Default)]
+struct Paving {
+    rings: Vec<([f32; 4], Vec<[f32; 2]>)>,
+    grid: HashMap<(i32, i32), Vec<usize>>,
+}
+
+impl Paving {
+    const BUCKET_M: f32 = 32.0;
+
+    fn push(&mut self, ring: Vec<[f32; 2]>) {
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for p in &ring {
+            b = [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ];
+        }
+        let i = self.rings.len();
+        #[allow(clippy::cast_possible_truncation)]
+        let cell = |v: f32| (v / Self::BUCKET_M).floor() as i32;
+        for gx in cell(b[0])..=cell(b[2]) {
+            for gz in cell(b[1])..=cell(b[3]) {
+                self.grid.entry((gx, gz)).or_default().push(i);
+            }
+        }
+        self.rings.push((b, ring));
+    }
+
+    /// How far out from point `i` of a line its trench reaches before the bank
+    /// or the wall is read, left then right: the edge of the surveyed surface it
+    /// runs on, where that is past its own half-width and within
+    /// [`WALL_SEARCH_M`]; its half-width otherwise.
+    fn from(&self, points: &[[f32; 2]], i: usize, half_w: f32) -> [f32; 2] {
+        let (a, b) = (
+            points[i.saturating_sub(1)],
+            points[(i + 1).min(points.len() - 1)],
+        );
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dz);
+        if len <= 1e-6 || self.rings.is_empty() {
+            return [half_w; 2];
+        }
+        let n = [-dz / len, dx / len];
+        let p = points[i];
+        #[allow(clippy::cast_possible_truncation)]
+        let key = (
+            (p[0] / Self::BUCKET_M).floor() as i32,
+            (p[1] / Self::BUCKET_M).floor() as i32,
+        );
+        let mut out = [half_w; 2];
+        for &ri in self.grid.get(&key).into_iter().flatten() {
+            let (bb, ring) = &self.rings[ri];
+            if p[0] < bb[0] || p[1] < bb[1] || p[0] > bb[2] || p[1] > bb[3] || !contains(ring, p) {
+                continue;
+            }
+            for (k, s) in [1.0f32, -1.0].into_iter().enumerate() {
+                let dir = [n[0] * s, n[1] * s];
+                if let Some(t) = ray_exit(ring, p, dir) {
+                    if t <= half_w + WALL_SEARCH_M {
+                        out[k] = out[k].max(t);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Even-odd point in polygon.
+fn contains(ring: &[[f32; 2]], p: [f32; 2]) -> bool {
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[j]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// The distance along `dir` (a unit vector) from `p` to the nearest edge of
+/// `ring` it crosses.
+fn ray_exit(ring: &[[f32; 2]], p: [f32; 2], dir: [f32; 2]) -> Option<f32> {
+    let mut best: Option<f32> = None;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[j], ring[i]);
+        let e = [b[0] - a[0], b[1] - a[1]];
+        let den = dir[0] * e[1] - dir[1] * e[0];
+        if den.abs() > 1e-9 {
+            let w = [a[0] - p[0], a[1] - p[1]];
+            let t = (w[0] * e[1] - w[1] * e[0]) / den;
+            let u = (w[0] * dir[1] - w[1] * dir[0]) / den;
+            if t > 0.0 && (0.0..=1.0).contains(&u) && best.is_none_or(|bt| t < bt) {
+                best = Some(t);
+            }
+        }
+        j = i;
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A trench reaches to the edge of the surface it carries.** A path drawn
+    /// two metres wide down the middle of a ramp surveyed as ten, lying 3 m to
+    /// its left and 7 m to its right: the bank and the walls are read from those
+    /// edges, and off the paving from the path's own.
+    #[test]
+    fn a_trench_reaches_the_edge_of_its_paving() {
+        let mut paving = Paving::default();
+        paving.push(vec![[0.0, -7.0], [40.0, -7.0], [40.0, 3.0], [0.0, 3.0]]);
+        let line = [[10.0, 0.0], [20.0, 0.0], [30.0, 0.0], [50.0, 0.0]];
+        // Heading east, left is +z.
+        let [l, r] = paving.from(&line, 1, 1.0);
+        assert!((l - 3.0).abs() < 1e-4 && (r - 7.0).abs() < 1e-4, "{l} {r}");
+        assert_eq!(paving.from(&line, 3, 1.0), [1.0, 1.0], "off the paving");
+    }
+
+    /// **The survey tells a wall from a bank, and says when it cannot.** A road
+    /// three metres down along x, read across on its left (+z): a wall between
+    /// two samples, a wall the survey cut out as a hole, a bank rising over ten
+    /// metres, and a side with no survey at all.
+    #[test]
+    fn a_wall_and_a_bank_read_off_the_survey() {
+        let points = [[0.0, 0.0], [10.0, 0.0]];
+        let read = |ground: &dyn Fn(f32) -> f32| {
+            let sample = |p: [f32; 2]| if p[1] > 0.0 { ground(p[1]) } else { f32::NAN };
+            wall_sides(&sample, &points, 0, [1.0, 1.0], -3.0, 0.0)[0]
+        };
+        // Floor to 4 m, the land from 5 m: a wall at about 4.5 m.
+        let wall = read(&|z| {
+            if z < 4.2 {
+                -3.0
+            } else if z < 5.0 {
+                -1.5 + (z - 4.2)
+            } else {
+                0.0
+            }
+        });
+        assert!((4.0..=5.5).contains(&wall), "a wall read as {wall}");
+        // Floor to 4 m, nothing measured to 9 m, then the land: a wall.
+        let cut = read(&|z| {
+            if z < 4.0 {
+                -3.0
+            } else if z < 9.0 {
+                f32::NAN
+            } else {
+                0.0
+            }
+        });
+        assert!(cut > 0.0, "a wall the survey cut out read as {cut}");
+        // Rising steadily from 2 m to 12 m: a bank.
+        let bank = read(&|z| (-3.0 + (z - 2.0) * 0.3).clamp(-3.0, 0.0));
+        assert!(bank == 0.0, "a bank read as a wall at {bank}");
+        // Nothing at all: not known.
+        assert!(
+            read(&|_| f32::NAN).is_nan(),
+            "an unmeasured side read as known"
+        );
+    }
 
     /// A report on a graded store, printed rather than asserted: how far the
     /// grading moved the ground, and whether neighbours agree along the edge they
