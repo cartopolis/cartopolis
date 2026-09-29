@@ -1528,7 +1528,9 @@ mod tests {
                 .spawn((Avatar, GridCell::default(), Transform::default()));
             app.update();
 
-            let at = app.world().resource::<AvatarState>().position;
+            let p = app.world().resource::<AvatarState>().position;
+            // Horizontal only: a fresh `AvatarState` stands at its own default height.
+            let at = Vec3::new(p.x, 0.0, p.z);
             let sent = matches!(
                 rx.try_recv(),
                 Ok(cartopolis_core::NetMessage::Teleport { .. })
