@@ -68,6 +68,16 @@ bridges, run the other way:
   showed a ramp five or six metres wide going down between grass slopes
   (2026-09-28). Where a trench is wider than the bore it runs into, a wing closes
   the gap between the two walls.
+- **A trench is at least as wide as the paving it carries** (atlas's `Paving`,
+  from the `bgt` dataset's surveyed road surfaces). The bank and the walls are
+  read from the edge of that paving outward, not from the edge of OSM's line:
+  the ramp into the bike park under the station square is a two-metre path in
+  OSM, ten metres in the BGT, and a hole in AHN, and read from the line the
+  bank landed on the ramp and it was never built (2026-09-29). With it, a side
+  of a cross-section with no survey at all is *unknown*, not a bank, and a rise
+  with nothing measured part way up is a wall however wide the hole it crosses.
+  Grading needs the `bgt` cells in the published tree; without them it falls
+  back to the line's own width.
 - **The fill to the land stops at a structure's end.** It used to round off
   around the end, and once a sloped ramp stopped being part of the structure
   that raised the ground over it back to the lid 30 m out and buried the mouth.
