@@ -248,11 +248,27 @@ impl AudioInput {
     /// covers a refused permission too.
     #[must_use]
     pub fn start() -> Self {
+        Self::open(false)
+    }
+
+    /// [`AudioInput::start`] for a call: on Android the microphone is opened in
+    /// voice-communication mode, which is where the device's echo cancellation
+    /// and noise suppression live — without it, a call on speaker hears itself
+    /// (`docs/notes/voice-chat.md`). Everywhere else it is `start`: cpal offers
+    /// no such mode, and the desktop answer is headphones.
+    #[must_use]
+    pub fn start_for_call() -> Self {
+        Self::open(true)
+    }
+
+    fn open(for_call: bool) -> Self {
         let shared = Arc::new(Shared::new());
+        #[cfg(not(all(feature = "audio", not(target_arch = "wasm32"))))]
+        let _ = for_call;
 
         #[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
         {
-            let thread = native::spawn(Arc::clone(&shared));
+            let thread = native::spawn(Arc::clone(&shared), for_call);
             return Self {
                 shared,
                 _thread: thread,
@@ -346,18 +362,32 @@ mod native {
     use std::sync::Arc;
 
     /// Own the stream on a thread, because `cpal::Stream` is not `Send`.
-    pub fn spawn(shared: Arc<Shared>) -> Option<std::thread::JoinHandle<()>> {
+    pub fn spawn(shared: Arc<Shared>, for_call: bool) -> Option<std::thread::JoinHandle<()>> {
         std::thread::Builder::new()
             .name("cartopolis-mic".into())
-            .spawn(move || run(&shared))
+            .spawn(move || run(&shared, for_call))
             .map_err(|e| tracing::warn!("could not spawn capture thread: {e}"))
             .ok()
     }
 
-    fn run(shared: &Arc<Shared>) {
+    fn run(shared: &Arc<Shared>, for_call: bool) {
         if !granted(shared) {
             return;
         }
+        #[cfg(target_os = "android")]
+        if for_call {
+            match call_capture(shared) {
+                Ok(()) => return,
+                // A device that refuses the preset still has a microphone:
+                // take the ordinary one and let the call echo, rather than
+                // have no call at all.
+                Err(e) => tracing::warn!(
+                    "voice-communication capture refused ({e}); using the plain microphone"
+                ),
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = for_call;
         let host = cpal::default_host();
         let Some(device) = host.default_input_device() else {
             shared.fail("No microphone found");
@@ -436,6 +466,54 @@ mod native {
         while !shared.stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+
+    /// Capture through AAudio with the `VOICE_COMMUNICATION` input preset — the
+    /// one thing cpal's AAudio host cannot ask for, and the switch that turns on
+    /// the device's acoustic echo canceller. Mono 16-bit, at whatever rate the
+    /// device picks (published through `shared.rate` like the cpal arm), until
+    /// the owner drops.
+    #[cfg(target_os = "android")]
+    fn call_capture(shared: &Arc<Shared>) -> Result<(), String> {
+        use ndk::audio::{
+            AudioCallbackResult, AudioDirection, AudioFormat, AudioInputPreset,
+            AudioPerformanceMode, AudioSharingMode, AudioStreamBuilder,
+        };
+        let cb_shared = Arc::clone(shared);
+        let err_shared = Arc::clone(shared);
+        let stream = AudioStreamBuilder::new()
+            .map_err(|e| e.to_string())?
+            .direction(AudioDirection::Input)
+            .channel_count(1)
+            .format(AudioFormat::PCM_I16)
+            .input_preset(AudioInputPreset::VoiceCommunication)
+            .performance_mode(AudioPerformanceMode::LowLatency)
+            .sharing_mode(AudioSharingMode::Shared)
+            .data_callback(Box::new(move |_, data, frames| {
+                // SAFETY: AAudio hands an input callback `frames` frames of the
+                // format and channel count the stream was opened with — mono
+                // i16 here — valid for the duration of the call.
+                let samples = unsafe {
+                    std::slice::from_raw_parts(data.cast::<i16>(), frames.max(0) as usize)
+                };
+                cb_shared.push_buffer(samples);
+                AudioCallbackResult::Continue
+            }))
+            .error_callback(Box::new(move |_, e| {
+                err_shared.fail(format!("Microphone stream error: {e}"));
+            }))
+            .open_stream()
+            .map_err(|e| e.to_string())?;
+        shared
+            .rate
+            .store(stream.sample_rate().max(0) as u32, Ordering::Relaxed);
+        *shared.device.lock().unwrap() = Some("Microphone (call)".into());
+        stream.request_start().map_err(|e| e.to_string())?;
+        while !shared.stop.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = stream.request_stop();
+        Ok(())
     }
 
     /// Hold the capture thread until the platform has agreed to a microphone.

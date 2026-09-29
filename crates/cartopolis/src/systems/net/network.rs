@@ -37,6 +37,8 @@ pub struct AuthWriteback<'w> {
     /// Private-chat traffic, handed on to `private_chat::drive_private_chats`
     /// for the same reason voice is decoded here: one drain of one queue.
     private: ResMut<'w, crate::systems::private_chat::PrivateInbox>,
+    /// Call signalling, handed on to `calls::drive_calls` likewise.
+    calls: ResMut<'w, crate::systems::calls::CallInbox>,
 }
 use crate::systems::locomotion;
 use crate::systems::model_assets;
@@ -706,6 +708,11 @@ pub fn apply_network_snapshot(
         // would otherwise land in the prim-edit arm below and deselect a prim.
         if crate::systems::private_chat::PrivateInbox::wants(&msg) {
             auth.private.0.push(msg);
+            continue;
+        }
+        // The same for a call's refusal, and for the rest of its signalling.
+        if crate::systems::calls::CallInbox::wants(&msg) {
+            auth.calls.0.push(msg);
             continue;
         }
         match msg {

@@ -521,6 +521,35 @@ struct Actions {
     report: Option<(String, Option<String>)>,
     message: Option<String>,
     dismiss_notice: bool,
+    call: Option<crate::systems::calls::CallRequest>,
+}
+
+/// What a private chat's header offers about the chat's call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CallButton {
+    /// Not a private chat, or a build that cannot call.
+    Hidden,
+    /// Nobody is in a call: start one.
+    Call,
+    /// Somebody is: join them.
+    Join,
+    /// This device is in it.
+    HangUp,
+}
+
+fn call_button(calls: &crate::systems::calls::Calls, key: &str) -> CallButton {
+    let Some(group) = crate::systems::private_chat::group_of(key) else {
+        return CallButton::Hidden;
+    };
+    if !crate::systems::calls::Calls::available() {
+        CallButton::Hidden
+    } else if calls.active_group() == Some(group.as_slice()) {
+        CallButton::HangUp
+    } else if calls.in_call(&group).is_empty() {
+        CallButton::Call
+    } else {
+        CallButton::Join
+    }
 }
 
 /// The Chats panel: the list, or one chat's Chat view.
@@ -537,6 +566,7 @@ pub fn render_chats_panel(
     mut voice: ResMut<crate::systems::voice::VoiceState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    mut calls: ResMut<crate::systems::calls::Calls>,
 ) {
     // The report dialog is not part of the panel: it hangs off names in the
     // overlay and over avatars too, and must stay up with the panel shut.
@@ -576,11 +606,17 @@ pub fn render_chats_panel(
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
             match view.open.clone() {
                 None => list_screen(ui, &mut chat, &mut view, &mut voice, &mut act, now),
-                Some(key) => chat_screen(ui, &mut chat, &mut view, &key, &mut act, now, lift),
+                Some(key) => {
+                    let call = call_button(&calls, &key);
+                    chat_screen(ui, &mut chat, &mut view, &key, &mut act, now, lift, call);
+                }
             }
         });
     if !open_flag {
         act.close = true;
+    }
+    if let Some(request) = act.call.take() {
+        calls.request = Some(request);
     }
 
     apply(
@@ -903,6 +939,7 @@ fn new_chat_section(ui: &mut egui::Ui, chat: &mut ChatState, act: &mut Actions) 
 }
 
 /// The header of an open chat: back, who, and (for a private chat) its menu.
+#[allow(clippy::too_many_arguments)]
 fn chat_header(
     ui: &mut egui::Ui,
     chat: &ChatState,
@@ -911,6 +948,7 @@ fn chat_header(
     kind: ChatKind,
     act: &mut Actions,
     now: u64,
+    call: CallButton,
 ) {
     // The design's thread header (`.thead`): a bare chevron, the small avatar,
     // the name over one line of status.
@@ -964,10 +1002,30 @@ fn chat_header(
                 }
             });
         }
+        // A private chat can be called. Encrypted like its lines, so the
+        // button lives only where the padlock does.
+        let label = match call {
+            CallButton::Hidden => None,
+            CallButton::Call => Some("Call"),
+            CallButton::Join => Some("Join call"),
+            CallButton::HangUp => Some("Hang up"),
+        };
+        if let (Some(label), Some(group)) = (label, crate::systems::private_chat::group_of(key)) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::action_button(ui, label).clicked() {
+                    act.call = Some(if call == CallButton::HangUp {
+                        crate::systems::calls::CallRequest::Leave
+                    } else {
+                        crate::systems::calls::CallRequest::Join(group)
+                    });
+                }
+            });
+        }
     });
 }
 
 /// One chat's thread.
+#[allow(clippy::too_many_arguments)]
 fn chat_screen(
     ui: &mut egui::Ui,
     chat: &mut ChatState,
@@ -976,6 +1034,7 @@ fn chat_screen(
     act: &mut Actions,
     now: u64,
     lift: f32,
+    call: CallButton,
 ) {
     let Some(channel) = chat.channels.iter().find(|c| c.key == key) else {
         act.back = true;
@@ -989,7 +1048,7 @@ fn chat_screen(
         .filter(|l| !chat.is_blocked(&l.sender))
         .cloned()
         .collect();
-    chat_header(ui, chat, key, &name, kind, act, now);
+    chat_header(ui, chat, key, &name, kind, act, now, call);
     ui.add_space(8.0);
     if segmented(ui, "Chat", 0, false, false) == Some(true) {
         act.world_of = Some(key.to_string());
@@ -1870,7 +1929,16 @@ pub fn render_chat_world(
             ui.set_width(header_width);
             glass_frame().show(ui, |ui| {
                 ui.set_width(header_width - 24.0);
-                chat_header(ui, &chat, &key, &name, kind, &mut act, now);
+                chat_header(
+                    ui,
+                    &chat,
+                    &key,
+                    &name,
+                    kind,
+                    &mut act,
+                    now,
+                    CallButton::Hidden,
+                );
                 ui.add_space(8.0);
                 if segmented(ui, "Chat", 0, true, false) == Some(false) {
                     act.to_world = false;

@@ -3,9 +3,10 @@
 /// Keeping the connection alive while the app is off screen (Android's
 /// foreground service).
 pub mod background;
-pub mod network;
 /// Private chats: this installation's encryption keys and the conversations
 /// they open (protocol 25).
+pub mod calls;
+pub mod network;
 pub mod private_chat;
 pub mod session;
 pub mod user_store;

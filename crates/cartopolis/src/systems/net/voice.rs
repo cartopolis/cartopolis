@@ -113,7 +113,7 @@ const MAX_PENDING_FRAMES: usize = 4;
 /// conversation and answers over the top of it. Past this the *oldest* audio is
 /// dropped — the same policy, and for the same reason, as
 /// `platform::audio::MAX_BACKLOG` on the capture side.
-const MAX_RING_SECS: f32 = 0.4;
+pub(crate) const MAX_RING_SECS: f32 = 0.4;
 
 /// Silence after which a speaker's sink is torn down.
 ///
@@ -447,7 +447,7 @@ pub fn apply_gain(pcm: &mut [i16], gain: f32) {
 /// pop of one sample or an extend of 320, the contending threads are the mixer
 /// and one Bevy system, and a spin-free queue here would be a dependency and a
 /// proof obligation for a lock that is never held across anything.
-type Ring = Arc<Mutex<std::collections::VecDeque<f32>>>;
+pub(crate) type Ring = Arc<Mutex<std::collections::VecDeque<f32>>>;
 
 /// A playable stream of one speaker's voice.
 ///
@@ -459,6 +459,14 @@ type Ring = Arc<Mutex<std::collections::VecDeque<f32>>>;
 #[derive(Asset, TypePath, Clone)]
 pub struct VoiceStream {
     ring: Ring,
+}
+
+impl VoiceStream {
+    /// A stream playing whatever is pushed into `ring`, at [`VOICE_RATE`]. How a
+    /// call's voices (`systems::calls`) use the same output as proximity voice.
+    pub(crate) fn from_ring(ring: Ring) -> Self {
+        Self { ring }
+    }
 }
 
 /// The pull side of a [`VoiceStream`]. Never ends.

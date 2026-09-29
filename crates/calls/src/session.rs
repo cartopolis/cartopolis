@@ -63,9 +63,12 @@ pub enum Event {
 }
 
 /// A running call. Dropping it ends the thread and closes both sockets.
+///
+/// `Sync`, so an app can keep it in shared state (a Bevy resource): the
+/// receiving end sits behind a mutex nobody else ever contends.
 pub struct Session {
     tx: Option<mpsc::Sender<Cmd>>,
-    rx: mpsc::Receiver<Event>,
+    rx: std::sync::Mutex<mpsc::Receiver<Event>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -88,7 +91,7 @@ impl Session {
             .ok();
         Self {
             tx: Some(tx),
-            rx,
+            rx: std::sync::Mutex::new(rx),
             thread,
         }
     }
@@ -127,7 +130,10 @@ impl Session {
 
     /// Whatever the thread has said since last asked.
     pub fn events(&self) -> Vec<Event> {
-        self.rx.try_iter().collect()
+        self.rx
+            .lock()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default()
     }
 }
 

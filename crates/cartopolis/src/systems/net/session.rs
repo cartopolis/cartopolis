@@ -1115,6 +1115,7 @@ mod tests {
             .init_resource::<crate::systems::script_editor::ScriptEditorState>()
             .init_resource::<crate::systems::voice::VoiceState>()
             .init_resource::<crate::systems::private_chat::PrivateInbox>()
+            .init_resource::<crate::systems::calls::CallInbox>()
             .init_resource::<OsmTileUrlTemplate>()
             .insert_resource(Assets::<Image>::default())
             .insert_resource(store)

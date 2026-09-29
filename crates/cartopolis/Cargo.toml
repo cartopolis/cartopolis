@@ -139,6 +139,10 @@ cartopolis_geo = { path = "../geo" }
 # Private chats (`systems::private_chat`). The only crate that can open a
 # sealed message; the simulator links it for tests only.
 cartopolis_e2ee = { path = "../e2ee" }
+# Calls in private chats (`systems::calls`, `docs/notes/calls.md`): the
+# `client` half only — sealing, Opus and a device's session. The forwarder is
+# the simulator's. Pure Rust on every target this crate builds for.
+cartopolis_calls = { path = "../calls", features = ["client"] }
 # The private-chat state blob (`systems::private_chat`); already built for core.
 postcard = { workspace = true }
 bytes.workspace = true
@@ -337,6 +341,14 @@ jni = "0.21.1"
 # compiles nothing extra. `ndk` 0.9's safe wrappers do not cover sensors, which is
 # why this is the `-sys` crate.
 ndk-sys = "0.6"
+# AAudio through its safe wrapper, for one thing cpal cannot ask for: a
+# microphone opened with the `VOICE_COMMUNICATION` input preset, which is where
+# an Android device's echo cancellation lives (`platform::audio::call_capture`,
+# used by calls). Already in the graph under `android-activity`; this adds the
+# `audio` module to it and nothing else.
+# `api-level-28` for the input preset, which AAudio gained in API 28 — the
+# APK's `minSdkVersion`, so every device it installs on has it.
+ndk = { version = "0.9", features = ["audio", "api-level-28"] }
 # `__system_property_get` (`platform::android::system_property`) and
 # `setpriority` (the tile-worker nice in `run`). Both are bare libc, not
 # framework calls, so neither needs a `classes.dex` — which is the only reason

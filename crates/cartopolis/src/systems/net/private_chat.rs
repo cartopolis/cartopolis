@@ -1120,6 +1120,20 @@ pub struct PrivateChats {
     last_sent: std::collections::HashMap<String, (u64, f64, f64)>,
 }
 
+impl PrivateChats {
+    /// What a call in this chat needs from its current epoch
+    /// (`systems::calls`): the chat's call key and who sends under which
+    /// index. `None` before the engine exists or for a chat this device is not in.
+    #[must_use]
+    pub fn call_epoch(&self, group: &[u8]) -> Option<cartopolis_e2ee::CallEpoch> {
+        self.engine
+            .as_ref()?
+            .device
+            .call_epoch(group, cartopolis_calls::keys::BASE_KEY_LEN)
+            .ok()
+    }
+}
+
 /// What an agent reading the chat over MCP needs to know about a private chat
 /// (`systems::mcp::agent`) — which chat is the direct one with a person, and
 /// which are groups whose names somebody else chose.

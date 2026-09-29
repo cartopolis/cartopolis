@@ -2330,6 +2330,8 @@ fn run_client() {
     app.init_resource::<systems::chat::ChatState>();
     app.init_resource::<systems::private_chat::PrivateInbox>();
     app.init_resource::<systems::private_chat::PrivateChats>();
+    app.init_resource::<systems::calls::CallInbox>();
+    app.init_resource::<systems::calls::Calls>();
     app.init_resource::<systems::chat_overlay::ChatOverlay>();
     app.init_resource::<systems::chats::ChatsView>();
     app.init_resource::<systems::voice::VoiceState>();
@@ -2775,6 +2777,9 @@ fn run_client() {
             // After the network system has sorted this frame's private-chat
             // traffic into the inbox it drains.
             systems::private_chat::drive_private_chats.after(network::apply_network_snapshot),
+            // After the chats: a call reads the chat's epoch, which a commit
+            // applied there this frame has just moved.
+            systems::calls::drive_calls.after(systems::private_chat::drive_private_chats),
             // A chat's "+ → Send this view": the camera's view, as a point, queued
             // for the sealing above to pick up on its next pass.
             systems::geo_nav::answer_view_requests
@@ -3285,6 +3290,8 @@ fn run_client() {
                 // network drain whatever this build can play, so a no-audio build
                 // still reports who is talking rather than pretending nobody is.
                 systems::voice::update_voice_playback.after(network::apply_network_snapshot),
+                // A call's voices, through the same output.
+                systems::calls::play_calls.after(systems::calls::drive_calls),
             ),
         );
     app
@@ -3499,6 +3506,13 @@ fn run_client() {
                     .after(systems::place_pins::render_place_pins),
             )
                 .chain(),
+        )
+        // The call bar: a call ringing, or the one you are in. Its own
+        // `Foreground` area like the sharing notice it sits under, so it is not
+        // in the panel chain; after the pins only so it is drawn over them.
+        .add_systems(
+            Update,
+            systems::calls::render_call_bar.after(systems::place_pins::render_place_pins),
         )
         // Phase 7c: the session — which world this client is in, and the screen that
         // changes it (`systems::session`, `systems::login_screen`).
