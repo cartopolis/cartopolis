@@ -114,6 +114,10 @@
 // deck drifts. Read a field at a time, never whole (see `cf::Deck`).
 @group(#{MATERIAL_BIND_GROUP}) @binding(109) var<storage, read> clouds: cf::Deck;
 
+/// Share of the long waves' slope that bends the ray the clouds are mirrored
+/// along; the rest blurs them instead (see where the clouds are mirrored).
+const MIRROR_SWELL_TILT: f32 = 0.3;
+
 /// Distance from the bank over which a body of water is treated as sheltered.
 /// A 12 m canal never gets more than 6 m from a wall and so keeps only a fine
 /// ripple; the middle of a harbour basin gets the full wind sea. Without this
@@ -820,8 +824,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // water — and the short octaves' slope variance joins the roughness the
     // deck is blurred by. The footprint on the deck is then taken of that
     // smooth ray, here in uniform control flow (see `cf::mirrored`).
-    let cloud_normal = normalize(vec3<f32>(-w.grad_lo.x, 1.0, -w.grad_lo.y));
-    let cloud_roughness = sqrt(sqrt(alpha * alpha + w.slope_var_hi));
+    //
+    // **And even the long waves steer it only part of the way.** At their full
+    // slope a swell folds the mirror: neighbouring crests throw their rays onto
+    // the same stretch of deck, and every cloud edge in it is crushed into a
+    // line, so a lake under soft cumulus drew a web of dark cracks — which
+    // vanished with a flat normal (Deck, 2026-09-29). `MIRROR_SWELL_TILT` of the
+    // slope still bends the ray, which keeps the wobble; the rest joins the
+    // roughness, so it blurs the reflection the way it spreads it on real water.
+    let tilt = w.grad_lo * MIRROR_SWELL_TILT;
+    let cloud_normal = normalize(vec3<f32>(-tilt.x, 1.0, -tilt.y));
+    let swell_var = dot(w.grad_lo, w.grad_lo) * (1.0 - MIRROR_SWELL_TILT * MIRROR_SWELL_TILT);
+    let cloud_roughness = sqrt(sqrt(alpha * alpha + w.slope_var_hi + swell_var));
     let deck = cf::Deck(
         clouds.shape,
         clouds.motion,

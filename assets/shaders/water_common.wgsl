@@ -161,8 +161,9 @@ fn cloud_mirror_fade(weight: f32) -> f32 {
 ///
 /// With an environment map the sky is the map's own radiance and the weight is
 /// bevy's split-sum ([`specular_weight`], and the occlusion it is applied under).
-/// Without one it is `sky_fallback`'s stand-in at `reflected × weight`, so the
-/// caller passes the same `clear`, `reflected` and `weight` it passed there. With
+/// Without one it is `sky_fallback`'s stand-in at `reflected × weight` plus the
+/// ambient specular it kept over the open water, so the caller passes the same
+/// `clear`, `reflected` and `weight` it passed there. With
 /// neither, the surface reflects no sky, and a cloud in it would be the only
 /// thing the mirror held.
 ///
@@ -183,13 +184,19 @@ fn with_clouds(
     let sky = environment_radiance(pbr_input);
     let w = specular_weight(pbr_input) * pbr_input.specular_occlusion;
 #else ifdef DISTANCE_FOG
+    // The sky this reflection holds is the stand-in *and* the part of bevy's
+    // ambient specular `sky_fallback` left in place, and a cloud stands in front
+    // of both. Taking out only the stand-in left the ambient as a flat bright
+    // sheen over every cloud — and under overcast, where the ambient is raised
+    // and barely gives way, that sheen was nearly all of the reflection: a lake
+    // under a dark grey deck came out white-grey with no clouds in it (Deck,
+    // `balanced`, 2026-09-29).
     let ray_y = reflect(-pbr_input.V, pbr_input.N).y;
-    let sky = sky_colour(
-        view_bindings::fog.base_color.rgb,
-        clear,
-        sky_t(ray_y, pbr_input.material.perceptual_roughness),
-    );
-    let w = vec3<f32>(reflected * weight);
+    let t = sky_t(ray_y, pbr_input.material.perceptual_roughness);
+    let w = reflected * weight;
+    let kept_ambient = ambient_specular(pbr_input) * (1.0 - t * clamp(clear, 0.0, 1.0)) * weight;
+    let sky = sky_colour(view_bindings::fog.base_color.rgb, clear, t) * w + kept_ambient;
+    return max(lit + cloud.a * (cloud.rgb * w - sky), vec3<f32>(0.0));
 #else
     let sky = vec3<f32>(0.0);
     let w = vec3<f32>(0.0);

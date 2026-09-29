@@ -184,10 +184,32 @@ fn value_noise(p: vec2<f32>) -> f32 {
 // different shapes, but a rough mirror kilometres from the deck keeps only one
 // or two of them.
 fn fbm(p: vec2<f32>, octaves: i32, billow_octaves: i32, detail: f32, evolve: vec2<f32>) -> f32 {
+    return fbm_blurred(p, octaves, billow_octaves, detail, evolve, 0.0);
+}
+
+// `fbm`, with each billow octave's crease rounded off as though the field had
+// been averaged over `blur` of its base octave (0 = exactly `fbm`).
+//
+// Muting octaves blurs the fine structure but not a billow's crease: `1 − |x|`
+// is as sharp at its ridge however coarse the octave, so a field reduced to its
+// base octave and thresholded is a web of thin ridge lines — which is what a
+// rough lake drew where the sky overhead had soft cumulus (Deck, 2026-09-29).
+// The crease is replaced by `√(x² + c²)`, the smooth hump a box-averaged `|x|`
+// approaches, scaled back onto 0..1; `c` is the blur in that octave's own units,
+// so finer octaves round off first.
+fn fbm_blurred(
+    p: vec2<f32>,
+    octaves: i32,
+    billow_octaves: i32,
+    detail: f32,
+    evolve: vec2<f32>,
+    blur: f32,
+) -> f32 {
     var v = 0.0;
     var amp = 0.5;
     var norm = 0.0;
     var q = p;
+    var crease = blur;
     let n = f32(octaves);
     for (var i = 0; i < octaves; i = i + 1) {
         let w = clamp((detail - f32(i) / n) * n + 1.0, 0.0, 1.0);
@@ -196,13 +218,21 @@ fn fbm(p: vec2<f32>, octaves: i32, billow_octaves: i32, detail: f32, evolve: vec
             let raw = value_noise(q + evolve * f32(i));
             s = raw;
             if i < billow_octaves {
-                s = 1.0 - abs(2.0 * raw - 1.0);
+                let x = 2.0 * raw - 1.0;
+                if crease > 0.0 {
+                    let c = min(crease, 1.0);
+                    let top = sqrt(1.0 + c * c);
+                    s = (top - sqrt(x * x + c * c)) / (top - c);
+                } else {
+                    s = 1.0 - abs(x);
+                }
             }
         }
         v += amp * mix(0.5, s, w);
         norm += amp;
         q = q * LACUNARITY + vec2<f32>(37.1, 17.3);
         amp *= 0.55;
+        crease *= LACUNARITY;
     }
     return v / norm;
 }
@@ -457,19 +487,23 @@ fn mirrored(
     let widen = clamp(patch_m * FREQ_LOW, 0.0, 1.0) * MIRROR_BLUR;
 
     let uv = low_uv(hit, deck.place.xy, deck.motion.xy);
-    let v = fbm(uv, octaves, low_billow(cheap), detail, evolve);
+    let v = fbm_blurred(uv, octaves, low_billow(cheap), detail, evolve, patch_m * FREQ_LOW);
     // Muting octaves cannot blur the base octave itself, which is still sampled at
     // one point — and a patch several base octaves wide lands that point on a
     // different cloud from each pixel to the next. Past one base octave the shape
     // settles onto the cover it would average to, as a wide enough lens would.
+    //
+    // What it settles onto is the patch's mean *opacity*, not its mean shape. The
+    // two differ by the exponential between them: a patch 70 % covered is 70 %
+    // opaque cloud and 30 % gap, while a shape of 0.7 is an optical depth of ~5,
+    // i.e. 99 % opaque — which is how a blurred lake used to show a solid lid with
+    // every gap in the deck closed over (Deck, 2026-09-29).
     let settle = smoothstep(1.0, 3.0, patch_m * FREQ_LOW);
-    let shape = mix(
-        smoothstep(thresh - 0.5 * widen, thresh + soft + 0.5 * widen, v),
-        cover,
-        settle,
-    );
+    let sharp = smoothstep(thresh - 0.5 * widen, thresh + soft + 0.5 * widen, v);
+    let shape = mix(sharp, cover, settle);
     let od = shape * OPTICAL_DEPTH_LOW;
-    let alpha = (1.0 - exp(-od)) * fade;
+    let opacity = mix(1.0 - exp(-sharp * OPTICAL_DEPTH_LOW), cover, settle);
+    let alpha = opacity * fade;
     if alpha <= 0.002 {
         return vec4<f32>(0.0);
     }
