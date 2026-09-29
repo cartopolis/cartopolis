@@ -7,7 +7,7 @@ triggers: [water.wgsl, water.rs, "water looks", waves, ocean, sea, foam, whiteca
   water_octaves, sky_ibl, "water looks grey", "no environment map", shallows,
   transparency, "ring edge", far_water, water_common, "hole in the water",
   "painted water", RENDERED_FORMAT]
-updated: 2026-09-26
+updated: 2026-09-29
 ---
 
 # The water surface: what is measured, and what only looked measured
@@ -321,6 +321,72 @@ Scaled, mean water colour over a fixed crop:
 The sky, the fresnel and the ambient give-way live in `water_common.wgsl`
 (`cartopolis::water_common`), registered as a shader library from
 `WaterSeaState::from_world` and imported by both water shaders below.
+
+## The clouds are in the mirror (2026-09-29)
+
+Neither sky the surface reflects has any clouds: the environment map is baked
+from bevy's atmosphere, the stand-in above is built from the haze colour, and the
+deck is a shell drawn over the sky *after* both. So a lake under a broken sky
+reflected a clear one. Each water fragment now finds the deck again along its
+reflected ray (`cloud_field::mirrored`, the field and the lighting the shell
+itself uses) and puts it in front of whichever sky the reflection holds, at the
+weight that sky went in with (`water_common::with_clouds`): with an environment
+map, the map's own radiance and bevy's split-sum recomputed from the same inputs;
+without one, the stand-in at `reflected × mirror × (1 − foam)`. A cloudless
+fragment is left exactly as it was.
+
+Three things were not obvious:
+
+* **The flat map's water past the ring has to do it too**, or a lake's clouds stop
+  at the ring's edge — and at grazing angles, where the reflection is strongest,
+  most of the visible lake is past it. So every ground material binds the deck's
+  buffer (108; the water binds it at 109), and both sides blur by the same
+  far-field roughness.
+* **That buffer lives at a fixed asset id** (`sky::CLOUD_FIELD_BUFFER`). A storage
+  buffer that does not exist is not an empty binding: the material never
+  prepares. The ground's materials are built with `..default()` in a dozen places,
+  and `Handle::default()` names no asset, so one missed site would be a hole in
+  the map. The ground and road extensions' `Default` names the fixed id instead.
+* **A rough mirror reflects a cone**, and a cone twenty kilometres long spans whole
+  clouds. The deck is sampled with the octaves finer than `2·t·α` muted and, past
+  one base octave, its edges widened about their midpoint — so a far, rough lake
+  shows soft blotches that average to the cover, not cut-outs.
+* **Only the long waves steer the clouds; the short ones blur them.** With the
+  full wave normal, the first cut drew the Paterswoldsemeer in a 3.5 m/s breeze
+  as grain (Deck, 2026-09-29): a ripple tilts the reflected ray a tenth of a
+  radian, which kilometres up is a different cloud, so neighbouring pixels
+  flipped between cloud and sky. The sky's own reflection gets away with that
+  normal because the sky barely changes over a tenth of a radian. The cloud ray
+  now bends on the two long octaves alone (`Waves::grad_lo`) and the short
+  octaves' slope variance joins its roughness. Blurring by each pixel's footprint
+  on the deck (`fwidth` of where the ray lands) was tried first, alone, and
+  changed nothing visible: the footprint of a random sample is still random. It
+  is kept for what it is right for — the horizon, and a swell bending rays apart.
+
+**What it costs, measured** (Steam Deck, 1600×900, same build with and without
+the two mirror blocks swapped in as runtime shader assets, three alternating
+runs each, 2026-09-29):
+
+| view | with | without | cost |
+|---|---|---|---|
+| Paterswoldsemeer from 30 m, grazing | 17.3 ms | 14.9 ms | **+2.5 ms** |
+| the same lake from 150 m | 15.5 ms | 14.3 ms | +1.2 ms |
+| the city at sunset, little water | 12.9 ms | 12.7 ms | none |
+
+The first cut, at the shell's full precision, cost about 3.5 ms; the mirror now
+runs at most four of the shell's octaves (muted, not dropped — see
+`cloud_field::MIRROR_MAX_OCTAVES`), no domain warp, a one-tap sun march and two
+scattering octaves, and is not looked up at all where the water reflects under
+3 % (`water_common::MIRROR_CLOUD_MIN`, steep views). **The tap is the one saving
+that failed:** replacing it with the column's own depth made every cloud fully
+self-shadowed, so the reflected deck came out as dark as the sky around it and
+the reflection vanished while measuring cheaper. More of the cost than the
+arithmetic predicts, and the fact that either mirror alone cost nearly as much as
+both in single runs, suggest register pressure in two already-heavy shaders
+rather than the noise itself — unproven. The phone tier runs the shell's cheap
+counts, read from a flag in the buffer because the water pipeline has no
+`CLOUDS_LOW` def. Only the low deck: the cirrus reflection at water's few per
+cent is below what a wave does to the picture. **Not yet seen on a phone.**
 
 ## Shallows show their bed, without a transparent pass
 

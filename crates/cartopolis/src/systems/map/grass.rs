@@ -57,7 +57,6 @@ use std::sync::{Arc, Mutex};
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
-use crate::systems::sky::CLOUD_WIND;
 use crate::systems::terrain::TerrainField;
 use crate::systems::turf::{self, GrassArea, MaskField, PlacedArea};
 use crate::systems::vector_tiles::{palette, SurfaceGroup};
@@ -262,10 +261,6 @@ const JITTER_FRAC: f32 = 1.3;
 const CALM_SWAY: f32 = 0.10;
 const FULL_SWAY: f32 = 0.55;
 const FULL_SWAY_WIND: f32 = 12.0;
-
-/// Wind assumed until a weather sample lands — a light breeze, matching
-/// `water::UNKNOWN_WIND`, because the two are the same wind.
-const UNKNOWN_WIND: f32 = 3.0;
 
 /// Wind change (m/s) needed before the material is rewritten. The animation clock
 /// is `globals.time` inside the shader, so this system tracks *weather*, which
@@ -564,8 +559,9 @@ pub struct GrassPatches {
     field_revision: u32,
     pending: Arc<Mutex<Option<MaskField>>>,
     in_flight: bool,
-    /// Wind and layer state already written to the materials.
-    applied_wind: Option<f32>,
+    /// Wind (the surface velocity, m/s) and layer state already written to the
+    /// materials.
+    applied_wind: Option<Vec2>,
     applied_alt: f32,
     /// Patches the view drew last frame, across every tier.
     ///
@@ -777,15 +773,18 @@ pub fn update_grass(
     }
 
     // ── The wind, and the altitude ramp ──
-    let wind_ms = weather.latest.map_or(UNKNOWN_WIND, |o| o.wind_ms).max(0.0);
+    // The live surface wind, with the same light south-westerly the water and the
+    // clouds fall back to until a weather sample lands — they are the same wind.
+    let wind = crate::systems::weather::surface_wind(&weather);
+    let wind_ms = wind.length();
     let fade = layer_fade(alt);
     let wind_moved = patches
         .applied_wind
-        .is_none_or(|w| (w - wind_ms).abs() >= WIND_EPSILON);
+        .is_none_or(|w| (w - wind).length() >= WIND_EPSILON);
     if wind_moved || (patches.applied_alt - fade).abs() > 0.01 {
-        patches.applied_wind = Some(wind_ms);
+        patches.applied_wind = Some(wind);
         patches.applied_alt = fade;
-        let dir = CLOUD_WIND.normalize_or(Vec2::X);
+        let dir = wind.normalize_or(Vec2::X);
         let sway = CALM_SWAY.lerp(FULL_SWAY, (wind_ms / FULL_SWAY_WIND).clamp(0.0, 1.0));
         for pool in &patches.pools {
             if let Some(mut m) = materials.get_mut(&pool.material) {

@@ -32,10 +32,11 @@
 //! uniform. A standalone `Material` would have to re-derive all of it.
 //!
 //! The wave state is driven by live weather: [`update_water_waves`] maps
-//! `WeatherState`'s wind speed onto steepness, wavelength, chop and foam, so a
-//! gale actually whips up the canals. It writes the uniforms only when the wind
-//! has moved meaningfully — the animation clock itself is `globals.time` inside
-//! the shader, so a still frame costs no CPU work at all.
+//! `WeatherState`'s wind speed onto steepness, wavelength, chop and foam, and its
+//! direction onto the way the waves run, so a gale actually whips up the canals.
+//! It writes the uniforms only when the wind has moved meaningfully — the
+//! animation clock itself is `globals.time` inside the shader, so a still frame
+//! costs no CPU work at all.
 //!
 //! Where the water *is* matters as much as what the wind is doing. Each cell
 //! carries a rasterised distance-to-shore field ([`vector_tiles::water_shore_field`]),
@@ -57,9 +58,10 @@
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
-use crate::systems::sky::CLOUD_WIND;
+use crate::systems::sky::CLOUD_FIELD_BUFFER;
 use crate::systems::vector_tiles::{self, ShoreField};
 use crate::systems::weather::WeatherState;
 
@@ -132,10 +134,12 @@ const FOAM_ONSET_WIND: f32 = 7.0;
 /// Wind assumed until a weather sample lands (or when the fetch fails outright,
 /// as it does with no network). A light breeze, not dead calm: glass-flat water
 /// is a real state but a rare one, and it is the one that reads as "the shader
-/// isn't running".
-const UNKNOWN_WIND: f32 = 3.0;
+/// isn't running". It is `weather::FALLBACK_WIND_MS`, the breeze the grass and the
+/// clouds fall back to — they are the same wind.
+const UNKNOWN_WIND: f32 = crate::systems::weather::FALLBACK_WIND_MS;
 
-/// Wind change (m/s) needed before the uniforms are rewritten. The shader
+/// Wind change (m/s, as a velocity — a veer counts) needed before the uniforms are
+/// rewritten. The shader
 /// animates itself from `globals.time`, so this system only exists to track
 /// *weather*, and weather moves on the scale of minutes.
 const WIND_EPSILON: f32 = 0.25;
@@ -329,6 +333,13 @@ pub struct WaterExtension {
     #[texture(107)]
     #[sampler(108)]
     pub bank: Handle<Image>,
+    /// The ground cloud deck this frame
+    /// ([`CLOUD_FIELD_BUFFER`](crate::systems::sky::CLOUD_FIELD_BUFFER)), so the
+    /// surface mirrors the clouds that are overhead. One buffer shared by every
+    /// cell: the deck moves every frame, and rewriting each per-cell material
+    /// would re-upload all of them every frame.
+    #[storage(109, read_only, visibility(fragment))]
+    pub clouds: Handle<ShaderBuffer>,
 }
 
 impl MaterialExtension for WaterExtension {
@@ -406,7 +417,13 @@ impl FromWorld for WaterSeaState {
                 WATER_COMMON_WGSL,
                 "shaders/water_common.wgsl",
             ));
-        let s = sea_state(UNKNOWN_WIND, crate::quality::budget().water_octaves);
+        let s = sea_state(
+            crate::systems::weather::wind_velocity(
+                crate::systems::weather::FALLBACK_WIND_FROM_DEG,
+                UNKNOWN_WIND,
+            ),
+            crate::quality::budget().water_octaves,
+        );
         Self {
             wave: s.0,
             surface: s.1,
@@ -484,6 +501,7 @@ impl WaterSeaState {
                 octaves: self.octaves,
                 shore: shore.unwrap_or_else(|| self.open_water.clone()),
                 bank: bank.unwrap_or_else(|| self.open_water.clone()),
+                clouds: CLOUD_FIELD_BUFFER,
             },
         }
     }
@@ -539,17 +557,21 @@ fn shore_image(data: &[u8], size: u32, label: &str) -> Image {
     image
 }
 
-/// The sea state a given wind speed produces, as (`wave`, `surface`, `wind`,
-/// `octaves`).
+/// The sea state a given surface wind (a world-frame velocity, m/s) produces, as
+/// (`wave`, `surface`, `wind`, `octaves`).
 ///
 /// Wind does four things at once, and they have to move together or the result
 /// reads wrong: it lengthens the dominant wave, steepens it, speeds it up, and
 /// past [`FOAM_ONSET_WIND`] starts tearing the crests into whitecaps. A calm
 /// canal keeps a fine, almost flat ripple; a gale gets long, sharp, fast swell.
-fn sea_state(wind_ms: f32, octave_count: u32) -> (Vec4, Vec4, Vec4, Vec4) {
+fn sea_state(wind: Vec2, octave_count: u32) -> (Vec4, Vec4, Vec4, Vec4) {
+    let wind_ms = wind.length();
     let sea = (wind_ms / FULL_SEA_WIND).clamp(0.0, 1.0);
     let foam = ((wind_ms - FOAM_ONSET_WIND) / (FULL_SEA_WIND - FOAM_ONSET_WIND)).clamp(0.0, 1.0);
-    let dir = CLOUD_WIND.normalize_or(Vec2::X);
+    // The waves run with the live surface wind — the same wind that drifts the
+    // clouds and sways the grass. A dead calm has no direction to give, and a
+    // calm sea has no waves for one to matter to.
+    let dir = wind.normalize_or(Vec2::X);
     let (slope, base_roughness) = slope_split(wind_ms);
     (
         Vec4::new(
@@ -599,7 +621,7 @@ fn sea_state(wind_ms: f32, octave_count: u32) -> (Vec4, Vec4, Vec4, Vec4) {
     )
 }
 
-/// Drive the sea state from the live weather's wind speed.
+/// Drive the sea state from the live weather's wind.
 ///
 /// Every live cell's material is rewritten, not one shared handle — but only when
 /// the wind has actually moved, which is a handful of times an hour.
@@ -610,30 +632,32 @@ pub fn update_water_waves(
     mut state: ResMut<WaterSeaState>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut ground: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
-    mut applied: Local<Option<(f32, bool, f32)>>,
+    mut applied: Local<Option<(Vec2, bool, f32)>>,
 ) {
     // The "Water shading" toggle (`DataLayers::water_shading`) flattens the sea to a
     // still sheet: hold the wind at calm and zero the wave steepness + foam. New
     // cells read `state.wave`, so they come up flat too.
     let shading = dl.water_shading;
-    let wind_ms = if shading {
-        weather.latest.map_or(UNKNOWN_WIND, |o| o.wind_ms).max(0.0)
+    // A velocity, not a speed: the waves run downwind, so a veer with no change
+    // of strength is still a new sea.
+    let surface_wind = if shading {
+        crate::systems::weather::surface_wind(&weather)
     } else {
-        0.0
+        Vec2::ZERO
     };
     // The stand-in sky reflection's cloud cover (`wind.w`, read only where there
     // is no environment map). Weather, like the wind: it moves in minutes, so the
     // same threshold-then-rewrite applies.
     let clear = 1.0 - crate::systems::sky::overcast(&dev);
     if applied.is_some_and(|(prev_wind, prev_shading, prev_clear)| {
-        (prev_wind - wind_ms).abs() < WIND_EPSILON
+        (prev_wind - surface_wind).length() < WIND_EPSILON
             && prev_shading == shading
             && (prev_clear - clear).abs() < CLEAR_SKY_EPSILON
     }) {
         return;
     }
     let (mut wave, mut surface, mut wind, octaves) =
-        sea_state(wind_ms, crate::quality::budget().water_octaves);
+        sea_state(surface_wind, crate::quality::budget().water_octaves);
     wind.w = clear;
     if !shading {
         wave.x = 0.0; // RMS slope → no ripples in the normal
@@ -673,8 +697,12 @@ pub fn update_water_waves(
             }
         }
     }
-    *applied = Some((wind_ms, shading, clear));
-    tracing::debug!(wind_ms, shading, "water sea state updated");
+    *applied = Some((surface_wind, shading, clear));
+    tracing::debug!(
+        wind_ms = surface_wind.length(),
+        shading,
+        "water sea state updated"
+    );
 }
 
 #[cfg(test)]
@@ -684,20 +712,47 @@ mod tests {
     /// Octave count used by the tests that only care about the wind ramps.
     const OCTAVES: u32 = 8;
 
+    /// A wind of `ms` m/s blowing toward the east — for the tests that care
+    /// about strength, not direction.
+    fn east(ms: f32) -> Vec2 {
+        Vec2::new(ms, 0.0)
+    }
+
     #[test]
     fn the_wind_direction_is_a_unit_vector() {
         // The shader takes `wind.xy` as a direction and does not normalise it —
-        // a stray length would scale every octave's frequency with it.
-        let (_, _, wind, _) = sea_state(UNKNOWN_WIND, OCTAVES);
-        assert!((Vec2::new(wind.x, wind.y).length() - 1.0).abs() < 1e-5);
+        // a stray length would scale every octave's frequency with it. A dead
+        // calm has no direction at all, and must still hand over a unit one.
+        for wind in [east(UNKNOWN_WIND), Vec2::new(-4.0, 9.0), Vec2::ZERO] {
+            let (_, _, dir, _) = sea_state(wind, OCTAVES);
+            assert!(
+                (Vec2::new(dir.x, dir.y).length() - 1.0).abs() < 1e-5,
+                "{wind} gave {dir}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_waves_run_downwind() {
+        // The direction is the live wind's, not a constant: a north-westerly
+        // (air moving toward the south-east, +x +z in this frame) must put the
+        // wave direction there too, whatever its strength.
+        let wind = crate::systems::weather::wind_velocity(315.0, 8.0);
+        let (_, _, dir, _) = sea_state(wind, OCTAVES);
+        let dir = Vec2::new(dir.x, dir.y);
+        assert!(
+            dir.dot(wind.normalize()) > 0.9999,
+            "wind {wind} gave waves toward {dir}"
+        );
+        assert!(dir.x > 0.0 && dir.y > 0.0, "south-east is +x +z: {dir}");
     }
 
     #[test]
     fn wind_raises_slope_wavelength_and_speed_together() {
         // The wind-driven knobs must move in the same direction; a longer wave
         // at a lower slope would read as a flat sheet, not a sea.
-        let (calm_wave, calm_surface, calm_wind, _) = sea_state(0.0, OCTAVES);
-        let (gale_wave, gale_surface, gale_wind, _) = sea_state(FULL_SEA_WIND, OCTAVES);
+        let (calm_wave, calm_surface, calm_wind, _) = sea_state(east(0.0), OCTAVES);
+        let (gale_wave, gale_surface, gale_wind, _) = sea_state(east(FULL_SEA_WIND), OCTAVES);
         assert!(gale_wave.x > calm_wave.x, "slope");
         assert!(gale_wave.y > calm_wave.y, "wavelength");
         assert!(gale_wave.z > calm_wave.z, "speed");
@@ -756,7 +811,7 @@ mod tests {
     fn the_far_field_is_the_surface_with_every_wave_retired() {
         for wind in [0.0, 3.0, 7.0, 12.0, 20.0] {
             for count in [4, 6, 8] {
-                let (wave, surface, wind_v, octaves) = sea_state(wind, count);
+                let (wave, surface, wind_v, octaves) = sea_state(east(wind), count);
                 let state = WaterSeaState {
                     wave,
                     surface,
@@ -843,8 +898,8 @@ mod tests {
             "Beaufort 6"
         );
         // And what reaches the shader is the resolvable half of it.
-        let calm = sea_state(0.0, OCTAVES).0.x;
-        let gale = sea_state(FULL_SEA_WIND, OCTAVES).0.x;
+        let calm = sea_state(east(0.0), OCTAVES).0.x;
+        let gale = sea_state(east(FULL_SEA_WIND), OCTAVES).0.x;
         assert!(
             (calm - 0.0274).abs() < 1e-3,
             "dead calm rendered slope {calm}"
@@ -861,16 +916,16 @@ mod tests {
 
     #[test]
     fn foam_only_appears_above_the_onset_wind() {
-        assert_eq!(sea_state(FOAM_ONSET_WIND - 1.0, OCTAVES).1.w, 0.0);
-        assert!(sea_state(FOAM_ONSET_WIND + 1.0, OCTAVES).1.w > 0.0);
+        assert_eq!(sea_state(east(FOAM_ONSET_WIND - 1.0), OCTAVES).1.w, 0.0);
+        assert!(sea_state(east(FOAM_ONSET_WIND + 1.0), OCTAVES).1.w > 0.0);
     }
 
     #[test]
     fn a_storm_does_not_run_off_the_end_of_the_ramps() {
         // Wind speeds well past `FULL_SEA_WIND` happen; the shaping must
         // saturate rather than extrapolate into an unrenderable sea.
-        let gale = sea_state(FULL_SEA_WIND, OCTAVES);
-        let storm = sea_state(FULL_SEA_WIND * 4.0, OCTAVES);
+        let gale = sea_state(east(FULL_SEA_WIND), OCTAVES);
+        let storm = sea_state(east(FULL_SEA_WIND * 4.0), OCTAVES);
         assert_eq!(storm.0, gale.0);
         assert_eq!(storm.1, gale.1);
     }

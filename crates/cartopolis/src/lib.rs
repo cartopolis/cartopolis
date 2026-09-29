@@ -2224,6 +2224,9 @@ fn run_client() {
         .init_resource::<systems::street_labels::StreetLabelStore>()
         .init_resource::<systems::map_geometry::DeckPlates>()
         .init_resource::<systems::street_labels::StreetLabelSigns>()
+        // Before any ground or water material can prepare: they all bind the
+        // cloud deck's buffer (`sky::CLOUD_FIELD_BUFFER`), which this inserts.
+        .init_resource::<systems::sky::CloudField>()
         // Must come after the `WaterMaterial` plugin above: it mints the shared
         // handle out of `Assets<WaterMaterial>`.
         .init_resource::<systems::water::WaterSeaState>()

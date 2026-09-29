@@ -14,9 +14,12 @@
 
 #import bevy_pbr::{
     mesh_view_bindings::{view, lights},
+    // The module as well, for the bindings that exist only under a shader def
+    // (the fog, the environment map) — the reason `water.wgsl` gives.
+    mesh_view_bindings as view_bindings,
     pbr_functions::calculate_F0,
     pbr_types::PbrInput,
-    lighting::{EnvBRDFApprox, F_AB},
+    lighting::{EnvBRDFApprox, F_AB, perceptualRoughnessToRoughness},
 }
 
 /// Water's reflectance at normal incidence, from its refractive index:
@@ -67,11 +70,11 @@ fn sky_colour(horizon: vec3<f32>, clear: f32, t: f32) -> vec3<f32> {
     return mix(horizon, zenith, t);
 }
 
-/// Exactly the specular half of what bevy's `ambient.wgsl` adds for this
-/// surface, recomputed with bevy's own functions on bevy's own inputs so that
-/// taking it back out is exact rather than a tuned discount. Pre-exposed, like
-/// the lit colour it is subtracted from.
-fn ambient_specular(pbr_input: PbrInput) -> vec3<f32> {
+/// The weight bevy gives this surface's image-based specular — its split-sum
+/// `F0·A + B` and the "pre-baked specular occlusion" it multiplies in below an
+/// F0 of 0.02 — recomputed with bevy's own functions on bevy's own inputs. Both
+/// the ambient and the environment map reach the surface through it.
+fn specular_weight(pbr_input: PbrInput) -> vec3<f32> {
     let f0 = calculate_F0(
         pbr_input.material.base_color.rgb,
         pbr_input.material.metallic,
@@ -79,10 +82,119 @@ fn ambient_specular(pbr_input: PbrInput) -> vec3<f32> {
     );
     let n_dot_v = max(dot(pbr_input.N, pbr_input.V), 0.0001);
     return EnvBRDFApprox(f0, F_AB(pbr_input.material.perceptual_roughness, n_dot_v))
-        * saturate(dot(f0, vec3(50.0 * 0.33)))
+        * saturate(dot(f0, vec3(50.0 * 0.33)));
+}
+
+/// Exactly the specular half of what bevy's `ambient.wgsl` adds for this
+/// surface, recomputed with bevy's own functions on bevy's own inputs so that
+/// taking it back out is exact rather than a tuned discount. Pre-exposed, like
+/// the lit colour it is subtracted from.
+fn ambient_specular(pbr_input: PbrInput) -> vec3<f32> {
+    return specular_weight(pbr_input)
         * lights.ambient_color.rgb
         * pbr_input.diffuse_occlusion
         * view.exposure;
+}
+
+#ifdef ENVIRONMENT_MAP
+/// The environment map's radiance along this surface's reflection, sampled
+/// exactly as bevy's `environment_map::compute_radiances` samples it — the same
+/// bent direction, the same mip for the roughness, the same intensity — and
+/// pre-exposed like the lit colour. Zero when the view turns out to have no map,
+/// which is bevy's own bail-out.
+fn environment_radiance(pbr_input: PbrInput) -> vec3<f32> {
+    let probes = view_bindings::light_probes.view_cubemap_index;
+    if probes < 0 {
+        return vec3<f32>(0.0);
+    }
+    let perceptual_roughness = pbr_input.material.perceptual_roughness;
+    let roughness = perceptualRoughnessToRoughness(perceptual_roughness);
+    let n = pbr_input.N;
+    // Frostbite's bent reflection vector, as `radiance_sample_direction`.
+    let smoothness = saturate(1.0 - roughness);
+    let bend = smoothness * (sqrt(smoothness) + roughness);
+    var dir = mix(n, reflect(-pbr_input.V, n), bend);
+    // The map's own rotation (`quat_rotate`), then the cube map's left-handed z.
+    let q = view_bindings::light_probes.view_rotation;
+    let t = 2.0 * cross(q.xyz, dir);
+    dir = dir + q.w * t + cross(q.xyz, t);
+    dir.z = -dir.z;
+    let level = perceptual_roughness
+        * f32(view_bindings::light_probes.smallest_specular_mip_level_for_view);
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let radiance = textureSampleLevel(
+        view_bindings::specular_environment_maps[probes],
+        view_bindings::environment_map_sampler,
+        dir,
+        level,
+    ).rgb;
+#else
+    let radiance = textureSampleLevel(
+        view_bindings::specular_environment_map,
+        view_bindings::environment_map_sampler,
+        dir,
+        level,
+    ).rgb;
+#endif
+    return radiance * view_bindings::light_probes.intensity_for_view * view.exposure;
+}
+#endif
+
+/// Reflected fraction below which the clouds are not looked up at all; they are
+/// at full strength from twice it. Water's own F0 is 0.0204, so this spares water
+/// seen from well above — where the reflection is a few per cent of the sky and a
+/// cloud in it a level or two of grey — and a quay's shadow in the mirror, and
+/// foam. The streamed surface and the flat map past its ring apply it to the same
+/// weight, so the cut-off cannot draw a line along the ring's edge.
+const MIRROR_CLOUD_MIN: f32 = 0.03;
+
+/// How much of the mirrored deck to keep at reflection weight `weight`: 0 means
+/// do not look it up. A band rather than a cut, so no line marks where it stops.
+fn cloud_mirror_fade(weight: f32) -> f32 {
+    return smoothstep(MIRROR_CLOUD_MIN, 2.0 * MIRROR_CLOUD_MIN, weight);
+}
+
+/// Puts the cloud deck into the reflection. `cloud` is the deck along the
+/// reflected ray (`cloud_field::mirrored`): where it stands in front of the sky,
+/// the sky the reflection already holds gives way to it, at the weight that sky
+/// went in with — so where there is no cloud the colour is left exactly as it was.
+///
+/// With an environment map the sky is the map's own radiance and the weight is
+/// bevy's split-sum ([`specular_weight`], and the occlusion it is applied under).
+/// Without one it is `sky_fallback`'s stand-in at `reflected × weight`, so the
+/// caller passes the same `clear`, `reflected` and `weight` it passed there. With
+/// neither, the surface reflects no sky, and a cloud in it would be the only
+/// thing the mirror held.
+///
+/// Clamped at zero because the sky estimate is recomputed rather than read back:
+/// a cloud darker than the sky it covers may not take out more than was put in.
+fn with_clouds(
+    lit: vec3<f32>,
+    pbr_input: PbrInput,
+    cloud: vec4<f32>,
+    clear: f32,
+    reflected: f32,
+    weight: f32,
+) -> vec3<f32> {
+    if cloud.a <= 0.0 {
+        return lit;
+    }
+#ifdef ENVIRONMENT_MAP
+    let sky = environment_radiance(pbr_input);
+    let w = specular_weight(pbr_input) * pbr_input.specular_occlusion;
+#else ifdef DISTANCE_FOG
+    let ray_y = reflect(-pbr_input.V, pbr_input.N).y;
+    let sky = sky_colour(
+        view_bindings::fog.base_color.rgb,
+        clear,
+        sky_t(ray_y, pbr_input.material.perceptual_roughness),
+    );
+    let w = vec3<f32>(reflected * weight);
+#else
+    let sky = vec3<f32>(0.0);
+    let w = vec3<f32>(0.0);
+#endif
+    return max(lit + w * cloud.a * (cloud.rgb - sky), vec3<f32>(0.0));
 }
 
 /// What a view with **no environment map** adds for the sky the water reflects,

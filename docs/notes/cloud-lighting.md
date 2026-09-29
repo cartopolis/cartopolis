@@ -1,10 +1,13 @@
 ---
 triggers:
-  - working on assets/shaders/clouds.wgsl or `update_clouds` / `CloudMaterial`
+  - working on assets/shaders/clouds.wgsl, cloud_field.wgsl or `update_clouds` / `CloudMaterial` / `CloudField`
   - "the clouds look flat / painted / wrong at sunset"
   - considering raymarched or volumetric clouds
   - changing the sun colour, the fog colour, or `utils::sun`
   - adding a cloud layer, or wondering why there are two
+  - how fast or which way the clouds move
+  - cloud shadows on the ground (see cloud-shadows.md)
+updated: 2026-09-29
 ---
 
 # Cloud lighting: why the deck is a scattering model, not a shaded surface
@@ -76,6 +79,15 @@ that starts by adding a march through a 3D density field.
    real-time shortcut is a flat "clouds are above half the air" fudge factor; the
    barometric term costs the same and is right.
 
+   **With bevy's atmosphere running, the colour is the atmosphere's own**
+   (2026-09-29, `cloud_field::deck_sunlight`): its transmittance table, read at
+   the deck's altitude toward the sun, times `utils::sun`'s disc occlusion and the
+   gain (`params3.x`). Before, a Full-sky sunset put a `utils::sun`-coloured deck
+   in front of bevy's differently-coloured sky. `utils::sun` is still the answer
+   wherever there is no atmosphere (the dome sky, `CARTO_NO_ATMOSPHERE`), and the
+   radii are read through the binding a field at a time — the Adreno 840 misreads
+   a by-value copy of that struct (`adreno-atmosphere-struct-copy.md`).
+
 3. **The silver lining is a view-dependent phase function.** A Henyey-Greenstein
    dual lobe (`g = 0.8` forward, `-0.3` back). **This is the biggest single
    contributor to the look.** The old shader had no view-dependent term at all;
@@ -92,6 +104,28 @@ that starts by adding a march through a 3D density field.
 5. **Two decks**, at different heights and different wind speeds, so they slide
    past each other both when the camera translates and when nothing moves at all.
    One field can never have parallax.
+
+## The deck moves with the weather's wind (2026-09-29)
+
+It used to drift at a fixed 126 m/s from one direction, whatever the weather said.
+It now takes MET's 10 m wind — speed *and* direction — scaled and veered to the
+deck's height (`sky::deck_wind`: twice the speed, 20° clockwise) and sped up four
+times (`CLOUD_TIME_LAPSE`), because at its true speed a deck 2.5 km up barely
+visibly moves. The drift is **integrated on the CPU** (`CloudField`) and handed
+to the shader in metres: velocity × clock in the shader would jump the whole
+field every time the wind changed. The velocity eases over 8 s, so a new sample
+turns the clouds rather than snapping them. The grass and the waves read the same
+surface wind (`weather::surface_wind`), so all three move one way; without a
+sample it is a 3 m/s south-westerly.
+
+## The water mirrors this deck
+
+`water.wgsl` and the flat map's water past the ring (`ground_detail.wgsl`) find the
+deck along their reflected ray, through the same `cloud_field.wgsl` the shell
+draws from, reading its uniforms out of one shared buffer. That is why the field,
+its octave counts, its sun march and its lighting live in the shared module
+rather than in `clouds.wgsl`: two copies would drift, and a lake would mirror
+clouds that are not overhead. `water-surface.md` has the rest.
 
 Plus two terms from the volumetric-cloud literature, both ALU-only:
 
@@ -112,19 +146,17 @@ nothing, which reads as the sky *ending*.
 
 ## Rejected, with reasons
 
-- **Sampling Bevy's atmosphere transmittance LUT in the cloud shader.** This is
-  possible, and worth knowing about: `bevy_pbr::mesh_view_bindings` exposes
-  `atmosphere_transmittance_texture`, its sampler and the `Atmosphere` storage
-  buffer at `@group(0) @binding(31..33)` under `#ifdef ATMOSPHERE`, which
-  `render/mesh.rs` pushes for the mesh pipeline a `Material` uses;
-  `bruneton_functions::transmittance_lut_r_mu_to_uv` turns `(r, mu)` into the UV.
-  It was not taken because the analytic `sun_transmittance_at` is one CPU
-  evaluation per frame instead of a per-pixel fetch, needs no `#ifdef` fallback
-  for `CARTO_NO_ATMOSPHERE`, and — the deciding reason — keeps the clouds
-  consistent with *our* sun light and *our* fog colour, which are also
-  `utils::sun`. Matching Bevy's sky exactly while mismatching our own sun would
-  have been the worse of the two consistencies. Revisit if the scene's lighting
-  ever moves onto the LUTs wholesale.
+- **Sampling Bevy's atmosphere transmittance LUT in the cloud shader** — rejected
+  on 2026-08-08, **taken on 2026-09-29** (mechanism 2 above). It was declined for
+  keeping the clouds consistent with *our* sun light and fog colour, which are
+  `utils::sun`: matching bevy's sky while mismatching our own sun looked like the
+  worse of the two consistencies. What changed is that the Adreno 840 can now run
+  bevy's atmosphere (`adreno-atmosphere-struct-copy.md`), so on every tier that
+  shows Full sky the deck sits *in* bevy's sky and the mismatch was the one on
+  screen. The ambient and the haze are still the fog's; only the beam's colour
+  moved. `bevy_pbr::mesh_view_bindings` exposes the table, its sampler and the
+  `Atmosphere` buffer at `@group(0) @binding(31..33)` under `#ifdef ATMOSPHERE`,
+  which `render/mesh.rs` pushes for the mesh pipeline a `Material` uses.
 - **The sky-view and aerial-view LUTs.** Not available: they live in the
   atmosphere pass's own `@group(0)`, not the view bind group. Only transmittance
   is reachable from a material.

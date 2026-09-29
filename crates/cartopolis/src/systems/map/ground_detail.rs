@@ -43,6 +43,7 @@ use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerD
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use crate::components::FreeCamera;
@@ -53,7 +54,7 @@ use crate::systems::terrain::TerrainField;
 pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundDetailExtension>;
 
 /// The sub-metre half of the ground, for `shaders/ground_detail.wgsl`.
-#[derive(Asset, AsBindGroup, Reflect, Clone, Debug, Default)]
+#[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 pub struct GroundDetailExtension {
     /// xy: the detail box's centre in **render-space** XZ. z: 1 / its half-extent.
     /// w: strength, and `0.0` means "no tier" — see the module docs.
@@ -94,6 +95,30 @@ pub struct GroundDetailExtension {
     /// `0.0` on every other ground surface — the off switch.
     #[uniform(107)]
     pub water_sea: Vec4,
+    /// The ground cloud deck
+    /// ([`CLOUD_FIELD_BUFFER`](crate::systems::sky::CLOUD_FIELD_BUFFER)), for a
+    /// clipmap tile's water texels to mirror the same clouds the streamed water
+    /// inside the ring mirrors — without it, a lake would show its clouds up to
+    /// the ring's edge and none past it. Every ground material binds the one
+    /// buffer, and only a water texel reads it.
+    #[storage(108, read_only, visibility(fragment))]
+    pub clouds: Handle<ShaderBuffer>,
+}
+
+impl Default for GroundDetailExtension {
+    fn default() -> Self {
+        Self {
+            params: Vec4::ZERO,
+            slope: None,
+            lod: Vec4::ZERO,
+            basemap: None,
+            water_body: Vec4::ZERO,
+            water_sea: Vec4::ZERO,
+            // Never `Handle::default()`, which names no asset: see
+            // `CLOUD_FIELD_BUFFER` for what a missing storage buffer costs.
+            clouds: crate::systems::sky::CLOUD_FIELD_BUFFER,
+        }
+    }
 }
 
 impl MaterialExtension for GroundDetailExtension {

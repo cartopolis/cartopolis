@@ -46,8 +46,46 @@ pub struct Observation {
     pub precipitation: f32,
     pub air_temp_c: f32,
     pub wind_ms: f32,
+    /// Where the 10 m wind comes *from*, in degrees clockwise from north — the
+    /// meteorological convention MET reports it in. `None` when the sample had no
+    /// direction (a dead calm can be reported without one).
+    pub wind_from_deg: Option<f32>,
     pub lat: f64,
     pub lng: f64,
+}
+
+/// The surface wind when no sample says otherwise: a light breeze from the
+/// south-west, the prevailing wind over the Netherlands. The water, the grass and
+/// the clouds all fall back to it — they are the same wind.
+pub const FALLBACK_WIND_FROM_DEG: f32 = 225.0;
+pub const FALLBACK_WIND_MS: f32 = 3.0;
+
+/// The surface wind as a velocity in the scene's world frame (x east, z south),
+/// in metres per second — what the wind *does*, where [`Observation`] reports
+/// where it comes from.
+#[must_use]
+pub fn surface_wind(weather: &WeatherState) -> Vec2 {
+    let (from_deg, speed) =
+        weather
+            .latest
+            .map_or((FALLBACK_WIND_FROM_DEG, FALLBACK_WIND_MS), |o| {
+                (
+                    o.wind_from_deg.unwrap_or(FALLBACK_WIND_FROM_DEG),
+                    o.wind_ms.max(0.0),
+                )
+            });
+    wind_velocity(from_deg, speed)
+}
+
+/// A wind reported as "from `from_deg`" at `speed` m/s, as a world-frame velocity.
+///
+/// The air moves *toward* `from_deg + 180°`. A bearing is clockwise from north,
+/// so its east component is `sin` and its north component `cos`; the world's +z
+/// is south, hence the sign.
+#[must_use]
+pub fn wind_velocity(from_deg: f32, speed: f32) -> Vec2 {
+    let toward = (from_deg + 180.0).to_radians();
+    Vec2::new(toward.sin(), -toward.cos()) * speed
 }
 
 type FetchResult = Result<Observation, String>;
@@ -175,6 +213,7 @@ fn parse_weather(text: &str, lat: f64, lng: f64) -> FetchResult {
     let humidity = inst["relative_humidity"].as_f64().unwrap_or(0.0);
     let air_temp_c = inst["air_temperature"].as_f64().unwrap_or(0.0) as f32;
     let wind_ms = inst["wind_speed"].as_f64().unwrap_or(0.0) as f32;
+    let wind_from_deg = inst["wind_from_direction"].as_f64().map(|d| d as f32);
 
     let precip_mm = now["next_1_hours"]["details"]["precipitation_amount"]
         .as_f64()
@@ -192,6 +231,7 @@ fn parse_weather(text: &str, lat: f64, lng: f64) -> FetchResult {
         precipitation: (precip_mm / RAIN_FULL_MM).clamp(0.0, 1.0),
         air_temp_c,
         wind_ms,
+        wind_from_deg,
         lat,
         lng,
     })
@@ -215,6 +255,42 @@ mod tests {
         // Clear + dry ⇒ just the haze floor.
         assert!((o.fog_density - HAZE_FLOOR).abs() < 1e-4);
         assert_eq!(o.air_temp_c, 21.0);
+        // No direction in the sample is reported as none, not as north.
+        assert_eq!(o.wind_from_deg, None);
+    }
+
+    #[test]
+    fn reads_the_wind_direction() {
+        let body = r#"{"properties":{"timeseries":[{"data":{
+            "instant":{"details":{
+                "cloud_area_fraction":50.0,"wind_speed":6.0,"wind_from_direction":250.5}}
+        }}]}}"#;
+        let o = parse_weather(body, 53.2194, 6.5665).unwrap();
+        assert_eq!(o.wind_from_deg, Some(250.5));
+    }
+
+    /// A wind *from* a bearing blows *toward* the opposite one, and the world's +z
+    /// is south — the two sign flips this is easiest to get wrong.
+    #[test]
+    fn a_reported_wind_blows_the_right_way() {
+        let close = |v: Vec2, x: f32, z: f32| (v - Vec2::new(x, z)).length() < 1e-5;
+        // From the west: the air moves east, +x.
+        assert!(close(wind_velocity(270.0, 1.0), 1.0, 0.0));
+        // From the north: the air moves south, +z.
+        assert!(close(wind_velocity(0.0, 1.0), 0.0, 1.0));
+        // From the south: toward the north, −z.
+        assert!(close(wind_velocity(180.0, 2.0), 0.0, -2.0));
+        // Speed is the length.
+        assert!((wind_velocity(225.0, 7.5).length() - 7.5).abs() < 1e-5);
+    }
+
+    /// With no sample the scene still has a wind, and it is the prevailing one.
+    #[test]
+    fn no_sample_falls_back_to_a_south_westerly() {
+        let v = surface_wind(&WeatherState::default());
+        assert!((v.length() - FALLBACK_WIND_MS).abs() < 1e-5);
+        // From the south-west: toward the north-east, +x and −z.
+        assert!(v.x > 0.0 && v.y < 0.0);
     }
 
     #[test]

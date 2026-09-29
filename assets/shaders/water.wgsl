@@ -65,7 +65,10 @@
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 }
-#import cartopolis::water_common::{water_reflected, water_transmitted, sky_fallback}
+#import cartopolis::water_common::{
+    water_reflected, water_transmitted, sky_fallback, with_clouds, cloud_mirror_fade,
+}
+#import cartopolis::cloud_field as cf
 
 // x: RMS slope of the wave field (see `water::sea_state`). y: base wavelength in
 // metres. z: wave speed scalar (metres/second at the base wavelength).
@@ -105,6 +108,11 @@
 // actually standing where it is about to darken the water.
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var bank_field: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var bank_sampler: sampler;
+
+// The ground cloud deck this frame (`sky::CLOUD_FIELD_BUFFER`) — one buffer every
+// water material and every ground material shares, rewritten in place as the
+// deck drifts. Read a field at a time, never whole (see `cf::Deck`).
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var<storage, read> clouds: cf::Deck;
 
 /// Distance from the bank over which a body of water is treated as sheltered.
 /// A 12 m canal never gets more than 6 m from a wall and so keeps only a fine
@@ -318,6 +326,12 @@ const FOAM_ROUGHNESS: f32 = 0.92;
 struct Waves {
     /// ∂h/∂x, ∂h/∂z of the wave height field, already scaled to RMS `wave.x`.
     grad: vec2<f32>,
+    /// The same, for the two long octaves alone — what steers the clouds in the
+    /// mirror (see where `fragment` reflects them).
+    grad_lo: vec2<f32>,
+    /// Mean square of the slope the short octaves still carry — the part of the
+    /// surface the cloud reflection takes as blur rather than as direction.
+    slope_var_hi: f32,
     /// Normalised height of the two long octaves — the big crests.
     height_lo: f32,
     /// Normalised height of the short octaves — the chop riding on them.
@@ -339,6 +353,10 @@ struct Waves {
 /// which is what keeps the far water from aliasing.
 fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
     var grad = vec2<f32>(0.0);
+    var grad_lo = vec2<f32>(0.0);
+    // Σ (surviving amplitude)² over the short octaves, the shape of their slope
+    // variance before the RMS scale is applied — as `retired_sq` is for the fade.
+    var short_sq = 0.0;
     // Long and short octaves are summed apart so foam can ask for *both* — see
     // the crest-and-chop mask in `fragment`.
     var height_lo = 0.0;
@@ -431,6 +449,11 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
         // calm to a gale changed the visible water by barely 2× and the sea
         // measured as a flat sheet (open-water luminance σ < 1/255).
         grad += dir * (w * d_shaped);
+        if i < LO_OCTAVES {
+            grad_lo += dir * (w * d_shaped);
+        } else {
+            short_sq += w * w;
+        }
         visible += w;
         let lost = amp * (1.0 - fade);
         retired_sq += lost * lost;
@@ -452,6 +475,8 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
 
     var out: Waves;
     out.grad = grad * scale;
+    out.grad_lo = grad_lo * scale;
+    out.slope_var_hi = scale * scale * slope_ms * short_sq;
     // The long band's weight is two fixed octaves, so its normaliser is a plain
     // constant; the short band's depends on how many octaves are running, which
     // is why that one is supplied.
@@ -567,6 +592,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         w = waves_at(p, globals.time, dist * wave.w / max(ring, 1e-4), shelter);
     } else {
         w.grad = vec2<f32>(0.0);
+        w.grad_lo = vec2<f32>(0.0);
+        w.slope_var_hi = 0.0;
         w.height_lo = 0.0;
         w.height_hi = 0.0;
         w.detail = 1.0;
@@ -769,6 +796,57 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     );
 #endif
 #endif
+
+    // **The clouds, in the mirror.** Neither the environment map nor the stand-in
+    // sky above has any: the deck is a shell drawn over the sky after both, so a
+    // lake under a cloudy sky reflected a clear one. The deck is found again along
+    // the reflected ray — the same field, the same light, `cf::mirrored` — and put
+    // in front of whichever sky the reflection holds, at the weight that sky went
+    // in with (`water_common::with_clouds`). Where the bank is in the mirror the
+    // cloud is behind the quay, so `mirror` dims it with the sky.
+    //
+    // Not faded toward the ring's edge the way the shore terms are: the clipmap's
+    // water past it mirrors the same deck (`ground_detail.wgsl`), at the same
+    // far-field roughness, so the clouds run on across the edge.
+    //
+    // **Only the long waves steer the clouds; the short ones blur them.** A
+    // ripple tilts the reflected ray by a tenth of a radian, which kilometres
+    // up is a different cloud — so the full wave normal sampled the deck at
+    // random from one pixel to the next and drew a breeze-blown lake as grain
+    // (Deck, 2026-09-29). The sky's own reflection gets away with the same
+    // normal because the sky barely changes over a tenth of a radian; a cloud
+    // edge changes completely. So the cloud ray bends on the two long octaves
+    // alone — a big swell still wobbles the reflection, as it does on real
+    // water — and the short octaves' slope variance joins the roughness the
+    // deck is blurred by. The footprint on the deck is then taken of that
+    // smooth ray, here in uniform control flow (see `cf::mirrored`).
+    let cloud_normal = normalize(vec3<f32>(-w.grad_lo.x, 1.0, -w.grad_lo.y));
+    let cloud_roughness = sqrt(sqrt(alpha * alpha + w.slope_var_hi));
+    let deck = cf::Deck(
+        clouds.shape,
+        clouds.motion,
+        clouds.sun_dir,
+        clouds.sun_color,
+        clouds.sky_color,
+        clouds.place,
+        clouds.haze_color,
+        clouds.light,
+    );
+    let offset = in.world_position.xyz - view.world_position.xyz;
+    let mirror_ray = reflect(-v, cloud_normal);
+    let spread = length(fwidth(cf::mirror_hit(deck.shape.w, offset, mirror_ray)));
+    // Not looked up at all where the water reflects too little of it to show
+    // (`water_common::cloud_mirror_fade`).
+    let cloud_fade = cloud_mirror_fade(reflected * mirror * (1.0 - foam));
+    var cloud = vec4<f32>(0.0);
+    if cloud_fade > 0.0 {
+        cloud = cf::mirrored(deck, offset, mirror_ray, dist, cloud_roughness, spread);
+        cloud.a *= cloud_fade;
+    }
+    out.color = vec4<f32>(
+        with_clouds(out.color.rgb, pbr_input, cloud, wind.w, reflected, mirror * (1.0 - foam)),
+        out.color.a,
+    );
 
     // Light that goes into the back of a crest, scatters, and comes out the front
     // toward the viewer — the translucent green that makes a backlit wave look

@@ -48,7 +48,10 @@
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
 }
-#import cartopolis::water_common::{water_reflected, water_transmitted, sky_fallback}
+#import cartopolis::water_common::{
+    water_reflected, water_transmitted, sky_fallback, with_clouds, cloud_mirror_fade,
+}
+#import cartopolis::cloud_field as cf
 
 // x, z: the detail box's centre in render-space XZ. z: 1 / its half-extent, so
 // `(world_position.xz - centre) * inv_half` is −1..1 across it. w: strength, 0 when
@@ -74,6 +77,10 @@
 // the off switch, since the vector fills and the roads share this material and
 // carry no mask. w unused.
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var<uniform> water_sea: vec4<f32>;
+// The ground cloud deck (`sky::CLOUD_FIELD_BUFFER`), which the water texels mirror
+// exactly as the streamed surface inside the ring does. Bound on every ground
+// material and read only under a water mask; a field at a time (see `cf::Deck`).
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var<storage, read> clouds: cf::Deck;
 
 // Metres of rise per metre of run a fully-saturated texel stands for. Must equal
 // `terrain::DETAIL_SLOPE_RANGE`.
@@ -224,6 +231,43 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 #endif
 #endif
+
+    // And the clouds in it, as the surface inside the ring mirrors them
+    // (`water.wgsl`): without this a lake's clouds would stop at the ring's edge.
+    // The pixel's footprint on the deck is taken out here, for every ground pixel,
+    // because a derivative is not allowed inside the water-only branch — the mask
+    // varies from texel to texel. It is a handful of arithmetic and one load.
+    let offset = in.world_position.xyz - view_bindings::view.world_position.xyz;
+    let mirror_ray = reflect(-pbr_input.V, pbr_input.N);
+    let spread = length(fwidth(cf::mirror_hit(clouds.shape.w, offset, mirror_ray)));
+    // The same cut-off the surface applies, to the same weight, so it cannot
+    // draw a line along the ring's edge.
+    let cloud_fade = cloud_mirror_fade(reflected * water);
+    if cloud_fade > 0.0 {
+        let deck = cf::Deck(
+            clouds.shape,
+            clouds.motion,
+            clouds.sun_dir,
+            clouds.sun_color,
+            clouds.sky_color,
+            clouds.place,
+            clouds.haze_color,
+            clouds.light,
+        );
+        var cloud = cf::mirrored(
+            deck,
+            offset,
+            mirror_ray,
+            length(offset),
+            pbr_input.material.perceptual_roughness,
+            spread,
+        );
+        cloud.a *= cloud_fade;
+        out.color = vec4<f32>(
+            with_clouds(out.color.rgb, pbr_input, cloud, water_sea.y, reflected, water),
+            out.color.a,
+        );
+    }
 
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

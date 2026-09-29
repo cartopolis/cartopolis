@@ -53,6 +53,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, VertexFormat,
 };
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 /// The road ladder rung this vertex draws on — `SurfaceMesh::rungs`.
@@ -85,7 +86,7 @@ pub type RoadMaterial = ExtendedMaterial<StandardMaterial, RoadDepthExtension>;
 /// `lib.rs::handle_render_error` answers by halting the renderer for the rest of the
 /// process. The clipmap cross-fade's three (103–105) are here for that reason alone; a
 /// road is never a clipmap tile, so they are never written and `lod.w` stays 0.
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct RoadDepthExtension {
     /// xy: the detail box's centre in render-space XZ. z: 1 / its half-extent.
     /// w: strength, `0.0` when there is no tier to read.
@@ -108,6 +109,27 @@ pub struct RoadDepthExtension {
     pub water_body: Vec4,
     #[uniform(107)]
     pub water_sea: Vec4,
+    /// The cloud deck the clipmap's water mirrors (108) — bound for the same
+    /// reason, and never read on a road for the same `water_sea.z`.
+    #[storage(108, read_only, visibility(fragment))]
+    pub clouds: Handle<ShaderBuffer>,
+}
+
+impl Default for RoadDepthExtension {
+    fn default() -> Self {
+        Self {
+            detail: Vec4::ZERO,
+            slope: None,
+            lod: Vec4::ZERO,
+            basemap: None,
+            water_body: Vec4::ZERO,
+            water_sea: Vec4::ZERO,
+            // Never `Handle::default()`, which names no asset: a road material
+            // whose storage buffer does not exist never prepares, and draws
+            // nothing (`sky::CLOUD_FIELD_BUFFER`).
+            clouds: crate::systems::sky::CLOUD_FIELD_BUFFER,
+        }
+    }
 }
 
 impl MaterialExtension for RoadDepthExtension {

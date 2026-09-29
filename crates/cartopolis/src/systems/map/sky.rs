@@ -17,9 +17,10 @@ use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
 use bevy::render::mesh::MeshVertexBufferLayoutRef;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
 };
-use bevy::shader::ShaderRef;
+use bevy::render::storage::ShaderBuffer;
+use bevy::shader::{Shader, ShaderRef};
 
 use big_space::prelude::GridCell;
 
@@ -1517,11 +1518,126 @@ pub(crate) const CLOUD_HIGH_OPACITY: f32 = 0.55;
 /// the old `smoothstep().powf(0.75)` needed half of it, so the *visible* edge band
 /// halved. Roughly doubling the ramp restores it.
 pub(crate) const CLOUD_SOFTNESS: f32 = 0.30;
-/// Wind velocity in metres/second (drifts the deck). Faster than any real wind —
-/// it is tuned so the field visibly crosses the sky in well under a minute rather
-/// than to be meteorologically honest. (`systems::water` reuses the *direction*
-/// so the waves travel with the clouds; only that is load-bearing there.)
-pub const CLOUD_WIND: Vec2 = Vec2::new(118.0, 44.0);
+/// How much faster than the live wind the deck drifts.
+///
+/// The deck used to ride a fixed 126 m/s — "faster than any real wind", tuned so
+/// the field crossed the sky in under a minute — whatever the weather said. It
+/// now takes the real wind's speed and direction ([`deck_wind`]), and this is the
+/// one deliberate liberty left: at its true speed a cloud 2.5 km up crosses a few
+/// degrees of sky in ten seconds, which reads as not moving. Four times that is
+/// motion you can see while still being *this* wind, from *this* direction.
+pub(crate) const CLOUD_TIME_LAPSE: f32 = 4.0;
+/// The wind at the low deck's height as a multiple of the 10 m wind MET reports.
+/// Surface friction slows the lowest air, so the wind a few kilometres up runs
+/// roughly twice as fast over land; MET's point forecast has no upper-air level to
+/// read instead.
+pub(crate) const DECK_WIND_SCALE: f32 = 2.0;
+/// …and how far it veers from the surface wind, in degrees clockwise. Out of the
+/// friction layer the wind turns toward the isobars — clockwise with height in
+/// the northern hemisphere, by roughly this much over land.
+pub(crate) const DECK_VEER_DEG: f32 = 20.0;
+/// How quickly the deck's drift follows a changed wind, in seconds. A new
+/// weather sample must turn the clouds, not snap them.
+pub(crate) const DECK_WIND_EASE_S: f32 = 8.0;
+
+/// The low deck's apparent wind for a surface wind: faster, veered, and sped up by
+/// [`CLOUD_TIME_LAPSE`]. World frame, metres per second.
+#[must_use]
+pub(crate) fn deck_wind(surface: Vec2) -> Vec2 {
+    // Clockwise seen from above, in a frame whose +z is south: that is a
+    // rotation from +x toward +z.
+    let (sin, cos) = DECK_VEER_DEG.to_radians().sin_cos();
+    let veered = Vec2::new(
+        surface.x * cos - surface.y * sin,
+        surface.x * sin + surface.y * cos,
+    );
+    veered * DECK_WIND_SCALE * CLOUD_TIME_LAPSE
+}
+
+/// The deck's shared buffer ([`CloudField`]), at a fixed id.
+///
+/// Fixed so that a material can name it in its `Default`. The ground's materials
+/// are built with `..default()` in a dozen places, and a storage buffer that does
+/// not exist is not an empty binding — the material never prepares, and a ground
+/// material that never prepares is a hole in the map. `Handle::default()` names
+/// no asset at all, so every material that binds the deck takes this instead.
+pub const CLOUD_FIELD_BUFFER: Handle<ShaderBuffer> =
+    bevy::asset::uuid_handle!("0aec065d-2710-4c8e-a7e1-02ad5c193299");
+
+/// What the ground cloud deck looks like this frame, shared with the water that
+/// mirrors it.
+///
+/// The deck's own material carries its uniforms; this carries the *same eight
+/// vectors* in one storage buffer ([`CLOUD_FIELD_BUFFER`]) that every water cell's
+/// material and every ground material binds, so a lake — streamed or past the
+/// ring on the flat map — finds the clouds that are overhead without any material
+/// being rewritten each frame (bevy writes a changed buffer of unchanged size in
+/// place). It also owns the wind's accumulated drift, which has to be integrated
+/// here: the live wind changes, and a velocity times the clock would jump the
+/// whole field every time it did.
+#[derive(Resource)]
+pub struct CloudField {
+    /// The wind's drift so far, in metres — f64, because it only ever grows.
+    drift: bevy::math::DVec2,
+    /// The drift's current velocity, eased toward [`deck_wind`].
+    velocity: Vec2,
+    /// Keeps `cartopolis::cloud_field` alive in `Assets<Shader>`: `clouds.wgsl`,
+    /// `water.wgsl` and `ground_detail.wgsl` all import it, and an import module
+    /// is only importable while something holds it.
+    _module: Handle<Shader>,
+}
+
+/// The shared cloud module (`cloud_field.wgsl`). Compiled in rather than loaded,
+/// for the reason `water_common` is: on Android there is no asset directory to
+/// lose it in, and an import that is not there yet is a pipeline that waits.
+const CLOUD_FIELD_WGSL: &str = include_str!("../../../../../assets/shaders/cloud_field.wgsl");
+
+/// [`CLOUD_FIELD_BUFFER`]'s layout: [`CloudMaterial`]'s uniforms, in binding order,
+/// under the names `cloud_field.wgsl`'s `Deck` gives them — `shape` is the
+/// material's `params0`, `motion` its `params1`, `place` its `params2` and `light`
+/// its `params3`. naga renames a struct member that ends in a digit, and naga_oil
+/// refuses an imported struct whose names would not survive it. All `vec4` so it
+/// has one layout on every driver (see `atmosphere_patch` for what a packed `vec3`
+/// cost).
+#[derive(ShaderType, Clone, Copy, Default, Debug, PartialEq)]
+pub struct CloudFieldGpu {
+    pub shape: Vec4,
+    pub motion: Vec4,
+    pub sun_dir: Vec4,
+    pub sun_color: Vec4,
+    pub sky_color: Vec4,
+    pub place: Vec4,
+    pub haze_color: Vec4,
+    pub light: Vec4,
+}
+
+impl FromWorld for CloudField {
+    fn from_world(world: &mut World) -> Self {
+        let module = world
+            .resource_mut::<Assets<Shader>>()
+            .add(Shader::from_wgsl(
+                CLOUD_FIELD_WGSL,
+                "shaders/cloud_field.wgsl",
+            ));
+        // Coverage 0 until `update_clouds` writes the first frame: water mirrors no
+        // cloud rather than a guessed one — and stays that way under
+        // `CARTO_NO_CLOUDS`, where nothing ever writes it.
+        let mut storage = ShaderBuffer::default();
+        storage.set_data(CloudFieldGpu::default());
+        world
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .insert(&CLOUD_FIELD_BUFFER, storage)
+            .expect("an asset id without a generation cannot be stale");
+        Self {
+            drift: bevy::math::DVec2::ZERO,
+            velocity: deck_wind(crate::systems::weather::wind_velocity(
+                crate::systems::weather::FALLBACK_WIND_FROM_DEG,
+                crate::systems::weather::FALLBACK_WIND_MS,
+            )),
+            _module: module,
+        }
+    }
+}
 /// Gain on the sunlit scattering term. The scattering model is not
 /// energy-conserving, so this is the one knob that sets the deck's absolute
 /// brightness; the *shape* of the lighting comes from the shader.
@@ -1558,16 +1674,19 @@ pub(crate) const CLOUD_FADE_HIGH: f32 = 9_000.0;
 /// from, so the deck can't drift off the sky's palette (see `update_clouds`).
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub(crate) struct CloudMaterial {
-    /// x: coverage 0–1, y: softness, z: time (wind clock), w: low deck height (m).
+    /// x: coverage 0–1, y: softness, z: the sky's clock in seconds (drives the
+    /// churn), w: low deck height (m).
     #[uniform(0)]
     params0: Vec4,
-    /// xy: wind velocity (m/s), z: space fade (1 = hidden), w: altitude fade.
+    /// xy: the wind's accumulated drift (m, [`CloudField`]), z: space fade (1 =
+    /// hidden), w: altitude fade.
     #[uniform(1)]
     params1: Vec4,
     /// xyz: world direction to the sun. w: deck thickness (m), for the sun march.
     #[uniform(2)]
     sun_dir: Vec4,
-    /// Sunlight reaching the deck's altitude; alpha carries the overall opacity.
+    /// Sunlight reaching the deck's altitude by `utils::sun`'s model — what a view
+    /// without bevy's atmosphere uses; alpha carries the overall opacity.
     #[uniform(3)]
     sun_color: LinearRgba,
     /// Ambient sky light on the deck; alpha scales the high deck's opacity.
@@ -1582,6 +1701,30 @@ pub(crate) struct CloudMaterial {
     /// so cloud and sky reach the horizon together.
     #[uniform(6)]
     haze_color: LinearRgba,
+    /// x: the sunlight's scale apart from its colour (the sun disc's occlusion ×
+    /// [`CLOUD_SUN_GAIN`]). With bevy's atmosphere running the shader takes the
+    /// *colour* from the atmosphere's own transmittance table instead of
+    /// `sun_color`, so sunset clouds match the sky around them. y: 1 on the phone
+    /// tier (`CLOUDS_LOW`), for the water that mirrors the deck — the shell
+    /// itself reads its shader def. zw: unused.
+    #[uniform(7)]
+    params3: Vec4,
+}
+
+impl CloudMaterial {
+    /// The eight vectors as the shared buffer lays them out ([`CloudFieldGpu`]).
+    fn gpu(&self) -> CloudFieldGpu {
+        CloudFieldGpu {
+            shape: self.params0,
+            motion: self.params1,
+            sun_dir: self.sun_dir,
+            sun_color: self.sun_color.to_vec4(),
+            sky_color: self.sky_color.to_vec4(),
+            place: self.params2,
+            haze_color: self.haze_color.to_vec4(),
+            light: self.params3,
+        }
+    }
 }
 
 impl Material for CloudMaterial {
@@ -1641,6 +1784,7 @@ pub(crate) fn setup_clouds(
         sky_color: LinearRgba::BLACK,
         params2: Vec4::ZERO,
         haze_color: LinearRgba::BLACK,
+        params3: Vec4::ZERO,
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -1682,7 +1826,22 @@ pub(crate) fn update_clouds(
     >,
     mut materials: ResMut<Assets<CloudMaterial>>,
     mut clouds_disabled: Local<Option<bool>>,
+    weather: Res<systems::weather::WeatherState>,
+    mut field: ResMut<CloudField>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
+    // The live wind drifts the deck. Integrated here rather than in the shader,
+    // which used to take velocity × clock: with a wind that changes, that product
+    // jumps the whole field whenever the weather does. The velocity is eased, so a
+    // new sample turns the clouds instead of snapping them.
+    let dt = time.delta_secs();
+    let target = deck_wind(systems::weather::surface_wind(&weather));
+    field.velocity = field
+        .velocity
+        .lerp(target, 1.0 - (-dt / DECK_WIND_EASE_S).exp());
+    let step = field.velocity * dt;
+    field.drift += bevy::math::DVec2::new(f64::from(step.x), f64::from(step.y));
+
     let Ok((cell, cam, cam_local, fog)) = camera.single() else {
         return;
     };
@@ -1755,9 +1914,17 @@ pub(crate) fn update_clouds(
             time.elapsed_secs(),
             CLOUD_LAYER_HEIGHT,
         );
-        mat.params1 = Vec4::new(CLOUD_WIND.x, CLOUD_WIND.y, space, alt_fade);
+        mat.params1 = Vec4::new(field.drift.x as f32, field.drift.y as f32, space, alt_fade);
         mat.sun_dir = sun_direction(hours, decl).extend(CLOUD_DECK_THICKNESS);
         mat.sun_color = LinearRgba::new(sun_rgb.x, sun_rgb.y, sun_rgb.z, CLOUD_OPACITY);
+        mat.params3 = Vec4::new(
+            utils::sun::sun_disc(hours, decl) * CLOUD_SUN_GAIN,
+            // The shell's tier, for the water that mirrors it: its pipelines have
+            // no `CLOUDS_LOW` to read, and must find the same shapes.
+            if quality::is_phone() { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        );
         mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);
         // The haze colour's alpha was documented "unused" and is the deck's sky
         // floor — a Rust-side decision precisely because it is a *lighting* one
@@ -1781,6 +1948,17 @@ pub(crate) fn update_clouds(
             fog_density_coefficient(&fog.falloff),
             CLOUD_HIGH_LAYER_HEIGHT,
         );
+
+        // The same vectors for the water that mirrors the deck — with no cover
+        // at all whenever the deck is not drawn, so a lake never reflects clouds
+        // the sky does not have.
+        let mut gpu = mat.gpu();
+        if want == Visibility::Hidden {
+            gpu.shape.x = 0.0;
+        }
+        if let Some(mut storage) = buffers.get_mut(&CLOUD_FIELD_BUFFER) {
+            storage.set_data(gpu);
+        }
     }
 }
 
@@ -2291,6 +2469,79 @@ mod overcast_tests {
             let f = cloud_sky_floor(i as f32 / 20.0);
             assert!(f >= last, "sky floor dipped at cover {}", i as f32 / 20.0);
             last = f;
+        }
+    }
+
+    /// The deck runs with the surface wind, faster and veered clockwise — never
+    /// against it, and never by more than the veer.
+    #[test]
+    fn the_deck_drifts_downwind_and_veered() {
+        let surface = systems::weather::wind_velocity(270.0, 5.0); // from the west
+        let deck = deck_wind(surface);
+        let expected = DECK_WIND_SCALE * CLOUD_TIME_LAPSE * surface.length();
+        assert!((deck.length() - expected).abs() < 1e-3, "{deck}");
+        let turn = surface.angle_to(deck).to_degrees();
+        // Clockwise from above with +z south is +x toward +z: a positive angle.
+        assert!((turn - DECK_VEER_DEG).abs() < 1e-3, "veered {turn}°");
+        assert_eq!(deck_wind(Vec2::ZERO), Vec2::ZERO);
+    }
+
+    /// `CloudFieldGpu` is what the shared buffer holds and `cloud_field.wgsl`'s
+    /// `Deck` is how three shaders read it. A vector added, dropped or reordered on
+    /// one side reads every later one from the wrong offset, and nothing but the
+    /// picture would say so.
+    #[test]
+    fn the_shared_deck_has_one_layout_on_both_sides() {
+        let body = CLOUD_FIELD_WGSL
+            .split("struct Deck {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("cloud_field.wgsl declares `struct Deck`");
+        let fields: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let rust = [
+            "shape",
+            "motion",
+            "sun_dir",
+            "sun_color",
+            "sky_color",
+            "place",
+            "haze_color",
+            "light",
+        ];
+        let wgsl: Vec<String> = rust.iter().map(|f| format!("{f}: vec4<f32>,")).collect();
+        assert_eq!(fields, wgsl);
+        // naga's writer renames a member ending in a digit (`params0` becomes
+        // `params0_`), and naga_oil then refuses the whole module at pipeline
+        // time — every shader importing it fails, the ground included, and
+        // nothing in `cargo test` ever compiles WGSL to notice.
+        for f in rust {
+            assert!(
+                !f.ends_with(|c: char| c.is_ascii_digit()),
+                "`Deck::{f}` would be renamed by naga"
+            );
+        }
+        // Eight bare `vec4`s: no padding anywhere, on any driver.
+        assert_eq!(CloudFieldGpu::min_size().get(), 8 * 16);
+        let gpu = CloudFieldGpu {
+            shape: Vec4::splat(0.0),
+            motion: Vec4::splat(1.0),
+            sun_dir: Vec4::splat(2.0),
+            sun_color: Vec4::splat(3.0),
+            sky_color: Vec4::splat(4.0),
+            place: Vec4::splat(5.0),
+            haze_color: Vec4::splat(6.0),
+            light: Vec4::splat(7.0),
+        };
+        let mut storage = ShaderBuffer::default();
+        storage.set_data(gpu);
+        let bytes = storage.data.expect("set_data writes the bytes");
+        for (i, chunk) in bytes.chunks_exact(16).enumerate() {
+            let first = f32::from_le_bytes(chunk[..4].try_into().unwrap());
+            assert_eq!(first, i as f32, "vector {i} ({}) is out of place", rust[i]);
         }
     }
 
