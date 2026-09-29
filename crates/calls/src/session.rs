@@ -391,7 +391,7 @@ fn run(
                     let _ = events.send(Event::Connected);
                 }
                 Output::KeyframeWanted => keyframe_wanted = true,
-                Output::Failed => return Err("the call's connection failed".into()),
+                Output::Failed(why) => return Err(format!("the call's connection failed: {why}")),
             }
         }
         if !busy {

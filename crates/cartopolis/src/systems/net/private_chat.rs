@@ -1147,6 +1147,12 @@ impl PrivateChats {
             .call_epoch(group, cartopolis_calls::keys::BASE_KEY_LEN)
             .ok()
     }
+    /// The direct chat with `username`, if this device has one — for the call
+    /// harness (`calls::drive_call_harness`), which calls a person by name.
+    #[must_use]
+    pub fn direct_chat_with(&self, username: &str) -> Option<Vec<u8>> {
+        self.engine.as_ref()?.direct_with(username).cloned()
+    }
 }
 
 /// What an agent reading the chat over MCP needs to know about a private chat

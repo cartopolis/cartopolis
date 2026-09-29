@@ -2339,6 +2339,13 @@ fn run_client() {
     app.init_resource::<systems::private_chat::PrivateChats>();
     app.init_resource::<systems::calls::CallInbox>();
     app.init_resource::<systems::calls::Calls>();
+    // Headless call tests (`CARTO_CALL`, `CARTO_ANSWER`): writes the request
+    // `drive_calls` takes, so it runs first.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    app.add_systems(
+        Update,
+        systems::calls::drive_call_harness.before(systems::calls::drive_calls),
+    );
     app.init_resource::<systems::chat_overlay::ChatOverlay>();
     app.init_resource::<systems::chats::ChatsView>();
     app.init_resource::<systems::contacts::ContactsInbox>();

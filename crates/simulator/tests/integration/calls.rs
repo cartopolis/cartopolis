@@ -183,7 +183,7 @@ fn pump(phone: &mut Phone) {
                 let opened = phone.keys.open(codec, &sealed).expect("a member opens it");
                 phone.heard.push((from, opened.frame));
             }
-            Output::Failed => panic!("a call link failed"),
+            Output::Failed(why) => panic!("a call link failed: {why}"),
             Output::Connected | Output::KeyframeWanted => {}
         }
     }

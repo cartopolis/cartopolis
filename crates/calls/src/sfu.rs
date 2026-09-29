@@ -37,7 +37,7 @@ use str0m::media::{Direction, KeyframeRequestKind, MediaData, MediaKind, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 
-pub use crate::media::{Kind, ParticipantId, TrackInfo};
+pub use crate::media::{Kind, ParticipantId, TrackInfo, RECONNECT_GRACE};
 
 /// A call. The simulator uses the private chat's group id.
 pub type RoomId = Vec<u8>;
@@ -158,6 +158,8 @@ struct Participant {
     ignores: Vec<ParticipantId>,
     pending: Option<SdpPendingOffer>,
     alive: bool,
+    /// When either connection last went `Disconnected` without coming back.
+    lost_since: Option<Instant>,
 }
 
 /// Media that arrived on somebody's up connection, waiting to be forwarded.
@@ -244,6 +246,7 @@ impl Sfu {
             ignores: Vec::new(),
             pending: None,
             alive: true,
+            lost_since: None,
         });
         Ok((id, answer.to_sdp_string()))
     }
@@ -389,8 +392,13 @@ impl Sfu {
                             break;
                         }
                         Ok(Output::Event(e)) => match e {
-                            Event::IceConnectionStateChange(IceConnectionState::Disconnected)
-                            | Event::Closed => {
+                            Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
+                                p.lost_since.get_or_insert(now);
+                            }
+                            Event::IceConnectionStateChange(
+                                IceConnectionState::Connected | IceConnectionState::Completed,
+                            ) => p.lost_since = None,
+                            Event::Closed => {
                                 p.alive = false;
                                 break;
                             }
@@ -426,6 +434,15 @@ impl Sfu {
                 if !p.alive {
                     break;
                 }
+            }
+        }
+
+        // A connection gone for longer than the grace is gone.
+        for p in &mut self.participants {
+            if p.lost_since
+                .is_some_and(|t| now.duration_since(t) > RECONNECT_GRACE)
+            {
+                p.alive = false;
             }
         }
 

@@ -30,8 +30,8 @@ use futures_channel::oneshot;
 use std::sync::Arc;
 
 use super::agent::{
-    AgentRequest, BuildArgs, EmoteArgs, IdArgs, IdsArgs, OutputArgs, PlaceArgs, ReadChatArgs,
-    SayArgs, ScriptArgs, WalkArgs,
+    AgentRequest, BuildArgs, CallArgs, EmoteArgs, IdArgs, IdsArgs, OutputArgs, PlaceArgs,
+    ReadChatArgs, SayArgs, ScriptArgs, WalkArgs,
 };
 use super::{Config, ImageFormat, Job, McpAuth, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
 use crate::systems::shot_harness::ShotEnv;
@@ -491,6 +491,38 @@ impl Tools {
     )]
     async fn sign_in(&self) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::SignIn).await
+    }
+
+    #[tool(
+        description = "Call somebody: an end-to-end encrypted voice and video call in your \
+                       private chat with them (opened first if there is none). This client \
+                       has no camera or microphone, so it sends a moving test pattern and a \
+                       tone. Returns once the call is ringing for them; `call_status` says \
+                       when they pick up."
+    )]
+    async fn call(
+        &self,
+        Parameters(args): Parameters<CallArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Call(args)).await
+    }
+
+    #[tool(description = "Answer a call that is ringing, from somebody you may hear.")]
+    async fn answer_call(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::AnswerCall).await
+    }
+
+    #[tool(description = "End the call you are in.")]
+    async fn hang_up(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::HangUp).await
+    }
+
+    #[tool(
+        description = "The call you are in (who, how long, whether media flows, and how \
+                       much audio and video has arrived from each person), or what is ringing."
+    )]
+    async fn call_status(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::CallStatus).await
     }
 
     #[tool(description = "Stop walking.")]

@@ -291,6 +291,19 @@ pub struct IdsArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CallArgs {
+    #[schemars(
+        description = "Who to call, by username. Must be somebody you are allowed to hear."
+    )]
+    pub to: String,
+    #[schemars(
+        description = "Send a picture too. This client has no camera or microphone, so what \
+                       it sends is a moving test pattern and a tone. Default true."
+    )]
+    pub video: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct IdArgs {
     pub id: i64,
 }
@@ -318,6 +331,10 @@ pub enum AgentRequest {
     MyBuilds,
     SignOut,
     SignIn,
+    Call(CallArgs),
+    AnswerCall,
+    HangUp,
+    CallStatus,
 }
 
 impl AgentRequest {
@@ -339,6 +356,10 @@ impl AgentRequest {
             Self::MyBuilds => "my builds",
             Self::SignOut => "sign out",
             Self::SignIn => "sign in",
+            Self::Call(_) => "call",
+            Self::AnswerCall => "answer call",
+            Self::HangUp => "hang up",
+            Self::CallStatus => "call status",
         }
     }
 }
@@ -471,6 +492,16 @@ enum Pending {
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
+    /// A `call`, until this device is in the call (it then rings for the
+    /// other person) or it could not start.
+    Calling {
+        to: String,
+        /// Whether the join has been asked for — false while the direct chat
+        /// is still being opened.
+        asked: bool,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
     /// A script saved, waiting for the compile verdict.
     Script {
         id: i64,
@@ -514,6 +545,7 @@ pub struct AgentWorld<'w, 's> {
     remotes: Query<'w, 's, &'static RemoteAvatar>,
     bodies: Query<'w, 's, (), With<Avatar>>,
     prims: Query<'w, 's, (&'static Prim, Option<&'static PrimGeo>)>,
+    calls: ResMut<'w, crate::systems::calls::Calls>,
 }
 
 impl AgentWorld<'_, '_> {
@@ -999,6 +1031,17 @@ fn handle(
                 )
             }
         }
+        AgentRequest::Call(args) => return call(state, audience, w, args, now, reply),
+        AgentRequest::AnswerCall => answer_call(audience, w),
+        AgentRequest::HangUp => {
+            if w.calls.active_group().is_some() {
+                w.calls.request = Some(crate::systems::calls::CallRequest::Leave);
+                AgentReply::ok("Hung up.", json!({ "in_call": false }))
+            } else {
+                AgentReply::ok("Not in a call.", json!({ "in_call": false }))
+            }
+        }
+        AgentRequest::CallStatus => call_status(w),
         AgentRequest::SignIn => {
             if w.session.is_online() {
                 AgentReply::ok("Already signed in.", json!({ "online": true }))
@@ -1234,6 +1277,145 @@ fn read_chat(
             })).collect::<Vec<_>>(),
             "withheld": withheld,
             "cursor": state.cursor,
+        }),
+    )
+}
+
+/// Seconds a `call` waits for the direct chat to open and the join to land.
+const CALL_WAIT_S: f64 = 60.0;
+
+fn call(
+    state: &mut AgentState,
+    audience: &Audience,
+    w: &mut AgentWorld,
+    args: CallArgs,
+    now: f64,
+    reply: oneshot::Sender<Reply>,
+) -> Option<(oneshot::Sender<Reply>, AgentReply)> {
+    let to = args.to.trim().to_string();
+    if w.online.is_none() {
+        return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+    }
+    if !audience.hears(&to) {
+        return Some((
+            reply,
+            AgentReply::refuse(format!(
+                "{to} is not on the list of people this client lets you hear, so you may not \
+                 call them either. You can hear: {}.",
+                audience.describe()
+            )),
+        ));
+    }
+    if w.identity
+        .username
+        .as_deref()
+        .is_some_and(|me| me.eq_ignore_ascii_case(&to))
+    {
+        return Some((reply, AgentReply::refuse("That is you.")));
+    }
+    if !crate::systems::calls::Calls::available() {
+        return Some((reply, AgentReply::refuse("This build cannot place calls.")));
+    }
+    // An agent has no camera or microphone: it sends the stand-ins.
+    w.calls.fake_media = true;
+    w.calls.camera_on = args.video.unwrap_or(true);
+    w.calls.notice = None;
+    let asked = match w.private.direct_with(&to) {
+        Some(group) => {
+            w.calls.request = Some(crate::systems::calls::CallRequest::Join(group));
+            true
+        }
+        None => {
+            // A call is in a private chat; open one first, as `say` does.
+            w.chat.private_start.push(to.clone());
+            false
+        }
+    };
+    state.pending.push(Pending::Calling {
+        to,
+        asked,
+        until: now + CALL_WAIT_S,
+        reply,
+    });
+    None
+}
+
+fn answer_call(audience: &Audience, w: &mut AgentWorld) -> AgentReply {
+    let me = w.identity.username.clone().unwrap_or_default();
+    // Only a call from somebody the agent may hear; anybody else's rings on
+    // unanswered, as their messages go unread.
+    let ringing = w
+        .calls
+        .ringing(&me)
+        .into_iter()
+        .find(|r| r.who.iter().any(|n| audience.hears(n)));
+    let Some(r) = ringing else {
+        return AgentReply::refuse("Nothing is ringing from anybody you may hear.");
+    };
+    w.calls.fake_media = true;
+    w.calls.camera_on = true;
+    w.calls.notice = None;
+    w.calls.request = Some(crate::systems::calls::CallRequest::Join(r.group));
+    AgentReply::ok(
+        format!("Answering the call from {}.", r.who.join(", ")),
+        json!({ "answering": r.who }),
+    )
+}
+
+fn call_status(w: &AgentWorld) -> AgentReply {
+    let me = w.identity.username.clone().unwrap_or_default();
+    let ringing: Vec<Vec<String>> = w.calls.ringing(&me).into_iter().map(|r| r.who).collect();
+    let received: Vec<Value> = w
+        .calls
+        .received()
+        .into_iter()
+        .map(|(p, audio, pictures)| {
+            json!({
+                "from": w.calls.name_of(p).unwrap_or("someone"),
+                "audio_frames": audio,
+                "pictures": pictures,
+            })
+        })
+        .collect();
+    let Some(group) = w.calls.active_group() else {
+        let text = if ringing.is_empty() {
+            "Not in a call, and nothing is ringing.".to_string()
+        } else {
+            format!(
+                "Not in a call. Ringing: {}.",
+                ringing
+                    .iter()
+                    .map(|w| w.join(", "))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        };
+        return AgentReply::ok(
+            text,
+            json!({ "in_call": false, "ringing": ringing, "notice": w.calls.notice }),
+        );
+    };
+    let with: Vec<String> = w
+        .calls
+        .in_call(group)
+        .into_iter()
+        .filter(|n| !n.eq_ignore_ascii_case(&me))
+        .collect();
+    let secs = w.calls.elapsed_secs();
+    let text = if with.is_empty() {
+        format!("In a call nobody has picked up yet ({secs} s).")
+    } else {
+        format!("In a call with {} for {secs} s.", with.join(", "))
+    };
+    AgentReply::ok(
+        text,
+        json!({
+            "in_call": true,
+            "with": with,
+            "connected": w.calls.connected(),
+            "seconds": secs,
+            "received": received,
+            "ringing": ringing,
         }),
     )
 }
@@ -1814,6 +1996,54 @@ fn settle(
                     still.push(Pending::Private {
                         to,
                         text,
+                        until,
+                        reply,
+                    });
+                }
+            }
+            Pending::Calling {
+                to,
+                mut asked,
+                until,
+                reply,
+            } => {
+                if !asked {
+                    if let Some(group) = w.private.direct_with(&to) {
+                        w.calls.request = Some(crate::systems::calls::CallRequest::Join(group));
+                        asked = true;
+                    }
+                }
+                let in_it = asked
+                    && w.calls.request.is_none()
+                    && w.calls
+                        .active_group()
+                        .is_some_and(|g| w.private.direct_with(&to).as_deref() == Some(g));
+                if in_it {
+                    let answer = AgentReply::ok(
+                        format!(
+                            "Calling {to}: it rings on their devices. `call_status` says when \
+                             they pick up; `hang_up` ends it."
+                        ),
+                        json!({ "calling": to }),
+                    );
+                    finish(bridge, "call", answer, reply, now);
+                } else if let Some(why) = w.calls.notice.clone().filter(|_| asked) {
+                    finish(bridge, "call", AgentReply::refuse(why), reply, now);
+                } else if now > until {
+                    let answer = AgentReply::refuse(format!(
+                        "Could not call {to}: {}",
+                        if asked {
+                            "the call did not start in time."
+                        } else {
+                            "no private chat with them could be opened (no such account, or \
+                             none of their devices has signed in since private chats existed)."
+                        }
+                    ));
+                    finish(bridge, "call", answer, reply, now);
+                } else {
+                    still.push(Pending::Calling {
+                        to,
+                        asked,
                         until,
                         reply,
                     });

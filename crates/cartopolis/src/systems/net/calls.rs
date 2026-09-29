@@ -107,6 +107,10 @@ struct Active {
     pictures: HashMap<u64, Picture>,
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
     fake_mic_sent: u64,
+    /// Received so far, per participant: (audio frames, pictures). Logged
+    /// every few seconds, which is what a headless test reads.
+    received: HashMap<u64, (u64, u64)>,
+    last_report: web_time::Instant,
 }
 
 /// The newest picture from somebody in the call, ready to draw.
@@ -145,6 +149,11 @@ pub struct Calls {
     /// starts as a voice call, and a camera switching itself on is the one
     /// surprise a person does not forgive.
     pub camera_on: bool,
+    /// Send the stand-in camera and microphone instead of the devices: for a
+    /// client nobody sits at, such as an agent placing a call over MCP. The
+    /// environment switches (`CARTO_FAKE_CAMERA`, `CARTO_FAKE_MIC`) do the same
+    /// for a whole run.
+    pub fake_media: bool,
 }
 
 /// What the UI shows about a chat's call.
@@ -222,6 +231,19 @@ impl Calls {
         self.active
             .iter_mut()
             .flat_map(|a| a.pictures.iter_mut().map(|(k, v)| (*k, v)))
+    }
+
+    /// What this device's call has received so far, per participant:
+    /// (participant, audio frames, pictures).
+    #[must_use]
+    pub fn received(&self) -> Vec<(u64, u64, u64)> {
+        let mut v: Vec<_> = self
+            .active
+            .iter()
+            .flat_map(|a| a.received.iter().map(|(p, (au, pi))| (*p, *au, *pi)))
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     /// Whether this build can place a call at all.
@@ -314,6 +336,7 @@ pub fn drive_calls(
                 let _ = (group, sdp, tracks);
             }
             NetMessage::ServerError { message, .. } => {
+                tracing::warn!(%message, "call refused by the server");
                 calls.notice = Some(format!("Call ended: {message}"));
                 calls.active = None;
             }
@@ -357,6 +380,7 @@ pub fn drive_calls(
         muted,
         level,
         camera_on,
+        fake_media,
         ..
     } = &mut *calls;
     let Some(a) = active.as_mut() else {
@@ -405,6 +429,7 @@ pub fn drive_calls(
                 }
                 Event::Connected => a.connected = true,
                 Event::Audio { from, pcm, .. } => {
+                    a.received.entry(from.0).or_default().0 += 1;
                     let speaker = a.speakers.entry(from.0).or_insert_with(|| Speaker {
                         ring: voice::Ring::default(),
                         entity: None,
@@ -418,6 +443,10 @@ pub fn drive_calls(
                     }
                 }
                 Event::Video { from, frame } => {
+                    a.received.entry(from.0).or_default().1 += 1;
+                    if let Some(n) = cartopolis_calls::video::test_pattern_number(&frame) {
+                        tracing::debug!(from = from.0, n, "call picture");
+                    }
                     a.pictures.insert(
                         from.0,
                         Picture {
@@ -432,6 +461,7 @@ pub fn drive_calls(
             }
         }
         if let Some(why) = failed {
+            tracing::warn!(%why, "call ended");
             *notice = Some(format!("Call ended: {why}"));
             online.send(
                 "call leave",
@@ -445,8 +475,15 @@ pub fn drive_calls(
         }
     }
 
-    capture(a, *muted, &prefs, level, notice);
-    send_camera(a, camera_on, notice);
+    if a.last_report.elapsed().as_secs() >= 5 {
+        a.last_report = web_time::Instant::now();
+        for (from, (audio, pictures)) in &a.received {
+            tracing::info!(from, audio, pictures, "call: received");
+        }
+    }
+
+    capture(a, *muted, *fake_media, &prefs, level, notice);
+    send_camera(a, camera_on, *fake_media, notice);
 }
 
 /// Start a call's session towards the simulator this client is connected to.
@@ -474,15 +511,17 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         last_picture: web_time::Instant::now(),
         pictures: HashMap::new(),
         fake_mic_sent: 0,
+        received: HashMap::new(),
+        last_report: web_time::Instant::now(),
     })
 }
 
 /// Camera to the session, at the call's frame rate, while it is on. The
 /// stand-in camera (`CARTO_FAKE_CAMERA`) is on from the start, since a
 /// headless test has nobody to press the button.
-fn send_camera(a: &mut Active, on: &mut bool, notice: &mut Option<String>) {
-    let fake = crate::env_flag("CARTO_FAKE_CAMERA");
-    if fake {
+fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Option<String>) {
+    let fake = fake_media || crate::env_flag("CARTO_FAKE_CAMERA");
+    if fake && !fake_media {
         *on = true;
     }
     if !*on {
@@ -518,13 +557,14 @@ fn send_camera(a: &mut Active, on: &mut bool, notice: &mut Option<String>) {
 fn capture(
     a: &mut Active,
     muted: bool,
+    fake_media: bool,
     prefs: &AppPrefs,
     level: &mut f32,
     notice: &mut Option<String>,
 ) {
     // The stand-in microphone (`CARTO_FAKE_MIC`): a tone, 20 ms at a time, as
     // many frames as wall-clock time says are due.
-    if crate::env_flag("CARTO_FAKE_MIC") {
+    if fake_media || crate::env_flag("CARTO_FAKE_MIC") {
         *level = if muted { 0.0 } else { 0.3 };
         let due = a.started.elapsed().as_millis() as u64 / 20;
         while a.fake_mic_sent < due {
@@ -791,6 +831,58 @@ pub fn render_call_bar(
     }
     if clear_notice {
         calls.notice = None;
+    }
+}
+
+/// Test switches for placing a call with nobody at the keyboard:
+///
+/// - `CARTO_CALL=<username>`: start a direct chat with that person if there is
+///   none, then call them.
+/// - `CARTO_ANSWER=1`: join any call that rings.
+///
+/// With `CARTO_FAKE_CAMERA` and `CARTO_FAKE_MIC`, two headless clients signed
+/// in to one simulator place a real call — every step after the camera and the
+/// microphone on the real path — and `calls: received` in each log says what
+/// arrived. Desktop only: an environment is what a harness sets.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[allow(clippy::too_many_arguments)]
+pub fn drive_call_harness(
+    mut calls: ResMut<Calls>,
+    private: Res<PrivateChats>,
+    mut chat: ResMut<crate::systems::chat::ChatState>,
+    identity: Res<AuthIdentity>,
+    online: Option<Res<OnlineSession>>,
+    mut asked: Local<bool>,
+    mut last_try: Local<Option<web_time::Instant>>,
+) {
+    if online.is_none() || calls.request.is_some() || calls.active_group().is_some() {
+        return;
+    }
+    // Not every frame: a join that fails ("not ready yet") is retried.
+    if last_try.is_some_and(|t| t.elapsed().as_secs_f32() < 2.0) {
+        return;
+    }
+    if let Ok(peer) = std::env::var("CARTO_CALL") {
+        match private.direct_chat_with(&peer) {
+            Some(group) => {
+                calls.notice = None;
+                calls.request = Some(CallRequest::Join(group));
+                *last_try = Some(web_time::Instant::now());
+            }
+            None if !*asked => {
+                chat.private_start.push(peer);
+                *asked = true;
+            }
+            None => {}
+        }
+    }
+    if crate::env_flag("CARTO_ANSWER") {
+        let me = identity.username.clone().unwrap_or_default();
+        if let Some(r) = calls.ringing(&me).into_iter().next() {
+            calls.notice = None;
+            calls.request = Some(CallRequest::Join(r.group));
+            *last_try = Some(web_time::Instant::now());
+        }
     }
 }
 

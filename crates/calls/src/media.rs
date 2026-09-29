@@ -41,6 +41,19 @@ impl Codec {
     }
 }
 
+/// How long a participant may stay without a working connection before it is
+/// taken out of the call.
+///
+/// str0m's ICE-lite side prunes a candidate pair that has seen no connectivity
+/// check for 15 s and reports the connection `Disconnected` — which also
+/// happens to a client that simply started late (a phone rendering a slow
+/// frame, a join answered over a slow network), and to one that dropped off
+/// the network for a moment. A later check from the client brings it back.
+/// Treating the first `Disconnected` as the end, as this forwarder first did,
+/// turned every late start into a call that failed 25 s in; found by two
+/// headless clients on the software renderer, 2026-09-29.
+pub const RECONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A participant in a call, as the forwarder numbers them. Opaque to clients,
 /// which learn who it is from the simulator's signalling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

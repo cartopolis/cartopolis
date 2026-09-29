@@ -65,9 +65,9 @@ pub enum Output {
     /// Somebody cannot decode this device's video and wants a full picture:
     /// the next video frame should be a keyframe.
     KeyframeWanted,
-    /// Either connection failed. The call is over for this device; to carry
-    /// on, join again (with fresh [`crate::keys::CallKeys`]).
-    Failed,
+    /// Either connection failed, and why. The call is over for this device;
+    /// to carry on, join again (with fresh [`crate::keys::CallKeys`]).
+    Failed(String),
 }
 
 pub struct Link {
@@ -81,7 +81,11 @@ pub struct Link {
     /// Down-connection tracks by mid, as the last offer named them.
     tracks: HashMap<String, TrackInfo>,
     connected: bool,
-    failed: bool,
+    /// Why a connection failed, once one has.
+    failed: Option<String>,
+    /// When a connection last went `Disconnected` and has not come back. Not
+    /// failed yet: see `sfu::RECONNECT_GRACE`, which this mirrors.
+    lost_since: Option<Instant>,
 }
 
 impl Link {
@@ -119,7 +123,8 @@ impl Link {
                 video,
                 tracks: HashMap::new(),
                 connected: false,
-                failed: false,
+                failed: None,
+                lost_since: None,
             },
             offer.to_sdp_string(),
         ))
@@ -214,8 +219,9 @@ impl Link {
                 contents,
             },
         );
-        if rtc.handle_input(input).is_err() {
-            self.failed = true;
+        if let Err(e) = rtc.handle_input(input) {
+            self.failed
+                .get_or_insert(format!("{leg:?} connection refused a datagram: {e}"));
         }
     }
 
@@ -229,8 +235,9 @@ impl Link {
                 Leg::Up => &mut self.up,
                 Leg::Down => &mut self.down,
             };
-            if rtc.handle_input(Input::Timeout(now)).is_err() {
-                self.failed = true;
+            if let Err(e) = rtc.handle_input(Input::Timeout(now)) {
+                self.failed
+                    .get_or_insert(format!("{leg:?} connection: {e}"));
             }
             loop {
                 match rtc.poll_output() {
@@ -251,9 +258,15 @@ impl Link {
                             self.connected = true;
                             out.push(Output::Connected);
                         }
-                        Event::IceConnectionStateChange(IceConnectionState::Disconnected)
-                        | Event::Closed => {
-                            self.failed = true;
+                        Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
+                            self.lost_since.get_or_insert(now);
+                        }
+                        Event::IceConnectionStateChange(
+                            IceConnectionState::Connected | IceConnectionState::Completed,
+                        ) => self.lost_since = None,
+                        Event::Closed => {
+                            self.failed
+                                .get_or_insert(format!("{leg:?} connection closed"));
                         }
                         Event::MediaData(d) if leg == Leg::Down => {
                             let codec = match d.params.spec().codec {
@@ -273,15 +286,23 @@ impl Link {
                         }
                         _ => {}
                     },
-                    Err(_) => {
-                        self.failed = true;
+                    Err(e) => {
+                        self.failed
+                            .get_or_insert(format!("{leg:?} connection: {e}"));
                         break;
                     }
                 }
             }
         }
-        if self.failed {
-            out.push(Output::Failed);
+        if self
+            .lost_since
+            .is_some_and(|t| now.duration_since(t) > crate::media::RECONNECT_GRACE)
+        {
+            self.failed
+                .get_or_insert("no connection to the server for 30 s".into());
+        }
+        if let Some(why) = &self.failed {
+            out.push(Output::Failed(why.clone()));
         }
         (out, next)
     }
@@ -315,6 +336,20 @@ mod tests {
     /// through the forwarder with keys from their real MLS group.
     #[test]
     fn three_members_hear_each_other_through_a_forwarder_that_cannot() {
+        call_of_three(Duration::ZERO);
+    }
+
+    /// The forwarder has been waiting 20 s — past str0m's 15 s, after which it
+    /// calls a connection that has seen no check `Disconnected` — before any
+    /// client's first check arrives: a phone that answered on a slow frame.
+    /// They must still get in (`media::RECONNECT_GRACE`). The forwarder's clock
+    /// is simply set ahead; sans-IO is what makes that a test and not a sleep.
+    #[test]
+    fn a_member_whose_first_check_arrives_late_still_gets_in() {
+        call_of_three(Duration::from_secs(20));
+    }
+
+    fn call_of_three(late: Duration) {
         let mut devs: Vec<Device> = ["alice", "bob", "carol"]
             .iter()
             .map(|n| Device::new(n, Uuid::new_v4()).unwrap())
@@ -362,6 +397,13 @@ mod tests {
                 }
             })
             .collect();
+        // The forwarder lives `late` ahead: step it through the gap first, so
+        // its connections have timed out waiting before anyone checks in.
+        if !late.is_zero() {
+            for s in 0..=late.as_secs() {
+                let _ = sfu.poll(now + Duration::from_secs(s));
+            }
+        }
         let alice_index = devs[0].call_epoch(&g, BASE_KEY_LEN).unwrap().own_index;
         let voice = |n: u32| format!("alice's frame {n}").into_bytes();
         let mut plaintext_at_forwarder = false;
@@ -371,14 +413,16 @@ mod tests {
         let mut buf = vec![0u8; 2000];
         while start.elapsed() < Duration::from_secs(8) {
             let now = Instant::now();
+            // The forwarder's clock; the phones keep real time.
+            let fwd = now + late;
             // Forwarder: read, poll, send, deliver signalling.
             while let Ok((n, from)) = sfu_sock.recv_from(&mut buf) {
                 if buf[..n].windows(13).any(|w| w == b"alice's frame") {
                     plaintext_at_forwarder = true;
                 }
-                sfu.receive(now, from, &buf[..n]);
+                sfu.receive(fwd, from, &buf[..n]);
             }
-            let (tx, _) = sfu.poll(now);
+            let (tx, _) = sfu.poll(fwd);
             for t in tx {
                 let _ = sfu_sock.send_to(&t.contents, t.destination);
             }
@@ -387,7 +431,7 @@ mod tests {
                 if let Signal::Offer { to, sdp, tracks } = s {
                     let p = phones.iter_mut().find(|p| p.id == to).unwrap();
                     let answer = p.link.accept_offer(&sdp, &tracks).unwrap();
-                    sfu.answer(now, to, &answer).unwrap();
+                    sfu.answer(fwd, to, &answer).unwrap();
                 }
             }
             // Phones.
@@ -416,7 +460,7 @@ mod tests {
                             let opened = p.keys.open(codec, &sealed).expect("a member opens it");
                             p.heard.push((from, opened.sender, opened.frame));
                         }
-                        Output::Failed => panic!("a link failed"),
+                        Output::Failed(why) => panic!("a link failed: {why}"),
                         Output::Connected | Output::KeyframeWanted => {}
                     }
                 }
