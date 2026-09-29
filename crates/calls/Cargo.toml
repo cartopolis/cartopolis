@@ -1,0 +1,55 @@
+# Calls: end-to-end encrypted voice and video in private chats, forwarded by the
+# simulator (`docs/notes/calls.md`). Pure logic with no I/O and no Bevy, like
+# `cartopolis_e2ee`, so it is testable on its own and both sides can link the
+# half they need.
+#
+# Two halves, one feature each, and the split is the point:
+#
+# - `client`: frame encryption (SFrame keyed from the chat's MLS group) and the
+#   Opus codec. What a device needs to seal and open media.
+# - `sfu`: the forwarding server. The simulator links only this, so it contains
+#   no code that could open a frame even if it were somehow handed a key — the
+#   same rule that keeps `cartopolis_e2ee` out of the simulator.
+#
+# Everything here is pure Rust with no `cc`, measured for x86_64,
+# aarch64-linux-android and wasm32 (the note has the numbers). `str0m` is the
+# WebRTC stack for native devices and the server; the browser has its own, so
+# str0m is not built for wasm at all.
+[package]
+name = "cartopolis_calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cartopolis_calls"
+path = "src/lib.rs"
+doctest = false
+
+[features]
+default = []
+client = ["dep:sframe", "dep:opus-pure", "dep:uuid"]
+sfu = []
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# `rust-crypto` rather than the default `ring`: the same pure-Rust backend
+# family openmls already uses, and it builds for wasm with no C.
+sframe = { version = "2", default-features = false, features = ["rust-crypto"], optional = true }
+opus-pure = { version = "0.2", optional = true }
+# Only for a random SFrame context id per join (`keys::Sender::new`).
+uuid = { workspace = true, optional = true }
+
+# `default-features = false` drops `aws-lc-rs`, which is C. The crypto provider
+# is installed explicitly (`install_crypto`), because str0m panics at the first
+# connection without one — the same trap rustls 0.23 sets.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+
+[dev-dependencies]
+cartopolis_e2ee = { path = "../e2ee" }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

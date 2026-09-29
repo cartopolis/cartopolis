@@ -473,6 +473,57 @@ impl Device {
     pub fn epoch(&self, group: &[u8]) -> Option<u64> {
         self.groups.get(group).map(|g| g.epoch().as_u64())
     }
+
+    /// What a call in this chat needs from its current epoch
+    /// (`docs/notes/calls.md`): the SFrame base key every member computes and
+    /// nobody else can, and which member sends under which leaf index.
+    ///
+    /// The key is the MLS exporter with RFC 9605 §5.2's label, so it changes
+    /// with every membership change — somebody removed from the chat cannot
+    /// hear the call after the commit that removed them. The caller keeps the
+    /// previous epoch's answer for a moment, because frames sealed just before
+    /// a commit arrive just after it and this device can no longer export for
+    /// an epoch it has left.
+    pub fn call_epoch(&self, group: &[u8], key_len: usize) -> Result<CallEpoch, Error> {
+        let g = self.groups.get(group).ok_or(Error::UnknownGroup)?;
+        let base_key = g
+            .export_secret(self.provider.crypto(), CALL_KEY_LABEL, b"", key_len)
+            .map_err(mls)?;
+        Ok(CallEpoch {
+            epoch: g.epoch().as_u64(),
+            base_key,
+            own_index: g.own_leaf_index().u32(),
+            members: g
+                .members()
+                .filter_map(|m| Some((m.index.u32(), Identity::from_credential(&m.credential)?)))
+                .collect(),
+        })
+    }
+}
+
+/// RFC 9605 §5.2's exporter label for an SFrame base key.
+pub const CALL_KEY_LABEL: &str = "SFrame 1.0 Base Key";
+
+/// One epoch of a chat, as a call sees it ([`Device::call_epoch`]).
+#[derive(Clone, PartialEq, Eq)]
+pub struct CallEpoch {
+    pub epoch: u64,
+    /// `MLS-Exporter(CALL_KEY_LABEL, "", key_len)`. Secret: never logged.
+    pub base_key: Vec<u8>,
+    /// This device's leaf index, which names its frames.
+    pub own_index: u32,
+    /// Every member device by leaf index, so a frame's sender can be named.
+    pub members: Vec<(u32, Identity)>,
+}
+
+impl std::fmt::Debug for CallEpoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallEpoch")
+            .field("epoch", &self.epoch)
+            .field("own_index", &self.own_index)
+            .field("members", &self.members)
+            .finish_non_exhaustive()
+    }
 }
 
 fn credential_for(me: &Identity, signer: &SignatureKeyPair) -> CredentialWithKey {
@@ -579,6 +630,45 @@ mod tests {
         assert_eq!(
             text(&catch_up(&mut alice, &g, &log, &mut alice_cursor)),
             vec!["see you there"]
+        );
+    }
+
+    #[test]
+    fn every_member_derives_the_same_call_key_and_it_changes_with_the_group() {
+        let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+        let mut carol = Device::new("carol", Uuid::new_v4()).unwrap();
+        let g = alice.create_group().unwrap();
+        let add = alice.add(&g, &bob.key_packages(1).unwrap()).unwrap();
+        alice.confirm_pending(&g).unwrap();
+        bob.join(add.welcome.as_ref().unwrap()).unwrap();
+
+        let a = alice.call_epoch(&g, 16).unwrap();
+        let b = bob.call_epoch(&g, 16).unwrap();
+        assert_eq!(a.base_key, b.base_key);
+        assert_eq!(a.base_key.len(), 16);
+        assert_eq!(a.epoch, b.epoch);
+        assert_ne!(a.own_index, b.own_index, "each sender has its own index");
+        assert_eq!(a.members, b.members);
+        let bob_index = a
+            .members
+            .iter()
+            .find(|(_, id)| id.username == "bob")
+            .map(|(i, _)| *i);
+        assert_eq!(bob_index, Some(b.own_index));
+
+        // Carol joins: a new epoch, so a new key Bob gets only by reading the commit.
+        let add = alice.add(&g, &carol.key_packages(1).unwrap()).unwrap();
+        alice.confirm_pending(&g).unwrap();
+        carol.join(add.welcome.as_ref().unwrap()).unwrap();
+        bob.receive(&g, &add.message).unwrap();
+        let a2 = alice.call_epoch(&g, 16).unwrap();
+        assert_ne!(a2.base_key, a.base_key);
+        assert_eq!(a2.base_key, bob.call_epoch(&g, 16).unwrap().base_key);
+        assert_eq!(a2.base_key, carol.call_epoch(&g, 16).unwrap().base_key);
+        assert!(
+            format!("{a2:?}").find("base_key").is_none(),
+            "never printed"
         );
     }
 
