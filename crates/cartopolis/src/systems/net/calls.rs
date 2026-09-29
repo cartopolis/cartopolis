@@ -234,7 +234,8 @@ impl Calls {
     }
 
     /// What this device's call has received so far, per participant:
-    /// (participant, audio frames, pictures).
+    /// (participant, audio frames, pictures). For `mcp`'s `call_status`.
+    #[cfg(mcp)]
     #[must_use]
     pub fn received(&self) -> Vec<(u64, u64, u64)> {
         let mut v: Vec<_> = self
