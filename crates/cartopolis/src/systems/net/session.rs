@@ -1448,6 +1448,7 @@ mod tests {
     fn a_reconnect_puts_the_avatar_back_where_it_was() {
         let mut app = App::new();
         app.init_resource::<SessionState>()
+            .init_resource::<UserStore>()
             .init_resource::<AvatarState>()
             .insert_resource(MapAnchor {
                 geo: Some((53.2194, 6.5665, 14)),
@@ -1497,5 +1498,63 @@ mod tests {
             _ => panic!("the sim was not told where the avatar is"),
         }
         assert!(!app.world().resource::<SessionState>().resumed);
+    }
+
+    /// Closing the app and opening it again finds the avatar where it was left —
+    /// the first sign-in of a launch reads `last_avatar` the way a reconnect reads
+    /// its own memory — unless that spot is far from where this launch opened.
+    #[test]
+    fn the_first_sign_in_puts_the_avatar_back_where_it_was_left() {
+        use crate::systems::user_store::SavedAvatar;
+        let anchor = (53.2194, 6.5665, 14);
+        let near = geo_nav::world_to_lat_lng(anchor, 200.0, -150.0);
+        let far = geo_nav::world_to_lat_lng(anchor, 50_000.0, 0.0);
+        for (saved, expect_moved) in [(near, true), (far, false)] {
+            let mut app = App::new();
+            app.init_resource::<SessionState>()
+                .init_resource::<AvatarState>()
+                .init_resource::<UserStore>()
+                .insert_resource(MapAnchor { geo: Some(anchor) })
+                .add_systems(Update, keep_avatar_across_reconnect);
+            let (intent_tx, mut rx) = futures_channel::mpsc::unbounded();
+            app.insert_resource(OnlineSession { intent_tx });
+            app.world_mut().resource_mut::<UserStore>().data.last_avatar = Some(SavedAvatar {
+                lat: saved.0,
+                lng: saved.1,
+                y: 0.0,
+            });
+            app.world_mut().resource_mut::<SessionState>().status = SessionStatus::Online;
+            app.world_mut()
+                .spawn((Avatar, GridCell::default(), Transform::default()));
+            app.update();
+
+            let at = app.world().resource::<AvatarState>().position;
+            let sent = matches!(
+                rx.try_recv(),
+                Ok(cartopolis_core::NetMessage::Teleport { .. })
+            );
+            if expect_moved {
+                assert!(
+                    at.distance(Vec3::new(200.0, 0.0, -150.0)) < 0.5,
+                    "avatar at {at}"
+                );
+                assert!(sent, "the sim was not told where the avatar is");
+            } else {
+                assert!(
+                    at.length() < 0.01,
+                    "a far-off spot moved the avatar to {at}"
+                );
+                assert!(!sent);
+            }
+            // …and from then on the store follows the avatar.
+            let kept = app
+                .world()
+                .resource::<UserStore>()
+                .data
+                .last_avatar
+                .unwrap();
+            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, kept.lat, kept.lng);
+            assert!((Vec3::new(wx as f32, 0.0, wz as f32) - at).length() < 0.5);
+        }
     }
 }
