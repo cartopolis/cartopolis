@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis chat — v5 addendum: notices from the municipality</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root { --fedi:#A98BFF; --fedibg:rgba(169,139,255,.14); --off:#E8C15A; --offbg:rgba(232,193,90,.14); }
+body { width:1920px; }
+.essence { font-size:26px; line-height:1.3; color:var(--cream); max-width:1450px; margin:16px 0 30px; letter-spacing:-.2px; }
+.essence b { color:var(--off); font-weight:inherit; }
+.rules { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-bottom:44px; }
+.rules div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.rules h3 { color:var(--cream); font-size:17px; margin-bottom:6px; }
+.rules h3 span { color:var(--off); margin-right:6px; }
+.rules p { color:var(--dim); font-size:14px; }
+.rules i { color:var(--text); font-style:normal; }
+.shot ul { font-size:14px; }
+
+.disc { width:44px; height:44px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); backdrop-filter:blur(10px); }
+.dock { position:absolute; left:50%; transform:translateX(-50%); bottom:30px; z-index:6; display:flex; gap:10px; }
+.topseg { position:absolute; top:52px; left:70px; right:70px; z-index:5; }
+.seg.glass { background:var(--glass); backdrop-filter:blur(12px); }
+
+.offbadge { display:inline-flex; gap:4px; align-items:center; font-size:11px; padding:1px 7px; border-radius:7px; background:var(--offbg); color:var(--off); }
+.status3 { display:flex; gap:0; margin:10px 0 4px; }
+.status3 div { flex:1; text-align:center; font-size:11.5px; color:var(--dim); padding-top:14px; position:relative; }
+.status3 div::before { content:""; position:absolute; top:4px; left:0; right:0; height:3px; background:var(--hover); }
+.status3 div::after { content:""; position:absolute; top:0; left:50%; width:11px; height:11px; margin-left:-5.5px; border-radius:50%; background:var(--hover); border:2px solid var(--surface); }
+.status3 .on { color:var(--off); }
+.status3 .on::after { background:var(--off); }
+.status3 .done::before { background:var(--off); }
+.status3 .done::after { background:var(--off); }
+
+/* objects marked in the world */
+.closed { position:absolute; z-index:2; height:26px; background:repeating-linear-gradient(45deg, rgba(232,193,90,.85) 0 8px, rgba(10,14,16,.7) 8px 16px); border:2px solid var(--off); border-radius:4px; transform-origin:left center; }
+.objring { position:absolute; z-index:3; width:40px; height:40px; border-radius:50%; border:3px solid var(--off); box-shadow:0 0 0 6px rgba(232,193,90,.25); transform:translate(-50%,-50%); }
+.objtag { position:absolute; z-index:3; background:rgba(10,14,16,.85); color:var(--off); font-size:11.5px; padding:2px 8px; border-radius:8px; white-space:nowrap; }
+
+.ncard { position:absolute; left:10px; right:10px; bottom:88px; z-index:6; background:var(--glass); backdrop-filter:blur(16px); border:1px solid rgba(232,193,90,.5); border-radius:20px; padding:12px 14px; }
+.ncard .who { display:flex; gap:9px; align-items:center; font-size:12.5px; color:var(--dim); }
+.ncard .who .gav { width:28px; height:28px; border-radius:8px; background:#b33a3a; color:#fff; display:grid; place-items:center; font-size:12px; }
+.ncard b.t { color:var(--cream); font-weight:inherit; font-size:16px; display:block; margin-top:8px; }
+.ncard .when { color:var(--off); font-size:13px; margin-top:2px; }
+.objs { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.objs div { font-size:11.5px; padding:3px 8px; border-radius:8px; background:var(--raised); color:var(--text); display:flex; gap:4px; align-items:center; }
+.btnrow { display:flex; gap:8px; margin-top:10px; }
+.btnrow div { flex:1; text-align:center; padding:8px 4px; border-radius:10px; font-size:13px; background:var(--hover); color:var(--text); display:flex; justify-content:center; gap:5px; align-items:center; white-space:nowrap; }
+.btnrow .pw { background:var(--accent); color:var(--ink); }
+
+/* notice in a place chat */
+.nmsg { align-self:stretch; background:var(--raised); border-radius:16px; overflow:hidden; border:1px solid rgba(232,193,90,.4); }
+.nmsg .band { background:var(--offbg); color:var(--off); font-size:12px; padding:6px 12px; display:flex; gap:6px; align-items:center; }
+.nmsg .img { height:84px; background:url(route.jpg) 55% 45%/620px auto; position:relative; }
+.nmsg .body { padding:8px 12px 10px; }
+.nmsg .body b { color:var(--cream); font-weight:inherit; font-size:14.5px; display:block; }
+.nmsg .body span { color:var(--dim); font-size:12.5px; }
+.upd { margin:0 12px 10px; border-left:2px solid var(--off); padding-left:10px; font-size:12.5px; color:var(--text); }
+.upd small { display:block; color:var(--dim); font-size:11.5px; }
+.pl { width:34px; height:34px; border-radius:10px; background:var(--fedibg); color:var(--fedi); display:grid; place-items:center; flex:none; border:1px solid rgba(169,139,255,.35); }
+
+/* compose (municipality) */
+.sheetfull { position:absolute; left:0; right:0; top:44px; bottom:0; background:var(--surface); z-index:5; padding:8px 16px; }
+.sheetfull h4 { color:var(--cream); font-size:18px; font-weight:inherit; margin:6px 0 10px; display:flex; gap:10px; align-items:center; }
+.mini-map { height:150px; border-radius:14px; background:url(route.jpg) 55% 45%/760px auto; position:relative; overflow:hidden; }
+.lab { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px; margin:12px 0 6px; }
+.inp { background:var(--raised); border-radius:10px; padding:9px 11px; font-size:13.5px; color:var(--cream); margin-bottom:6px; }
+.inp small { color:var(--dim); }
+.pills { display:flex; gap:6px; flex-wrap:wrap; }
+.pills div { padding:6px 10px; border-radius:9px; font-size:12.5px; background:var(--raised); color:var(--dim); border:1px solid var(--gline); }
+.pills .on { background:var(--offbg); color:var(--off); border-color:var(--off); }
+.reach { margin-top:10px; background:var(--raised); border-radius:12px; padding:9px 11px; font-size:12.5px; color:var(--text); }
+.reach b { color:var(--off); font-weight:inherit; }
+.bigbtn { margin-top:10px; background:var(--off); color:#1b1606; border-radius:14px; text-align:center; padding:11px; font-size:15px; }
+
+/* mastodon light */
+.phone.light { background:#f4f4f7; }
+.phone.light .status { color:#111; }
+.mpost { background:#fff; border-bottom:1px solid #e6e6ea; padding:12px 16px; }
+.mpost .boost { color:#888; font-size:12px; margin-bottom:5px; }
+.mpost .hd { display:flex; gap:9px; align-items:center; }
+.mpost .hd .gav { width:36px; height:36px; border-radius:9px; background:#b33a3a; color:#fff; display:grid; place-items:center; font-size:13px; }
+.mpost .hd b { color:#111; font-weight:inherit; display:block; font-size:14px; }
+.mpost .hd span { color:#777; font-size:12px; }
+.mpost p { color:#222; font-size:14px; margin:6px 0; }
+.mpost p a { color:#5b4bd6; }
+.mpost .img { height:120px; border-radius:10px; background:url(route.jpg) 55% 45%/620px auto; }
+.mpost .acts { display:flex; gap:26px; color:#888; font-size:12.5px; margin-top:8px; }
+.mtitle { padding:8px 16px 10px; font-size:17px; color:#111; background:#fff; border-bottom:1px solid #e6e6ea; }
+
+.two { display:grid; grid-template-columns:1.1fr 1fr; gap:24px; margin-top:52px; }
+.two > div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.two h3 { color:var(--cream); font-size:16px; margin-bottom:8px; }
+.two p.c { color:var(--dim); font-size:13.5px; margin-bottom:10px; }
+.two li { color:var(--dim); font-size:13.5px; margin:0 0 8px 18px; }
+.two li b { color:var(--text); font-weight:inherit; }
+pre { background:var(--ink); border-radius:12px; padding:14px 16px; font:12.5px/1.5 ui-monospace, "DejaVu Sans Mono", monospace; color:var(--text); white-space:pre; }
+pre .k { color:#8fc1e3; } pre .s { color:#c9d8a4; } pre .c { color:var(--line); } pre .x { color:var(--off); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="plane" viewBox="0 0 24 24"><path d="M3 13l18-7-7 18-2.5-8.5z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></symbol>
+  <symbol id="area" viewBox="0 0 24 24"><path d="M5 7l6-3 8 3 1 9-7 5-8-4z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="cone" viewBox="0 0 24 24"><path d="M9 4h6l4 15H5zM7.5 10h9M6.5 14h11M3 20h18"/></symbol>
+  <symbol id="tree" viewBox="0 0 24 24"><circle cx="12" cy="9" r="5.5"/><path d="M12 14.5V21M9 21h6"/></symbol>
+  <symbol id="road" viewBox="0 0 24 24"><path d="M8 3L5 21M16 3l3 18M12 5v2M12 11v2M12 17v2"/></symbol>
+  <symbol id="doc" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6"/></symbol>
+  <symbol id="bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4zM10 20a2 2 0 004 0"/></symbol>
+  <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8 18h7a3 3 0 000-6H9a3 3 0 010-6h7"/></symbol>
+</svg>
+
+<h1>Cartopolis chat — <b style="color:var(--off)">v5 addendum: notices from the municipality</b></h1>
+<p class="essence">Yes: a <b>notice</b> is a point with four extra things: <b>which objects</b> it's about (this tree, this stretch of road, this building, identified by their register numbers), <b>when</b>, a <b>status</b> that moves from planned to done, and an <b>official author</b>. It's posted to the places it touches, so the people who follow those places hear about it, and the objects themselves carry it in the 3D world.</p>
+
+<div class="rules">
+  <div><h3><span>1</span>Attached to things, not just a spot</h3><p>Cartopolis already knows the city object by object: BAG buildings, BGT trees, lampposts and road surfaces, each by its official number. A notice names them, so the <i>actual tree</i> gets a ring and the <i>actual road</i> gets hatching.</p></div>
+  <div><h3><span>2</span>It goes where people already listen</h3><p>No separate app or subscription. A notice about the Turfsingel is posted to Turfsingel, Binnenstad and Groningen, the same place communities residents already follow, and out to the fediverse.</p></div>
+  <div><h3><span>3</span>One notice, updated in place</h3><p>Planned → underway → done. Updates attach to the notice instead of arriving as new, disconnected posts, and when it's done the marks disappear from the world.</p></div>
+</div>
+
+<div class="row">
+
+<!-- A. IN THE WORLD -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:55% 45%; background-size:auto 1500px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="topseg"><div class="seg glass"><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="closed" style="left:60px;top:300px;width:250px;transform:rotate(-24deg)"></div>
+  <div class="objtag" style="left:170px;top:238px">bike lane closed · 7–18 Oct</div>
+  <div class="objring" style="left:120px;top:390px"></div>
+  <div class="objring" style="left:170px;top:370px"></div>
+  <div class="objtag" style="left:92px;top:420px">2 trees to be felled</div>
+  <div class="ncard">
+    <div class="who"><div class="gav">G</div><span>Gemeente Groningen <span class="offbadge"><svg class="i s" style="width:12px;height:12px"><use href="#shield"/></svg>official</span></span></div>
+    <b class="t">Sewer work on the Turfsingel</b>
+    <div class="when">7 – 18 October · bike lane closed, cars pass</div>
+    <div class="status3"><div class="on">Planned</div><div>Underway</div><div>Done</div></div>
+    <div class="objs"><div><svg class="i s" style="width:13px;height:13px"><use href="#road"/></svg>Turfsingel, 240 m</div><div><svg class="i s" style="width:13px;height:13px"><use href="#tree"/></svg>2 trees (replaced)</div><div><svg class="i s" style="width:13px;height:13px"><use href="#doc"/></svg>Official decision</div></div>
+    <div class="btnrow"><div class="pw"><svg class="i s"><use href="#bell"/></svg>Follow updates</div><div><svg class="i s"><use href="#chat"/></svg>Discuss</div></div>
+  </div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+  </div>
+</div>
+<h2><span>A</span>In the world: the objects carry the notice</h2>
+<ul>
+  <li>The closed stretch of road is hatched and the two trees are ringed, in their real positions, for as long as the notice is live.</li>
+  <li>Tapping any marked object opens the notice: who, what, when, its status, and a link to the official decision.</li>
+  <li>The notice colour (yellow, with an <i>official</i> badge) is only ever used for official accounts.</li>
+</ul>
+</div>
+
+<!-- B. IN THE PLACE CHAT -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="pl"><svg class="i s"><use href="#area"/></svg></div><div class="who"><b>Binnenstad, Groningen</b><span style="color:var(--fedi)">public place</span></div></div>
+  <div class="tabs"><div class="seg"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chat</div><div><span class="live"></span>World</div></div></div>
+  <div class="msgs">
+    <div class="m them"><b style="color:var(--fedi);font-weight:inherit;font-size:12.5px;display:block">@anna</b>Market is back on the Vismarkt<small>09:10</small></div>
+    <div class="nmsg">
+      <div class="band"><svg class="i s" style="width:13px;height:13px"><use href="#shield"/></svg>Gemeente Groningen · official notice</div>
+      <div class="img"></div>
+      <div class="body"><b>Sewer work on the Turfsingel</b><span>7 – 18 Oct · bike lane closed · 2 trees felled and replaced</span>
+        <div class="status3"><div class="done">Planned</div><div class="on">Underway</div><div>Done</div></div></div>
+      <div class="upd">Work started. Detour for bikes via the Oosterstraat.<small>Update · 7 Oct 08:30</small></div>
+      <div class="upd">Two replacement lime trees planted.<small>Update · 15 Oct 14:10</small></div>
+    </div>
+    <div class="m them"><b style="color:var(--fedi);font-weight:inherit;font-size:12.5px;display:block">@pieter</b>Is the Oosterstraat detour lit at night?<small>reply · 10:02</small></div>
+  </div>
+  <div class="composer"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Post in Binnenstad (public)</div><div class="circ hot"><svg class="i"><use href="#mic"/></svg></div></div>
+</div>
+<h2><span>B</span>In the place's chat: one notice that keeps itself current</h2>
+<ul>
+  <li>The notice sits among residents' posts but looks official, and its status bar moves as the work progresses.</li>
+  <li>Updates attach to the notice. Residents can reply in public underneath, and the municipality can answer there.</li>
+  <li>Formal objections aren't handled here: the notice links to the official procedure.</li>
+</ul>
+</div>
+
+<!-- C. MUNICIPALITY WRITES ONE -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sheetfull">
+    <h4><svg class="i"><use href="#back"/></svg>New notice <span class="offbadge">Gemeente Groningen</span></h4>
+    <div class="mini-map">
+      <div class="closed" style="left:40px;top:74px;width:230px;transform:rotate(-22deg)"></div>
+      <div class="objring" style="left:92px;top:118px;width:30px;height:30px"></div>
+      <div class="objring" style="left:134px;top:104px;width:30px;height:30px"></div>
+    </div>
+    <div class="lab">About (tap objects on the map)</div>
+    <div class="inp">Turfsingel, road surface <small>· BGT, 3 segments</small></div>
+    <div class="inp">2 trees <small>· BGT tree numbers 0014…3121, 0014…3122</small></div>
+    <div class="lab">What</div>
+    <div class="pills"><div class="on">Works</div><div>Closure</div><div>Felling</div><div>Event</div><div>New object</div></div>
+    <div class="lab">When</div>
+    <div class="inp">7 Oct – 18 Oct · planned</div>
+    <div class="reach"><b>Goes to</b> Turfsingel, Binnenstad and Groningen: <b>20.4k followers</b>, plus their followers on the fediverse. Residents following those places are notified.</div>
+    <div class="bigbtn">Publish notice</div>
+  </div>
+</div>
+<h2><span>C</span>The municipality writes one by pointing at the map</h2>
+<ul>
+  <li>Pick the objects on the map; the places it goes to follow from where they are. Nobody chooses an audience by hand.</li>
+  <li>The same form works on the web (the atlas site), and an API accepts notices from the municipality's own systems.</li>
+  <li>An account is marked official by the Cartopolis operator after checking it, not by itself.</li>
+</ul>
+</div>
+
+<!-- D. FROM MASTODON -->
+<div class="shot">
+<div class="phone light">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="mtitle">Home</div>
+  <div class="mpost">
+    <div class="boost">⟳ Binnenstad, Groningen boosted</div>
+    <div class="hd"><div class="gav">G</div><div><b>Gemeente Groningen</b><span>@gemeente.groningen@cartopolis.org · 1d</span></div></div>
+    <p><b style="font-weight:inherit">Sewer work on the Turfsingel</b>, 7–18 October. Bike lane closed, cars pass. Two trees will be felled and replaced. Status: underway.<br><a>cartopolis.org/n/turfsingel-riolering</a></p>
+    <div class="img"></div>
+    <div class="acts"><span>↩ 12</span><span>⟳ 30</span><span>☆ 44</span></div>
+  </div>
+  <div class="mpost">
+    <div class="hd"><div class="gav" style="background:#6b7a86">P</div><div><b>Pieter</b><span>@pieter@mastodon.nl · 1d</span></div></div>
+    <p>Is the Oosterstraat detour lit at night? <a>@gemeente.groningen@cartopolis.org</a></p>
+  </div>
+</div>
+<h2><span>D</span>The same notice on the fediverse</h2>
+<ul>
+  <li>On Mastodon a notice is an ordinary post, boosted by each place it belongs to. The link opens it on the map.</li>
+  <li>When its status changes, the post is edited (ActivityPub has an <code>Update</code> for that) rather than posted again.</li>
+  <li>Replies from Mastodon land in the same thread as replies from Cartopolis.</li>
+</ul>
+</div>
+
+</div>
+
+<style>
+.bind { display:flex; gap:40px; margin-top:56px; align-items:flex-start; }
+.planned { position:absolute; z-index:3; border:2.5px dashed #fff; background:rgba(255,255,255,.18); border-radius:4px; }
+.planned.fence { height:10px; background:repeating-linear-gradient(90deg, rgba(255,255,255,.7) 0 4px, transparent 4px 10px); }
+.realobj { position:absolute; z-index:3; background:#8a6a4a; border:2px solid #3a2a1a; border-radius:3px; box-shadow:0 4px 8px rgba(0,0,0,.4); }
+.ptag { position:absolute; z-index:4; background:rgba(10,14,16,.85); color:#fff; font-size:11.5px; padding:2px 8px; border-radius:8px; white-space:nowrap; }
+.ptag i { font-style:normal; color:var(--off); }
+.timebar { position:absolute; left:10px; right:10px; bottom:30px; z-index:6; background:var(--glass); backdrop-filter:blur(14px); border:1px solid rgba(232,193,90,.45); border-radius:16px; padding:10px 14px; }
+.timebar .lbl { display:flex; justify-content:space-between; font-size:12px; color:var(--dim); }
+.timebar .lbl b { color:var(--off); font-weight:inherit; }
+.track { position:relative; height:6px; border-radius:3px; background:var(--hover); margin:10px 0 6px; }
+.track .fill { position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--off); }
+.track .knob { position:absolute; top:-6px; width:18px; height:18px; border-radius:50%; background:#fff; border:3px solid var(--off); margin-left:-9px; }
+.timebar .note2 { font-size:12px; color:var(--text); }
+.btable { flex:1; background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.btable h3 { color:var(--cream); font-size:16px; margin-bottom:10px; }
+.btable table { width:100%; border-collapse:collapse; font-size:13px; }
+.btable td, .btable th { text-align:left; padding:8px 10px; border-bottom:1px solid var(--gline); vertical-align:top; }
+.btable th { color:var(--cream); font-weight:inherit; }
+.btable td { color:var(--dim); }
+.btable td:first-child { color:var(--text); white-space:nowrap; }
+.btable .rules2 { margin-top:14px; }
+.btable .rules2 li { color:var(--dim); font-size:13.5px; margin:0 0 8px 18px; }
+.btable .rules2 li b { color:var(--text); font-weight:inherit; }
+</style>
+
+<div class="bind">
+
+<!-- E. PLANNED: prims the notice brings, shown as planned -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:55% 45%; background-size:auto 2400px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="closed" style="left:20px;top:260px;width:360px;transform:rotate(-20deg)"></div>
+  <div class="planned fence" style="left:30px;top:320px;width:330px;transform:rotate(-20deg);transform-origin:left center"></div>
+  <div class="ptag" style="left:210px;top:236px">works fence <i>· while underway</i></div>
+  <div class="objring" style="left:150px;top:470px;width:56px;height:56px"></div>
+  <div class="ptag" style="left:100px;top:506px">tree <i>· to be felled</i></div>
+  <div class="planned" style="left:240px;top:520px;width:70px;height:26px;transform:rotate(-20deg)"></div>
+  <div class="ptag" style="left:230px;top:560px">new bench <i>· from done</i></div>
+  <div class="timebar">
+    <div class="lbl"><span>Now</span><b>Sewer work on the Turfsingel</b><span>After</span></div>
+    <div class="track"><div class="fill" style="width:8%"></div><div class="knob" style="left:8%"></div></div>
+    <div class="note2">Planned. Dashed objects aren't built yet; drag to see the street during and after the work.</div>
+  </div>
+</div>
+<h2><span>E</span>A notice can bring its own objects</h2>
+<ul>
+  <li>The municipality builds the change as prims (a works fence, a new bench) and attaches them to the notice.</li>
+  <li>Until they exist, they're drawn dashed. The timeline under the notice lets anyone scrub from now to after.</li>
+  <li>Each brought prim says how long it lasts: <i>while underway</i> (the fence) or <i>from done</i> (the bench).</li>
+</ul>
+</div>
+
+<!-- F. DONE -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:55% 45%; background-size:auto 2400px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="realobj" style="left:240px;top:520px;width:70px;height:22px;transform:rotate(-20deg)"></div>
+  <div class="ptag" style="left:230px;top:556px">new bench</div>
+  <div class="timebar">
+    <div class="lbl"><span>Now</span><b>Sewer work on the Turfsingel</b><span>After</span></div>
+    <div class="track"><div class="fill" style="width:100%"></div><div class="knob" style="left:100%"></div></div>
+    <div class="note2">Done on 18 Oct. The fence is gone, the tree is gone from the register, the bench is part of the street.</div>
+  </div>
+</div>
+<h2><span>F</span>When it's done, the world has changed</h2>
+<ul>
+  <li>The hatching and the fence disappear by themselves, and the bench stays as an ordinary object.</li>
+  <li>The felled tree disappears when the BGT stops listing it. The notice keeps a record of where it stood.</li>
+  <li>The notice stays in the place's history, so "what happened here?" has an answer later.</li>
+</ul>
+</div>
+
+<div class="btable">
+  <h3>Three kinds of object a notice can point at</h3>
+  <table>
+    <tr><th>Kind</th><th>Its number</th><th>Does the app already have that number?</th></tr>
+    <tr><td>Buildings (BAG)</td><td>The BAG identificatie, national</td><td><b style="color:var(--text);font-weight:inherit">Yes.</b> Every drawn building carries it; the building card is built on it.</td></tr>
+    <tr><td>Street objects (BGT)</td><td>The BGT <code>lokaal_id</code>, national</td><td><b style="color:var(--text);font-weight:inherit">No.</b> Atlas reads it while extracting, but only to drop duplicates. The map files it writes have a tree's position, not its number. See the first rule below.</td></tr>
+    <tr><td>Prims (built in Cartopolis)</td><td>The prim's id, a URL on this server</td><td><b style="color:var(--text);font-weight:inherit">Yes</b>, on the wire. The id only means something on this server, so it's written as a web address for anyone outside.</td></tr>
+  </table>
+  <ul class="rules2">
+    <li><b>Every reference carries a snapshot</b>: kind, position or outline, name. The app draws the ring or hatching from the snapshot, so BGT numbers don't have to be added to the map files at all. It also keeps working after the object is gone, which for a felled tree is the whole point.</li>
+    <li><b>Hiding or replacing a specific BGT object</b> (the tree disappearing the day it's felled, before the BGT catches up) does need the number in the map files. That's a change to atlas's extractor and the client's reader in the same commit, and it makes the files bigger. Leave it until it's needed.</li>
+    <li><b>Prims a notice brings</b> are grouped by one column on the prim, the way content packs are grouped today by <code>prims.origin</code>. Deleting the notice deletes its prims, and nobody can edit them except the notice's author.</li>
+    <li><b>Pointing at somebody's prim</b> is fine: a notice only marks it, it never changes it. Only official notices draw marks in the world; an ordinary point that mentions a prim just links to it.</li>
+    <li><b>Possible later</b>: a scripted prim reacting to the notice's status (a detour sign that lights up while underway), through the message channels scripts already listen on.</li>
+  </ul>
+</div>
+
+</div>
+
+<div class="two">
+  <div>
+    <h3>The format: a point with a notice section</h3>
+    <p class="c">The same ActivityStreams object as every other point, with one extension. An app that doesn't know the extension still shows a sensible post with a picture, a place and dates.</p>
+<pre>{
+  <span class="k">"type"</span>: <span class="s">"Note"</span>,
+  <span class="k">"attributedTo"</span>: <span class="s">"https://cartopolis.org/@gemeente.groningen"</span>,
+  <span class="k">"content"</span>: <span class="s">"Sewer work on the Turfsingel, 7–18 October…"</span>,
+  <span class="k">"location"</span>: { <span class="k">"type"</span>: <span class="s">"Place"</span>, <span class="k">"name"</span>: <span class="s">"Turfsingel"</span>, <span class="k">"latitude"</span>: 53.2157, <span class="k">"longitude"</span>: 6.5719 },
+  <span class="k">"startTime"</span>: <span class="s">"2026-10-07"</span>, <span class="k">"endTime"</span>: <span class="s">"2026-10-18"</span>,
+  <span class="k">"audience"</span>: [<span class="s">"…/@turfsingel.groningen"</span>, <span class="s">"…/@binnenstad.groningen"</span>, <span class="s">"…/@groningen"</span>],
+  <span class="x">"cartopolis:notice"</span>: {
+    <span class="k">"kind"</span>: <span class="s">"works"</span>,
+    <span class="k">"status"</span>: <span class="s">"underway"</span>,        <span class="c">// planned · underway · done · cancelled</span>
+    <span class="k">"about"</span>: [                     <span class="c">// objects that exist now</span>
+      { <span class="k">"register"</span>: <span class="s">"bgt"</span>, <span class="k">"id"</span>: <span class="s">"G0014.…"</span>, <span class="k">"kind"</span>: <span class="s">"road-surface"</span>,
+        <span class="k">"effect"</span>: <span class="s">"closed-for-bikes"</span>, <span class="k">"snapshot"</span>: { <span class="k">"line"</span>: [[53.2151,6.5702], …] } },
+      { <span class="k">"register"</span>: <span class="s">"bgt"</span>, <span class="k">"id"</span>: <span class="s">"G0014.…"</span>, <span class="k">"kind"</span>: <span class="s">"tree"</span>,
+        <span class="k">"effect"</span>: <span class="s">"removed"</span>, <span class="k">"snapshot"</span>: { <span class="k">"point"</span>: [53.2158,6.5716] } },
+      { <span class="k">"register"</span>: <span class="s">"prim"</span>, <span class="k">"id"</span>: <span class="s">"https://cartopolis.org/prims/812"</span>,
+        <span class="k">"effect"</span>: <span class="s">"moved"</span>, <span class="k">"snapshot"</span>: { <span class="k">"point"</span>: [53.2160,6.5711], <span class="k">"name"</span>: <span class="s">"Kiosk"</span> } }
+    ],
+    <span class="k">"brings"</span>: [                    <span class="c">// prims that belong to the notice</span>
+      { <span class="k">"prim"</span>: <span class="s">"…/prims/901"</span>, <span class="k">"name"</span>: <span class="s">"Works fence"</span>,  <span class="k">"lasts"</span>: <span class="s">"while-underway"</span> },
+      { <span class="k">"prim"</span>: <span class="s">"…/prims/902"</span>, <span class="k">"name"</span>: <span class="s">"New bench"</span>,    <span class="k">"lasts"</span>: <span class="s">"from-done"</span> }
+    ],
+    <span class="k">"decision"</span>: <span class="s">"https://zoek.officielebekendmakingen.nl/…"</span>
+  }
+}</pre>
+  </div>
+  <div>
+    <h3>What it builds on, and what it leaves out</h3>
+    <ul>
+      <li><b>Builds on the place communities</b> from the previous addendum: a notice is a post addressed to the places it touches, worked out from its objects.</li>
+      <li><b>Builds on the registers Cartopolis already reads</b>: BAG buildings by their identificatie, BGT trees, lampposts, road surfaces and boundaries. The objects in a notice are the same ones drawn on the map.</li>
+      <li><b>Official accounts</b> are organisation accounts marked official by the operator. This is the one place where the server vouching for someone is exactly right: the notices are public, not private messages.</li>
+      <li><b>Could be filled from day one</b> by importing what municipalities already publish: official announcements carry a location, so a place could show them before its municipality ever signs up. An option, not a requirement.</li>
+      <li><b>Leaves out</b> formal objections (a legal procedure, linked to rather than rebuilt), and reports from residents about broken things (the other direction, a separate use case).</li>
+      <li><b>Possible later, because the pieces exist</b>: the router avoiding a closed road, and a notice carrying a 3D model of what's planned, using the existing IFC building import, so residents can walk around it before it's built.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

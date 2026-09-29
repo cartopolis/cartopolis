@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis chat — v5 addendum: follow a place</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root { --fedi:#A98BFF; --fedibg:rgba(169,139,255,.14); --lock:#9fd3b4; }
+body { width:1920px; }
+.essence { font-size:26px; line-height:1.3; color:var(--cream); max-width:1450px; margin:16px 0 30px; letter-spacing:-.2px; }
+.essence b { color:var(--fedi); font-weight:inherit; }
+.rules { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-bottom:44px; }
+.rules div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.rules h3 { color:var(--cream); font-size:17px; margin-bottom:6px; }
+.rules h3 span { color:var(--fedi); margin-right:6px; }
+.rules p { color:var(--dim); font-size:14px; }
+.rules i { color:var(--text); font-style:normal; }
+.shot ul { font-size:14px; }
+.later { font-size:11px; padding:1px 7px; border-radius:7px; background:var(--fedibg); color:var(--fedi); }
+
+.disc { width:44px; height:44px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); backdrop-filter:blur(10px); }
+.dock { position:absolute; left:50%; transform:translateX(-50%); bottom:30px; z-index:6; display:flex; gap:10px; }
+.topseg { position:absolute; top:52px; left:70px; right:70px; z-index:5; }
+.seg.glass { background:var(--glass); backdrop-filter:blur(12px); }
+
+/* area outline on the map */
+.area { position:absolute; z-index:2; border:2.5px dashed var(--fedi); background:rgba(169,139,255,.10); border-radius:40% 55% 45% 50%; }
+
+/* the ladder of places around a spot */
+.ladder { position:absolute; left:10px; right:10px; bottom:88px; z-index:6; background:var(--glass); backdrop-filter:blur(16px); border:1px solid var(--gline); border-radius:20px; padding:12px 14px 8px; }
+.ladder h4 { color:var(--cream); font-size:16px; font-weight:inherit; }
+.ladder .sub { color:var(--dim); font-size:12.5px; margin-bottom:8px; }
+.rung { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--gline); }
+.rung .ic { width:34px; height:34px; border-radius:10px; background:var(--fedibg); color:var(--fedi); display:grid; place-items:center; flex:none; font-size:11px; }
+.rung .t { flex:1; color:var(--cream); font-size:14px; }
+.rung .t small { display:block; color:var(--dim); font-size:11.5px; }
+.fbtn { background:var(--fedi); color:#140d2b; border-radius:10px; padding:6px 12px; font-size:12.5px; }
+.fbtn.on { background:transparent; color:var(--fedi); border:1px solid var(--fedi); }
+
+/* chat list with place rows */
+.sect { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px; padding:12px 18px 4px; display:flex; gap:6px; align-items:center; }
+.pl { width:48px; height:48px; border-radius:14px; background:var(--fedibg); color:var(--fedi); display:grid; place-items:center; flex:none; border:1px solid rgba(169,139,255,.35); }
+.chat-row .l3.f { color:var(--fedi); }
+.lk { color:var(--lock); }
+
+/* area chat, world view */
+.ppin { position:absolute; z-index:4; transform:translate(-50%,-100%); display:flex; flex-direction:column; align-items:center; }
+.ppin .head { display:flex; align-items:center; gap:7px; background:#fff; color:var(--ink); border-radius:12px; padding:4px 9px 4px 4px; font-size:12px; box-shadow:0 6px 16px rgba(0,0,0,.35); border:2px solid var(--fedi); max-width:200px; }
+.ppin .th { width:28px; height:28px; border-radius:8px; background-size:cover; flex:none; }
+.ppin .head small { display:block; color:#666; font-size:10.5px; }
+.ppin .stem { width:2px; height:14px; background:var(--fedi); }
+.thead .who span.f { color:var(--fedi); }
+
+/* mastodon side, light */
+.phone.light { background:#f4f4f7; }
+.phone.light .status { color:#111; }
+.mhdr { height:110px; background:url(city.jpg) 40% 60%/760px auto; position:relative; }
+.mhdr .area { border-color:#fff; background:rgba(255,255,255,.15); }
+.mprof { padding:0 16px; margin-top:-30px; }
+.mprof .gav { width:64px; height:64px; border-radius:16px; background:#5b4bd6; color:#fff; display:grid; place-items:center; border:4px solid #f4f4f7; }
+.mprof h3 { color:#111; font-size:19px; margin-top:6px; }
+.mprof .h { color:#666; font-size:13px; }
+.mprof .tag { display:inline-block; font-size:11px; background:#ecebfb; color:#5b4bd6; border-radius:6px; padding:1px 7px; margin-left:4px; }
+.mprof p { color:#222; font-size:13.5px; margin:8px 0; }
+.mstats { display:flex; gap:16px; font-size:13px; color:#666; margin:6px 0 10px; }
+.mstats b { color:#111; font-weight:inherit; }
+.mbtn { background:#5b4bd6; color:#fff; border-radius:10px; text-align:center; padding:9px; font-size:14.5px; }
+.mpost { background:#fff; margin:10px 0 0; border-top:1px solid #e6e6ea; padding:11px 16px; }
+.mpost .boost { color:#888; font-size:12px; margin-bottom:5px; }
+.mpost .hd { display:flex; gap:9px; align-items:center; }
+.mpost .hd .av { width:34px; height:34px; font-size:13px; }
+.mpost .hd b { color:#111; font-weight:inherit; display:block; font-size:13.5px; }
+.mpost .hd span { color:#777; font-size:12px; }
+.mpost p { color:#222; font-size:13.5px; margin:6px 0 0; }
+.mpost p a { color:#5b4bd6; }
+.mpost .img { height:96px; border-radius:10px; margin-top:6px; background-size:cover; }
+.compose { position:absolute; left:10px; right:10px; bottom:26px; background:#fff; border:1px solid #ddd; border-radius:14px; padding:10px 12px; font-size:13.5px; color:#222; box-shadow:0 8px 20px rgba(0,0,0,.12); }
+.compose a { color:#5b4bd6; }
+.compose small { display:block; color:#888; font-size:11.5px; margin-top:6px; }
+
+.bottom { display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px; margin-top:52px; }
+.bottom > div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.bottom h3 { color:var(--cream); font-size:16px; margin-bottom:8px; }
+.bottom li { color:var(--dim); font-size:13.5px; margin:0 0 7px 18px; }
+.bottom li b { color:var(--text); font-weight:inherit; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="plane" viewBox="0 0 24 24"><path d="M3 13l18-7-7 18-2.5-8.5z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="fedi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="20" r="2"/><path d="M6.5 7.3l3.4 2.9M17.5 7.3l-3.4 2.9M12 15v3"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6.2-6.5-11A6.5 6.5 0 0118.5 10c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="area" viewBox="0 0 24 24"><path d="M5 7l6-3 8 3 1 9-7 5-8-4z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+</svg>
+
+<h1>Cartopolis chat — <b style="color:var(--fedi)">v5 addendum: follow a place</b></h1>
+<p class="essence">What ActivityPub adds is that <b>a place can be followed</b>. Every area on the map (a square, a neighbourhood, a town) is a <b>public community</b> with its own fediverse address, such as <b>@binnenstad.groningen@cartopolis.org</b>. Following it, from Cartopolis or from Mastodon, means hearing what's posted <i style="font-style:normal;color:var(--cream)">there</i>. Posting there is just posting a point inside it, or mentioning it from Mastodon.</p>
+
+<div class="rules">
+  <div><h3><span>1</span>A community is a chat with an area</h3><p>It's the same shape as v5: a <i>Chat</i> view of its posts and a <i>World</i> view where they're pins inside its outline. It just happens to be public and anchored to a place.</p></div>
+  <div><h3><span>2</span>Places nest, so posts rise</h3><p>A point posted at the Vismarkt belongs to <i>Vismarkt</i>, <i>Binnenstad</i> and <i>Groningen</i> at once. Follow as close or as wide as you like; you hear it once.</p></div>
+  <div><h3><span>3</span>Anyone on the fediverse can join in</h3><p>From Mastodon you follow <i>@binnenstad.groningen@cartopolis.org</i> like any account. Mention it in a post and the post lands on the map there, even though Mastodon itself has no location feature.</p></div>
+</div>
+
+<div class="row">
+
+<!-- A. AROUND HERE -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(city.jpg); background-position:40% 60%; background-size:auto 1300px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="topseg"><div class="seg glass"><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="area" style="left:40px;top:150px;width:310px;height:300px"></div>
+  <div class="area" style="left:170px;top:270px;width:90px;height:70px;border-style:solid"></div>
+  <div class="ladder">
+    <h4>Around here</h4>
+    <div class="sub">Public communities for the spot under the camera</div>
+    <div class="rung"><div class="ic"><svg class="i s"><use href="#pin"/></svg></div><div class="t">Vismarkt<small>square · 140 following · 3 posts today</small></div><div class="fbtn">Follow</div></div>
+    <div class="rung"><div class="ic"><svg class="i s"><use href="#area"/></svg></div><div class="t">Binnenstad<small>neighbourhood · 2.3k following · 41 today</small></div><div class="fbtn on">Following</div></div>
+    <div class="rung"><div class="ic"><svg class="i s"><use href="#area"/></svg></div><div class="t">Groningen<small>municipality · 18k following · 390 today</small></div><div class="fbtn">Follow</div></div>
+  </div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+  </div>
+</div>
+<h2><span>A</span>Around here: the ladder of places</h2>
+<ul>
+  <li>Wherever the camera is, one sheet lists the places containing that spot, from close to wide, each with Follow.</li>
+  <li>The areas' outlines light up on the map, so "Binnenstad" is something you can see, not just a word.</li>
+  <li>This is the proximity subscription: you follow the ground you care about, at the size you care about.</li>
+</ul>
+</div>
+
+<!-- B. CHATS LIST WITH PLACES -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="top"><div class="titlebar"><h3>Chats</h3></div>
+    <div class="seg"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chats</div><div><span class="live"></span>World</div></div></div>
+  <div class="sect"><svg class="i s lk"><use href="#lock"/></svg>Private</div>
+  <div class="chat-row"><div class="av c1 ring">S</div><div class="body"><div class="l1"><span>Sanne</span><time>18:12</time></div><div class="l2"><span>this café next door, 7 pm?</span><span class="badge b">2</span></div></div></div>
+  <div class="chat-row"><div class="av c6 room">🏡</div><div class="body"><div class="l1"><span>Family</span><time>Mon</time></div><div class="l2"><span>Oma: sent a point</span></div></div></div>
+  <div class="sect"><svg class="i s" style="color:var(--fedi)"><use href="#fedi"/></svg>Places you follow · public</div>
+  <div class="chat-row"><div class="pl"><svg class="i"><use href="#area"/></svg></div><div class="body"><div class="l1"><span>Binnenstad, Groningen</span><time>now</time></div><div class="l2"><span>@anna: Market is back on the Vismarkt</span><span class="badge">41</span></div><div class="l3 f">2.3k following · 12 from Mastodon today</div></div></div>
+  <div class="chat-row"><div class="pl"><svg class="i"><use href="#area"/></svg></div><div class="body"><div class="l1"><span>Oosterpoort</span><time>17:40</time></div><div class="l2"><span>Road works on the Oosterweg until Friday</span><span class="badge">3</span></div><div class="l3 f">where you live</div></div></div>
+  <div class="chat-row"><div class="pl"><svg class="i"><use href="#pin"/></svg></div><div class="body"><div class="l1"><span>Noorderplantsoen</span><time>Sun</time></div><div class="l2"><span>Concert Sunday 15:00, bring a blanket</span></div></div></div>
+  <div class="sect">Nearby, live</div>
+  <div class="chat-row"><div class="av here-disc room"><svg class="i"><use href="#pin"/></svg></div><div class="body"><div class="l1"><span>Here</span><time>now</time></div><div class="l2"><span>3 avatars within earshot</span></div></div></div>
+</div>
+<h2><span>B</span>Places sit in the chat list, marked public</h2>
+<ul>
+  <li>Three sections, each saying what it is: <i>private</i> (encrypted), <i>places you follow</i> (public, and on the fediverse), and <i>Here</i> (whoever's standing near your avatar, right now, not kept).</li>
+  <li>A place row counts what's new, and how much came in from outside Cartopolis.</li>
+</ul>
+</div>
+
+<!-- C. A PLACE, WORLD VIEW -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(city.jpg); background-position:40% 60%; background-size:auto 1300px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="float-top">
+    <div class="thead"><svg class="i"><use href="#back"/></svg><div class="pl" style="width:34px;height:34px;border-radius:10px"><svg class="i s"><use href="#area"/></svg></div><div class="who"><b>Binnenstad, Groningen</b><span class="f" style="color:var(--fedi)">public · @binnenstad.groningen@cartopolis.org</span></div></div>
+    <div class="tabs"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Chat</div><div class="on w"><span class="live"></span>World</div></div></div>
+  </div>
+  <div class="area" style="left:30px;top:200px;width:330px;height:330px"></div>
+  <div class="ppin" style="left:215px;top:300px"><div class="head"><div class="th" style="background-image:url(dusk.jpg);background-position:60% 60%"></div><div>Market is back<small>@anna · mastodon.nl</small></div></div><div class="stem"></div></div>
+  <div class="ppin" style="left:110px;top:380px"><div class="head"><div class="th" style="background-image:url(city.jpg);background-position:30% 72%"></div><div>Show Saturday?<small>@jeroen · here</small></div></div><div class="stem"></div></div>
+  <div class="ppin" style="left:275px;top:450px"><div class="head"><div class="th" style="background-image:url(route.jpg);background-position:50% 40%"></div><div>Bike lane closed<small>@gemeente · 1 h</small></div></div><div class="stem"></div></div>
+  <div class="sheet">
+    <div class="handle"></div>
+    <div class="mini"><p><b>@anna</b>Market is back on the Vismarkt</p><p><b style="color:var(--fedi)">@gemeente</b>Bike lane on the Turfsingel closed until 17:00</p></div>
+    <div class="composer"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Post in Binnenstad (public)</div><div class="circ hot"><svg class="i"><use href="#mic"/></svg></div></div>
+  </div>
+</div>
+<h2><span>C</span>A place is a chat whose World view is its area</h2>
+<ul>
+  <li>Posts are pins inside the outline, from Cartopolis and from the fediverse alike. Tap one to look from where it was posted.</li>
+  <li>The text field says <i>public</i> in the field itself. A post here goes to every follower, on any server.</li>
+  <li>A post from inside Cartopolis is a point, so it lands exactly where it was made. A mention from Mastodon lands on the place's centre unless it carries a Cartopolis link.</li>
+</ul>
+</div>
+
+<!-- D. FROM MASTODON -->
+<div class="shot">
+<div class="phone light">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="mhdr"><div class="area" style="left:120px;top:14px;width:150px;height:84px"></div></div>
+  <div class="mprof">
+    <div class="gav"><svg class="i"><use href="#area"/></svg></div>
+    <h3>Binnenstad, Groningen <span class="tag">Group</span></h3>
+    <div class="h">@binnenstad.groningen@cartopolis.org</div>
+    <p>What's happening in Groningen's city centre. Mention this account to post here. On the map: cartopolis.org/binnenstad.groningen</p>
+    <div class="mstats"><span><b>2.3k</b> followers</span><span><b>41</b> posts today</span></div>
+    <div class="mbtn">Follow</div>
+  </div>
+  <div class="mpost">
+    <div class="boost">⟳ Binnenstad, Groningen boosted</div>
+    <div class="hd"><div class="av c3">A</div><div><b>Anna</b><span>@anna@mastodon.nl · 20 min</span></div></div>
+    <p>Market is back on the Vismarkt 🥕 <a>@binnenstad.groningen@cartopolis.org</a></p>
+  </div>
+  <div class="compose"><a>@vismarkt.groningen@cartopolis.org</a> anyone know when the fish stall opens?<small>Mentioning a place posts to it: it appears on the map at the Vismarkt, and in Binnenstad and Groningen.</small></div>
+</div>
+<h2><span>D</span>The same place, from Mastodon <span class="later">later</span></h2>
+<ul>
+  <li>A place is a fediverse <i>group</i> account, as Lemmy communities and Guppe groups already are. Mastodon users follow it and see its posts as boosts.</li>
+  <li>Mentioning the place is how someone outside posts there. No Cartopolis account needed.</li>
+  <li>Nothing about a follower's own location is involved. They choose a place by name.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="bottom">
+  <div><h3>Where the places come from</h3><ul>
+    <li><b>Areas from boundary data</b>: municipality, district and neighbourhood (in the Netherlands, the CBS districts and neighbourhoods; elsewhere OpenStreetMap's administrative boundaries). The building card already shows a building's district.</li>
+    <li><b>Named spots from the map</b>: squares, parks, stations, streets; the same places the map already labels.</li>
+    <li><b>Communities that aren't an official area</b> (#fietsers-groningen) can be created with an outline drawn on the map. They behave the same.</li>
+    <li>A place's community exists from the start, but only really "opens" (gets an actor on the fediverse) after its first post, so there aren't a million empty accounts.</li>
+  </ul></div>
+  <div><h3>What stays the same</h3><ul>
+    <li><b>Private chats</b>: encrypted, never on the fediverse. Points sent there stay there.</li>
+    <li><b>Here</b>: live, nearby avatars, not kept, not federated. Places are the lasting version of "near".</li>
+    <li><b>Nobody's real location is used.</b> You follow a place by choice; a post's position is the point you made, not where your phone is.</li>
+    <li><b>Posting is a point</b>: the ActivityStreams object from the earlier addendum, addressed to the place instead of to a person.</li>
+  </ul></div>
+  <div><h3>Open questions</h3><ul>
+    <li><b>Who moderates a place?</b> The operator at first. Local moderators per area later, perhaps the municipality's own account for official news.</li>
+    <li><b>Handles</b>: <code>@binnenstad.groningen</code> keeps names unique (many towns have a Binnenstad). Needs one naming rule, fixed before the first place federates.</li>
+    <li><b>Seeing a post twice</b> on Mastodon if you follow both the Vismarkt and Binnenstad: inside Cartopolis you see it once; on Mastodon it's up to the app showing the boosts.</li>
+  </ul></div>
+</div>
+</body>
+</html>

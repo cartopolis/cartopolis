@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis chat — v5 addendum: the fediverse</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root { --fedi:#A98BFF; --fedibg:rgba(169,139,255,.14); --lock:#9fd3b4; }
+body { width:1920px; }
+.essence { font-size:26px; line-height:1.3; color:var(--cream); max-width:1400px; margin:16px 0 30px; letter-spacing:-.2px; }
+.essence b { color:var(--fedi); font-weight:inherit; }
+.later { font-size:11px; padding:1px 7px; border-radius:7px; background:var(--fedibg); color:var(--fedi); }
+.shot ul { font-size:14px; }
+
+/* a generic fediverse app, light: not Cartopolis */
+.phone.light { background:#f4f4f7; }
+.phone.light .status { color:#111; }
+.mhdr { height:118px; background:url(dusk.jpg) 55% 60%/700px auto; }
+.mprof { padding:0 16px; margin-top:-34px; }
+.mprof .av { width:72px; height:72px; font-size:26px; border:4px solid #f4f4f7; }
+.mprof h3 { color:#111; font-size:20px; margin-top:6px; }
+.mprof .h { color:#666; font-size:13.5px; }
+.mprof p { color:#222; font-size:14px; margin:8px 0; }
+.mfields { border:1px solid #ddd; border-radius:10px; overflow:hidden; margin:8px 0; }
+.mfields div { display:flex; font-size:12.5px; border-top:1px solid #e6e6ea; }
+.mfields div:first-child { border-top:0; }
+.mfields span { padding:7px 10px; }
+.mfields span:first-child { width:96px; color:#666; background:#fafafc; flex:none; }
+.mfields span:last-child { color:#1a1a1a; }
+.mfields .ok { background:#e9f7ef; }
+.mfields .ok span:last-child { color:#177245; }
+.mstats { display:flex; gap:16px; font-size:13px; color:#666; margin:6px 0 10px; }
+.mstats b { color:#111; font-weight:inherit; }
+.mbtn { background:#5b4bd6; color:#fff; border-radius:10px; text-align:center; padding:9px; font-size:14.5px; }
+.mpost { background:#fff; margin:10px 0 0; border-top:1px solid #e6e6ea; padding:12px 16px; }
+.mpost .hd { display:flex; gap:9px; align-items:center; }
+.mpost .hd .av { width:36px; height:36px; font-size:14px; }
+.mpost .hd b { color:#111; font-weight:inherit; display:block; font-size:14px; }
+.mpost .hd span { color:#777; font-size:12px; }
+.mpost p { color:#222; font-size:14px; margin:6px 0; }
+.mpost p a { color:#5b4bd6; }
+.mpost .img { height:132px; border-radius:10px; background:url(city.jpg) 30% 72%/560px auto; }
+.mpost .loc { color:#777; font-size:12px; margin-top:6px; display:flex; gap:5px; align-items:center; }
+.mpost .acts { display:flex; gap:26px; color:#888; font-size:12.5px; margin-top:8px; }
+
+/* Cartopolis screens */
+.sheetfull { position:absolute; left:0; right:0; top:44px; bottom:0; background:var(--surface); z-index:5; padding:8px 16px; }
+.sheetfull h4 { color:var(--cream); font-size:19px; font-weight:inherit; margin:8px 0 10px; display:flex; gap:10px; align-items:center; }
+.field3 { background:var(--raised); border-radius:12px; padding:11px 12px; font-size:14.5px; color:var(--cream); display:flex; gap:8px; align-items:center; }
+.fprof { margin-top:12px; background:var(--raised); border-radius:16px; overflow:hidden; }
+.fprof .hdr { height:74px; background:url(green.jpg) 40% 30%/600px auto; }
+.fprof .body { padding:0 14px 14px; margin-top:-24px; }
+.fprof .av { width:52px; height:52px; font-size:20px; border:3px solid var(--raised); }
+.fprof b { color:var(--cream); font-weight:inherit; font-size:16px; display:block; margin-top:4px; }
+.fprof .h { color:var(--fedi); font-size:12.5px; }
+.fprof p { color:var(--text); font-size:13.5px; margin:6px 0; }
+.fprof .st { font-size:12.5px; color:var(--dim); display:flex; gap:14px; margin-bottom:10px; }
+.fprof .st b { display:inline; font-size:12.5px; color:var(--text); margin:0; }
+.grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin-top:4px; }
+.grid3 div { height:74px; border-radius:6px; background-size:600px auto; position:relative; }
+.grid3 div i { position:absolute; left:4px; bottom:4px; width:16px; height:16px; border-radius:50%; background:rgba(10,14,16,.7); }
+.fbtn { background:var(--fedi); color:#140d2b; border-radius:12px; text-align:center; padding:10px; font-size:14.5px; }
+.note { font-size:12.5px; color:var(--dim); margin-top:10px; line-height:1.45; }
+.note b { color:var(--text); font-weight:inherit; }
+
+.steps { counter-reset:s; }
+.step { background:var(--raised); border-radius:14px; padding:11px 12px; margin-bottom:10px; }
+.step .t { display:flex; gap:10px; align-items:center; color:var(--cream); font-size:14.5px; }
+.step .t .n { width:24px; height:24px; border-radius:50%; background:var(--fedibg); color:var(--fedi); display:grid; place-items:center; font-size:12.5px; flex:none; }
+.step .t .n.done { background:#23392f; color:var(--lock); }
+.step .d { font-size:12.5px; color:var(--dim); margin:6px 0 0 34px; }
+.copybox { margin:8px 0 0 34px; background:var(--ink); border-radius:10px; padding:8px 10px; font:12px/1.5 ui-monospace, "DejaVu Sans Mono", monospace; color:var(--text); }
+.copybox .l { color:var(--dim); }
+.copybtn { margin:8px 0 0 34px; display:inline-block; background:var(--hover); color:var(--text); border-radius:9px; padding:5px 12px; font-size:12.5px; }
+.okline { margin:6px 0 0 34px; font-size:12.5px; color:var(--lock); display:flex; gap:6px; align-items:center; }
+
+.infohd { display:flex; flex-direction:column; align-items:center; padding:14px 0 10px; }
+.infohd .av { width:76px; height:76px; font-size:28px; }
+.infohd b { color:var(--cream); font-weight:inherit; font-size:19px; margin-top:8px; }
+.infohd span { color:var(--dim); font-size:13px; }
+.lockline { display:flex; gap:8px; align-items:center; justify-content:center; font-size:12.5px; color:var(--lock); margin-bottom:12px; }
+.plist { background:var(--raised); border-radius:14px; overflow:hidden; }
+.plist > div { display:flex; gap:10px; align-items:center; padding:11px 12px; border-top:1px solid var(--gline); font-size:14px; color:var(--cream); }
+.plist > div:first-child { border-top:0; }
+.plist small { display:block; color:var(--dim); font-size:12px; }
+.plist .v { margin-left:auto; font-size:12px; color:var(--lock); display:flex; gap:4px; align-items:center; white-space:nowrap; }
+.plist .v.s { color:var(--dim); }
+.plab { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px; margin:14px 0 6px; }
+
+.flows { display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px; margin-top:52px; }
+.flows > div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.flows h3 { font-size:16px; margin-bottom:8px; }
+.flows li { color:var(--dim); font-size:13.5px; margin:0 0 6px 18px; }
+.flows li b { color:var(--text); font-weight:inherit; }
+.tech { margin-top:24px; background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.tech h3 { color:var(--cream); font-size:16px; margin-bottom:8px; }
+.tech ul { columns:2; column-gap:40px; }
+.tech li { color:var(--dim); font-size:13.5px; margin:0 0 7px 18px; break-inside:avoid; }
+.tech li b { color:var(--text); font-weight:inherit; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="fedi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="20" r="2"/><path d="M6.5 7.3l3.4 2.9M17.5 7.3l-3.4 2.9M12 15v3"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6.2-6.5-11A6.5 6.5 0 0118.5 10c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="mail" viewBox="0 0 24 24"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M4 7l8 6 8-6"/></symbol>
+  <symbol id="key" viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/></symbol>
+</svg>
+
+<h1>Cartopolis chat — <b style="color:var(--fedi)">v5 addendum: the fediverse</b></h1>
+<p class="essence">Yes. With ActivityPub, <b>Cartopolis becomes a fediverse server of its own</b>, the way Pixelfed is one for photos: every account is also <b>@name@cartopolis.org</b>, which anyone on Mastodon can find, follow and reply to. Cartopolis's part in the fediverse is <b>places</b>: it publishes points and shows other people's located posts on the map. It doesn't try to be a general Mastodon app. Private chats stay encrypted and never cross over.</p>
+
+<div class="row">
+
+<!-- A. SEEN FROM MASTODON -->
+<div class="shot">
+<div class="phone light">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="mhdr"></div>
+  <div class="mprof">
+    <div class="av c4">J</div>
+    <h3>Jeroen</h3>
+    <div class="h">@jeroen@cartopolis.org</div>
+    <p>Building a 3D map of the Netherlands you can walk around in.</p>
+    <div class="mfields">
+      <div><span>Map</span><span>cartopolis.org/@jeroen</span></div>
+      <div class="ok"><span>Website</span><span>✓ jeroenvanveen.nl</span></div>
+    </div>
+    <div class="mstats"><span><b>48</b> posts</span><span><b>212</b> followers</span><span><b>90</b> following</span></div>
+    <div class="mbtn">Follow</div>
+  </div>
+  <div class="mpost">
+    <div class="hd"><div class="av c4">J</div><div><b>Jeroen</b><span>@jeroen@cartopolis.org · 2h</span></div></div>
+    <p>Show at the Stadsschouwburg on Saturday. Who's coming? <a>cartopolis.org/go?place=53.2166,6.5708…</a></p>
+    <div class="img"></div>
+    <div class="loc"><svg class="i s"><use href="#pin"/></svg>Stadsschouwburg, Turfsingel 86, Groningen</div>
+    <div class="acts"><span>↩ 3</span><span>⟳ 5</span><span>☆ 21</span></div>
+  </div>
+</div>
+<h2><span>A</span>A Cartopolis account, seen from Mastodon <span class="later">later</span></h2>
+<ul>
+  <li>Anyone on the fediverse can search <i>@jeroen@cartopolis.org</i> and follow. What they get is your <b>public points</b>: text, the picture, and a link that opens the map at the same view.</li>
+  <li>The header can be a render of your favourite spot; the profile links to your page on cartopolis.org.</li>
+  <li>Replies, boosts and likes from Mastodon come back to Cartopolis and show under the point.</li>
+</ul>
+</div>
+
+<!-- B. FOLLOW SOMEONE ON THE FEDIVERSE -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sheetfull">
+    <h4><svg class="i"><use href="#back"/></svg>Find people</h4>
+    <div class="field3"><svg class="i s"><use href="#search"/></svg>@anna@pixelfed.social</div>
+    <div class="fprof">
+      <div class="hdr"></div>
+      <div class="body">
+        <div class="av c3">A</div>
+        <b>Anna de Vries</b>
+        <div class="h">@anna@pixelfed.social · on the fediverse</div>
+        <p>Photos of Groningen, mostly parks and bikes.</p>
+        <div class="st"><span><b>31</b> posts with a place</span><span><b>140</b> without</span></div>
+        <div class="grid3">
+          <div style="background-image:url(green.jpg);background-position:30% 40%"><i></i></div>
+          <div style="background-image:url(route.jpg);background-position:60% 30%"><i></i></div>
+          <div style="background-image:url(dusk.jpg);background-position:50% 70%"><i></i></div>
+        </div>
+      </div>
+    </div>
+    <div class="fbtn" style="margin-top:12px">Follow</div>
+    <p class="note"><b>Her 31 posts with a place</b> will appear on your map, in the Following layer. Posts without a place don't: Cartopolis isn't a timeline app. You can't start a private chat with her here: fediverse messages aren't encrypted.</p>
+  </div>
+</div>
+<h2><span>B</span>Following someone from the fediverse <span class="later">later</span></h2>
+<ul>
+  <li>Search a fediverse address, see how many of their posts have a place, and follow.</li>
+  <li>Those posts then sit on the map where they were made. Replies go back out as ordinary fediverse replies.</li>
+  <li>A Mastodon post that contains a Cartopolis link has a place too (the link carries the coordinates), so it can be pinned even though Mastodon itself has no location feature.</li>
+</ul>
+</div>
+
+<!-- C. PROVE YOUR KEY WITH A FEDIVERSE ACCOUNT -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sheetfull">
+    <h4><svg class="i"><use href="#back"/></svg>Prove it's you</h4>
+    <div class="steps">
+      <div class="step"><div class="t"><span class="n done">✓</span>Your fediverse account</div>
+        <div class="d">@jeroen@mastodon.nl</div></div>
+      <div class="step"><div class="t"><span class="n">2</span>Add this to its profile</div>
+        <div class="d">In Mastodon: Edit profile → Extra fields. Add a field:</div>
+        <div class="copybox"><span class="l">Label</span>&nbsp; Cartopolis<br><span class="l">Content</span> https://cartopolis.org/@jeroen<br><span class="l">&nbsp;</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;key 4F2A 9C1B 77E0 D3A5</div>
+        <div class="copybtn">Copy</div></div>
+      <div class="step"><div class="t"><span class="n done">✓</span>Checked</div>
+        <div class="okline"><svg class="i s"><use href="#check"/></svg>Your phone read your Mastodon profile and found the key.</div>
+        <div class="okline"><svg class="i s"><use href="#check"/></svg>Mastodon shows the link as verified too.</div></div>
+    </div>
+    <p class="note"><b>Why this works:</b> only you can edit your Mastodon profile, and mastodon.nl is run by different people from Cartopolis. Each of your contacts' phones reads that profile directly, so Cartopolis couldn't fake it even if it wanted to. The profile must be on another server: a proof on your own @cartopolis.org profile would prove nothing about Cartopolis.</p>
+  </div>
+</div>
+<h2><span>C</span>A fediverse proof: the main way to verify</h2>
+<ul>
+  <li>Link any fediverse account you already have. The field holds a link back to Cartopolis and your key's fingerprint.</li>
+  <li>Mastodon already checks profile links (the green tick), so the same field is verified on both sides.</li>
+  <li>This works before Cartopolis joins the fediverse itself: reading a public profile needs no federation.</li>
+</ul>
+</div>
+
+<!-- D. WHAT A CONTACT SEES -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sheetfull">
+    <h4><svg class="i"><use href="#back"/></svg></h4>
+    <div class="infohd"><div class="av c1 ring">S</div><b>Sanne</b><span>@sanne@cartopolis.org</span></div>
+    <div class="lockline"><svg class="i s"><use href="#lock"/></svg>Chat is end-to-end encrypted</div>
+    <div class="plab">Proven by her own accounts</div>
+    <div class="plist">
+      <div><svg class="i s" style="color:var(--fedi)"><use href="#fedi"/></svg><div>@sanne@mastodon.nl<small>profile names her key · checked now</small></div><span class="v"><svg class="i s"><use href="#check"/></svg>your phone</span></div>
+      <div><svg class="i s" style="color:var(--fedi)"><use href="#fedi"/></svg><div>@sanne@pixelfed.social<small>profile names her key · 2 days ago</small></div><span class="v"><svg class="i s"><use href="#check"/></svg>your phone</span></div>
+    </div>
+    <div class="plab">Confirmed by Cartopolis</div>
+    <div class="plist">
+      <div><svg class="i s"><use href="#mail"/></svg><div>Email verified<small>address not shown</small></div><span class="v s">trusts the server</span></div>
+    </div>
+    <div class="plab">Her devices</div>
+    <div class="plist">
+      <div><svg class="i s"><use href="#key"/></svg><div>2 phones, 1 laptop<small>all signed by her account key</small></div><span class="v"><svg class="i s"><use href="#check"/></svg>no changes</span></div>
+    </div>
+  </div>
+</div>
+<h2><span>D</span>What her contacts see</h2>
+<ul>
+  <li>Fediverse proofs come first and say who checked them: <i>your phone</i>, not the server.</li>
+  <li>Email stays as a weaker, clearly labelled proof, and the address itself is never shown.</li>
+  <li>If her key changes and a proof no longer matches, the proof turns red and the chat shows a warning.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="flows">
+  <div><h3 style="color:var(--fedi)">Goes out to the fediverse</h3><ul>
+    <li><b>Points you post publicly</b>, with picture, place and a map link</li>
+    <li><b>Your public profile</b>: name, picture, bio, links</li>
+    <li><b>Your replies</b> to fediverse posts</li>
+    <li><b>Deletes</b> when you delete a post or your account</li></ul></div>
+  <div><h3 style="color:var(--fedi)">Comes in from the fediverse</h3><ul>
+    <li><b>Follows</b> of your account (you can choose to approve them)</li>
+    <li><b>Replies, boosts and likes</b> on your points</li>
+    <li><b>Posts with a place</b> from people you follow, onto the map</li>
+    <li><b>Reports</b> from other servers about your users, and yours to them</li></ul></div>
+  <div><h3 style="color:var(--lock)">Never crosses over</h3><ul>
+    <li><b>Private chats</b> and everything in them: points, pictures, shared real locations</li>
+    <li><b>Avatars, voice, nearby chat</b>: real-time, and run by the simulator</li>
+    <li><b>Your real location</b>, in any form</li>
+    <li><b>Who you chat with</b> inside Cartopolis</li></ul></div>
+</div>
+
+<div class="tech">
+  <h3>What it takes on the server</h3>
+  <ul>
+    <li><b>An address for every account</b>: WebFinger at <code>cartopolis.org/.well-known/webfinger</code>, so <i>@jeroen@cartopolis.org</i> resolves. Caddy routes it to the simulator, like <code>/api</code> today.</li>
+    <li><b>An "actor" per account</b>: a public profile document with an inbox and an outbox. The server signs everything it sends with a per-account server key, which is separate from the encryption keys and never touches private chats.</li>
+    <li><b>An outgoing queue with retries</b>: posting to 200 followers on 60 servers is 60 deliveries, some of which fail and must be retried. It runs beside the simulator's tick loop, never on it.</li>
+    <li><b>An incoming inbox</b> that checks each delivery's signature, then stores replies, follows and located posts.</li>
+    <li><b>A picture proxy</b>: phones fetch fediverse pictures through Cartopolis, so a remote server never learns a Cartopolis user's IP address from a map pin.</li>
+    <li><b>Server-level moderation</b>: block whole servers, filter incoming posts with the same word filter, send and receive reports (ActivityPub's <code>Flag</code>).</li>
+    <li><b>A library, not our own implementation</b>: <code>activitypub_federation</code> (from the Lemmy project) handles signatures, WebFinger and fetching, and has an axum integration; the simulator's HTTP side is already axum. To be checked before relying on it.</li>
+    <li><b>Order</b>: the fediverse <i>proof</i> (C) needs none of this and can ship with encrypted chat. Following and posting come later, as their own step.</li>
+  </ul>
+</div>
+</body>
+</html>

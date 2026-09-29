@@ -398,6 +398,7 @@ arrived when the block was made, which the server cannot retract.
 
 - `docs/guides/development.md` — contributor guide: dev loop, tests, code map, conventions, config, CI
 - `docs/notes/` — **standing facts** the code and `git log` don't hold: measurements (with date and method), rejected options (with the reason they lost), external-world constraints, directions abandoned without a diff. One file per topic with `triggers:` front-matter; edited in place when a fact stops being true. `docs/notes/README.md` has the format
+- `docs/mockups/` — **screen designs** drawn before a feature is built, one folder per topic with an HTML source and a rendered PNG per version; same `triggers:` front-matter as a note. `docs/mockups/README.md` has the format
 - `docs/adr/`, `docs/abstract/` — **frozen archive** of the numbered ADR log and its abstract layer, retired 2026-07-26 (`docs/notes/retired/adr-system.md` says why). Read for history; **do not add to them or re-propose the form**
 
 **Where a fact goes:** explains this diff → the commit body, required for `feat`/`fix`/`perf` and any 5+-file commit (`.claude/skills/commit`); constrains all future work → a note; a code change would falsify it → a comment next to the code.

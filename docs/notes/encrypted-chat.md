@@ -10,7 +10,7 @@ Direct messages and private groups are sealed with **MLS** (RFC 9420) on the
 devices. The simulator stores and delivers the sealed bytes and cannot open
 them: it does not link `cartopolis_e2ee`, the only crate that could (the
 simulator's *tests* link it, to drive real devices). Design and screens:
-`docs/design/chat-world/` on the `design/chat-world-mockup` branch.
+`docs/mockups/chat-world/`.
 
 ## What the server can and cannot see
 

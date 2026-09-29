@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis chat — v5 addendum: who can read it</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root { --gps:#4FB2FF; --fedi:#A98BFF; --fedibg:rgba(169,139,255,.14); --lock:#9fd3b4; }
+body { width:1500px; }
+.essence { font-size:26px; line-height:1.3; color:var(--cream); max-width:1250px; margin:16px 0 28px; letter-spacing:-.2px; }
+.essence b { color:var(--brand); font-weight:inherit; }
+.tiers { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-bottom:44px; }
+.tiers > div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.tiers h3 { font-size:17px; margin-bottom:4px; display:flex; gap:8px; align-items:center; }
+.tiers .sub { font-size:13px; color:var(--dim); margin-bottom:10px; }
+.tiers li { color:var(--dim); font-size:13.5px; margin:0 0 4px 18px; }
+.tiers li b { color:var(--text); font-weight:inherit; }
+.t1 h3 { color:var(--lock); } .t2 h3 { color:var(--cream); } .t3 h3 { color:var(--fedi); }
+.later { font-size:11px; padding:1px 7px; border-radius:7px; background:var(--fedibg); color:var(--fedi); }
+.shot ul { font-size:14px; }
+
+/* send row with reach marks */
+.wcard { position:absolute; left:10px; right:10px; bottom:88px; z-index:6; background:var(--glass); backdrop-filter:blur(16px); border:1px solid var(--gline); border-radius:20px; padding:12px 14px; }
+.wcard .hd b { font-size:17px; color:var(--cream); font-weight:inherit; display:block; }
+.wcard .hd span { font-size:12.5px; color:var(--dim); }
+.facts { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 12px; }
+.facts div { font-size:12px; padding:3px 9px; border-radius:9px; background:var(--raised); color:var(--text); }
+.sendto { border-top:1px solid var(--gline); padding-top:10px; }
+.sendto .lab { font-size:12px; color:var(--dim); margin-bottom:8px; }
+.strip { display:flex; gap:10px; }
+.strip > div { text-align:center; font-size:11px; color:var(--dim); width:52px; position:relative; }
+.strip .av { margin:0 auto 4px; width:44px; height:44px; font-size:16px; }
+.mark { position:absolute; top:28px; right:2px; width:19px; height:19px; border-radius:50%; display:grid; place-items:center; border:2px solid var(--ink); }
+.mark svg { width:11px; height:11px; stroke-width:2.4; }
+.mark.l { background:#23392f; color:var(--lock); }
+.mark.p { background:var(--hover); color:var(--cream); }
+.mark.f { background:#3a2f5c; color:var(--fedi); }
+.strip .post .av { background:var(--fedibg); border:1.5px dashed var(--fedi); color:var(--fedi); }
+.strip .post { color:var(--fedi); }
+.strip > .sep { width:1px; background:var(--gline); margin:0 2px; flex:none; }
+.glassbld { position:absolute; z-index:2; background:rgba(199,211,216,.28); border:2px solid rgba(243,247,249,.9); }
+.disc { width:44px; height:44px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); backdrop-filter:blur(10px); }
+.dock { position:absolute; left:50%; transform:translateX(-50%); bottom:30px; z-index:6; display:flex; gap:10px; }
+.topseg { position:absolute; top:52px; left:70px; right:70px; z-index:5; }
+.seg.glass { background:var(--glass); backdrop-filter:blur(12px); }
+.thead .who span.lk { color:var(--lock); }
+
+/* post confirm */
+.scrim { position:absolute; inset:0; background:rgba(0,0,0,.6); z-index:6; }
+.bigsheet { position:absolute; left:0; right:0; bottom:0; z-index:7; background:var(--surface); border-top-left-radius:26px; border-top-right-radius:26px; padding:0 16px 30px; border-top:1px solid var(--gline); }
+.bigsheet h4 { font-size:18px; color:var(--cream); margin:2px 0 4px; font-weight:inherit; }
+.bigsheet .sub { color:var(--dim); font-size:13px; margin-bottom:12px; }
+.fpost { background:#fff; color:#1a1a1a; border-radius:14px; overflow:hidden; }
+.fpost .hd { display:flex; gap:9px; align-items:center; padding:10px 12px 6px; }
+.fpost .hd .av { width:36px; height:36px; font-size:14px; }
+.fpost .hd b { display:block; font-weight:inherit; font-size:14px; }
+.fpost .hd span { font-size:12px; color:#666; }
+.fpost p { padding:0 12px 8px; font-size:14px; }
+.fpost p a { color:#5b4bd6; }
+.fpost .img { height:120px; background:url(city.jpg) 30% 72%/560px auto; }
+.fpost .loc { font-size:12px; color:#666; padding:7px 12px 9px; display:flex; gap:5px; align-items:center; }
+.warn { margin-top:12px; background:var(--fedibg); border:1px solid rgba(169,139,255,.4); border-radius:12px; padding:9px 11px; font-size:12.5px; color:var(--text); display:flex; gap:9px; }
+.warn b { color:var(--fedi); font-weight:inherit; }
+.bigbtn { margin-top:12px; background:var(--fedi); color:#140d2b; border-radius:14px; text-align:center; padding:12px; font-size:15px; }
+.aud { display:flex; gap:8px; margin-top:10px; }
+.aud div { flex:1; text-align:center; padding:8px 4px; border-radius:10px; font-size:12.5px; background:var(--raised); color:var(--dim); border:1px solid var(--gline); }
+.aud .on { background:var(--fedibg); color:var(--fedi); border-color:var(--fedi); }
+
+/* following layer */
+.fpin { position:absolute; z-index:4; transform:translate(-50%,-100%); display:flex; flex-direction:column; align-items:center; }
+.fpin .head { display:flex; align-items:center; gap:7px; background:#fff; color:var(--ink); border-radius:12px; padding:4px 9px 4px 4px; font-size:12px; box-shadow:0 6px 16px rgba(0,0,0,.35); border:2px solid var(--fedi); }
+.fpin .th { width:30px; height:30px; border-radius:8px; background-size:cover; flex:none; }
+.fpin .head small { display:block; color:#666; font-size:10.5px; }
+.fpin .stem { width:2px; height:14px; background:var(--fedi); }
+.layerchip { position:absolute; z-index:5; left:12px; top:112px; background:var(--glass); border:1px solid rgba(169,139,255,.5); border-radius:14px; padding:6px 10px; font-size:12.5px; color:var(--fedi); display:flex; gap:7px; align-items:center; backdrop-filter:blur(10px); }
+.pcard { position:absolute; left:10px; right:10px; bottom:88px; z-index:6; background:var(--glass); backdrop-filter:blur(16px); border:1px solid rgba(169,139,255,.45); border-radius:20px; padding:12px 14px; }
+.pcard .hd { display:flex; gap:9px; align-items:center; }
+.pcard .hd b { color:var(--cream); font-weight:inherit; display:block; font-size:14.5px; }
+.pcard .hd span { color:var(--fedi); font-size:12px; }
+.pcard p { color:var(--text); font-size:13.5px; margin:8px 0; }
+.pcard .rep { font-size:12.5px; color:var(--dim); border-top:1px solid var(--gline); padding-top:8px; }
+.btnrow { display:flex; gap:8px; margin-top:10px; }
+.btnrow div { flex:1; text-align:center; padding:8px 4px; border-radius:10px; font-size:13px; background:var(--hover); color:var(--text); display:flex; justify-content:center; gap:5px; align-items:center; }
+.btnrow .pw { background:var(--accent); color:var(--ink); }
+
+.two { display:grid; grid-template-columns:1.05fr 1fr; gap:24px; margin-top:52px; }
+.two > div { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:18px 20px; }
+.two h3 { color:var(--cream); font-size:16px; margin-bottom:8px; }
+.two p.c { color:var(--dim); font-size:13.5px; margin-bottom:10px; }
+pre { background:var(--ink); border-radius:12px; padding:14px 16px; font:12.5px/1.5 ui-monospace, "DejaVu Sans Mono", monospace; color:var(--text); white-space:pre; }
+pre .k { color:#8fc1e3; } pre .s { color:#c9d8a4; } pre .c { color:var(--line); } pre .x { color:var(--brand); }
+.two ol { margin-left:20px; }
+.two li { color:var(--dim); font-size:13.5px; margin-bottom:8px; }
+.two li b { color:var(--text); font-weight:inherit; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="plane" viewBox="0 0 24 24"><path d="M3 13l18-7-7 18-2.5-8.5z"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.3"/><path d="M3.5 19a5.5 5.5 0 0111 0M14.5 19a4 4 0 016.5-3"/></symbol>
+  <symbol id="fedi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="20" r="2"/><path d="M6.5 7.3l3.4 2.9M17.5 7.3l-3.4 2.9M12 15v3"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6.2-6.5-11A6.5 6.5 0 0118.5 10c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="reply" viewBox="0 0 24 24"><path d="M10 7L4 12l6 5M4 12h10a6 6 0 016 6"/></symbol>
+</svg>
+
+<h1>Cartopolis chat — <b>v5 addendum: who can read it</b></h1>
+<p class="essence">Every chat, and so every point, has one of three reaches, and the app always shows which: <b>private</b> (end-to-end encrypted), <b>public in Cartopolis</b>, or <b>a public post</b> on the fediverse through ActivityPub, <i style="font-style:normal;color:var(--fedi)">later</i>. A point is stored as an ActivityPub object from day one, so the same point can go into an encrypted chat now and into a public post later without being redesigned.</p>
+
+<div class="tiers">
+  <div class="t1"><h3><svg class="i s"><use href="#lock"/></svg>Private</h3><div class="sub">Direct messages and private groups</div><ul>
+    <li><b>End-to-end encrypted</b>: the server passes messages on and stores them, but can't read them.</li>
+    <li>Points, their pictures and shared real locations only ever go here.</li>
+    <li><b>Never federated.</b> ActivityPub direct messages aren't encrypted, so they stay out of this list.</li></ul></div>
+  <div class="t2"><h3><svg class="i s"><use href="#people"/></svg>Public in Cartopolis</h3><div class="sub">Here (nearby), Global, public rooms</div><ul>
+    <li><b>Not encrypted.</b> The server decides who hears a nearby message by where they stand.</li>
+    <li>Avatars, voice and emotes live here too, run by the simulator as today.</li>
+    <li><b>Not federated.</b> None of this is real-time-capable over ActivityPub, and it shouldn't be.</li></ul></div>
+  <div class="t3"><h3><svg class="i s"><use href="#fedi"/></svg>Public post <span class="later">later</span></h3><div class="sub">The fediverse: Mastodon, Pixelfed and others</div><ul>
+    <li>A point posted publicly as <b>@you@cartopolis.org</b>. Anyone can see it, follow you and reply.</li>
+    <li>Posts from people you follow that carry a location show up <b>on the map</b>.</li>
+    <li>Only a point you choose to post. Never your real location, never automatically.</li></ul></div>
+</div>
+
+<div class="row">
+
+<!-- A. SEND ROW WITH REACH -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(city.jpg); background-position:30% 72%; background-size:auto 1700px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="topseg"><div class="seg glass"><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="glassbld" style="left:160px;top:250px;width:120px;height:92px;transform:skew(-14deg,-6deg);border-radius:4px"></div>
+  <div class="wcard">
+    <div class="hd"><b>Stadsschouwburg</b><span>Turfsingel 86 · 1883 · theatre · 350 m</span></div>
+    <div class="facts"><div>Rijksmonument</div><div>4 storeys</div><div>2 addresses</div></div>
+    <div class="sendto">
+      <div class="lab">Send to a chat</div>
+      <div class="strip">
+        <div><div class="av c1">S</div><span class="mark l"><svg class="i"><use href="#lock"/></svg></span>Sanne</div>
+        <div><div class="av c6 room">🏡</div><span class="mark l"><svg class="i"><use href="#lock"/></svg></span>Family</div>
+        <div><div class="av here-disc room" style="font-size:12px">here</div><span class="mark p"><svg class="i"><use href="#people"/></svg></span>Here</div>
+        <div class="sep"></div>
+        <div class="post"><div class="av"><svg class="i"><use href="#fedi"/></svg></div>Post</div>
+      </div>
+    </div>
+  </div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+  </div>
+</div>
+<h2><span>A</span>Every destination shows its reach</h2>
+<ul>
+  <li>v5's send row, with a small mark on each chat: a green lock for private, a people mark for public in Cartopolis.</li>
+  <li><i>Post</i> sits apart at the end, in its own colour, and always asks first (B).</li>
+  <li>The same marks appear in the chat list and in every chat header.</li>
+</ul>
+</div>
+
+<!-- B. POST CONFIRM -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(city.jpg); background-position:30% 72%; background-size:auto 1700px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="scrim"></div>
+  <div class="bigsheet">
+    <div class="handle"></div>
+    <h4>Post publicly</h4>
+    <div class="sub">This is how it will look on Mastodon and other fediverse apps.</div>
+    <div class="fpost">
+      <div class="hd"><div class="av c4">J</div><div><b>Jeroen</b><span>@jeroen@cartopolis.org · now</span></div></div>
+      <p>Show at the Stadsschouwburg on Saturday. Who's coming? <a>cartopolis.org/go?place=53.2166,6.5708,120m…</a></p>
+      <div class="img"></div>
+      <div class="loc"><svg class="i s"><use href="#pin"/></svg>Stadsschouwburg, Turfsingel 86, Groningen</div>
+    </div>
+    <div class="aud"><div class="on">Public</div><div>Followers only</div></div>
+    <div class="warn"><svg class="i s" style="color:var(--fedi);flex:none"><use href="#fedi"/></svg><span><b>Anyone can see this</b>, and copies stay on other servers even if you delete it. It shows the place you pointed at, <b>not where you are</b>.</span></div>
+    <div class="bigbtn">Post</div>
+  </div>
+</div>
+<h2><span>B</span>Posting a point <span class="later">later</span></h2>
+<ul>
+  <li>Outside Cartopolis the post is ordinary text, the picture and a link that opens the web client at the same view.</li>
+  <li>Apps that read the post's location can put it on their own map.</li>
+  <li>The warning is honest about the fediverse: deleting sends a delete request, but other servers may keep copies.</li>
+</ul>
+</div>
+
+<!-- C. FOLLOWING ON THE MAP -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:44% 0; background-size:auto 900px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="topseg"><div class="seg glass"><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="layerchip"><svg class="i s"><use href="#fedi"/></svg>Following · 3 posts here</div>
+  <div class="fpin" style="left:120px;top:300px"><div class="head"><div class="th" style="background-image:url(green.jpg);background-position:40% 30%"></div><div>@anna<small>pixelfed.social · 2 h</small></div></div><div class="stem"></div></div>
+  <div class="fpin" style="left:285px;top:250px"><div class="head"><div class="th" style="background-image:url(dusk.jpg);background-position:60% 60%"></div><div>@groningen<small>mastodon.nl · 1 d</small></div></div><div class="stem"></div></div>
+  <div class="fpin" style="left:210px;top:420px"><div class="head"><div class="th" style="background-image:url(city.jpg);background-position:30% 72%"></div><div>@jeroen<small>you · 3 replies</small></div></div><div class="stem"></div></div>
+  <div class="pcard">
+    <div class="hd"><div class="av sm c3">A</div><div><b>Anna</b><span>@anna@pixelfed.social · 2 h</span></div></div>
+    <p>First warm evening in the Noorderplantsoen 🌳</p>
+    <div class="rep"><svg class="i s" style="vertical-align:-3px"><use href="#reply"/></svg> 4 replies · posted from outside Cartopolis</div>
+    <div class="btnrow"><div class="pw"><svg class="i s"><use href="#eye"/></svg>Look here</div><div><svg class="i s"><use href="#reply"/></svg>Reply</div><div><svg class="i s"><use href="#chat"/></svg>Send to chat</div></div>
+  </div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#plane"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+  </div>
+</div>
+<h2><span>C</span>The fediverse on the map <span class="later">later</span></h2>
+<ul>
+  <li>A <i>Following</i> map layer (it goes in the existing Layers menu): posts with a location from people you follow, including people on Mastodon or Pixelfed, pinned where they were posted.</li>
+  <li>A post from outside has no camera view, so <i>Look here</i> uses a default angle over the spot.</li>
+  <li>Replies go back out as ordinary fediverse replies.</li>
+</ul>
+</div>
+
+</div>
+
+<div class="two">
+  <div>
+    <h3>A point, stored as an ActivityPub object from day one</h3>
+    <p class="c">The same object is the encrypted payload of a private message now, and the body of a public post later. Only the Cartopolis-specific camera view is an extension; everything else is standard ActivityStreams, which already has <code>Place</code> with latitude and longitude.</p>
+<pre>{
+  <span class="k">"type"</span>: <span class="s">"Note"</span>,
+  <span class="k">"content"</span>: <span class="s">"Show at the Stadsschouwburg on Saturday?"</span>,
+  <span class="k">"location"</span>: {
+    <span class="k">"type"</span>: <span class="s">"Place"</span>,
+    <span class="k">"name"</span>: <span class="s">"Stadsschouwburg, Turfsingel 86"</span>,
+    <span class="k">"latitude"</span>: 53.2166, <span class="k">"longitude"</span>: 6.5708
+  },
+  <span class="k">"attachment"</span>: [{ <span class="k">"type"</span>: <span class="s">"Image"</span>, <span class="k">"url"</span>: <span class="s">"…/view.jpg"</span> }],
+  <span class="k">"url"</span>: <span class="s">"https://cartopolis.org/go?place=53.2166,6.5708,120m,-35,40"</span>,
+  <span class="x">"cartopolis:view"</span>: { <span class="k">"altitude"</span>: 120, <span class="k">"pitch"</span>: -35, <span class="k">"heading"</span>: 40 }
+}
+<span class="c">// private: this whole object is encrypted, and the image is an encrypted
+// attachment whose key travels inside it. public: it is sent as-is.</span></pre>
+  </div>
+  <div>
+    <h3>Decide now, so ActivityPub is cheap later</h3>
+    <ol>
+      <li><b>Store points as ActivityStreams objects</b>, as on the left. Converting a home-made format later means converting every stored point, and encrypted ones can only be converted on the phones.</li>
+      <li><b>Fix the address: <code>@name@cartopolis.org</code>.</b> Moving a fediverse account to another domain breaks followers' links, so choose the domain before anyone federates. Usernames of deleted accounts are never reused.</li>
+      <li><b>Every chat carries its reach</b> (private, public in Cartopolis, public post) as data, not as a label drawn in one screen. The marks in A read from it.</li>
+      <li><b>Nothing real-time goes over ActivityPub.</b> Avatars, voice, nearby chat and location sharing stay on the simulator's own connection. ActivityPub delivers posts in seconds, over HTTP, and that's what it's for.</li>
+      <li><b>Private chats never become fediverse direct messages</b>, which aren't encrypted. If encrypted chat across servers is wanted one day, there is work in the W3C Social Web group on carrying the same encryption (MLS) over ActivityPub; the design leaves room for it but doesn't depend on it.</li>
+      <li><b>Moderation grows a remote side</b>: blocking whole servers, and passing reports to the server a post came from (ActivityPub has a <code>Flag</code> activity for this). Today's report path is where it hooks in.</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

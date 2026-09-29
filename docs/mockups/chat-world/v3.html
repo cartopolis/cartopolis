@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis chat — v3</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root { --gps:#4FB2FF; --gpsbg:rgba(79,178,255,.16); }
+.principles { grid-template-columns:repeat(4,1fr); }
+.principles i.g { color:var(--gps); }
+.row + .row { margin-top:56px; }
+
+/* the two presence marks */
+.gpsdot { position:absolute; z-index:3; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center; }
+.gpsdot .ring { width:46px; height:46px; border-radius:50%; background:var(--gpsbg); border:2px solid rgba(79,178,255,.6); display:grid; place-items:center; }
+.gpsdot .core { width:18px; height:18px; border-radius:50%; background:var(--gps); border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.4); }
+.gpsdot .name { margin-top:2px; font-size:11.5px; color:#fff; background:rgba(10,14,16,.8); padding:1px 7px; border-radius:8px; white-space:nowrap; }
+.gpsdot .name b { color:var(--gps); font-weight:inherit; }
+.mk .name b { color:var(--brand); font-weight:inherit; }
+
+/* persistent "you are sharing" pill: never hidden while a share is on */
+.sharepill { position:absolute; top:44px; left:50%; transform:translateX(-50%); z-index:9; background:var(--gps); color:#06121c; font-size:12px; padding:4px 10px 4px 8px; border-radius:14px; display:flex; gap:5px; align-items:center; white-space:nowrap; }
+.sharepill svg { width:14px; height:14px; }
+.status.pill .notch { display:none; }
+
+/* current map chrome */
+.disc { width:44px; height:44px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); backdrop-filter:blur(10px); }
+.disc.on { background:var(--accent); color:var(--ink); }
+.leftcol { position:absolute; left:12px; z-index:4; display:flex; flex-direction:column; gap:10px; }
+.dock { position:absolute; left:50%; transform:translateX(-50%); bottom:30px; z-index:6; display:flex; gap:10px; }
+.modechip { position:absolute; right:12px; z-index:4; display:flex; background:var(--glass); border:1px solid var(--gline); border-radius:12px; padding:3px; backdrop-filter:blur(10px); }
+.modechip div { padding:5px 9px; font-size:12px; color:var(--dim); border-radius:9px; display:flex; gap:4px; align-items:center; }
+.modechip .on { background:var(--accent); color:var(--ink); }
+.seg.glass { background:var(--glass); backdrop-filter:blur(12px); }
+.topseg { position:absolute; top:80px; left:70px; right:70px; z-index:5; }
+.me-chip { position:absolute; z-index:4; left:12px; background:var(--glass); border:1px solid var(--gline); border-radius:14px; padding:6px 8px 6px 10px; font-size:12.5px; color:var(--text); display:flex; gap:8px; align-items:center; backdrop-filter:blur(10px); }
+.me-chip .btn { background:var(--brand); color:#fff; border-radius:9px; padding:3px 9px; }
+
+/* presence lines in a chat header */
+.pres { display:flex; flex-direction:column; gap:1px; }
+.pres span { font-size:11.5px; display:flex; gap:5px; align-items:center; }
+.pres .a { color:var(--brand); }
+.pres .g { color:var(--gps); }
+.gdot { width:7px; height:7px; border-radius:50%; background:var(--gps); box-shadow:0 0 0 3px rgba(79,178,255,.25); flex:none; }
+
+/* live location card */
+.lcard { align-self:flex-start; width:262px; background:var(--raised); border-radius:18px; border-bottom-left-radius:6px; overflow:hidden; border:1px solid rgba(79,178,255,.35); }
+.lcard .img { height:108px; background:url(route.jpg) 40% 55%/700px auto; position:relative; }
+.lcard .meta { padding:9px 12px 2px; }
+.lcard .meta b { color:var(--cream); font-weight:inherit; display:block; }
+.lcard .meta span { color:var(--dim); font-size:12px; }
+.lcard .meta .who { color:var(--gps); }
+.btnrow { display:flex; gap:8px; margin:8px 12px 12px; }
+.btnrow div { flex:1; text-align:center; padding:7px; border-radius:10px; font-size:13px; background:var(--hover); color:var(--text); display:flex; justify-content:center; gap:5px; align-items:center; }
+.btnrow .pb { background:var(--gps); color:#06121c; }
+.btnrow .po { background:var(--brand); color:#fff; }
+.btnrow .pw { background:var(--accent); color:var(--ink); }
+.sharebar { align-self:stretch; background:var(--gpsbg); border:1px solid rgba(79,178,255,.35); border-radius:12px; padding:8px 10px; font-size:12.5px; color:var(--text); display:flex; gap:8px; align-items:center; }
+.sharebar b { color:var(--gps); font-weight:inherit; }
+.sharebar a { margin-left:auto; color:var(--gps); }
+
+/* share sheet */
+.scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:6; }
+.bigsheet { position:absolute; left:0; right:0; bottom:0; z-index:7; background:var(--surface); border-top-left-radius:26px; border-top-right-radius:26px; padding:0 18px 30px; border-top:1px solid var(--gline); }
+.bigsheet h4 { font-size:19px; color:var(--cream); margin:4px 0 4px; font-weight:inherit; }
+.bigsheet .sub { color:var(--dim); font-size:13px; margin-bottom:14px; }
+.bigsheet .sub b { color:var(--gps); font-weight:inherit; }
+.lab { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px; margin:12px 0 6px; }
+.pick { display:flex; align-items:center; gap:10px; padding:7px 0; }
+.pick .t { flex:1; color:var(--cream); font-size:14.5px; }
+.pick .t small { display:block; color:var(--dim); font-size:12px; }
+.pick .t small.warn { color:var(--amber); }
+.chk { width:24px; height:24px; border-radius:7px; border:2px solid var(--line); display:grid; place-items:center; }
+.chk.on { background:var(--gps); border-color:var(--gps); color:#06121c; }
+.pills { display:flex; gap:8px; }
+.pills div { flex:1; text-align:center; padding:8px 4px; border-radius:10px; font-size:13px; background:var(--raised); color:var(--dim); border:1px solid var(--gline); }
+.pills .on { background:var(--gpsbg); color:var(--gps); border-color:var(--gps); }
+.preview { margin-top:14px; background:var(--raised); border-radius:12px; padding:10px 12px; font-size:13px; color:var(--text); display:flex; gap:10px; }
+.preview b { color:var(--gps); font-weight:inherit; }
+.bigbtn { margin-top:14px; background:var(--gps); color:#06121c; border-radius:14px; text-align:center; padding:12px; font-size:15.5px; }
+
+/* route sheet (today's panel, plus two fields and a button) */
+.rsheet { position:absolute; left:10px; right:10px; bottom:88px; z-index:6; background:var(--glass); backdrop-filter:blur(16px); border:1px solid var(--gline); border-radius:20px; padding:4px 12px 12px; }
+.field2 { display:flex; align-items:center; gap:10px; background:var(--raised); border-radius:12px; padding:8px 10px; font-size:13.5px; color:var(--text); margin-bottom:6px; }
+.field2 small { color:var(--dim); font-size:11.5px; display:block; }
+.field2 .x { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.modes { display:flex; gap:6px; margin:8px 0; }
+.modes div { flex:1; display:flex; justify-content:center; align-items:center; gap:5px; padding:6px; border-radius:9px; font-size:13px; color:var(--text); border:1px solid var(--gline); }
+.modes .on { background:var(--accent); color:var(--ink); border-color:transparent; }
+.eta { display:flex; align-items:baseline; gap:8px; margin:2px 2px 8px; }
+.eta b { font-size:22px; color:var(--cream); font-weight:inherit; }
+.eta span { color:var(--dim); font-size:13px; }
+.suggest { display:flex; gap:6px; margin:2px 0 8px; overflow:hidden; }
+.suggest div { font-size:12px; padding:4px 9px; border-radius:10px; background:var(--raised); color:var(--dim); white-space:nowrap; display:flex; gap:5px; align-items:center; }
+
+/* driving */
+.turn { position:absolute; top:76px; left:10px; right:10px; z-index:5; background:#1d6b3f; border-radius:18px; padding:12px 14px; display:flex; gap:12px; align-items:center; color:#fff; }
+.turn b { font-size:24px; font-weight:inherit; display:block; }
+.turn span { font-size:14px; opacity:.9; }
+.drivebar { position:absolute; left:0; right:0; bottom:0; z-index:6; background:var(--surface); border-top-left-radius:22px; border-top-right-radius:22px; padding:12px 16px 30px; border-top:1px solid var(--gline); }
+.drivebar .top2 { display:flex; align-items:center; gap:12px; }
+.drivebar .top2 b { font-size:22px; color:var(--cream); font-weight:inherit; }
+.drivebar .top2 span { color:var(--dim); font-size:13px; }
+.drivebar .end { margin-left:auto; background:#5a2a24; color:#ffb4a8; padding:8px 14px; border-radius:12px; font-size:14px; }
+.etashare { margin-top:10px; display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text); background:var(--gpsbg); border:1px solid rgba(79,178,255,.35); border-radius:12px; padding:7px 10px; }
+.etashare b { color:var(--gps); font-weight:inherit; }
+.toggle { margin-left:auto; width:36px; height:21px; border-radius:11px; background:var(--gps); position:relative; }
+.toggle::after { content:""; position:absolute; right:2px; top:2px; width:17px; height:17px; border-radius:50%; background:#fff; }
+.toast { position:absolute; left:10px; right:10px; top:176px; z-index:6; background:var(--glass); backdrop-filter:blur(14px); border:1px solid var(--gline); border-radius:16px; padding:10px 12px; }
+.toast p { font-size:14px; color:var(--text); display:flex; gap:8px; align-items:center; }
+.quick { display:flex; gap:6px; margin-top:8px; }
+.quick div { flex:1; text-align:center; background:var(--raised); border-radius:10px; padding:7px 4px; font-size:13px; color:var(--text); }
+
+/* signed out */
+.signcard { position:absolute; left:18px; right:18px; top:220px; z-index:5; background:var(--surface); border:1px solid var(--gline); border-radius:22px; padding:22px 20px; text-align:center; }
+.signcard h4 { font-size:20px; color:var(--cream); font-weight:inherit; margin:10px 0 6px; }
+.signcard p { color:var(--dim); font-size:13.5px; }
+.signcard .bigbtn { background:var(--accent); }
+.signcard .ghostbtn { margin-top:8px; padding:10px; color:var(--text); font-size:14px; }
+
+/* legend */
+.legend { width:390px; background:var(--surface); border:1px solid var(--gline); border-radius:20px; padding:20px; align-self:flex-start; }
+.legend h3 { color:var(--cream); font-size:17px; margin-bottom:12px; }
+.lg { display:flex; gap:14px; align-items:center; padding:10px 0; border-bottom:1px solid var(--gline); }
+.lg:last-child { border:0; }
+.lg .sym { width:52px; display:grid; place-items:center; flex:none; position:relative; height:46px; }
+.lg .sym .gpsdot, .lg .sym .mk { position:static; transform:none; }
+.lg p { font-size:13px; color:var(--dim); }
+.lg p b { display:block; color:var(--cream); font-weight:inherit; font-size:14px; }
+table { width:100%; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c3 3.2 3 13.8 0 17M12 3.5c-3 3.2-3 13.8 0 17"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><path d="M6 4h3l1.5 4-2 1.5a10 10 0 005 5l1.5-2 4 1.5v3a2 2 0 01-2 2A16 16 0 014 6a2 2 0 012-2z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6.2-6.5-11A6.5 6.5 0 0118.5 10c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
+  <symbol id="walk" viewBox="0 0 24 24"><circle cx="13" cy="4.5" r="1.8"/><path d="M10 21l2-6 3 3v3M8 11l3-4 3 2 2 3M12 15l-1-5"/></symbol>
+  <symbol id="bike" viewBox="0 0 24 24"><circle cx="6" cy="16" r="3.5"/><circle cx="18" cy="16" r="3.5"/><path d="M6 16l4-7h5l3 7M10 9l2 7h-6M14 6h3"/></symbol>
+  <symbol id="car" viewBox="0 0 24 24"><path d="M4 16v-4l2-5h12l2 5v4zM4 16v2M20 16v2M4 12h16"/><circle cx="8" cy="14" r=".6"/><circle cx="16" cy="14" r=".6"/></symbol>
+  <symbol id="plane" viewBox="0 0 24 24"><path d="M3 13l18-7-7 18-2.5-8.5z"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4"/></symbol>
+  <symbol id="compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 6l2.5 6H9.5z" fill="currentColor"/></symbol>
+  <symbol id="locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></symbol>
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8 18h7a3 3 0 000-6H9a3 3 0 010-6h7"/></symbol>
+  <symbol id="send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></symbol>
+  <symbol id="play" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="arrow" viewBox="0 0 24 24"><path d="M12 3l7 17-7-4-7 4z" fill="currentColor"/></symbol>
+  <symbol id="turnr" viewBox="0 0 24 24"><path d="M7 21v-8a4 4 0 014-4h8M15 5l4 4-4 4"/></symbol>
+  <symbol id="nav" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/></symbol>
+  <symbol id="user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0114 0"/></symbol>
+</svg>
+
+<h1>Cartopolis chat — <b>v3: real location, getting around, routes</b></h1>
+<p class="lede">Follows up v1 and v2. Four changes: your <b style="color:var(--gps);font-weight:inherit">real location</b> (from your phone's GPS) is now clearly separate from your <b style="color:var(--brand);font-weight:inherit">avatar</b>; the World tab is today's app with its camera modes; routing and driving work exactly as they do now, with or without chat; and people and places from your chats become extra destinations.</p>
+
+<div class="principles">
+  <div><h3>Two kinds of "where"</h3><p><i>Orange</i> is your avatar: where you are in the 3D world. <i class="g">Blue</i> is your real location: where your phone is. They never share a colour, a shape or a button.</p></div>
+  <div><h3>Blue is always visible</h3><p>While anyone can see your real location, a blue bar at the top of every screen says who and for how long. Tap it to stop. It's never hidden, even while driving.</p></div>
+  <div><h3>Pick people, not a setting</h3><p>Sharing always starts from a list of names with none ticked except the chat you're in. A group shows its size and needs one extra confirmation.</p></div>
+  <div><h3>The World tab is today's app</h3><p>Search, Places, Route, Layers, and the Follow · Fly · Earth camera all stay. Chats only add people to the map, and you don't need an avatar to look around.</p></div>
+</div>
+
+<!-- ============ ROW 1 ============ -->
+<div class="row">
+
+<!-- 1. WORLD TAB: exploring -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:44% 0; background-size:auto 900px;"></div>
+  <div class="status pill"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sharepill"><svg class="i"><use href="#nav"/></svg>Sanne sees your location · 48 min</div>
+  <div class="topseg"><div class="seg glass"><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="leftcol" style="top:138px"><div class="disc"><svg class="i"><use href="#layers"/></svg></div><div class="disc"><svg class="i"><use href="#compass"/></svg></div><div class="disc"><svg class="i"><use href="#locate"/></svg></div></div>
+  <div class="modechip" style="top:138px"><div>Follow</div><div class="on"><svg class="i s"><use href="#plane"/></svg>Fly</div><div>Earth</div></div>
+
+  <div class="bub" style="left:150px;top:268px">coffee at the Korenbeurs?</div>
+  <div class="mk" style="left:176px;top:382px"><div class="av c3 ring">M</div><div class="stem o"></div><div class="foot"></div><div class="name">Mila <b>· avatar</b></div></div>
+  <div class="mk" style="left:300px;top:300px"><div class="av c2 ring">J</div><div class="stem o"></div><div class="foot"></div><div class="name">Joris <b>· avatar</b></div></div>
+  <div class="gpsdot" style="left:258px;top:560px"><div class="ring"><div class="core"></div></div><div class="name">Sanne <b>· real location</b></div></div>
+  <div class="gpsdot" style="left:96px;top:640px"><div class="ring"><div class="core"></div></div><div class="name">You <b>· real location</b></div></div>
+  <div class="ghost" style="left:60px;top:470px"></div><div class="ghost" style="left:330px;top:450px"></div>
+
+  <div class="me-chip" style="bottom:92px"><svg class="i s"><use href="#eye"/></svg>You're watching · no avatar<span class="btn">Step in</span></div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#route"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+  </div>
+</div>
+<h2><span>1</span>World tab: looking around</h2>
+<ul>
+  <li>This is the app as it is today: layers, compass and locate on the left; Follow · Fly · Earth camera; the dock with Search, Route, Places, Chat and the menu.</li>
+  <li>People from your chats are drawn on top. Orange pins are avatars; blue dots are real locations shared with you. Other people are plain dots.</li>
+  <li>You can look around without an avatar ("watching"). <i>Step in</i> puts your avatar where the camera is.</li>
+</ul>
+</div>
+
+<!-- 2. CHAT with both kinds -->
+<div class="shot">
+<div class="phone">
+  <div class="status pill"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sharepill"><svg class="i"><use href="#nav"/></svg>Sanne sees your location · 48 min</div>
+  <div class="thead" style="padding-top:36px">
+    <svg class="i"><use href="#back"/></svg>
+    <div class="av sm c1 ring">S</div>
+    <div class="who"><b>Sanne</b>
+      <div class="pres"><span class="a"><span class="live"></span>Avatar at Vismarkt</span><span class="g"><span class="gdot"></span>Real location · 1.4 km · until 19:30</span></div></div>
+    <svg class="i"><use href="#phone"/></svg>
+  </div>
+  <div class="tabs"><div class="seg"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chat</div><div><span class="live"></span>World</div></div></div>
+  <div class="msgs">
+    <div class="m them">Where are you? I'm at the market<small>18:21</small></div>
+    <div class="lcard">
+      <div class="img"><div class="gpsdot" style="left:130px;top:52px"><div class="ring"><div class="core"></div></div></div></div>
+      <div class="meta"><b>Live location</b><span class="who">Sanne shares her real location with you</span><br><span>Updated 20 s ago · 52 min left</span></div>
+      <div class="btnrow"><div class="pw"><svg class="i s"><use href="#route"/></svg>Route there</div><div><svg class="i s"><use href="#globe"/></svg>View</div></div>
+    </div>
+    <div class="sharebar"><svg class="i s" style="color:var(--gps)"><use href="#nav"/></svg><span>You share your real location with <b>Sanne only</b> · 48 min left</span><a>Stop</a></div>
+    <div class="card me" style="width:250px">
+      <div class="route-mini"><svg viewBox="0 0 250 62" width="250" height="62"><path d="M20 48 C60 44 70 20 110 24 S170 40 228 14" stroke="#0A0E10" stroke-width="8" fill="none" stroke-linecap="round"/><path d="M20 48 C60 44 70 20 110 24 S170 40 228 14" stroke="#F3F7F9" stroke-width="4" fill="none" stroke-linecap="round"/><circle cx="228" cy="14" r="7" fill="#4FB2FF" stroke="#fff" stroke-width="2"/></svg></div>
+      <div class="meta"><b>Route to Sanne</b><span>Bike · 6 min · 1.4 km · follows her if she moves</span></div>
+      <div class="btnrow"><div class="pw"><svg class="i s"><use href="#play"/></svg>Start</div></div>
+    </div>
+  </div>
+  <div class="composer">
+    <div class="circ"><svg class="i"><use href="#plus"/></svg></div>
+    <div class="field">Message</div>
+    <div class="circ hot"><svg class="i"><use href="#mic"/></svg></div>
+  </div>
+</div>
+<h2><span>2</span>A chat shows both, separately</h2>
+<ul>
+  <li>The header has two lines: where Sanne's avatar is (orange) and where Sanne really is (blue, only because she shares it with you).</li>
+  <li>A live location is a message, as in WhatsApp. Its button is <i>Route there</i>, never <i>Talk</i>.</li>
+  <li>Your own sharing is a blue bar in the thread that names exactly who can see you.</li>
+</ul>
+</div>
+
+<!-- 3. SHARE SHEET -->
+<div class="shot">
+<div class="phone">
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c1 ring">S</div><div class="who"><b>Sanne</b></div></div>
+  <div class="msgs"><div class="m them">Where are you? I'm at the market</div></div>
+  <div class="scrim"></div>
+  <div class="bigsheet">
+    <div class="handle"></div>
+    <h4>Share your real location</h4>
+    <p class="sub">Where your <b>phone</b> is, from GPS. This is not your avatar.</p>
+    <div class="lab">Who can see it</div>
+    <div class="pick"><div class="av sm c1">S</div><div class="t">Sanne<small>this chat</small></div><div class="chk on"><svg class="i s"><use href="#check"/></svg></div></div>
+    <div class="pick"><div class="av sm c2 room">🚲</div><div class="t">#fietsers-groningen<small class="warn">23 people, you know 6 of them</small></div><div class="chk"></div></div>
+    <div class="pick"><div class="av sm c6 room">🏡</div><div class="t">Family<small>4 people</small></div><div class="chk"></div></div>
+    <div class="lab">For how long</div>
+    <div class="pills"><div>15 min</div><div class="on">1 hour</div><div>8 hours</div><div>Until I stop</div></div>
+    <div class="lab">How exact</div>
+    <div class="pills"><div class="on">Exact</div><div>Neighbourhood (~500 m)</div></div>
+    <div class="preview"><svg class="i" style="color:var(--gps)"><use href="#eye"/></svg><span><b>Sanne</b> will see a blue dot where you are, updated live, until <b>19:41</b>. Nobody else will.</span></div>
+    <div class="bigbtn">Share with 1 person</div>
+  </div>
+</div>
+<h2><span>3</span>Sharing: always a list of names</h2>
+<ul>
+  <li>Opened from the <i>+</i> button in a chat. Only that chat is ticked, and the button says how many people it's for.</li>
+  <li>Ticking a group shows how many people are in it and how many you actually know.</li>
+  <li>The preview spells out what they'll see and until when. "Until I stop" is allowed, but it's never the default.</li>
+</ul>
+</div>
+
+<!-- 4. AVATAR MEETUP -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(city.jpg); background-position:36% 70%; background-size:auto 1500px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="float-top">
+    <div class="thead"><svg class="i"><use href="#back"/></svg><div class="av sm c5 ring">P</div>
+      <div class="who"><b>Pieter</b><div class="pres"><span class="a"><span class="live"></span>Avatar next to yours · 4 m</span><span style="color:var(--line)">Real location not shared</span></div></div></div>
+    <div class="tabs"><div class="seg"><div><svg class="i s"><use href="#chat"/></svg>Chat</div><div class="on w"><span class="live"></span>World</div></div></div>
+  </div>
+  <div class="modechip" style="top:176px"><div class="on">Follow</div><div>Fly</div><div>Earth</div></div>
+  <div class="bub" style="left:34px;top:300px">This is the building I told you about</div>
+  <div class="mk" style="left:128px;top:432px"><div class="av c5 ring">P</div><div class="stem o"></div><div class="foot"></div><div class="name">Pieter</div></div>
+  <div class="bub me" style="left:196px;top:382px">It's huge!</div>
+  <div class="mk" style="left:230px;top:470px"><div class="av c4 ring">Me</div><div class="stem o"></div><div class="foot"></div><div class="name">You</div></div>
+
+  <div class="sheet">
+    <div class="handle"></div>
+    <div class="mini"><p><b>Pieter</b>This is the building I told you about</p><p><b class="me">You</b>It's huge!</p></div>
+    <div class="actions">
+      <div class="p"><svg class="i s"><use href="#mic"/></svg>Talk · you're 4 m apart</div>
+      <div><svg class="i s"><use href="#walk"/></svg>Walk together</div>
+    </div>
+    <div class="composer"><div class="circ"><svg class="i"><use href="#plus"/></svg></div><div class="field">Message</div><div class="circ hot"><svg class="i"><use href="#mic"/></svg></div></div>
+  </div>
+</div>
+<h2><span>4</span>Where Talk belongs: avatars together, people apart</h2>
+<ul>
+  <li>Pieter is in Rotterdam and you're in Groningen, but your avatars stand side by side. That's when voice makes sense, so Talk appears here.</li>
+  <li>Talk only depends on how far apart the <i>avatars</i> are. Real location never turns it on.</li>
+  <li><i>Walk together</i> makes your avatar follow his while you both look around.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============ ROW 2: routing ============ -->
+<div class="row">
+
+<!-- 5. WHERE TO -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:60% 0; background-size:auto 900px; filter:brightness(.6);"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="bigsheet" style="top:70px; background:var(--surface); padding-top:4px">
+    <div class="handle"></div>
+    <div class="field2" style="background:var(--hover); padding:11px 12px"><svg class="i s"><use href="#search"/></svg><span style="color:var(--cream)">martini</span><span class="x">✕</span></div>
+    <div class="lab">Addresses and places</div>
+    <div class="pick"><div class="circ"><svg class="i s"><use href="#pin"/></svg></div><div class="t">Martini Ziekenhuis<small>Voorbeeldstraat 1, Groningen · 3.9 km</small></div></div>
+    <div class="pick"><div class="circ"><svg class="i s"><use href="#pin"/></svg></div><div class="t">Martinitoren<small>Martinikerkhof, Groningen · 450 m</small></div></div>
+    <div class="pick"><div class="circ"><svg class="i s"><use href="#pin"/></svg></div><div class="t">Martinikerkhof 12<small>address · 480 m</small></div></div>
+    <div class="lab">Saved places</div>
+    <div class="pick"><div class="circ"><svg class="i s"><use href="#bookmark"/></svg></div><div class="t">Home<small>Oosterpoort · 1.8 km</small></div></div>
+    <div class="lab">From your chats</div>
+    <div class="pick"><div class="circ"><svg class="i s"><use href="#pin"/></svg></div><div class="t">Vismarkt<small>Sanne sent this at 18:21</small></div></div>
+    <div class="lab">Sharing their location with you</div>
+    <div class="pick"><div class="circ" style="background:var(--gpsbg)"><span class="gdot"></span></div><div class="t">Sanne<small style="color:var(--gps)">live · 1.4 km · route follows her</small></div></div>
+  </div>
+</div>
+<h2><span>5</span>Where to? Addresses first</h2>
+<ul>
+  <li>The Route button opens a normal destination search: addresses and places first, then your saved Places.</li>
+  <li>When you're signed in, two extra groups appear underneath: places mentioned in your chats, and people sharing their location with you.</li>
+  <li>Signed out, it's just the first two groups: plain routing, as today.</li>
+</ul>
+</div>
+
+<!-- 6. CAR ROUTE -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:52% 0; background-size:auto 900px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="topseg" style="top:52px"><div class="seg glass"><div><svg class="i s"><use href="#chat"/></svg>Chats</div><div class="on w"><span class="live"></span>World</div></div></div>
+  <div class="leftcol" style="top:110px"><div class="disc"><svg class="i"><use href="#layers"/></svg></div><div class="disc"><svg class="i"><use href="#compass"/></svg></div></div>
+  <svg style="position:absolute;inset:0;z-index:2" width="390" height="844">
+    <path d="M70 420 C120 400 140 330 190 300 S300 250 330 150" stroke="#0A0E10" stroke-width="7" fill="none" stroke-linecap="round" opacity=".5"/>
+    <path d="M70 420 C120 400 140 330 190 300 S300 250 330 150" stroke="#A5B2B7" stroke-width="3.5" fill="none" stroke-linecap="round" opacity=".8"/>
+    <path d="M70 420 C90 300 170 250 250 230 S320 190 330 150" stroke="#0A0E10" stroke-width="10" fill="none" stroke-linecap="round"/>
+    <path d="M70 420 C90 300 170 250 250 230 S320 190 330 150" stroke="#F3F7F9" stroke-width="5.5" fill="none" stroke-linecap="round"/></svg>
+  <div class="gpsdot" style="left:70px;top:420px"><div class="ring"><div class="core"></div></div><div class="name">You</div></div>
+  <div class="mk" style="left:330px;top:150px"><div class="av" style="width:30px;height:30px;background:#fff;color:var(--ink);border:0"><svg class="i s"><use href="#pin"/></svg></div><div class="stem"></div></div>
+
+  <div class="rsheet">
+    <div class="handle"></div>
+    <div class="field2"><span class="gdot"></span><div>My location<small>from GPS</small></div></div>
+    <div class="field2"><svg class="i s"><use href="#pin"/></svg><div>Martini Ziekenhuis<small>Voorbeeldstraat 1, Groningen</small></div><span class="x">✕</span></div>
+    <div class="modes"><div class="on"><svg class="i s"><use href="#car"/></svg>Car</div><div><svg class="i s"><use href="#bike"/></svg>Bike</div><div><svg class="i s"><use href="#walk"/></svg>Walk</div></div>
+    <div class="eta"><b>11 min</b><span>· 5.8 km · arrive 18:52 · via Ring Zuid</span></div>
+    <div class="suggest"><div style="background:var(--accent);color:var(--ink)">11 min · Ring Zuid</div><div>14 min · through the centre</div></div>
+    <div class="btnrow" style="margin:0"><div style="flex:0 0 46px"><svg class="i s"><use href="#send"/></svg></div><div class="pw"><svg class="i s"><use href="#play"/></svg>Start</div></div>
+  </div>
+  <div class="dock">
+    <div class="disc"><svg class="i"><use href="#search"/></svg></div>
+    <div class="disc on"><svg class="i"><use href="#route"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#bookmark"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#chat"/></svg></div>
+    <div class="disc"><svg class="i"><use href="#menu"/></svg></div>
+  </div>
+</div>
+<h2><span>6</span>A normal car route</h2>
+<ul>
+  <li>Today's route panel: Car · Bike · Walk, time and distance, Start. It gains a From/To pair and a choice between routes. No chat involved, and nothing is shared.</li>
+  <li>The small arrow button next to Start sends the route to a chat. It's there if you want it and never in the way.</li>
+  <li>The route is white; the alternative is grey.</li>
+</ul>
+</div>
+
+<!-- 7. CAR DRIVING -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:62% 40%; background-size:auto 2000px;"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="turn" style="top:48px"><svg class="i" style="width:40px;height:40px;stroke-width:2.4;transform:scaleX(-1)"><use href="#turnr"/></svg><div><b>400 m</b><span>Left onto Ring Zuid (N7)</span></div></div>
+  <div style="position:absolute;top:128px;left:10px;z-index:5;background:#16502f;color:#cfe9d9;border-radius:12px;padding:6px 12px;font-size:13px">Then right onto Voorbeeldstraat</div>
+  <svg style="position:absolute;inset:0;z-index:2" width="390" height="844"><path d="M195 720 L195 430 Q195 390 155 380 L0 350" stroke="#0A0E10" stroke-width="22" fill="none" stroke-linejoin="round"/><path d="M195 720 L195 430 Q195 390 155 380 L0 350" stroke="#F3F7F9" stroke-width="14" fill="none" stroke-linejoin="round"/></svg>
+  <div style="position:absolute;left:173px;top:600px;z-index:3;width:44px;height:44px;border-radius:50%;background:var(--gps);border:3px solid #fff;display:grid;place-items:center;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.4)"><svg class="i" style="width:24px;height:24px"><use href="#arrow"/></svg></div>
+  <div class="chip" style="right:12px;top:190px"><svg class="i s"><use href="#chat"/></svg>2 new messages</div>
+  <div class="drivebar">
+    <div class="top2"><div><b>9 min</b><br><span>4.6 km · arrive 18:52 · Martini Ziekenhuis</span></div><div class="end">End</div></div>
+    <div class="etashare" style="background:var(--raised);border-color:var(--gline)"><svg class="i s"><use href="#send"/></svg><span>Share arrival time with…</span><span style="margin-left:auto;color:var(--dim)">off</span></div>
+  </div>
+</div>
+<h2><span>7</span>Driving: today's driver mode</h2>
+<ul>
+  <li>Start opens driver mode as it works now: turn banner, GPS arrow, stripped-down map, camera looking ahead.</li>
+  <li>Chat stays out of the way: new messages are just a counter, never a pop-up with a keyboard.</li>
+  <li>Sharing your arrival time is off. You can turn it on for someone, but it's never assumed.</li>
+</ul>
+</div>
+
+<!-- 8. DRIVING TO A PERSON -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(route.jpg); background-position:30% 78%; background-size:auto 2000px;"></div>
+  <div class="status pill"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="sharepill"><svg class="i"><use href="#nav"/></svg>Sanne sees your location and arrival time</div>
+  <div class="turn"><svg class="i" style="width:40px;height:40px;stroke-width:2.4"><use href="#turnr"/></svg><div><b>200 m</b><span>Right onto Oude Ebbingestraat</span></div></div>
+  <svg style="position:absolute;inset:0;z-index:2" width="390" height="844"><path d="M195 700 L195 470 Q195 430 235 420 L390 380" stroke="#0A0E10" stroke-width="22" fill="none" stroke-linejoin="round"/><path d="M195 700 L195 470 Q195 430 235 420 L390 380" stroke="#F3F7F9" stroke-width="14" fill="none" stroke-linejoin="round"/></svg>
+  <div style="position:absolute;left:173px;top:600px;z-index:3;width:44px;height:44px;border-radius:50%;background:var(--gps);border:3px solid #fff;display:grid;place-items:center;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.4)"><svg class="i" style="width:24px;height:24px"><use href="#arrow"/></svg></div>
+  <div class="toast"><div style="display:flex;gap:8px;align-items:center;font-size:14px"><div class="av sm c1 ring" style="width:26px;height:26px;font-size:11px">S</div><span><b style="color:var(--cream);font-weight:inherit">Sanne:</b> I'm by the door with the bikes</span></div>
+    <div class="quick"><div>👍</div><div>5 min</div><div>Almost there</div><div><svg class="i s"><use href="#phone"/></svg></div></div></div>
+  <div class="drivebar">
+    <div class="top2"><div><b>5 min</b><br><span>1.2 km · arrive 18:37 · to Sanne</span></div><div class="end">End</div></div>
+    <div class="etashare"><svg class="i s" style="color:var(--gps)"><use href="#nav"/></svg><span><b>Sanne</b> sees your location and arrival time</span><div class="toggle"></div></div>
+  </div>
+</div>
+<h2><span>8</span>The same mode, going to a person</h2>
+<ul>
+  <li>Same driver mode as screen 7, but the destination is Sanne's live location, so the route updates if she moves.</li>
+  <li>Because this trip is about her, her messages appear as a notice with one-tap replies and no keyboard.</li>
+  <li>Because the destination is a person, Start asked whether to share your arrival time with her. You said yes, so the switch is on and the blue bar says so for the whole trip.</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============ ROW 3 ============ -->
+<div class="row">
+
+<!-- 9. SIGNED OUT VIEWER -->
+<div class="shot">
+<div class="phone">
+  <div class="world" style="background-image:url(green.jpg); background-position:30% 0; background-size:auto 900px; filter:blur(3px) brightness(.55);"></div>
+  <div class="status"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+  <div class="topseg" style="top:52px"><div class="seg glass"><div class="on"><svg class="i s"><use href="#chat"/></svg>Chats</div><div>World</div></div></div>
+  <div class="signcard">
+    <div class="av room" style="margin:0 auto;background:var(--raised);width:64px;height:64px"><svg class="i" style="width:30px;height:30px"><use href="#chat"/></svg></div>
+    <h4>Chat needs an account</h4>
+    <p>The map, routes, driving and places all work without one. Sign in to message people and see the friends who share where they are.</p>
+    <div class="bigbtn">Sign in or create account</div>
+    <div class="ghostbtn">Keep exploring the map</div>
+  </div>
+</div>
+<h2><span>9</span>Signed out: today's viewer, unchanged</h2>
+<ul>
+  <li>Without an account the World tab <i>is</i> the app, exactly like the current offline viewer, including routing and driving (screens 5–7).</li>
+  <li>The Chats tab stays visible but only explains itself. It never asks for sign-in at launch.</li>
+  <li>Place links (<code>/go?place=</code>) still open straight onto the map.</li>
+</ul>
+</div>
+
+<!-- LEGEND -->
+<div class="legend">
+  <h3>On the map</h3>
+  <div class="lg"><div class="sym"><div class="mk"><div class="av c1 ring" style="width:34px;height:34px;font-size:13px">S</div><div class="stem o" style="height:8px"></div></div></div><p><b>Avatar</b>Where someone is in the 3D world. Anyone near it can see it, as today; your chats can see it from anywhere, unless you turn that off for a chat.</p></div>
+  <div class="lg"><div class="sym"><div class="gpsdot"><div class="ring"><div class="core"></div></div></div></div><p><b>Real location</b>Where someone's phone is. Only the people they picked see it, for the time they picked. Off unless you switch it on.</p></div>
+  <div class="lg"><div class="sym"><div class="ghost" style="position:static"></div></div><p><b>Someone else</b>A nearby avatar who isn't in any of your chats. No name, no bubble.</p></div>
+  <div class="lg"><div class="sym"><svg width="48" height="14"><path d="M2 7h44" stroke="#0A0E10" stroke-width="9" stroke-linecap="round"/><path d="M2 7h44" stroke="#F3F7F9" stroke-width="5" stroke-linecap="round"/></svg></div><p><b>Route</b>White, so it never looks like either kind of presence. An alternative route is grey.</p></div>
+  <h3 style="margin-top:18px">Your own status</h3>
+  <div class="lg"><div class="sym"><span class="live"></span></div><p><b>In the world</b>You have an avatar. People nearby can see it and hear you with Talk.</p></div>
+  <div class="lg"><div class="sym"><svg class="i"><use href="#eye"/></svg></div><p><b>Watching</b>Signed in, with no avatar. You're a camera: you can chat, but nobody sees where you're looking.</p></div>
+  <div class="lg"><div class="sym"><span style="width:7px;height:7px;border-radius:50%;background:var(--line)"></span></div><p><b>Signed out</b>The map viewer as it is today.</p></div>
+</div>
+
+<div style="flex:1">
+<div class="sec" style="margin-top:0">
+  <h2>Who sees what</h2>
+  <table>
+    <tr><th>What</th><th>Who can see it</th><th>Default</th><th>How you know</th></tr>
+    <tr><td>Your avatar</td><td>Anyone near it in the world. Members of your chats, from anywhere.</td><td>On while you're in the world</td><td>The orange "in the world" line under your name</td></tr>
+    <tr><td>Your real location</td><td>Only the people ticked in the share sheet</td><td><b style="color:var(--gps);font-weight:inherit">Off</b>. When switched on: 1 hour</td><td>Blue bar on every screen, plus a blue bar in each chat it's shared with</td></tr>
+    <tr><td>Your arrival time while navigating</td><td>Someone you pick</td><td>Off. Offered at Start only when the destination is a person</td><td>A switch in the driving bar, and the blue bar while it is on</td></tr>
+    <tr><td>Where your camera is (watching)</td><td>Nobody</td><td>—</td><td>—</td></tr>
+    <tr><td>A route you planned</td><td>Only the chat you send it to</td><td>Private</td><td>It appears as a card in that chat</td></tr>
+  </table>
+</div>
+</div></div>
+</body>
+</html>
