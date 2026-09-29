@@ -41,6 +41,29 @@ impl Codec {
     }
 }
 
+/// A participant in a call, as the forwarder numbers them. Opaque to clients,
+/// which learn who it is from the simulator's signalling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ParticipantId(pub u64);
+
+/// What kind of track a [`TrackInfo`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Audio,
+    Video,
+}
+
+/// Which participant a track on somebody's *down* connection comes from. Sent
+/// with every offer, because a receiver cannot tell from the media itself whose
+/// camera a tile is until the first frame opens (the SFrame Key ID names the
+/// sender, but only once there is a frame).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackInfo {
+    pub mid: String,
+    pub from: ParticipantId,
+    pub kind: Kind,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

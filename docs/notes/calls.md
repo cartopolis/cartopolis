@@ -59,13 +59,19 @@ as it is: it is public, like nearby chat.
 
 2026-09-29, a throwaway crate outside the workspace:
 
-- `str0m` 0.24 (`default-features = false, features = ["rust-crypto"]`),
-  `sframe` 2.0 (`rust-crypto`) and `opus-pure` 0.2 check for x86_64,
-  `aarch64-linux-android` and `wasm32-unknown-unknown` (web flags, nightly), and
-  `cargo tree -e build -i cc` prints nothing — no C anywhere.
+- `str0m` 0.24, `sframe` 2.0 (`rust-crypto`) and `opus-pure` 0.2 check for
+  x86_64, `aarch64-linux-android` and `wasm32-unknown-unknown` (web flags,
+  nightly). **But str0m's own `rust-crypto` backend is not C-free**: it turns
+  on `dimpl`'s `rcgen` feature, which turns on `aws-lc-rs`, a C library, only
+  to make the DTLS certificate. The first run of this check missed it because
+  `cargo tree -e build -i cc` walks only build edges from the root and prints
+  nothing; `-e normal,build` finds it (control: it finds `cc` under the
+  simulator's `mlua-sys`). So `cartopolis_calls` carries upstream's provider
+  with a RustCrypto certificate (`crates/calls/src/crypto`), and with that the
+  same query prints nothing for all three targets.
 - Two str0m clients through a str0m forwarder over loopback UDP, 6 s: 280 of 281
-  SFrame-sealed Opus frames arrived, decrypted and decoded (tone RMS 0.350 in,
-  0.354 out); 56 of 56 sealed fake VP8 frames arrived bit-exact; the forwarder
+  SFrame-sealed Opus frames arrived, decrypted and decoded (tone RMS 0.354 in,
+  0.350 out); 56 of 56 sealed fake VP8 frames arrived bit-exact; the forwarder
   flagged all 6 keyframes from the clear header; no sealed packet equalled its
   plaintext.
 

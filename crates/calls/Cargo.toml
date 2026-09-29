@@ -41,13 +41,35 @@ opus-pure = { version = "0.2", optional = true }
 # Only for a random SFrame context id per join (`keys::Sender::new`).
 uuid = { workspace = true, optional = true }
 
-# `default-features = false` drops `aws-lc-rs`, which is C. The crypto provider
-# is installed explicitly (`install_crypto`), because str0m panics at the first
-# connection without one — the same trap rustls 0.23 sets.
+# str0m with *no* crypto backend of its own: its `rust-crypto` backend still
+# reaches aws-lc (C) for one thing, making the DTLS certificate, so this crate
+# carries that provider itself with a pure-Rust certificate (`src/crypto`). The
+# dependencies below are exactly upstream's provider's, minus `rcgen`, plus the
+# two RustCrypto crates the certificate needs — all already under `dimpl`.
+# It is installed explicitly (`install_crypto`): str0m fails at the first
+# connection, not at build time, when no provider is set.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+str0m = { version = "0.24", default-features = false }
+dimpl = { version = "0.7.4", default-features = false, features = ["rust-crypto"] }
+aes = "0.8"
+aes-gcm = "0.10"
+ctr = "0.9"
+hmac = "0.12.1"
+sha1 = "0.10"
+# `oid`: the certificate names its signature algorithm, ECDSA with SHA-256.
+sha2 = { version = "0.10", features = ["oid"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+x509-cert = { version = "0.2", features = ["builder"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+# The web build generates a join's SFrame context with `Uuid::new_v4`, and uuid
+# has no randomness source on wasm unless told to use the browser's.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
+# The link test runs a whole call, so it needs both halves.
+cartopolis_calls = { path = ".", features = ["client", "sfu"] }
 cartopolis_e2ee = { path = "../e2ee" }
 uuid = { workspace = true }
 

@@ -10,21 +10,29 @@
 //!   the clear for the forwarder.
 //! - `keys` (`client`): sealing and opening frames.
 //! - `opus` (`client`): the voice codec.
+//! - `link` (`client`, native): a device's connection to the forwarder.
 //! - `sfu` (`sfu`, native): the forwarder the simulator runs.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod crypto;
 pub mod media;
 
 #[cfg(feature = "client")]
 pub mod keys;
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+pub mod link;
 #[cfg(feature = "client")]
 pub mod opus;
+#[cfg(all(feature = "sfu", not(target_arch = "wasm32")))]
+pub mod sfu;
 
-/// Install str0m's pure-Rust crypto as the process default. Idempotent, and
-/// required: str0m does not pick one itself when its C default is compiled out,
-/// and fails at the first connection rather than at build time.
+/// Install the pure-Rust crypto provider (`crypto`) as str0m's process
+/// default. Idempotent, and required: str0m picks none itself when its C
+/// default is compiled out, and fails at the first connection rather than at
+/// build time.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn install_crypto() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
-    ONCE.call_once(|| str0m::crypto::from_feature_flags().install_process_default());
+    ONCE.call_once(|| crypto::provider().install_process_default());
 }
