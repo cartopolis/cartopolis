@@ -853,7 +853,7 @@ impl<'a> Grader<'a> {
                 }
             }
         }
-        let solved = road_levels::solve(&lines);
+        let mut solved = road_levels::solve(&lines);
 
         // **The land each road runs through**, for deciding which stretches are
         // structures below the ground and how high their walls reach. Over a
@@ -869,81 +869,100 @@ impl<'a> Grader<'a> {
         // its own. A point the survey has nothing beside takes its neighbour's
         // along the line, and a tunnel with none at all is a level's depth under
         // its road.
-        let mut land: Vec<Vec<f32>> = lines
-            .iter()
-            .zip(&owners)
-            .zip(&solved.heights)
-            .zip(&span)
-            .map(|(((l, o), ys), sp)| {
-                if l.level > 0 {
-                    return vec![f32::NAN; l.points.len()];
-                }
-                let mut g: Vec<f32> = (0..l.points.len())
-                    .map(|i| {
-                        if l.level < 0 && !sp[i] {
-                            lid_level(&sample, l.points[i])
-                        } else {
-                            bank_level(&sample, &l.points, i, paving.from(&l.points, i, o.2))
-                        }
-                    })
-                    .collect();
-                fill_along(&mut g);
-                // **A street the survey has no bank for at all** — the ramp into
-                // the bike park under Groningen's station square, which AHN masks
-                // with the garage like a building — takes the level of the land
-                // around, as a lid does. Left without land it was never a
-                // structure, and the ramp the photograph shows was not there.
-                if l.level == 0 && g.iter().all(|v| !v.is_finite()) {
-                    g = l.points.iter().map(|&p| lid_level(&sample, p)).collect();
-                }
-                if g.iter().all(|v| !v.is_finite()) && l.level < 0 && !sp.contains(&true) {
-                    g = ys
-                        .iter()
-                        .map(|y| y + cartopolis_geo::tunnels::level_depth(o.4))
+        let derive = |lines: &[road_levels::Line], heights: &[Vec<f32>]| {
+            let mut land: Vec<Vec<f32>> = lines
+                .iter()
+                .zip(&owners)
+                .zip(heights)
+                .zip(&span)
+                .map(|(((l, o), ys), sp)| {
+                    if l.level > 0 {
+                        return vec![f32::NAN; l.points.len()];
+                    }
+                    let mut g: Vec<f32> = (0..l.points.len())
+                        .map(|i| {
+                            if l.level < 0 && !sp[i] {
+                                lid_level(&sample, l.points[i])
+                            } else {
+                                bank_level(&sample, &l.points, i, paving.from(&l.points, i, o.2))
+                            }
+                        })
                         .collect();
+                    fill_along(&mut g);
+                    // **A street the survey has no bank for at all** — the ramp into
+                    // the bike park under Groningen's station square, which AHN masks
+                    // with the garage like a building — takes the level of the land
+                    // around, as a lid does. Left without land it was never a
+                    // structure, and the ramp the photograph shows was not there.
+                    if l.level == 0 && g.iter().all(|v| !v.is_finite()) {
+                        g = l.points.iter().map(|&p| lid_level(&sample, p)).collect();
+                    }
+                    if g.iter().all(|v| !v.is_finite()) && l.level < 0 && !sp.contains(&true) {
+                        g = ys
+                            .iter()
+                            .map(|y| y + cartopolis_geo::tunnels::level_depth(o.4))
+                            .collect();
+                    }
+                    g
+                })
+                .collect();
+            let mut inside = road_levels::structures(lines, heights, &land);
+            in_the_same_trench(lines, &owners, heights, &mut land, &mut inside);
+            for (g, m) in land.iter_mut().zip(&inside) {
+                smooth_land(g, m);
+            }
+            // **Where the walls stand, and whether there are any**, from the survey
+            // either side of every open stretch — see `wall_side`. A stretch sloped on
+            // both sides is no structure at all: the survey's own slope is its
+            // ground, and the road is laid in it as any road is.
+            let mut walls: Vec<Vec<[f32; 2]>> = lines
+                .iter()
+                .map(|l| vec![[f32::NAN; 2]; l.points.len()])
+                .collect();
+            for (li, l) in lines.iter().enumerate() {
+                if l.level > 0 || !inside[li].iter().any(|&b| b) {
+                    continue;
                 }
-                g
-            })
-            .collect();
-        let mut inside = road_levels::structures(&lines, &solved.heights, &land);
-        in_the_same_trench(&lines, &owners, &solved.heights, &mut land, &mut inside);
-        for (g, m) in land.iter_mut().zip(&inside) {
-            smooth_land(g, m);
+                for vi in 0..l.points.len() {
+                    if inside[li][vi] && (l.level == 0 || span[li][vi]) {
+                        walls[li][vi] = wall_sides(
+                            &sample,
+                            &l.points,
+                            vi,
+                            paving.from(&l.points, vi, owners[li].2),
+                            heights[li][vi],
+                            land[li][vi],
+                        );
+                    }
+                }
+                smooth_walls(&mut walls[li], &inside[li]);
+                for vi in 0..l.points.len() {
+                    if inside[li][vi] && walls[li][vi] == [0.0, 0.0] {
+                        inside[li][vi] = false;
+                        land[li][vi] = f32::NAN;
+                        walls[li][vi] = [f32::NAN; 2];
+                    }
+                }
+            }
+            (land, inside, walls)
+        };
+        let (mut land, mut inside, mut walls) = derive(&lines, &solved.heights);
+        // **A street on a structure's surface is on the structure.** OSM maps
+        // the footway and the cycle path down one ramp as two ways and tags
+        // only one; the survey has a hole across the ramp, so the other read at
+        // grade and the ramp's opening cut through it — eleven of the eighteen
+        // streets the audit found cut (`tunnels::audit`, 2026-09-29). Such a
+        // street is pinned to the structure's road where the two overlap, and
+        // the network is solved again, so its grades carry it into the ramp
+        // and back out rather than stepping.
+        let pins = on_the_same_surface(&lines, &owners, &solved.heights, &land, &inside, &walls);
+        if !pins.is_empty() {
+            for &(li, vi, y) in &pins {
+                lines[li].heights[vi] = Height::Measured { y, weight: 1.0 };
+            }
+            solved = road_levels::solve(&lines);
+            (land, inside, walls) = derive(&lines, &solved.heights);
         }
-        // **Where the walls stand, and whether there are any**, from the survey
-        // either side of every open stretch — see `wall_side`. A stretch sloped on
-        // both sides is no structure at all: the survey's own slope is its
-        // ground, and the road is laid in it as any road is.
-        let mut walls: Vec<Vec<[f32; 2]>> = lines
-            .iter()
-            .map(|l| vec![[f32::NAN; 2]; l.points.len()])
-            .collect();
-        for (li, l) in lines.iter().enumerate() {
-            if l.level > 0 || !inside[li].iter().any(|&b| b) {
-                continue;
-            }
-            for vi in 0..l.points.len() {
-                if inside[li][vi] && (l.level == 0 || span[li][vi]) {
-                    walls[li][vi] = wall_sides(
-                        &sample,
-                        &l.points,
-                        vi,
-                        paving.from(&l.points, vi, owners[li].2),
-                        solved.heights[li][vi],
-                        land[li][vi],
-                    );
-                }
-            }
-            smooth_walls(&mut walls[li], &inside[li]);
-            for vi in 0..l.points.len() {
-                if inside[li][vi] && walls[li][vi] == [0.0, 0.0] {
-                    inside[li][vi] = false;
-                    land[li][vi] = f32::NAN;
-                    walls[li][vi] = [f32::NAN; 2];
-                }
-            }
-        }
-
         let own = self.road_heights.entry((tx, ty)).or_default();
         for ((((mine, key, ..), ys), (g, m)), w) in owners
             .iter()
@@ -999,6 +1018,7 @@ impl<'a> Grader<'a> {
                 let (lat, lng) = ll(f.at);
                 self.flaws.push(serde_json::json!({
                     "kind": f.flaw.slug(),
+                    "note": f.note,
                     "lat": round(lat),
                     "lng": round(lng),
                     "tile": [tx, ty],
@@ -1369,6 +1389,103 @@ fn smooth_land(land: &mut [f32], inside: &[bool]) {
         v.sort_by(f32::total_cmp);
         land[i] = v[v.len() / 2];
     }
+}
+
+/// Every point of a street at grade that lies on an open structure's surface —
+/// a ramp's or a cutting's: between its walls (its own half-width where none
+/// was measured standing back), with its own half-width and half a metre, and
+/// running within 35° of its heading, where that structure is below its land. With the height
+/// to pin it to — the structure's road there.
+fn on_the_same_surface(
+    lines: &[road_levels::Line],
+    owners: &[(bool, u64, f32, i8, cartopolis_geo::road_texture::RoadClass)],
+    road: &[Vec<f32>],
+    land: &[Vec<f32>],
+    inside: &[Vec<bool>],
+    walls: &[Vec<[f32; 2]>],
+) -> Vec<(usize, usize, f32)> {
+    const CELL_M: f32 = 16.0;
+    const PARALLEL_COS: f32 = 0.819;
+    let cell = |p: [f32; 2]| {
+        (
+            (p[0] / CELL_M).floor() as i64,
+            (p[1] / CELL_M).floor() as i64,
+        )
+    };
+    let heading = |pts: &[[f32; 2]], i: usize| {
+        let (a, b) = (pts[i.saturating_sub(1)], pts[(i + 1).min(pts.len() - 1)]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dz);
+        (len > 1e-6).then(|| [dx / len, dz / len])
+    };
+    // Only the open structures — the ramps and cuttings, at level 0 — since a
+    // street along the top of a tunnel's lid runs parallel to the tunnel and
+    // over it, and must never be pulled down onto its road.
+    let mut near: HashMap<(i64, i64), Vec<(usize, usize)>> = HashMap::new();
+    for (li, l) in lines.iter().enumerate() {
+        if l.level != 0 {
+            continue;
+        }
+        for vi in 0..l.points.len() {
+            if inside[li][vi]
+                && land[li][vi].is_finite()
+                && road[li][vi] < land[li][vi] - road_levels::SUNK_M
+            {
+                near.entry(cell(l.points[vi])).or_default().push((li, vi));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (li, l) in lines.iter().enumerate() {
+        if l.level != 0 {
+            continue;
+        }
+        for (vi, &p) in l.points.iter().enumerate() {
+            if inside[li][vi] {
+                continue;
+            }
+            let Some(h) = heading(&l.points, vi) else {
+                continue;
+            };
+            let (cx, cz) = cell(p);
+            let mut best: Option<(f32, f32)> = None;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    for &(o, oi) in near.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                        if o == li {
+                            continue;
+                        }
+                        let q = lines[o].points[oi];
+                        let d = (q[0] - p[0]).hypot(q[1] - p[1]);
+                        let Some(oh) = heading(&lines[o].points, oi) else {
+                            continue;
+                        };
+                        // Between the structure's walls: out to the wall on
+                        // the side the street is on, where one was measured
+                        // standing back; the two half-widths otherwise.
+                        let across = (p[0] - q[0]) * -oh[1] + (p[1] - q[1]) * oh[0];
+                        let wall = walls[o][oi][usize::from(across < 0.0)];
+                        let reach = if wall > 0.0 { wall } else { owners[o].2 }.max(owners[o].2)
+                            + owners[li].2
+                            + 0.5;
+                        if d > reach + 3.0 || across.abs() > reach {
+                            continue;
+                        }
+                        if (h[0] * oh[0] + h[1] * oh[1]).abs() < PARALLEL_COS {
+                            continue;
+                        }
+                        if best.is_none_or(|(bd, _)| d < bd) {
+                            best = Some((d, road[o][oi]));
+                        }
+                    }
+                }
+            }
+            if let Some((_, y)) = best {
+                out.push((li, vi, y));
+            }
+        }
+    }
+    out
 }
 
 /// How far beside a structure another road may run and still be in its trench,

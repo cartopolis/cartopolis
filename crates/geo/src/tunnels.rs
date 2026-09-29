@@ -1024,6 +1024,11 @@ struct Plan {
     /// Whether each end is its street's own end, as against a point where the
     /// street carries on as an ordinary road laid in the ground.
     run_end: [bool; 2],
+    /// Whether each end is closed by an end wall though other streets come
+    /// near it: open, below its land and met by nothing ([`unmet_ends`]). The
+    /// road stops there whatever the map says, and a wall is how a road that
+    /// stops below the ground looks; left open, the corridor showed the void.
+    closed: [bool; 2],
     /// Whether each end is where its road ends in nothing: no other street in the
     /// tile comes within [`road_levels::TEE_M`] of it, and the border did not cut
     /// it. A tunnel into a garage the map does not draw ends that way, and so does
@@ -1315,11 +1320,14 @@ impl Flaw {
     }
 }
 
-/// One [`Flaw`] where [`audit`] found it, tile-local metres.
-#[derive(Clone, Copy, Debug)]
+/// One [`Flaw`] where [`audit`] found it, tile-local metres, with what was
+/// there — the classes, the depth, the headroom, the angle — so a list of them
+/// says why without a render.
+#[derive(Clone, Debug)]
 pub struct Finding {
     pub flaw: Flaw,
     pub at: [f32; 2],
+    pub note: String,
 }
 
 /// **Every shape the structures in a tile should never take**, from the same
@@ -1345,44 +1353,31 @@ pub fn audit(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Finding> {
                 out.push(Finding {
                     flaw: Flaw::CeilingOutOfPlace,
                     at: p.centre[k],
+                    note: format!(
+                        "{:?}, headroom {:.1} m, {:.1} m under its land",
+                        p.class,
+                        p.ceiling[k] - p.road_y[k],
+                        p.land_y[k] - p.road_y[k]
+                    ),
                 });
             }
         }
     }
 
-    // Open ends below the land with nothing beyond.
-    let ends: Vec<([f32; 2], f32, f32, bool)> = plans
-        .iter()
-        .flat_map(|p| {
-            let n = p.centre.len() - 1;
-            // An end where the street carries on is met by the street itself,
-            // laid in the ground from there — the survey's own slope, where a
-            // ramp's banks are banks rather than walls.
-            [(0usize, 0usize), (1, n)].map(|(k, v)| {
-                (
-                    p.centre[v],
-                    p.road_y[v],
-                    p.land_y[v],
-                    p.roofed[v] || p.cut[k] || p.dead[k] || !p.run_end[k],
-                )
-            })
-        })
-        .collect();
-    for (i, &(at, y, g, closed)) in ends.iter().enumerate() {
-        if closed || y > g - road_levels::SUNK_M - 0.01 {
-            continue;
-        }
-        let met = ends.iter().enumerate().any(|(j, &(q, oy, ..))| {
-            j != i
-                && (q[0] - at[0]).hypot(q[1] - at[1]) < road_levels::TEE_M
-                && (oy - y).abs() < 0.05
+    // Open ends below the land with nothing beyond — closed by an end wall
+    // when drawn, but still a road meeting nothing at its height.
+    for (pi, k) in unmet_ends(&plans) {
+        let p = &plans[pi];
+        let v = if k == 0 { 0 } else { p.centre.len() - 1 };
+        out.push(Finding {
+            flaw: Flaw::StepIntoNothing,
+            at: p.centre[v],
+            note: format!(
+                "{:?}, {:.1} m under its land",
+                p.class,
+                p.land_y[v] - p.road_y[v]
+            ),
         });
-        if !met {
-            out.push(Finding {
-                flaw: Flaw::StepIntoNothing,
-                at,
-            });
-        }
     }
 
     // Streets at grade inside an opening.
@@ -1409,12 +1404,98 @@ pub fn audit(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Finding> {
                 .zip(&bounds)
                 .any(|(ring, b)| point_in_bbox(q, b) && point_in_ring(q, ring));
             if hit {
+                let qk = k;
+                // The structure under it, and how it meets the street.
+                let near = plans
+                    .iter()
+                    .filter_map(|p| {
+                        (0..p.centre.len().saturating_sub(1))
+                            .filter_map(|k| {
+                                project(p.centre[k], p.centre[k + 1], q).map(|(d, t)| (d, t, k))
+                            })
+                            .min_by(|a, b| a.0.total_cmp(&b.0))
+                            .map(|(d, t, k)| (d, t, k, p))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                let note = near.map_or_else(String::new, |(_, t, k, p)| {
+                    let y = p.road_y[k] + (p.road_y[k + 1] - p.road_y[k]) * t;
+                    let g = p.land_y[k] + (p.land_y[k + 1] - p.land_y[k]) * t;
+                    let (a, b) = (p.centre[k], p.centre[k + 1]);
+                    let (sa, sb) = (
+                        r.points[qk.saturating_sub(1)],
+                        r.points[(qk + 1).min(r.points.len() - 1)],
+                    );
+                    let cos = ((b[0] - a[0]) * (sb[0] - sa[0]) + (b[1] - a[1]) * (sb[1] - sa[1]))
+                        / ((b[0] - a[0]).hypot(b[1] - a[1]) * (sb[0] - sa[0]).hypot(sb[1] - sa[1]))
+                            .max(1e-6);
+                    format!(
+                        "{:?} over {:?}, {:.1} m under its land, {}roofed, at {:.0}°",
+                        r.class,
+                        p.class,
+                        g - y,
+                        if p.roofed[k] && p.roofed[k + 1] {
+                            ""
+                        } else {
+                            "not "
+                        },
+                        cos.abs().clamp(0.0, 1.0).acos().to_degrees()
+                    )
+                });
                 out.push(Finding {
                     flaw: Flaw::SlotThroughStreet,
                     at: q,
+                    note,
                 });
                 break;
             }
+        }
+    }
+    out
+}
+
+/// Every end of a structure that is open, below its land by more than
+/// [`road_levels::SUNK_M`], and met by nothing — as (plan, end) pairs.
+///
+/// Not an end that is roofed, cut by the tile border, alone (a dead end, which
+/// has its wall), or one where its street carries on as an ordinary road laid
+/// in the ground; and not one met end to end by another structure at its height
+/// or teed into another's side at it — a footway down a ramp beside the cycle
+/// path, ending where it joins it.
+fn unmet_ends(plans: &[Plan]) -> Vec<(usize, usize)> {
+    let ends: Vec<(usize, usize, [f32; 2], f32, f32, bool)> = plans
+        .iter()
+        .enumerate()
+        .flat_map(|(pi, p)| {
+            let n = p.centre.len() - 1;
+            [(0usize, 0usize), (1, n)].map(|(k, v)| {
+                (
+                    pi,
+                    k,
+                    p.centre[v],
+                    p.road_y[v],
+                    p.land_y[v],
+                    p.roofed[v] || p.cut[k] || p.dead[k] || !p.run_end[k],
+                )
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (i, &(pi, k, at, y, g, closed)) in ends.iter().enumerate() {
+        if closed || y > g - road_levels::SUNK_M - 0.01 {
+            continue;
+        }
+        let met = ends.iter().enumerate().any(|(j, &(_, _, q, oy, ..))| {
+            j != i
+                && (q[0] - at[0]).hypot(q[1] - at[1]) < road_levels::TEE_M
+                && (oy - y).abs() < 0.05
+        }) || plans.iter().any(|p| {
+            nearest_on(p, at).is_some_and(|(q, oy)| {
+                let d = (q[0] - at[0]).hypot(q[1] - at[1]);
+                d < road_levels::TEE_M + p.half && d > 1e-3 && (oy - y).abs() < 0.3
+            })
+        });
+        if !met {
+            out.push((pi, k));
         }
     }
     out
@@ -1586,6 +1667,7 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
                 cut: [start == 0 && run.cut[0], i == n && run.cut[1]],
                 mouth: [false; 2],
                 run_end: [start == 0, i == n],
+                closed: [false; 2],
                 dead: [
                     start == 0 && !run.cut[0] && alone(ri, run.points[0]),
                     i == n && !run.cut[1] && alone(ri, run.points[n - 1]),
@@ -1692,6 +1774,9 @@ fn plan(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Plan> {
                 p.mouth[k] = false;
             }
         }
+    }
+    for (pi, k) in unmet_ends(&plans) {
+        plans[pi].closed[k] = true;
     }
     plans
 }
@@ -2416,7 +2501,7 @@ fn emit(plans: &[Plan], max_bytes: Option<usize>, streets: &[[f32; 2]]) -> Tunne
                 walls_of[seg][0].map_or(l, |w| w[end]),
                 walls_of[seg][1].map_or(r, |w| w[end]),
             );
-            if !plan.dead[k] || road_y[v] >= land_y[v] - 0.05 {
+            if !(plan.dead[k] || plan.closed[k]) || road_y[v] >= land_y[v] - 0.05 {
                 continue;
             }
             let t = top(v, roofed[v]);
@@ -3803,6 +3888,34 @@ mod tests {
             .filter(|n| n[0].abs() > 0.99)
             .count();
         assert_eq!(ends, 2 * 6, "expected an end wall at each end of the stub");
+    }
+
+    /// **A structure ending below its land at a street it does not meet is
+    /// closed.** A cutting three metres down that stops where a street at grade
+    /// tees into its end is not alone, so it is not a dead end — and was left
+    /// open onto the void. It gets the same end wall.
+    #[test]
+    fn an_unmet_end_below_the_land_is_walled() {
+        let cut = run(0, [0.0, 0.0], [60.0, 0.0], 0);
+        let street = run(0, [60.0, 0.0], [60.0, 30.0], 1);
+        let n = cut.points.len();
+        let profiles = vec![
+            Some(Profile {
+                road: vec![-3.0; n],
+                land: vec![0.0; n],
+                walls: Vec::new(),
+            }),
+            None,
+        ];
+        let out = build_structures(&[cut, street], &profiles, None);
+        let walls_at_end = out
+            .meshes
+            .iter()
+            .filter(|m| m.group == SurfaceGroup::TunnelStructure)
+            .flat_map(|m| m.positions.iter().zip(&m.normals))
+            .filter(|(p, n)| n[0] < -0.99 && (p[0] - 60.0).abs() < 0.01)
+            .count();
+        assert!(walls_at_end > 0, "the cutting's end was left open");
     }
 
     /// **A building in a covered tunnel's old trench is the tunnel's, and one on
