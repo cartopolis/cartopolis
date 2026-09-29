@@ -1201,11 +1201,12 @@ fn parse_percent(text: &str) -> Option<f64> {
 /// on the very restart that was supposed to apply it.
 ///
 /// The tab is ordered by what a struggling device should reach for first: the
-/// detail preset, then the render scale, then the individual features. Each
-/// control says whether it applies now or at the next start, because the split is
-/// real and not a UI convention — `quality::budget()` is a `OnceLock` read before
-/// the world exists, and the sky and env map cannot be added to or removed from a
-/// live camera without tearing down GPU resources still in flight.
+/// detail preset, then the render scale and frame rate, then the individual
+/// features. **Everything here applies at once** (2026-09-29): the preset swaps
+/// the budget (`quality::select`) and `render_features` reconciles the camera to
+/// every row, the sky included — see its module note for how the sky got there.
+/// The individual rows are `Option`s whose `None` follows the preset, so picking
+/// a preset moves every row still on Automatic and none that was set by hand.
 fn graphics_tab(
     ui: &mut egui::Ui,
     prefs: &mut AppPrefs,
@@ -1218,17 +1219,57 @@ fn graphics_tab(
             ui.selectable_value(&mut prefs.quality, preset, preset.label());
         }
     });
-    // `quality::budget()` is a process-wide `OnceLock`, read by systems that run
-    // before the world exists (the worker pool sizes itself from it), so there is
-    // no honest way to apply this to a running process.
     pending(
         ui,
-        "Takes effect the next time the application starts. Automatic picks by device.",
+        "Applies immediately. Automatic picks by device. The settings below that \
+         are on Automatic follow it.",
     );
 
     ui.add_space(8.0);
     ui.separator();
     render_scale_row(ui, prefs, target);
+
+    ui.add_space(8.0);
+    frame_rate_row(ui, prefs);
+
+    ui.add_space(8.0);
+    ui.separator();
+    section(ui, "Effects");
+    tri_state(
+        ui,
+        &mut prefs.bloom,
+        crate::quality::budget().bloom,
+        "Bloom",
+    );
+    // A run launched with neither bloom nor the full sky has no `Hdr`, and that
+    // cannot be added to a live camera (`render_features::hdr_at_launch`).
+    let hdr = crate::systems::render_features::hdr_at_launch().unwrap_or(true);
+    ui.label(
+        egui::RichText::new(if !hdr && prefs.bloom_on() {
+            "Turns on at the next start: this run was launched with the simple \
+             sky and no bloom."
+        } else {
+            "Glare around the sun, lit windows and the planet's edge from orbit. \
+             Thirteen full-screen passes when on."
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+    ui.add_space(6.0);
+    tri_state(
+        ui,
+        &mut prefs.anti_aliasing,
+        crate::quality::budget().msaa != bevy::render::view::Msaa::Off,
+        "Anti-aliasing",
+    );
+    ui.label(
+        egui::RichText::new(
+            "Smooth edges. Applies immediately as an edge filter; multisampling, \
+             which is sharper and costs more memory traffic, follows at the next start.",
+        )
+        .small()
+        .color(theme::TEXT_DIM),
+    );
 
     ui.add_space(8.0);
     ui.separator();
@@ -1291,8 +1332,7 @@ fn graphics_tab(
             "Forced off for this run by CARTO_NO_ENVMAP."
         } else if ibl_possible {
             "Lights shadowed faces with the sky and gives water something to \
-             reflect. Costs a cubemap re-baked every frame. Takes effect at the \
-             next start."
+             reflect. Costs a cubemap re-baked every frame. Applies immediately."
         } else {
             "Needs the full atmosphere — the simple sky has nothing to reflect."
         })
@@ -1385,8 +1425,7 @@ fn sky_section(
     });
     pending(
         ui,
-        "Takes effect the next time the application starts. Simple is cheaper and \
-         works on every device.",
+        "Applies immediately. Simple is cheaper and works on every device.",
     );
 
     // What this run is drawing, and — when it differs from the request — why. The
@@ -1395,9 +1434,15 @@ fn sky_section(
     let now = match sky {
         Some(SkyMode::Atmosphere) => "Drawing the full atmosphere.".to_string(),
         Some(SkyMode::Dome) => {
+            let launched_without_hdr =
+                crate::systems::render_features::hdr_at_launch() == Some(false);
             let why = match (prefs.sky, filterable) {
                 (SkyPreference::Simple, _) => "as asked",
                 (_, Some(false)) => "this GPU cannot sample the atmosphere's lookup textures",
+                _ if launched_without_hdr && SkyMode::atmosphere_possible() => {
+                    "the full sky turns on at the next start, since this run was \
+                     launched with the simple sky and no bloom"
+                }
                 _ => "forced by a startup switch",
             };
             format!("Drawing the simple sky — {why}.")
@@ -1441,13 +1486,42 @@ fn tri_state(ui: &mut egui::Ui, value: &mut Option<bool>, tier_default: bool, la
     }
 }
 
-/// The render-scale slider.
+/// Frames per second to aim for: Automatic, a fixed rate, or no cap.
 ///
-/// Deliberately **not** followed by a `pending(...)` note, unlike the quality
-/// preset directly above it, and the contrast is the point rather than an
-/// oversight: that preset cannot apply to a running process (`quality::budget()`
-/// is a `OnceLock` read before the world exists), while this is a `Resource` the
-/// render world re-extracts every frame. Do not paste that note down here.
+/// Buttons rather than a slider, because on a phone the number is a request to
+/// the display, which rounds it to a mode it has — 45 on a 60/120 Hz panel is not
+/// a thing anyone gets. The idle halving in `frame_pacing` still applies on top.
+fn frame_rate_row(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
+    const CHOICES: [(Option<u32>, &str); 5] = [
+        (None, "Automatic"),
+        (Some(30), "30"),
+        (Some(60), "60"),
+        (Some(120), "120"),
+        (Some(0), "No cap"),
+    ];
+    ui.label("Frame rate");
+    ui.horizontal_wrapped(|ui| {
+        for (value, label) in CHOICES {
+            ui.selectable_value(&mut prefs.frame_rate, value, label);
+        }
+    });
+    let note = match prefs.frame_rate {
+        None => {
+            let fps = crate::quality::budget().target_fps();
+            if fps > 0.0 {
+                format!("Automatic — {fps:.0} fps for this device. Lower saves battery and heat.")
+            } else {
+                "Automatic — no cap for this device.".to_string()
+            }
+        }
+        Some(0) => "As fast as the device can draw. Uses the most battery.".to_string(),
+        Some(_) => "Lower saves battery and heat.".to_string(),
+    };
+    ui.label(egui::RichText::new(note).small().color(theme::TEXT_DIM));
+}
+
+/// The render-scale slider. Applies immediately: `RenderScale` is a `Resource`
+/// the render world re-extracts every frame.
 fn render_scale_row(ui: &mut egui::Ui, prefs: &mut AppPrefs, target: Option<UVec2>) {
     use crate::systems::render_scale::RenderScale;
 

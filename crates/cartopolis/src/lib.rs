@@ -2741,6 +2741,25 @@ fn run_client() {
         PreUpdate,
         systems::touch::recognize_touch_gestures.after(bevy::input::InputSystems),
     );
+    // A preset picked in Settings swaps the render budget before anything in
+    // `Update` reads it (`quality::follow_preset` says why it cannot be later).
+    app.add_systems(PreUpdate, quality::follow_preset);
+
+    // The camera's switchable render state — bloom, samples, the sky and its
+    // reflections — put on before the first frame is drawn, and then kept in step
+    // every frame from `Update` below. `find_env_map_component` goes first so it
+    // sees the camera once without reflections (`render_features::EnvMapComponent`).
+    app.init_resource::<systems::render_features::EnvMapComponent>();
+    app.add_systems(
+        Startup,
+        (
+            systems::render_features::find_env_map_component,
+            systems::render_features::apply_render_features,
+            systems::render_features::apply_sky,
+        )
+            .chain()
+            .after(systems::free_camera::setup_camera),
+    );
 
     app.add_systems(
         Startup,
@@ -3140,11 +3159,16 @@ fn run_client() {
                 // landed dry until the rain next moved.
                 systems::wet_surfaces::apply_wet_surfaces
                     .after(systems::map_geometry::update_map_surfaces),
-                // Ambient occlusion and the light shafts, reconciled with what
-                // Settings ▸ Graphics currently asks for. After the camera, which
-                // is the entity it writes and which measures the capability half
-                // of the answer.
-                systems::render_features::apply_render_features
+                // Every switch in Settings ▸ Graphics — the light shafts, bloom,
+                // samples, the sky and its reflections — reconciled with what it
+                // currently asks for. After the camera, which is the entity they
+                // write and which measures the capability half of the answer.
+                (
+                    systems::render_features::apply_render_features,
+                    systems::render_features::apply_sky,
+                    systems::render_features::find_env_map_component,
+                )
+                    .chain()
                     .after(systems::free_camera::camera_controls),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then

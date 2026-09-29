@@ -2,10 +2,8 @@ use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::camera::Exposure;
 use bevy::light::atmosphere::ScatteringMedium;
-use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
+use bevy::light::{AmbientLight, Atmosphere, NotShadowCaster};
 use bevy::math::{DQuat, DVec3};
-use bevy::pbr::AtmosphereSettings;
-use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
 use cartopolis_core::motion;
@@ -733,22 +731,14 @@ pub const GROUND_BLOOM_INTENSITY: f32 = 0.12;
 /// switches between the two at the tier boundary.
 pub const SPACE_BLOOM_INTENSITY: f32 = 0.35;
 
-/// Bloom strength at a given `space_factor` — 0 at the ground, 1 in deep space —
-/// with the render budget applied.
+/// Bloom strength at a given `space_factor` — 0 at the ground, 1 in deep space.
 ///
-/// The phone tier answers **exactly** `0.0`, and the exactness is the mechanism
-/// rather than an approximation of "off": `bevy_post_process`'s bloom node
-/// early-returns on `intensity == 0.0`, so a zero here skips all thirteen
-/// downsample/upsample passes over the HDR target without removing the
-/// component. That matters — `apply_day_night_cycle` and `shot_harness` both
-/// query `&Bloom` as part of a tuple, so a camera without the component would
-/// silently drop out of the day/night cycle and out of `ShotMetrics` rather than
-/// merely rendering without glare.
+/// Whether there is any bloom at all is not decided here: it is the presence of
+/// the `Bloom` component, which `render_features::apply_render_features` adds and
+/// removes from `AppPrefs::bloom_on`. This used to answer 0.0 on a tier without
+/// bloom, which made the preference unable to turn it on.
 #[must_use]
 pub fn bloom_intensity(space_factor: f32) -> f32 {
-    if !crate::quality::budget().bloom {
-        return 0.0;
-    }
     GROUND_BLOOM_INTENSITY.lerp(SPACE_BLOOM_INTENSITY, space_factor)
 }
 
@@ -796,13 +786,6 @@ pub fn setup_camera(
     // The web and a software adapter both advertise sample counts of 1 and 4 only
     // — see the `Msaa` comment at the camera spawn.
     let restricted_sample_counts = cfg!(target_arch = "wasm32") || software_renderer;
-    // Kept for `render_features::apply_render_features`, which has to answer the
-    // same question every time the occlusion setting is flipped and cannot
-    // re-derive it — the restriction is a fact about this surface as well as this
-    // adapter.
-    commands.insert_resource(crate::systems::render_features::RestrictedSampleCounts(
-        restricted_sample_counts,
-    ));
     let budget = crate::quality::budget();
 
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
@@ -815,11 +798,10 @@ pub fn setup_camera(
         space: medium.clone(),
     });
 
-    // Atmosphere and its env-map IBL are chosen once here, at startup: they can't
-    // be safely toggled at runtime (removing the components frees in-flight GPU
-    // resources and hangs the device — see `globe::update_globe_visibility`). The
-    // dev-panel checkboxes seed these but only take effect on the next launch; the
-    // env flags force them off. Env-map IBL requires the atmosphere it bakes from.
+    // The atmosphere and its env-map IBL are switched while the app runs
+    // (`render_features`, which also removes the render-world state bevy leaves
+    // behind when they go); the env flags force them off. Env-map IBL requires the
+    // atmosphere it bakes from.
     // The atmosphere is compute-based (bevy_pbr) and needs a fragment storage
     // buffer. That ruled it out under WebGL2, which has neither — but the web build
     // targets WebGPU now (ADR-033), where both exist, so this is no longer
@@ -919,19 +901,13 @@ pub fn setup_camera(
     // shaders copying the `Atmosphere` struct, which that driver reads wrong —
     // fixed on our side by `atmosphere_patch`, and confirmed on the phone
     // (`docs/notes/adreno-atmosphere-struct-copy.md`).
-    let want_sky = !crate::env_flag("CARTO_NO_ATMOSPHERE");
-    let asked_for_dome = prefs.sky == crate::resources::SkyPreference::Simple;
-    let want_atmosphere =
-        want_sky && float32_filterable && !asked_for_dome && !crate::env_flag("CARTO_SKY_DOME");
-    let want_envmap =
-        want_atmosphere && prefs.sky_lighting_on() && !crate::env_flag("CARTO_NO_ENVMAP");
-    let sky = if want_atmosphere {
-        crate::systems::sky_dome::SkyMode::Atmosphere
-    } else if want_sky {
-        crate::systems::sky_dome::SkyMode::Dome
-    } else {
-        crate::systems::sky_dome::SkyMode::None
-    };
+    //
+    // The rules live in `SkyMode::resolve` now, because the answer is no longer
+    // taken once: Settings ▸ Graphics ▸ Sky switches it while the app runs, and
+    // `render_features::apply_render_features` puts the camera, the dome and the
+    // render world in step with it every frame. This is only the first answer.
+    let sky = crate::systems::sky_dome::SkyMode::resolve(prefs.sky);
+    let atmosphere_possible = crate::systems::sky_dome::SkyMode::atmosphere_possible();
     // **Unconditional, and it was not before.** The two lines this replaces each
     // fired only when the answer was *changed* from the tier's, on the reasoning
     // that an unchanged answer is not news. It is news when the sky is black: a
@@ -950,6 +926,10 @@ pub fn setup_camera(
         "sky chosen"
     );
     commands.insert_resource(sky);
+    // The one render-target shape decided here for good — see
+    // `render_features::hdr_at_launch` for why it cannot follow the switches.
+    let hdr = sky == crate::systems::sky_dome::SkyMode::Atmosphere || prefs.bloom_on();
+    crate::systems::render_features::set_hdr_at_launch(hdr);
 
     commands.spawn_big_space(Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD), |root| {
         // The root must carry Visibility: renderable children inherit it, and a
@@ -986,9 +966,10 @@ pub fn setup_camera(
             // There used to be a third clamp here — ambient occlusion, whose SSAO
             // node requires `Msaa::Off` — and with it a reconciliation in
             // `render_features` for when the setting was flipped mid-run. The
-            // occlusion pass was removed on 2026-09-21, so the sample count is
-            // decided once, here, and nothing moves it afterwards.
-            budget.main_pass_msaa(restricted_sample_counts),
+            // occlusion pass was removed on 2026-09-21. The Anti-aliasing setting
+            // moves the count now, through `render_features`, and this is only
+            // the first answer.
+            budget.main_pass_msaa(prefs.anti_aliasing_on(), restricted_sample_counts),
             // How a shadow edge is filtered. Stated rather than left to bevy's
             // required-component default for the same reason `tonemapping` below
             // is: the default is the expensive one. `Gaussian` takes nine taps
@@ -997,9 +978,8 @@ pub fn setup_camera(
             // nine taps over three and a half million pixels with the sun and the
             // moon both up. See `quality::Budget::shadow_filter`.
             //
-            // Unlike the sample count above, this is not re-applied by
-            // `render_features`: nothing can change it while the app runs, the
-            // rung being constant for the process.
+            // Like the sample count above, this is re-applied by `render_features`
+            // when the preset changes.
             budget.shadow_filter,
             // Explicit, because Bevy's required-component default is
             // `TonyMcMapface` and that samples a 3D LUT. On a tier with no `Hdr`
@@ -1025,39 +1005,19 @@ pub fn setup_camera(
             FreeCamera,
             FloatingOrigin,
         ));
-        // Bloom: the glare that makes an HDR scene read as bright. The sun disk is
-        // the case that needs it — a physically-sized disc is a few pixels across,
-        // and without glare around it the sky's brightest object looks like a
-        // sticker. It also gives the night city's window lights and the sunlit limb
-        // from orbit their halo. Kept low (Bevy's default 0.15 is tuned for
-        // emissive-heavy scenes) so the daytime basemap doesn't smear.
-        //
-        // Omitted entirely on a tier that does not want it, rather than kept at
-        // `intensity == 0.0`. A zero intensity does skip the thirteen
-        // downsample/upsample passes — `bloom_intensity` documents that, and it is
-        // true — but `Bloom` carries `#[require(Hdr)]`, so the component's mere
-        // presence keeps the main texture at `Rgba16Float` whether or not the node
-        // does any work. Skipping the passes while still paying 8 B/px for the
-        // target is the worst of both.
-        //
-        // The reason it used to stay is real and is now handled at the query
-        // instead: `apply_day_night_cycle` and `shot_harness` both name `&Bloom`
-        // inside a tuple, and a camera missing it would silently drop out of the
-        // day/night cycle and out of `ShotMetrics` — a lighting bug, not a
-        // rendering one. Both read `Option<&Bloom>` now.
-        if budget.bloom {
-            cam.insert(Bloom {
-                intensity: bloom_intensity(0.0),
-                ..Bloom::NATURAL
-            });
+        if hdr {
+            cam.insert(bevy::camera::Hdr);
         }
-        // Ambient occlusion, the edge filter that pays for it, and the light
-        // shafts are **not** inserted here. All three are capability-and-
-        // preference answers that can change while the app runs (Settings ▸
-        // Graphics), so one system owns adding and removing them and this spawn
-        // would only be a second place that could disagree with it — see
-        // `systems::render_features`, which runs from `Startup` as well as on
-        // change and so has them on before the first frame.
+        // Bloom, the atmosphere, its reflections, the edge filter and the light
+        // shafts are **not** inserted here, and the tonemapping and shadow filter
+        // above are only first answers (the sample count and `Hdr` are this
+        // launch's for good — `render_features::hdr_at_launch`). Every one of them is a
+        // capability-and-preference answer that changes while the app runs
+        // (Settings ▸ Graphics, including the preset), so one system owns adding
+        // and removing them and this spawn would only be a second place that could
+        // disagree with it — see `systems::render_features`, which runs from
+        // `Startup` as well as every frame and so has them on before the first
+        // frame is drawn.
         // Atmospheric distance fog: distant buildings fade into haze, sun-side
         // glow, driven by the dev panel (apply_distance_fog). It is one more
         // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14
@@ -1068,55 +1028,6 @@ pub fn setup_camera(
             dev.time_of_day,
             dev.sun_declination_rad,
         ));
-        // Bevy 0.19 built-in atmosphere: the camera carries only the render
-        // settings; the sky derives from the sun direction + camera altitude
-        // over the planet entity below.
-        //
-        // This used to add that "`update_globe_visibility` no-ops without it,
-        // which is what made dropping it a safe web workaround". It is not safe
-        // and has not been for a while: that system is now the sole writer of the
-        // globe surface's visibility, so a camera with no `AtmosphereSettings`
-        // meant a planet that streamed every tile and drew none of them. It takes
-        // the component optionally now — see its doc comment. Nothing here may
-        // assume a system "no-ops" because of a component this gate withholds.
-        //
-        // The LUT sizes are the tier's. Nothing else here is: the sample counts,
-        // the aerial-view range and the rendering method stay at Bevy's defaults
-        // (`update_globe_visibility` owns the last two of those at runtime), so
-        // the desktop tier restates exactly what `AtmosphereSettings::default()`
-        // gave it. The reason the sizes are worth touching at all is that all four
-        // LUTs are recomputed *every frame* — see `quality::AtmosphereLuts`.
-        //
-        // Gated on `want_atmosphere`, and the gate is about **bandwidth, not the
-        // LUTs**. `AtmosphereSettings` carries `#[require(Hdr)]`, so its mere
-        // presence makes the main texture `Rgba16Float` — 8 B/px of colour instead
-        // of 4. On a tiled mobile GPU that is not a memory cost but a *binning*
-        // one: 8 B colour plus depth overruns the on-chip tile budget, and the
-        // driver answers by splitting the pass into more bins and replaying the
-        // whole draw list for each. An adapter without `FLOAT32_FILTERABLE` (the
-        // Adreno 619 in a Fairphone 4 is the first one we found) already renders
-        // no sky at all, so before this gate it paid the doubled bandwidth *and*
-        // the extra bins for an atmosphere that was switched off above.
-        if want_atmosphere {
-            let luts = budget.atmosphere_luts;
-            cam.insert(AtmosphereSettings {
-                transmittance_lut_size: luts.transmittance,
-                multiscattering_lut_size: luts.multiscattering,
-                sky_view_lut_size: luts.sky_view,
-                aerial_view_lut_size: luts.aerial_view,
-                ..default()
-            });
-        }
-        if want_envmap {
-            // Sky-driven image-based lighting: surfaces are lit by and reflect
-            // the actual atmosphere. 256² IBL cubemap instead of the 512²
-            // default quarters the per-frame environment-map compute bake;
-            // ambient/diffuse IBL is low-frequency, so the drop is imperceptible.
-            cam.insert(AtmosphereEnvironmentMapLight {
-                size: UVec2::splat(256),
-                ..default()
-            });
-        }
 
         // A ground skirt out to the horizon, in the OSM basemap's paper tone.
         // Without it, the world ends at the loaded tiles and the void below
@@ -1158,8 +1069,10 @@ pub fn setup_camera(
     // BigSpace): the camera is the floating origin and stays near y = 0, so the sky's
     // altitude stays effectively constant — correct for the flat local world.
     // `update_atmosphere_origin` moves it to Earth's true render-space centre.
-    // Spawned only when the atmosphere is enabled (startup choice — see above).
-    if want_atmosphere {
+    // Spawned wherever the atmosphere is *possible*, not only where this run starts
+    // with it: the sky is switched while the app runs, and with no camera carrying
+    // `AtmosphereSettings` bevy does no work for it (its extraction walks cameras).
+    if atmosphere_possible {
         commands.spawn((
             crate::components::PlanetAtmosphere,
             Atmosphere::earth(medium),

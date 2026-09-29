@@ -435,20 +435,15 @@ pub struct AppPrefs {
     /// it, since the default is the behaviour the app already had.
     #[serde(default = "crate::resources::yes")]
     pub voice_guidance: bool,
-    /// What the user asked the render budget to be. Applied at **startup only**
-    /// — `quality::budget()` is a process-wide `OnceLock` read by systems that
-    /// run before the world exists, so there is nothing here that can change a
-    /// running process's tier. The panel says so rather than implying otherwise.
+    /// What the user asked the render budget to be. Applied live:
+    /// `quality::follow_preset` swaps the budget when this changes, and the
+    /// systems that act on it reconcile the scene to the new one
+    /// (`quality::select` lists what follows and the little that does not).
     #[serde(default)]
     pub quality: QualityPreset,
     /// The fraction of the screen the 3D world is rendered at, or `None` to follow
-    /// the device's tier.
-    ///
-    /// **The one field in this struct that applies live**, and the contrast with
-    /// [`Self::quality`] directly above is the point rather than an inconsistency.
-    /// A tier is a `OnceLock` read before the world exists and can only ever be a
-    /// restart; this is a `Resource` the render world re-extracts every frame, so
-    /// the picture moves under the slider.
+    /// the device's tier. A `Resource` the render world re-extracts every frame,
+    /// so the picture moves under the slider.
     ///
     /// `None` is "Automatic" — the *absence* of an answer, exactly as
     /// [`QualityPreset::Auto`] is. Clamped on the way in by `RenderScale::new`,
@@ -477,13 +472,25 @@ pub struct AppPrefs {
     /// for that reason.
     #[serde(default = "crate::resources::unit_gain")]
     pub mic_gain: f32,
-    /// Which sky to draw. Applied at **startup only**, like [`Self::quality`]:
-    /// `free_camera::setup_camera` records the answer once as
-    /// `sky_dome::SkyMode` because three systems downstream must make the same
-    /// choice, and because adding or removing an `Atmosphere` component on a live
-    /// camera tears down GPU resources still in flight and hangs the device.
+    /// Which sky to draw. Applied live by `render_features::apply_render_features`,
+    /// which resolves it against the adapter into `sky_dome::SkyMode` and puts the
+    /// camera, the dome and the render world in step with that one answer.
     #[serde(default)]
     pub sky: SkyPreference,
+    /// Frames per second to aim for, or `None` to follow the device's tier.
+    /// `Some(0)` is "no cap". Applied live (`frame_pacing::present_rate`); on a
+    /// vsync-paced surface it is the rate the display is *asked* for, which the
+    /// platform rounds to a mode it has.
+    #[serde(default)]
+    pub frame_rate: Option<u32>,
+    /// Glare around bright light, or `None` to follow the tier. Applied live.
+    #[serde(default)]
+    pub bloom: Option<bool>,
+    /// Multisampled edges, or `None` to follow the tier. Applied live. On is the
+    /// tier's own sample count where it has one and 4× where it has none — the only
+    /// count every surface supports besides 1 (see `quality::Budget::msaa`).
+    #[serde(default)]
+    pub anti_aliasing: Option<bool>,
     /// Sun + moon shadow maps, or `None` to follow the device's tier.
     ///
     /// `Option<bool>` rather than a plain `bool`, and the reason is the same one
@@ -518,8 +525,8 @@ pub struct AppPrefs {
     /// Sky-driven image-based lighting: the cubemap that fills shadowed faces and
     /// gives water something to reflect. `None` follows the tier.
     ///
-    /// Startup only, and it needs the atmosphere — there is nothing to bake an
-    /// environment from on a `SkyMode::Simple` run, which is exactly why
+    /// Applied live, and it needs the atmosphere — there is nothing to bake an
+    /// environment from on a `SkyMode::Dome` run, which is exactly why
     /// `AMBIENT_DAY_BRIGHTNESS_NO_IBL` exists to stand in for it.
     #[serde(default)]
     pub sky_lighting: Option<bool>,
@@ -599,6 +606,9 @@ impl Default for AppPrefs {
             voice_volume: unit_gain(),
             mic_gain: unit_gain(),
             sky: SkyPreference::default(),
+            frame_rate: None,
+            bloom: None,
+            anti_aliasing: None,
             shadows: None,
             light_shafts: None,
             sun_rays: None,
@@ -619,6 +629,31 @@ impl AppPrefs {
     #[must_use]
     pub fn shadows_on(&self) -> bool {
         self.shadows.unwrap_or(crate::quality::budget().shadows)
+    }
+
+    /// Bloom, with `None` resolved against this device's tier. See
+    /// [`Self::shadows_on`].
+    #[must_use]
+    pub fn bloom_on(&self) -> bool {
+        self.bloom.unwrap_or(crate::quality::budget().bloom)
+    }
+
+    /// Multisampling, with `None` resolved against this device's tier — "on" when
+    /// the tier asks for any samples at all. See [`Self::shadows_on`].
+    #[must_use]
+    pub fn anti_aliasing_on(&self) -> bool {
+        self.anti_aliasing
+            .unwrap_or(crate::quality::budget().msaa != bevy::render::view::Msaa::Off)
+    }
+
+    /// The frame rate to aim for: the preference if one is set, else the tier's.
+    /// `0.0` means no cap.
+    #[must_use]
+    pub fn target_fps(&self) -> f32 {
+        match self.frame_rate {
+            Some(fps) => fps as f32,
+            None => crate::quality::budget().target_fps(),
+        }
     }
 
     /// Sky-driven IBL, with `None` resolved against this device's tier. See
@@ -1898,6 +1933,10 @@ mod tests {
             light_shafts: Some(true),
             sun_rays: Some(false),
             sky_lighting: Some(true),
+            // `Some(0)` is "no cap" and must survive as itself, not as `None`.
+            frame_rate: Some(0),
+            bloom: Some(false),
+            anti_aliasing: Some(true),
             // Non-default, like everything else here: the field defaults to
             // `false`, so a round trip that left it `false` would pass with the
             // field missing from the document entirely.
@@ -1963,11 +2002,19 @@ mod tests {
         );
         assert_eq!(auto.shadows_on(), tier.shadows);
         assert_eq!(auto.sky_lighting_on(), tier.sky_ibl);
+        assert_eq!(auto.bloom_on(), tier.bloom);
+        assert_eq!(
+            auto.anti_aliasing_on(),
+            tier.msaa != bevy::render::view::Msaa::Off
+        );
+        assert_eq!(auto.target_fps(), tier.target_fps());
 
         for answer in [true, false] {
             let set = AppPrefs {
                 shadows: Some(answer),
                 sky_lighting: Some(answer),
+                bloom: Some(answer),
+                anti_aliasing: Some(answer),
                 ..AppPrefs::default()
             };
             assert_eq!(set.shadows_on(), answer, "shadows overridden to {answer}");
@@ -1975,6 +2022,23 @@ mod tests {
                 set.sky_lighting_on(),
                 answer,
                 "sky lighting overridden to {answer}"
+            );
+            assert_eq!(set.bloom_on(), answer, "bloom overridden to {answer}");
+            assert_eq!(
+                set.anti_aliasing_on(),
+                answer,
+                "anti-aliasing overridden to {answer}"
+            );
+        }
+        for fps in [0, 30, 120] {
+            let set = AppPrefs {
+                frame_rate: Some(fps),
+                ..AppPrefs::default()
+            };
+            assert_eq!(
+                set.target_fps(),
+                fps as f32,
+                "a chosen rate wins, 0 included"
             );
         }
     }
@@ -1990,6 +2054,9 @@ mod tests {
         assert_eq!(prefs.sky, SkyPreference::Auto);
         assert_eq!(prefs.shadows, None);
         assert_eq!(prefs.sky_lighting, None);
+        assert_eq!(prefs.frame_rate, None);
+        assert_eq!(prefs.bloom, None);
+        assert_eq!(prefs.anti_aliasing, None);
     }
 
     /// A file written before the levels existed must not arrive silent.

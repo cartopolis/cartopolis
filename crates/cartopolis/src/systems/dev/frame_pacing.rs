@@ -11,6 +11,9 @@ use std::time::Duration;
 use crate::env_flag;
 use crate::env_value;
 use crate::platform;
+// Native only: the one reader left off the handset is `frame_limiter`, whose
+// body is compiled out on the web.
+#[cfg(not(target_arch = "wasm32"))]
 use crate::quality;
 use crate::resources;
 use crate::systems;
@@ -38,6 +41,11 @@ pub(crate) struct PresentationRate {
     /// which is chained ahead of both consumers, so the zero this defaults to is
     /// never read.
     pub wanted: f32,
+    /// Whether a person picked a rate in Settings ▸ Graphics. A swapchain that
+    /// paces itself is left alone by [`frame_limiter`] *unless* this is set: a
+    /// display can round a rate request up to a mode it prefers, and "30" that
+    /// quietly runs at 60 is not the setting somebody chose to save battery.
+    pub chosen: bool,
     /// What the compositor last accepted, on Android. `None` until the surface
     /// exists — `native_window()` answers `None` for the first few seconds after
     /// `android_main`, which is what [`report_frame_to_scheduler`] waits for
@@ -149,6 +157,7 @@ pub(crate) fn present_rate(
     uploads: Res<systems::upload_meter::UploadMeter>,
     driver: Res<systems::driver::DriverState>,
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
+    prefs: Res<crate::resources::AppPrefs>,
     mut rate: ResMut<PresentationRate>,
     mut watch: Local<IdleWatch>,
 ) {
@@ -184,13 +193,14 @@ pub(crate) fn present_rate(
         watch.quiet_s + time.delta_secs()
     };
 
-    let active = resolve_frame_rate(cap_override(), quality::budget().target_fps());
+    let active = resolve_frame_rate(cap_override(), prefs.target_fps());
     let wanted = if watch.quiet_s >= IDLE_AFTER_S {
         idle_frame_rate(active)
     } else {
         active
     };
     rate.wanted = wanted;
+    rate.chosen = prefs.frame_rate.is_some_and(|fps| fps > 0);
 
     #[cfg(target_os = "android")]
     if rate.applied != Some(wanted) {
@@ -567,7 +577,13 @@ pub(crate) fn frame_limiter(
         // `None` — before `setup_camera` has run — falls through to the tier, which
         // is right: those are the first frames, there is no swapchain yet, and the
         // conservative answer is the one that caps.
-        if quality::capabilities().is_some_and(|c| c.vsync_paced) {
+        //
+        // The one exception is a rate a person picked (`PresentationRate::chosen`):
+        // the rate hint is a request the display may round up, and a battery-saving
+        // 30 that runs at 60 is a setting that does nothing. Below the display's
+        // rate the sleep lands frames on every other vsync; at or above it the
+        // deadline is always already past and it sleeps nothing.
+        if !rate.chosen && quality::capabilities().is_some_and(|c| c.vsync_paced) {
             return;
         }
         // The rate comes from `PresentationRate` now rather than being resolved

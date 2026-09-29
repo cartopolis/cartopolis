@@ -230,8 +230,15 @@ pub(crate) fn manage_lights(
     sun: Query<Entity, With<SunLight>>,
     moon: Query<Entity, With<MoonLight>>,
     mut last_shadows: Local<Option<bool>>,
+    // The budget the lights were spawned from. A preset swap moves the cascade
+    // count and reach, which — like the shadow flag — cannot be written on a live
+    // light, so it respawns them too.
+    mut last_budget: Local<Option<u64>>,
 ) {
-    if !dev.is_changed() && !prefs.is_changed() {
+    let generation = crate::quality::generation();
+    let prev_budget = last_budget.replace(generation);
+    let budget_swapped = prev_budget.is_some() && prev_budget != Some(generation);
+    if !dev.is_changed() && !prefs.is_changed() && !budget_swapped {
         return;
     }
     // A shadow-toggle flip (not the first run, where setup_sky already spawned
@@ -240,7 +247,7 @@ pub(crate) fn manage_lights(
     let prev = last_shadows.replace(shadows);
     let shadows_flipped = prev.is_some() && prev != Some(shadows);
 
-    if shadows_flipped {
+    if shadows_flipped || budget_swapped {
         for e in sun.iter() {
             commands.entity(e).despawn();
         }
@@ -903,6 +910,13 @@ pub(crate) fn apply_day_night_cycle(
     // The space tier changes the whole lighting model, so the `dev.is_changed()`
     // gate has to let a climb through it too — `space_factor` at the last apply.
     mut was_space: Local<f32>,
+    // Which of bloom and the sky reflections the camera carried at the last
+    // apply. Settings switches both while the app runs (`render_features`), and
+    // each changes a term below — the ambient fill that stands in for missing
+    // reflections, the glare strength a freshly added `Bloom` has to be given —
+    // so either arriving or leaving has to re-apply, as a climb through the
+    // space ramp does.
+    mut was_features: Local<Option<(bool, bool)>>,
 ) {
     let mut camera = camera;
     // 0 on the ground, 1 in deep space, smooth in between: every lighting term
@@ -912,10 +926,18 @@ pub(crate) fn apply_day_night_cycle(
         .map(|(cell, tf, _, _, _)| globe.space_factor(cell, tf))
         .unwrap_or(0.0);
     let sky_ibl = camera.single().is_ok_and(|(_, _, _, _, env)| env.is_some());
-    if !dev.is_changed() && (space - *was_space).abs() < SPACE_RAMP_STEP {
+    let bloom_on = camera
+        .single()
+        .is_ok_and(|(_, _, _, bloom, _)| bloom.is_some());
+    let features = Some((sky_ibl, bloom_on));
+    if !dev.is_changed()
+        && (space - *was_space).abs() < SPACE_RAMP_STEP
+        && *was_features == features
+    {
         return;
     }
     *was_space = space;
+    *was_features = features;
 
     // Overcast: thick cloud (and, a little, rain) dims and flattens the ground
     // lighting — the direct sun drops, the sky's fill light rises, colours grey

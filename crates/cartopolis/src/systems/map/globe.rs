@@ -954,7 +954,8 @@ const SKY_SHELL_GROUND_RADIUS: f32 = 150_000.0;
 /// forces the cheap `LookupTexture` path if a weaker GPU ever needs it.
 const SPACE_ATMOSPHERE: bool = true;
 
-/// Whether the space tier should raymarch (see [`SPACE_ATMOSPHERE`]), read once.
+/// Whether the space tier should raymarch (see [`SPACE_ATMOSPHERE`]),
+/// the tier's answer read live.
 ///
 /// Three gates, and the middle one is the load-bearing addition: "a weaker GPU
 /// ever needs it" describes a handset exactly, and `CARTO_NO_SPACE_RAYMARCH`
@@ -963,13 +964,14 @@ const SPACE_ATMOSPHERE: bool = true;
 /// platform it would matter most for — hence the tier answers first
 /// (`quality::Budget::space_raymarch`), and the env flag stays as the way to
 /// reproduce the cheap path on a machine that can profile it.
+///
+/// The switch is read once; the tier's half is read every call, because a preset
+/// picked in Settings swaps the budget while the app runs.
 fn space_raymarch() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        SPACE_ATMOSPHERE
-            && crate::quality::budget().space_raymarch
-            && !crate::env_flag("CARTO_NO_SPACE_RAYMARCH")
-    })
+    static FORCED_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    SPACE_ATMOSPHERE
+        && crate::quality::budget().space_raymarch
+        && !*FORCED_OFF.get_or_init(|| crate::env_flag("CARTO_NO_SPACE_RAYMARCH"))
 }
 
 /// Raymarch sky samples per fragment in the space tier. Held at Bevy's default:
@@ -1210,10 +1212,11 @@ pub fn update_globe_visibility(
     //
     // We deliberately do NOT add/remove the `Atmosphere` or the camera's
     // `AtmosphereEnvironmentMapLight` here (an earlier version dropped the env-map
-    // light in space): tearing those components down at runtime frees GPU
-    // resources still in flight and hangs the device (`VK_ERROR_DEVICE_LOST`,
-    // confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
-    // (`setup_camera`, gated by the dev-panel/env flags) and left in place.
+    // light in space, and hung the device — `VK_ERROR_DEVICE_LOST`, kernel `GPU
+    // HANG` logs). Removing them leaves bevy's per-view atmosphere state behind in
+    // the render world; the one place that does it, for the Settings switches,
+    // is `render_features::apply_sky`, which re-syncs the camera afterwards to
+    // clear that state. Nothing here should grow a second.
     //
     // Absent on a `SkyMode::Dome` run, which has no atmosphere to switch modes on
     // — that arm skips this block and goes on to the visibility writes below,

@@ -69,22 +69,79 @@ use big_space::prelude::GridCell;
 use crate::resources::DevPanelState;
 use crate::utils::sun;
 
-/// Which sky this run got, decided once by [`crate::systems::free_camera::setup_camera`]
-/// from the adapter's features and the startup switches.
+/// Which sky this run is drawing, from the adapter's features, the startup
+/// switches and Settings ▸ Graphics ▸ Sky ([`SkyMode::resolve`]).
 ///
-/// A resource rather than a re-test at each use, because the decision has to be
-/// the *same* one in three places — whether the camera carries
-/// `AtmosphereSettings`, whether the planet entity exists, and whether the dome
-/// below is spawned — and two of those are already load-bearing enough that
-/// discovering the answer twice is how they come apart.
+/// A resource rather than a re-test at each use, because the answer has to be
+/// the *same* one in several places — whether the camera carries
+/// `AtmosphereSettings`, whether the dome below is shown, what the Graphics tab
+/// reports — and discovering it twice is how they come apart. First written by
+/// `setup_camera`, then kept current by `render_features::apply_sky`.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkyMode {
     /// bevy_pbr's atmosphere: the real thing, and what nearly every machine gets.
     Atmosphere,
-    /// This module: the sky was wanted, and the adapter could not draw it.
+    /// This module: the sky was wanted, and either the adapter could not draw the
+    /// atmosphere or the person asked for the simple one.
     Dome,
     /// No sky at all — `CARTO_NO_ATMOSPHERE`, or the dev panel's toggle off.
     None,
+}
+
+/// The startup switches that bind the sky, read once: on Android each read is a
+/// system-property lookup, and [`SkyMode::resolve`] runs every frame.
+struct SkySwitches {
+    no_sky: bool,
+    forced_dome: bool,
+    no_envmap: bool,
+}
+
+fn switches() -> &'static SkySwitches {
+    static SWITCHES: std::sync::OnceLock<SkySwitches> = std::sync::OnceLock::new();
+    SWITCHES.get_or_init(|| SkySwitches {
+        no_sky: crate::env_flag("CARTO_NO_ATMOSPHERE"),
+        forced_dome: crate::env_flag("CARTO_SKY_DOME"),
+        no_envmap: crate::env_flag("CARTO_NO_ENVMAP"),
+    })
+}
+
+impl SkyMode {
+    /// Whether this run could draw bevy's atmosphere at all: the adapter can
+    /// filter the float lookup tables, and no startup switch forbids it. `false`
+    /// before `setup_camera` has measured the adapter.
+    #[must_use]
+    pub fn atmosphere_possible() -> bool {
+        !switches().no_sky
+            && !switches().forced_dome
+            && crate::quality::capabilities().is_some_and(|caps| caps.float32_filterable)
+    }
+
+    /// The sky for a preference on this run — the one answer the camera, the
+    /// planet, the dome and the Graphics tab all read.
+    ///
+    /// **The preference can only narrow.** `Simple` picks the dome on hardware
+    /// that could run the atmosphere; `Full` cannot conjure an atmosphere the
+    /// adapter will not draw, because the alternative to refusing is a bind-group
+    /// validation failure that takes the whole app down.
+    #[must_use]
+    pub fn resolve(preference: crate::resources::SkyPreference) -> Self {
+        if switches().no_sky {
+            Self::None
+        } else if Self::atmosphere_possible()
+            && preference != crate::resources::SkyPreference::Simple
+        {
+            Self::Atmosphere
+        } else {
+            Self::Dome
+        }
+    }
+
+    /// Whether the sky-driven reflections can be on under this sky — they are
+    /// baked from the atmosphere, so only [`SkyMode::Atmosphere`] has any.
+    #[must_use]
+    pub fn allows_reflections(self) -> bool {
+        self == Self::Atmosphere && !switches().no_envmap
+    }
 }
 
 /// The dome shell.
@@ -275,27 +332,30 @@ impl Material for SkyDomeMaterial {
     }
 }
 
-/// Spawns the shell, if this run's sky is the dome.
+/// Spawns the shell wherever the sky can be the dome — which is every run that
+/// has a sky at all, since Settings ▸ Graphics ▸ Sky can pick Simple while the
+/// app runs. [`update_sky_dome`] keeps it hidden whenever [`SkyMode`] says the
+/// atmosphere is drawing instead, and a hidden dome costs nothing.
 ///
 /// Startup, and ordered after `setup_camera` because that is where [`SkyMode`] is
-/// decided — the adapter's features are not known before the render device
-/// exists.
+/// first decided.
 pub fn setup_sky_dome(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<SkyDomeMaterial>>,
     sky: Res<SkyMode>,
 ) {
-    if *sky != SkyMode::Dome {
+    if *sky == SkyMode::None {
         return;
     }
-    // Deliberately says *that* the dome was chosen, not why: there are three
-    // reasons (no `FLOAT32_FILTERABLE`, the render budget, `CARTO_SKY_DOME`) and
-    // `setup_camera` logs the one that applied a few lines earlier. This line used
-    // to assert the first of them unconditionally, which sent one report chasing a
-    // missing adapter feature on a phone that had it and had merely been tiered
-    // down (Adreno 840, 2026-08-17).
-    info!("drawing the analytic sky dome (systems::sky_dome); setup_camera logged which reason");
+    if *sky == SkyMode::Dome {
+        // Deliberately says *that* the dome was chosen, not why: there are three
+        // reasons (no `FLOAT32_FILTERABLE`, the preference, `CARTO_SKY_DOME`) and
+        // `setup_camera` logs the one that applied a few lines earlier.
+        info!(
+            "drawing the analytic sky dome (systems::sky_dome); setup_camera logged which reason"
+        );
+    }
     // Shading is per-pixel from the view direction, so the subdivision only
     // decides how round the shell is; `ico(3)` is 1,280 triangles and dips 0.15 %
     // inside its own radius, which is the number that has to stay clear of the
@@ -312,6 +372,11 @@ pub fn setup_sky_dome(
         Mesh3d(mesh),
         MeshMaterial3d(material),
         Transform::from_scale(Vec3::splat(SKY_DOME_RADIUS)),
+        if *sky == SkyMode::Dome {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        },
         bevy::light::NotShadowCaster,
         bevy::light::NotShadowReceiver,
         SkyDome,
@@ -341,6 +406,7 @@ pub fn update_sky_dome(
     // three inputs that move slowly at most — and this is the tier where that is
     // worth caring about, since it is by definition the weakest GPU in the room.
     mut applied: Local<Option<(f32, f32, f32)>>,
+    sky: Res<SkyMode>,
 ) {
     let Ok((cell, cam, cam_local)) = camera.single() else {
         return;
@@ -348,6 +414,17 @@ pub fn update_sky_dome(
     let Ok((mut tf, mut vis, mat_handle)) = dome.single_mut() else {
         return;
     };
+    // The dome exists on every run with a sky, so that Settings can switch to it
+    // while the app runs; it is drawn only while it is the sky.
+    if *sky != SkyMode::Dome {
+        if *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        }
+        // Forget the uniforms, so the first frame it is shown again writes them
+        // for the clock as it is then rather than trusting a stale match.
+        *applied = None;
+        return;
+    }
     // Camera-centred, so the sky reads as infinitely far however far the avatar
     // has walked from the anchor.
     tf.translation = cam.translation();
@@ -411,6 +488,25 @@ pub fn update_sky_dome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The preference can only narrow: Simple is the dome whatever the adapter,
+    /// and nothing but the atmosphere carries reflections.
+    #[test]
+    fn the_sky_preference_only_narrows() {
+        use crate::resources::SkyPreference;
+        assert_eq!(SkyMode::resolve(SkyPreference::Simple), SkyMode::Dome);
+        for preference in SkyPreference::ALL {
+            let sky = SkyMode::resolve(preference);
+            assert_ne!(sky, SkyMode::None, "no switch is set in a test run");
+            assert_eq!(
+                sky == SkyMode::Atmosphere,
+                SkyMode::atmosphere_possible() && preference != SkyPreference::Simple,
+                "{preference:?}"
+            );
+        }
+        assert!(!SkyMode::Dome.allows_reflections());
+        assert!(!SkyMode::None.allows_reflections());
+    }
 
     /// Noon, at sea level. The sky has to be blue — which in these terms means
     /// the blue channel scatters hardest — and bright enough to matter against

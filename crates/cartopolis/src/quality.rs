@@ -1,4 +1,4 @@
-//! How much frame the client is allowed to spend, resolved once at startup.
+//! How much frame the client is allowed to spend, resolved at startup and swapped when Settings picks a preset.
 //!
 //! The web build targets phones now, and a phone is not a small desktop: a
 //! Fairphone 4 renders at a device pixel ratio near 2.75 (1080×2340 real pixels
@@ -10,10 +10,10 @@
 //!
 //! This module is the one place that answers "which of those settings applies".
 //! It is deliberately shaped like [`crate::env_flag`] rather than like a Bevy
-//! resource: the tier is constant for the process, and several of its consumers
+//! resource: the tier changes only when a person picks another preset, and several of its consumers
 //! (`free_camera::camera_controls`, the streamers' radius constants) either run
 //! before the world exists or are already at Bevy's 16-parameter cap for a
-//! system. A `OnceLock` read costs an atomic load and plumbs through nothing.
+//! system. A read costs an atomic load and plumbs through nothing.
 //!
 //! ## Where the answer comes from
 //!
@@ -46,7 +46,8 @@
 //! not a weaker default — it is unreachable. Anything a handset needs turned down
 //! belongs in [`Budget`], where `auto()` can answer for it.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::ShadowFilteringMethod;
@@ -767,12 +768,6 @@ impl Budget {
     /// thermally throttled for the privilege.
     ///
     /// 60 everywhere else, matching what the limiter would have done.
-    // Its only non-test caller is `report_frame_to_scheduler`'s Android arm, which
-    // is `cfg`-ed away everywhere else — so off the handset the tests below are the
-    // only users, and the workspace's `unused = "deny"` would otherwise fail the
-    // native lane for a method that exists precisely to be called on one target.
-    // Same arrangement as `lib.rs::android_property_name`.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     #[must_use]
     pub fn target_fps(&self) -> f32 {
         match self.tier {
@@ -819,41 +814,70 @@ impl Budget {
     /// was removed (2026-09-21, see `render_features`), so the clamp went with it
     /// and multisampling is available again wherever the surface permits it.
     ///
-    /// Returning the answer from one function is what makes
-    /// [`wants_edge_filter`](Self::wants_edge_filter) truthful: the edge filter
-    /// has to go on exactly when the samples went away.
+    /// `anti_aliasing` is `AppPrefs::anti_aliasing_on`, which already folds in
+    /// the tier: off means one sample. On is the tier's own count where it has
+    /// one, and **4× where it has none** — a person switching edges on for a rung
+    /// that gave them up gets the one count besides 1 that every surface supports.
+    /// That same portability is why an explicit 4× survives a restricted surface
+    /// while the desktop tier's 2× does not.
+    ///
+    /// Resolved once, at launch (`setup_camera`): a live camera is not moved
+    /// between sample counts — see `render_features::apply_render_features`.
     #[must_use]
-    pub fn main_pass_msaa(&self, restricted: bool) -> Msaa {
-        if restricted {
-            Msaa::Off
+    pub fn main_pass_msaa(&self, anti_aliasing: bool, restricted: bool) -> Msaa {
+        if !anti_aliasing {
+            return Msaa::Off;
+        }
+        let asked = if self.msaa == Msaa::Off {
+            Msaa::Sample4
         } else {
             self.msaa
+        };
+        if restricted && asked != Msaa::Sample4 {
+            Msaa::Off
+        } else {
+            asked
         }
-    }
-
-    /// Whether this run should carry `Fxaa`.
-    ///
-    /// Exactly when the main pass ends up with one sample and the scene is still
-    /// worth filtering — i.e. when something took the multisampling away. A rung
-    /// that never had any (the phone) does **not** gain a full-screen pass here:
-    /// it gave up edge quality on purpose and an extra pass is the thing it has
-    /// least of.
-    #[must_use]
-    pub fn wants_edge_filter(&self, restricted: bool) -> bool {
-        self.msaa != Msaa::Off && self.main_pass_msaa(restricted) == Msaa::Off
     }
 }
 
-static BUDGET: OnceLock<Budget> = OnceLock::new();
+/// The budget in force, swapped whole when Settings picks another preset.
+///
+/// **A leaked `Box` behind an atomic pointer, not a lock**, so that [`budget`] can
+/// keep handing out `&'static Budget`: a hundred call sites read it, several from
+/// worker threads and from inside loops, and every one of them was written against
+/// a `OnceLock`. A swap leaks the previous budget — a few hundred bytes, once per
+/// press of a preset button — which is what makes an old reference that is still
+/// being read on another thread safe to hold.
+static BUDGET: AtomicPtr<Budget> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Bumped on every swap, so a system that applied something from the budget can
+/// tell that it has to apply it again ([`generation`]).
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The preset word the budget in force was resolved from — `None` for Automatic.
+static PREFERRED: Mutex<Option<&'static str>> = Mutex::new(None);
+
+fn install(budget: Budget) {
+    BUDGET.store(Box::into_raw(Box::new(budget)), Ordering::Release);
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+}
 
 /// Resolve the budget for this run. Call once, early — before anything reads
 /// [`budget`], and in particular before `platform::workers` sizes its pool.
 ///
 /// Idempotent, and deliberately not a panic if called twice: a second call from a
 /// test harness should be a no-op, not a crash in a build that works.
-pub fn init(preferred: Option<&str>) {
+pub fn init(preferred: Option<&'static str>) {
+    if !BUDGET.load(Ordering::Acquire).is_null() {
+        return;
+    }
     let resolved = detect(preferred);
-    if BUDGET.set(resolved).is_ok() {
+    *PREFERRED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = preferred;
+    install(resolved);
+    {
         tracing::info!(
             tier = ?resolved.tier,
             shadows = resolved.shadows,
@@ -892,7 +916,7 @@ pub fn report_budget() {
     let resolved = budget();
     tracing::info!(
         tier = ?resolved.tier,
-        chose = SOURCE.get().copied().unwrap_or("auto"),
+        chose = *SOURCE.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         shadows = resolved.shadows,
         // Beside `shadows` because it is the shadow setting a reader is least
         // likely to guess: it costs per pixel rather than per caster, and
@@ -919,17 +943,98 @@ pub fn report_budget() {
 /// A tier alone does not say whether a person chose it, and the difference is the
 /// first question of every report: `Balanced` from the settings screen and
 /// `Balanced` from `auto()` are the same struct and different bugs.
-static SOURCE: OnceLock<&'static str> = OnceLock::new();
+static SOURCE: Mutex<&'static str> = Mutex::new("auto");
 
-/// The budget for this run, resolving it on first use if [`init`] never ran (a
-/// unit test, or a system that beat startup to it).
+fn set_source(source: &'static str) {
+    *SOURCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = source;
+}
+
+/// The budget in force, resolving it on first use if [`init`] never ran (a unit
+/// test, or a system that beat startup to it).
+///
+/// **Read it where you use it; do not keep it.** Settings can swap the preset
+/// while the app runs ([`select`]), so a value copied into a `Local` or a resource
+/// at startup goes stale. Anything that has to *act* on a change — respawn a
+/// light, re-insert a camera component — compares [`generation`].
 #[must_use]
 pub fn budget() -> &'static Budget {
-    // `None` rather than the stored preference: this arm only runs when nobody
-    // called `init`, which means there is no app and therefore no user — a unit
-    // test, or a system that beat startup to it. Reading `user.json` from here
-    // would make a test's answer depend on the developer's saved settings.
-    BUDGET.get_or_init(|| detect(None))
+    let mut ptr = BUDGET.load(Ordering::Acquire);
+    if ptr.is_null() {
+        // `None` rather than the stored preference: this arm only runs when nobody
+        // called `init`, which means there is no app and therefore no user — a unit
+        // test, or a system that beat startup to it. Reading `user.json` from here
+        // would make a test's answer depend on the developer's saved settings.
+        let fresh = Box::into_raw(Box::new(detect(None)));
+        ptr = match BUDGET.compare_exchange(
+            std::ptr::null_mut(),
+            fresh,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => fresh,
+            // Another thread got there first; ours is dropped, theirs stands.
+            Err(theirs) => {
+                // SAFETY: `fresh` came from `Box::into_raw` just above and was never
+                // published, so nothing else can hold it.
+                drop(unsafe { Box::from_raw(fresh) });
+                theirs
+            }
+        };
+    }
+    // SAFETY: every pointer ever stored in `BUDGET` came from `Box::into_raw` and
+    // is never freed — a swap leaks the old one on purpose (see `BUDGET`).
+    unsafe { &*ptr }
+}
+
+/// Swap the budget when Settings ▸ Graphics picks another preset.
+///
+/// `PreUpdate`, so that every system in `Update` sees the new budget in the same
+/// frame it sees the changed preference — `manage_lights` and
+/// `apply_preferred_render_scale` both act on `AppPrefs` change detection and
+/// would otherwise apply the old budget's answer once and not look again.
+pub fn follow_preset(prefs: bevy::prelude::Res<crate::resources::AppPrefs>) {
+    if bevy::prelude::DetectChanges::is_changed(&prefs) {
+        select(prefs.quality.as_env_word());
+    }
+}
+
+/// How many times the budget has been installed. Changes when Settings swaps the
+/// preset, which is the signal to re-apply anything read from it once.
+#[must_use]
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
+}
+
+/// Swap in the budget for another preset, while the app runs.
+///
+/// `preferred` is the word `QualityPreset::word` gives, `None` for Automatic.
+/// Returns whether anything was swapped: asking for the preset already in force
+/// is a no-op, so this can be called every time the preferences change.
+///
+/// **What follows the swap and what does not.** Everything read per frame follows
+/// at once — the streamers' radii and per-frame budgets, the frame rate, and every
+/// camera component `render_features` reconciles (bloom, multisampling,
+/// tonemapping, the shadow filter, the sky's lookup tables and reflections), plus
+/// the lights, which `sky::manage_lights` respawns on [`generation`]. What was
+/// sized once at startup stays: the worker pool, and the upload and cache ceilings
+/// cached behind their own `OnceLock`s. On a handset those are pinned by
+/// [`handset_guarded`] whatever the preset, so there is nothing for them to follow.
+pub fn select(preferred: Option<&'static str>) -> bool {
+    {
+        let mut current = PREFERRED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *current == preferred {
+            return false;
+        }
+        *current = preferred;
+    }
+    let resolved = detect(preferred);
+    install(resolved);
+    report_budget();
+    true
 }
 
 /// How many bytes a frame may hand the GPU, with `CARTO_UPLOAD_KB` folded in.
@@ -952,8 +1057,9 @@ pub fn budget() -> &'static Budget {
 /// run.
 /// Memoised, because the callers are hot: `map_stream` asks once a frame and
 /// `scatter` once a cell, while `env_value` is a system-property read on Android
-/// and a query-string parse on the web. The answer cannot change during a run —
-/// same reason [`BUDGET`] is a `OnceLock`.
+/// and a query-string parse on the web. The answer is
+/// one sized at startup, like the worker pool, and a preset swap ([`select`]) does
+/// not move it.
 #[must_use]
 pub fn upload_ceiling() -> Option<usize> {
     static CEILING: OnceLock<Option<usize>> = OnceLock::new();
@@ -1125,7 +1231,7 @@ fn detect(preferred: Option<&str>) -> Budget {
     if let Some(v) = crate::env_value("CARTO_QUALITY") {
         match parse(&v) {
             Some(budget) => {
-                let _ = SOURCE.set("CARTO_QUALITY");
+                set_source("CARTO_QUALITY");
                 return on_this_machine(budget);
             }
             None => tracing::warn!(
@@ -1141,10 +1247,10 @@ fn detect(preferred: Option<&str>) -> Budget {
     // laptop is nicer than its core count suggests. `None` is "Auto", which is not
     // a third answer but the absence of one.
     if let Some(budget) = preferred.and_then(parse) {
-        let _ = SOURCE.set("settings");
+        set_source("settings");
         return on_this_machine(budget);
     }
-    let _ = SOURCE.set("auto");
+    set_source("auto");
     on_this_machine(auto())
 }
 
@@ -1885,5 +1991,37 @@ mod tests {
         for word in ["", "temporal", "off", "1", "smooth"] {
             assert_eq!(parse_filter(word), None, "{word} should name no filter");
         }
+    }
+
+    /// The Anti-aliasing switch over every rung and both kinds of surface.
+    ///
+    /// Two properties: off is one sample; on for a rung that has no samples of
+    /// its own is 4×, the only other count every surface accepts, so it survives
+    /// a restricted surface, while the desktop rung's 2× on one falls to 1 (and
+    /// the edge filter, which `render_features` adds whenever the pass has one).
+    #[test]
+    fn the_anti_aliasing_switch_resolves_to_a_portable_sample_count() {
+        for budget in [Budget::phone(), Budget::balanced(), Budget::desktop()] {
+            for restricted in [false, true] {
+                assert_eq!(budget.main_pass_msaa(false, restricted), Msaa::Off);
+                let on = budget.main_pass_msaa(true, restricted);
+                assert!(
+                    matches!(on, Msaa::Off | Msaa::Sample2 | Msaa::Sample4),
+                    "{:?}",
+                    budget.tier
+                );
+                if restricted {
+                    assert!(
+                        matches!(on, Msaa::Off | Msaa::Sample4),
+                        "a restricted surface takes 1 or 4 only"
+                    );
+                }
+            }
+        }
+        assert_eq!(Budget::phone().main_pass_msaa(true, true), Msaa::Sample4);
+        assert_eq!(
+            Budget::desktop().main_pass_msaa(true, false),
+            Budget::desktop().msaa
+        );
     }
 }

@@ -3740,9 +3740,8 @@ pub fn drive_capture(
             near_m: near as i64,
             far_m: far as i64,
             exposure_ev100: exposure.ev100,
-            // A tier with no glare has no `Bloom` component at all, and 0.0 is the
-            // honest reading for it — the same number the component would have
-            // carried, since `bloom_intensity` returns exactly 0.0 on that tier.
+            // No glare means no `Bloom` component at all, and 0.0 is the honest
+            // reading for it.
             bloom: bloom.map_or(0.0, |b| b.intensity),
             globe_albedo: readouts.globe_albedo.0,
             veg_factor: readouts.vegetation.factor,
