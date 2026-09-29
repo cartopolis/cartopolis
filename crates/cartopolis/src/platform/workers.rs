@@ -285,7 +285,7 @@ struct Waiting {
 /// and a new submission's "is there room" cannot both see the same free thread.
 struct Scheduler {
     running: usize,
-    /// Of `running`, the [heavy](submit_heavy) ones.
+    /// Of `running`, the [heavy](submit_heavy_ranked) ones.
     heavy_running: usize,
     next_seq: u64,
     waiting: Vec<Waiting>,
@@ -429,8 +429,8 @@ pub fn submit_ranked(label: &'static str, urgency: Urgency, job: Job) {
     enter(label, false, urgency, job);
 }
 
-/// [`submit`] for a job that holds its thread for **seconds** — a whole map cell,
-/// a building cell, a terrain bake.
+/// [`submit_ranked`] for a job that holds its thread for **seconds** — a whole map
+/// cell, a building cell, a terrain bake.
 ///
 /// **A running job cannot be preempted**, so without this a burst of heavy jobs
 /// takes every thread and a 50 ms basemap tile waits behind them. Measured cold
@@ -445,11 +445,6 @@ pub fn submit_ranked(label: &'static str, urgency: Urgency, job: Job) {
 /// while the reserve sits idle, which is the right way round: a cell that lands a
 /// little later is hidden by the basemap under it, and a missing basemap is not
 /// hidden by anything.
-pub fn submit_heavy(label: &'static str, job: Job) {
-    enter(label, true, NORMAL, job);
-}
-
-/// [`submit_heavy`], saying how soon the job wants a thread.
 pub fn submit_heavy_ranked(label: &'static str, urgency: Urgency, job: Job) {
     enter(label, true, urgency, job);
 }
@@ -712,8 +707,9 @@ mod tests {
         let n = 3 * heavy_lane_width(imp::worker_count().max(1)) + 2;
         for i in 0..n {
             let tx = tx.clone();
-            submit_heavy(
+            submit_heavy_ranked(
                 "heavy_test",
+                NORMAL,
                 Box::new(move || {
                     std::thread::sleep(Duration::from_millis(2));
                     let _ = tx.send(i);
