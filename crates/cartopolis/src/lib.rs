@@ -3221,10 +3221,6 @@ fn run_client() {
                 // movement just did, so all three run after it.
                 systems::soundscape::play_avatar_sounds.after(avatar::handle_avatar_movement),
                 systems::soundscape::update_wind_volume.after(avatar::handle_avatar_movement),
-                // The road hum is a function of the map rather than of movement,
-                // so it hangs off nothing — it reads the streamed road network
-                // and the camera, both of which are settled by now.
-                systems::soundscape::update_road_hum,
                 // The arrival whoosh. After the teleport that causes it, so a
                 // jump is heard on the frame it lands rather than the next one.
                 systems::soundscape::announce_teleports.after(systems::geo_nav::apply_teleport),

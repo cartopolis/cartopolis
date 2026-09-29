@@ -92,25 +92,6 @@ const TELEPORT_VOLUME: f32 = 0.3;
 /// Wind is silent at rest and reaches this at full flight speed.
 const WIND_VOLUME_MAX: f32 = 0.18;
 
-/// Loudest the road hum ever gets — standing beside a motorway.
-///
-/// Below the wind on purpose. A city is *quietly* noisy: the hum has to be the
-/// thing you stop noticing, not the thing you notice, and anything you notice on
-/// a still street is too loud for one you are only passing through.
-const ROAD_VOLUME_MAX: f32 = 0.11;
-
-/// How far a road carries. Past this it contributes nothing.
-///
-/// Generous compared with what you would measure — real traffic on a main road is
-/// audible far further — but the hum is placed by the *nearest* road, and a radius
-/// that reached across a district would mean the sound never changed as you walked
-/// through one. It has to fall away over a distance you can cover on foot, or it
-/// is a constant and constants are inaudible.
-pub const ROAD_AUDIBLE_M: f32 = 140.0;
-
-/// The speed a road has to carry to be at full loudness. `motorway` in
-/// [`cartopolis_geo::traffic::drive_speed`].
-const ROAD_LOUD_SPEED: f32 = 26.0;
 /// How fast the wind volume follows the speed. Slow: wind has mass, and a gust
 /// that tracks the accelerometer exactly reads as a volume slider.
 const WIND_RATE: f32 = 2.0;
@@ -129,8 +110,6 @@ pub struct Soundscape {
     /// The arrival whoosh, played by `announce_teleports` on every jump that did
     /// not ask to be silent (`geo_nav::Teleport::silent`).
     teleport: Handle<AudioSource>,
-    /// The city's road hum (`systems::traffic`'s network drives its volume).
-    road: Handle<AudioSource>,
     /// The Settings ▸ Audio sound test. Public because it is played from the
     /// panel rather than from this module's own systems.
     pub test_tone: Handle<AudioSource>,
@@ -140,12 +119,6 @@ pub struct Soundscape {
 /// Marks the looping wind emitter so its volume can be tracked to the speed.
 #[derive(Component)]
 pub struct WindSound;
-
-#[cfg(feature = "audio")]
-/// Marks the looping road-hum emitter. Its volume is a function of the map, not
-/// of the avatar — see [`update_road_hum`].
-#[derive(Component)]
-pub struct RoadHum;
 
 #[cfg(feature = "audio")]
 /// Build the clips and start the (silent) wind loop.
@@ -164,7 +137,6 @@ pub fn setup_soundscape(mut commands: Commands, mut sources: ResMut<Assets<Audio
         ],
         land: source(synth::landing()),
         wind: source(synth::wind()),
-        road: source(synth::road_hum()),
         teleport: source(synth::teleport()),
         test_tone: source(synth::test_tone()),
     };
@@ -179,18 +151,6 @@ pub fn setup_soundscape(mut commands: Commands, mut sources: ResMut<Assets<Audio
             ..default()
         },
         WindSound,
-    ));
-    // Started silent at launch for the same reason the wind is: a loop that
-    // begins when you walk into earshot begins with an attack, and a city's hum
-    // has to be something you notice the *absence* of, never the arrival of.
-    commands.spawn((
-        AudioPlayer(soundscape.road.clone()),
-        PlaybackSettings {
-            mode: PlaybackMode::Loop,
-            volume: Volume::Linear(0.0),
-            ..default()
-        },
-        RoadHum,
     ));
     commands.insert_resource(soundscape);
 }
@@ -339,58 +299,6 @@ fn step_wobble(foot: usize, phase: f32) -> (f32, f32) {
 }
 
 #[cfg(feature = "audio")]
-/// Track the road hum to the map: how big a road is near the camera, and how near.
-///
-/// The volume comes from `systems::traffic`'s `DriveNetwork`, which is already
-/// resident and already carries each road's class as a speed — so this costs one
-/// scan of the loaded ring per frame and no new data at all. That is the whole
-/// idea: the city sounds like a city because of what the map already says is
-/// there.
-///
-/// Gated on **Layers ▸ Life ▸ Traffic**, because somebody switching the traffic
-/// off expects the traffic to stop, including the sound of it. On the cars
-/// alone: the hum is a road's, and a pavement of people makes none of it.
-pub fn update_road_hum(
-    time: Res<Time>,
-    net: Res<crate::systems::traffic::DriveNetwork>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
-    prefs: Res<AppPrefs>,
-    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
-    mut hum: Query<&mut AudioSink, With<RoadHum>>,
-    mut current: Local<f32>,
-) {
-    let target = if layers.cars_visible() {
-        camera
-            .single()
-            .ok()
-            .map(|(cell, tf)| {
-                let cam = Vec2::new(
-                    cell.x as f32 * crate::grid::WORLD_CELL_EDGE + tf.translation.x,
-                    cell.z as f32 * crate::grid::WORLD_CELL_EDGE + tf.translation.z,
-                );
-                // Silent from the air. A hum that followed you up to a kilometre
-                // would be a drone with no source anywhere in the picture.
-                let alt = (1.0 - tf.translation.y / ROAD_AUDIBLE_M).clamp(0.0, 1.0);
-                net.loudest_road(cam) * alt * ROAD_VOLUME_MAX
-            })
-            .unwrap_or(0.0)
-    } else {
-        0.0
-    };
-    // The same ramp shape the wind uses, and for the same reason: the level is a
-    // claim about where you are standing, so it has to move at a physical rate
-    // rather than snapping when a cell streams in.
-    *current += (target - *current) * (1.0 - (-WIND_RATE * time.delta_secs()).exp());
-    if (target - *current).abs() < 1e-5 {
-        *current = target;
-    }
-    let gain = prefs.effects_gain();
-    for mut sink in hum.iter_mut() {
-        sink.set_volume(Volume::Linear(*current * gain));
-    }
-}
-
-#[cfg(feature = "audio")]
 /// Track the wind's volume to the avatar's speed.
 pub fn update_wind_volume(
     time: Res<Time>,
@@ -416,25 +324,6 @@ pub fn update_wind_volume(
     for mut sink in wind.iter_mut() {
         sink.set_volume(Volume::Linear(*current * gain));
     }
-}
-
-/// How loud one road is from `distance_m` away, 0..1.
-///
-/// A **maximum** is taken over the roads in range rather than a sum, and that is
-/// the load-bearing choice: summing makes a dense grid of back streets louder
-/// than a motorway, which is backwards — the thing you hear is the biggest road
-/// near you, not the number of roads near you.
-///
-/// Falls away with the *square* of the remaining distance, so the hum is a place
-/// you walk into rather than a level that fades linearly across a district.
-#[must_use]
-pub fn road_loudness(speed_m_s: f32, distance_m: f32) -> f32 {
-    if distance_m >= ROAD_AUDIBLE_M || !distance_m.is_finite() {
-        return 0.0;
-    }
-    let level = (speed_m_s / ROAD_LOUD_SPEED).clamp(0.0, 1.0);
-    let near = (1.0 - distance_m / ROAD_AUDIBLE_M).clamp(0.0, 1.0);
-    level * near * near
 }
 
 /// Wind volume for a speed. Silent at a walk (nobody hears the wind strolling),
@@ -748,55 +637,6 @@ pub mod synth {
     /// slower pole takes the rush down to ~120 Hz. The suite asserts the
     /// headroom, because nothing about the number is self-evident and the
     /// symptom of losing it is a sound that is wrong rather than absent.
-    /// The city's road hum: a two-pole rush an octave below the wind, with a
-    /// faint low tone under it.
-    ///
-    /// Distant traffic is not wind — it has a *pitch*, the tyre-on-tarmac roar
-    /// around 60–80 Hz that carries furthest — so noise alone reads as weather
-    /// and not as a road. The tone is deliberately weak: strong enough to give
-    /// the rush a centre, quiet enough that it never becomes a hum you could name
-    /// a note for.
-    ///
-    /// Headroom to the same standard [`wind`] documents, and for the same reason:
-    /// clipping a low-passed rush manufactures exactly the top end the filter
-    /// removed, and no volume slider can undo distortion baked into the asset.
-    /// The suite asserts it.
-    pub fn road_hum() -> Vec<u8> {
-        const GAIN: f32 = 1.9;
-        const POLE: f32 = 0.018;
-        const TONE_HZ: f32 = 68.0;
-        const TONE_GAIN: f32 = 0.05;
-        let len = (SAMPLE_RATE as f32 * 2.0) as usize;
-        let fade = (SAMPLE_RATE as f32 * 0.25) as usize;
-        let mut seed = 0x00D0_7A11;
-        let mut lp = 0.0_f32;
-        let mut lp2 = 0.0_f32;
-        let raw: Vec<f32> = (0..len + fade)
-            .map(|i| {
-                lp += POLE * (noise(&mut seed) - lp);
-                lp2 += POLE * (lp - lp2);
-                // The tone's period is forced to divide the loop, or the seam
-                // clicks: a sine that does not close is a discontinuity, and a
-                // discontinuity repeated every two seconds is a metronome.
-                let cycles = (TONE_HZ * len as f32 / SAMPLE_RATE as f32).round();
-                let phase = std::f32::consts::TAU * cycles * (i as f32 / len as f32);
-                lp2 * GAIN + phase.sin() * TONE_GAIN
-            })
-            .collect();
-        let samples: Vec<i16> = (0..len)
-            .map(|i| {
-                let v = if i < fade {
-                    let t = i as f32 / fade as f32;
-                    raw[i] * t + raw[len + i] * (1.0 - t)
-                } else {
-                    raw[i]
-                };
-                to_i16(v)
-            })
-            .collect();
-        wav(&samples)
-    }
-
     pub fn wind() -> Vec<u8> {
         const GAIN: f32 = 2.5;
         const POLE: f32 = 0.035;
@@ -831,40 +671,6 @@ pub mod synth {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A motorway is louder than a back street at the same distance, and both
-    /// fall to nothing at the audible radius. The shape is the whole feature: a
-    /// hum that did not change as you walked would be a constant, and constants
-    /// are inaudible.
-    #[test]
-    fn the_road_hum_follows_the_road_and_the_distance() {
-        let motorway = road_loudness(26.0, 20.0);
-        let back_street = road_loudness(7.5, 20.0);
-        assert!(motorway > back_street, "class has to matter");
-        assert!(
-            road_loudness(26.0, 20.0) > road_loudness(26.0, 100.0),
-            "distance has to matter"
-        );
-        assert_eq!(
-            road_loudness(26.0, ROAD_AUDIBLE_M),
-            0.0,
-            "silent at the edge"
-        );
-        assert_eq!(road_loudness(26.0, 5_000.0), 0.0, "and beyond it");
-        assert!(road_loudness(26.0, 0.0) <= 1.0, "bounded at the kerb");
-        // A road nobody may drive contributes nothing, which is what keeps a
-        // footpath from humming.
-        assert_eq!(road_loudness(0.0, 10.0), 0.0);
-    }
-
-    /// A NaN distance must read as *out of earshot*, not as full volume. It
-    /// arrives the moment a line has a degenerate point, and the failure would be
-    /// the loudest possible one.
-    #[test]
-    fn a_nan_distance_is_silent() {
-        assert_eq!(road_loudness(26.0, f32::NAN), 0.0);
-        assert_eq!(road_loudness(26.0, f32::INFINITY), 0.0);
-    }
 
     /// Nobody hears the wind while strolling, and flight is louder than a sprint
     /// at the same nominal fraction — the two things that make it read as air
@@ -914,7 +720,6 @@ mod tests {
             ("footstep", synth::footstep(1.0)),
             ("landing", synth::landing()),
             ("wind", synth::wind()),
-            ("road_hum", synth::road_hum()),
         ] {
             let b: &[u8] = &bytes;
             assert_eq!(&b[0..4], b"RIFF", "{name}: not a RIFF");
@@ -986,7 +791,6 @@ mod tests {
             ("footstep-high", synth::footstep(1.18)),
             ("landing", synth::landing()),
             ("wind", synth::wind()),
-            ("road hum", synth::road_hum()),
             ("teleport", synth::teleport()),
             ("test tone", synth::test_tone()),
         ] {

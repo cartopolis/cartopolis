@@ -167,10 +167,9 @@ is claiming the map knows where the cars are.
 **The master toggle is read through `cars_visible()` / `people_visible()` /
 `live_vehicles_visible()`, never as `life_enabled` directly.** A group master each
 consumer has to remember to `&&` is one that a consumer will eventually forget,
-and that layer then keeps moving with the group switched off. Four call sites
-use them: the two pools in `drive_traffic`, the vehicle feed's poll and its draw,
-and the road hum (`cars_visible`, because the hum is a road's — a pavement of
-people makes none of it).
+and that layer then keeps moving with the group switched off. Three call sites
+use them: the two pools in `drive_traffic`, and the vehicle feed's poll and its
+draw.
 
 Two smaller things went with it. `drive_traffic` skips `DriveNetwork::near` for a
 pool that is off — that scan is the whole per-frame cost of a switched-off layer —
@@ -201,41 +200,14 @@ it, and this container has no way to watch a moving frame. The hand-off logic
 excludes the road just left — without that a car at a dead end turns round and
 drives back down it forever — but that path has been reasoned about, not watched.
 
-## The city hums, off the same network
+## There is no road hum (removed 2026-09-29)
 
-`soundscape::update_road_hum` (2026-08-26) drives a looping road hum from
-`DriveNetwork::loudest_road` — the same resident roads the cars drive, already
-carrying each road's class as a speed. No new data, no new request, one scan of
-the loaded ring per frame.
-
-Four decisions:
-
-- **A maximum over nearby roads, not a sum.** Summing makes a dense grid of back
-  streets louder than a motorway, which is backwards: what you hear is the
-  biggest road near you, not the number of roads near you.
-- **It falls off with the square of the remaining distance** over
-  `ROAD_AUDIBLE_M` (140 m). That is far shorter than real traffic carries, on
-  purpose — the hum has to change over a distance you can walk, or it is a
-  constant, and constants are inaudible.
-- **Noise alone reads as weather.** Distant traffic has a pitch — the tyre roar
-  around 68 Hz that carries furthest — so a faint tone sits under the rush, weak
-  enough that no note can be named for it. Its period is forced to divide the
-  loop, because a sine that does not close is a click every two seconds.
-- **Silent from the air**, and gated on **Life ▸ Traffic** (`cars_visible()`):
-  somebody switching the traffic off expects the sound of it to stop too. On the
-  cars alone — a hum is a road's, and the people make none of it.
-
-`soundscape::road_loudness` is pure and tested on every lane, which is why
-`systems::soundscape` is now re-exported unconditionally — the `cfg(feature =
-"audio")` on that re-export existed only because nothing outside reached it by
-name, and its own comment anticipated this.
-
-**Unheard.** This container has no audio hardware at all
-(`docs/notes/container-audio.md`), so the hum is verified as *arithmetic and a
-well-formed clip with headroom* — never as a sound. The headroom assertion is not
-ceremony: a synthesised clip that clips arrives as a roar at any playback volume,
-which is how the wind was reported from a phone, and no volume slider can undo
-distortion baked into an asset.
+`soundscape::update_road_hum` looped a noise clip whose volume followed the
+loudest road near the camera. It is gone: it scanned every vertex of every drive
+line in the loaded ring on every frame — the largest named main-thread cost in a
+steady-state web profile, for a sound nobody could pick out from the wind. If a
+city ambience comes back, it needs the proximity index below first and must not
+be a per-frame scan of `DriveNetwork`.
 
 ## Water and playground ambience are not done
 

@@ -548,40 +548,6 @@ impl DriveNetwork {
         self.cells.get(&key.cell)?.get(key.index)
     }
 
-    /// The loudest road within earshot of `at`, 0..1
-    /// (`soundscape::road_loudness`).
-    ///
-    /// A **maximum**, not a sum — summing makes a dense grid of back streets
-    /// louder than a motorway, which is backwards. Public because the soundscape
-    /// asks it: the city's hum is a function of the map, and this resource is
-    /// where the map's roads already live, so it costs no new data and one scan
-    /// of the loaded ring.
-    #[must_use]
-    pub fn loudest_road(&self, at: Vec2) -> f32 {
-        let mut best = 0.0f32;
-        for lines in self.cells.values() {
-            for l in lines {
-                if !l.uses.drive {
-                    continue;
-                }
-                // Distance to the nearest *vertex*, not to the nearest segment: a
-                // simplified line has a vertex every few metres, so the error is
-                // smaller than the ear can place a sound, and the exact version
-                // would cost a projection per segment per frame.
-                let d2 = l
-                    .points
-                    .iter()
-                    .map(|p| p.distance_squared(at))
-                    .fold(f32::MAX, f32::min);
-                best = best.max(crate::systems::soundscape::road_loudness(
-                    l.speed,
-                    d2.sqrt(),
-                ));
-            }
-        }
-        best
-    }
-
     fn is_empty(&self) -> bool {
         self.cells.values().all(Vec::is_empty)
     }

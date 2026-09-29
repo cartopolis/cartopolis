@@ -44,6 +44,10 @@ pub use dev::mcp;
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.
+pub use cartopolis_geo::{
+    furniture, ground_stack, ground_texture, mip, moorings, parking, paving, places, pois,
+    road_texture, routing, scatter, turf, vector_tiles,
+};
 pub use gui::{
     bookmarks, building_card, chat, chat_overlay, chats, data_layers, dismiss, dock, egui_manager,
     glass, hud, icons, login_screen, map_osd, model_library, onscreen_keyboard, place_card,
@@ -71,14 +75,5 @@ pub use player::{
 // module is still compiled (its synthesis and rate maths are pure and tested),
 // but nothing outside it calls in, and an unconditional re-export would be an
 // unused import rather than a convenience.
-pub use cartopolis_geo::{
-    furniture, ground_stack, ground_texture, mip, moorings, parking, paving, places, pois,
-    road_texture, routing, scatter, turf, vector_tiles,
-};
-// **Unconditional since 2026-08-26.** It used to be `cfg(feature = "audio")`,
-// with the note above explaining that nothing outside reached it by name so an
-// unconditional re-export would be an unused import. Something does now:
-// `traffic::DriveNetwork::loudest_road` answers in `soundscape::road_loudness`'s
-// units, and that function is pure and compiled on every lane — which is the
-// whole reason the maths lives outside the `cfg` in the first place.
+#[cfg(feature = "audio")]
 pub use player::soundscape;
