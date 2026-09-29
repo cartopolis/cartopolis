@@ -10,6 +10,7 @@
 //!   the clear for the forwarder.
 //! - `keys` (`client`): sealing and opening frames.
 //! - `opus` (`client`): the voice codec.
+//! - `video` (`client`): the video codec, and a stand-in camera for tests.
 //! - `link` (`client`, native): a device's connection to the forwarder.
 //! - `session` (`client`, native): a device's call, on a thread of its own.
 //! - `sfu` (`sfu`, native): the forwarder the simulator runs.
@@ -28,6 +29,8 @@ pub mod opus;
 pub mod session;
 #[cfg(all(feature = "sfu", not(target_arch = "wasm32")))]
 pub mod sfu;
+#[cfg(feature = "client")]
+pub mod video;
 
 /// Install the pure-Rust crypto provider (`crypto`) as str0m's process
 /// default. Idempotent, and required: str0m picks none itself when its C

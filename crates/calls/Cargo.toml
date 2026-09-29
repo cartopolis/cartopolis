@@ -28,7 +28,7 @@ doctest = false
 
 [features]
 default = []
-client = ["dep:sframe", "dep:opus-pure", "dep:uuid"]
+client = ["dep:sframe", "dep:opus-pure", "dep:uuid", "dep:oxideav-vp8"]
 sfu = []
 
 [dependencies]
@@ -38,6 +38,9 @@ tracing = { workspace = true }
 # family openmls already uses, and it builds for wasm with no C.
 sframe = { version = "2", default-features = false, features = ["rust-crypto"], optional = true }
 opus-pure = { version = "0.2", optional = true }
+# VP8, encoder and decoder, pure Rust (`video`). Without the default
+# `registry` feature, which only adds a framework the crate can plug into.
+oxideav-vp8 = { version = "0.2.7", default-features = false, optional = true }
 # Only for a random SFrame context id per join (`keys::Sender::new`).
 uuid = { workspace = true, optional = true }
 

@@ -32,6 +32,7 @@ use bevy::prelude::*;
 use cartopolis_core::{CallMember, NetMessage};
 
 use crate::platform::audio::AudioInput;
+use crate::platform::camera::Camera;
 use crate::resources::{AppPrefs, AuthIdentity, ConnectAddr, OnlineSession};
 use crate::systems::private_chat::{channel_key, PrivateChats};
 use crate::systems::voice::{self, Resampler, VoiceMode, VoiceState};
@@ -99,6 +100,22 @@ struct Active {
     pending: Vec<i16>,
     /// Who is heard, by participant: the ring their audio goes into.
     speakers: HashMap<u64, Speaker>,
+    /// The camera, while it is on.
+    camera: Option<Camera>,
+    last_picture: web_time::Instant,
+    /// The newest picture from each person seen, by participant.
+    pictures: HashMap<u64, Picture>,
+    /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
+    fake_mic_sent: u64,
+}
+
+/// The newest picture from somebody in the call, ready to draw.
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// Arrived since the UI last uploaded it.
+    pub fresh: bool,
 }
 
 /// One person heard in the call.
@@ -124,6 +141,10 @@ pub struct Calls {
     dismissed: HashSet<Vec<u8>>,
     /// The microphone's level while in a call, for the in-call bar's meter.
     pub level: f32,
+    /// Whether this device sends its camera. Off until asked for: a call
+    /// starts as a voice call, and a camera switching itself on is the one
+    /// surprise a person does not forgive.
+    pub camera_on: bool,
 }
 
 /// What the UI shows about a chat's call.
@@ -184,6 +205,23 @@ impl Calls {
             .collect();
         out.sort_by(|a, b| a.group.cmp(&b.group));
         out
+    }
+
+    /// Who a participant in this device's call is, by name.
+    #[must_use]
+    pub fn name_of(&self, participant: u64) -> Option<&str> {
+        self.rosters
+            .get(self.active_group()?)?
+            .iter()
+            .find(|m| m.participant == participant)
+            .map(|m| m.username.as_str())
+    }
+
+    /// The newest picture from each person in this device's call.
+    pub fn pictures_mut(&mut self) -> impl Iterator<Item = (u64, &mut Picture)> {
+        self.active
+            .iter_mut()
+            .flat_map(|a| a.pictures.iter_mut().map(|(k, v)| (*k, v)))
     }
 
     /// Whether this build can place a call at all.
@@ -318,6 +356,7 @@ pub fn drive_calls(
         notice,
         muted,
         level,
+        camera_on,
         ..
     } = &mut *calls;
     let Some(a) = active.as_mut() else {
@@ -378,6 +417,17 @@ pub fn drive_calls(
                         }
                     }
                 }
+                Event::Video { from, frame } => {
+                    a.pictures.insert(
+                        from.0,
+                        Picture {
+                            width: frame.width,
+                            height: frame.height,
+                            rgba: frame.to_rgba(),
+                            fresh: true,
+                        },
+                    );
+                }
                 Event::Failed(why) => failed = Some(why),
             }
         }
@@ -396,6 +446,7 @@ pub fn drive_calls(
     }
 
     capture(a, *muted, &prefs, level, notice);
+    send_camera(a, camera_on, notice);
 }
 
 /// Start a call's session towards the simulator this client is connected to.
@@ -407,7 +458,10 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         group: group.to_vec(),
         participant: None,
         #[cfg(not(target_arch = "wasm32"))]
-        session: cartopolis_calls::session::Session::start(host, RATE),
+        // Always offer a camera track, whether the camera is on or not: turning
+        // it on mid-call must not need a renegotiation, and a track with no
+        // frames on it costs nothing.
+        session: cartopolis_calls::session::Session::start(host, RATE, true),
         connected: false,
         epoch: None,
         started: web_time::Instant::now(),
@@ -416,7 +470,46 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         capture: Vec::new(),
         pending: Vec::new(),
         speakers: HashMap::new(),
+        camera: None,
+        last_picture: web_time::Instant::now(),
+        pictures: HashMap::new(),
+        fake_mic_sent: 0,
     })
+}
+
+/// Camera to the session, at the call's frame rate, while it is on. The
+/// stand-in camera (`CARTO_FAKE_CAMERA`) is on from the start, since a
+/// headless test has nobody to press the button.
+fn send_camera(a: &mut Active, on: &mut bool, notice: &mut Option<String>) {
+    let fake = crate::env_flag("CARTO_FAKE_CAMERA");
+    if fake {
+        *on = true;
+    }
+    if !*on {
+        a.camera = None;
+        return;
+    }
+    let camera = a
+        .camera
+        .get_or_insert_with(|| if fake { Camera::fake() } else { Camera::open() });
+    if let Some(err) = camera.error() {
+        *notice = Some(err);
+        *on = false;
+        a.camera = None;
+        return;
+    }
+    let period =
+        std::time::Duration::from_micros(1_000_000 / u64::from(cartopolis_calls::video::FPS));
+    if !a.connected || a.last_picture.elapsed() < period {
+        return;
+    }
+    if let Some(picture) = camera.take() {
+        a.last_picture = web_time::Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        a.session.send_picture(picture);
+        #[cfg(target_arch = "wasm32")]
+        let _ = picture;
+    }
 }
 
 /// Microphone to the session, in 20 ms frames at [`RATE`]. The device stays
@@ -429,6 +522,23 @@ fn capture(
     level: &mut f32,
     notice: &mut Option<String>,
 ) {
+    // The stand-in microphone (`CARTO_FAKE_MIC`): a tone, 20 ms at a time, as
+    // many frames as wall-clock time says are due.
+    if crate::env_flag("CARTO_FAKE_MIC") {
+        *level = if muted { 0.0 } else { 0.3 };
+        let due = a.started.elapsed().as_millis() as u64 / 20;
+        while a.fake_mic_sent < due {
+            let pcm = cartopolis_calls::video::test_tone(voice::VOICE_RATE, a.fake_mic_sent);
+            a.fake_mic_sent += 1;
+            if !muted && a.connected {
+                #[cfg(not(target_arch = "wasm32"))]
+                a.session.send_pcm(pcm);
+                #[cfg(target_arch = "wasm32")]
+                let _ = pcm;
+            }
+        }
+        return;
+    }
     let mic = a.mic.get_or_insert_with(AudioInput::start_for_call);
     if let Some(err) = mic.error() {
         *notice = Some(format!("Microphone: {err}"));
@@ -521,6 +631,7 @@ pub fn render_call_bar(
     identity: Res<AuthIdentity>,
     chat: Res<crate::systems::chat::ChatState>,
     online: Option<Res<OnlineSession>>,
+    mut tiles: Local<HashMap<u64, egui::TextureHandle>>,
 ) {
     use crate::systems::theme;
     if online.is_none() {
@@ -543,6 +654,39 @@ pub fn render_call_bar(
     };
     let top = if chat.sharing.is_empty() { 8.0 } else { 52.0 };
     let ctx = egui.ctx_mut().clone();
+
+    // Each person's newest picture, uploaded only when it changed: a texture
+    // per person, reused, so a call is one small upload per picture received
+    // rather than a texture allocated per frame (`docs/notes/upload-bursts.md`).
+    let mut present = HashSet::new();
+    for (id, p) in calls.pictures_mut() {
+        present.insert(id);
+        if !p.fresh {
+            continue;
+        }
+        p.fresh = false;
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [p.width as usize, p.height as usize],
+            &p.rgba,
+        );
+        match tiles.get_mut(&id) {
+            Some(t) => t.set(image, egui::TextureOptions::LINEAR),
+            None => {
+                let t = ctx.load_texture(
+                    format!("call-video-{id}"),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                );
+                tiles.insert(id, t);
+            }
+        }
+    }
+    tiles.retain(|id, _| present.contains(id));
+    let mut faces: Vec<(String, egui::TextureId)> = tiles
+        .iter()
+        .map(|(id, t)| (calls.name_of(*id).unwrap_or("someone").to_string(), t.id()))
+        .collect();
+    faces.sort_by(|a, b| a.0.cmp(&b.0));
     let mut request = None;
     let mut clear_notice = false;
     egui::Area::new(egui::Id::new("call_bar"))
@@ -584,10 +728,35 @@ pub fn render_call_bar(
                             if theme::action_button(ui, mute).clicked() {
                                 calls.muted = !calls.muted;
                             }
+                            if Camera::available() {
+                                let cam = if calls.camera_on {
+                                    "Camera off"
+                                } else {
+                                    "Camera"
+                                };
+                                if theme::action_button(ui, cam).clicked() {
+                                    calls.camera_on = !calls.camera_on;
+                                }
+                            }
                             if theme::action_button(ui, "Hang up").clicked() {
                                 request = Some(CallRequest::Leave);
                             }
                         });
+                        // The people in the call who have their camera on.
+                        if !faces.is_empty() {
+                            ui.horizontal(|ui| {
+                                for (name, texture) in &faces {
+                                    ui.vertical(|ui| {
+                                        ui.image((*texture, egui::vec2(160.0, 120.0)));
+                                        ui.label(
+                                            egui::RichText::new(name.as_str())
+                                                .size(12.0)
+                                                .color(theme::TEXT_DIM),
+                                        );
+                                    });
+                                }
+                            });
+                        }
                     }
                     for r in &ringing {
                         ui.horizontal(|ui| {

@@ -62,6 +62,9 @@ pub enum Output {
     },
     /// The up connection is established and [`Link::send`] will be carried.
     Connected,
+    /// Somebody cannot decode this device's video and wants a full picture:
+    /// the next video frame should be a keyframe.
+    KeyframeWanted,
     /// Either connection failed. The call is over for this device; to carry
     /// on, join again (with fresh [`crate::keys::CallKeys`]).
     Failed,
@@ -76,7 +79,7 @@ pub struct Link {
     audio: Mid,
     video: Option<Mid>,
     /// Down-connection tracks by mid, as the last offer named them.
-    tracks: HashMap<String, ParticipantId>,
+    tracks: HashMap<String, TrackInfo>,
     connected: bool,
     failed: bool,
 }
@@ -137,7 +140,7 @@ impl Link {
     pub fn accept_offer(&mut self, sdp: &str, tracks: &[TrackInfo]) -> Result<String, Error> {
         let offer = SdpOffer::from_sdp_string(sdp).map_err(|e| Error::Sdp(e.to_string()))?;
         let answer = self.down.sdp_api().accept_offer(offer).map_err(rtc_err)?;
-        self.tracks = tracks.iter().map(|t| (t.mid.clone(), t.from)).collect();
+        self.tracks = tracks.iter().map(|t| (t.mid.clone(), t.clone())).collect();
         Ok(answer.to_sdp_string())
     }
 
@@ -174,6 +177,23 @@ impl Link {
         writer
             .write(pt, now, MediaTime::new(ticks, rate), sealed)
             .map_err(rtc_err)
+    }
+
+    /// Ask `from` for a full picture: its video stopped decoding (a lost
+    /// packet took a reference frame with it). Goes to the forwarder, which
+    /// passes it on, throttled.
+    pub fn request_keyframe(&mut self, from: ParticipantId) {
+        let mids: Vec<String> = self
+            .tracks
+            .values()
+            .filter(|t| t.from == from && t.kind == crate::media::Kind::Video)
+            .map(|t| t.mid.clone())
+            .collect();
+        for mid in mids {
+            if let Some(mut w) = self.down.writer(Mid::from(mid.as_str())) {
+                let _ = w.request_keyframe(None, str0m::media::KeyframeRequestKind::Pli);
+            }
+        }
     }
 
     /// Hand in a datagram that arrived on `leg`'s socket.
@@ -224,6 +244,9 @@ impl Link {
                         break;
                     }
                     Ok(RtcOutput::Event(e)) => match e {
+                        Event::KeyframeRequest(_) if leg == Leg::Up => {
+                            out.push(Output::KeyframeWanted);
+                        }
                         Event::Connected if leg == Leg::Up => {
                             self.connected = true;
                             out.push(Output::Connected);
@@ -238,7 +261,8 @@ impl Link {
                                 RtpCodec::Vp8 => Codec::Vp8,
                                 _ => continue,
                             };
-                            let Some(&from) = self.tracks.get(&d.mid.to_string()) else {
+                            let Some(from) = self.tracks.get(&d.mid.to_string()).map(|t| t.from)
+                            else {
                                 continue;
                             };
                             out.push(Output::Media {
@@ -393,7 +417,7 @@ mod tests {
                             p.heard.push((from, opened.sender, opened.frame));
                         }
                         Output::Failed => panic!("a link failed"),
-                        Output::Connected => {}
+                        Output::Connected | Output::KeyframeWanted => {}
                     }
                 }
             }

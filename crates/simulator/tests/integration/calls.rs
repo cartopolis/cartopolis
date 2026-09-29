@@ -184,7 +184,7 @@ fn pump(phone: &mut Phone) {
                 phone.heard.push((from, opened.frame));
             }
             Output::Failed => panic!("a call link failed"),
-            Output::Connected => {}
+            Output::Connected | Output::KeyframeWanted => {}
         }
     }
 }

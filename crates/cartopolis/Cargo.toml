@@ -524,6 +524,16 @@ winresource = "0.1"
 [lints]
 workspace = true
 
+
+# The webcam, for video calls (`platform::camera`): V4L2 on Linux, Media
+# Foundation on Windows, AVFoundation on macOS. Desktop only — the phone's
+# camera is the NDK's, and the browser's is the browser's. No default features:
+# those decode MJPEG through mozjpeg, a C library, and the camera is asked for
+# uncompressed YUYV instead. Its Linux bindings are made by bindgen at build
+# time, which needs libclang (present on the workstation and in the CI image).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+
 [dev-dependencies]
 # The loopback tests (`systems::voice::loopback`, the session restart test)
 # boot a real simulator; test-only, so it ships in no client build.
