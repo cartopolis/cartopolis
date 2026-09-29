@@ -38,7 +38,6 @@ pub struct AuthWriteback<'w> {
     /// for the same reason voice is decoded here: one drain of one queue.
     private: ResMut<'w, crate::systems::private_chat::PrivateInbox>,
 }
-use crate::systems::avatar::AIRBORNE_EPS;
 use crate::systems::locomotion;
 use crate::systems::model_assets;
 use bevy::asset::RenderAssetUsages;
@@ -1391,36 +1390,46 @@ pub fn send_network_intent(
     // Building collision (the sim is authoritative but has no building geometry —
     // that streams only on the client): steer the walk velocity so the avatar
     // slides along walls and can't enter a building, and auto-walk it out if it
-    // ended up inside one (e.g. teleported in — no interiors yet). Anything off the
-    // ground is exempt: the footprints are 2D, so a fall past a facade would be
-    // steered around a building the avatar is nowhere near the height of.
-    // Measured against `position`, never `display_position`. The two differ by
-    // `terrain_lift` (`avatar::smooth_online_avatar_display`), and the sim's frame
-    // is the flat one — it holds no map data, so the relief is added on the display
-    // side only. Reading the display height here meant that switching the Height
-    // layer on made the client believe the avatar was airborne on every frame:
-    // CLAUDE.md measures Dutch-city relief at ~2 m against an `AIRBORNE_EPS` of
-    // 0.2, so collision steering was skipped entirely and the avatar walked through
-    // every wall. The offline path (`avatar::handle_avatar_movement`) always
-    // subtracted the terrain here, which is what made this one visibly a bug.
-    let airborne = avatar_state.position.y > AIRBORNE_EPS;
+    // ended up inside one (e.g. teleported in — no interiors yet). A building is in
+    // the way only at its own height (`collision::Body`), so a flight is steered
+    // by a facade and clears a roof, and a fall past a wall is not steered around
+    // a building the avatar is nowhere near the height of.
+    //
+    // The height is measured on the sim's flat plane and lifted by the two things
+    // only the client knows — `terrain_lift` (the measured ground, bridge decks
+    // included) and `floor_lift` (the storey) — into the frame the footprints'
+    // extents are in. Reading `display_position` here would be the same thing
+    // computed the other way round, but `position` is what the sim believes and
+    // `avatar::smooth_online_avatar_display` may still be easing the display.
+    // (Comparing the *flat* height against an airborne threshold was the old
+    // bug: with the Height layer on, relief of ~2 m read as airborne on every
+    // frame and steering never ran.)
     // Inside a tunnel the surface footprints are not what is around the avatar, and
     // the tunnel's walls are — the same exclusive pair the offline path resolves
     // (`avatar::handle_avatar_movement`, `systems::tunnels`). Steered rather than
     // snapped for the reason this whole branch exists: the sim owns the position
     // online and would overwrite a snap with the next snapshot.
     let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
-    if !avatar_state.is_flying
-        && !airborne
-        && (in_bore || (layers.buildings_enabled && !colliders.is_empty()))
-    {
+    if in_bore || (layers.buildings_enabled && !colliders.is_empty()) {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
-        let wish = Vec2::new(v.x, v.z);
+        // The wish is a saturated throttle; the sim multiplies a flier's by the
+        // altitude factor, and how far ahead the probe must look depends on the
+        // speed that actually results.
+        let lift = if avatar_state.is_flying {
+            motion::fly_altitude_factor(avatar_state.position.y)
+        } else {
+            1.0
+        };
+        let wish = Vec2::new(v.x, v.z) * lift;
+        let body = crate::systems::collision::Body::new(
+            avatar_state.position.y + avatar_state.terrain_lift + avatar_state.floor_lift,
+            avatar_state.terrain_lift + avatar_state.floor_lift,
+        );
         let steered = if in_bore {
             colliders.steer_in_bore(pos, wish)
         } else {
-            colliders.steer_velocity(pos, wish)
-        };
+            colliders.steer_velocity(pos, wish, body)
+        } / lift;
         v.x = steered.x;
         v.z = steered.y;
     }

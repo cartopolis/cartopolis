@@ -274,18 +274,18 @@ fn first_person_after_zoom(current: bool, distance: f32, wish: f32) -> bool {
 const FIRST_PERSON_PITCH_MAX: f32 = 1.48; // ~85°
 
 // ── Boom collision ───────────────────────────────────────────────────────────
-/// Camera height (m) above which the boom stops being tested against building
-/// footprints. The footprints are 2D — they carry no height at all — so above a
-/// plausible eaves line a 2D hit means "there is a building over there", not "the
-/// view is blocked", and acting on it would reel the camera in every time the
-/// avatar walked past a block.
-const CAMERA_COLLIDE_MAX_Y: f32 = 15.0;
 /// Fraction of the boom kept clear of the wall it hit, so the near plane doesn't
 /// end up inside the facade.
 const CAMERA_COLLIDE_MARGIN: f32 = 0.12;
 /// Shortest the boom may be pulled to, as a fraction. Zero would put the camera
 /// inside the avatar's head; this leaves a close-in over-the-shoulder view.
 const CAMERA_COLLIDE_MIN: f32 = 0.18;
+/// Metres the camera is held off a wall by the final ray test, and the closest to
+/// the head it may be pushed. The first is what keeps the near plane out of the
+/// facade; the second is what stops a wall right behind the avatar from putting
+/// the lens inside its skull.
+const CAMERA_WALL_CLEARANCE_M: f32 = 0.25;
+const CAMERA_HEAD_MIN_M: f32 = 0.6;
 /// The boom comes in fast (the wall is already in shot) and goes back out slowly
 /// (or every doorway makes the camera lunge).
 const CAMERA_COLLIDE_IN_RATE: f32 = 22.0;
@@ -1702,17 +1702,17 @@ pub fn camera_controls(
             );
 
             // Pull the boom in when a facade would come between the camera and the
-            // avatar. The footprints carry no height (`systems::collision`), so
-            // this only applies while the camera is low enough for a 2D answer to
-            // be the right one — a high, steep view is looking over the roofs, and
-            // testing it against footprints would yank the camera in every time the
-            // avatar walked past a block.
+            // avatar. The test is a sight line from the head to where the boom
+            // ends, against each footprint *at the height the line passes it* —
+            // so a high, steep view looks over a roof and a low one is stopped by
+            // the wall, at any altitude. It was gated off above 15 m while the
+            // footprints had no height, which is also why the camera could sit
+            // inside any building the avatar flew past.
             let mut boom_scale = 1.0_f32;
             if !locked
                 && !first_person
                 && rig.layers.buildings_enabled
                 && !rig.colliders.is_empty()
-                && (eye + boom).y < CAMERA_COLLIDE_MAX_Y
             {
                 if let Ok((cell, _)) = avatar_cells.single() {
                     let base = Vec2::new(
@@ -1721,7 +1721,11 @@ pub fn camera_controls(
                     );
                     let from = base + Vec2::new(avatar_pos.x, avatar_pos.z);
                     let to = from + Vec2::new(boom.x, boom.z);
-                    if let Some(t) = rig.colliders.segment_fraction(from, to) {
+                    let head_y = avatar_pos.y + eye.y;
+                    if let Some(t) =
+                        rig.colliders
+                            .segment_fraction(from, head_y, to, head_y + boom.y)
+                    {
                         boom_scale = (t - CAMERA_COLLIDE_MARGIN).clamp(CAMERA_COLLIDE_MIN, 1.0);
                     }
                 }
@@ -1833,6 +1837,46 @@ pub fn camera_controls(
                 // Entering Follow: snap straight onto the avatar (the reposition).
                 camera_state.avatar_initialized = true;
                 target_world
+            };
+            // The last word on where the lens is: a sight line from the head to the
+            // position the ease has actually arrived at, cut short at the first
+            // wall. The boom test above only sees the *target*; the camera lags it
+            // (and leads the avatar by its velocity), so on a turn or at flight
+            // speed it cuts across corners and through facades the target never
+            // touched. Resolved against the eased position rather than folded into
+            // the ease, so it cannot be smoothed back through the wall.
+            let new_world = if !locked
+                && !first_person
+                && rig.layers.buildings_enabled
+                && !rig.colliders.is_empty()
+            {
+                let head = avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT).as_dvec3();
+                let ray = new_world - head;
+                let len = ray.length() as f32;
+                if len > CAMERA_HEAD_MIN_M {
+                    let base = Vec2::new(avatar_origin.x as f32, avatar_origin.z as f32);
+                    let plan = |v: bevy::math::DVec3| {
+                        base + Vec2::new((v.x - avatar_origin.x) as f32, (v.z - avatar_origin.z) as f32)
+                    };
+                    let head_y = (head.y - avatar_origin.y) as f32;
+                    let end_y = (new_world.y - avatar_origin.y) as f32;
+                    match rig
+                        .colliders
+                        .segment_fraction(plan(head), head_y, plan(new_world), end_y)
+                    {
+                        Some(t) => {
+                            let keep = (t - CAMERA_WALL_CLEARANCE_M / len)
+                                .max(CAMERA_HEAD_MIN_M / len)
+                                .min(1.0);
+                            head + ray * f64::from(keep)
+                        }
+                        None => new_world,
+                    }
+                } else {
+                    new_world
+                }
+            } else {
+                new_world
             };
             let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
             let (new_cell, local) = grid.translation_to_grid(new_world);

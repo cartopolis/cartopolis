@@ -1750,20 +1750,26 @@ pub fn update_buildings(
                                                               // Publish footprints (exact OSM rings → world-XZ polygons) for avatar
                                                               // collision. `ax/ay/z/tile_m` are the anchor established above, so these
                                                               // land in the same frame as the avatar's absolute position.
+        let ground = terrain.snapshot();
         let detail_fps = osm
             .buildings
             .iter()
-            // A part raised clear of head height is an archway or a skybridge —
-            // the ground under it is walkable, and a collider there would be an
-            // invisible wall across a passage the mapper deliberately opened.
-            .filter(|b| b.min_height < 2.2)
             .filter_map(|b| {
                 let ring: Vec<Vec2> = b
                     .ring
                     .iter()
                     .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
                     .collect();
+                let base = ground.level_over(ring.iter().map(|p| [p.x, p.y]));
+                // A part raised clear of head height is an archway or a skybridge:
+                // its extent starts above the avatar, so the passage under it is open.
+                let roof = if b.height_is_eaves {
+                    b.roof_height.unwrap_or(3.0)
+                } else {
+                    0.0
+                };
                 crate::systems::collision::Footprint::new(ring)
+                    .map(|f| f.with_extent(base + b.min_height, base + b.height_m + roof))
             })
             .collect();
         colliders.set_detail(detail_fps);

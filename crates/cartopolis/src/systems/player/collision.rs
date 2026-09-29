@@ -54,6 +54,10 @@ pub const EJECT_MARGIN: f32 = 1.0;
 /// body radius — it stops roughly this far from a facade).
 pub const COLLIDE_PROBE_M: f32 = 0.6;
 
+/// How many seconds of travel the online steering probe looks ahead, when that is
+/// further than [`COLLIDE_PROBE_M`]. About two sim ticks.
+pub const PROBE_LOOKAHEAD_S: f32 = 0.12;
+
 /// A building footprint as a closed polygon in world-XZ metres (`x` = east,
 /// `y` = south, i.e. world `z`), with a cached AABB for a cheap broad-phase.
 #[derive(Clone)]
@@ -74,6 +78,54 @@ pub struct Footprint {
     /// Whether there is a room behind the door — see the module header. Hollow
     /// buildings collide on their walls only; solid ones are a no-go region.
     hollow: bool,
+    /// The vertical extent this footprint occupies, in the same absolute frame as
+    /// the avatar's feet (metres above the anchor's ground). Unbounded by default,
+    /// which is what a footprint was before it had a height: a wall that reaches
+    /// from the bottom of the world to the top of it.
+    bottom: f32,
+    top: f32,
+}
+
+/// The volume an avatar takes up, for the vertical half of every collision query.
+///
+/// Footprints were flat polygons and the avatar a point on the ground, so a
+/// building was a wall for exactly as long as the avatar was not "airborne" — a
+/// boolean that could not tell a bridge deck from the pavement under it (both read
+/// as standing on the ground, and the building beside the deck blocked one and
+/// ejected the other), and that switched collision off altogether for flight, so a
+/// flier went straight through every facade. Asking "do our heights overlap"
+/// instead answers all three: the deck clears what is under it, a roof clears the
+/// flier, and a wall still stops anyone at its own height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Body {
+    /// Height of the soles, in the frame the footprints' extents are in.
+    pub feet: f32,
+    /// Height of the ground (or deck, or storey) under the avatar, same frame.
+    pub ground: f32,
+}
+
+impl Body {
+    /// How tall the avatar is, metres. Something whose underside is above this is
+    /// walked under (an arcade, a gate); something whose top is below the step
+    /// height is walked over.
+    pub const HEIGHT: f32 = 1.8;
+    /// The most an avatar steps up onto without jumping — a kerb, not a fence.
+    pub const STEP: f32 = 0.35;
+    /// How high a prop (bench, bin, bollard) stands. Props are circles with no
+    /// height of their own, and every one of them is knee-to-waist.
+    pub const PROP_HEIGHT: f32 = 1.2;
+
+    #[must_use]
+    pub fn new(feet: f32, ground: f32) -> Self {
+        Self { feet, ground }
+    }
+
+    /// An avatar standing on the datum. What a test — or a caller with no height
+    /// to offer — means.
+    #[must_use]
+    pub fn standing() -> Self {
+        Self::new(0.0, 0.0)
+    }
 }
 
 impl Footprint {
@@ -109,7 +161,38 @@ impl Footprint {
             max,
             doors: doors.to_vec(),
             hollow,
+            bottom: f32::NEG_INFINITY,
+            top: f32::INFINITY,
         })
+    }
+
+    /// Bound this footprint vertically: it occupies `bottom..top`, in the frame the
+    /// avatar's feet are measured in. A non-finite or inverted extent is refused
+    /// rather than stored, since a NaN here would make the footprint answer "no"
+    /// to every query and the building would quietly stop being solid.
+    #[must_use]
+    pub fn with_extent(mut self, bottom: f32, top: f32) -> Self {
+        if bottom.is_finite() && top.is_finite() && top > bottom {
+            self.bottom = bottom;
+            self.top = top;
+        }
+        self
+    }
+
+    /// Whether this footprint is in the avatar's way *at its height*.
+    fn blocks(&self, body: Body) -> bool {
+        body.feet < self.top - Body::STEP && body.feet + Body::HEIGHT > self.bottom
+    }
+
+    /// Whether height `h` lies inside this footprint's vertical extent.
+    fn spans(&self, h: f32) -> bool {
+        h >= self.bottom && h <= self.top
+    }
+
+    /// The footprint's centre in XZ — where the ground under it is sampled from.
+    #[must_use]
+    pub fn centre(&self) -> Vec2 {
+        (self.min + self.max) * 0.5
     }
 
     /// Whether `p` is close enough to one of this building's doors to pass.
@@ -361,10 +444,11 @@ impl BuildingColliders {
             && self.features.is_empty()
     }
 
-    /// True if `p` is inside a prop's circle. Separate from [`Self::blocked`]'s
-    /// polygon test because the shapes are different, not because the rule is —
-    /// every caller treats the two the same.
-    fn in_prop(&self, p: Vec2) -> bool {
+    /// True if `p` is inside a prop's circle that the avatar is low enough to hit.
+    fn in_prop(&self, p: Vec2, body: Body) -> bool {
+        if body.feet >= body.ground + Body::PROP_HEIGHT {
+            return false;
+        }
         self.props
             .iter()
             .any(|(c, r)| c.distance_squared(p) < r * r)
@@ -383,29 +467,38 @@ impl BuildingColliders {
             .chain(self.features.values().flatten())
     }
 
-    /// True if `p` (world XZ) lies inside any footprint or prop.
-    fn blocked(&self, p: Vec2) -> bool {
-        self.iter().any(|f| f.contains(p)) || self.in_prop(p)
+    /// The footprints an avatar with this `body` can actually run into.
+    fn iter_at(&self, body: Body) -> impl Iterator<Item = &Footprint> {
+        self.iter().filter(move |f| f.blocks(body))
+    }
+
+    /// True if `p` (world XZ) lies inside any footprint or prop in the way.
+    fn blocked(&self, p: Vec2, body: Body) -> bool {
+        self.iter_at(body).any(|f| f.contains(p)) || self.in_prop(p, body)
     }
 
     /// True if the move `from → to` is refused — the question every mover here
-    /// actually asks, and the one that has an answer for both kinds of
-    /// footprint. A solid building (or a prop) refuses a move that *ends* inside
-    /// it; a hollow one refuses a move that *crosses* one of its walls.
-    fn blocked_move(&self, from: Vec2, to: Vec2) -> bool {
-        if self.blocked(to) {
+    /// actually asks. A building refuses a move that *ends* inside it (a solid
+    /// one) or that *crosses* one of its walls (any, and the crossing is the part
+    /// that matters at flight speed: a flier covers several metres a frame, and a
+    /// point test at the far end walks it through a ten-metre house whose middle
+    /// it never sampled).
+    fn blocked_move(&self, from: Vec2, to: Vec2, body: Body) -> bool {
+        if self.in_prop(to, body) {
             return true;
         }
-        self.iter().any(|f| f.hollow && f.crosses_wall(from, to))
+        self.iter_at(body)
+            .any(|f| f.contains(to) || f.crosses_wall(from, to))
     }
 
-    /// The footprint containing `p`, if any.
-    fn hit(&self, p: Vec2) -> Option<&Footprint> {
-        self.iter().find(|f| f.contains(p))
+    /// The footprint containing `p`, if any is in the way.
+    fn hit(&self, p: Vec2, body: Body) -> Option<&Footprint> {
+        self.iter_at(body).find(|f| f.contains(p))
     }
 
-    /// How far along the segment `from → to` (world XZ) the first wall is, as a
-    /// fraction in `0..1`, or `None` if the segment is clear.
+    /// How far along the sight line `from → to` the first wall is, as a fraction
+    /// in `0..1`, or `None` if the line is clear. `from_y`/`to_y` are the heights
+    /// of its ends in the footprints' frame.
     ///
     /// This is the follow camera's query, not the avatar's: the boom runs from the
     /// avatar out to the camera, and anything it crosses is a facade about to be
@@ -414,11 +507,20 @@ impl BuildingColliders {
     /// a thin wall entirely — and a camera that pops through a wall on some frames
     /// and not others is worse than one that never collides.
     ///
-    /// `from` inside a footprint answers `None`: the avatar is already indoors (or
-    /// a building streamed in on top of it), and pulling the camera to zero there
-    /// would jam it inside the avatar's head until it walked out.
-    pub fn segment_fraction(&self, from: Vec2, to: Vec2) -> Option<f32> {
-        if self.blocked(from) {
+    /// **A wall only counts where the line is at the wall's height.** The query
+    /// used to be flat and the camera gated it off above 15 m, because a flat wall
+    /// has no top and a boom passing over a roof reeled in for every block it
+    /// crossed. With extents the gate is not needed: over a roof is over it, and
+    /// through a facade is through it, at any altitude.
+    ///
+    /// `from` inside a footprint at its own height answers `None`: the avatar is
+    /// already indoors (or a building streamed in on top of it), and pulling the
+    /// camera to zero there would jam it inside the avatar's head.
+    pub fn segment_fraction(&self, from: Vec2, from_y: f32, to: Vec2, to_y: f32) -> Option<f32> {
+        if self
+            .iter()
+            .any(|f| f.spans(from_y) && f.contains(from))
+        {
             return None;
         }
         let d = to - from;
@@ -444,7 +546,10 @@ impl BuildingColliders {
                 let ap = a - from;
                 let t = (ap.x * e.y - ap.y * e.x) / denom;
                 let u = (ap.x * d.y - ap.y * d.x) / denom;
-                if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                if (0.0..=1.0).contains(&t)
+                    && (0.0..=1.0).contains(&u)
+                    && f.spans(from_y + (to_y - from_y) * t)
+                {
                     best = Some(best.map_or(t, |b: f32| b.min(t)));
                 }
             }
@@ -454,27 +559,27 @@ impl BuildingColliders {
 
     /// Resolve a desired walk from `from` to `to` (world XZ), sliding along walls
     /// so pushing into a building glides along the facade instead of sticking.
-    /// The avatar is treated as a point.
-    pub fn slide(&self, from: Vec2, to: Vec2) -> Vec2 {
+    /// The avatar is treated as a point in plan and as `body` in height.
+    pub fn slide(&self, from: Vec2, to: Vec2, body: Body) -> Vec2 {
         // Already inside something solid (just teleported / a building streamed
         // over us)? Don't trap the avatar — let it move; `eject` pushes it back
         // out this frame. A hollow building never answers this, which is the
         // point: being indoors is not being stuck in something.
-        if self.blocked(from) {
+        if self.blocked(from, body) {
             return to;
         }
-        if !self.blocked_move(from, to) {
+        if !self.blocked_move(from, to, body) {
             return to;
         }
         // Axis separation: keep whichever single-axis component stays clear. Each
         // candidate is a move in its own right and is tested as one, or a step
         // along a wall could hop through the corner of it.
         let slide_x = Vec2::new(to.x, from.y);
-        if !self.blocked_move(from, slide_x) {
+        if !self.blocked_move(from, slide_x, body) {
             return slide_x;
         }
         let slide_z = Vec2::new(from.x, to.y);
-        if !self.blocked_move(from, slide_z) {
+        if !self.blocked_move(from, slide_z, body) {
             return slide_z;
         }
         from
@@ -482,8 +587,8 @@ impl BuildingColliders {
 
     /// If `p` is inside a footprint, the nearest point `margin` metres outside
     /// its wall; otherwise `p` unchanged.
-    pub fn eject(&self, p: Vec2, margin: f32) -> Vec2 {
-        let Some(fp) = self.hit(p) else {
+    pub fn eject(&self, p: Vec2, margin: f32, body: Body) -> Vec2 {
+        let Some(fp) = self.hit(p, body) else {
             return p;
         };
         let q = fp.nearest_boundary(p);
@@ -500,8 +605,8 @@ impl BuildingColliders {
     /// avatar can only be moved by steering its velocity: an avatar that ends up
     /// inside a building (teleported in — no interiors yet) is walked straight
     /// back out along this vector.
-    pub fn eject_dir(&self, p: Vec2) -> Option<Vec2> {
-        if let Some(fp) = self.hit(p) {
+    pub fn eject_dir(&self, p: Vec2, body: Body) -> Option<Vec2> {
+        if let Some(fp) = self.hit(p, body) {
             let out = (fp.nearest_boundary(p) - p).normalize_or_zero();
             if out != Vec2::ZERO {
                 return Some(out);
@@ -512,6 +617,9 @@ impl BuildingColliders {
         // an avatar that a bench streamed in on top of would stand inside it: the
         // footprint path answers `None` for a prop, and `slide` then lets the
         // avatar move but never pushes it clear.
+        if body.feet >= body.ground + Body::PROP_HEIGHT {
+            return None;
+        }
         self.props
             .iter()
             .find(|(c, r)| c.distance_squared(p) < r * r)
@@ -519,23 +627,29 @@ impl BuildingColliders {
             .filter(|v| *v != Vec2::ZERO)
     }
 
-    /// Steer a desired walk velocity (`wish`, world XZ) from the avatar's current
+    /// Steer a desired velocity (`wish`, world XZ) from the avatar's current
     /// position `pos` so it slides along walls and never enters a building — the
     /// client-side prediction for the authoritative (online) movement path,
     /// where the sim integrates exactly this velocity and has no building data.
     /// Returns the (possibly redirected, possibly zeroed) velocity; if the avatar
     /// is already inside a footprint it returns a straight push outward at the
     /// wish's speed so it auto-walks clear.
-    pub fn steer_velocity(&self, pos: Vec2, wish: Vec2) -> Vec2 {
-        if let Some(out) = self.eject_dir(pos) {
+    ///
+    /// The probe is [`COLLIDE_PROBE_M`] or [`PROBE_LOOKAHEAD_S`] of travel,
+    /// whichever is further: a flier at 100 m/s is 5 m from the wall before the
+    /// sim's next tick, and a 0.6 m probe only sees the wall on the tick it is
+    /// already through.
+    pub fn steer_velocity(&self, pos: Vec2, wish: Vec2, body: Body) -> Vec2 {
+        if let Some(out) = self.eject_dir(pos, body) {
             return out * wish.length().max(1.0);
         }
         let speed = wish.length();
         if speed < 1e-6 {
             return wish;
         }
-        let probe = pos + wish / speed * COLLIDE_PROBE_M;
-        let allowed = self.slide(pos, probe) - pos;
+        let reach = COLLIDE_PROBE_M.max(speed * PROBE_LOOKAHEAD_S);
+        let probe = pos + wish / speed * reach;
+        let allowed = self.slide(pos, probe, body) - pos;
         if allowed.length_squared() < 1e-6 {
             Vec2::ZERO
         } else {
@@ -676,35 +790,23 @@ pub fn eject_avatar_from_buildings(
     let Ok((cell, mut tf)) = avatars.single_mut() else {
         return;
     };
-    // Only a pedestrian is ejected. The footprints have no height, so shoving a
-    // flying — or falling — avatar sideways would move it around a building it is
-    // passing well above.
+    // What an avatar is ejected from depends on its height, not on whether it is
+    // "airborne": a flier over a roof is clear of the building and one at its wall
+    // is not, and a deck over a road is clear of the house under it.
     //
-    // The ground this is measured against is the *measured* one. Offline the
-    // transform is the avatar's state rather than a display offset, so standing
-    // still on a hill puts `translation.y` at `GROUND_HEIGHT + terrain.ground_at(..)` —
-    // which above 0.15 m of relief already exceeds `AIRBORNE_EPS`, and the snap-out
-    // backstop then never ran. A teleport that landed inside a building stranded
-    // the avatar there for good. `avatar::handle_avatar_movement` computes the same
-    // ground the same way, a few lines before it calls `slide`.
-    //
-    // The storey counts as ground for the same reason, and it has to: a first
-    // floor stands 3.2 m up, so without it every avatar upstairs reads as flying
-    // and neither this backstop nor the slide that runs before it does anything
-    // at all — which is a storey whose walls are a picture.
-    let ground_y = crate::systems::avatar::GROUND_HEIGHT
-        + terrain.ground_at(tf.translation.x, tf.translation.z)
-        + avatar_state.floor_lift;
-    if avatar_state.is_flying || tf.translation.y > ground_y + crate::systems::avatar::AIRBORNE_EPS
-    {
-        return;
-    }
+    // The ground is the *measured* one. Offline the transform is the avatar's state
+    // rather than a display offset, so `translation.y` is `GROUND_HEIGHT +
+    // terrain.ground_at(..)` when standing — and the storey counts too
+    // (`floor_lift`), which is what keeps an avatar upstairs a resident of the
+    // floor it is on rather than of the ground floor's walls.
+    let ground_y = terrain.ground_at(tf.translation.x, tf.translation.z) + avatar_state.floor_lift;
+    let body = Body::new(tf.translation.y - crate::systems::avatar::GROUND_HEIGHT, ground_y);
     let base = Vec2::new(
         cell.x as f32 * WORLD_CELL_EDGE,
         cell.z as f32 * WORLD_CELL_EDGE,
     );
     let p = base + Vec2::new(tf.translation.x, tf.translation.z);
-    let fixed = colliders.eject(p, EJECT_MARGIN);
+    let fixed = colliders.eject(p, EJECT_MARGIN, body);
     if fixed != p {
         tf.translation.x = fixed.x - base.x;
         tf.translation.z = fixed.y - base.y;
@@ -785,7 +887,7 @@ mod tests {
         // and with no Z component there's nothing to slide to → stay put.
         let from = Vec2::new(-6.0, 0.0);
         let to = Vec2::new(-4.0, 0.0); // would land inside
-        assert_eq!(c.slide(from, to), from);
+        assert_eq!(c.slide(from, to, Body::standing()), from);
     }
 
     #[test]
@@ -795,7 +897,7 @@ mod tests {
         // Z component is free, so the avatar slides north along the facade.
         let from = Vec2::new(-6.0, 0.0);
         let to = Vec2::new(-4.0, 2.0);
-        let got = c.slide(from, to);
+        let got = c.slide(from, to, Body::standing());
         assert_eq!(got, Vec2::new(-6.0, 2.0));
     }
 
@@ -804,7 +906,7 @@ mod tests {
         let c = colliders_with(unit_square());
         let from = Vec2::new(-20.0, -20.0);
         let to = Vec2::new(-18.0, -19.0);
-        assert_eq!(c.slide(from, to), to);
+        assert_eq!(c.slide(from, to, Body::standing()), to);
     }
 
     #[test]
@@ -814,7 +916,7 @@ mod tests {
         // the final position) rather than freezing the avatar in place.
         let from = Vec2::ZERO;
         let to = Vec2::new(1.0, 1.0);
-        assert_eq!(c.slide(from, to), to);
+        assert_eq!(c.slide(from, to, Body::standing()), to);
     }
 
     #[test]
@@ -822,9 +924,9 @@ mod tests {
         let c = colliders_with(unit_square());
         // Just inside the east wall (nearest boundary is x=5).
         let inside = Vec2::new(4.0, 0.0);
-        let out = c.eject(inside, EJECT_MARGIN);
+        let out = c.eject(inside, EJECT_MARGIN, Body::standing());
         assert!(
-            !c.blocked(out),
+            !c.blocked(out, Body::standing()),
             "ejected point must be outside every building"
         );
         // Nearest wall is +X, so it should exit eastward past x = 5 + margin.
@@ -841,7 +943,7 @@ mod tests {
         // Walking straight east into the west wall from just outside the probe:
         // velocity is zeroed (nothing to slide to).
         let pos = Vec2::new(-5.0 - COLLIDE_PROBE_M * 0.5, 0.0);
-        let v = c.steer_velocity(pos, Vec2::new(1.0, 0.0));
+        let v = c.steer_velocity(pos, Vec2::new(1.0, 0.0), Body::standing());
         assert!(v.length() < 1e-6, "expected zeroed velocity, got {v:?}");
     }
 
@@ -852,7 +954,7 @@ mod tests {
         // the free north component survives at full speed.
         let pos = Vec2::new(-5.0 - COLLIDE_PROBE_M * 0.5, 0.0);
         let wish = Vec2::new(1.0, 1.0);
-        let v = c.steer_velocity(pos, wish);
+        let v = c.steer_velocity(pos, wish, Body::standing());
         assert!(
             (v.length() - wish.length()).abs() < 1e-4,
             "speed preserved: {v:?}"
@@ -867,7 +969,7 @@ mod tests {
     fn steer_pushes_out_from_inside() {
         let c = colliders_with(unit_square());
         // Inside, near the east wall: pushed east regardless of (zero) input.
-        let v = c.steer_velocity(Vec2::new(4.0, 0.0), Vec2::ZERO);
+        let v = c.steer_velocity(Vec2::new(4.0, 0.0), Vec2::ZERO, Body::standing());
         assert!(v.x > 0.5 && v.y.abs() < 1e-4, "should push east out: {v:?}");
     }
 
@@ -875,7 +977,7 @@ mod tests {
     fn steer_clear_path_unchanged() {
         let c = colliders_with(unit_square());
         let wish = Vec2::new(1.0, 0.0);
-        assert_eq!(c.steer_velocity(Vec2::new(-50.0, -50.0), wish), wish);
+        assert_eq!(c.steer_velocity(Vec2::new(-50.0, -50.0), wish, Body::standing()), wish);
     }
 
     /// The bug this whole split exists for: the doorway let the avatar into a
@@ -885,13 +987,13 @@ mod tests {
     fn a_hollow_building_can_be_walked_around_inside() {
         let c = colliders_with(hollow_square());
         // In through the door, then on across the room.
-        let door_step = c.slide(Vec2::new(0.0, -6.0), Vec2::new(0.0, -4.0));
+        let door_step = c.slide(Vec2::new(0.0, -6.0), Vec2::new(0.0, -4.0), Body::standing());
         assert_eq!(door_step, Vec2::new(0.0, -4.0), "the door must open");
-        let across = c.slide(Vec2::new(0.0, -4.0), Vec2::new(3.0, 3.0));
+        let across = c.slide(Vec2::new(0.0, -4.0), Vec2::new(3.0, 3.0), Body::standing());
         assert_eq!(across, Vec2::new(3.0, 3.0), "the room must be walkable");
         // And back out the way we came.
         assert_eq!(
-            c.slide(Vec2::new(0.0, -4.0), Vec2::new(0.0, -6.0)),
+            c.slide(Vec2::new(0.0, -4.0), Vec2::new(0.0, -6.0), Body::standing()),
             Vec2::new(0.0, -6.0)
         );
     }
@@ -902,10 +1004,10 @@ mod tests {
         let c = colliders_with(hollow_square());
         // Outside, walking at a blank wall (the door is on the south side).
         let outside = Vec2::new(-6.0, 0.0);
-        assert_eq!(c.slide(outside, Vec2::new(-4.0, 0.0)), outside);
+        assert_eq!(c.slide(outside, Vec2::new(-4.0, 0.0), Body::standing()), outside);
         // Inside, walking at the same wall from the room.
         let inside = Vec2::new(-4.0, 0.0);
-        assert_eq!(c.slide(inside, Vec2::new(-6.0, 0.0)), inside);
+        assert_eq!(c.slide(inside, Vec2::new(-6.0, 0.0), Body::standing()), inside);
     }
 
     /// A wall has no thickness, so a point test would step over it. Crossing the
@@ -916,7 +1018,7 @@ mod tests {
         let c = colliders_with(hollow_square());
         let from = Vec2::new(0.0, -6.0);
         assert_eq!(
-            c.slide(from, Vec2::new(0.0, 6.0)),
+            c.slide(from, Vec2::new(0.0, 6.0), Body::standing()),
             from,
             "a step from outside to outside crosses the back wall"
         );
@@ -929,7 +1031,7 @@ mod tests {
     fn steer_stops_at_a_hollow_wall_the_probe_overshoots() {
         let c = colliders_with(hollow_square());
         let pos = Vec2::new(-5.0 - COLLIDE_PROBE_M * 0.5, 0.0);
-        let v = c.steer_velocity(pos, Vec2::new(1.0, 0.0));
+        let v = c.steer_velocity(pos, Vec2::new(1.0, 0.0), Body::standing());
         assert!(v.length() < 1e-6, "expected zeroed velocity, got {v:?}");
     }
 
@@ -938,11 +1040,11 @@ mod tests {
     #[test]
     fn nothing_ejects_an_avatar_that_is_simply_indoors() {
         let c = colliders_with(hollow_square());
-        assert_eq!(c.eject(Vec2::ZERO, EJECT_MARGIN), Vec2::ZERO);
-        assert_eq!(c.eject_dir(Vec2::ZERO), None);
+        assert_eq!(c.eject(Vec2::ZERO, EJECT_MARGIN, Body::standing()), Vec2::ZERO);
+        assert_eq!(c.eject_dir(Vec2::ZERO, Body::standing()), None);
         // And a walk inside is steered by nothing at all.
         let wish = Vec2::new(1.0, 0.0);
-        assert_eq!(c.steer_velocity(Vec2::ZERO, wish), wish);
+        assert_eq!(c.steer_velocity(Vec2::ZERO, wish, Body::standing()), wish);
     }
 
     /// A building with no room behind the door stays solid, and so does one with
@@ -951,15 +1053,78 @@ mod tests {
     fn a_solid_building_is_unchanged_by_any_of_this() {
         let c = colliders_with(unit_square());
         let from = Vec2::new(0.0, -6.0);
-        assert_eq!(c.slide(from, Vec2::new(0.0, -4.0)), from, "still no way in");
-        let out = c.eject(Vec2::ZERO, EJECT_MARGIN);
-        assert!(!c.blocked(out), "still ejected from inside");
+        assert_eq!(c.slide(from, Vec2::new(0.0, -4.0), Body::standing()), from, "still no way in");
+        let out = c.eject(Vec2::ZERO, EJECT_MARGIN, Body::standing());
+        assert!(!c.blocked(out, Body::standing()), "still ejected from inside");
     }
 
     #[test]
     fn eject_noop_when_outside() {
         let c = colliders_with(unit_square());
         let outside = Vec2::new(50.0, 50.0);
-        assert_eq!(c.eject(outside, EJECT_MARGIN), outside);
+        assert_eq!(c.eject(outside, EJECT_MARGIN, Body::standing()), outside);
+    }
+
+    /// The 10 m square as a 12 m tall building standing on the datum.
+    fn tall_building() -> Footprint {
+        unit_square().with_extent(-3.0, 12.0)
+    }
+
+    #[test]
+    fn a_bridge_deck_over_a_building_is_not_blocked_by_it() {
+        let mut c = BuildingColliders::default();
+        c.set_detail(vec![unit_square().with_extent(-3.0, 4.0)]);
+        // Deck 8 m up, ground under the avatar is the deck itself.
+        let on_deck = Body::new(8.0, 8.0);
+        assert!(!c.blocked(Vec2::ZERO, on_deck));
+        assert_eq!(
+            c.slide(Vec2::new(-8.0, 0.0), Vec2::new(8.0, 0.0), on_deck),
+            Vec2::new(8.0, 0.0)
+        );
+        assert_eq!(c.eject(Vec2::ZERO, EJECT_MARGIN, on_deck), Vec2::ZERO);
+    }
+
+    #[test]
+    fn flying_over_a_roof_is_clear_and_at_wall_height_is_stopped() {
+        let c = colliders_with(tall_building());
+        let from = Vec2::new(-8.0, 0.0);
+        let to = Vec2::new(8.0, 0.0);
+        assert_eq!(c.slide(from, to, Body::new(30.0, 0.0)), to);
+        assert_ne!(c.slide(from, to, Body::new(6.0, 0.0)), to);
+    }
+
+    #[test]
+    fn a_fast_move_cannot_tunnel_a_solid_building() {
+        let c = colliders_with(tall_building());
+        let from = Vec2::new(-20.0, 0.0);
+        let got = c.slide(from, Vec2::new(20.0, 0.0), Body::new(3.0, 0.0));
+        assert!(got.x < -5.0, "stopped at the near wall, got {got:?}");
+    }
+
+    #[test]
+    fn the_sight_line_passes_over_a_roof_and_hits_a_wall() {
+        let c = colliders_with(tall_building());
+        let (a, b) = (Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0));
+        assert_eq!(c.segment_fraction(a, 20.0, b, 20.0), None);
+        let t = c.segment_fraction(a, 5.0, b, 5.0).expect("wall in the way");
+        assert!((t - 0.25).abs() < 1e-4, "hits the west wall, got {t}");
+        // Descending onto the roof from far away enters through the roof plane's
+        // footprint edge only when it is already below the ridge there.
+        assert!(c.segment_fraction(a, 5.0, b, 30.0).is_some());
+    }
+
+    #[test]
+    fn eject_skips_a_footprint_below_the_deck() {
+        let mut c = BuildingColliders::default();
+        c.set_detail(vec![unit_square().with_extent(-3.0, 4.0)]);
+        assert_eq!(c.eject_dir(Vec2::ZERO, Body::new(8.0, 8.0)), None);
+        assert!(c.eject_dir(Vec2::ZERO, Body::standing()).is_some());
+    }
+
+    #[test]
+    fn a_kerb_sized_solid_is_stepped_over() {
+        let mut c = BuildingColliders::default();
+        c.set_detail(vec![unit_square().with_extent(-0.5, 0.3)]);
+        assert!(!c.blocked(Vec2::ZERO, Body::standing()));
     }
 }

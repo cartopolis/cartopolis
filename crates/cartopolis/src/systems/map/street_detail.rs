@@ -888,7 +888,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 white,
             );
         }
-        colliders.extend(square_collider(at + Vec2::new(ox, oz), 0.15));
+        colliders.extend(square_collider(at + Vec2::new(ox, oz), 0.15, ground_at(at), 3.5));
     }
 
     for &(id, lat, lng) in &data.crossings {
@@ -936,7 +936,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             [0.07, 0.42, 0.07],
             linear(METAL),
         );
-        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.12));
+        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.12, ground_at(p), 0.85));
     }
 
     for &(lat, lng) in &data.racks {
@@ -980,7 +980,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 metal,
             );
         }
-        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.8));
+        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.8, ground_at(p), 1.0));
     }
 
     for &(lat, lng) in &data.billboards {
@@ -1022,7 +1022,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             [1.55, 1.05, 0.06],
             [0.92, 0.90, 0.86, 1.0],
         );
-        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.3));
+        colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.3, ground_at(p), 4.1));
     }
 
     // ── Linear features ──────────────────────────────────────────────────
@@ -1072,6 +1072,8 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                     a + Vec2::new(ox, oz),
                     b + Vec2::new(ox, oz),
                     half_t.max(0.15),
+                    ground_at(a).max(ground_at(b)),
+                    top,
                 ));
             }
         }
@@ -1225,23 +1227,25 @@ fn signal_group(dir: Vec2) -> u8 {
 }
 
 /// A small square footprint (for point props the avatar should not pass through).
-fn square_collider(center: Vec2, half: f32) -> Option<Footprint> {
+fn square_collider(center: Vec2, half: f32, ground: f32, height: f32) -> Option<Footprint> {
     Footprint::new(vec![
         center + Vec2::new(-half, -half),
         center + Vec2::new(half, -half),
         center + Vec2::new(half, half),
         center + Vec2::new(-half, half),
     ])
+    .map(|f| f.with_extent(ground - 0.5, ground + height))
 }
 
 /// A thin rectangle along a wall segment.
-fn segment_collider(a: Vec2, b: Vec2, half_t: f32) -> Option<Footprint> {
+fn segment_collider(a: Vec2, b: Vec2, half_t: f32, ground: f32, height: f32) -> Option<Footprint> {
     let dir = (b - a).normalize_or_zero();
     if dir == Vec2::ZERO {
         return None;
     }
     let n = Vec2::new(-dir.y, dir.x) * half_t;
     Footprint::new(vec![a - n, b - n, b + n, a + n])
+        .map(|f| f.with_extent(ground - 0.5, ground + height))
 }
 
 // ─── Resource + main system ──────────────────────────────────────────────────

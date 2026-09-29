@@ -703,9 +703,6 @@ fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
 /// second copy of the number there is exactly the drift CLAUDE.md's
 /// "standing height comes from THREE places" note is about.
 pub const GROUND_HEIGHT: f32 = 0.05;
-/// Height above the ground at which the avatar stops being a pedestrian: the
-/// building footprints are 2D, so they only apply to something standing on them.
-pub(crate) const AIRBORNE_EPS: f32 = 0.2;
 
 /// Animation data attached to an avatar (and each of its model "holder" children),
 /// read once a scene is ready. `Clone` so the body and outfit holders can share it.
@@ -2147,29 +2144,29 @@ pub fn handle_avatar_movement(
     };
     if avatar_state.ground_speed > 1e-4 {
         let delta = avatar_state.move_dir * avatar_state.ground_speed * lift * delta_time;
-        // Collide against buildings while walking (anything off the ground passes
-        // over roofs — the footprints are 2D, so they'd otherwise divert a flight
-        // or a fall around a building it clears) when the buildings layer is on.
+        // Collide against buildings when the buildings layer is on. A building is
+        // in the way only at its own height (`collision::Body`), so a flight
+        // clears a roof and is stopped by a facade, a jump clears a kerb and not
+        // a wall, and a bridge deck is not the house standing under it. It used
+        // to be a boolean — anything off the ground passed through everything —
+        // which made flight ghost through every building and could not tell a
+        // deck from the pavement below it.
+        //
         // Footprints live in the anchored world-XZ frame, so resolve the move in
-        // absolute metres (cell + local).
-        // Last frame's storey is part of the ground here, exactly as the terrain
-        // is (`collision::eject_avatar_from_buildings` says why): offline this
-        // transform *is* the avatar's state, so standing on a first floor puts
-        // `y` 3.2 m up and without the lift every avatar upstairs reads as
-        // airborne — and an airborne avatar skips collision entirely, so the
-        // walls of every upper storey stop being walls.
-        let airborne = transform.translation.y
-            > GROUND_HEIGHT
-                + terrain.ground_at(transform.translation.x, transform.translation.z)
-                + avatar_state.floor_lift
-                + AIRBORNE_EPS;
+        // absolute metres (cell + local). Last frame's storey is part of the
+        // ground (`collision::eject_avatar_from_buildings` says why).
+        let body = crate::systems::collision::Body::new(
+            transform.translation.y - GROUND_HEIGHT,
+            terrain.ground_at(transform.translation.x, transform.translation.z)
+                + avatar_state.floor_lift,
+        );
         // Underground, the surface world is not what is around you: the
         // building over a tunnel is seven metres up and its footprint is not a
         // wall down here, while the tunnel's own wall is the only thing that is
         // (`systems::tunnels`). So the two collision worlds are exclusive, and
         // which one applies is decided by the floor the avatar is standing on.
         let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
-        if !airborne && (in_bore || (layers.buildings_enabled && !colliders.is_empty())) {
+        if in_bore || (layers.buildings_enabled && !colliders.is_empty()) {
             use crate::grid::WORLD_CELL_EDGE;
             let base = Vec2::new(
                 grid_cell.x as f32 * WORLD_CELL_EDGE,
@@ -2180,7 +2177,7 @@ pub fn handle_avatar_movement(
             let resolved = if in_bore {
                 colliders.slide_in_bore(from, to)
             } else {
-                colliders.slide(from, to)
+                colliders.slide(from, to, body)
             };
             transform.translation.x = resolved.x - base.x;
             transform.translation.z = resolved.y - base.y;

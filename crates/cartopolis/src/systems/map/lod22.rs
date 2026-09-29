@@ -1639,11 +1639,8 @@ fn build_lod22_from_body(
         // — a shell is back-face culled, so walking into one is a hole in the
         // world with the street showing through it.
         let hollow = !doors.is_empty() && crate::systems::interiors::can_hold_a_room(&outline);
-        if let Some(fp) =
-            crate::systems::collision::Footprint::with_doors(outline.clone(), &doors, hollow)
-        {
-            footprints.push(fp);
-        }
+        let pending_fp =
+            crate::systems::collision::Footprint::with_doors(outline.clone(), &doors, hollow);
 
         // A door on the facade at each entrance the register lists.
         //
@@ -1702,6 +1699,11 @@ fn build_lod22_from_body(
         // for "where does this wall stop", and it is only computed for shells
         // carrying an id.
         let wall_h = b.p.iter().map(|&(_, _, h)| h).fold(0.0f32, f32::max);
+        // The collider spans the building's own height, so a bridge deck or a
+        // flier above the ridge is not stopped by it.
+        if let Some(fp) = pending_fp {
+            footprints.push(fp.with_extent(base - 3.0, base + wall_h.max(3.0)));
+        }
         for &(i, j, k, is_roof) in &b.t {
             let (a, bb, c) = (local[i], local[j], local[k]);
             if is_roof == 1 {
@@ -1778,14 +1780,17 @@ fn build_lod22_from_body(
             // Only the walls. A slab's footprint is the whole storey, so hulling
             // one would fill the building with an invisible block — which is
             // exactly the collider a shell has and a model exists to lose.
+            let mut model_fp = None;
             if crate::systems::lod3::is_solid_class(&b.class) {
-                if let Some(fp) = crate::systems::collision::Footprint::new(
+                model_fp = crate::systems::collision::Footprint::new(
                     crate::systems::collision::convex_hull_xz(world_xz.clone()),
-                ) {
-                    footprints.push(fp);
-                }
+                );
             }
             let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
+            if let Some(fp) = model_fp {
+                let top = b.p.iter().map(|&(_, _, h)| h).fold(0.0f32, f32::max);
+                footprints.push(fp.with_extent(base - 3.0, base + top.max(3.0)));
+            }
             let local: Vec<Vec3> =
                 b.p.iter()
                     .zip(&world_xz)
