@@ -2948,3 +2948,47 @@ fn delete_row(env: &mut JNIEnv, activity: &JObject, uri: &GlobalRef) {
         clear_pending(env);
     }
 }
+
+/// This device's UnifiedPush endpoint, if a distributor has given it one
+/// (protocol 29, `systems::push`). The Java side — `Push.java` registers at
+/// startup, `PushReceiver.java` keeps the answer — writes it to the app's
+/// `cartopolis_push` preferences, and this reads it back: the endpoint arrives
+/// on a broadcast at any moment, and a preferences file is the one place both
+/// a receiver with no native code loaded and the running app can see.
+pub fn push_endpoint() -> Option<String> {
+    let java_vm = vm().ok()?;
+    let mut env = java_vm.attach_current_thread().ok()?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let name = env.new_string("cartopolis_push")?;
+        let prefs = env
+            .call_method(
+                &activity,
+                "getSharedPreferences",
+                "(Ljava/lang/String;I)Landroid/content/SharedPreferences;",
+                &[JValue::Object(&name), JValue::Int(0)],
+            )?
+            .l()?;
+        let key = env.new_string("endpoint")?;
+        let value = env
+            .call_method(
+                &prefs,
+                "getString",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&key), JValue::Object(&JObject::null())],
+            )?
+            .l()?;
+        if value.is_null() {
+            return Ok::<Option<String>, Fail>(None);
+        }
+        Ok(Some(env.get_string(&JString::from(value))?.into()))
+    });
+    match result {
+        Ok(v) => v.filter(|e| !e.trim().is_empty()),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            tracing::warn!(error = %msg, "could not read the push endpoint");
+            None
+        }
+    }
+}

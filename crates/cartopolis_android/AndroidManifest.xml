@@ -190,6 +190,14 @@
          microphone still installs and simply cannot transmit. -->
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- From API 30 an app sees only the packages it declares an interest in:
+         without this, Push.java would find no distributor even with one installed. -->
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+    </queries>
+
     <application
         android:label="Cartopolis"
         android:icon="@mipmap/icon"
@@ -299,5 +307,20 @@
             android:name=".ConnectionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- UnifiedPush (Push.java, PushReceiver.java): the distributor app tells us
+             our endpoint and wakes us for a call while the app is closed. Exported,
+             because the distributor is another app; PushReceiver ignores anything
+             that does not carry our registration token. -->
+        <receiver
+            android:name=".PushReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

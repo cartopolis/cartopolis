@@ -39,6 +39,8 @@ pub struct CallsHandle {
 pub struct Joiner {
     pub group: Vec<u8>,
     pub username: String,
+    /// `accounts.id`, so a push for the call does not wake the caller's own phone.
+    pub account: String,
     pub device: uuid::Uuid,
     /// Usernames this account blocks, lowercased: their media is not forwarded
     /// to it.
@@ -123,6 +125,7 @@ pub async fn spawn(
     listen: &str,
     public: Option<SocketAddr>,
     chat: Arc<ChatHub>,
+    ring: Option<mpsc::UnboundedSender<crate::push::Ring>>,
 ) -> anyhow::Result<(CallsHandle, SocketAddr, tokio::task::JoinHandle<()>)> {
     let socket = UdpSocket::bind(listen).await?;
     let bound = socket.local_addr()?;
@@ -134,7 +137,7 @@ pub async fn spawn(
         );
     }
     let (tx, rx) = mpsc::unbounded_channel();
-    let task = tokio::spawn(run(socket, Sfu::new(public), rx, chat));
+    let task = tokio::spawn(run(socket, Sfu::new(public), rx, chat, ring));
     Ok((CallsHandle { tx }, bound, task))
 }
 
@@ -143,6 +146,7 @@ async fn run(
     mut sfu: Sfu,
     mut rx: mpsc::UnboundedReceiver<Command>,
     chat: Arc<ChatHub>,
+    ring: Option<mpsc::UnboundedSender<crate::push::Ring>>,
 ) {
     let mut info: HashMap<ParticipantId, Info> = HashMap::new();
     // Every member account of a chat whose call has anyone in it, for the
@@ -176,6 +180,17 @@ async fn run(
                                     blocked: joiner.blocked,
                                 });
                                 members.insert(group.clone(), joiner.members);
+                                // The first one in starts the call: wake the phones of
+                                // everyone else in the chat whose app is closed (`push`).
+                                if sfu.members(&group).len() == 1 {
+                                    if let Some(ring) = &ring {
+                                        let _ = ring.send(crate::push::Ring {
+                                            caller: joiner.account.clone(),
+                                            caller_name: info[&id].username.clone(),
+                                            members: members[&group].clone(),
+                                        });
+                                    }
+                                }
                                 let _ = reply.send(Ok((id.0, answer)));
                                 let who = info[&id].username.clone();
                                 roster(&chat, &sfu, &info, &members, &group, &who);

@@ -133,6 +133,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "video on a prim — PrimDto.video (a clip in the simulator's video store, when it started, whether it loops) and SetPrimVideo to start or stop one; the clip is fetched over HTTP, not sent on the wire (docs/notes/video-on-a-prim.md)",
     },
+    ProtocolRevision {
+        version: 29,
+        adr: "",
+        summary: "ringing a closed app — SetPushEndpoint registers a device's UnifiedPush address; the server wakes it when a call starts in one of its chats, with no content in the push (docs/notes/calls.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -212,6 +217,7 @@ pub enum MessageKind {
     GetNearbyPeople = 61,
     NearbyPeople = 62,
     SetPrimVideo = 63,
+    SetPushEndpoint = 64,
 }
 
 impl MessageKind {
@@ -280,6 +286,7 @@ impl MessageKind {
             61 => Some(Self::GetNearbyPeople),
             62 => Some(Self::NearbyPeople),
             63 => Some(Self::SetPrimVideo),
+            64 => Some(Self::SetPushEndpoint),
             _ => None,
         }
     }
@@ -1191,6 +1198,11 @@ pub enum NetMessage {
         prim_id: i64,
         video: Option<SetVideo>,
     },
+    /// Client: where to wake this device when it is not connected — a
+    /// UnifiedPush endpoint (an `https:` URL its distributor gave it) — or
+    /// `None` to stop. The server posts an empty wake-up there when a call
+    /// starts in one of the account's chats; nothing about the call is in it.
+    SetPushEndpoint { endpoint: Option<String> },
 }
 
 /// What [`NetMessage::SetPrimVideo`] asks for; the server adds the start time.
@@ -1523,6 +1535,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::GetNearbyPeople { .. } => MessageKind::GetNearbyPeople,
         NetMessage::NearbyPeople { .. } => MessageKind::NearbyPeople,
         NetMessage::SetPrimVideo { .. } => MessageKind::SetPrimVideo,
+        NetMessage::SetPushEndpoint { .. } => MessageKind::SetPushEndpoint,
     }
 }
 
@@ -2033,7 +2046,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 62] = [
+        const ALL: [MessageKind; 63] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2096,6 +2109,7 @@ mod tests {
             GetNearbyPeople,
             NearbyPeople,
             SetPrimVideo,
+            SetPushEndpoint,
         ];
         for k in ALL {
             assert_eq!(
@@ -2109,7 +2123,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(SetPrimVideo as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(SetPushEndpoint as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

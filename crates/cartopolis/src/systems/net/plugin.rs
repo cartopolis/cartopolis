@@ -29,6 +29,12 @@ impl Plugin for NetPlugin {
                 .before(systems::calls::drive_calls)
                 .in_set(ClientPhase::Input),
         );
+        // Where the simulator wakes this phone for a call while the app is closed.
+        #[cfg(target_os = "android")]
+        app.add_systems(
+            Update,
+            systems::push::send_push_endpoint.in_set(ClientPhase::Input),
+        );
         // Voice plays through the output device the soundscape already opened, as a
         // custom `Decodable` asset. Registering the type is what teaches bevy_audio
         // to build a rodio source from it; without this an `AudioPlayer<VoiceStream>`

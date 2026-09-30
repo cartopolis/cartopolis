@@ -27,9 +27,40 @@
 package eu.garage44.cartopolis;
 
 import android.app.NativeActivity;
+import android.app.NotificationManager;
+import android.os.Bundle;
 import android.os.Process;
 
 public final class MainActivity extends NativeActivity {
+    /** Whether the app is on screen, for `PushReceiver`: a wake-up for a call
+     *  the app is already showing must not ring a second time. */
+    static volatile boolean onScreen;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // Where the simulator wakes this phone while the app is closed
+        // (Push.java). Nothing happens without a UnifiedPush distributor.
+        Push.register(this);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        onScreen = true;
+        // Opened, from the notification or not: the app shows the call now.
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) {
+            manager.cancel(PushReceiver.NOTIFICATION_ID);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        onScreen = false;
+        super.onPause();
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();

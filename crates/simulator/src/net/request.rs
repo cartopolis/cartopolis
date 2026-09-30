@@ -90,6 +90,9 @@ pub enum ClientRequest {
         prim_id: i64,
         video: Option<cartopolis_core::SetVideo>,
     },
+    SetPushEndpoint {
+        endpoint: Option<String>,
+    },
     TextureCatalogRequest,
     TextureRequest {
         request_id: u32,
@@ -316,6 +319,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 prim_id,
                 video,
             },
+            NetMessage::SetPushEndpoint { endpoint } => Self::SetPushEndpoint { endpoint },
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
             NetMessage::TextureRequest {
                 request_id,

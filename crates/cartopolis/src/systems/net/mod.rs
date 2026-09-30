@@ -13,6 +13,9 @@ pub mod background;
 pub mod calls;
 pub mod network;
 pub mod private_chat;
+/// Where the simulator wakes this phone when the app is closed (UnifiedPush).
+#[cfg(target_os = "android")]
+pub mod push;
 pub mod session;
 pub mod user_store;
 /// Proximity voice: capture, the codec, and the playback of what arrives.

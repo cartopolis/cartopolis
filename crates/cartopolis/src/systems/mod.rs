@@ -74,6 +74,8 @@ pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,
     transit_vehicles,
 };
+#[cfg(target_os = "android")]
+pub use net::push;
 pub use net::{background, calls, network, private_chat, session, user_store, voice};
 pub use player::{
     avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, sit_pose, touch,

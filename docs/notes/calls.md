@@ -110,7 +110,8 @@ in any firewall. `calls_addr` on `SimHandle` says what was bound.
 - A block made during a call applies from the next join, not at once.
 - A device that connects while a call is already running learns of it only
   when the roster next changes (someone joins or leaves).
-- Ringing reaches connected devices only; a closed app is `UnifiedPush`, later.
+- Ringing reaches connected devices, and a closed Android app through
+  UnifiedPush (below). A closed desktop app or browser tab is not rung.
 
 ## Not yet known
 
@@ -201,3 +202,30 @@ And what a test has to know:
   under overflow checks), and after a renderer halt a system whose resource was
   removed panics where a release build only logs. Build the test with debug
   assertions and overflow checks off, as the shipped build has them.
+
+## Ringing a closed app (2026-09-30, protocol 29)
+
+A phone with a **UnifiedPush distributor** installed (ntfy is the common one)
+is woken when a call starts in one of its chats. `Push.java` asks the
+distributor for an endpoint at startup, `PushReceiver.java` keeps it in the
+`cartopolis_push` preferences, and the running app hands it to the server
+(`SetPushEndpoint`, `systems::push`). When the first person joins a call, the
+server posts to every other member's endpoints (`simulator::push`), and the
+receiver shows a ringing "Incoming call" for 45 s. Opening it connects, and the
+roster rings as it does for any connected device. Decisions:
+
+- **The push is empty.** Not who is calling, not which chat — the
+  distributor's server relays it. The app learns the rest over its own
+  connection, which is also why the receiver needs no native code.
+- **UnifiedPush, not Firebase**, for ConnectionService's reason: no Google
+  Play services. Spoken as three broadcasts by hand, because the connector
+  library is an AAR, i.e. Gradle.
+- **The endpoint is a stranger's URL and the server is inside the private
+  network**, so a push goes to `https:` only and to public addresses only,
+  checked by the resolver at connect time (no redirects). A 404/410 from the
+  distributor removes the endpoint. One push per endpoint per 20 s.
+- **Not rung:** the caller's own devices, and anyone who blocked the caller.
+  **Not verified on a device**: the emulator here cannot run the app, so the
+  broadcast exchange with a real distributor and the notification are
+  untested; the server half is tested with a database and the Java is
+  compiled against android-34.

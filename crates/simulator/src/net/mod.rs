@@ -510,6 +510,9 @@ struct ConnCtx<T> {
     /// dropping the seat leaves the call, which is also what happens when the
     /// connection ends and this goes out of scope.
     call_seat: Option<crate::calls::Seat>,
+    /// The push endpoint this connection last registered (protocol 29), so
+    /// `SetPushEndpoint { endpoint: None }` knows which one to take back.
+    push_endpoint: Option<String>,
 }
 
 impl<T: FrameTransport> ConnCtx<T> {
@@ -661,6 +664,7 @@ pub async fn handle_connection<T: FrameTransport>(
         presence_active: true,
         e2ee_device: None,
         call_seat: None,
+        push_endpoint: None,
     };
 
     ctx.send(&NetMessage::BlockedList { usernames: blocked })
@@ -946,6 +950,9 @@ async fn dispatch<T: FrameTransport>(
             prim_id,
             video,
         } => prims::on_set_video(ctx, request_id, prim_id, video).await,
+        ClientRequest::SetPushEndpoint { endpoint } => {
+            calls::on_set_push_endpoint(ctx, endpoint).await
+        }
         ClientRequest::GetPrimScript {
             request_id,
             prim_id,

@@ -23,6 +23,7 @@ pub mod library;
 pub mod mail;
 pub mod net;
 pub mod prims;
+pub mod push;
 pub mod registration;
 pub mod scripting;
 pub mod state;
@@ -122,7 +123,9 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
                 .map(str::parse::<SocketAddr>)
                 .transpose()
                 .context("calls_public_addr must be IP:port")?;
-            let (handle, bound, task) = calls::spawn(listen, public, chat.clone())
+            // Wakes the phones of a chat's members when a call starts in it.
+            let ring = push::spawn(conn.clone());
+            let (handle, bound, task) = calls::spawn(listen, public, chat.clone(), Some(ring))
                 .await
                 .with_context(|| format!("bind calls_listen {listen}"))?;
             tracing::info!(%bound, "calls listening (udp)");

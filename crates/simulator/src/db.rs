@@ -1325,3 +1325,54 @@ mod tests {
         assert_eq!(sync, 1, "synchronous = NORMAL");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Push endpoints (V23): where to wake a device whose app is closed.
+// ---------------------------------------------------------------------------
+
+/// Record `endpoint` as `account`'s, moving it from anyone who had it.
+pub fn set_push_endpoint(
+    conn: &Connection,
+    account: &str,
+    endpoint: &str,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO push_endpoints (endpoint, account, updated_ms) VALUES (?1, ?2, ?3)
+         ON CONFLICT(endpoint) DO UPDATE SET account = excluded.account, updated_ms = excluded.updated_ms",
+        rusqlite::params![endpoint, account, now_ms],
+    )?;
+    Ok(())
+}
+
+/// Forget `endpoint`, if it is `account`'s — a device can only take back its own.
+pub fn remove_push_endpoint(
+    conn: &Connection,
+    account: &str,
+    endpoint: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM push_endpoints WHERE endpoint = ?1 AND account = ?2",
+        rusqlite::params![endpoint, account],
+    )?;
+    Ok(())
+}
+
+/// Forget `endpoint` whoever it belonged to: its distributor said it is gone.
+pub fn drop_push_endpoint(conn: &Connection, endpoint: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM push_endpoints WHERE endpoint = ?1",
+        rusqlite::params![endpoint],
+    )?;
+    Ok(())
+}
+
+/// Every endpoint registered by `account`.
+pub fn push_endpoints(conn: &Connection, account: &str) -> anyhow::Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT endpoint FROM push_endpoints WHERE account = ?1 ORDER BY endpoint")?;
+    let out = stmt
+        .query_map(rusqlite::params![account], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(out)
+}

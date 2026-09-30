@@ -58,6 +58,7 @@ pub(super) async fn on_join<T: FrameTransport>(
         .join(crate::calls::Joiner {
             group: group.clone(),
             username: ctx.display_name.clone(),
+            account: ctx.principal_key.clone(),
             device,
             blocked,
             members,
@@ -92,4 +93,39 @@ pub(super) fn on_leave<T: FrameTransport>(ctx: &mut ConnCtx<T>, group: Vec<u8>) 
     if ctx.call_seat.as_ref().is_some_and(|s| s.group == group) {
         ctx.call_seat = None;
     }
+}
+
+/// Register (or take back) where this device is woken when its app is closed
+/// (protocol 29, `crate::push`). A refused endpoint is dropped with a log line
+/// and no answer: the client has nothing it could do differently, and the
+/// check is the server's, made again before every push.
+pub(super) async fn on_set_push_endpoint<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    endpoint: Option<String>,
+) -> anyhow::Result<()> {
+    let account = ctx.principal_key.clone();
+    match endpoint {
+        Some(endpoint) => {
+            if let Err(why) = crate::push::check_endpoint(&endpoint) {
+                tracing::info!(%why, "push endpoint refused");
+                return Ok(());
+            }
+            let now = super::now_millis() as i64;
+            let saved = endpoint.clone();
+            let _ = crate::db::call(&ctx.conn, move |c| {
+                crate::db::set_push_endpoint(c, &account, &saved, now)
+            })
+            .await;
+            ctx.push_endpoint = Some(endpoint);
+        }
+        None => {
+            if let Some(endpoint) = ctx.push_endpoint.take() {
+                let _ = crate::db::call(&ctx.conn, move |c| {
+                    crate::db::remove_push_endpoint(c, &account, &endpoint)
+                })
+                .await;
+            }
+        }
+    }
+    Ok(())
 }
