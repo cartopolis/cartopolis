@@ -128,6 +128,9 @@ struct Active {
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
     #[cfg(not(target_arch = "wasm32"))]
     fake_mic_sent: u64,
+    /// Whether anybody else has been in the call yet: until they have, it is
+    /// still ringing on the other side.
+    others_seen: bool,
     /// Received so far, per participant: (audio frames, pictures). Logged
     /// every few seconds, which is what a headless test reads.
     received: HashMap<u64, (u64, u64)>,
@@ -157,6 +160,9 @@ const SPEAKING_RMS: f32 = 0.02;
 /// How long a tile stays lit after the last loud frame, so it does not
 /// flicker between words.
 const SPEAKING_HOLD_MS: u128 = 400;
+
+/// How long a call you placed rings before it gives up, as a phone's does.
+const NO_ANSWER: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Every call this device knows about, and the one it is in.
 #[derive(Resource, Default)]
@@ -356,7 +362,9 @@ pub fn drive_calls(
     private: Res<PrivateChats>,
     mut voice: ResMut<VoiceState>,
     prefs: Res<AppPrefs>,
+    identity: Res<AuthIdentity>,
 ) {
+    let me = identity.username.clone().unwrap_or_default();
     let Some(online) = online else {
         // No connection, no call: the forwarder has already dropped us.
         calls.active = None;
@@ -376,6 +384,18 @@ pub fn drive_calls(
                         .retain(|p, _| *p == SELF_TILE || here.contains(p));
                 }
                 if members.is_empty() {
+                    // A call that rang here and stopped before anybody here
+                    // answered or declined it: a missed call, said once.
+                    if let Some(old) = calls.rosters.get(&group) {
+                        let rang_here = !old.iter().any(|m| m.username.eq_ignore_ascii_case(&me));
+                        if rang_here
+                            && !calls.dismissed.contains(&group)
+                            && calls.active_group() != Some(group.as_slice())
+                        {
+                            let who: Vec<String> = old.iter().map(|m| m.username.clone()).collect();
+                            calls.notice = Some(format!("Missed call from {}", who.join(", ")));
+                        }
+                    }
                     calls.dismissed.remove(&group);
                     calls.rosters.remove(&group);
                 } else {
@@ -459,6 +479,34 @@ pub fn drive_calls(
             calls.dismissed.insert(group);
         }
         None => {}
+    }
+
+    // The phone rules. A call you placed that nobody answers within
+    // [`NO_ANSWER`] ends ("No answer"); and a call ends for you when the last
+    // other person in it hangs up, as it does on a phone.
+    if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
+        let others = calls.others().len();
+        let (seen, since) = match calls.active.as_mut() {
+            Some(a) => {
+                a.others_seen |= others > 0;
+                (a.others_seen, a.started.elapsed())
+            }
+            None => (true, std::time::Duration::ZERO),
+        };
+        let end = if seen && others == 0 {
+            Some(None)
+        } else if !seen && since > NO_ANSWER {
+            Some(Some("No answer"))
+        } else {
+            None
+        };
+        if let Some(why) = end {
+            online.send("call leave", NetMessage::CallLeave { group });
+            calls.active = None;
+            if let Some(why) = why {
+                calls.notice = Some(why.into());
+            }
+        }
     }
 
     let Calls {
@@ -695,6 +743,7 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         #[cfg(not(target_arch = "wasm32"))]
         fake_mic_sent: 0,
         received: HashMap::new(),
+        others_seen: false,
         last_report: web_time::Instant::now(),
     })
 }
@@ -1051,7 +1100,10 @@ pub fn render_call_bar(
                 .show(ui, |ui| {
                     if let Some(group) = &active {
                         let secs = calls.elapsed_secs();
-                        let status = if calls.connected() {
+                        let status = if people.is_empty() {
+                            // Nobody else in it yet: it is ringing on their side.
+                            "ringing…".to_string()
+                        } else if calls.connected() {
                             format!("{:02}:{:02}", secs / 60, secs % 60)
                         } else {
                             "connecting…".into()
@@ -1107,7 +1159,19 @@ pub fn render_call_bar(
                             } else {
                                 (icons::MIC, "Mute")
                             };
-                            if theme::call_button(ui, icon, tip, calls.muted, false).clicked() {
+                            if theme::call_button(
+                                ui,
+                                icon,
+                                tip,
+                                if calls.muted {
+                                    theme::CallTone::Off
+                                } else {
+                                    theme::CallTone::On
+                                },
+                                false,
+                            )
+                            .clicked()
+                            {
                                 calls.muted = !calls.muted;
                             }
                             if camera_available() {
@@ -1116,43 +1180,129 @@ pub fn render_call_bar(
                                 } else {
                                     (icons::VIDEOCAM_OFF, "Turn the camera on")
                                 };
-                                if theme::call_button(ui, icon, tip, !calls.camera_on, false)
-                                    .clicked()
+                                if theme::call_button(
+                                    ui,
+                                    icon,
+                                    tip,
+                                    if calls.camera_on {
+                                        theme::CallTone::On
+                                    } else {
+                                        theme::CallTone::Off
+                                    },
+                                    false,
+                                )
+                                .clicked()
                                 {
                                     calls.camera_on = !calls.camera_on;
                                 }
                             }
-                            if theme::call_button(ui, icons::CALL_END, "Hang up", false, true)
-                                .clicked()
+                            if theme::call_button(
+                                ui,
+                                icons::CALL_END,
+                                "Hang up",
+                                theme::CallTone::HangUp,
+                                false,
+                            )
+                            .clicked()
                             {
                                 request = Some(CallRequest::Leave);
                             }
                         });
                     }
+                    // A call coming in, as a phone shows one: who, big; what
+                    // it is, small; decline on the left in red, answer on the
+                    // right in green.
                     for r in &ringing {
+                        use crate::systems::icons;
+                        ui.set_width(bar_width);
+                        let name = r.who.join(", ");
+                        let chat = label_of(&r.group);
+                        let subtitle = if active.is_some() {
+                            "Calling you · answering ends this call".to_string()
+                        } else if chat.eq_ignore_ascii_case(&name) {
+                            "Incoming call".to_string()
+                        } else {
+                            format!("Incoming call · {chat}")
+                        };
+                        ui.add_space(6.0);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(bar_width, 116.0),
+                            egui::Sense::hover(),
+                        );
+                        let p = ui.painter();
+                        let x = rect.center().x;
+                        let disc = egui::pos2(x, rect.min.y + 30.0);
+                        p.circle_filled(disc, 30.0, theme::ACCENT_MUTED);
+                        let initial: String = name
+                            .chars()
+                            .next()
+                            .map_or_else(String::new, |c| c.to_uppercase().collect());
+                        p.text(
+                            disc,
+                            egui::Align2::CENTER_CENTER,
+                            initial,
+                            egui::FontId::proportional(26.0),
+                            theme::CREAM,
+                        );
+                        p.text(
+                            egui::pos2(x, rect.min.y + 78.0),
+                            egui::Align2::CENTER_CENTER,
+                            &name,
+                            egui::FontId::proportional(19.0),
+                            theme::CREAM,
+                        );
+                        p.text(
+                            egui::pos2(x, rect.min.y + 102.0),
+                            egui::Align2::CENTER_CENTER,
+                            subtitle,
+                            egui::FontId::proportional(13.0),
+                            theme::TEXT_DIM,
+                        );
+                        ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} is calling · {}",
-                                    r.who.join(", "),
-                                    label_of(&r.group)
-                                ))
-                                .color(theme::CREAM),
-                            );
-                            if theme::action_button(ui, "Join").clicked() {
-                                request = Some(CallRequest::Join(r.group.clone()));
-                            }
-                            if theme::action_button(ui, "Dismiss").clicked() {
+                            let d = theme::ROUND_BUTTON_SIZE * 1.4;
+                            let gap = 64.0;
+                            ui.add_space(((bar_width - 2.0 * d - gap) * 0.5).max(0.0));
+                            if theme::call_button(
+                                ui,
+                                icons::CALL_END,
+                                "Decline",
+                                theme::CallTone::HangUp,
+                                true,
+                            )
+                            .clicked()
+                            {
                                 request = Some(CallRequest::Dismiss(r.group.clone()));
                             }
+                            ui.add_space(gap);
+                            if theme::call_button(
+                                ui,
+                                icons::CALL,
+                                "Answer",
+                                theme::CallTone::Accept,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                request = Some(CallRequest::Join(r.group.clone()));
+                            }
                         });
+                        ui.add_space(6.0);
                     }
                     if let Some(text) = &notice {
+                        // The same width as the call box, so a notice covers the
+                        // switch under it cleanly rather than half of it.
+                        ui.set_width(bar_width);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(text).color(theme::TEXT_DIM));
-                            if theme::action_button(ui, "OK").clicked() {
-                                clear_notice = true;
-                            }
+                            ui.label(egui::RichText::new(text).color(theme::CREAM));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if theme::action_button(ui, "OK").clicked() {
+                                        clear_notice = true;
+                                    }
+                                },
+                            );
                         });
                     }
                 });

@@ -150,6 +150,8 @@ impl Plugin for NetPlugin {
                 .in_set(ClientPhase::Present),
         );
 
+        #[cfg(feature = "audio")]
+        app.add_systems(Startup, systems::call_tones::setup_call_tones);
         // The output half, behind the `audio` feature with the rest of the
         // soundscape (ALSA headers on Linux — see Cargo.toml).
         #[cfg(feature = "audio")]
@@ -164,6 +166,8 @@ impl Plugin for NetPlugin {
                 systems::voice::update_voice_playback.after(network::apply_network_snapshot),
                 // A call's voices, through the same output.
                 systems::calls::play_calls.after(systems::calls::drive_calls),
+                // Its ringtone, ringback and cues.
+                systems::call_tones::play_call_tones.after(systems::calls::drive_calls),
             )
                 .in_set(ClientPhase::Present),
         );

@@ -8,6 +8,8 @@ pub use plugin::NetPlugin;
 /// Keeping the connection alive while the app is off screen (Android's
 /// foreground service).
 pub mod background;
+/// The sounds of a call: ringtone, ringback, call waiting, join and leave cues.
+pub mod call_tones;
 /// Private chats: this installation's encryption keys and the conversations
 /// they open (protocol 25).
 pub mod calls;

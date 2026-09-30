@@ -168,6 +168,8 @@ icons! {
     VIDEOCAM_OFF = "\u{e04c}", "videocam_off";
     /// End a call.
     CALL_END = "\u{f0bc}", "call_end";
+    /// Answer a call.
+    CALL = "\u{f0d4}", "call";
     /// A script that is running.
     RUNNING = "\u{e1c4}", "play_circle";
     /// A script that is not.

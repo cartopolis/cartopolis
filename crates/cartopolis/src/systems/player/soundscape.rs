@@ -47,7 +47,7 @@ use cartopolis_core::motion;
 
 /// Sample rate for everything synthesised here. 22.05 kHz is plenty for noise
 /// bursts and wind, and halves the bytes.
-const SAMPLE_RATE: u32 = 22_050;
+pub(crate) const SAMPLE_RATE: u32 = 22_050;
 
 /// Strides per second at the walk and run clips' authored speeds. Two footfalls
 /// per cycle, so these are twice the cycle rate: the `Walk` clip is 1.333 s and
@@ -365,7 +365,7 @@ pub mod synth {
     /// Wrap mono 16-bit samples in a WAV header. Hand-rolled because a WAV header
     /// is 44 bytes of known constants and pulling in an encoder to write them
     /// would be the larger dependency by far.
-    fn wav(samples: &[i16]) -> Vec<u8> {
+    pub(crate) fn wav(samples: &[i16]) -> Vec<u8> {
         let data_len = (samples.len() * 2) as u32;
         let mut out = Vec::with_capacity(44 + data_len as usize);
         out.extend_from_slice(b"RIFF");
