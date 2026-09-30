@@ -24,12 +24,13 @@
 //!
 //! # What it shares with the wire, and what that costs
 //!
-//! It goes through [`SimWorld`] rather than SQLite, which is not an
-//! implementation detail: the world is the authority, it holds prims in memory,
-//! and a row written behind its back would be invisible until a restart. That
-//! means every handler here takes the world's write lock, so each one does its
-//! work and drops it — the tick loop is waiting on the same lock 20 times a
-//! second.
+//! It goes through [`crate::prims::PrimService`] rather than SQLite, which is not
+//! an implementation detail: the world is the authority, it holds prims in
+//! memory, and a row written behind its back would be invisible until a restart.
+//! It is the *same* service the wire's `CreatePrim`/`UpdatePrim`/`DeletePrim`/
+//! `SetPrimScript` go through, so the budget, the ownership rule and what gets
+//! announced cannot differ between the two; an operator here is
+//! [`Actor::server`], and an import is the importing account.
 //!
 //! Changes are announced the same way a script's are: a `PrimUpsert` (or a
 //! `PrimRemoved`) on the snapshot broadcast, so a client that is already
@@ -44,13 +45,12 @@
 //! author-facing side is the one that gets degrees.
 
 use crate::http::{require_admin, ApiError, ApiResult, HttpState};
+use crate::prims::{Actor, ModelCheck, PrimError, PrimFields, PrimSeed};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use cartopolis_core::{
-    encode_app_frame, GeoAnchor, NetMessage, ParticleEffect, PrimDto, PrimGeometry, PrimSurface,
-};
+use cartopolis_core::{GeoAnchor, ParticleEffect, PrimDto, PrimGeometry, PrimSurface};
 use glam::Vec3;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -105,7 +105,7 @@ where
 /// = {0,0.4,1} }` is a blue flame with everything else left alone, and so is
 /// `{"color_start": [0,0.4,1]}` — before this, the second was an error listing
 /// the thirteen fields it had not mentioned.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticleSpec {
     /// Which preset the unmentioned fields come from — a one-shot blast, or a
@@ -179,7 +179,7 @@ impl ParticleSpec {
 /// requiring one would make the simplest possible request — "put a red cube
 /// here" — a twenty-field document, and would let a caller write fields that are
 /// not theirs to write.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrimSpec {
     pub name: Option<String>,
@@ -376,9 +376,10 @@ async fn create_prim(
     Json(spec): Json<PrimSpec>,
 ) -> ApiResult<(StatusCode, Json<PrimView>)> {
     let (_, who) = require_admin(&state, &headers)?;
-    let created = create(&state, &spec).await?;
+    let operator = Actor::server();
+    let created = create(&state, &operator, &spec).await?;
     tracing::info!(%who, prim_id = created.id, "prim authored");
-    let scripted = store_script(&state, created.id, spec.script.as_deref()).await?;
+    let scripted = store_script(&state, &operator, created.id, spec.script.as_deref()).await?;
     Ok((
         StatusCode::CREATED,
         Json(PrimView {
@@ -400,7 +401,10 @@ async fn create_prim(
 /// The script is deliberately **not** stored here: it draws against a different
 /// budget, and the caller wants to report the prim even when the script is
 /// refused.
-async fn create(state: &HttpState, spec: &PrimSpec) -> ApiResult<PrimDto> {
+///
+/// `actor` decides who owns the result: [`Actor::server`] for an operator and a
+/// pack (nobody — it belongs to the server), the importing account for an import.
+async fn create(state: &HttpState, actor: &Actor, spec: &PrimSpec) -> ApiResult<PrimDto> {
     // A prim has to be *somewhere*, and there is no sensible default for where:
     // the sim holds no map, so its own frame origin is not a place.
     let (Some(latitude), Some(longitude)) = (spec.latitude, spec.longitude) else {
@@ -410,34 +414,28 @@ async fn create(state: &HttpState, spec: &PrimSpec) -> ApiResult<PrimDto> {
     let shape = spec.shape.clone().unwrap_or_else(|| "box".to_string());
     check_shape(&shape)?;
 
-    let created = {
-        let mut w = state.world.write().await;
-        let base = w
-            .add_prim(
-                Vec3::new(0.0, spec.altitude.unwrap_or(0.0), 0.0),
-                &shape,
-                geo,
-                // Not the resolved effect: the insert only needs *a* prim to
-                // exist, and `apply` below writes every authored field onto it in
-                // one update. Passing it twice would mean two places deciding what
-                // an unmentioned field means.
-                None,
-                None,
-            )
-            .map_err(bad)?;
-        // The insert takes shape, altitude and place; everything else is an
-        // update on top, which is the same two-step the wire's `CreatePrim` does
-        // and for the same reason — `insert_prim` writes defaults, and there is
-        // one function that writes the rest.
-        apply(&mut w, &base, spec).map_err(|e| {
-            // Roll the empty prim back rather than leaving a grey box named
-            // "Prim" behind: a create either happened or it did not.
-            let _ = w.remove_prim(base.id);
-            bad(e)
-        })?
+    // The insert takes shape, altitude and place; everything else is merged onto
+    // the defaults it wrote, which is the same two-step the wire's `CreatePrim`
+    // does and for the same reason — `insert_prim` writes defaults, and there is
+    // one function that writes the rest. Both run in one transaction, so a spec
+    // `merge` refuses leaves nothing behind: a create either happened or it did
+    // not.
+    let seed = PrimSeed {
+        position: Vec3::new(0.0, spec.altitude.unwrap_or(0.0), 0.0),
+        shape,
+        geo,
     };
-    broadcast_upsert(state, &created);
-    Ok(created)
+    let spec = spec.clone();
+    state
+        .prims
+        .create(
+            actor,
+            seed,
+            move |base| merge(base, &spec),
+            ModelCheck::Skip,
+        )
+        .await
+        .map_err(|e| bad(e.to_string()))
 }
 
 async fn update_prim(
@@ -450,15 +448,23 @@ async fn update_prim(
     if let Some(s) = &spec.shape {
         check_shape(s)?;
     }
-    let updated = {
-        let mut w = state.world.write().await;
-        let current = w.prim(id).cloned().ok_or_else(not_found)?;
-        apply(&mut w, &current, &spec).map_err(bad)?
-    };
-    broadcast_upsert(&state, &updated);
+    let operator = Actor::server();
+    let updated = state
+        .prims
+        .update(
+            &operator,
+            id,
+            |current| merge(current, &spec),
+            ModelCheck::Skip,
+        )
+        .await
+        .map_err(|e| match e {
+            PrimError::NotFound(_) => not_found(),
+            other => bad(other.to_string()),
+        })?;
     tracing::info!(%who, prim_id = id, "prim edited");
 
-    let scripted = store_script(&state, id, spec.script.as_deref()).await?;
+    let scripted = store_script(&state, &operator, id, spec.script.as_deref()).await?;
     Ok(Json(PrimView {
         prim: updated,
         scripted,
@@ -472,19 +478,12 @@ async fn delete_prim(
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
     let (_, who) = require_admin(&state, &headers)?;
-    let gone = {
-        let mut w = state.world.write().await;
-        w.remove_prim(id).map_err(bad)?
-    };
-    if !gone {
-        return Err(not_found());
-    }
-    // The VM goes with it. `remove_prim` dropped the source row and released the
-    // budget, but the host holds its own map keyed by prim id and would keep
-    // running a script for a prim nobody can see.
-    state.scripts.unload(id);
-    if let Ok(frame) = encode_app_frame(&NetMessage::PrimRemoved { id }) {
-        let _ = state.tx_snap.send(bytes::Bytes::from(frame));
+    // The row, the script, the VM, the world's copy and every client's, in that
+    // order — `PrimService::delete`.
+    match state.prims.delete(&Actor::server(), id).await {
+        Ok(()) => {}
+        Err(PrimError::NotFound(_)) => return Err(not_found()),
+        Err(e) => return Err(bad(e.to_string())),
     }
     tracing::info!(%who, prim_id = id, "prim deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -503,7 +502,7 @@ async fn put_script(
     Json(body): Json<ScriptBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let (_, who) = require_admin(&state, &headers)?;
-    let scripted = store_script(&state, id, Some(&body.source)).await?;
+    let scripted = store_script(&state, &Actor::server(), id, Some(&body.source)).await?;
     tracing::info!(%who, prim_id = id, scripted, "prim script stored");
     // A compile error arrives asynchronously, as a `ScriptOutput` on the wire —
     // the host compiles on its own thread, and blocking this request until it
@@ -721,19 +720,19 @@ async fn import_content(
         )));
     }
 
+    // The importer, as an account: what they import is theirs, in the database
+    // and in the world's own map both (`SimWorld::may_edit`), so they can edit it
+    // straight away. Not an admin here even if they are one — an import builds
+    // only what it creates, and needs no override for that.
+    let importer = Actor::account(principal.to_string(), false);
     let mut created = Vec::new();
     for spec in &doc.prims {
         // Straight through `create`, so an imported prim is checked exactly as
         // one an author posts by hand: same shape validation, same geo bounds,
         // same world budget. A document cannot describe a prim the API would
         // otherwise refuse.
-        let prim = create(&state, spec).await?;
-        let owner = principal.to_string();
-        crate::http::with_db(&state, |c| crate::db::set_prim_owner(c, prim.id, &owner))?;
-        // The world's map too, or the importer could not edit what they had just
-        // imported until the server restarted (`SimWorld::may_edit`).
-        state.world.write().await.set_owner(prim.id, &owner);
-        store_script(&state, prim.id, spec.script.as_deref()).await?;
+        let prim = create(&state, &importer, spec).await?;
+        store_script(&state, &importer, prim.id, spec.script.as_deref()).await?;
         created.push(json!({ "id": prim.id, "name": prim.name }));
     }
     tracing::info!(%username, count = created.len(), "content imported");
@@ -793,28 +792,19 @@ async fn install_content(
     // old one standing and added a second. A script may rewrite any field a client
     // can see; `prims.origin` is one it cannot reach.
     let doomed = crate::http::with_db(&state, |c| crate::db::prim_ids_from(c, &pack.name))?;
-    let replaced = {
-        let mut w = state.world.write().await;
-        let mut gone = Vec::new();
-        for id in doomed {
-            if w.remove_prim(id).unwrap_or(false) {
-                gone.push(id);
-            }
-        }
-        gone
-    };
-    for id in &replaced {
+    let operator = Actor::server();
+    let mut replaced = Vec::new();
+    for id in doomed {
         // The VM goes with the prim, and so does the client's copy — a snapshot
-        // is AoI-filtered and carries no removals.
-        state.scripts.unload(*id);
-        if let Ok(frame) = encode_app_frame(&NetMessage::PrimRemoved { id: *id }) {
-            let _ = state.tx_snap.send(bytes::Bytes::from(frame));
+        // carries no removals. Both are part of `PrimService::delete`.
+        if state.prims.delete(&operator, id).await.is_ok() {
+            replaced.push(id);
         }
     }
 
     let mut installed = Vec::new();
     for spec in &pack.prims {
-        let prim = create(&state, spec).await?;
+        let prim = create(&state, &operator, spec).await?;
         // Stamped straight after the create, so a pack that fails partway through
         // still leaves every prim it did make reachable by the next reinstall
         // rather than as litter nothing owns.
@@ -822,7 +812,7 @@ async fn install_content(
             crate::db::set_prim_origin(c, prim.id, &pack.name)
         })?;
         installed.push(json!({ "id": prim.id, "name": prim.name }));
-        store_script(&state, prim.id, spec.script.as_deref()).await?;
+        store_script(&state, &operator, prim.id, spec.script.as_deref()).await?;
     }
     tracing::info!(%who, pack = %name, replaced = replaced.len(), "content installed");
     Ok(Json(json!({
@@ -837,18 +827,17 @@ async fn install_content(
 // The shared half
 // ---------------------------------------------------------------------------
 
-/// Merge a spec onto a prim and write it through the world.
+/// Merge a spec onto a prim: the fields to write.
 ///
 /// Takes the *current* prim as the base rather than reading it again, so a create
 /// (base = the freshly inserted defaults) and a patch (base = what is there) are
 /// one code path. Every field an author did not mention keeps its value, which is
 /// what makes `PATCH {"color": [1,0,0]}` a colour change rather than a reset of
 /// everything else to a default.
-fn apply(
-    w: &mut crate::state::SimWorld,
-    base: &PrimDto,
-    spec: &PrimSpec,
-) -> Result<PrimDto, String> {
+///
+/// Pure: the write is `PrimService`'s, which runs this at the point it has the
+/// base in hand.
+fn merge(base: &PrimDto, spec: &PrimSpec) -> Result<PrimFields, String> {
     let geo = match (spec.latitude, spec.longitude) {
         (None, None) => base.geo,
         (lat, lng) => {
@@ -886,19 +875,9 @@ fn apply(
     };
     let name = spec.name.clone().unwrap_or_else(|| base.name.clone());
     let surface = spec.surface.unwrap_or(base.surface);
-    let geometry = spec.geometry.unwrap_or_else(|| PrimGeometry {
-        path_cut_begin: base.path_cut_begin,
-        path_cut_end: base.path_cut_end,
-        hollow: base.hollow,
-        twist_begin: base.twist_begin,
-        twist_end: base.twist_end,
-        taper_x: base.taper_x,
-        taper_y: base.taper_y,
-        top_shear_x: base.top_shear_x,
-        top_shear_y: base.top_shear_y,
-        slice_begin: base.slice_begin,
-        slice_end: base.slice_end,
-    });
+    let geometry = spec
+        .geometry
+        .unwrap_or_else(|| crate::prims::geometry_of(base));
     // The shape is the one field `update_prim` does not carry — it is written by
     // the insert. Changing it on a patch would need a column write of its own,
     // and nothing has asked for it; refusing beats accepting it silently.
@@ -908,20 +887,19 @@ fn apply(
             base.shape
         ));
     }
-    w.update_prim(
-        base.id,
+    Ok(PrimFields {
         position,
         rotation,
         scale,
         color,
         texture_id,
-        &name,
+        name,
         surface,
         geometry,
         geo,
-        particles.as_ref(),
-        model.as_deref(),
-    )
+        particles,
+        model,
+    })
 }
 
 /// Store (or, with an empty source, remove) a prim's script, and tell the host.
@@ -930,45 +908,28 @@ fn apply(
 /// nothing about the script, which is not the same as an empty one — that
 /// distinction is why a `PATCH` that only changes a colour does not silently
 /// delete the script attached to the same prim.
-async fn store_script(state: &HttpState, prim_id: i64, source: Option<&str>) -> ApiResult<bool> {
+///
+/// The trimming, the size limit, the budget and the permission are
+/// `PrimService::set_script`'s, the same ones the wire's `SetPrimScript` meets.
+async fn store_script(
+    state: &HttpState,
+    actor: &Actor,
+    prim_id: i64,
+    source: Option<&str>,
+) -> ApiResult<bool> {
     let Some(source) = source else {
         return Ok(state.world.read().await.is_scripted(prim_id));
     };
-    // Trimmed first, for the reason the wire's `SetPrimScript` trims: a buffer of
-    // whitespace means "no script", and the two differ in whether they draw
-    // against the world's budget.
-    let source = source.trim();
-    if source.len() > crate::scripting::MAX_SOURCE_BYTES {
-        return Err(bad(format!(
-            "script is {} bytes; the limit is {}",
-            source.len(),
-            crate::scripting::MAX_SOURCE_BYTES
-        )));
-    }
-    let mut w = state.world.write().await;
-    if !w.has_prim(prim_id) {
-        return Err(not_found());
-    }
-    if source.is_empty() {
-        crate::http::with_db(state, |c| crate::db::delete_prim_script(c, prim_id))?;
-        w.set_scripted(prim_id, false);
-        state.scripts.unload(prim_id);
-        return Ok(false);
-    }
-    w.can_add_script(prim_id).map_err(bad)?;
-    crate::http::with_db(state, |c| crate::db::set_prim_script(c, prim_id, source))?;
-    w.set_scripted(prim_id, true);
-    state.scripts.load(prim_id, source.to_string());
-    Ok(true)
-}
-
-fn broadcast_upsert(state: &HttpState, prim: &PrimDto) {
-    match encode_app_frame(&NetMessage::PrimUpsert { prim: prim.clone() }) {
-        Ok(frame) => {
-            let _ = state.tx_snap.send(bytes::Bytes::from(frame));
-        }
-        Err(e) => tracing::error!("authoring upsert encode: {e}"),
-    }
+    state
+        .prims
+        .set_script(actor, prim_id, source)
+        .await
+        .map_err(|e| match e {
+            PrimError::NotFound(_) => not_found(),
+            PrimError::NotYours(id) => ApiError(StatusCode::FORBIDDEN, crate::prims::not_yours(id)),
+            PrimError::Refused(message) => bad(message),
+            PrimError::Storage(message) => crate::http::internal(anyhow::anyhow!(message)),
+        })
 }
 
 /// The shapes the client can mesh (`components::PrimShape`).

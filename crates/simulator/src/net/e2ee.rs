@@ -1,0 +1,336 @@
+//! Private chats (protocol 25). `crate::e2ee` holds the rules; these handlers
+//! only translate, run them off the async runtime, and deliver.
+
+use super::{
+    blocked_lowercase, now_millis, server_error, take_token, ConnCtx, FrameTransport, CLAIM_BURST,
+    MIN_CLAIM_INTERVAL,
+};
+use crate::db;
+use bytes::Bytes;
+use cartopolis_core::{encode_app_frame, E2eeCursor, E2eeWelcome, NetMessage};
+use uuid::Uuid;
+
+pub(super) async fn on_register_device<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    device: Uuid,
+    key_packages: Vec<Vec<u8>>,
+) -> anyhow::Result<()> {
+    let account = ctx.principal_key.clone();
+    let result = match db::call(&ctx.conn, move |c| {
+        crate::e2ee::register_device(c, &account, device, &key_packages)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => return Ok(()),
+    };
+    match result {
+        Ok(left) => {
+            ctx.e2ee_device = Some(device);
+            ctx.chat.set_device(ctx.avatar_id, device);
+            ctx.send(&NetMessage::E2eeDeviceStatus {
+                request_id,
+                key_packages: left,
+            })
+            .await
+        }
+        Err(refusal) => {
+            ctx.send(&server_error(request_id, 403, refusal.to_string()))
+                .await
+        }
+    }
+}
+
+pub(super) async fn on_claim_key_packages<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    subject: String,
+) -> anyhow::Result<()> {
+    if ctx.e2ee_device.is_none() {
+        return Ok(());
+    }
+    if !take_token(&mut ctx.gates.claim, MIN_CLAIM_INTERVAL, CLAIM_BURST) {
+        // Said, not dropped: an empty answer would read as "they have no app that
+        // can chat privately".
+        return ctx
+            .send(&server_error(
+                request_id,
+                429,
+                "too many new private chats at once — try again in a moment",
+            ))
+            .await;
+    }
+    let subject = subject.trim().to_string();
+    // Your own name means "my other devices".
+    let except = if subject.eq_ignore_ascii_case(&ctx.display_name) {
+        ctx.e2ee_device
+    } else {
+        None
+    };
+    // A private chat with somebody who is not a contact starts as a request
+    // (`contacts`, rule 4): without one between you, their devices cannot be
+    // added.
+    let key = ctx.principal_key.clone();
+    let whom = subject.clone();
+    let refused = match db::call(&ctx.conn, move |c| {
+        match crate::contacts::account_by_name(c, &whom) {
+            Ok(Some(target)) => match crate::contacts::may_invite(c, &key, &target.id) {
+                Ok(true) => None,
+                Ok(false) => {
+                    Some(crate::contacts::Refusal::NotAContact(target.username).to_string())
+                }
+                Err(e) => Some(e.to_string()),
+            },
+            // Nobody by that name: the empty answer below already says so.
+            _ => None,
+        }
+    })
+    .await
+    {
+        Ok(refused) => refused,
+        Err(_) => return Ok(()),
+    };
+    if let Some(message) = refused {
+        return ctx.send(&server_error(request_id, 403, message)).await;
+    }
+    let whose = subject.clone();
+    let packages = match db::call(&ctx.conn, move |c| {
+        crate::e2ee::claim_key_packages(c, &whose, except).unwrap_or_default()
+    })
+    .await
+    {
+        Ok(packages) => packages,
+        Err(_) => return Ok(()),
+    };
+    ctx.send(&NetMessage::E2eeKeyPackages {
+        request_id,
+        username: subject,
+        packages: packages
+            .into_iter()
+            .map(|(device, bytes)| cartopolis_core::E2eeKeyPackage { device, bytes })
+            .collect(),
+    })
+    .await
+}
+
+pub(super) async fn on_create_group<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    group: Vec<u8>,
+    direct_with: Option<String>,
+) -> anyhow::Result<()> {
+    if ctx.e2ee_device.is_none() {
+        return Ok(());
+    }
+    let account = ctx.principal_key.clone();
+    let id = group.clone();
+    let result = match db::call(&ctx.conn, move |c| {
+        crate::e2ee::create_group(c, &account, &id, direct_with.as_deref())
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => return Ok(()),
+    };
+    let reply = match result {
+        Ok(existing) => NetMessage::E2eeGroupCreated {
+            request_id,
+            group,
+            existing,
+        },
+        Err(refusal) => server_error(request_id, 409, refusal.to_string()),
+    };
+    ctx.send(&reply).await
+}
+
+/// An `E2eeSend`, as the server reads it.
+pub(super) struct Outgoing {
+    pub request_id: u32,
+    pub group: Vec<u8>,
+    pub epoch: u64,
+    pub commit: bool,
+    pub message: Vec<u8>,
+    pub welcome: Option<E2eeWelcome>,
+}
+
+pub(super) async fn on_send<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    send: Outgoing,
+) -> anyhow::Result<()> {
+    let Some(device) = ctx.e2ee_device else {
+        return Ok(());
+    };
+    let Outgoing {
+        request_id,
+        group,
+        epoch,
+        commit,
+        message,
+        welcome,
+    } = send;
+    // One message into a chat that is still a request (`contacts`, rule 4).
+    // Commits are never held: a device that misses one can read nothing again.
+    if !commit {
+        let key = ctx.principal_key.clone();
+        let id = group.clone();
+        let held = match db::call(&ctx.conn, move |c| crate::contacts::may_send(c, &key, &id)).await
+        {
+            Ok(held) => held,
+            Err(_) => return Ok(()),
+        };
+        if let Err(refusal) = held {
+            return ctx
+                .send(&NetMessage::E2eeSent {
+                    request_id,
+                    group,
+                    seq: None,
+                    refused: Some(refusal.to_string()),
+                })
+                .await;
+        }
+    }
+    let account = ctx.principal_key.clone();
+    let sender_name = ctx.display_name.clone();
+    let id = group.clone();
+    let result = match db::call(&ctx.conn, move |c| {
+        crate::e2ee::append(
+            c,
+            &account,
+            &sender_name,
+            device,
+            &id,
+            epoch,
+            commit,
+            &message,
+            welcome.as_ref().map(|w| crate::e2ee::WelcomeFor {
+                devices: &w.devices,
+                members: &w.members,
+                bytes: &w.bytes,
+            }),
+            now_millis(),
+        )
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => return Ok(()),
+    };
+    match result {
+        Ok(appended) => {
+            ctx.send(&NetMessage::E2eeSent {
+                request_id,
+                group: group.clone(),
+                seq: Some(appended.entry.seq),
+                refused: None,
+            })
+            .await?;
+            // A chat with somebody who declined this sender's request: stored and
+            // acknowledged as usual, delivered to nobody but the sender
+            // (`contacts::silenced_by`), and they are taken straight back out of
+            // it if this entry added them.
+            let key = ctx.principal_key.clone();
+            let id = group.clone();
+            let silenced = match db::call(&ctx.conn, move |c| {
+                let other = crate::contacts::silenced_by(c, &key, &id).ok().flatten();
+                if let Some(o) = &other {
+                    let _ = crate::contacts::leave_direct_chat(c, o, &key);
+                }
+                other
+            })
+            .await
+            {
+                Ok(silenced) => silenced,
+                Err(_) => return Ok(()),
+            };
+            let (members, invites) = match &silenced {
+                Some(o) => (
+                    appended
+                        .members
+                        .into_iter()
+                        .filter(|m| m != o)
+                        .collect::<Vec<_>>(),
+                    Vec::new(),
+                ),
+                None => (appended.members, appended.invites),
+            };
+            let e = appended.entry;
+            let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeDeliver {
+                group: e.group,
+                seq: e.seq,
+                sender: e.sender_name,
+                device: e.device,
+                sent_at_ms: e.sent_at_ms,
+                commit: e.is_commit,
+                message: e.message,
+            })?);
+            ctx.chat
+                .deliver_private(&members, &ctx.display_name, commit, &frame);
+            for inv in invites {
+                let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeInvite {
+                    group: inv.group,
+                    from: inv.from,
+                    after: inv.after,
+                    welcome: inv.welcome,
+                })?);
+                ctx.chat.deliver_to_device(inv.device, &frame);
+            }
+            Ok(())
+        }
+        Err(refusal) => {
+            ctx.send(&NetMessage::E2eeSent {
+                request_id,
+                group,
+                seq: None,
+                refused: Some(refusal.to_string()),
+            })
+            .await
+        }
+    }
+}
+
+pub(super) async fn on_sync<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    cursors: Vec<E2eeCursor>,
+) -> anyhow::Result<()> {
+    let Some(device) = ctx.e2ee_device else {
+        return Ok(());
+    };
+    let cursors: Vec<(Vec<u8>, u64)> = cursors.into_iter().map(|c| (c.group, c.after)).collect();
+    let account = ctx.principal_key.clone();
+    let result = match db::call(&ctx.conn, move |c| {
+        // Read fresh rather than from the list at connect: a block made since
+        // must hold on the replay too.
+        let blocked = blocked_lowercase(c, &account);
+        crate::e2ee::sync(c, &account, device, &cursors, &blocked)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => return Ok(()),
+    };
+    let (entries, invites) = result.unwrap_or_default();
+    for e in entries {
+        ctx.send(&NetMessage::E2eeDeliver {
+            group: e.group,
+            seq: e.seq,
+            sender: e.sender_name,
+            device: e.device,
+            sent_at_ms: e.sent_at_ms,
+            commit: e.is_commit,
+            message: e.message,
+        })
+        .await?;
+    }
+    for inv in invites {
+        ctx.send(&NetMessage::E2eeInvite {
+            group: inv.group,
+            from: inv.from,
+            after: inv.after,
+            welcome: inv.welcome,
+        })
+        .await?;
+    }
+    ctx.send(&NetMessage::E2eeSynced { request_id }).await
+}

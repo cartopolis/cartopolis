@@ -94,13 +94,16 @@ a mutex and written from async worker threads. `db.rs`'s
 `the_database_opens_in_wal_mode` pins it; nothing else downstream would notice if
 `tune` stopped being called.
 
-`SimWorld::flush_dirty` wraps the batch in one transaction rather than letting
-each `UPDATE` be its own implicit one. It runs on the tick loop's thread holding
-both the database mutex and the world write lock, so a flush of forty moved prims
-was forty commits inside the most contended section in the server. The failure
-granularity changed with it and in the right direction: a rolled-back batch
-leaves every id dirty, so the retry writes the same set the database rejected
-rather than a half-applied one.
+`PrimService::flush` (`prims.rs`) wraps the batch in one transaction rather than
+letting each `UPDATE` be its own implicit one. It used to run as
+`SimWorld::flush_dirty` on the tick loop's thread holding both the database mutex
+and the world write lock, so a flush of forty moved prims was forty commits inside
+the most contended section in the server. Since 2026-09-29 `SimWorld` holds no
+connection at all: the flush copies the dirty rows out under the world lock
+(`take_dirty`), releases it, and writes on the blocking pool, as a task of its own
+the tick loop starts every 40 ticks. The failure granularity is unchanged: a
+rolled-back batch re-marks every id dirty (`restore_dirty`), so the retry writes
+the same set the database rejected rather than a half-applied one.
 
 ## File reads and writes go through `spawn_blocking`
 

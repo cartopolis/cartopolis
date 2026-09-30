@@ -1,10 +1,9 @@
 use cartopolis_core::{
-    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage,
-    ParticleEffect, PrimDto, PrimGeometry, PrimSurface, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
+    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
+    EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use crate::scripting::{PrimView, ScriptCommand};
 use cartopolis_core::motion;
@@ -78,11 +77,22 @@ struct AvatarSim {
 }
 
 pub struct SimWorld {
+    /// Every prim, in id order.
     prims: Vec<PrimDto>,
+    /// Prim id -> position in `prims`.
+    ///
+    /// Every edit, permission check, script write and touch looks a prim up by
+    /// id, and a linear scan of a 1,000-prim world is a thousand comparisons per
+    /// gizmo frame per dragging client, under the write lock. Kept in step by the
+    /// three methods that change the list's shape — [`Self::commit_prim`],
+    /// [`Self::forget_prim`] and [`Self::new`] — and by nothing else, because
+    /// nothing else inserts or removes.
+    index: HashMap<i64, usize>,
     avatars: HashMap<u64, AvatarSim>,
     next_avatar_id: u64,
-    /// Database connection for prim mutations (Phase 3).
-    conn: Arc<Mutex<rusqlite::Connection>>,
+    /// Creates that have claimed room against the budget and are inserting
+    /// their row with this lock released ([`Self::reserve_prim`]).
+    pending_prims: u32,
     /// What this world may hold at once, from `cartopolis.toml`.
     ///
     /// One budget for the server. It used to be a row per region, on the
@@ -111,6 +121,9 @@ pub struct SimWorld {
     /// rate, which is 20 disk writes a second per script for state that is
     /// re-derivable and changes again immediately.
     dirty: HashSet<i64>,
+    /// Prims a script deleted (`vfDie`) whose rows are still to be removed —
+    /// the deletion half of `dirty` ([`Self::retire_prim`]).
+    retired: HashSet<i64>,
     /// Who has been near whom, by lowercase username pair (sorted), for the
     /// "people you have been near" request setting (`contacts`). Pruned to
     /// [`MET_WINDOW_MS`] as it is written. In memory on purpose: it is an hour of
@@ -193,22 +206,32 @@ pub struct CapacityUsage {
 }
 
 impl SimWorld {
+    /// A world holding `prims`, as loaded from the database.
+    ///
+    /// Takes no connection, and that is deliberate: nothing in here does I/O, so
+    /// nothing done under the world lock can wait on the disk. The database is
+    /// `crate::prims::PrimService`'s.
     pub fn new(
-        prims: Vec<PrimDto>,
-        conn: Arc<Mutex<rusqlite::Connection>>,
+        mut prims: Vec<PrimDto>,
         caps: WorldCaps,
         scripted: HashSet<i64>,
         owners: HashMap<i64, String>,
     ) -> Self {
+        // `db::load_world` already orders by id; sorting again is what keeps the
+        // `partition_point` in `commit_prim` right for any caller.
+        prims.sort_by_key(|p| p.id);
+        let index = prims.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         Self {
             prims,
+            index,
             avatars: HashMap::new(),
             next_avatar_id: 1,
-            conn,
+            pending_prims: 0,
             caps,
             scripted,
             owners,
             dirty: HashSet::new(),
+            retired: HashSet::new(),
             met: HashMap::new(),
             meet_clock: 0.0,
         }
@@ -668,122 +691,125 @@ impl SimWorld {
             .collect()
     }
 
-    /// Create a new prim in the world (Phase 3).
-    /// Persists to database and updates in-memory list.
-    /// Returns the created PrimDto on success, or ServerError on failure.
-    /// (ADR-017 Phase 3)
-    pub fn add_prim(
-        &mut self,
-        position: Vec3,
-        shape: &str,
-        geo: GeoAnchor,
-        particles: Option<&ParticleEffect>,
-        model: Option<&str>,
-    ) -> Result<PrimDto, String> {
-        // Capacity is checked *before* the insert, so the refusal costs no write
-        // and the id sequence does not advance on a rejected create.
-        let used = self.prims.len() as u32;
+    // -----------------------------------------------------------------------
+    // Prim storage — in memory only
+    //
+    // Nothing below touches SQLite, and that is the point of the shape: the world
+    // is behind one write lock that the tick loop takes twenty times a second, so
+    // a write that waited on the disk while holding it stalled every connected
+    // client at once. The database half of each operation lives in
+    // `crate::prims::PrimService`, which does it with this lock released and then
+    // comes back here to make the in-memory copy agree.
+    // -----------------------------------------------------------------------
+
+    /// Claim room for one prim that is about to be inserted into the database.
+    ///
+    /// Capacity is checked *before* the insert, so the refusal costs no write and
+    /// the id sequence does not advance on a rejected create. It is a
+    /// reservation rather than a bare check because the insert now happens with
+    /// the world lock released: two creates that both checked `len()` and then
+    /// both inserted would put the world one prim over its budget. Every
+    /// reservation ends in exactly one [`Self::commit_prim`] or
+    /// [`Self::release_prim_reservation`].
+    pub fn reserve_prim(&mut self) -> Result<(), String> {
+        let used = self.prims.len() as u32 + self.pending_prims;
         if used >= self.caps.max_prims {
             return Err(format!(
                 "the world is full: {used} of {} prims. Delete something or ask the operator to raise the budget.",
                 self.caps.max_prims
             ));
         }
-        // Call db::insert_prim with a minimal lock
-        let prim = {
-            let conn_guard = self
-                .conn
-                .lock()
-                .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::insert_prim(&conn_guard, position, shape, geo, particles, model)
-                .map_err(|e| format!("insert_prim failed: {}", e))?
-        };
-        // Add to in-memory list
-        self.prims.push(prim.clone());
-        Ok(prim)
+        self.pending_prims += 1;
+        Ok(())
     }
 
-    /// Update an existing prim in the world (Phase 3).
-    /// Persists to database and updates in-memory list.
-    /// Returns the updated PrimDto on success, or ServerError if prim not found.
-    /// (ADR-017 Phase 3)
-    pub fn update_prim(
-        &mut self,
-        prim_id: i64,
-        position: Vec3,
-        rotation: Vec3,
-        scale: Vec3,
-        color: [f32; 3],
-        texture_id: Option<String>,
-        name: &str,
-        surface: PrimSurface,
-        geometry: PrimGeometry,
-        geo: GeoAnchor,
-        particles: Option<&ParticleEffect>,
-        model: Option<&str>,
-    ) -> Result<PrimDto, String> {
-        // Call db::update_prim with a minimal lock
-        let prim = {
-            let conn_guard = self
-                .conn
-                .lock()
-                .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::update_prim(
-                &conn_guard,
-                prim_id,
-                position,
-                rotation,
-                scale,
-                color,
-                texture_id,
-                name,
-                surface,
-                geometry,
-                geo,
-                particles,
-                model,
-            )
-            .map_err(|e| format!("update_prim failed: {}", e))?
-            .ok_or_else(|| format!("prim {} not found", prim_id))?
-        };
-        // Update in-memory list
-        if let Some(pos) = self.prims.iter().position(|p| p.id == prim_id) {
-            self.prims[pos] = prim.clone();
-        }
-        Ok(prim)
+    /// Give back a reservation whose insert did not happen.
+    pub fn release_prim_reservation(&mut self) {
+        self.pending_prims = self.pending_prims.saturating_sub(1);
     }
 
-    /// Delete a prim from the world (Phase 3).
-    /// Persists deletion to database and removes from in-memory list.
-    /// Returns true if the prim was deleted, false if not found.
-    /// (ADR-017 Phase 3)
-    pub fn remove_prim(&mut self, prim_id: i64) -> Result<bool, String> {
-        // Call db::delete_prim with a minimal lock
-        let deleted = {
-            let conn_guard = self
-                .conn
-                .lock()
-                .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::delete_prim(&conn_guard, prim_id)
-                .map_err(|e| format!("delete_prim failed: {}", e))?
-        };
-        // Remove from in-memory list if it was deleted
-        if deleted {
-            if let Some(pos) = self.prims.iter().position(|p| p.id == prim_id) {
-                self.prims.remove(pos);
-            }
-            // `db::delete_prim` removed the script row too, so release its budget.
-            self.scripted.remove(&prim_id);
-            self.owners.remove(&prim_id);
-            self.dirty.remove(&prim_id);
+    /// Add a prim the database has just stored, spending its reservation.
+    ///
+    /// Inserted in id order rather than pushed: [`Self::prims`] promises id
+    /// order, and two creates that finished their inserts in one order may reach
+    /// here in the other.
+    pub fn commit_prim(&mut self, mut prim: PrimDto, owner: Option<&str>) {
+        self.release_prim_reservation();
+        prim.scripted = self.scripted.contains(&prim.id);
+        if let Some(owner) = owner {
+            self.owners.insert(prim.id, owner.to_string());
         }
-        Ok(deleted)
+        if let Some(&pos) = self.index.get(&prim.id) {
+            // Cannot happen — the id is the database's and was never here — but
+            // replacing is the answer that leaves the index honest if it does.
+            self.prims[pos] = prim;
+            return;
+        }
+        let pos = self.prims.partition_point(|p| p.id < prim.id);
+        self.prims.insert(pos, prim);
+        self.reindex_from(pos);
+    }
+
+    /// Replace a prim's in-memory copy with what the database now holds for it.
+    ///
+    /// `false` when the prim is no longer in the world — a script can retire one
+    /// (`vfDie`) between an edit's database write and this call, and a caller
+    /// that broadcast the edit anyway would hand every client a resurrected copy.
+    pub fn replace_prim(&mut self, mut prim: PrimDto) -> bool {
+        let Some(&pos) = self.index.get(&prim.id) else {
+            return false;
+        };
+        // The in-memory flag is the one maintained beside the script store, so it
+        // wins over whatever the row read back said.
+        prim.scripted = self.scripted.contains(&prim.id);
+        self.prims[pos] = prim;
+        true
+    }
+
+    /// Drop a prim the database has already deleted.
+    ///
+    /// Returns whether it was here. Releases everything held against it — its
+    /// script budget (`db::delete_prim` removed the script row too), its owner
+    /// and any unflushed script write.
+    pub fn forget_prim(&mut self, prim_id: i64) -> bool {
+        let Some(pos) = self.index.remove(&prim_id) else {
+            return false;
+        };
+        self.prims.remove(pos);
+        self.reindex_from(pos);
+        self.scripted.remove(&prim_id);
+        self.owners.remove(&prim_id);
+        self.dirty.remove(&prim_id);
+        true
+    }
+
+    /// Remove a prim now and delete its row at the next flush.
+    ///
+    /// For `vfDie`, which is applied inside the tick while this lock is held and
+    /// so cannot wait on the database the way a person's delete does. The world
+    /// is the authority — the prim is gone for every client at once — and the row
+    /// follows on the same cadence script writes do; a failed delete stays queued
+    /// and is retried, exactly as a failed script write stays dirty.
+    pub fn retire_prim(&mut self, prim_id: i64) -> bool {
+        if !self.forget_prim(prim_id) {
+            return false;
+        }
+        self.retired.insert(prim_id);
+        true
+    }
+
+    /// Re-point the id index at every prim from `from` onwards, after an insert
+    /// or removal shifted them.
+    fn reindex_from(&mut self, from: usize) {
+        for (i, p) in self.prims.iter().enumerate().skip(from) {
+            self.index.insert(p.id, i);
+        }
     }
 
     /// A prim by id, for the lookups a script command needs (its name and where
     /// it is standing when it speaks).
     pub fn prim(&self, prim_id: i64) -> Option<&PrimDto> {
-        self.prims.iter().find(|p| p.id == prim_id)
+        self.index.get(&prim_id).map(|&i| &self.prims[i])
     }
 
     /// Whether a prim carries a script. Cheap enough to ask per touch — the set is
@@ -795,7 +821,7 @@ impl SimWorld {
     /// Does a prim by this id exist?
     #[must_use]
     pub fn has_prim(&self, prim_id: i64) -> bool {
-        self.prims.iter().any(|p| p.id == prim_id)
+        self.index.contains_key(&prim_id)
     }
 
     /// Budget and usage for the world, for [`NetMessage::WorldCapacity`].
@@ -864,8 +890,8 @@ impl SimWorld {
         // load, so this is the in-memory copy catching up rather than a second
         // source of truth — but without it a freshly scripted prim would not be
         // pressable until the server restarted.
-        if let Some(p) = self.prims.iter_mut().find(|p| p.id == prim_id) {
-            p.scripted = scripted;
+        if let Some(&pos) = self.index.get(&prim_id) {
+            self.prims[pos].scripted = scripted;
         }
     }
 
@@ -943,7 +969,7 @@ impl SimWorld {
     /// Apply a script's transform/appearance write in memory.
     ///
     /// Returns the mutated prim so the caller can broadcast a `PrimUpsert`.
-    /// Nothing is persisted here — see [`SimWorld::flush_dirty`] and the note on
+    /// Nothing is persisted here — see [`SimWorld::take_dirty`] and the note on
     /// the `dirty` field.
     pub fn apply_script_command(&mut self, cmd: &ScriptCommand) -> Option<PrimDto> {
         let (prim_id, mutate): (i64, Box<dyn FnOnce(&mut PrimDto)>) = match cmd {
@@ -1015,86 +1041,67 @@ impl SimWorld {
             | ScriptCommand::Output { .. }
             | ScriptCommand::Die { .. } => return None,
         };
-        let prim = self.prims.iter_mut().find(|p| p.id == prim_id)?;
+        let pos = *self.index.get(&prim_id)?;
+        let prim = &mut self.prims[pos];
         mutate(prim);
         let out = prim.clone();
         self.dirty.insert(prim_id);
         Some(out)
     }
 
-    /// Persist prims that scripts have moved since the last call.
+    /// Hand over everything scripts have changed since the last call, for
+    /// [`crate::prims::PrimService::flush`] to write with this lock released.
     ///
-    /// Best-effort: a failed write leaves the prim dirty for the next flush, and
-    /// the in-memory value — which is what clients see — is unaffected.
+    /// A *copy* of each dirty prim as it stands now, not a reference to it: the
+    /// write happens after the lock is gone, while scripts carry on moving the
+    /// same prims, and a later change simply marks the prim dirty again for the
+    /// next flush. What the batch carries is therefore always a state the world
+    /// really was in, which is all a crash-recovery copy has to be.
     ///
-    /// **One transaction for the whole batch, not one per prim.** Every statement
-    /// outside an explicit transaction is its own implicit one, so a flush of
-    /// forty moved prims was forty commits — forty journal round trips, on the
-    /// tick loop's thread, while it holds both this mutex and the world write
-    /// lock. Wrapping them makes it one commit regardless of how many scripts
-    /// moved something, which is the difference the batching costs nothing to
-    /// get.
-    ///
-    /// It does change the failure granularity, and the change is in the right
-    /// direction: a rolled-back batch leaves *every* id in the batch dirty, so
-    /// the retry on the next flush writes the same set the database rejected,
-    /// rather than a half-applied one.
-    pub fn flush_dirty(&mut self) {
-        if self.dirty.is_empty() {
-            return;
-        }
-        // Lock before draining: a poisoned lock must leave the set intact for
-        // the next flush, exactly as the doc above promises.
-        let Ok(mut conn) = self.conn.lock() else {
-            tracing::warn!("db lock poisoned; script writes not persisted");
-            return;
-        };
-        let ids: Vec<i64> = self.dirty.drain().collect();
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(e) => {
-                tracing::warn!("could not begin the prim flush transaction: {e:#}");
-                self.dirty.extend(ids);
-                return;
-            }
-        };
-        let mut failed = false;
-        for &id in &ids {
-            let Some(p) = self.prims.iter().find(|p| p.id == id) else {
-                continue;
-            };
-            if let Err(e) = crate::db::update_prim(
-                &tx,
-                p.id,
-                p.position,
-                p.rotation,
-                p.scale,
-                p.color,
-                p.texture_id.clone(),
-                &p.name,
-                p.surface,
-                prim_geometry(p),
-                p.geo,
-                p.particles.as_ref(),
-                p.model.as_deref(),
-            ) {
-                tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
-                failed = true;
-                break;
+    /// The ids are drained. A batch that does not land must be handed back with
+    /// [`Self::restore_dirty`], or those writes are lost until the prim next
+    /// changes — the promise `flush` makes is that a failed write is retried.
+    #[must_use]
+    pub fn take_dirty(&mut self) -> DirtyBatch {
+        let mut rows = Vec::with_capacity(self.dirty.len());
+        for id in self.dirty.drain() {
+            if let Some(&pos) = self.index.get(&id) {
+                rows.push(self.prims[pos].clone());
             }
         }
-        // Keep the promise above: a batch that did not land stays dirty, so a
-        // transiently locked or full database is retried on the next flush
-        // instead of silently rewinding the prims on restart.
-        if failed {
-            drop(tx);
-            self.dirty.extend(ids);
-            return;
+        DirtyBatch {
+            rows,
+            retired: self.retired.drain().collect(),
         }
-        if let Err(e) = tx.commit() {
-            tracing::warn!("committing the prim flush failed: {e:#}");
-            self.dirty.extend(ids);
+    }
+
+    /// Mark a batch that did not reach the database as unwritten again.
+    ///
+    /// An updated prim that has since left the world is not re-marked — its row
+    /// is being deleted, and writing it back would be the resurrection the
+    /// delete exists to prevent. A retired id always is: its row still exists.
+    pub fn restore_dirty(&mut self, batch: &DirtyBatch) {
+        for p in &batch.rows {
+            if self.index.contains_key(&p.id) {
+                self.dirty.insert(p.id);
+            }
         }
+        self.retired.extend(batch.retired.iter().copied());
+    }
+}
+
+/// What one flush writes: prims scripts have changed, and prims scripts have
+/// deleted (`vfDie`). See [`SimWorld::take_dirty`].
+#[derive(Debug, Default)]
+pub struct DirtyBatch {
+    pub rows: Vec<PrimDto>,
+    pub retired: Vec<i64>,
+}
+
+impl DirtyBatch {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty() && self.retired.is_empty()
     }
 }
 
@@ -1102,8 +1109,8 @@ impl SimWorld {
 mod tests {
     use super::*;
 
-    /// A world on a throwaway database — `SimWorld` writes prim mutations through
-    /// its connection, so an in-memory stub would not exercise the same code.
+    /// A world loaded from a throwaway database, so the prims it holds are ones
+    /// the real schema produced rather than hand-built stand-ins.
     fn test_world() -> (SimWorld, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("test.db");
@@ -1111,12 +1118,72 @@ mod tests {
         let prims = crate::db::load_world(&conn).expect("load world");
         let world = SimWorld::new(
             prims,
-            Arc::new(Mutex::new(conn)),
             crate::config::SimConfig::default().world_caps(),
             HashSet::new(),
             HashMap::new(),
         );
         (world, dir)
+    }
+
+    /// Store a prim and add it to the world, the two halves
+    /// `prims::PrimService::create` performs with the lock released between them.
+    fn stored_prim(world: &mut SimWorld, dir: &tempfile::TempDir) -> PrimDto {
+        let path = dir.path().join("test.db");
+        let conn = crate::db::open_and_migrate(path.to_str().unwrap()).expect("open db");
+        let prim =
+            crate::db::insert_prim(&conn, Vec3::ZERO, "box", GeoAnchor::default(), None, None)
+                .expect("insert prim");
+        world.reserve_prim().expect("room for a prim");
+        world.commit_prim(prim.clone(), None);
+        prim
+    }
+
+    /// The id index has to follow every change to the list's shape, including a
+    /// removal from the middle, which shifts every prim after it. A stale index
+    /// would answer `prim(id)` with a *different* prim — the edit lands on the
+    /// wrong object with nothing to say so.
+    #[test]
+    fn the_prim_index_follows_inserts_and_removals() {
+        let (mut world, dir) = test_world();
+        let a = stored_prim(&mut world, &dir);
+        let b = stored_prim(&mut world, &dir);
+        let c = stored_prim(&mut world, &dir);
+        assert!(world.forget_prim(b.id));
+        assert!(!world.has_prim(b.id));
+        assert_eq!(world.prim(a.id).map(|p| p.id), Some(a.id));
+        assert_eq!(world.prim(c.id).map(|p| p.id), Some(c.id));
+        assert!(!world.forget_prim(b.id), "a second forget finds nothing");
+
+        // A retirement is gone from the world at once and queued for the row.
+        assert!(world.retire_prim(c.id));
+        assert!(world.prim(c.id).is_none());
+        let batch = world.take_dirty();
+        assert_eq!(batch.retired, vec![c.id]);
+        // And a failed flush hands the retirement back for the next one.
+        world.restore_dirty(&batch);
+        assert_eq!(world.take_dirty().retired, vec![c.id]);
+        assert_eq!(world.prims().len(), 1);
+    }
+
+    /// A reservation counts against the budget before its row exists, so two
+    /// creates racing through the database cannot both fit into the last slot.
+    #[test]
+    fn a_reservation_holds_its_place_in_the_budget() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut world = SimWorld::new(
+            Vec::new(),
+            WorldCaps {
+                max_prims: 1,
+                max_scripts: 1,
+            },
+            HashSet::new(),
+            HashMap::new(),
+        );
+        world.reserve_prim().expect("the first create fits");
+        assert!(world.reserve_prim().is_err(), "the second must not");
+        world.release_prim_reservation();
+        let _ = stored_prim(&mut world, &dir);
+        assert!(world.reserve_prim().is_err(), "the world is full");
     }
 
     /// The repeating snapshot must not carry the prim list, and the handshake one
@@ -1130,10 +1197,8 @@ mod tests {
     /// serialisations a second.
     #[test]
     fn only_the_first_snapshot_carries_the_world() {
-        let (mut world, _dir) = test_world();
-        world
-            .add_prim(Vec3::ZERO, "box", GeoAnchor::default(), None, None)
-            .expect("add prim");
+        let (mut world, dir) = test_world();
+        let _ = stored_prim(&mut world, &dir);
         let id = world.spawn_avatar();
 
         let NetMessage::WorldSnapshot { prims, avatars, .. } = world.snapshot(0) else {
@@ -1409,23 +1474,5 @@ mod tests {
 
         world.teleport_avatar(id, Vec3::new(500.0, 0.0, 500.0));
         assert_eq!(velocity(&world), Vec3::ZERO, "a placement is not travel");
-    }
-}
-
-/// Re-assemble the flattened geometry fields of a [`PrimDto`] into the grouped
-/// [`PrimGeometry`] that the write path takes.
-fn prim_geometry(p: &PrimDto) -> PrimGeometry {
-    PrimGeometry {
-        path_cut_begin: p.path_cut_begin,
-        path_cut_end: p.path_cut_end,
-        hollow: p.hollow,
-        twist_begin: p.twist_begin,
-        twist_end: p.twist_end,
-        taper_x: p.taper_x,
-        taper_y: p.taper_y,
-        top_shear_x: p.top_shear_x,
-        top_shear_y: p.top_shear_y,
-        slice_begin: p.slice_begin,
-        slice_end: p.slice_end,
     }
 }

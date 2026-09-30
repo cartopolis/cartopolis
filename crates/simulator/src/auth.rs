@@ -13,7 +13,8 @@
 //! the one operation here that must never be performed while holding a lock
 //! anything else wants. It was: the connection handler passed the live SQLite
 //! `MutexGuard` into [`verify_credentials`], and the same mutex is taken by the
-//! tick loop's `flush_dirty` **while the tick loop holds the world write lock**.
+//! tick loop's script flush, which at the time ran **while the tick loop held the world
+//! write lock** (it no longer does — `prims::PrimService::flush`).
 //! A handful of unauthenticated sockets could therefore stop the simulation for
 //! every connected client without ever logging in. The account row is read and the
 //! guard dropped before any hashing now ([`lookup_account`]), and the hashing

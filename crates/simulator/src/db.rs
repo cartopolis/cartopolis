@@ -3,6 +3,68 @@ use cartopolis_core::{GeoAnchor, ParticleEffect, PrimDto, PrimGeometry, PrimSurf
 use glam::Vec3;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// The one SQLite connection the server shares between every task.
+pub type SharedConn = Arc<Mutex<Connection>>;
+
+/// Run `f` against the database on a blocking thread, and wait for it.
+///
+/// SQLite is synchronous: every statement is a syscall and possibly an fsync. Run
+/// on an async task, it parks the runtime worker it happens to be on — one of the
+/// few that also carry the 20 Hz tick — for as long as the disk takes, and while
+/// the tick loop took this same mutex *inside* the world write lock, a slow
+/// commit stalled every connected client at once. So the lock is taken on
+/// `spawn_blocking`'s pool, never on a runtime worker, and never while the world
+/// lock is held (see [`crate::prims`]).
+///
+/// The closure is `'static` because the blocking thread outlives nothing it is
+/// given: whatever it needs is moved in. A poisoned mutex is an error rather than
+/// a panic — the guard's owner died mid-statement, and SQLite's own transaction
+/// rollback is what keeps the file consistent, not the mutex.
+pub async fn call<F, R>(conn: &SharedConn, f: F) -> anyhow::Result<R>
+where
+    F: FnOnce(&mut Connection) -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let conn = conn.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut guard = conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the database lock is poisoned"))?;
+        Ok(f(&mut *guard))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("database task failed: {e}"))?
+}
+
+/// Run a short synchronous database closure from async code without parking a
+/// runtime worker.
+///
+/// [`call`] is the right tool when the work can be handed over whole, and it is
+/// what every write on the world's path uses. The HTTP handlers' reads are the
+/// other shape: dozens of one-line closures that borrow the request they are
+/// answering, which `spawn_blocking` cannot take (it needs `'static`). For those,
+/// `block_in_place` tells a multi-threaded runtime that this worker is about to
+/// block, and it moves the worker's other tasks elsewhere first — the same
+/// property, without an owned copy of every argument.
+///
+/// It is not available on a current-thread runtime (it panics there), which is
+/// what `#[tokio::test]` builds; there the closure simply runs inline, exactly as
+/// it did before this existed.
+pub fn blocking<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h)
+            if matches!(
+                h.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
 
 /// Column list (in order) for selecting a full [`PrimDto`]; consumed by [`row_to_prim`].
 const PRIM_COLUMNS: &str = "id, name, shape, \

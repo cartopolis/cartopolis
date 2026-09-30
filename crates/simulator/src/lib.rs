@@ -22,6 +22,7 @@ pub mod http;
 pub mod library;
 pub mod mail;
 pub mod net;
+pub mod prims;
 pub mod registration;
 pub mod scripting;
 pub mod state;
@@ -89,7 +90,6 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
 
     let world = Arc::new(RwLock::new(state::SimWorld::new(
         prims,
-        conn.clone(),
         config.world_caps(),
         scripts.iter().map(|(id, _)| *id).collect(),
         owners,
@@ -134,6 +134,14 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
 
     let (tx_snap, _) = broadcast::channel::<bytes::Bytes>(256);
     let script_handle = scripts_host.handle();
+    // The one way prims are made, changed and deleted, shared by the wire, the
+    // authoring API and the tick loop's flush (`prims`'s module note).
+    let prim_service = prims::PrimService::new(
+        world.clone(),
+        conn.clone(),
+        tx_snap.clone(),
+        script_handle.clone(),
+    );
     // Each task returns a label so `task_ended` can say *which* one died.
     let mut tasks = tokio::task::JoinSet::new();
     if let Some(task) = calls_task {
@@ -147,8 +155,9 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         let config = config.clone();
         let tx_snap = tx_snap.clone();
         let chat = chat.clone();
+        let prims = prim_service.clone();
         tasks.spawn(async move {
-            net::tick_loop(world, config, tx_snap, scripts_host, chat).await;
+            net::tick_loop(world, config, tx_snap, scripts_host, chat, prims).await;
             "tick loop"
         });
     }
@@ -188,6 +197,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             chat: chat.clone(),
             scripts: script_handle.clone(),
             calls: calls.clone(),
+            prims: prim_service.clone(),
             mailer,
             registration_throttle: Arc::new(http::RegistrationLimits::default()),
         };
@@ -233,6 +243,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
             chat,
             script_handle,
             calls,
+            prim_service,
         )
         .await;
         "accept loop"
@@ -259,6 +270,7 @@ async fn accept_loop(
     chat: Arc<chat::ChatHub>,
     scripts: scripting::ScriptHandle,
     calls: Option<calls::CallsHandle>,
+    prims: prims::PrimService,
 ) {
     // Consecutive failures, for the backoff below. Reset by any success.
     let mut failures: u32 = 0;
@@ -302,24 +314,24 @@ async fn accept_loop(
         let world_c = world.clone();
         let cfg_c = config.clone();
         let rx = tx_snap.subscribe();
-        let tx_c = tx_snap.clone();
         let conn_c = conn.clone();
         let sessions_c = sessions.clone();
         let chat_c = chat.clone();
         let scripts_c = scripts.clone();
         let calls_c = calls.clone();
+        let prims_c = prims.clone();
         tokio::spawn(async move {
             if let Err(e) = net::handle_connection(
                 net::tcp_frames(stream),
                 world_c,
                 cfg_c,
                 rx,
-                tx_c,
                 conn_c,
                 sessions_c,
                 chat_c,
                 scripts_c,
                 calls_c,
+                prims_c,
             )
             .await
             {

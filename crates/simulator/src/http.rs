@@ -60,6 +60,9 @@ pub struct HttpState {
     pub chat: Arc<crate::chat::ChatHub>,
     pub scripts: ScriptHandle,
     pub calls: Option<crate::calls::CallsHandle>,
+    /// Prim create/edit/delete/script, shared with the wire so the two surfaces
+    /// cannot disagree about who may do what (`crate::prims`).
+    pub prims: crate::prims::PrimService,
     pub mailer: Arc<Mailer>,
     /// Shared by the register and re-send paths, because they cost the same
     /// things and a limit only one of them applies is not a limit.
@@ -208,12 +211,12 @@ async fn ws_handler(
                 state.world,
                 state.config,
                 state.tx_snap.subscribe(),
-                state.tx_snap.clone(),
                 state.conn,
                 state.sessions,
                 state.chat,
                 state.scripts,
                 state.calls,
+                state.prims,
             )
             .await
             {
@@ -228,12 +231,14 @@ async fn health(State(state): State<HttpState>) -> Json<serde_json::Value> {
     // here because "is anybody waiting on a moderation decision?" is a question
     // an operator's existing monitoring can ask, and a queue nobody polls is how
     // "timely responses to concerns" quietly stops being true.
-    let open_reports = state
-        .conn
-        .lock()
-        .ok()
-        .and_then(|c| crate::db::open_report_count(&c).ok())
-        .unwrap_or(0);
+    let open_reports = crate::db::blocking(|| {
+        state
+            .conn
+            .lock()
+            .ok()
+            .and_then(|c| crate::db::open_report_count(&c).ok())
+            .unwrap_or(0)
+    });
     Json(json!({
         "status": "ok",
         "protocol_version": cartopolis_core::PROTOCOL_VERSION,
@@ -370,15 +375,7 @@ async fn register(
         .map_err(|e| internal(anyhow::anyhow!("hash task: {e}")))?
         .map_err(internal)?;
 
-    let outcome = {
-        let mut guard = state.conn.lock().map_err(|_| {
-            ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "database unavailable".into(),
-            )
-        })?;
-        registration::begin(&mut guard, &username, &email, &hash).map_err(internal)?
-    };
+    let outcome = with_db_mut(&state, |c| registration::begin(c, &username, &email, &hash))?;
 
     match outcome {
         registration::Begin::UsernameTaken => Err(ApiError(
@@ -476,15 +473,7 @@ async fn verify_registration(
     if token.is_empty() {
         return Err(bad_request("that link is missing its token"));
     }
-    let outcome = {
-        let mut guard = state.conn.lock().map_err(|_| {
-            ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "database unavailable".into(),
-            )
-        })?;
-        registration::verify(&mut guard, &token).map_err(internal)?
-    };
+    let outcome = with_db_mut(&state, |c| registration::verify(c, &token))?;
     match outcome {
         registration::Verify::Confirmed { username } => {
             tracing::info!(%username, "registration confirmed");
@@ -639,16 +628,7 @@ pub(crate) fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult
         StatusCode::UNAUTHORIZED,
         "that session has expired".to_string(),
     ))?;
-    let admin = {
-        let guard = state.conn.lock().map_err(|_| {
-            ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "database unavailable".into(),
-            )
-        })?;
-        auth::is_admin(&guard, principal).map_err(internal)?
-    };
-    if !admin {
+    if !is_caller_admin(state, principal)? {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "that account may not administer this server".into(),
@@ -659,10 +639,12 @@ pub(crate) fn require_admin(state: &HttpState, headers: &HeaderMap) -> ApiResult
 
 /// Whether a principal is an enabled admin *right now*.
 ///
-/// Split out of [`require_admin`] because two routes need the answer without
-/// requiring it: `/api/content/export` and `/api/content/transfer` are open to any
-/// signed-in account and merely reach *further* for an admin, so they ask rather
-/// than demand.
+/// Split out of [`require_admin`] because some routes need the answer without
+/// requiring it: `/api/content/export` and `/api/content/transfer` are open to
+/// any signed-in account and merely reach *further* for an admin, and the model
+/// library lets an admin remove what somebody else shared. They ask rather than
+/// demand — and all of them ask here, so "is this an admin?" has one answer on
+/// the HTTP surface.
 pub(crate) fn is_caller_admin(state: &HttpState, principal: Uuid) -> ApiResult<bool> {
     with_db(state, |c| auth::is_admin(c, principal))
 }
@@ -672,20 +654,30 @@ pub(crate) fn is_caller_admin(state: &HttpState, principal: Uuid) -> ApiResult<b
 /// Every admin handler goes through this rather than locking inline, because the
 /// rule it enforces is easy to break by accident and expensive when broken: the
 /// guard is taken, used and dropped inside one non-async closure, so it can never
-/// be held across an `.await`. The tick loop takes the same mutex while holding
-/// the world write lock (see `auth`'s module note), so an admin request that
-/// parked with it held would stall the simulation for everyone.
+/// be held across an `.await`. And it runs through [`crate::db::blocking`], so
+/// the worker thread this request is on is handed back to the runtime for the
+/// length of the query rather than parked on the disk.
 pub(crate) fn with_db<T>(
     state: &HttpState,
     f: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<T>,
 ) -> ApiResult<T> {
-    let guard = state.conn.lock().map_err(|_| {
-        ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "database unavailable".into(),
-        )
-    })?;
-    f(&guard).map_err(internal)
+    with_db_mut(state, |c| f(&*c))
+}
+
+/// [`with_db`] for a body that needs the connection mutably — a transaction.
+pub(crate) fn with_db_mut<T>(
+    state: &HttpState,
+    f: impl FnOnce(&mut rusqlite::Connection) -> anyhow::Result<T>,
+) -> ApiResult<T> {
+    crate::db::blocking(|| {
+        let mut guard = state.conn.lock().map_err(|_| {
+            ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "database unavailable".into(),
+            )
+        })?;
+        f(&mut *guard).map_err(internal)
+    })
 }
 
 #[derive(Deserialize)]
@@ -733,7 +725,7 @@ async fn login(
     // Authenticated, but the API is admin-only: a player's correct password gets
     // the same answer as a wrong one, so this endpoint cannot be used to tell
     // which usernames exist.
-    if !with_db(&state, |c| auth::is_admin(c, principal))? {
+    if !is_caller_admin(&state, principal)? {
         return Err(ApiError(
             StatusCode::UNAUTHORIZED,
             "wrong username or password".into(),

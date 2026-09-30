@@ -661,7 +661,7 @@ async fn unshare_item(
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
     let (principal, username) = require_session(&state, &headers)?;
-    let admin = is_admin(&state, principal)?;
+    let admin = crate::http::is_caller_admin(&state, principal)?;
     let gone = with_conn(&state, |conn| {
         let Some(item) = read_item(conn, principal, id)? else {
             return Ok(false);
@@ -1377,18 +1377,15 @@ fn check_label(s: &str, what: &str) -> ApiResult<String> {
 ///
 /// The lock is held for the body and no longer. Every caller here is a short
 /// read or a couple of inserts; nothing in this module does network work or model
-/// parsing while holding it, because the tick loop takes the same lock.
+/// parsing while holding it, because every other task that touches the database
+/// waits on the same lock. It is the same helper `http::with_db` is, so this
+/// module's queries leave the async runtime's workers free exactly as that one's
+/// do.
 fn with_conn<T>(
     state: &HttpState,
     f: impl FnOnce(&Connection) -> anyhow::Result<T>,
 ) -> ApiResult<T> {
-    let guard = state.conn.lock().map_err(|_| {
-        ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "database unavailable".into(),
-        )
-    })?;
-    f(&guard).map_err(internal)
+    crate::http::with_db(state, f)
 }
 
 /// The refusal both sharing and giving away come down to.
@@ -1416,17 +1413,15 @@ fn with_conn_api<T>(
     state: &HttpState,
     f: impl FnOnce(&Connection) -> ApiResult<T>,
 ) -> ApiResult<T> {
-    let guard = state.conn.lock().map_err(|_| {
-        ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "database unavailable".into(),
-        )
-    })?;
-    f(&guard)
-}
-
-fn is_admin(state: &HttpState, principal: Uuid) -> ApiResult<bool> {
-    with_conn(state, |conn| Ok(crate::auth::is_admin(conn, principal)?))
+    crate::db::blocking(|| {
+        let guard = state.conn.lock().map_err(|_| {
+            ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "database unavailable".into(),
+            )
+        })?;
+        f(&guard)
+    })
 }
 
 #[cfg(test)]
