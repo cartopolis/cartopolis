@@ -180,6 +180,9 @@ pub enum ClientRequest {
     CallLeave {
         group: Vec<u8>,
     },
+    CallDecline {
+        group: Vec<u8>,
+    },
     RequestContact {
         request_id: u32,
         username: String,
@@ -449,6 +452,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             },
             NetMessage::CallAnswer { group, sdp } => Self::CallAnswer { group, sdp },
             NetMessage::CallLeave { group } => Self::CallLeave { group },
+            NetMessage::CallDecline { group } => Self::CallDecline { group },
             NetMessage::RequestContact {
                 request_id,
                 username,
@@ -529,6 +533,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallJoined { .. }
             | NetMessage::CallOffer { .. }
             | NetMessage::CallRoster { .. }
+            | NetMessage::CallDeclined { .. }
             | NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
             | NetMessage::NearbyPeople { .. }

@@ -350,7 +350,6 @@ impl Engine {
 
     /// Whether a chat is a group, and its label: the other person for a direct
     /// chat, the name its creator gave it for a group.
-    #[cfg(mcp)]
     #[must_use]
     pub fn describe(&self, group: &[u8]) -> Option<(bool, &str)> {
         self.peers
@@ -1198,7 +1197,11 @@ impl PrivateChats {
     pub fn direct_with(&self, username: &str) -> Option<Vec<u8>> {
         self.engine.as_ref()?.direct_with(username).cloned()
     }
+}
 
+// Everywhere, not only beside the agent tools: a call needs to know whether
+// its chat is one-to-one (`calls`, a declined call).
+impl PrivateChats {
     /// See [`Engine::describe`].
     #[must_use]
     pub fn describe(&self, group: &[u8]) -> Option<(bool, String)> {

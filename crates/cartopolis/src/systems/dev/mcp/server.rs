@@ -513,6 +513,11 @@ impl Tools {
         self.act(AgentRequest::AnswerCall).await
     }
 
+    #[tool(description = "Decline the call that is ringing. The caller is told at once.")]
+    async fn decline_call(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::DeclineCall).await
+    }
+
     #[tool(description = "End the call you are in.")]
     async fn hang_up(&self) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::HangUp).await

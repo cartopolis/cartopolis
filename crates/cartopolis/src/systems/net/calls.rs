@@ -74,7 +74,8 @@ impl CallInbox {
         match msg {
             NetMessage::CallJoined { .. }
             | NetMessage::CallOffer { .. }
-            | NetMessage::CallRoster { .. } => true,
+            | NetMessage::CallRoster { .. }
+            | NetMessage::CallDeclined { .. } => true,
             NetMessage::ServerError { request_id, .. } => is_call_request(*request_id),
             _ => false,
         }
@@ -402,6 +403,25 @@ pub fn drive_calls(
                     calls.rosters.insert(group, members);
                 }
             }
+            NetMessage::CallDeclined { group, username } => {
+                if username.eq_ignore_ascii_case(&me) {
+                    // Declined on another of this account's devices: stop
+                    // ringing here too, and it is not a missed call.
+                    calls.dismissed.insert(group);
+                } else if calls.active_group() == Some(group.as_slice())
+                    && calls.others().is_empty()
+                {
+                    // The call this device is ringing out. In a one-to-one chat
+                    // that is the end of it; in a group the others may still pick
+                    // up, so it is only said.
+                    let is_group = private.describe(&group).is_some_and(|(g, _)| g);
+                    calls.notice = Some(format!("{username} declined"));
+                    if !is_group {
+                        online.send("call leave", NetMessage::CallLeave { group });
+                        calls.active = None;
+                    }
+                }
+            }
             NetMessage::CallJoined {
                 group,
                 participant,
@@ -476,6 +496,14 @@ pub fn drive_calls(
             }
         }
         Some(CallRequest::Dismiss(group)) => {
+            // Declining, as a phone does: the caller hears at once, and this
+            // account's other devices stop ringing (protocol 31).
+            online.send(
+                "call decline",
+                NetMessage::CallDecline {
+                    group: group.clone(),
+                },
+            );
             calls.dismissed.insert(group);
         }
         None => {}

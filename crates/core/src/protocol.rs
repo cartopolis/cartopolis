@@ -143,6 +143,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "where the people in a chat are — WherePeople / PeopleWhere: a private chat's World view asks where its members' avatars are, and hears only about contacts who show that they are online (docs/notes/contacts.md)",
     },
+    ProtocolRevision {
+        version: 31,
+        adr: "",
+        summary: "declining a call — CallDecline from the device that declines; CallDeclined to the chat's connected devices, so the caller hears at once instead of ringing out, and the decliner's other devices stop ringing (docs/notes/calls.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -225,6 +230,8 @@ pub enum MessageKind {
     SetPushEndpoint = 64,
     WherePeople = 65,
     PeopleWhere = 66,
+    CallDecline = 67,
+    CallDeclined = 68,
 }
 
 impl MessageKind {
@@ -296,6 +303,8 @@ impl MessageKind {
             64 => Some(Self::SetPushEndpoint),
             65 => Some(Self::WherePeople),
             66 => Some(Self::PeopleWhere),
+            67 => Some(Self::CallDecline),
+            68 => Some(Self::CallDeclined),
             _ => None,
         }
     }
@@ -1227,6 +1236,12 @@ pub enum NetMessage {
         request_id: u32,
         people: Vec<PersonWhereDto>,
     },
+    /// Client: this device declines the call ringing in `group`.
+    CallDecline { group: Vec<u8> },
+    /// Server: `username` declined the call in `group` — to the chat's
+    /// connected devices: the caller's, which stop ringing out, and the
+    /// decliner's others, which stop ringing.
+    CallDeclined { group: Vec<u8>, username: String },
 }
 
 /// One person's avatar on Earth ([`NetMessage::PeopleWhere`]).
@@ -1573,6 +1588,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::SetPushEndpoint { .. } => MessageKind::SetPushEndpoint,
         NetMessage::WherePeople { .. } => MessageKind::WherePeople,
         NetMessage::PeopleWhere { .. } => MessageKind::PeopleWhere,
+        NetMessage::CallDecline { .. } => MessageKind::CallDecline,
+        NetMessage::CallDeclined { .. } => MessageKind::CallDeclined,
     }
 }
 
@@ -2085,7 +2102,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 65] = [
+        const ALL: [MessageKind; 67] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2151,6 +2168,8 @@ mod tests {
             SetPushEndpoint,
             WherePeople,
             PeopleWhere,
+            CallDecline,
+            CallDeclined,
         ];
         for k in ALL {
             assert_eq!(
@@ -2164,7 +2183,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(PeopleWhere as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(CallDeclined as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

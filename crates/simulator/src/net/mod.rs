@@ -1067,6 +1067,7 @@ async fn dispatch<T: FrameTransport>(
             calls::on_leave(ctx, group);
             Ok(())
         }
+        ClientRequest::CallDecline { group } => calls::on_decline(ctx, group).await,
         ClientRequest::RequestContact {
             request_id,
             username,

@@ -380,6 +380,7 @@ pub enum AgentRequest {
     SignIn,
     Call(CallArgs),
     AnswerCall,
+    DeclineCall,
     HangUp,
     CallStatus,
     RequestContact(ContactArgs),
@@ -409,6 +410,7 @@ impl AgentRequest {
             Self::SignIn => "sign in",
             Self::Call(_) => "call",
             Self::AnswerCall => "answer call",
+            Self::DeclineCall => "decline call",
             Self::HangUp => "hang up",
             Self::CallStatus => "call status",
             Self::RequestContact(_) => "request contact",
@@ -1153,6 +1155,22 @@ fn handle(
         }
         AgentRequest::Call(args) => return call(state, audience, w, args, now, reply),
         AgentRequest::AnswerCall => answer_call(audience, w),
+        AgentRequest::DeclineCall => {
+            let me = w.identity.username.clone().unwrap_or_default();
+            match w.calls.ringing(&me).into_iter().next() {
+                Some(r) => {
+                    w.calls.request = Some(crate::systems::calls::CallRequest::Dismiss(r.group));
+                    AgentReply::ok(
+                        format!(
+                            "Declined the call from {}. They are told.",
+                            r.who.join(", ")
+                        ),
+                        json!({ "declined": r.who }),
+                    )
+                }
+                None => AgentReply::refuse("Nothing is ringing."),
+            }
+        }
         AgentRequest::HangUp => {
             if w.calls.active_group().is_some() {
                 w.calls.request = Some(crate::systems::calls::CallRequest::Leave);

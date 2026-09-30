@@ -246,3 +246,15 @@ offer; the client drops their pictures on the roster.
 
 Agents reach contacts through MCP (`request_contact`, `answer_contact`,
 `contacts`), because a call needs two people to be contacts first.
+
+## Ringing like a phone (2026-09-30, protocol 31)
+
+A call rings with a synthesised ringtone and an incoming-call card (Decline
+red, Answer green); your own ringing plays the 425 Hz ringback and gives up
+after 60 s ("No answer"); cues mark joins, departures and the end; a call
+that stopped ringing unanswered leaves "Missed call from …". Which tone plays
+is `call_tones::wanted_loop`, a pure function of the call state. **Declining is
+on the wire** (`CallDecline` → `CallDeclined` to the chat's connected
+devices): in a one-to-one chat the caller's call ends at once with
+"… declined", in a group it is only said, and the decliner's other devices
+stop ringing without counting it as missed. Agents have `decline_call`.

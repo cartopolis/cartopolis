@@ -129,3 +129,48 @@ pub(super) async fn on_set_push_endpoint<T: FrameTransport>(
     }
     Ok(())
 }
+
+/// This device declines the call ringing in `group`: tell the chat's
+/// connected devices, so the caller's stop ringing out at once ("declined")
+/// and this account's other devices stop ringing. Through `deliver_private`,
+/// so somebody the decliner has blocked is not told anything by them.
+///
+/// Only a member of the chat may decline in it, and only while a call is
+/// ringing there is it worth saying — but checking the second would need the
+/// calls task, and a stray decline for a call that has ended does nothing on
+/// any client.
+pub(super) async fn on_decline<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    group: Vec<u8>,
+) -> anyhow::Result<()> {
+    if group.len() > crate::e2ee::MAX_GROUP_ID_BYTES {
+        return Ok(());
+    }
+    // One per join interval, as a join is: a decline is a fan-out to every
+    // device of the chat.
+    if ctx.gates.last_call_join.elapsed() < MIN_CALL_JOIN_INTERVAL {
+        return Ok(());
+    }
+    ctx.gates.last_call_join = Instant::now();
+    let id = group.clone();
+    let members = match db::call(&ctx.conn, move |c| {
+        crate::e2ee::members(c, &id).unwrap_or_default()
+    })
+    .await
+    {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    if !members.contains(&ctx.principal_key) {
+        return Ok(());
+    }
+    let frame = bytes::Bytes::from(cartopolis_core::encode_app_frame(
+        &NetMessage::CallDeclined {
+            group,
+            username: ctx.display_name.clone(),
+        },
+    )?);
+    ctx.chat
+        .deliver_private(&members, &ctx.display_name, false, &frame);
+    Ok(())
+}
