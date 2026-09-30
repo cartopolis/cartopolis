@@ -213,7 +213,10 @@ impl<'a> Grader<'a> {
     fn paving(&mut self, x: i64, y: i64) -> &[Vec<(f64, f64)>] {
         let ctx = self.ctx;
         self.paving.entry((x, y)).or_insert_with(|| {
-            let Some(bytes) = ctx.read_site(&format!("bgt/14/{x}/{y}.surfaces.json")) else {
+            let Some(bytes) = ctx.read_site(&format!(
+                "bgt/{}/{x}/{y}.surfaces.json",
+                cartopolis_geo::formats::CACHE_ZOOM
+            )) else {
                 return Vec::new();
             };
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -245,7 +248,10 @@ impl<'a> Grader<'a> {
     fn water(&mut self, x: i64, y: i64) -> &[(f32, Vec<(f64, f64)>)] {
         let ctx = self.ctx;
         self.water.entry((x, y)).or_insert_with(|| {
-            let Some(bytes) = ctx.read_site(&format!("water/14/{x}/{y}.json")) else {
+            let Some(bytes) = ctx.read_site(&format!(
+                "water/{}/{x}/{y}.json",
+                cartopolis_geo::formats::CACHE_ZOOM
+            )) else {
                 return Vec::new();
             };
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {

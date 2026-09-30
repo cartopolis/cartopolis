@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use cartopolis_geo::formats::dikes as wire;
 use serde_json::{json, Value};
 
 use super::geom::{round, Pt, M_PER_DEG};
@@ -193,7 +194,7 @@ fn line_strings(geom: &Value) -> Vec<Vec<Pt>> {
 #[derive(Default)]
 struct CellData {
     names: Vec<String>,
-    lines: Vec<Value>,
+    lines: Vec<wire::Line>,
     /// Per line, where its crest is measured (RD, the line's middle vertex), for a
     /// named line whose crest is ground; `None` for the rest.
     mids: Vec<Option<[f64; 2]>>,
@@ -421,7 +422,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                         cartopolis_geo::ahn::wgs84_to_rd(lat, lng)
                     });
                     bucket.mids.push(mid);
-                    bucket.lines.push(json!([kind_ix, cat_ix, name_ix, back]));
+                    let points = back.iter().map(|p| (p[0], p[1])).collect();
+                    bucket.lines.push((kind_ix, cat_ix, name_ix, points));
                     n_pieces += 1;
                 }
             }
@@ -447,14 +449,18 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         // `crests` beside `lines` rather than inside each line: a client that
         // reads a line as exactly four fields would refuse a fifth, and every
         // installed one does.
-        let crests: Vec<Value> = data
+        let crests: Vec<Option<f64>> = data
             .crests
             .iter()
-            .map(|c| c.map_or(Value::Null, |v| json!(round(f64::from(v), 2))))
+            .map(|c| c.map(|v| round(f64::from(v), 2)))
             .collect();
-        ctx.write_json(
+        ctx.write_doc(
             &cell_path("dikes", *cell),
-            &json!({"names": data.names, "lines": data.lines, "crests": crests}),
+            &wire::Cell {
+                crests: Some(crests),
+                lines: data.lines.clone(),
+                names: data.names.clone(),
+            },
         )?;
     }
     ctx.write_json(
@@ -528,7 +534,7 @@ mod tests {
         );
         let mut cells: HashMap<Cell, CellData> = HashMap::new();
         let data = cells.entry((1, 1)).or_default();
-        data.lines = vec![Value::Null; 3];
+        data.lines = vec![(0, 0, -1, Vec::new()); 3];
         // Two measurable lines 20 m apart, and one that is not measured.
         data.mids = vec![Some([1000.0, 5000.0]), Some([1020.0, 5000.0]), None];
         let source = Ramp(std::sync::atomic::AtomicUsize::new(0));

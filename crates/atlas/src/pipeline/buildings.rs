@@ -18,7 +18,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Map, Value};
+use cartopolis_geo::formats::osm_buildings::{self, LatLon, Tags};
+use serde_json::{json, Value};
 
 use super::http::{get_json_with, query};
 use super::rd::rd_to_lat_lng;
@@ -44,7 +45,7 @@ fn num(props: &Value, key: &str) -> Option<f64> {
 /// ridge and the roof is carved off the top of it, which is what the client's
 /// parser expects.
 #[must_use]
-pub fn height_tags(props: &Value) -> Option<Map<String, Value>> {
+pub fn height_tags(props: &Value) -> Option<Tags> {
     let mut ground = num(props, "b3_h_maaiveld");
     let mut roof = num(props, "b3_h_70p")
         .or_else(|| num(props, "b3_h_50p"))
@@ -62,7 +63,7 @@ pub fn height_tags(props: &Value) -> Option<Map<String, Value>> {
     }
     let (roof, ground) = (roof?, ground?);
 
-    let mut tags = Map::new();
+    let mut tags = Tags::new();
     tags.insert("building".into(), "yes".into());
     if let Some(l) = lagen {
         tags.insert(
@@ -164,7 +165,7 @@ fn js(v: f64) -> String {
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
-    let mut cells: HashMap<Cell, Vec<Value>> = HashMap::new();
+    let mut cells: HashMap<Cell, Vec<osm_buildings::Element>> = HashMap::new();
     let mut seen: HashSet<i64> = HashSet::new();
     let (mut total_in, mut total_out, mut start) = (0usize, 0usize, 0usize);
     let mut matched: Option<u64> = None;
@@ -210,12 +211,15 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                     continue;
                 }
                 let cell = lat_lng_to_cell(geometry[0].0, geometry[0].1);
-                let way = json!({
-                    "geometry": geometry.iter().map(|&(lat, lon)| json!({"lat": lat, "lon": lon})).collect::<Vec<_>>(),
-                    "id": wid,
-                    "tags": Value::Object(tags.clone()),
-                    "type": "way",
-                });
+                let way = osm_buildings::Element {
+                    geometry: geometry
+                        .iter()
+                        .map(|&(lat, lon)| Some(LatLon { lat, lon }))
+                        .collect(),
+                    id: wid,
+                    tags: tags.clone(),
+                    kind: "way".into(),
+                };
                 cells.entry(cell).or_default().push(way);
                 total_out += 1;
             }
@@ -236,8 +240,16 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         }
     }
 
-    for (cell, ways) in &cells {
-        ctx.write_json(&cell_path("buildings", *cell), &json!({"elements": ways}))?;
+    let covered = sorted_cells(cells.keys().copied());
+    let n_cells = cells.len();
+    for (cell, elements) in cells {
+        ctx.write_doc(
+            &cell_path("buildings", cell),
+            &osm_buildings::Cell {
+                elements: Some(elements),
+                remark: None,
+            },
+        )?;
     }
     ctx.write_json(
         "coverage.json",
@@ -247,17 +259,16 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             "attribution": ATTRIBUTION,
             "source": "3DBAG WFS BAG3D:lod12",
             "bbox_rd": ctx.bbox,
-            "cells": sorted_cells(cells.keys().copied()),
+            "cells": covered,
             "building_count": total_out,
         }),
     )?;
     ctx.log(format!(
-        "done: {total_out} buildings from {total_in} features across {} z{CACHE_ZOOM} cells (matched={})",
-        cells.len(),
+        "done: {total_out} buildings from {total_in} features across {n_cells} z{CACHE_ZOOM} cells (matched={})",
         matched.map_or("?".to_string(), |m| m.to_string())
     ));
     Ok(DatasetResult {
-        cells: cells.len(),
+        cells: n_cells,
         counts: vec![Count::new("buildings", total_out)],
     })
 }

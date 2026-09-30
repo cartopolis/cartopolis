@@ -1,12 +1,12 @@
 //! The slippy-tile cell every extractor bins into.
 //!
-//! `CACHE_ZOOM` must match `osm_buildings::CACHE_ZOOM` in the client, and the
-//! formula is `cartopolis_core::world`'s — a cell numbered differently here is a
-//! cell the client fetches from an address nothing was written to, which shows up
-//! as a 404 per tile and an empty map, not as an error. Using the client's own
-//! function is what makes that impossible now.
+//! `CACHE_ZOOM` is `cartopolis_geo::formats::CACHE_ZOOM`, the one the client's
+//! streamers read too, and the formula is `cartopolis_core::world`'s — a cell
+//! numbered differently here is a cell the client fetches from an address nothing
+//! was written to, which shows up as a 404 per tile and an empty map, not as an
+//! error. Sharing both is what makes that impossible now.
 
-pub const CACHE_ZOOM: u32 = 14;
+pub use cartopolis_geo::formats::CACHE_ZOOM;
 
 pub type Cell = (i64, i64);
 

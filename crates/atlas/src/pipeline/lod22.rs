@@ -418,9 +418,15 @@ fn bin_path(cell: Cell) -> String {
 /// which the JSON would have written as `null`) keeps its JSON and is logged:
 /// the client falls back to the JSON for a missing binary.
 ///
+/// Both are written from the one `lod22_cell::Cell`, the JSON through
+/// `cartopolis_geo::formats::lod22` — the type the client parses it with.
+///
 /// [`Grid::JSON`]: lod22_cell::Grid::JSON
-fn write_cell(ctx: &Ctx, cell: Cell, elements: &[Value], bin: &lod22_cell::Cell) -> Outcome<()> {
-    ctx.write_json(&cell_path("lod22", cell), &json!({"elements": elements}))?;
+fn write_cell(ctx: &Ctx, cell: Cell, bin: &lod22_cell::Cell) -> Outcome<()> {
+    ctx.write_doc(
+        &cell_path("lod22", cell),
+        &cartopolis_geo::formats::lod22::File::from(bin),
+    )?;
     match lod22_cell::encode(bin, lod22_cell::Grid::JSON) {
         Ok(bytes) => ctx.write_bytes_gzipped(&bin_path(cell), &bytes),
         Err(e) => {
@@ -442,9 +448,9 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     };
     progress(0);
 
-    // Each cell twice over: the JSON elements, and the same elements as the
-    // binary encoding's plain data (see `write_cell`).
-    let mut cells: HashMap<Cell, (Vec<Value>, lod22_cell::Cell)> = HashMap::new();
+    // Each cell as the binary encoding's plain data, from which `write_cell`
+    // writes both formats.
+    let mut cells: HashMap<Cell, lod22_cell::Cell> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     let (mut total, mut tiles_done) = (0usize, 0usize);
 
@@ -474,13 +480,11 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                             continue;
                         }
                         let cell = lat_lng_to_cell(p[0][0], p[0][1]);
-                        let mut el = json!({"id": pand, "p": p, "t": t});
-                        if part != 0 {
-                            el["part"] = json!(part);
-                        }
-                        let (json_els, bin) = cells.entry(cell).or_default();
-                        json_els.push(el);
-                        bin.elements.push(element(pand, part, &p, &t));
+                        cells
+                            .entry(cell)
+                            .or_default()
+                            .elements
+                            .push(element(pand, part, &p, &t));
                         total += 1;
                     }
                     ctx.log(format!(
@@ -497,8 +501,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         },
     )?;
 
-    for (cell, (elements, bin)) in &cells {
-        write_cell(ctx, *cell, elements, bin)?;
+    for (cell, bin) in &cells {
+        write_cell(ctx, *cell, bin)?;
     }
     ctx.write_json(
         "lod22/coverage.json",
@@ -627,11 +631,17 @@ mod tests {
             elements: vec![element(pand.clone(), 2, &p, &t)],
             pands: vec![],
         };
-        write_cell(&ctx, (8490, 5319), &[el], &bin).unwrap();
+        write_cell(&ctx, (8490, 5319), &bin).unwrap();
 
         let root = dir.path().join("lod22/14/8490");
-        let json: Value =
-            serde_json::from_slice(&std::fs::read(root.join("5319.json")).unwrap()).unwrap();
+        let text = std::fs::read(root.join("5319.json")).unwrap();
+        // Byte for byte what the `json!` writer this replaced produced.
+        assert_eq!(
+            text,
+            serde_json::to_vec(&json!({"elements": [el]})).unwrap(),
+            "the JSON cell changed shape"
+        );
+        let json: Value = serde_json::from_slice(&text).unwrap();
         assert_eq!(json["elements"][0]["id"], "0014100010904218");
         let raw = std::fs::read(root.join("5319.bin")).unwrap();
         let mut unzipped = Vec::new();

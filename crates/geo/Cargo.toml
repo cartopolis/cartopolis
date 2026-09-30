@@ -41,6 +41,10 @@ image.workspace = true
 # this lived there.
 tiff.workspace = true
 mvt-reader.workspace = true
+# The per-cell file formats atlas writes and the client reads (`formats`). Both
+# are already in the build through `cartopolis_core`.
+serde.workspace = true
+serde_json.workspace = true
 tiny-skia.workspace = true
 tracing.workspace = true
 cartopolis_core = { path = "../core" }

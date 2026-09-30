@@ -5,8 +5,8 @@
 //! beside it, in the encoding below (`lod22/14/{x}/{y}.bin`). The client's
 //! `systems::lod22` asks for the binary first and falls back to the JSON. Both
 //! ends use **this module's** types and codec, so the binary half of the seam is
-//! one definition — unlike the JSON, whose writer (a `json!` in atlas) and parser
-//! (a serde struct in the client) still share no type.
+//! one definition — and the JSON half is too, through `formats::lod22`, which
+//! converts to and from this module's [`Cell`].
 //!
 //! # Why a binary at all
 //!

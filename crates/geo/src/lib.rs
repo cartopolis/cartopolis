@@ -27,6 +27,11 @@ pub mod deck_profile;
 // The triangulation both surveyed polygon layers use: rings in, byte-bounded
 // merged meshes out, with the per-polygon tone in the vertex colours.
 mod flat_fill;
+// The per-cell JSON files atlas's pipelines write and the client's streamers
+// read, as one set of serde types both ends use — so a renamed key is a compile
+// error on both sides rather than a layer that silently draws nothing. Also the
+// one `CACHE_ZOOM` every one of those trees is binned at.
+pub mod formats;
 pub mod furniture;
 // The tiling roughness map the flat ground groups sample, so paving and built
 // land stop being one perfectly uniform sheet beside a textured road.

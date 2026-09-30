@@ -20,7 +20,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde::Serialize;
+use cartopolis_geo::formats::bag::{self, Address, Berth, Building};
+use cartopolis_geo::formats::LatLng;
 use serde_json::{json, Value};
 
 use super::geom::{
@@ -420,60 +421,16 @@ fn point_of(feat: &Value) -> Option<[f64; 2]> {
     Some([round(lat, 7), round(lng, 7)])
 }
 
-#[derive(Serialize, Default)]
-struct Building {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    area: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    area_max: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    district: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    doors: Option<Vec<[f64; 2]>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fp: Option<Vec<[f64; 2]>>,
-    id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mcat: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mon: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    units: Option<i64>,
-    #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
-    use_: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    year: Option<i64>,
+/// A JavaScript-coerced integer in the narrower type the file declares
+/// (`cartopolis_geo::formats::bag`), or nothing when it does not fit — a value
+/// out of range used to be written as is and failed the whole cell in the client.
+fn narrow<T: TryFrom<i64>>(v: Option<i64>) -> Option<T> {
+    v.and_then(|v| T::try_from(v).ok())
 }
 
-#[derive(Serialize)]
-struct Address {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    area: Option<i64>,
-    at: [f64; 2],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    nr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    postcode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    street: Option<usize>,
-    #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
-    use_: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct Berth {
-    at: [f64; 2],
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    nr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    postcode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    street: Option<usize>,
+/// A `gebruiksdoel` mask as the file carries it, `None` for "nothing known".
+fn use_field(mask: u32) -> Option<u16> {
+    (mask != 0).then(|| u16::try_from(mask).ok()).flatten()
 }
 
 #[derive(Default)]
@@ -585,7 +542,7 @@ impl FootprintIndex {
 /// of a multipolygon (the rest are courtyard slivers and porches), because the
 /// client's other footprint for a 3DBAG building is the convex hull of a triangle
 /// soup, which fills in the inner corner of every L-shaped building.
-fn footprint_ring(geom: &Value) -> Option<Vec<[f64; 2]>> {
+fn footprint_ring(geom: &Value) -> Option<Vec<LatLng>> {
     let mut best: Option<Vec<Pt>> = None;
     let mut best_area = 0.0;
     for rings in polygon_rings(geom) {
@@ -614,7 +571,7 @@ fn footprint_ring(geom: &Value) -> Option<Vec<[f64; 2]>> {
         kept.iter()
             .map(|&[x, y]| {
                 let (lat, lng) = rd_to_lat_lng(x, y);
-                [round(lat, 7), round(lng, 7)]
+                (round(lat, 7), round(lng, 7))
             })
             .collect(),
     )
@@ -648,25 +605,22 @@ fn collect_buildings(ctx: &Ctx, cells: &mut Cells) -> Outcome<Collected> {
             ..Default::default()
         };
         if truthy(&props["bouwjaar"]) {
-            rec.year = js_trunc(&props["bouwjaar"]);
+            rec.year = narrow(js_trunc(&props["bouwjaar"]));
         }
-        let mask = use_mask(&props["gebruiksdoel"]);
-        if mask != 0 {
-            rec.use_ = Some(mask);
-        }
+        rec.uses = use_field(use_mask(&props["gebruiksdoel"]));
         // `_min`/`_max` bracket the units inside and are equal for most buildings,
         // so `area_max` is only worth the bytes when it says something new.
         if !props["oppervlakte_min"].is_null() {
-            rec.area = js_trunc(&props["oppervlakte_min"]);
+            rec.area = narrow(js_trunc(&props["oppervlakte_min"]));
             if !props["oppervlakte_max"].is_null() {
-                let max = js_trunc(&props["oppervlakte_max"]);
+                let max: Option<u32> = narrow(js_trunc(&props["oppervlakte_max"]));
                 if max != rec.area {
                     rec.area_max = max;
                 }
             }
         }
         if truthy(&props["aantal_verblijfsobjecten"]) {
-            rec.units = js_trunc(&props["aantal_verblijfsobjecten"]);
+            rec.units = narrow(js_trunc(&props["aantal_verblijfsobjecten"]));
         }
         if let Some(status) = props["status"]
             .as_str()
@@ -674,7 +628,7 @@ fn collect_buildings(ctx: &Ctx, cells: &mut Cells) -> Outcome<Collected> {
         {
             rec.status = Some(status_code(status).unwrap_or(status).to_string());
         }
-        rec.fp = footprint_ring(&feat["geometry"]);
+        rec.fp = footprint_ring(&feat["geometry"]).unwrap_or_default();
         let ix = c.buildings.len();
         c.buildings.push(rec);
         for key in cells_of_bbox(bb) {
@@ -705,23 +659,24 @@ fn collect_addresses(ctx: &Ctx, cells: &mut Cells, c: &mut Collected) -> Outcome
             .as_str()
             .filter(|s| !s.is_empty());
         let street = cells.street(key, &props["openbare_ruimte"]);
-        let mask = use_mask(&props["gebruiksdoel"]);
         let rec = Address {
-            area: (!props["oppervlakte"].is_null())
-                .then(|| js_trunc(&props["oppervlakte"]))
-                .flatten(),
-            at,
+            area: narrow(
+                (!props["oppervlakte"].is_null())
+                    .then(|| js_trunc(&props["oppervlakte"]))
+                    .flatten(),
+            ),
+            at: (at[0], at[1]),
             id: pand.map(str::to_string),
             nr: house_number(props).filter(|s| !s.is_empty()),
             postcode: truthy(&props["postcode"]).then(|| js_string(&props["postcode"])),
             street,
-            use_: (mask != 0).then_some(mask),
+            uses: use_field(use_mask(&props["gebruiksdoel"])),
         };
         cells.cell(key).addresses.push(rec);
         // The unit's point is also its building's **door**: the mesh lane needs
         // only the entrances and must not pull two megabytes of addresses.
         if let Some(&b) = pand.and_then(|p| c.by_pand.get(p)) {
-            c.buildings[b].doors.get_or_insert_with(Vec::new).push(at);
+            c.buildings[b].doors.push((at[0], at[1]));
         }
         n += 1;
     })?;
@@ -731,7 +686,10 @@ fn collect_addresses(ctx: &Ctx, cells: &mut Cells, c: &mut Collected) -> Outcome
 fn collect_berths(ctx: &Ctx, cells: &mut Cells) -> Outcome<usize> {
     let mut n = 0;
     let mut seen = HashSet::new();
-    for (layer, kind) in [("bag:ligplaats", "mooring"), ("bag:standplaats", "plot")] {
+    for (layer, kind) in [
+        ("bag:ligplaats", bag::KIND_MOORING),
+        ("bag:standplaats", bag::KIND_PLOT),
+    ] {
         pages(ctx, layer, |feat| {
             let props = &feat["properties"];
             let Some(at) = point_of(feat) else {
@@ -745,8 +703,8 @@ fn collect_berths(ctx: &Ctx, cells: &mut Cells) -> Outcome<usize> {
             let key = lat_lng_to_cell(at[0], at[1]);
             let street = cells.street(key, &props["openbare_ruimte"]);
             cells.cell(key).berths.push(Berth {
-                at,
-                kind,
+                at: (at[0], at[1]),
+                kind: kind.to_string(),
                 nr: house_number(props).filter(|s| !s.is_empty()),
                 postcode: truthy(&props["postcode"]).then(|| js_string(&props["postcode"])),
                 street,
@@ -803,7 +761,7 @@ fn collect_monuments(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
             return;
         };
         let rec = &mut c.buildings[b];
-        rec.mon = js_trunc(number);
+        rec.mon = narrow(js_trunc(number));
         if truthy(&props["hoofdcategorie"]) {
             rec.mcat = Some(js_string(&props["hoofdcategorie"]));
         }
@@ -867,8 +825,14 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let n_dis = collect_townscapes(ctx, &mut c, &mut districts)?;
 
     let mut done = Vec::new();
-    for key in &cells.order {
-        let cell = &cells.cells[key];
+    let Cells {
+        order,
+        cells: mut by_key,
+    } = cells;
+    for key in &order {
+        let Some(cell) = by_key.remove(key) else {
+            continue;
+        };
         if cell.buildings.is_empty() && cell.addresses.is_empty() && cell.berths.is_empty() {
             continue;
         }
@@ -877,17 +841,20 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         if !cell.buildings.is_empty() {
             // The district table goes whole into every cell: a handful of names,
             // and a cell that explains its own indices can be read on its own.
-            let buildings: Vec<&Building> =
-                cell.buildings.iter().map(|&i| &c.buildings[i]).collect();
-            ctx.write_json(
+            let buildings: Vec<Building> = cell
+                .buildings
+                .iter()
+                .map(|&i| c.buildings[i].clone())
+                .collect();
+            ctx.write_doc(
                 &cell_path("bag", *key),
-                &json!({"districts": districts, "buildings": buildings}),
+                &bag::Cell::buildings(buildings, districts.clone()),
             )?;
         }
         if !cell.addresses.is_empty() || !cell.berths.is_empty() {
-            ctx.write_json(
+            ctx.write_doc(
                 &format!("bag/{CACHE_ZOOM}/{cx}/{cy}.places.json"),
-                &json!({"streets": cell.streets, "addresses": cell.addresses, "berths": cell.berths}),
+                &bag::Cell::places(cell.streets, cell.addresses, cell.berths),
             )?;
         }
     }

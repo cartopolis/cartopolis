@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use cartopolis_geo::formats::water as wire;
 use serde_json::{json, Value};
 
 use super::bv3d::{for_each_block, CityJson};
@@ -161,7 +162,7 @@ pub fn water_rings(cj: &CityJson) -> Vec<(f64, Vec<(f64, f64)>)> {
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
-    let mut cells: HashMap<Cell, Vec<Value>> = HashMap::new();
+    let mut cells: HashMap<Cell, Vec<wire::Ring>> = HashMap::new();
     let (mut n_rings, mut n_placements) = (0usize, 0usize);
 
     for_each_block(ctx, "waterpeilen", water_rings, |rings| {
@@ -188,7 +189,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 .iter()
                 .flat_map(|&(lat, lng)| [round(lat, 7), round(lng, 7)])
                 .collect();
-            let entry = json!([round(level, 2), flat]);
+            let entry: wire::Ring = (round(level, 2), flat);
             for y in y0..=y1 {
                 for x in x0..=x1 {
                     cells.entry((x, y)).or_default().push(entry.clone());
@@ -198,16 +199,19 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         }
     })?;
 
-    let written: Vec<(&Cell, &Vec<Value>)> = cells.iter().filter(|(_, r)| !r.is_empty()).collect();
-    for (cell, rings) in &written {
-        ctx.write_json(&cell_path("water", **cell), &json!({"rings": rings}))?;
+    let written: Vec<(Cell, Vec<wire::Ring>)> =
+        cells.into_iter().filter(|(_, r)| !r.is_empty()).collect();
+    let covered = sorted_cells(written.iter().map(|(c, _)| *c));
+    let n_written = written.len();
+    for (cell, rings) in written {
+        ctx.write_doc(&cell_path("water", cell), &wire::Cell { rings })?;
     }
     ctx.write_json(
         "water/coverage.json",
         &json!({
             "attribution": ATTRIBUTION,
             "bbox_rd": ctx.bbox,
-            "cells": sorted_cells(written.iter().map(|(c, _)| **c)),
+            "cells": covered,
             "name": ctx.name,
             "ring_count": n_rings,
             "source": "Kadaster 3D basisvoorziening (Waterdeel_vlak)",
@@ -216,10 +220,10 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     )?;
     ctx.log(format!(
         "{n_rings} waterringen, {n_placements} plaatsingen over {} cellen",
-        written.len()
+        n_written
     ));
     Ok(DatasetResult {
-        cells: written.len(),
+        cells: n_written,
         counts: vec![Count::new("water rings", n_rings)],
     })
 }

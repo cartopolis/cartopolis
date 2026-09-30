@@ -2470,6 +2470,8 @@ dependencies = [
  "i_overlay",
  "image",
  "mvt-reader",
+ "serde",
+ "serde_json",
  "tiff",
  "tiny-skia 0.12.0",
  "tracing",

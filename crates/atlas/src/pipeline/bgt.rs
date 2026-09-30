@@ -25,6 +25,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cartopolis_geo::formats::bgt::{self, Line, Surface};
+use cartopolis_geo::formats::LatLng;
 use serde_json::{json, Value};
 
 use super::bgt_extract::Extract;
@@ -179,6 +181,16 @@ const MIN_AREA_M2: f64 = 1.0;
 /// sliver under [`MIN_AREA_M2`].
 fn simplified_rings(poly: &[Vec<Pt>]) -> Vec<Vec<[f64; 2]>> {
     lat_lng_rings(poly, SIMPLIFY_M, MIN_AREA_M2)
+}
+
+/// `[lat, lng]` points as the file's pairs.
+fn pairs(pts: &[Pt]) -> Vec<LatLng> {
+    pts.iter().map(|p| (p[0], p[1])).collect()
+}
+
+/// `[lat, lng]` rings as the file's pairs.
+fn ring_pairs(rings: &[Vec<[f64; 2]>]) -> Vec<Vec<LatLng>> {
+    rings.iter().map(|r| pairs(r)).collect()
 }
 
 /// BGT `plus_type` → our point form. Unlisted objects are dropped rather than
@@ -381,13 +393,13 @@ pub fn centreline(geom: &Value) -> Vec<Vec<Pt>> {
 
 #[derive(Default)]
 struct CellData {
-    trees: Vec<Value>,
-    props: Vec<Value>,
-    lines: Vec<Value>,
-    surfaces: Vec<Value>,
+    trees: Vec<LatLng>,
+    props: Vec<bgt::Prop>,
+    lines: Vec<Line>,
+    surfaces: Vec<Surface>,
     /// `[part, level, movable, [ring, …]]`, rings `[lat, lng]` — see
     /// [`BRIDGE_PARTS`].
-    bridges: Vec<Value>,
+    bridges: Vec<bgt::BridgePart>,
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
@@ -416,7 +428,11 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             return;
         }
         if let Some(at) = point_of(feat) {
-            cells.entry(cell_of(at)).or_default().trees.push(json!(at));
+            cells
+                .entry(cell_of(at))
+                .or_default()
+                .trees
+                .push((at[0], at[1]));
             n_trees += 1;
         }
     })?;
@@ -429,11 +445,11 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 return;
             };
             if let Some(at) = point_of(feat) {
-                cells.entry(cell_of(at)).or_default().props.push(json!([
+                cells.entry(cell_of(at)).or_default().props.push((
                     at[0],
                     at[1],
-                    ix(&PROP_KINDS, form)
-                ]));
+                    ix(&PROP_KINDS, form),
+                ));
                 n_props += 1;
             }
         })?;
@@ -448,12 +464,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             if height.is_none() && MEASURED_ONLY_TYPES.contains(&t) {
                 return;
             }
-            let points: Vec<Pt> = pts.to_vec();
             let kind = ix(&LINE_KINDS, form);
-            let line = match height {
-                None => json!([kind, points]),
-                Some(h) => json!([kind, points, round(*h, 2)]),
-            };
+            let line = Line(kind, pairs(pts), height.map(|h| round(*h, 2)));
             cells.entry(cell_of(pts[0])).or_default().lines.push(line);
             n_lines += 1;
             n_measured += usize::from(height.is_some());
@@ -489,11 +501,11 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             return;
         }
         for pts in centreline(&feat["geometry"]) {
-            cells
-                .entry(cell_of(pts[0]))
-                .or_default()
-                .lines
-                .push(json!([ix(&LINE_KINDS, "hedge"), pts]));
+            cells.entry(cell_of(pts[0])).or_default().lines.push(Line(
+                ix(&LINE_KINDS, "hedge"),
+                pairs(&pts),
+                None,
+            ));
             n_lines += 1;
         }
     })?;
@@ -511,7 +523,12 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         let Some(part) = bridge_part(props) else {
             return;
         };
-        let level = props["relatieve_hoogteligging"].as_i64().unwrap_or(0);
+        // The BGT's levels run −6…5, so an `i8` holds every one; anything else
+        // is not a level and reads as the ground.
+        let level = props["relatieve_hoogteligging"]
+            .as_i64()
+            .and_then(|l| i8::try_from(l).ok())
+            .unwrap_or(0);
         let movable = js_str(&props["overbrugging_is_beweegbaar"]) == "true";
         for poly in polygon_rings(&feat["geometry"]) {
             let rings = simplified_rings(&poly);
@@ -522,15 +539,15 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 .entry(lat_lng_to_cell(first[0], first[1]))
                 .or_default()
                 .bridges
-                .push(json!([ix(&BRIDGE_PARTS, part), level, movable, rings]));
+                .push((ix(&BRIDGE_PARTS, part), level, movable, ring_pairs(&rings)));
             n_bridges += 1;
         }
     })?;
 
     let n_surf = collect_surfaces(ctx, extract, &mut cells)?;
 
-    let written: Vec<(&Cell, &CellData)> = cells
-        .iter()
+    let written: Vec<(Cell, CellData)> = cells
+        .into_iter()
         .filter(|(_, c)| {
             !c.trees.is_empty()
                 || !c.props.is_empty()
@@ -539,28 +556,33 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 || !c.bridges.is_empty()
         })
         .collect();
-    for (cell, data) in &written {
-        let (cx, cy) = **cell;
+    let covered = sorted_cells(written.iter().map(|(c, _)| *c));
+    let n_written = written.len();
+    for (cell, data) in written {
+        let (cx, cy) = cell;
+        let CellData {
+            trees,
+            props,
+            lines,
+            surfaces,
+            bridges,
+        } = data;
         // Two files, as the BAG splits its own: the paving is the heavy part.
-        if !data.trees.is_empty()
-            || !data.props.is_empty()
-            || !data.lines.is_empty()
-            || !data.bridges.is_empty()
-        {
-            ctx.write_json(
-                &cell_path("bgt", **cell),
-                &json!({
-                    "trees": data.trees,
-                    "props": data.props,
-                    "lines": data.lines,
-                    "bridges": data.bridges,
-                }),
+        if !trees.is_empty() || !props.is_empty() || !lines.is_empty() || !bridges.is_empty() {
+            ctx.write_doc(
+                &cell_path("bgt", cell),
+                &bgt::Objects {
+                    bridges,
+                    lines,
+                    props,
+                    trees,
+                },
             )?;
         }
-        if !data.surfaces.is_empty() {
-            ctx.write_json(
+        if !surfaces.is_empty() {
+            ctx.write_doc(
                 &format!("bgt/{CACHE_ZOOM}/{cx}/{cy}.surfaces.json"),
-                &json!({"surfaces": data.surfaces}),
+                &bgt::Paving { surfaces },
             )?;
         }
     }
@@ -577,7 +599,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             "surface_kinds": SURFACE_KINDS,
             "surface_materials": SURFACE_MATERIALS,
             "bridge_parts": BRIDGE_PARTS,
-            "cells": sorted_cells(written.iter().map(|(c, _)| **c)),
+            "cells": covered,
             "tree_count": n_trees,
             "prop_count": n_props,
             "line_count": n_lines,
@@ -591,10 +613,10 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     ctx.log(format!(
         "done: {n_trees} surveyed trees, {n_props} street objects, {n_lines} fences, walls and hedges, {n_surf} \
          paved surfaces across {} cells",
-        written.len()
+        n_written
     ));
     Ok(DatasetResult {
-        cells: written.len(),
+        cells: n_written,
         counts: vec![
             Count::new("trees", n_trees),
             Count::new("props", n_props),
@@ -633,10 +655,7 @@ fn collect_surfaces(
                 // Appended, never inserted, so the two-element form still reads.
                 let material = surface_material(props);
                 let kind = ix(&SURFACE_KINDS, form);
-                let surface = match material {
-                    None => json!([kind, out_rings]),
-                    Some(mi) => json!([kind, out_rings, mi]),
-                };
+                let surface = Surface(kind, ring_pairs(&out_rings), material);
                 cells
                     .entry(lat_lng_to_cell(first[0], first[1]))
                     .or_default()

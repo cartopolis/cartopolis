@@ -249,6 +249,19 @@ impl Ctx {
         self.write_bytes(relative, &body)
     }
 
+    /// Write one of the per-cell documents in `cartopolis_geo::formats`, the same
+    /// atomic way [`Self::write_json`] writes a `Value`.
+    ///
+    /// Serialised **directly**, never through `serde_json::to_value`: the format
+    /// types declare their fields in the sorted order a `Value` used to emit, and
+    /// a `Value` would widen an `f32` height to the `f64` nearest it and change
+    /// the bytes every installed client reads.
+    pub fn write_doc<T: serde::Serialize>(&self, relative: &str, doc: &T) -> Outcome<()> {
+        let body = cartopolis_geo::formats::to_vec(doc)
+            .map_err(|e| PipelineError::Failed(format!("{relative}: {e}")))?;
+        self.write_bytes(relative, &body)
+    }
+
     /// Write a binary file, and a `.gz` of it beside it, the same atomic way
     /// [`Self::write_json`] writes JSON.
     ///
