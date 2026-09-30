@@ -28,6 +28,9 @@ struct Shared {
     stop: AtomicBool,
     sink: Mutex<Option<Sink>>,
     last_sunk: Mutex<Option<std::time::Instant>>,
+    /// The newest picture, for the person's own view of themselves
+    /// ([`Camera::take_preview`]); replaced, never queued.
+    preview: Mutex<Option<I420>>,
 }
 
 impl Shared {
@@ -35,14 +38,20 @@ impl Shared {
     /// rate, and dropped otherwise — a call wants what the camera sees now.
     fn deliver(&self, picture: I420) {
         let period = std::time::Duration::from_micros(1_000_000 / u64::from(video::FPS));
+        {
+            let mut last = self.last_sunk.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < period) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
         if let Ok(sink) = self.sink.lock() {
             if let Some(sink) = sink.as_ref() {
-                let mut last = self.last_sunk.lock().unwrap();
-                if last.is_none_or(|t| t.elapsed() >= period) {
-                    *last = Some(std::time::Instant::now());
-                    sink(picture.clone());
-                }
+                sink(picture.clone());
             }
+        }
+        if let Ok(mut preview) = self.preview.lock() {
+            *preview = Some(picture);
         }
     }
 }
@@ -114,6 +123,13 @@ impl Camera {
     /// the app's frame loop.
     pub fn set_sink(&self, sink: Sink) {
         *self.shared.sink.lock().unwrap() = Some(sink);
+    }
+
+    /// The newest picture since the last call, for showing the person
+    /// themselves: a call's self-view, the camera test in Settings.
+    #[must_use]
+    pub fn take_preview(&self) -> Option<I420> {
+        self.shared.preview.lock().ok()?.take()
     }
 
     /// Why the camera is not working, if it is not.
@@ -497,4 +513,19 @@ mod phone {
         };
         I420::from_planes(w as u32, h as u32, plane(0)?, plane(1)?, plane(2)?)
     }
+}
+
+/// A picture of the person themselves as RGBA, at most `max_width` wide:
+/// **mirrored**, as a mirror shows you. What is sent is not mirrored (the
+/// other person should see you the right way round); only this view is.
+#[must_use]
+pub fn self_view(picture: &I420, max_width: u32) -> (u32, u32, Vec<u8>) {
+    let small = if picture.width > max_width {
+        let h = (picture.height * max_width / picture.width.max(1)) & !1;
+        picture.scaled(max_width, h.max(2))
+    } else {
+        picture.clone()
+    };
+    let mirrored = small.rotated(0, true);
+    (mirrored.width, mirrored.height, mirrored.to_rgba())
 }

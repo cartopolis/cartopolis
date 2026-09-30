@@ -2091,6 +2091,7 @@ const UI_ELEMENTS: &[&str] = &[
     "place",
     "settings",
     "graphics",
+    "audio",
     "world",
     "signin",
     "chat",
@@ -2205,13 +2206,23 @@ pub fn open_scripted_ui(
         // `avatar.open` bool above is what the HUD reads, not the panel, so
         // `--ui avatar` opened nothing at all until this arm existed.
         crate::resources::RightPanel::Appearance
-    } else if want("settings") || want("graphics") || want("world") {
+    } else if want("settings") || want("graphics") || want("world") || want("audio") {
         // `--ui graphics` opens Settings on the Graphics tab, `--ui world` on the
         // World tab. A tab is not reachable by opening the panel alone, so naming
         // the panel would capture whichever tab was last selected — which for a
         // fresh scripted world is always General, i.e. never the one being
         // reviewed.
-        cards.settings.tab = if want("graphics") {
+        // `--ui audio`: the Audio & video tab with the camera test running (on
+        // the stand-in camera under `CARTO_FAKE_CAMERA`) and a sample level on
+        // the meter, since a capture has no microphone to move it.
+        #[cfg(not(target_arch = "wasm32"))]
+        if want("audio") && !cards.settings.camera_running() {
+            cards.settings.start_camera();
+            cards.settings.demo_level = Some((0.62, 0.81));
+        }
+        cards.settings.tab = if want("audio") {
+            crate::systems::settings::SettingsTab::Audio
+        } else if want("graphics") {
             crate::systems::settings::SettingsTab::Graphics
         } else if want("world") {
             crate::systems::settings::SettingsTab::World

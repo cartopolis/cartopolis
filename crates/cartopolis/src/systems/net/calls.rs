@@ -59,6 +59,10 @@ pub fn is_call_request(request_id: u32) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 const RATE: u32 = voice::VOICE_RATE;
 
+/// The key [`Calls::pictures_mut`] files this device's own camera under: no
+/// participant number is this large.
+pub const SELF_TILE: u64 = u64::MAX;
+
 /// Call messages the network system collected this frame, for [`drive_calls`].
 #[derive(Resource, Default)]
 pub struct CallInbox(pub Vec<NetMessage>);
@@ -143,7 +147,16 @@ pub struct Picture {
 struct Speaker {
     ring: voice::Ring,
     entity: Option<Entity>,
+    /// When they were last heard above [`SPEAKING_RMS`]: what lights their tile.
+    heard_at: Option<web_time::Instant>,
 }
+
+/// A frame this loud (RMS, full scale 1) counts as speaking.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const SPEAKING_RMS: f32 = 0.02;
+/// How long a tile stays lit after the last loud frame, so it does not
+/// flicker between words.
+const SPEAKING_HOLD_MS: u128 = 400;
 
 /// Every call this device knows about, and the one it is in.
 #[derive(Resource, Default)]
@@ -234,8 +247,47 @@ impl Calls {
     }
 
     /// Who a participant in this device's call is, by name.
+    /// Whether `participant` is speaking now — or this device, for
+    /// [`SELF_TILE`]. Always false in the browser, where the audio never
+    /// passes through here.
     #[must_use]
+    pub fn speaking(&self, participant: u64) -> bool {
+        let Some(a) = self.active.as_ref() else {
+            return false;
+        };
+        if participant == SELF_TILE {
+            return !self.muted && self.level > 0.08;
+        }
+        a.speakers
+            .get(&participant)
+            .and_then(|s| s.heard_at)
+            .is_some_and(|t| t.elapsed().as_millis() < SPEAKING_HOLD_MS)
+    }
+
+    /// Everybody else in this device's call, by participant: the call bar's
+    /// tiles, one each whether their camera is on or not.
+    #[must_use]
+    pub fn others(&self) -> Vec<(u64, String)> {
+        let Some(a) = self.active.as_ref() else {
+            return Vec::new();
+        };
+        self.rosters
+            .get(&a.group)
+            .map(|r| {
+                r.iter()
+                    .filter(|m| Some(m.participant) != a.participant)
+                    .map(|m| (m.participant, m.username.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // The call tools (`dev::mcp`) name people by it; the call bar uses `others`.
+    #[cfg_attr(not(mcp), allow(dead_code))]
     pub fn name_of(&self, participant: u64) -> Option<&str> {
+        if participant == SELF_TILE {
+            return Some("You");
+        }
         self.rosters
             .get(self.active_group()?)?
             .iter()
@@ -320,7 +372,8 @@ pub fn drive_calls(
                 // nothing (`sfu::negotiate`), so no offer says they went.
                 if let Some(a) = calls.active.as_mut().filter(|a| a.group == group) {
                     let here: HashSet<u64> = members.iter().map(|m| m.participant).collect();
-                    a.pictures.retain(|p, _| here.contains(p));
+                    a.pictures
+                        .retain(|p, _| *p == SELF_TILE || here.contains(p));
                 }
                 if members.is_empty() {
                     calls.dismissed.remove(&group);
@@ -538,7 +591,12 @@ pub fn drive_calls(
                     let speaker = a.speakers.entry(from.0).or_insert_with(|| Speaker {
                         ring: voice::Ring::default(),
                         entity: None,
+                        heard_at: None,
                     });
+                    let loud = pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len().max(1) as f32;
+                    if loud.sqrt() > SPEAKING_RMS {
+                        speaker.heard_at = Some(web_time::Instant::now());
+                    }
                     if let Ok(mut ring) = speaker.ring.lock() {
                         ring.extend(pcm);
                         let cap = (voice::MAX_RING_SECS * RATE as f32) as usize;
@@ -652,6 +710,7 @@ fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Opt
     }
     if !*on {
         a.camera = None;
+        a.pictures.remove(&SELF_TILE);
         return;
     }
     if a.camera.is_none() {
@@ -669,6 +728,21 @@ fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Opt
         *notice = Some(err);
         *on = false;
         a.camera = None;
+        a.pictures.remove(&SELF_TILE);
+        return;
+    }
+    // What the camera sees, for the person's own tile: mirrored, and small.
+    if let Some(p) = a.camera.as_ref().and_then(Camera::take_preview) {
+        let (width, height, rgba) = crate::platform::camera::self_view(&p, 320);
+        a.pictures.insert(
+            SELF_TILE,
+            Picture {
+                width,
+                height,
+                rgba,
+                fresh: true,
+            },
+        );
     }
 }
 
@@ -781,6 +855,92 @@ pub fn play_calls(
 #[derive(Component)]
 pub struct CallSink;
 
+/// Height of a tile in the call bar, in points; the self-view is smaller.
+const TILE_HEIGHT: f32 = 120.0;
+const SELF_TILE_HEIGHT: f32 = 68.0;
+
+/// One person's tile in the call bar.
+struct CallTile {
+    /// Their picture and its width over its height, when their camera is on.
+    texture: Option<(egui::TextureId, f32)>,
+    name: String,
+    speaking: bool,
+    /// Shows a muted-microphone badge (known only for yourself).
+    muted: bool,
+}
+
+impl CallTile {
+    /// Width at `height`: the picture's own shape (an upright phone sends a
+    /// portrait one), or square for a tile with no picture.
+    fn width(&self, height: f32) -> f32 {
+        self.texture.map_or(height, |(_, aspect)| height * aspect)
+    }
+}
+
+/// Draw one tile: the picture, or an initial on a plate when the camera is
+/// off; the name on a dark label over the corner, where it reads on any
+/// picture; and a ring in the brand colour while they are speaking.
+fn call_tile(ui: &mut egui::Ui, t: &CallTile, height: f32) {
+    use crate::systems::theme;
+    let size = egui::vec2(t.width(height), height);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let p = ui.painter();
+    let radius = egui::CornerRadius::same(8);
+    match t.texture {
+        Some((id, _)) => {
+            egui::Image::new((id, size))
+                .corner_radius(radius)
+                .paint_at(ui, rect);
+        }
+        None => {
+            p.rect_filled(rect, radius, theme::SURFACE_RAISED);
+            let initial: String = t
+                .name
+                .chars()
+                .next()
+                .map_or_else(String::new, |c| c.to_uppercase().collect());
+            p.circle_filled(rect.center(), height * 0.26, theme::ACCENT_MUTED);
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initial,
+                egui::FontId::proportional(height * 0.24),
+                theme::CREAM,
+            );
+        }
+    }
+    // The name, on a chip over the bottom-left corner.
+    let font = egui::FontId::proportional(if height < TILE_HEIGHT { 11.0 } else { 12.5 });
+    let label = if t.muted {
+        format!("{} {}", crate::systems::icons::MIC_OFF, t.name)
+    } else {
+        t.name.clone()
+    };
+    let galley = p.layout_no_wrap(label, font, theme::CREAM);
+    let pad = egui::vec2(6.0, 2.0);
+    let chip = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.min.x + 5.0,
+            rect.max.y - 5.0 - galley.size().y - 2.0 * pad.y,
+        ),
+        galley.size() + 2.0 * pad,
+    );
+    p.rect_filled(
+        chip,
+        egui::CornerRadius::same(5),
+        egui::Color32::from_black_alpha(170),
+    );
+    p.galley(chip.min + pad, galley, theme::CREAM);
+    if t.speaking {
+        p.rect_stroke(
+            rect,
+            radius,
+            egui::Stroke::new(2.5, theme::BRAND),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
 /// The bar at the top of the screen: a call ringing, or the call you are in.
 ///
 /// An `Area` of its own at the top centre, below the location-sharing notice
@@ -844,21 +1004,39 @@ pub fn render_call_bar(
         }
     }
     tiles.retain(|id, _| present.contains(id));
-    // Each tile 120 px tall at its own shape: an upright phone sends a
-    // portrait picture (`cartopolis_calls::video::Encoder::encode`).
-    let mut faces: Vec<(String, egui::TextureId, egui::Vec2)> = tiles
-        .iter()
-        .map(|(id, t)| {
+    // One tile for everybody else in the call, camera or not, by name; then
+    // your own picture, small, at the end — the room is for the people you
+    // are talking to.
+    let texture_of = |id: u64| {
+        tiles.get(&id).map(|t| {
             let [w, h] = t.size();
-            let size = egui::vec2(120.0 * w as f32 / h.max(1) as f32, 120.0);
-            (
-                calls.name_of(*id).unwrap_or("someone").to_string(),
-                t.id(),
-                size,
-            )
+            (t.id(), w as f32 / h.max(1) as f32)
+        })
+    };
+    let mut people: Vec<CallTile> = calls
+        .others()
+        .into_iter()
+        .map(|(id, name)| CallTile {
+            texture: texture_of(id),
+            speaking: calls.speaking(id),
+            name,
+            muted: false,
         })
         .collect();
-    faces.sort_by(|a, b| a.0.cmp(&b.0));
+    people.sort_by(|a, b| a.name.cmp(&b.name));
+    let own = texture_of(SELF_TILE).map(|texture| CallTile {
+        texture: Some(texture),
+        speaking: calls.speaking(SELF_TILE),
+        name: "You".into(),
+        muted: calls.muted,
+    });
+    let gap = 8.0;
+    let tiles_width: f32 = people
+        .iter()
+        .map(|t| t.width(TILE_HEIGHT) + gap)
+        .chain(own.iter().map(|t| t.width(SELF_TILE_HEIGHT) + gap))
+        .sum();
+    let bar_width = tiles_width.clamp(300.0, 900.0);
     let mut request = None;
     let mut clear_notice = false;
     egui::Area::new(egui::Id::new("call_bar"))
@@ -888,48 +1066,68 @@ pub fn render_call_bar(
                         } else {
                             format!("In call with {}", others.join(", "))
                         };
+                        // The box's width is pinned, never left to its contents: a
+                        // size-to-content `Area` that centres anything feeds its own
+                        // width back and grows (`hud`'s module note).
+                        ui.set_width(bar_width);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {with} · {status}",
+                                crate::systems::icons::LOCK
+                            ))
+                            .color(theme::CREAM),
+                        );
+                        if !people.is_empty() || own.is_some() {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                // Bottom-aligned, so the small self-view sits on
+                                // the same line as the others' feet.
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Max),
+                                    |ui| {
+                                        for t in &people {
+                                            call_tile(ui, t, TILE_HEIGHT);
+                                        }
+                                        if let Some(t) = &own {
+                                            call_tile(ui, t, SELF_TILE_HEIGHT);
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} {with} · {status}",
-                                    crate::systems::icons::LOCK
-                                ))
-                                .color(theme::CREAM),
-                            );
-                            let mute = if calls.muted { "Unmute" } else { "Mute" };
-                            if theme::action_button(ui, mute).clicked() {
+                            use crate::systems::icons;
+                            let n = if camera_available() { 3.0 } else { 2.0 };
+                            let gap = ui.spacing().item_spacing.x;
+                            let row = n * theme::ROUND_BUTTON_SIZE + (n - 1.0) * gap;
+                            ui.add_space(((bar_width - row) * 0.5).max(0.0));
+                            let (icon, tip) = if calls.muted {
+                                (icons::MIC_OFF, "Unmute")
+                            } else {
+                                (icons::MIC, "Mute")
+                            };
+                            if theme::call_button(ui, icon, tip, calls.muted, false).clicked() {
                                 calls.muted = !calls.muted;
                             }
-                            // In the browser the camera is the browser's (`web_call`).
                             if camera_available() {
-                                let cam = if calls.camera_on {
-                                    "Camera off"
+                                let (icon, tip) = if calls.camera_on {
+                                    (icons::VIDEOCAM, "Turn the camera off")
                                 } else {
-                                    "Camera"
+                                    (icons::VIDEOCAM_OFF, "Turn the camera on")
                                 };
-                                if theme::action_button(ui, cam).clicked() {
+                                if theme::call_button(ui, icon, tip, !calls.camera_on, false)
+                                    .clicked()
+                                {
                                     calls.camera_on = !calls.camera_on;
                                 }
                             }
-                            if theme::action_button(ui, "Hang up").clicked() {
+                            if theme::call_button(ui, icons::CALL_END, "Hang up", false, true)
+                                .clicked()
+                            {
                                 request = Some(CallRequest::Leave);
                             }
                         });
-                        // The people in the call who have their camera on.
-                        if !faces.is_empty() {
-                            ui.horizontal(|ui| {
-                                for (name, texture, size) in &faces {
-                                    ui.vertical(|ui| {
-                                        ui.image((*texture, *size));
-                                        ui.label(
-                                            egui::RichText::new(name.as_str())
-                                                .size(12.0)
-                                                .color(theme::TEXT_DIM),
-                                        );
-                                    });
-                                }
-                            });
-                        }
                     }
                     for r in &ringing {
                         ui.horizontal(|ui| {

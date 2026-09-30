@@ -1535,6 +1535,56 @@ pub fn round_button(
     resp.on_hover_text(tooltip)
 }
 
+/// Hang-up red: the one control in the app that is red at rest, because
+/// ending a call is the action every phone draws in it, and a person reaching
+/// for it in a hurry looks for the colour before the shape.
+pub const CALL_END_RED: Color32 = Color32::from_rgb(0xD6, 0x45, 0x45);
+
+/// A round button in a call bar. `off` wears the inverted plate — a
+/// microphone or camera switched *off* is the state worth noticing, and the
+/// icon says which (`MIC_OFF`, `VIDEOCAM_OFF`) — and `hang_up` is
+/// [`CALL_END_RED`].
+pub fn call_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    tooltip: &str,
+    off: bool,
+    hang_up: bool,
+) -> egui::Response {
+    let size = egui::Vec2::splat(ROUND_BUTTON_SIZE);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hovered = resp.hovered();
+    let (fill, ring, ink) = if hang_up {
+        let red = if hovered {
+            CALL_END_RED.gamma_multiply(1.15)
+        } else {
+            CALL_END_RED
+        };
+        (red, red, CREAM)
+    } else if off {
+        (CREAM, ACCENT_RING, INK)
+    } else if hovered {
+        (SURFACE_HOVER, ACCENT, CREAM)
+    } else {
+        (SURFACE_RAISED, OVERLAY_LINE, TEXT)
+    };
+    paint_disc(
+        ui.painter(),
+        rect.center(),
+        ROUND_BUTTON_SIZE * 0.5 - 1.0,
+        Disc {
+            fill,
+            ring,
+            ink,
+            icon,
+            icon_size: 19.0,
+            ring_width: 1.5,
+        },
+    );
+    paint_focus_ring(ui, &resp, rect, true);
+    resp.on_hover_text(tooltip)
+}
+
 // The dock's menu disc used to be `mark_button` — [the mark](paint_mark) at
 // [`round_button`]'s size, so the app's own logo was the button that opened the
 // menu. It is an ordinary `round_button` carrying `icons::MENU` now: in a row

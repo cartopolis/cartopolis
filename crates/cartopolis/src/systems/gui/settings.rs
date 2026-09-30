@@ -120,7 +120,7 @@ impl SettingsTab {
             Self::General => "General",
             Self::World => "World",
             Self::Graphics => "Graphics",
-            Self::Audio => "Audio",
+            Self::Audio => "Audio & video",
             Self::Account => "Account",
         }
     }
@@ -133,8 +133,22 @@ pub struct SettingsState {
     /// `Some` only while the mic test is active — see the module note on why
     /// this is not held open for the process lifetime.
     pub mic: Option<AudioInput>,
-    /// Highest meter value seen since the test started.
+    /// The meter as drawn: rises with the signal at once and falls back
+    /// smoothly, as a hardware meter's needle does.
+    pub shown: f32,
+    /// The peak-hold mark: the highest recent level, held for a second, then
+    /// falling.
     pub peak: f32,
+    /// When the peak mark was last raised (`egui` seconds).
+    pub peak_at: f64,
+    /// The camera, while the camera test runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub camera: Option<crate::platform::camera::Camera>,
+    /// The camera test's picture on the GPU, replaced as frames arrive.
+    pub camera_texture: Option<egui::TextureHandle>,
+    /// A level to draw on the meter with no microphone running: a scripted
+    /// capture's (`--ui audio`), which has no device to move it. (meter, peak)
+    pub demo_level: Option<(f32, f32)>,
     /// The password re-entered to confirm account deletion.
     ///
     /// Cleared the moment the request goes out and whenever the panel closes: it
@@ -154,6 +168,37 @@ impl SettingsState {
     pub fn stop_mic(&mut self) {
         self.mic = None;
         self.peak = 0.0;
+        self.shown = 0.0;
+    }
+
+    /// Begin the camera test, replacing any running one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start_camera(&mut self) {
+        self.camera_texture = None;
+        self.camera = Some(if crate::env_flag("CARTO_FAKE_CAMERA") {
+            // The stand-in camera, as a call uses under the same switch.
+            crate::platform::camera::Camera::fake()
+        } else {
+            crate::platform::camera::Camera::open()
+        });
+    }
+
+    /// Stop the camera test and close the device.
+    pub fn stop_camera(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.camera = None;
+        }
+        self.camera_texture = None;
+    }
+
+    /// Whether the camera test is running.
+    #[must_use]
+    pub fn camera_running(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.camera.is_some();
+        #[cfg(target_arch = "wasm32")]
+        false
     }
 }
 
@@ -163,12 +208,33 @@ impl SettingsState {
 /// only place the input gain can be judged — voice transmits the gained signal,
 /// so a meter showing the raw one would have someone calibrate against a number
 /// nobody sends.
-fn observe_peak(state: &mut SettingsState, gain: f32) -> Option<(f32, f32)> {
+fn observe_peak(state: &mut SettingsState, gain: f32, now: f64, dt: f32) -> Option<(f32, f32)> {
     let mic = state.mic.as_ref()?;
     let meter = audio::level_to_meter((mic.level() * gain).clamp(0.0, 1.0));
-    state.peak = state.peak.max(meter);
-    Some((meter, state.peak))
+    Some(meter_ballistics(state, meter, now, dt))
 }
+
+/// Meter ballistics: the bar jumps up with the signal and falls at
+/// [`METER_FALL`] a second; the peak mark holds for [`PEAK_HOLD_S`], then falls
+/// at [`PEAK_FALL`]. Without them a meter fed a raw level flickers from frame
+/// to frame and the peak mark is either stuck or gone.
+fn meter_ballistics(state: &mut SettingsState, meter: f32, now: f64, dt: f32) -> (f32, f32) {
+    state.shown = meter.max(state.shown - METER_FALL * dt).max(0.0);
+    if meter >= state.peak {
+        state.peak = meter;
+        state.peak_at = now;
+    } else if now - state.peak_at > PEAK_HOLD_S {
+        state.peak = (state.peak - PEAK_FALL * dt).max(state.shown);
+    }
+    (state.shown, state.peak)
+}
+
+/// How fast the bar falls, in full scales a second.
+const METER_FALL: f32 = 1.6;
+/// How long the peak mark holds before it falls, in seconds.
+const PEAK_HOLD_S: f64 = 1.0;
+/// How fast the peak mark falls once released, in full scales a second.
+const PEAK_FALL: f32 = 0.6;
 
 /// The Settings panel. Ordered in the panel `.chain()` like every other panel
 /// — see the note there; an unordered panel loses egui's hit test at random.
@@ -295,6 +361,13 @@ pub fn render_settings_panel(
     // hidden panel is the recording-indicator problem the module note describes.
     if !right_panel.is(RightPanel::Settings) && state.mic.is_some() {
         state.stop_mic();
+    }
+    // The camera likewise, and on leaving the tab too: a camera light that
+    // stays on behind another screen is the same problem, more visible.
+    if (!right_panel.is(RightPanel::Settings) || state.tab != SettingsTab::Audio)
+        && state.camera_running()
+    {
+        state.stop_camera();
     }
     // …and it must drop the typed password, for the same shape of reason.
     if !right_panel.is(RightPanel::Settings) && !state.delete_password.is_empty() {
@@ -1632,13 +1705,19 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
 
     ui.add_space(10.0);
     ui.separator();
+    microphone_section(ui, state, prefs);
+    camera_section(ui, state);
+    play_tone
+}
+
+fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs) {
     section(ui, "Microphone");
 
     if !AudioInput::available() {
         // The `platform::location` contract: say unavailable rather than show a
         // meter that can never move.
         ui.colored_label(theme::ERROR, unavailable_reason());
-        return play_tone;
+        return;
     }
 
     // Above the test, because the test is how it is judged: the meter below shows
@@ -1659,7 +1738,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
     ui.horizontal(|ui| {
         if ui
             .button(if running {
-                format!("{}  Stop", icons::STOP)
+                format!("{}  Stop microphone", icons::STOP)
             } else {
                 format!("{}  Test microphone", icons::MIC)
             })
@@ -1673,7 +1752,13 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
         }
     });
 
-    if let Some((meter, peak)) = observe_peak(state, prefs.capture_gain()) {
+    if state.mic.is_none() {
+        if let Some((meter, peak)) = state.demo_level {
+            level_bar(ui, meter, peak);
+        }
+    }
+    let (now, dt) = ui.input(|i| (i.time, i.stable_dt));
+    if let Some((meter, peak)) = observe_peak(state, prefs.capture_gain(), now, dt) {
         let mic = state.mic.as_ref().expect("observe_peak proved it is Some");
         if let Some(err) = mic.error() {
             ui.colored_label(theme::ERROR, err);
@@ -1687,10 +1772,85 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
                 ui.small(name);
             }
             ui.small("Speak normally — the bar should reach the middle.");
+            // The bar falls back smoothly, so it has to be redrawn while it does.
+            ui.ctx().request_repaint();
         }
     }
+}
 
-    play_tone
+/// The camera test: the picture a call would send, shown mirrored as a mirror
+/// shows you (the other person sees you the right way round).
+fn camera_section(ui: &mut egui::Ui, state: &mut SettingsState) {
+    ui.add_space(10.0);
+    ui.separator();
+    section(ui, "Camera");
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = state;
+        ui.label(
+            "In the browser, the camera is the browser's: it asks to use it when you \
+             turn the camera on in a call.",
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::platform::camera;
+        let running = state.camera_running();
+        if ui
+            .button(if running {
+                format!("{}  Stop camera", icons::STOP)
+            } else {
+                format!("{}  Test camera", icons::CAMERA)
+            })
+            .clicked()
+        {
+            if running {
+                state.stop_camera();
+            } else {
+                state.start_camera();
+            }
+        }
+        let Some(cam) = state.camera.as_ref() else {
+            return;
+        };
+        if let Some(err) = cam.error() {
+            ui.colored_label(theme::ERROR, err);
+            return;
+        }
+        if let Some(picture) = cam.take_preview() {
+            let (w, h, rgba) = camera::self_view(&picture, 480);
+            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+            match state.camera_texture.as_mut() {
+                Some(t) => t.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    state.camera_texture = Some(ui.ctx().load_texture(
+                        "camera-test",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            }
+        }
+        match state.camera_texture.as_ref() {
+            Some(t) => {
+                let [w, h] = t.size();
+                // Enough to judge framing and light, without pushing the rest
+                // of the tab off the screen.
+                let aspect = w as f32 / h.max(1) as f32;
+                let height = (ui.available_width() / aspect).min(200.0);
+                let size = egui::vec2(height * aspect, height);
+                ui.add(
+                    egui::Image::new((t.id(), size))
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS_SM)),
+                );
+                ui.small("Mirrored, as a mirror shows you. The other person sees you the right way round.");
+            }
+            None => {
+                ui.label("Waiting for the camera…");
+            }
+        }
+        ui.ctx().request_repaint();
+    }
 }
 
 /// Why capture is unavailable, specifically enough to be actionable.
@@ -1710,30 +1870,68 @@ fn unavailable_reason() -> &'static str {
     }
 }
 
-/// A level meter with a peak-hold tick.
+/// Segments in [`level_bar`].
+const METER_SEGMENTS: usize = 30;
+
+/// A level meter: a row of lit segments, like a mixing desk's, with a
+/// peak-hold segment above the signal.
+///
+/// Every segment is drawn, lit or not: the unlit ones in a faint copy of their
+/// own colour, so the scale — calm, then caution, then clipping — reads before
+/// any sound arrives. A lit segment carries a soft glow. Its colour is the
+/// colour of where it *is* on the scale ([`meter_colour`]), not of the current
+/// level, which is what makes a loud passage climb into amber and red rather
+/// than turning the whole bar red.
 ///
 /// Shared with the chat panel's voice row rather than redrawn there: the two
 /// answer the same question about the same device, and a second bar with its own
 /// colours is how the chrome drifts (`systems::theme`'s note).
 pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
     let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
     let p = ui.painter();
-    let radius = egui::CornerRadius::same(theme::RADIUS_SM);
-    p.rect_filled(rect, radius, theme::SURFACE);
-
-    if meter > 0.0 {
-        let filled =
-            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * meter, rect.height()));
-        p.rect_filled(filled, radius, meter_colour(meter));
-    }
-    if peak > 0.0 {
-        let x = rect.min.x + rect.width() * peak;
-        p.line_segment(
-            [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-            egui::Stroke::new(1.5, theme::CREAM),
+    p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_SM), theme::INK);
+    let inner = rect.shrink2(egui::vec2(4.0, 4.0));
+    let gap = 2.0;
+    let n = METER_SEGMENTS as f32;
+    let width = ((inner.width() - gap * (n - 1.0)) / n).max(1.0);
+    let lit_upto = (meter.clamp(0.0, 1.0) * n).round() as usize;
+    let peak_at = (peak.clamp(0.0, 1.0) * n).ceil() as usize;
+    for i in 0..METER_SEGMENTS {
+        let x = inner.min.x + i as f32 * (width + gap);
+        let segment = egui::Rect::from_min_size(
+            egui::pos2(x, inner.min.y),
+            egui::vec2(width, inner.height()),
         );
+        let colour = segment_colour((i as f32 + 0.5) / n);
+        let radius = egui::CornerRadius::same(2);
+        let lit = i < lit_upto;
+        let is_peak = peak > 0.0 && i + 1 == peak_at && !lit;
+        if lit {
+            p.rect_filled(
+                segment.expand(1.5),
+                egui::CornerRadius::same(3),
+                colour.gamma_multiply(0.25),
+            );
+            p.rect_filled(segment, radius, colour);
+        } else if is_peak {
+            p.rect_filled(segment, radius, colour.gamma_multiply(0.85));
+        } else {
+            p.rect_filled(segment, radius, colour.gamma_multiply(0.12));
+        }
     }
+}
+
+/// A segment's colour by where it sits on the scale: the calm range
+/// brightening as it climbs, then [`meter_colour`]'s caution and clipping.
+fn segment_colour(at: f32) -> egui::Color32 {
+    if at > 0.75 {
+        return meter_colour(at);
+    }
+    let t = (at / 0.75).clamp(0.0, 1.0);
+    let low = egui::Rgba::from(theme::ACCENT_PRESSED);
+    let high = egui::Rgba::from(theme::ACCENT_BRIGHT);
+    egui::Color32::from(low * (1.0 - t) + high * t)
 }
 
 /// The live tone through amber to the error red as the signal approaches
@@ -2014,7 +2212,7 @@ mod tests {
     fn peak_holds_the_maximum_and_resets_with_the_test() {
         let mut state = SettingsState::default();
         // No mic: nothing to observe, and no panic.
-        assert!(observe_peak(&mut state, 1.0).is_none());
+        assert!(observe_peak(&mut state, 1.0, 0.0, 0.016).is_none());
 
         state.peak = 0.6;
         state.stop_mic();

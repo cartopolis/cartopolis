@@ -160,6 +160,14 @@ icons! {
     STOP = "\u{e047}", "stop";
     /// Microphone.
     MIC = "\u{e31d}", "mic";
+    /// A muted microphone (a call's mute button, while muted).
+    MIC_OFF = "\u{e02b}", "mic_off";
+    /// A video camera (a call's camera button, while on).
+    VIDEOCAM = "\u{e04b}", "videocam";
+    /// A camera that is off.
+    VIDEOCAM_OFF = "\u{e04c}", "videocam_off";
+    /// End a call.
+    CALL_END = "\u{f0bc}", "call_end";
     /// A script that is running.
     RUNNING = "\u{e1c4}", "play_circle";
     /// A script that is not.
