@@ -138,6 +138,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "ringing a closed app — SetPushEndpoint registers a device's UnifiedPush address; the server wakes it when a call starts in one of its chats, with no content in the push (docs/notes/calls.md)",
     },
+    ProtocolRevision {
+        version: 30,
+        adr: "",
+        summary: "where the people in a chat are — WherePeople / PeopleWhere: a private chat's World view asks where its members' avatars are, and hears only about contacts who show that they are online (docs/notes/contacts.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -218,6 +223,8 @@ pub enum MessageKind {
     NearbyPeople = 62,
     SetPrimVideo = 63,
     SetPushEndpoint = 64,
+    WherePeople = 65,
+    PeopleWhere = 66,
 }
 
 impl MessageKind {
@@ -287,6 +294,8 @@ impl MessageKind {
             62 => Some(Self::NearbyPeople),
             63 => Some(Self::SetPrimVideo),
             64 => Some(Self::SetPushEndpoint),
+            65 => Some(Self::WherePeople),
+            66 => Some(Self::PeopleWhere),
             _ => None,
         }
     }
@@ -1203,6 +1212,32 @@ pub enum NetMessage {
     /// `None` to stop. The server posts an empty wake-up there when a call
     /// starts in one of the account's chats; nothing about the call is in it.
     SetPushEndpoint { endpoint: Option<String> },
+
+    // ── Where the people in a chat are (protocol 30) ─────────────────────────
+    /// Client asks where these people's avatars are, for a private chat's World
+    /// view. Asked again every few seconds while that view is open.
+    WherePeople {
+        request_id: u32,
+        usernames: Vec<String>,
+    },
+    /// Server: the ones the asker may see — contacts who show that they are
+    /// online, whose avatar is in the world with a location. Anybody else is
+    /// left out, never marked as hidden, so the answer says nothing about them.
+    PeopleWhere {
+        request_id: u32,
+        people: Vec<PersonWhereDto>,
+    },
+}
+
+/// One person's avatar on Earth ([`NetMessage::PeopleWhere`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonWhereDto {
+    pub username: String,
+    /// The avatar's id, the same number as in `WorldSnapshot`, so a client that
+    /// also has the avatar in view can put the marker on it exactly.
+    pub avatar_id: u64,
+    pub latitude: f64,
+    pub longitude: f64,
 }
 
 /// What [`NetMessage::SetPrimVideo`] asks for; the server adds the start time.
@@ -1536,6 +1571,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::NearbyPeople { .. } => MessageKind::NearbyPeople,
         NetMessage::SetPrimVideo { .. } => MessageKind::SetPrimVideo,
         NetMessage::SetPushEndpoint { .. } => MessageKind::SetPushEndpoint,
+        NetMessage::WherePeople { .. } => MessageKind::WherePeople,
+        NetMessage::PeopleWhere { .. } => MessageKind::PeopleWhere,
     }
 }
 
@@ -1578,6 +1615,8 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::SetContactSettings { request_id, .. } => *request_id,
         NetMessage::LookupPerson { request_id, .. } => *request_id,
         NetMessage::SetPrimVideo { request_id, .. } => *request_id,
+        NetMessage::WherePeople { request_id, .. } => *request_id,
+        NetMessage::PeopleWhere { request_id, .. } => *request_id,
         NetMessage::PersonInfo { request_id, .. } => *request_id,
         NetMessage::GetNearbyPeople { request_id } => *request_id,
         NetMessage::NearbyPeople { request_id, .. } => *request_id,
@@ -2046,7 +2085,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 63] = [
+        const ALL: [MessageKind; 65] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2110,6 +2149,8 @@ mod tests {
             NearbyPeople,
             SetPrimVideo,
             SetPushEndpoint,
+            WherePeople,
+            PeopleWhere,
         ];
         for k in ALL {
             assert_eq!(
@@ -2123,7 +2164,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(SetPushEndpoint as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(PeopleWhere as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

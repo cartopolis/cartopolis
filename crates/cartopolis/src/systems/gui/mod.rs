@@ -9,6 +9,7 @@ pub mod bookmarks;
 pub mod building_card;
 pub mod chat;
 pub mod chat_overlay;
+pub mod chat_people;
 pub mod chats;
 pub mod contacts;
 pub mod data_layers;

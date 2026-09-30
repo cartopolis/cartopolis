@@ -32,8 +32,9 @@
 //! taken on the globe itself (`globe::GlobeState::direction_local`) and pins on
 //! the far side are dropped by the horizon test.
 
-use crate::components::FreeCamera;
+use crate::components::{Avatar, FreeCamera, RemoteAvatar};
 use crate::resources::MapAnchor;
+use crate::systems::chat_people;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -144,6 +145,12 @@ pub fn render_place_pins(
     // Also where other people's shared real locations are pinned, and where the
     // "you are sharing your location" chip is drawn — see [`sharing_chip`].
     mut chat: ResMut<crate::systems::chat::ChatState>,
+    // The people in that chat, where their avatars are (`chat_people`): the
+    // server's answer, and this client's own avatars to stand a marker on
+    // when one of them is in view.
+    contacts: Res<crate::systems::contacts::Contacts>,
+    remotes: Query<(&RemoteAvatar, &Transform), Without<FreeCamera>>,
+    local: Query<(&GridCell, &Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) {
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
@@ -173,7 +180,15 @@ pub fn render_place_pins(
         .filter(|l| l.until_ms > now_ms)
         .cloned()
         .collect();
-    if store.data.bookmarks.is_empty() && chat_points.is_empty() && people.is_empty() {
+    let chat_world = chat
+        .world
+        .clone()
+        .filter(|k| crate::systems::chat::ChatState::is_private(k));
+    if store.data.bookmarks.is_empty()
+        && chat_points.is_empty()
+        && people.is_empty()
+        && chat_world.is_none()
+    {
         return;
     }
     let Some(anchor) = map_anchor.geo else {
@@ -320,6 +335,71 @@ pub fn render_place_pins(
         let label = format!("{} (where their phone is)", l.from);
         if pin(&ctx, map_rect, PEOPLE_PIN_IDS + i as u64, tip, blue, &label) {
             jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
+        }
+    }
+    // The people in the chat whose World view is open, at their avatars, with
+    // what each last said floating over them (`chat_people`, design v5 B).
+    if let Some(key) = chat_world {
+        let now = chat.clock;
+        // Over the head on the flat map; from orbit a head is not a distance.
+        let head_up = if in_space {
+            DVec3::ZERO
+        } else {
+            DVec3::Y * chat_people::HEAD_HEIGHT_M
+        };
+        let mut balloons: Vec<(String, egui::Pos2, String, f32, bool)> = Vec::new();
+        for w in &contacts.whereabouts {
+            let (lat, lng) = w.at(now);
+            let Some(ground) = place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)
+            else {
+                continue;
+            };
+            // Remote avatars are root entities whose translation is already the
+            // absolute sim position (`chat_overlay::render_chat_bubbles`).
+            let foot = remotes
+                .iter()
+                .find(|(r, _)| r.sim_id == w.avatar_id)
+                .map(|(_, tf)| tf.translation.as_dvec3() - cam_world)
+                .filter(|drawn| !in_space && chat_people::same_avatar(*drawn, ground))
+                .unwrap_or(ground);
+            let Ok(screen) = cam.world_to_viewport(&cam_view, (foot + head_up).as_vec3()) else {
+                continue;
+            };
+            let tip = to_ui(screen);
+            if !map_rect.contains(tip) {
+                continue;
+            }
+            drawn += 1;
+            if chat_people::marker(&ctx, map_rect, tip, &w.username) {
+                jump = Some((Teleport::geo(lat, lng, None), w.username.clone()));
+            }
+            if let Some((text, alpha)) = chat_people::latest_said(&chat, &key, &w.username) {
+                let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
+                balloons.push((w.username.clone(), over, text, alpha, false));
+            }
+        }
+        // Your own last line, over your own avatar, which has no marker: it is
+        // the one person on the map you do not need to find.
+        if let (false, Some((text, alpha)), Ok((cell, tf))) = (
+            in_space,
+            chat_people::latest_mine(&chat, &key),
+            local.single(),
+        ) {
+            let foot = DVec3::new(
+                cell.x as f64 * edge + tf.translation.x as f64,
+                cell.y as f64 * edge + tf.translation.y as f64,
+                cell.z as f64 * edge + tf.translation.z as f64,
+            ) - cam_world;
+            if let Ok(screen) = cam.world_to_viewport(&cam_view, (foot + head_up).as_vec3()) {
+                let over = to_ui(screen);
+                if map_rect.contains(over) {
+                    balloons.push((String::new(), over, text, alpha, true));
+                }
+            }
+        }
+        // After every marker, so a balloon is never under somebody's disc.
+        for (who, over, text, alpha, mine) in balloons {
+            chat_people::balloon(&ctx, map_rect, &who, over, &text, alpha, mine);
         }
     }
     // "The pins aren't showing" has three very different causes — no anchor, all

@@ -4,7 +4,7 @@
 
 use super::{
     now_millis, server_error, take_token, ConnCtx, FrameTransport, LOOKUP_BURST, MAX_USERNAME_LEN,
-    MIN_LOOKUP_INTERVAL,
+    MAX_WHERE_PEOPLE, MIN_LOOKUP_INTERVAL, MIN_WHERE_INTERVAL,
 };
 use crate::chat::ChatHub;
 use crate::contacts::{Refusal, Sent};
@@ -311,6 +311,48 @@ pub(super) async fn on_lookup<T: FrameTransport>(
         }
     };
     ctx.send(&NetMessage::PersonInfo { request_id, person })
+        .await
+}
+
+/// Where the people in a chat are, for its World view (protocol 30): only the
+/// asker's contacts who show that they are online (`contacts::visible_to`).
+pub(super) async fn on_where<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    mut usernames: Vec<String>,
+) -> anyhow::Result<()> {
+    let now = std::time::Instant::now();
+    if now.duration_since(ctx.gates.last_where) < MIN_WHERE_INTERVAL {
+        return Ok(());
+    }
+    ctx.gates.last_where = now;
+    usernames.retain(|n| !n.trim().is_empty() && n.chars().count() <= MAX_USERNAME_LEN);
+    usernames.truncate(MAX_WHERE_PEOPLE);
+    let principal = ctx.principal_key.clone();
+    let visible = match db::call(&ctx.conn, move |c| {
+        crate::contacts::visible_to(c, &principal, &usernames).unwrap_or_default()
+    })
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let people = ctx
+        .world
+        .read()
+        .await
+        .whereabouts(&visible)
+        .into_iter()
+        .map(
+            |(username, avatar_id, geo)| cartopolis_core::PersonWhereDto {
+                username,
+                avatar_id,
+                latitude: geo.latitude,
+                longitude: geo.longitude,
+            },
+        )
+        .collect();
+    ctx.send(&NetMessage::PeopleWhere { request_id, people })
         .await
 }
 

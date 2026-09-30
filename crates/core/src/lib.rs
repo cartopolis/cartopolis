@@ -28,10 +28,11 @@ pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, AuthCredential, AvatarStateDto, CallMember, CallTrack, ChatScope,
     ContactDto, ContactRequestDto, ContactSettings, E2eeCursor, E2eeKeyPackage, E2eeWelcome, Emote,
-    EmoteState, GeoAnchor, MessageKind, MetDto, NearbyPersonDto, NetMessage, PersonDto, PrimDto,
-    PrimGeometry, PrimSurface, PrimVideo, ProtocolRevision, Relation, ReportReason, RequestPolicy,
-    ScriptLevel, SetVideo, TextureEntry, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN,
-    MAX_REPORT_NOTE_LEN, MAX_ROOM_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
+    EmoteState, GeoAnchor, MessageKind, MetDto, NearbyPersonDto, NetMessage, PersonDto,
+    PersonWhereDto, PrimDto, PrimGeometry, PrimSurface, PrimVideo, ProtocolRevision, Relation,
+    ReportReason, RequestPolicy, ScriptLevel, SetVideo, TextureEntry, EMOTE_REPLICATE_SECS,
+    MAX_REPORT_MESSAGE_LEN, MAX_REPORT_NOTE_LEN, MAX_ROOM_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY,
+    PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use world::{

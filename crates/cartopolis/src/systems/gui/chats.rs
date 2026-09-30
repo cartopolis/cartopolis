@@ -179,7 +179,13 @@ pub(crate) fn avatar(ui: &mut egui::Ui, name: &str, kind: ChatKind, size: f32) {
     paint_avatar(ui.painter(), rect.center(), name, kind, size);
 }
 
-fn paint_avatar(p: &egui::Painter, c: egui::Pos2, name: &str, kind: ChatKind, size: f32) {
+pub(crate) fn paint_avatar(
+    p: &egui::Painter,
+    c: egui::Pos2,
+    name: &str,
+    kind: ChatKind,
+    size: f32,
+) {
     let (tone, text, scale) = match kind {
         ChatKind::Here => (HERE_TONE, icons::PIN.to_string(), 0.45),
         ChatKind::Everyone => (AVATAR_TONES[3], icons::CAM_EARTH.to_string(), 0.45),
@@ -2226,6 +2232,16 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
             RightPanel::None
         }
         "world" => {
+            // Something Sanne has just said, to float over her marker
+            // (`chat_people`); the thread's last line is yours.
+            let said = "Great, see you at 7!";
+            let already = chat
+                .channels
+                .iter()
+                .any(|c| c.key == sanne && c.lines.iter().any(|l| l.body == said));
+            if !already {
+                chat.receive(sanne, 0, "Sanne".into(), said.into(), None);
+            }
             view.open_chat(sanne);
             chat.world = Some(sanne.into());
             RightPanel::None

@@ -1,7 +1,7 @@
 ---
 topic: contacts
-triggers: [contacts.rs, "contact request", "message request", RequestContact, ContactsState, PersonInfo, V21__contacts.sql, request_policy, link_code, "Say hi", tap_avatar]
-updated: 2026-09-29
+triggers: [contacts.rs, chat_people.rs, WherePeople, PeopleWhere, "contact request", "message request", RequestContact, ContactsState, PersonInfo, V21__contacts.sql, request_policy, link_code, "Say hi", tap_avatar]
+updated: 2026-09-30
 ---
 
 # Contacts and message requests
@@ -69,3 +69,17 @@ first would race the request and be refused keys.
 and the web client already serves, so it needed no Caddy or manifest change.
 The mockup drew `/u/name`; that would need both. A link lets the holder send a
 request whatever the setting says; *Reset link* issues a new code.
+
+## Where the people in a chat are (protocol 30)
+
+A private chat's World view draws each other member at their avatar, with what
+they last said floating over them (`systems::chat_people`, design v5 screen B).
+The client cannot know this itself: the avatar is usually far outside the
+snapshot's area of interest, and its sim position is in its own client's
+frame. So the view asks `WherePeople` every 2 s and the server answers from
+`ClientIntent.geo`, only for the asker's **contacts who show that they are
+online** (`contacts::visible_to`). Where an avatar stands is the same kind of
+fact as whether it is online, so it rides the same switch; anybody else is
+left out of the answer rather than marked, so it says nothing about them.
+This is the avatar, never the phone — the real location is still only what a
+person shares with one chat, for a time.

@@ -278,6 +278,30 @@ pub fn relation(conn: &Connection, me: &str, them: &str) -> Result<Relation, Ref
     Ok(Relation::Nobody)
 }
 
+/// Which of `names` `me` may see on a chat's World view (`WherePeople`): their
+/// contacts who show that they are online, as their own spelling of the name.
+///
+/// Where somebody's avatar stands is the same kind of fact as whether they are
+/// online, so it rides the same switch: hiding one and showing the other would
+/// be a setting that says less than it seems to. Anyone else is dropped rather
+/// than marked, so the answer says nothing about whether they exist.
+pub fn visible_to(conn: &Connection, me: &str, names: &[String]) -> Result<Vec<String>, Refusal> {
+    let mut out = Vec::new();
+    for name in names {
+        let Some(them) = account_by_name(conn, name)? else {
+            continue;
+        };
+        if them.show_online
+            && them.id != me
+            && are_contacts(conn, me, &them.id)?
+            && !out.contains(&them.username)
+        {
+            out.push(them.username);
+        }
+    }
+    Ok(out)
+}
+
 /// Whether `target`'s setting lets `me` send them a request, before the daily
 /// limit. `met` is whether the two were near each other in the last hour.
 pub fn policy_allows(
@@ -995,5 +1019,29 @@ mod tests {
         make_contacts(&c, &a.id, &b.id, None, NOW).unwrap();
         erase_account(&c, &a.id).unwrap();
         assert!(contact_ids(&c, &b.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_contacts_who_show_online_are_placed_on_a_map() {
+        let c = db();
+        let (a, b, _sanne, h) = (
+            account(&c, "anna", 100),
+            account(&c, "bas", 100),
+            account(&c, "sanne", 100),
+            account(&c, "hidden", 100),
+        );
+        make_contacts(&c, &a.id, &b.id, None, NOW).unwrap();
+        make_contacts(&c, &a.id, &h.id, None, NOW).unwrap();
+        set_settings(&c, &h.id, RequestPolicy::Near, false, true, true, false).unwrap();
+        let ask: Vec<String> = ["BAS", "bas", "sanne", "hidden", "anna", "nobody"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        // Sanne is no contact, Hidden hides being online, Anna is the asker,
+        // and a name asked twice (in any case) is answered once.
+        assert_eq!(
+            visible_to(&c, &a.id, &ask).unwrap(),
+            vec!["bas".to_string()]
+        );
     }
 }

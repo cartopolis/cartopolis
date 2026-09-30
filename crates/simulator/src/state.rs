@@ -313,6 +313,22 @@ impl SimWorld {
         d.is_finite().then_some(d)
     }
 
+    /// Where each of `names` has an avatar in the world with a location: the
+    /// avatar's id and where it is on Earth. A name with no located avatar is
+    /// left out; one signed in on two devices answers with the first found.
+    #[must_use]
+    pub fn whereabouts(&self, names: &[String]) -> Vec<(String, u64, GeoAnchor)> {
+        names
+            .iter()
+            .filter_map(|n| {
+                self.avatars
+                    .iter()
+                    .filter(|(_, av)| av.name.eq_ignore_ascii_case(n))
+                    .find_map(|(id, av)| Some((n.clone(), *id, av.geo?)))
+            })
+            .collect()
+    }
+
     /// Everybody within [`MEET_RADIUS_M`] of `name`'s avatar, nearest first.
     #[must_use]
     pub fn near(&self, name: &str) -> Vec<(String, f32)> {

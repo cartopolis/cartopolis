@@ -88,6 +88,13 @@ const MIN_CALL_JOIN_INTERVAL: Duration = Duration::from_secs(1);
 const MIN_LOOKUP_INTERVAL: Duration = Duration::from_millis(1000);
 /// Lookups one connection may make back to back.
 const LOOKUP_BURST: u32 = 10;
+/// Shortest gap between two `WherePeople` from one connection. The World view
+/// asks every few seconds; anything faster is dropped unanswered, and the next
+/// ask brings the view up to date.
+const MIN_WHERE_INTERVAL: Duration = Duration::from_millis(900);
+/// Most people one `WherePeople` is answered for. A chat bigger than this shows
+/// its first ones; the ask is a list of names, not a way to sweep the server.
+const MAX_WHERE_PEOPLE: usize = 32;
 
 /// Longest username the moderation messages will act on.
 ///
@@ -440,6 +447,7 @@ struct RateGates {
     /// The person-lookup bucket ([`take_token`]).
     lookup: Instant,
     last_call_join: Instant,
+    last_where: Instant,
 }
 
 impl RateGates {
@@ -458,6 +466,7 @@ impl RateGates {
             claim: ago(MIN_CLAIM_INTERVAL * CLAIM_BURST),
             lookup: ago(MIN_LOOKUP_INTERVAL * LOOKUP_BURST),
             last_call_join: ago(MIN_CALL_JOIN_INTERVAL),
+            last_where: ago(MIN_WHERE_INTERVAL),
         }
     }
 }
@@ -1094,6 +1103,10 @@ async fn dispatch<T: FrameTransport>(
             avatar_id,
         } => contacts::on_lookup(ctx, request_id, username, avatar_id).await,
         ClientRequest::GetNearbyPeople { request_id } => contacts::on_nearby(ctx, request_id).await,
+        ClientRequest::WherePeople {
+            request_id,
+            usernames,
+        } => contacts::on_where(ctx, request_id, usernames).await,
     }
 }
 

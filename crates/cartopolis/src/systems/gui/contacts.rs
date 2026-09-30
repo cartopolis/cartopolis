@@ -50,6 +50,72 @@ pub fn is_contacts_request(request_id: u32) -> bool {
 /// How often the contacts screen asks who is near, while it is open.
 const NEARBY_EVERY_S: f64 = 5.0;
 
+/// How often a chat's World view asks where the people in it are. A marker
+/// glides from each answer to the next over this long, so it moves at walking
+/// pace rather than hopping.
+pub const WHERE_EVERY_S: f64 = 2.0;
+
+/// A move longer than this between two answers is a jump, not a walk: the
+/// marker is put straight there rather than sliding across the country.
+const WHERE_JUMP_M: f64 = 2_000.0;
+
+/// Where one person in the open chat is, as the server last said
+/// (`NetMessage::PeopleWhere`), with the answer before it to glide from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Whereabout {
+    pub username: String,
+    /// Their avatar's id, the same as `RemoteAvatar::sim_id`.
+    pub avatar_id: u64,
+    from: (f64, f64),
+    to: (f64, f64),
+    /// When `to` arrived, in `Time::elapsed_secs_f64`.
+    arrived: f64,
+}
+
+impl Whereabout {
+    /// Where to draw them at `now`: on the way from the last answer to the
+    /// newest, reaching it as the next one is due.
+    #[must_use]
+    pub fn at(&self, now: f64) -> (f64, f64) {
+        let t = ((now - self.arrived) / WHERE_EVERY_S).clamp(0.0, 1.0);
+        (
+            self.from.0 + (self.to.0 - self.from.0) * t,
+            self.from.1 + (self.to.1 - self.from.1) * t,
+        )
+    }
+}
+
+/// Fold a `PeopleWhere` answer into what is known: anybody it leaves out is
+/// gone (they went offline, hid it, or left the world), and anybody still there
+/// glides on from wherever they are drawn now.
+fn merge_whereabouts(
+    known: &[Whereabout],
+    people: Vec<cartopolis_core::PersonWhereDto>,
+    now: f64,
+) -> Vec<Whereabout> {
+    people
+        .into_iter()
+        .map(|p| {
+            let to = (p.latitude, p.longitude);
+            let from = known
+                .iter()
+                .find(|w| w.username.eq_ignore_ascii_case(&p.username))
+                .map(|w| w.at(now))
+                .filter(|&(lat, lng)| {
+                    cartopolis_core::geo::ground_distance_m(lat, lng, to.0, to.1) < WHERE_JUMP_M
+                })
+                .unwrap_or(to);
+            Whereabout {
+                username: p.username,
+                avatar_id: p.avatar_id,
+                from,
+                to,
+                arrived: now,
+            }
+        })
+        .collect()
+}
+
 /// A tap this close to an avatar's feet, in points, is a tap on the avatar.
 const TAP_RADIUS_PTS: f32 = 36.0;
 
@@ -71,7 +137,8 @@ impl ContactsInbox {
         match msg {
             NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
-            | NetMessage::NearbyPeople { .. } => true,
+            | NetMessage::NearbyPeople { .. }
+            | NetMessage::PeopleWhere { .. } => true,
             NetMessage::ServerError { request_id, .. } => is_contacts_request(*request_id),
             _ => false,
         }
@@ -146,6 +213,12 @@ pub struct Contacts {
     pub pending_link: Option<(String, String)>,
     /// Set by a screen each frame it wants [`Self::nearby`] kept fresh.
     pub want_nearby: bool,
+    /// Where the people in the chat whose World view is open are, for their
+    /// markers (`chat_people`). Empty while no World view is open.
+    pub whereabouts: Vec<Whereabout>,
+    where_asked_at: Option<f64>,
+    /// Whose whereabouts were last asked for, so a different chat asks at once.
+    where_asked_for: Vec<String>,
     hellos: Vec<Hello>,
     outbox: Vec<NetMessage>,
     next_request: u32,
@@ -392,6 +465,7 @@ pub fn drive_contacts(
     mut inbox: ResMut<ContactsInbox>,
     mut contacts: ResMut<Contacts>,
     mut chat: ResMut<ChatState>,
+    private: Res<crate::systems::private_chat::PrivateChats>,
     mut launched: Local<bool>,
 ) {
     if !*launched {
@@ -453,6 +527,10 @@ pub fn drive_contacts(
                 }
             }
             NetMessage::NearbyPeople { people, .. } => contacts.nearby = people,
+            NetMessage::PeopleWhere { people, .. } => {
+                let now = time.elapsed_secs_f64();
+                contacts.whereabouts = merge_whereabouts(&contacts.whereabouts, people, now);
+            }
             NetMessage::ServerError {
                 request_id,
                 message,
@@ -524,6 +602,35 @@ pub fn drive_contacts(
             .push(NetMessage::GetNearbyPeople { request_id });
     }
     contacts.want_nearby = false;
+
+    // A private chat's World view: where the people in it are, asked again
+    // every few seconds while it is open and forgotten the moment it closes.
+    let wanted = chat
+        .world
+        .as_deref()
+        .filter(|k| ChatState::is_private(k))
+        .map(|k| private.people_in(k))
+        .unwrap_or_default();
+    if wanted.is_empty() {
+        contacts.whereabouts.clear();
+        contacts.where_asked_at = None;
+        contacts.where_asked_for.clear();
+    } else if wanted != contacts.where_asked_for
+        || contacts
+            .where_asked_at
+            .is_none_or(|t| now - t >= WHERE_EVERY_S)
+    {
+        if wanted != contacts.where_asked_for {
+            contacts.whereabouts.clear();
+        }
+        contacts.where_asked_at = Some(now);
+        contacts.where_asked_for = wanted.clone();
+        let request_id = contacts.request_id();
+        contacts.outbox.push(NetMessage::WherePeople {
+            request_id,
+            usernames: wanted,
+        });
+    }
 
     for msg in std::mem::take(&mut contacts.outbox) {
         online.send("contacts", msg);
@@ -1971,9 +2078,45 @@ pub fn seed_demo_card(contacts: &mut Contacts) {
     });
 }
 
+/// Where the demo chat's Sanne is standing for `--ui chatworld`: by the café
+/// her last point names, so the marker and the point pin share the frame.
+pub fn seed_demo_whereabouts(contacts: &mut Contacts) {
+    let at = (53.2154, 6.5671);
+    contacts.whereabouts = vec![Whereabout {
+        username: "Sanne".into(),
+        avatar_id: 2,
+        from: at,
+        to: at,
+        arrived: 0.0,
+    }];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_glides_on_from_where_the_marker_is_and_a_jump_does_not() {
+        let dto = |lat: f64, lng: f64| cartopolis_core::PersonWhereDto {
+            username: "sanne".into(),
+            avatar_id: 2,
+            latitude: lat,
+            longitude: lng,
+        };
+        let first = merge_whereabouts(&[], vec![dto(53.0, 6.0)], 0.0);
+        assert_eq!(first[0].at(0.0), (53.0, 6.0));
+        // ~110 m north: a walk, so it glides over one ask interval.
+        let walk = merge_whereabouts(&first, vec![dto(53.001, 6.0)], 10.0);
+        assert_eq!(walk[0].at(10.0), (53.0, 6.0));
+        let (mid, _) = walk[0].at(10.0 + WHERE_EVERY_S / 2.0);
+        assert!((mid - 53.0005).abs() < 1e-9, "{mid}");
+        assert_eq!(walk[0].at(10.0 + WHERE_EVERY_S), (53.001, 6.0));
+        // A hundred kilometres is a teleport: straight there.
+        let jump = merge_whereabouts(&walk, vec![dto(54.0, 6.0)], 20.0);
+        assert_eq!(jump[0].at(20.0), (54.0, 6.0));
+        // Somebody the answer leaves out is gone.
+        assert!(merge_whereabouts(&jump, vec![], 30.0).is_empty());
+    }
 
     #[test]
     fn contact_requests_have_their_own_id_range() {

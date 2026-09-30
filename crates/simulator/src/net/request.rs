@@ -210,6 +210,10 @@ pub enum ClientRequest {
     GetNearbyPeople {
         request_id: u32,
     },
+    WherePeople {
+        request_id: u32,
+        usernames: Vec<String>,
+    },
 }
 
 impl TryFrom<NetMessage> for ClientRequest {
@@ -488,6 +492,13 @@ impl TryFrom<NetMessage> for ClientRequest {
                 avatar_id,
             },
             NetMessage::GetNearbyPeople { request_id } => Self::GetNearbyPeople { request_id },
+            NetMessage::WherePeople {
+                request_id,
+                usernames,
+            } => Self::WherePeople {
+                request_id,
+                usernames,
+            },
 
             // Everything below is server-to-client. Listed rather than folded into
             // a `_` arm, so a new message has to be put on one side or the other
@@ -520,7 +531,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallRoster { .. }
             | NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
-            | NetMessage::NearbyPeople { .. } => return Err(msg),
+            | NetMessage::NearbyPeople { .. }
+            | NetMessage::PeopleWhere { .. } => return Err(msg),
         })
     }
 }

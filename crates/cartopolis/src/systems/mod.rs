@@ -54,9 +54,10 @@ pub use cartopolis_geo::{
     road_texture, routing, scatter, turf, vector_tiles,
 };
 pub use gui::{
-    bookmarks, building_card, chat, chat_overlay, chats, contacts, data_layers, dismiss, dock,
-    egui_manager, glass, hud, icons, login_screen, map_osd, model_library, onscreen_keyboard,
-    place_card, place_pins, script_editor, settings, splash, text_touch, theme, ui,
+    bookmarks, building_card, chat, chat_overlay, chat_people, chats, contacts, data_layers,
+    dismiss, dock, egui_manager, glass, hud, icons, login_screen, map_osd, model_library,
+    onscreen_keyboard, place_card, place_pins, script_editor, settings, splash, text_touch, theme,
+    ui,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use map::prim_video;

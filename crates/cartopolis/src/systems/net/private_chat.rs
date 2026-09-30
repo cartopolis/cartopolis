@@ -302,6 +302,26 @@ impl Engine {
         self.peers.iter()
     }
 
+    /// Everybody in a chat but this account, one entry per person however many
+    /// devices they have. A direct chat whose other side has not joined yet
+    /// still names them, from its label.
+    #[must_use]
+    pub fn people_in(&self, group: &[u8]) -> Vec<String> {
+        let me = self.username();
+        let mut out: Vec<String> = Vec::new();
+        for id in self.device.members(group) {
+            if !id.username.eq_ignore_ascii_case(me)
+                && !out.iter().any(|n| n.eq_ignore_ascii_case(&id.username))
+            {
+                out.push(id.username);
+            }
+        }
+        if out.is_empty() && !self.groups.contains(group) {
+            out.extend(self.peers.get(group).cloned());
+        }
+        out
+    }
+
     /// Every direct chat this device is in, with who it is with.
     pub fn directs(&self) -> impl Iterator<Item = (&Vec<u8>, &String)> {
         self.peers.iter().filter(|(g, _)| !self.groups.contains(*g))
@@ -1153,6 +1173,17 @@ impl PrivateChats {
     #[must_use]
     pub fn direct_chat_with(&self, username: &str) -> Option<Vec<u8>> {
         self.engine.as_ref()?.direct_with(username).cloned()
+    }
+
+    /// Who else is in a private chat, by username, for its World view
+    /// (`contacts::want_chat_whereabouts`). Empty for anything that is not a
+    /// private chat this device is in.
+    #[must_use]
+    pub fn people_in(&self, channel: &str) -> Vec<String> {
+        match (self.engine.as_ref(), group_of(channel)) {
+            (Some(engine), Some(group)) => engine.people_in(&group),
+            _ => Vec::new(),
+        }
     }
 }
 

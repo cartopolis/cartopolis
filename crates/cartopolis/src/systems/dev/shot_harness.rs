@@ -2244,9 +2244,17 @@ pub fn open_scripted_ui(
                 &mut cards.chat.chats,
                 screen,
             );
+            // The World view's people (`chat_people`): a scripted run has no
+            // server to say where anybody is.
+            if screen == "world" {
+                crate::systems::contacts::seed_demo_whereabouts(&mut cards.chat.contacts);
+            } else {
+                cards.chat.contacts.whereabouts.clear();
+            }
         }
         None => {
-            crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats)
+            crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats);
+            cards.chat.contacts.whereabouts.clear();
         }
     }
     // The contacts screens (`systems::contacts`), over the same demo chats.
@@ -2575,6 +2583,8 @@ pub fn hold_scripted_fire(
 pub fn hold_scripted_chat(
     mut chat: ResMut<crate::systems::chat::ChatState>,
     overlay: Res<crate::systems::chat_overlay::ChatOverlay>,
+    // `--ui chatworld` too: its balloons (`chat_people`) age the same way.
+    view: Res<crate::systems::chats::ChatsView>,
     camera: Query<
         &Transform,
         (
@@ -2584,7 +2594,7 @@ pub fn hold_scripted_chat(
     >,
     mut speaker: Query<&mut Transform, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
 ) {
-    if !overlay.demo {
+    if !overlay.demo && !(view.demo && chat.world.is_some()) {
         return;
     }
     let now = chat.clock;
