@@ -1071,6 +1071,14 @@ impl Default for PrimWarp {
     }
 }
 
+/// What the edit dialog's Video row asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoAction {
+    /// Pick a clip, upload it, and start it on the prim.
+    Choose,
+    Stop,
+}
+
 /// Edit dialog state for prim properties
 #[derive(Resource, Debug, Clone)]
 pub struct EditDialogState {
@@ -1086,6 +1094,13 @@ pub struct EditDialogState {
     pub color: [f32; 3],
     pub texture_id: Option<String>,
     pub texture_picker_open: bool,
+    /// Whether a clip is playing on the prim (protocol 28). Shown, not edited:
+    /// a clip is started and stopped by its own message, never by the save.
+    pub playing_video: bool,
+    /// Set by the dialog's Video row; taken by `prim_video::drive_video_actions`.
+    pub video_action: Option<VideoAction>,
+    /// What the last video action came to, for the row to say.
+    pub video_note: Option<String>,
     /// The model asset this prim wears, if it wears one (protocol v22).
     ///
     /// Carried through the dialog even though nothing in the dialog edits it,
@@ -1133,6 +1148,9 @@ impl Default for EditDialogState {
             color: [0.0; 3],
             texture_id: None,
             texture_picker_open: false,
+            playing_video: false,
+            video_action: None,
+            video_note: None,
             model: None,
             path_cut_begin: 0.0,
             path_cut_end: 1.0,

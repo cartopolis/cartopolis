@@ -124,6 +124,7 @@ pub fn router(state: HttpState) -> Router {
         // same reason the authoring surface is: one listener, one token, one
         // reverse-proxy prefix to configure.
         .merge(crate::library::routes())
+        .merge(crate::videos::routes())
         .with_state(state)
 }
 

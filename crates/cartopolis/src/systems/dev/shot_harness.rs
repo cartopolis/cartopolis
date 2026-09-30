@@ -2519,6 +2519,7 @@ pub fn hold_scripted_fire(
                     // would otherwise offer to press a thing with nothing behind
                     // it in every `--ui fire` capture.
                     scripted: false,
+                    video: None,
                 },
                 crate::systems::particles::ScriptedFire { burst },
                 Transform::from_translation(place(distance * offset.0, offset.1))

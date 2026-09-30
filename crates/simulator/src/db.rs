@@ -77,7 +77,7 @@ const PRIM_COLUMNS: &str = "id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude, particles, model, \
+     latitude, longitude, particles, model, video, \
      EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
 
 /// How many columns [`PRIM_COLUMNS`] selects.
@@ -155,7 +155,18 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // still updates its in-memory copy so the next snapshot is current
         // without a re-read — the database is what it falls back to being right
         // from.
-        scripted: row.get(41)?,
+        scripted: row.get(42)?,
+        // Protocol v28. A column that will not parse is no video, and a
+        // warning — the `particles` rule, for the same reason.
+        video: row.get::<_, Option<String>>(41)?.and_then(|json| {
+            match serde_json::from_str(&json) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("prim video column is not a valid video ({e}); ignoring it");
+                    None
+                }
+            }
+        }),
     })
 }
 
@@ -427,6 +438,79 @@ pub fn update_prim(
 
     tracing::debug!(prim_id, "prim updated");
     Ok(Some(prim))
+}
+
+/// Start or stop the video on a prim (`V22__prim_video.sql`). Its own write,
+/// because nothing else may touch the column: `update_prim` rewrites every
+/// other field on every edit, and a video that stopped whenever somebody moved
+/// the screen would be a bug in every tool that edits prims.
+///
+/// Returns the prim as it now is, or `None` if there is no such prim.
+pub fn set_prim_video(
+    conn: &Connection,
+    prim_id: i64,
+    video: Option<&cartopolis_core::PrimVideo>,
+) -> anyhow::Result<Option<PrimDto>> {
+    let json = video.map(serde_json::to_string).transpose()?;
+    let changed = conn.execute(
+        "UPDATE prims SET video = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, json],
+    )?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    select_prim_by_id(conn, prim_id)
+}
+
+/// One clip in the video store, as measured when it was uploaded.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct VideoRow {
+    pub hash: String,
+    pub byte_size: u64,
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u64,
+    pub has_audio: bool,
+}
+
+/// Record a clip. Uploading the same bytes twice is one row.
+pub fn insert_video(conn: &Connection, v: &VideoRow, uploaded_by: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO videos \
+         (hash, byte_size, width, height, duration_ms, has_audio, uploaded_by, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))",
+        rusqlite::params![
+            v.hash,
+            v.byte_size as i64,
+            v.width,
+            v.height,
+            v.duration_ms as i64,
+            v.has_audio,
+            uploaded_by
+        ],
+    )?;
+    Ok(())
+}
+
+/// A clip in the store, if there is one with this hash.
+pub fn video(conn: &Connection, hash: &str) -> anyhow::Result<Option<VideoRow>> {
+    Ok(conn
+        .query_row(
+            "SELECT hash, byte_size, width, height, duration_ms, has_audio FROM videos \
+             WHERE hash = ?1",
+            rusqlite::params![hash],
+            |r| {
+                Ok(VideoRow {
+                    hash: r.get(0)?,
+                    byte_size: r.get::<_, i64>(1)? as u64,
+                    width: r.get(2)?,
+                    height: r.get(3)?,
+                    duration_ms: r.get::<_, i64>(4)? as u64,
+                    has_audio: r.get(5)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 /// Record which content pack installed a prim (`V14__prim_origin.sql`).

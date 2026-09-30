@@ -22,6 +22,18 @@ pub struct MapPlugin {
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
+        // Video on a prim (protocol 28): after the prims' own textures are put
+        // back, so a screen keeps its picture through an edit.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_resource::<systems::prim_video::PrimVideos>()
+            .init_resource::<systems::prim_video::VideoPicker>()
+            .add_systems(
+                Update,
+                systems::prim_video::drive_prim_videos
+                    .after(systems::rendering::refresh_prim_textures)
+                    .after(systems::network::apply_network_snapshot),
+            )
+            .add_systems(Update, systems::prim_video::drive_video_actions);
         app.init_resource::<systems::rendering::MeshCache>()
             .init_resource::<systems::rendering::MaterialCache>()
             // Every streamer is watched on the line after it is initialised:

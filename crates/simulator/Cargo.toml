@@ -87,6 +87,9 @@ cartopolis_core = { path = "../core" }
 # is the `client` feature, which this crate must not link outside its tests,
 # for the reason `cartopolis_e2ee` stays out of it.
 cartopolis_calls = { path = "../calls", features = ["sfu"] }
+# The video store's upload check (`videos::inspect`): reads a WebM's tracks
+# and frame timestamps, never decodes a picture. Pure Rust, no dependencies.
+matroska-demuxer = "0.8"
 
 [dev-dependencies]
 tempfile = "3.0"

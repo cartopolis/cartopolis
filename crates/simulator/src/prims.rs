@@ -369,6 +369,62 @@ impl PrimService {
         Ok(prim)
     }
 
+    /// Start a clip on a prim (`Some`: a hash in the video store, and whether
+    /// it loops) or stop the one playing (`None`) — protocol 28. The same
+    /// ownership rule as any edit; the start time is this server's clock, so
+    /// every client measures its position from one instant.
+    pub async fn set_video(
+        &self,
+        actor: &Actor,
+        prim_id: i64,
+        video: Option<cartopolis_core::SetVideo>,
+        now_ms: u64,
+    ) -> Result<PrimDto, PrimError> {
+        let _writer = self.writer.lock().await;
+        {
+            let w = self.world.read().await;
+            editable(&w, actor, prim_id)?;
+        }
+        let written = db::call(&self.conn, move |c| -> Result<PrimDto, PrimError> {
+            let video = match video {
+                Some(v) => {
+                    let known = db::video(c, &v.asset)
+                        .map_err(|e| PrimError::Storage(format!("video lookup failed: {e:#}")))?;
+                    if known.is_none() {
+                        return Err(PrimError::Refused(
+                            "this server does not have that video".to_string(),
+                        ));
+                    }
+                    Some(cartopolis_core::PrimVideo {
+                        asset: v.asset,
+                        started_at_ms: now_ms,
+                        looped: v.looped,
+                    })
+                }
+                None => None,
+            };
+            db::set_prim_video(c, prim_id, video.as_ref())
+                .map_err(|e| PrimError::Storage(format!("set_prim_video failed: {e:#}")))?
+                .ok_or(PrimError::NotFound(prim_id))
+        })
+        .await;
+        let prim = match written {
+            Ok(result) => result?,
+            Err(e) => return Err(PrimError::Storage(format!("set_prim_video failed: {e:#}"))),
+        };
+        let stored = {
+            let mut w = self.world.write().await;
+            if w.replace_prim(prim) {
+                w.prim(prim_id).cloned()
+            } else {
+                None
+            }
+        };
+        let prim = stored.ok_or(PrimError::NotFound(prim_id))?;
+        self.broadcast(&NetMessage::PrimUpsert { prim: prim.clone() });
+        Ok(prim)
+    }
+
     /// Delete a prim: its row, its script, its place in the world, and every
     /// client's copy.
     ///

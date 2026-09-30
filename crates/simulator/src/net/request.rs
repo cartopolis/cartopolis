@@ -85,6 +85,11 @@ pub enum ClientRequest {
         request_id: u32,
         prim_id: i64,
     },
+    SetPrimVideo {
+        request_id: u32,
+        prim_id: i64,
+        video: Option<cartopolis_core::SetVideo>,
+    },
     TextureCatalogRequest,
     TextureRequest {
         request_id: u32,
@@ -301,6 +306,15 @@ impl TryFrom<NetMessage> for ClientRequest {
             } => Self::DeletePrim {
                 request_id,
                 prim_id,
+            },
+            NetMessage::SetPrimVideo {
+                request_id,
+                prim_id,
+                video,
+            } => Self::SetPrimVideo {
+                request_id,
+                prim_id,
+                video,
             },
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
             NetMessage::TextureRequest {

@@ -100,6 +100,13 @@ const SCRIPT_WAIT_S: f64 = 4.0;
 /// answers a refused create to the sender only, and not in a form tied to it.
 const BUILD_WAIT_S: f64 = 10.0;
 
+/// How long `play_video` waits for an upload and the server's answer: a clip is
+/// up to 64 MB.
+const VIDEO_WAIT_S: f64 = 300.0;
+
+/// An upload in flight: the hash, or why not.
+type VideoUpload = std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>;
+
 /// How long `sign_in` waits for the session to come up before answering.
 const SIGN_IN_WAIT_S: f64 = 30.0;
 
@@ -286,6 +293,23 @@ pub struct ScriptArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct VideoArgs {
+    #[schemars(description = "The object's id, as `build` or `my_builds` reported it.")]
+    pub id: i64,
+    #[schemars(
+        description = "A WebM file (VP8 picture, Opus sound if any) on the machine this client runs \
+                       on, uploaded and then played. Omit, with no `asset`, to stop the video."
+    )]
+    pub file: Option<String>,
+    #[schemars(
+        description = "A clip already in the server's store, by the hash an upload answered."
+    )]
+    pub asset: Option<String>,
+    #[schemars(description = "Start again at the end. Default true.")]
+    pub looped: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct IdsArgs {
     pub ids: Vec<i64>,
 }
@@ -325,6 +349,7 @@ pub enum AgentRequest {
     Emote(EmoteArgs),
     Build(BuildArgs),
     SetScript(ScriptArgs),
+    PlayVideo(VideoArgs),
     Delete(IdsArgs),
     Touch(IdArgs),
     ScriptOutput(OutputArgs),
@@ -350,6 +375,7 @@ impl AgentRequest {
             Self::Emote(_) => "emote",
             Self::Build(_) => "build",
             Self::SetScript(_) => "script",
+            Self::PlayVideo(_) => "play video",
             Self::Delete(_) => "delete",
             Self::Touch(_) => "touch",
             Self::ScriptOutput(_) => "script output",
@@ -502,6 +528,16 @@ enum Pending {
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
+    /// A `play_video`: the upload, if there is one, then the server's
+    /// announcement of the prim with the clip on it (or without, to stop).
+    Video {
+        id: i64,
+        upload: Option<VideoUpload>,
+        asset: Option<String>,
+        looped: bool,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
     /// A script saved, waiting for the compile verdict.
     Script {
         id: i64,
@@ -546,6 +582,7 @@ pub struct AgentWorld<'w, 's> {
     bodies: Query<'w, 's, (), With<Avatar>>,
     prims: Query<'w, 's, (&'static Prim, Option<&'static PrimGeo>)>,
     calls: ResMut<'w, crate::systems::calls::Calls>,
+    videos: Res<'w, crate::systems::prim_video::PrimVideos>,
 }
 
 impl AgentWorld<'_, '_> {
@@ -971,6 +1008,53 @@ fn handle(
                 id: args.id,
                 seen,
                 until: now + SCRIPT_WAIT_S,
+                reply,
+            });
+            return None;
+        }
+        AgentRequest::PlayVideo(args) => {
+            if w.online.is_none() {
+                return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+            }
+            let upload = args.file.map(|path| {
+                let slot = VideoUpload::default();
+                let out = slot.clone();
+                bevy::tasks::IoTaskPool::get()
+                    .spawn(async move {
+                        let got = match std::fs::read(&path) {
+                            Ok(bytes) => crate::systems::model_assets::api_upload_video(bytes)
+                                .await
+                                .and_then(|body| {
+                                    serde_json::from_str::<Value>(&body)
+                                        .ok()
+                                        .and_then(|j| j["hash"].as_str().map(str::to_string))
+                                        .ok_or(body)
+                                }),
+                            Err(e) => Err(format!("could not read {path}: {e}")),
+                        };
+                        if let Ok(mut s) = out.lock() {
+                            *s = Some(got);
+                        }
+                    })
+                    .detach();
+                slot
+            });
+            let looped = args.looped.unwrap_or(true);
+            let upload_started = upload.is_some();
+            if upload.is_none() {
+                send_video(w, args.id, args.asset.clone(), looped);
+            }
+            state.pending.push(Pending::Video {
+                id: args.id,
+                upload,
+                asset: args.asset,
+                looped,
+                until: now
+                    + if upload_started {
+                        VIDEO_WAIT_S
+                    } else {
+                        BUILD_WAIT_S
+                    },
                 reply,
             });
             return None;
@@ -2207,6 +2291,87 @@ fn settle(
                 let answer = read_chat(state, audience, w, &args);
                 finish(bridge, "read chat", answer, reply, now);
             }
+            Pending::Video {
+                id,
+                mut upload,
+                mut asset,
+                looped,
+                mut until,
+                reply,
+            } => {
+                // The upload first, then the same message a hash-only call sends.
+                if let Some(slot) = &upload {
+                    match slot.lock().ok().and_then(|mut s| s.take()) {
+                        None if now <= until => {
+                            still.push(Pending::Video {
+                                id,
+                                upload,
+                                asset,
+                                looped,
+                                until,
+                                reply,
+                            });
+                            continue;
+                        }
+                        None => {
+                            let answer = AgentReply::refuse("The upload did not finish in time.");
+                            finish(bridge, "play video", answer, reply, now);
+                            continue;
+                        }
+                        Some(Err(why)) => {
+                            let answer =
+                                AgentReply::refuse(format!("The upload was refused: {why}"));
+                            finish(bridge, "play video", answer, reply, now);
+                            continue;
+                        }
+                        Some(Ok(hash)) => {
+                            send_video(w, id, Some(hash.clone()), looped);
+                            asset = Some(hash);
+                            upload = None;
+                            until = now + BUILD_WAIT_S;
+                        }
+                    }
+                }
+                let now_on = w
+                    .prims
+                    .iter()
+                    .find(|(p, _)| p.id == id)
+                    .map(|(p, _)| p.video.as_ref().map(|v| v.asset.clone()));
+                let done = now_on.as_ref().is_some_and(|v| *v == asset);
+                if !done && now <= until {
+                    still.push(Pending::Video {
+                        id,
+                        upload,
+                        asset,
+                        looped,
+                        until,
+                        reply,
+                    });
+                    continue;
+                }
+                let answer = if done {
+                    match &asset {
+                        Some(hash) => AgentReply::ok(
+                            format!(
+                                "Object {id} is playing the clip for everyone near it; this \
+                                 client is playing {} video(s).",
+                                w.videos.playing()
+                            ),
+                            json!({ "id": id, "asset": hash, "looped": looped }),
+                        ),
+                        None => AgentReply::ok(
+                            format!("Stopped the video on object {id}."),
+                            json!({ "id": id, "asset": null }),
+                        ),
+                    }
+                } else {
+                    AgentReply::refuse(format!(
+                        "The server did not put that on object {id}. Either it is not yours, \
+                         there is no such object, or the store does not have the clip."
+                    ))
+                };
+                finish(bridge, "play video", answer, reply, now);
+            }
             Pending::Script {
                 id,
                 seen,
@@ -2253,6 +2418,20 @@ fn settle(
     state.pending = still;
     if built_changed {
         save_builds(state);
+    }
+}
+
+/// Start (or, with no asset, stop) a clip on a prim.
+fn send_video(w: &AgentWorld, id: i64, asset: Option<String>, looped: bool) {
+    if let Some(online) = &w.online {
+        online.send(
+            "agent video",
+            NetMessage::SetPrimVideo {
+                request_id: 0,
+                prim_id: id,
+                video: asset.map(|asset| cartopolis_core::SetVideo { asset, looped }),
+            },
+        );
     }
 }
 

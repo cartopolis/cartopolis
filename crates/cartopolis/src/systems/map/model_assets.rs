@@ -187,6 +187,37 @@ pub async fn api_delete(path: &str) -> Result<(), String> {
     http::fetch(request).await.map(|_| ())
 }
 
+/// Upload a clip to the video store (`/api/videos`). Answers the server's
+/// measurements as JSON, the hash among them.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn api_upload_video(bytes: Vec<u8>) -> Result<String, String> {
+    let request = api_request(http::Request::post, "/api/videos")
+        .ok_or("not signed in")?
+        .header("Content-Type", "video/webm")
+        // Up to 64 MB, possibly over a phone's uplink.
+        .timeout(std::time::Duration::from_secs(300))
+        .body(bytes);
+    let bytes = http::fetch(request).await?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+/// A clip's bytes: from the cache if this device has fetched it before (the
+/// name is its hash, so a cached copy is never stale), else from the server.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_video(hash: &str) -> Result<Vec<u8>, String> {
+    use crate::platform::storage::{self, Namespace};
+    let key = format!("videos/{hash}.webm");
+    if let Some(bytes) = storage::get(Namespace::Cache, &key).await {
+        return Ok(bytes);
+    }
+    let request = api_request(http::Request::get, &format!("/api/videos/{hash}.webm"))
+        .ok_or("not signed in")?
+        .timeout(std::time::Duration::from_secs(300));
+    let bytes = http::fetch(request).await?;
+    storage::put(Namespace::Cache, &key, &bytes).await;
+    Ok(bytes)
+}
+
 /// Upload a model. The file is the body; everything about it is the query string.
 ///
 /// A raw body rather than a multipart form for the reason the route's own note

@@ -903,6 +903,7 @@ mod prim_prompt_tests {
                     surface: cartopolis_core::PrimSurface::default(),
                     particles: None,
                     scripted: *scripted,
+                    video: None,
                 },
                 PrimGeo {
                     latitude: *lat,

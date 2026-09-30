@@ -62,9 +62,33 @@ pub fn is_available() -> bool {
 }
 
 /// Ask the platform for a file.
+/// What the picker is asked for: the title and the file filter differ, the
+/// rest (bytes back, unexamined) does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Model,
+    /// A clip for a prim (`systems::prim_video`, which the web build lacks).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Video,
+}
+
+impl Kind {
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+    fn title(self) -> &'static str {
+        match self {
+            Kind::Model => "Model to upload",
+            Kind::Video => "Video to play",
+        }
+    }
+}
+
 pub fn start() -> Result<Pick, String> {
+    start_for(Kind::Model)
+}
+
+pub fn start_for(kind: Kind) -> Result<Pick, String> {
     let slot: Slot = Arc::new(Mutex::new(None));
-    let inner = imp::start(slot.clone())?;
+    let inner = imp::start(slot.clone(), kind)?;
     Ok(Pick { slot, inner })
 }
 
@@ -74,7 +98,7 @@ pub fn start() -> Result<Pick, String> {
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 mod imp {
-    use super::{Outcome, Slot};
+    use super::{Kind, Outcome, Slot};
     use bevy::tasks::IoTaskPool;
 
     pub const AVAILABLE: bool = true;
@@ -84,19 +108,20 @@ mod imp {
     /// `AsyncFileDialog` for the reason `photo`'s arm gives: the blocking API must
     /// be called from the main thread on macOS, which a Bevy system cannot
     /// promise.
-    pub fn start(slot: Slot) -> Result<Inner, String> {
+    pub fn start(slot: Slot, kind: Kind) -> Result<Inner, String> {
         IoTaskPool::get()
             .spawn(async move {
-                let picked = rfd::AsyncFileDialog::new()
-                    .set_title("Model to upload")
-                    // A convenience, not a guarantee — "All files" is always
-                    // reachable — which is another reason the server does the
-                    // deciding. `.gltf` is offered because the server repacks a
-                    // self-contained one; it still refuses a `.gltf` that names
-                    // files beside it, which a file dialog cannot tell apart.
-                    .add_filter("glTF model", &["glb", "gltf"])
-                    .pick_file()
-                    .await;
+                let dialog = rfd::AsyncFileDialog::new().set_title(kind.title());
+                // A filter is a convenience, not a guarantee — "All files" is
+                // always reachable — which is another reason the server does
+                // the deciding. `.gltf` is offered because the server repacks a
+                // self-contained one; it still refuses a `.gltf` that names
+                // files beside it, which a file dialog cannot tell apart.
+                let dialog = match kind {
+                    Kind::Model => dialog.add_filter("glTF model", &["glb", "gltf"]),
+                    Kind::Video => dialog.add_filter("WebM video", &["webm"]),
+                };
+                let picked = dialog.pick_file().await;
                 let outcome = match picked {
                     Some(file) => Outcome::Ready(file.read().await),
                     // Cancelled *or* no chooser at all. The `xdg-portal` backend
@@ -129,7 +154,7 @@ mod imp {
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use super::{Outcome, Slot};
+    use super::{Kind, Outcome, Slot};
     use wasm_bindgen::prelude::*;
 
     pub const AVAILABLE: bool = true;
@@ -140,7 +165,7 @@ mod imp {
     /// transient user activation a real gesture leaves behind, and the change
     /// listener has to outlive this function without being owned by the handle,
     /// because a `Closure` is not `Send` and the caller lives in a Bevy resource.
-    pub fn start(slot: Slot) -> Result<Inner, String> {
+    pub fn start(slot: Slot, kind: Kind) -> Result<Inner, String> {
         let document = web_sys::window()
             .and_then(|w| w.document())
             .ok_or_else(|| "no document to attach the file input to".to_string())?;
@@ -150,7 +175,10 @@ mod imp {
             .dyn_into()
             .map_err(|_| "the file input was not an input element".to_string())?;
         input.set_type("file");
-        input.set_accept(".glb,.gltf,model/gltf-binary,model/gltf+json");
+        input.set_accept(match kind {
+            Kind::Model => ".glb,.gltf,model/gltf-binary,model/gltf+json",
+            Kind::Video => ".webm,video/webm",
+        });
         let _ = input.style().set_property("display", "none");
 
         let on_change = {
@@ -235,13 +263,13 @@ mod imp {
 /// So the button is hidden on a phone rather than doing nothing when pressed.
 #[cfg(target_os = "android")]
 mod imp {
-    use super::Slot;
+    use super::{Kind, Slot};
 
     pub const AVAILABLE: bool = false;
 
     pub struct Inner;
 
-    pub fn start(_slot: Slot) -> Result<Inner, String> {
+    pub fn start(_slot: Slot, _kind: Kind) -> Result<Inner, String> {
         Err("this build cannot choose a file".into())
     }
 }

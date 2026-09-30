@@ -128,6 +128,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "contacts and message requests — ContactsState / RequestContact / AnswerContact / RemoveContact / SetContactSettings / LookupPerson / PersonInfo / GetNearbyPeople / NearbyPeople; a private chat with somebody who is not a contact starts as a request (docs/notes/contacts.md)",
     },
+    ProtocolRevision {
+        version: 28,
+        adr: "",
+        summary: "video on a prim — PrimDto.video (a clip in the simulator's video store, when it started, whether it loops) and SetPrimVideo to start or stop one; the clip is fetched over HTTP, not sent on the wire (docs/notes/video-on-a-prim.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -206,6 +211,7 @@ pub enum MessageKind {
     PersonInfo = 60,
     GetNearbyPeople = 61,
     NearbyPeople = 62,
+    SetPrimVideo = 63,
 }
 
 impl MessageKind {
@@ -273,6 +279,7 @@ impl MessageKind {
             60 => Some(Self::PersonInfo),
             61 => Some(Self::GetNearbyPeople),
             62 => Some(Self::NearbyPeople),
+            63 => Some(Self::SetPrimVideo),
             _ => None,
         }
     }
@@ -459,6 +466,27 @@ pub struct PrimDto {
     /// compile error on somebody else's object.
     #[serde(default)]
     pub scripted: bool,
+    /// A video playing on the prim's surface (protocol 28,
+    /// `docs/notes/video-on-a-prim.md`), or `None`. Set only by
+    /// [`NetMessage::SetPrimVideo`] — never by `UpdatePrim`, which is a
+    /// full-state edit every tool sends, so that a colour change cannot stop a
+    /// video by forgetting to carry it.
+    #[serde(default)]
+    pub video: Option<PrimVideo>,
+}
+
+/// A video on a prim: which clip, and when it started, so everybody near it
+/// sees the same moment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrimVideo {
+    /// The clip's content hash in the simulator's video store (`/api/videos`).
+    pub asset: String,
+    /// When it started, in Unix milliseconds by the simulator's clock. A
+    /// client plays from `now - started_at_ms`, so sync is only as good as the
+    /// two clocks' agreement — seconds at worst on devices that keep time.
+    pub started_at_ms: u64,
+    /// Start again at the end, rather than stop on the last picture.
+    pub looped: bool,
 }
 
 fn default_path_cut_end() -> f32 {
@@ -1152,6 +1180,24 @@ pub enum NetMessage {
         request_id: u32,
         people: Vec<NearbyPersonDto>,
     },
+
+    // ── Video on a prim (protocol 28, `docs/notes/video-on-a-prim.md`) ───────
+    /// Client starts a clip on a prim it may edit (`video: Some`), or stops the
+    /// one playing (`None`). The clip must be in the simulator's video store;
+    /// the server stamps the start time and answers with the prim's
+    /// `PrimUpsert` to everyone, or a `ServerError` to the sender.
+    SetPrimVideo {
+        request_id: u32,
+        prim_id: i64,
+        video: Option<SetVideo>,
+    },
+}
+
+/// What [`NetMessage::SetPrimVideo`] asks for; the server adds the start time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetVideo {
+    pub asset: String,
+    pub looped: bool,
 }
 
 /// One track on a device's receiving connection ([`NetMessage::CallOffer`]).
@@ -1476,6 +1522,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::PersonInfo { .. } => MessageKind::PersonInfo,
         NetMessage::GetNearbyPeople { .. } => MessageKind::GetNearbyPeople,
         NetMessage::NearbyPeople { .. } => MessageKind::NearbyPeople,
+        NetMessage::SetPrimVideo { .. } => MessageKind::SetPrimVideo,
     }
 }
 
@@ -1517,6 +1564,7 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::RemoveContact { request_id, .. } => *request_id,
         NetMessage::SetContactSettings { request_id, .. } => *request_id,
         NetMessage::LookupPerson { request_id, .. } => *request_id,
+        NetMessage::SetPrimVideo { request_id, .. } => *request_id,
         NetMessage::PersonInfo { request_id, .. } => *request_id,
         NetMessage::GetNearbyPeople { request_id } => *request_id,
         NetMessage::NearbyPeople { request_id, .. } => *request_id,
@@ -1964,6 +2012,11 @@ mod tests {
             },
             particles: Some(crate::particles::ParticleEffect::blast()),
             scripted: true,
+            video: Some(PrimVideo {
+                asset: "ab".repeat(32),
+                started_at_ms: 1_790_000_000_000,
+                looped: true,
+            }),
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();
@@ -1980,7 +2033,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 61] = [
+        const ALL: [MessageKind; 62] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2042,6 +2095,7 @@ mod tests {
             PersonInfo,
             GetNearbyPeople,
             NearbyPeople,
+            SetPrimVideo,
         ];
         for k in ALL {
             assert_eq!(
@@ -2055,7 +2109,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(NearbyPeople as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(SetPrimVideo as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

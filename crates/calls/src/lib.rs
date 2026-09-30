@@ -8,6 +8,7 @@
 //!
 //! - [`media`]: which codecs a call carries, and how much of each frame stays in
 //!   the clear for the forwarder.
+//! - `clip` (`client`, native): a WebM clip played on a prim.
 //! - `keys` (`client`): sealing and opening frames.
 //! - `opus` (`client`): the voice codec.
 //! - `video` (`client`): the video codec, and a stand-in camera for tests.
@@ -19,6 +20,8 @@
 mod crypto;
 pub mod media;
 
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+pub mod clip;
 #[cfg(feature = "client")]
 pub mod keys;
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]

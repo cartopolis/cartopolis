@@ -27,6 +27,7 @@ pub mod registration;
 pub mod scripting;
 pub mod state;
 pub mod textures;
+pub mod videos;
 
 pub use auth::{ensure_account, ensure_admin_account, Sessions};
 pub use chat::ChatHub;

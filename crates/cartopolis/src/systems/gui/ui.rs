@@ -644,6 +644,8 @@ pub fn populate_edit_dialog(edit_dialog: &mut EditDialogState, prim: &Prim, tran
     edit_dialog.original_scale = edit_dialog.scale;
     edit_dialog.original_texture_id = prim.texture_id.clone();
     edit_dialog.original_model = prim.model.clone();
+    edit_dialog.playing_video = prim.video.is_some();
+    edit_dialog.video_note = None;
     edit_dialog.original_path_cut_begin = prim.path_cut_begin;
     edit_dialog.original_path_cut_end = prim.path_cut_end;
     edit_dialog.original_hollow = prim.hollow;
@@ -1287,6 +1289,40 @@ pub fn render_edit_dialog(
                                 ];
                             }
                             ui.end_row();
+
+                            // Video (protocol 28): its own message, not part of the
+                            // save — so only for a prim that already exists, and
+                            // only where a clip can be chosen and played.
+                            if !edit_dialog.is_new && crate::systems::map::prim_video_available() {
+                                ui.label("Video");
+                                ui.horizontal(|ui| {
+                                    ui.label(if edit_dialog.playing_video {
+                                        "Playing"
+                                    } else {
+                                        "None"
+                                    });
+                                    if crate::platform::model_file::is_available()
+                                        && ui.button("Choose video…").clicked()
+                                    {
+                                        edit_dialog.video_action =
+                                            Some(crate::resources::VideoAction::Choose);
+                                    }
+                                    if edit_dialog.playing_video && ui.button("Stop").clicked() {
+                                        edit_dialog.video_action =
+                                            Some(crate::resources::VideoAction::Stop);
+                                    }
+                                    if let Some(note) = &edit_dialog.video_note {
+                                        ui.label(
+                                            egui::RichText::new(note.as_str())
+                                                .small()
+                                                .color(crate::systems::theme::TEXT_DIM),
+                                        );
+                                    }
+                                })
+                                .response
+                                .on_hover_text(cartopolis_core::video_limits::VIDEO_FORMAT_HINT);
+                                ui.end_row();
+                            }
 
                             ui.label("Texture");
                             ui.horizontal(|ui| {

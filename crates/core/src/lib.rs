@@ -11,6 +11,7 @@ pub mod point;
 pub mod protocol;
 pub mod script_api;
 pub mod ts_mirror;
+pub mod video_limits;
 pub mod world;
 pub mod yaw;
 
@@ -28,9 +29,9 @@ pub use protocol::{
     message_request_id, AuthCredential, AvatarStateDto, CallMember, CallTrack, ChatScope,
     ContactDto, ContactRequestDto, ContactSettings, E2eeCursor, E2eeKeyPackage, E2eeWelcome, Emote,
     EmoteState, GeoAnchor, MessageKind, MetDto, NearbyPersonDto, NetMessage, PersonDto, PrimDto,
-    PrimGeometry, PrimSurface, ProtocolRevision, Relation, ReportReason, RequestPolicy,
-    ScriptLevel, TextureEntry, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN, MAX_REPORT_NOTE_LEN,
-    MAX_ROOM_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
+    PrimGeometry, PrimSurface, PrimVideo, ProtocolRevision, Relation, ReportReason, RequestPolicy,
+    ScriptLevel, SetVideo, TextureEntry, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN,
+    MAX_REPORT_NOTE_LEN, MAX_ROOM_LEN, MAX_SEAT_OFFSET_M, PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use world::{

@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use super::agent::{
     AgentRequest, BuildArgs, CallArgs, EmoteArgs, IdArgs, IdsArgs, OutputArgs, PlaceArgs,
-    ReadChatArgs, SayArgs, ScriptArgs, WalkArgs,
+    ReadChatArgs, SayArgs, ScriptArgs, VideoArgs, WalkArgs,
 };
 use super::{Config, ImageFormat, Job, McpAuth, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
 use crate::systems::shot_harness::ShotEnv;
@@ -571,6 +571,18 @@ impl Tools {
         Parameters(args): Parameters<ScriptArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::SetScript(args)).await
+    }
+
+    #[tool(
+        description = "Play a video on one of your objects, for everyone near it: upload a \
+                       WebM file from this machine (`file`), or name a clip the server already \
+                       has (`asset`). Neither stops the video."
+    )]
+    async fn play_video(
+        &self,
+        Parameters(args): Parameters<VideoArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::PlayVideo(args)).await
     }
 
     #[tool(

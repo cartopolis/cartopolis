@@ -1206,6 +1206,7 @@ fn prim_from_dto(p: &PrimDto) -> Prim {
         surface: p.surface,
         particles: p.particles,
         scripted: p.scripted,
+        video: p.video.clone(),
     }
 }
 

@@ -941,6 +941,11 @@ async fn dispatch<T: FrameTransport>(
             request_id,
             prim_id,
         } => prims::on_delete(ctx, request_id, prim_id).await,
+        ClientRequest::SetPrimVideo {
+            request_id,
+            prim_id,
+            video,
+        } => prims::on_set_video(ctx, request_id, prim_id, video).await,
         ClientRequest::GetPrimScript {
             request_id,
             prim_id,

@@ -58,6 +58,8 @@ pub use gui::{
     egui_manager, glass, hud, icons, login_screen, map_osd, model_library, onscreen_keyboard,
     place_card, place_pins, script_editor, settings, splash, text_touch, theme, ui,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use map::prim_video;
 pub use map::{
     aerial, atmosphere_patch, building_facts, building_fade, building_select, building_windows,
     cache_reset, cell_ring, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather,

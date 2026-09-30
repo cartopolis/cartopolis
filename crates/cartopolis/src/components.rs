@@ -47,6 +47,8 @@ pub struct Prim {
     /// `systems::interact` is what reads it, to decide whether walking up to this
     /// thing offers to press it.
     pub scripted: bool,
+    /// A clip playing on the prim (protocol 28), drawn by `systems::prim_video`.
+    pub video: Option<cartopolis_core::PrimVideo>,
 }
 
 /// ADR-029: a prim's absolute geographic placement. Present iff the prim was

@@ -50,6 +50,15 @@ pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
+// The clip player is a thread of its own, which the browser build does not have.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod prim_video;
+
+/// Whether this build plays video on prims (`prim_video`; not the browser's).
+#[must_use]
+pub const fn prim_video_available() -> bool {
+    cfg!(not(target_arch = "wasm32"))
+}
 pub mod render_features;
 pub mod render_scale;
 pub mod rendering;
