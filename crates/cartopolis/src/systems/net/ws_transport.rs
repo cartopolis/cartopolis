@@ -126,9 +126,16 @@ impl Socket {
         })
     }
 
+    /// Copied out of wasm memory first. The threaded build's memory is a
+    /// `SharedArrayBuffer`, and `WebSocket.send` refuses a view onto shared
+    /// memory with a `TypeError` — which `send_with_u8_array` is, since it
+    /// passes the slice in place. That failed the very first frame, the
+    /// hello, so no browser could sign in.
     fn send(&self, frame: &[u8]) -> Result<(), String> {
+        let copy = js_sys::Uint8Array::new_with_length(frame.len() as u32);
+        copy.copy_from(frame);
         self.ws
-            .send_with_u8_array(frame)
+            .send_with_array_buffer(&copy.buffer())
             .map_err(|e| describe(&e, "the connection dropped mid-send"))
     }
 
