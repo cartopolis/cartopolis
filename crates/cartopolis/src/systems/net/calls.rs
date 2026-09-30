@@ -102,7 +102,6 @@ struct Active {
     speakers: HashMap<u64, Speaker>,
     /// The camera, while it is on.
     camera: Option<Camera>,
-    last_picture: web_time::Instant,
     /// The newest picture from each person seen, by participant.
     pictures: HashMap<u64, Picture>,
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
@@ -509,7 +508,6 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         pending: Vec::new(),
         speakers: HashMap::new(),
         camera: None,
-        last_picture: web_time::Instant::now(),
         pictures: HashMap::new(),
         fake_mic_sent: 0,
         received: HashMap::new(),
@@ -529,26 +527,21 @@ fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Opt
         a.camera = None;
         return;
     }
-    let camera = a
-        .camera
-        .get_or_insert_with(|| if fake { Camera::fake() } else { Camera::open() });
-    if let Some(err) = camera.error() {
+    if a.camera.is_none() {
+        let camera = if fake { Camera::fake() } else { Camera::open() };
+        // The camera thread sends straight to the session: video at the
+        // camera's pace, not at the app's frame rate.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let sink = a.session.picture_sink();
+            camera.set_sink(Box::new(move |p| sink.send(p)));
+        }
+        a.camera = Some(camera);
+    }
+    if let Some(err) = a.camera.as_ref().and_then(Camera::error) {
         *notice = Some(err);
         *on = false;
         a.camera = None;
-        return;
-    }
-    let period =
-        std::time::Duration::from_micros(1_000_000 / u64::from(cartopolis_calls::video::FPS));
-    if !a.connected || a.last_picture.elapsed() < period {
-        return;
-    }
-    if let Some(picture) = camera.take() {
-        a.last_picture = web_time::Instant::now();
-        #[cfg(not(target_arch = "wasm32"))]
-        a.session.send_picture(picture);
-        #[cfg(target_arch = "wasm32")]
-        let _ = picture;
     }
 }
 

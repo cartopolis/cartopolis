@@ -144,12 +144,32 @@ impl Session {
         self.send(Cmd::Picture(frame));
     }
 
+    /// A handle a camera thread can send pictures through directly, so video
+    /// runs at the camera's pace rather than the app's frame rate — which on a
+    /// slow frame (or a software renderer) would be the video's frame rate.
+    #[must_use]
+    pub fn picture_sink(&self) -> PictureSink {
+        PictureSink(self.tx.clone())
+    }
+
     /// Whatever the thread has said since last asked.
     pub fn events(&self) -> Vec<Event> {
         self.rx
             .lock()
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default()
+    }
+}
+
+/// See [`Session::picture_sink`]. Sending after the call ended does nothing.
+#[derive(Clone)]
+pub struct PictureSink(Option<mpsc::Sender<Cmd>>);
+
+impl PictureSink {
+    pub fn send(&self, frame: video::I420) {
+        if let Some(tx) = &self.0 {
+            let _ = tx.send(Cmd::Picture(frame));
+        }
     }
 }
 

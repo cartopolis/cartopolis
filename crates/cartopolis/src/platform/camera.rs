@@ -1,4 +1,5 @@
-//! The camera, for calls (`systems::calls`): the newest picture, as I420.
+//! The camera, for calls (`systems::calls`): pictures as I420, delivered from
+//! the camera's own thread ([`Camera::set_sink`]).
 //!
 //! One API over a webcam on the desktop (`nokhwa`: V4L2, Media Foundation,
 //! AVFoundation) and a stand-in anywhere: [`Camera::fake`] draws
@@ -19,11 +20,32 @@ use std::sync::{Arc, Mutex};
 
 use cartopolis_calls::video::{self, I420};
 
+/// Where a camera delivers pictures as it takes them (see [`Camera::set_sink`]).
+pub type Sink = Box<dyn Fn(I420) + Send>;
+
 #[derive(Default)]
 struct Shared {
-    latest: Mutex<Option<I420>>,
     error: Mutex<Option<String>>,
     stop: AtomicBool,
+    sink: Mutex<Option<Sink>>,
+    last_sunk: Mutex<Option<std::time::Instant>>,
+}
+
+impl Shared {
+    /// A new picture: handed to the sink at no more than the call's frame
+    /// rate, and dropped otherwise — a call wants what the camera sees now.
+    fn deliver(&self, picture: I420) {
+        let period = std::time::Duration::from_micros(1_000_000 / u64::from(video::FPS));
+        if let Ok(sink) = self.sink.lock() {
+            if let Some(sink) = sink.as_ref() {
+                let mut last = self.last_sunk.lock().unwrap();
+                if last.is_none_or(|t| t.elapsed() >= period) {
+                    *last = Some(std::time::Instant::now());
+                    sink(picture.clone());
+                }
+            }
+        }
+    }
 }
 
 /// A running camera. Dropping it closes the device.
@@ -70,7 +92,7 @@ impl Camera {
                 let period = std::time::Duration::from_micros(1_000_000 / u64::from(video::FPS));
                 let mut n = 0u64;
                 while !s.stop.load(Ordering::Relaxed) {
-                    *s.latest.lock().unwrap() = Some(video::test_pattern(n));
+                    s.deliver(video::test_pattern(n));
                     n += 1;
                     std::thread::sleep(period);
                 }
@@ -81,11 +103,14 @@ impl Camera {
         Self { shared }
     }
 
-    /// The newest picture since last asked, if there is one. Older ones are
-    /// gone: a call wants what the camera sees now, not a queue.
-    #[must_use]
-    pub fn take(&self) -> Option<I420> {
-        self.shared.latest.lock().ok()?.take()
+    /// Send every picture to `sink` as it is taken, at most at the call's
+    /// frame rate, from the camera's own thread — so video does not wait on
+    /// the app's frame loop.
+    // The web build has no call session to sink into yet (calls there are
+    // the browser's own WebRTC, not built), so nothing calls this on wasm.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn set_sink(&self, sink: Sink) {
+        *self.shared.sink.lock().unwrap() = Some(sink);
     }
 
     /// Why the camera is not working, if it is not.
@@ -141,7 +166,7 @@ mod webcam {
                 }
             };
             if let Some(p) = picture {
-                *shared.latest.lock().unwrap() = Some(p);
+                shared.deliver(p);
             }
         }
         let _ = cam.stop_stream();
