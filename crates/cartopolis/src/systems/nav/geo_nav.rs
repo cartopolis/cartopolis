@@ -1821,7 +1821,7 @@ fn card_place(s: &GeoSuggestion) -> crate::systems::place_card::CardPlace {
     }
 }
 
-/// The Search panel (dock ▸ 🔍, or `Ctrl+L`). Ordered in the Phase 7b `.chain()`
+/// The Search panel (dock ▸ 🔍, or `Ctrl+L`). Ordered in the panel `.chain()`
 /// like every other panel — see the note there; an unordered panel loses egui's
 /// hit test at random.
 ///
@@ -1833,7 +1833,7 @@ fn card_place(s: &GeoSuggestion) -> crate::systems::place_card::CardPlace {
 /// asks for it).
 pub fn render_search_panel(
     // Spelled plainly rather than through its module path on purpose: the guard
-    // that every root-`Ui` panel is in the Phase 7b chain
+    // that every root-`Ui` panel is in the panel chain
     // (`egui_manager::every_root_ui_panel_is_in_the_chain`) recognises a panel
     // system by the literal `ResMut<EguiManager>`, so a qualified path here would
     // quietly opt this panel out of the one check that catches an unordered one.

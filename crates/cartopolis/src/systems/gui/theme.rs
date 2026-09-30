@@ -2371,7 +2371,7 @@ pub fn checkbox(
 /// down with it, so revealing your password would cost you the keyboard you were
 /// typing it with. Putting the focus back has to happen in the same pass, before
 /// the keyboard's own system runs and reads `text_edit_focused()`; every UI
-/// system runs before it, by construction (`lib.rs`, phase 7d).
+/// system runs before it, by construction (`gui::plugin`, the on-screen keyboard's `.after` edges).
 pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
     let eye = close_button_size();
     let gap = ui.spacing().item_spacing.x;

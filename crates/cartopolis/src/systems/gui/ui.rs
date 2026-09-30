@@ -71,7 +71,7 @@ pub struct SignInMenu<'w> {
 /// is centred and its width depends on whether there is a session (Say comes and
 /// goes), so an offset measured from the disc would move under a card that should
 /// not move. It is a floating `Area`, so like the dock and the HUD it is
-/// deliberately *not* in the Phase 7b panel chain.
+/// deliberately *not* in the panel chain.
 #[allow(clippy::too_many_arguments)]
 pub fn render_main_menu(
     mut egui: ResMut<EguiManager>,

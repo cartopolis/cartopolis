@@ -105,6 +105,15 @@ pub struct WeatherState {
     pub latest: Option<Observation>,
 }
 
+/// A `--weather-live` run holds until the first met.no sample lands, so the
+/// capture shows real conditions rather than the default clear sky.
+impl crate::systems::stream_watch::StreamBusy for WeatherState {
+    const NAME: &'static str = "weather";
+    fn stream_busy(&self) -> bool {
+        self.live && !self.ready()
+    }
+}
+
 impl WeatherState {
     /// Construct with live application on/off (from the `--weather-live` flag).
     pub fn with_live(live: bool) -> Self {

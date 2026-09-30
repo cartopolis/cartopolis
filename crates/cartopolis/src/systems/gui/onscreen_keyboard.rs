@@ -27,7 +27,7 @@
 //!
 //!   - **This system must run after every system that draws a text field**, or
 //!     the surrender happens *after* our restore and undoes it. See the
-//!     registration note in `lib.rs`. It is also what makes `read_response` on
+//!     registration note in `gui::plugin`. It is also what makes `read_response` on
 //!     the focused field return this frame's rect rather than nothing.
 //!   - `Memory::request_focus` installs a **default** `EventFilter`, and
 //!     `Focus::begin_pass` consults that filter *before* the `TextEdit` gets a
@@ -56,7 +56,7 @@
 //!
 //! **It is an `Area`, not a root-`Ui` panel.** It draws over everything, and a
 //! panel would reserve space in a layout that has already been computed by the
-//! time we run. That also keeps it *out* of the Phase 7b `.chain()`, which is
+//! time we run. That also keeps it *out* of the panel `.chain()`, which is
 //! only about systems sharing the root `Ui` — `dock.rs` and `hud.rs`'s bar are
 //! the precedent, and `egui_manager`'s `every_root_ui_panel_is_in_the_chain`
 //! test keys off `ui_mut()`, which nothing here calls.

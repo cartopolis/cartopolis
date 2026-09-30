@@ -895,6 +895,16 @@ impl Default for DataLayers {
     }
 }
 
+/// Both streams: the markers and the Overpass detail pass. Quiet while every
+/// layer is off — nothing is requested for a disabled layer — and above
+/// `SURFACE_LAYER_MAX_ALT`, where the streamer requests nothing either.
+impl crate::systems::stream_watch::StreamBusy for DataLayers {
+    const NAME: &'static str = "data_layers";
+    fn stream_busy(&self) -> bool {
+        self.cells.busy() || self.details.busy()
+    }
+}
+
 impl DataLayers {
     /// The live-feed anchor once established: base tile `(x, y)`, zoom, and the
     /// anchor latitude — the frame `lat_lng_to_local` maps into. Used by
@@ -929,15 +939,7 @@ pub struct PoiPopup {
 /// exact order the per-frame version produced; a change here changes which cells
 /// win the fetch budget on a fresh anchor.
 fn ring_offsets(radius: i64) -> Vec<(i64, i64)> {
-    let mut cells: Vec<(i64, i64)> =
-        Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            cells.push((dx, dy));
-        }
-    }
-    cells.sort_by_key(|(dx, dy)| dx.abs().max(dy.abs()));
-    cells
+    crate::systems::cell_ring::ring((0, 0), radius, |_, _| true)
 }
 
 /// The marker ring ([`LAYER_CELL_RADIUS`]), built once.
@@ -1057,11 +1059,11 @@ pub fn update_data_layers(
     let from_tile = tile_source_kind(&template) == TileSourceKind::Vector;
 
     // Camera's LAYER_ZOOM cell from its base-zoom tile coords.
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let shift = z.saturating_sub(LAYER_ZOOM);
-    let ccx = (ax + (world_x / tile_m).round() as i64).div_euclid(1i64 << shift);
-    let ccy = (ay + (world_z / tile_m).round() as i64).div_euclid(1i64 << shift);
+    let (ccx, ccy) = crate::systems::cell_ring::coarsen(
+        crate::systems::cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        LAYER_ZOOM,
+    );
 
     // Queue missing cells for enabled layers, nearest first. `CellStream::request`
     // both de-dups and holds the backoff, so there is no second retry loop: a cell

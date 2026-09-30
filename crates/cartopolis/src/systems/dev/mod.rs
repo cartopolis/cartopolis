@@ -1,5 +1,13 @@
 //! `systems::dev` — one file per concern; see systems/mod.rs for the map.
 
+/// The group's registration: its resources and its systems, each in its
+/// `crate::phase::ClientPhase`. Added by `run_client`.
+mod plugin;
+pub use plugin::DevPlugin;
+#[cfg(mcp)]
+pub use plugin::McpPlugin;
+pub use plugin::{PerfPlugin, ShotHarnessPlugin};
+
 /// The aerial photograph a capture is checked against (`--aerial-reference`).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aerial_reference;

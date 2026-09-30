@@ -384,6 +384,13 @@ impl Default for GlobeState {
     }
 }
 
+impl crate::systems::stream_watch::StreamBusy for GlobeState {
+    const NAME: &'static str = "globe";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl GlobeState {
     /// Quadtree tiles applied, and how many this view wants — the boot splash's
     /// readiness signal and progress track *above* the flat streamer's freeze

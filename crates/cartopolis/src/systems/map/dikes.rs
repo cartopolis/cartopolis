@@ -47,10 +47,9 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::components::FreeCamera;
-use crate::grid::WORLD_CELL_EDGE;
-use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
@@ -59,9 +58,8 @@ use crate::systems::osm_buildings::tdbag_url;
 use big_space::prelude::GridCell;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_meters};
 
-/// Fixed cache/streaming zoom — must match the `CACHE_ZOOM` the extractor bins
-/// into.
-const DIKE_ZOOM: u32 = 14;
+/// Fixed cache/streaming zoom — the one the extractor bins into.
+const DIKE_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 
 /// Cells streamed around the camera. Wider than the building ring and it can be:
 /// a whole city's defences are ~120 kB (measured over Groningen, 2026-08-29:
@@ -224,18 +222,9 @@ pub struct DikeCell {
 
 /// Parse a cell file: `{"names":[…],"lines":[[kind,category,name_ix,[[lat,lng],…]],…]}`.
 pub fn parse_dike_cell(text: &str) -> Result<DikeCell, String> {
-    #[derive(serde::Deserialize)]
-    struct Wire {
-        #[serde(default)]
-        names: Vec<String>,
-        #[serde(default)]
-        lines: Vec<(usize, usize, i64, Vec<(f64, f64)>)>,
-        /// The crests atlas measured, by line (`pipeline/dikes.rs`). A file
-        /// without them is measured here, as before.
-        #[serde(default)]
-        crests: Option<Vec<Option<f32>>>,
-    }
-    let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // The file's own type, shared with atlas's `pipeline/dikes.rs`. `crests` is
+    // what atlas measured, by line; a file without them is measured here.
+    let wire = cartopolis_geo::formats::dikes::parse(text)?;
     let names: Vec<Arc<str>> = wire.names.into_iter().map(Arc::from).collect();
     let crests = wire.crests.filter(|c| c.len() == wire.lines.len());
     Ok(DikeCell {
@@ -248,7 +237,7 @@ pub fn parse_dike_cell(text: &str) -> Result<DikeCell, String> {
             .filter(|(_, (_, _, _, pts))| pts.len() >= 2)
             .map(|(i, (k, c, n, points))| {
                 // Measured on atlas: settled, whether it found a crest or not.
-                let measured = crests.as_ref().map(|c| c[i]);
+                let measured = crests.as_ref().map(|c| c[i].map(|m| m as f32));
                 (k, c, n, points, measured)
             })
             .map(|(k, c, n, points, measured)| DikeLine {
@@ -329,6 +318,15 @@ impl Dikes {
     }
 }
 
+/// Only ever busy over covered ground below the globe tier: nothing is requested
+/// for a cell the host does not serve, and a stream that was never asked is quiet.
+impl crate::systems::stream_watch::StreamBusy for Dikes {
+    const NAME: &'static str = "dikes";
+    fn stream_busy(&self) -> bool {
+        self.stream.busy()
+    }
+}
+
 /// Does the host serve defences for this cell?
 fn dike_covers(cx: i64, cy: i64) -> bool {
     COVERAGE.covers(cx, cy)
@@ -401,27 +399,14 @@ pub fn update_dikes(
         return;
     }
 
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let center = (
-        ax + (world_x / tile_m).round() as i64,
-        ay + (world_z / tile_m).round() as i64,
+    let centre = cell_ring::coarsen(
+        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        DIKE_ZOOM,
     );
-    let shift = z.saturating_sub(DIKE_ZOOM);
-    let (ccx, ccy) = (
-        center.0.div_euclid(1i64 << shift),
-        center.1.div_euclid(1i64 << shift),
-    );
-
-    for dy in -DIKE_RADIUS..=DIKE_RADIUS {
-        for dx in -DIKE_RADIUS..=DIKE_RADIUS {
-            let c = (ccx + dx, ccy + dy);
-            if dike_covers(c.0, c.1) {
-                let rank = fetch_gate::ring_distance(c, ccx, ccy);
-                dikes.stream.request_ranked(c, rank, now);
-            }
-        }
-    }
+    cell_ring::request_ring(&mut dikes.stream, centre, DIKE_RADIUS, now, |c, _| {
+        dike_covers(c.0, c.1)
+    });
 
     let sink = dikes.stream.sink();
     while let Some((cx, cy)) = dikes.stream.next_job(now) {

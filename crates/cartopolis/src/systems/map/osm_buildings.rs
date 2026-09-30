@@ -38,14 +38,17 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::cell_ring;
 use crate::systems::scatter::srgb_to_linear_f32;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
+use cartopolis_geo::formats::osm_buildings::Tags;
 
 /// Fixed grid zoom at which building data is fetched + cached. Independent of the
 /// requested patch size, so changing the patch radius never invalidates the cache
 /// (each cell is `cache/buildings/{CACHE_ZOOM}/{x}/{y}.json`). Kept coarse (few,
-/// large cells) so a patch is a handful of Overpass queries, not dozens.
-pub(crate) const CACHE_ZOOM: u32 = 14;
+/// large cells) so a patch is a handful of Overpass queries, not dozens. The one
+/// atlas bins every per-cell tree into, shared rather than repeated.
+pub(crate) const CACHE_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 /// Polite pace against a PUBLIC Overpass instance (see [`overpass_pace`]).
 const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
 /// Concurrent live queries against our own Overpass (see [`overpass_pace`]).
@@ -745,6 +748,13 @@ pub struct OsmBuildings {
     buildings: Vec<Building>,
 }
 
+impl crate::systems::stream_watch::StreamBusy for OsmBuildings {
+    const NAME: &'static str = "osm_buildings";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl OsmBuildings {
     /// Is the detail patch or either far lane still working? Read by the `--shot`
     /// harness's settle test: the OSM detail patch is the slowest thing on the
@@ -1190,11 +1200,7 @@ pub fn update_buildings(
     // Over a LoD2.2-covered cell the real meshes (lod22.rs) carry the near
     // detail, so skip the extruded detail patch there entirely. `center` is in
     // base-zoom tile coords; coverage is keyed on CACHE_ZOOM cells, so convert.
-    let cam_shift = z.saturating_sub(CACHE_ZOOM);
-    let cam_cell14 = (
-        center.0.div_euclid(1i64 << cam_shift),
-        center.1.div_euclid(1i64 << cam_shift),
-    );
+    let cam_cell14 = cell_ring::coarsen(center, z, CACHE_ZOOM);
     let over_lod22 = lod22_covers(cam_cell14.0, cam_cell14.1);
     // Entering LoD2.2 territory from outside: despawn any lingering extruded
     // detail patch (it only refreshes via a new fetch, which we now skip here) so
@@ -1366,26 +1372,19 @@ pub fn update_buildings(
     // --- Far LOD cells: stream one CACHE_ZOOM cell at a time (like map tiles) ---
     {
         // Camera's CACHE_ZOOM cell from its base-zoom tile coords.
-        let shift = z.saturating_sub(CACHE_ZOOM);
-        let (ccx, ccy) = (
-            center.0.div_euclid(1i64 << shift),
-            center.1.div_euclid(1i64 << shift),
-        );
+        let (ccx, ccy) = cell_ring::coarsen(center, z, CACHE_ZOOM);
 
         // Queue missing cells, nearest first so the surroundings fill outward.
         // Nothing queues until the coverage manifests resolve (a few startup
         // frames): queued earlier, covered cells route to the serial Overpass
         // lane — 800 ms courtesy sleep per cell — only to be evicted when the
         // real meshes arrive (see `coverage_resolved`).
-        let mut to_request: Vec<(i64, i64)> = Vec::new();
+        //
+        // Not `cell_ring::request_ring`: each cell is routed to one of two lanes
+        // as it is requested, below.
         let queue_open = coverage_resolved();
-        let far_r = far_cell_radius();
-        for dy in -far_r..=far_r {
-            if !queue_open {
-                break;
-            }
-            for dx in -far_r..=far_r {
-                let cell = (ccx + dx, ccy + dy);
+        let to_request = if queue_open {
+            cell_ring::ring((ccx, ccy), far_cell_radius(), |cell, d| {
                 // Distance LOD: within the LoD2.2 KEEP ring (its request radius
                 // plus its one cell of despawn hysteresis) the real meshes
                 // (lod22.rs) own the cell, so skip the simplified far extrusion.
@@ -1398,7 +1397,6 @@ pub fn update_buildings(
                 // nearer `lod22_ring` and ownership is by presence instead: blocks
                 // wherever the shells are not standing, and not fetched for a
                 // cell the shells are about to load.
-                let d = (cell.0 - ccx).abs().max((cell.1 - ccy).abs());
                 let ring = crate::systems::lod22::lod22_ring(cell.0, cell.1);
                 let lod22_near = lod22_covers(cell.0, cell.1)
                     && if tdbag_covers(cell.0, cell.1) {
@@ -1406,12 +1404,11 @@ pub fn update_buildings(
                     } else {
                         d <= ring + 1
                     };
-                if !lod22_near {
-                    to_request.push(cell);
-                }
-            }
-        }
-        to_request.sort_by_key(|c| fetch_gate::ring_distance(*c, ccx, ccy));
+                !lod22_near
+            })
+        } else {
+            Vec::new()
+        };
         // `CellStream::request_ranked` de-dups and is also the retry pump — it
         // refuses a cell already known or one that has spent its attempts.
         let now_secs = time.elapsed_secs_f64();
@@ -3196,36 +3193,40 @@ pub(crate) async fn overpass_query(query: &str) -> Result<String, String> {
 }
 
 /// Parse an Overpass `out geom` response into buildings.
+///
+/// Also the 3DBAG host's cells, which are this shape on purpose: both go through
+/// `cartopolis_geo::formats::osm_buildings`, the type atlas writes them with.
 fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
-    let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // Lenient per element: an unreadable point, id or tag set costs only itself.
+    let doc = cartopolis_geo::formats::osm_buildings::parse(text)?;
     // Overpass reports timeouts / runtime errors / rate limits as HTTP 200 with a
     // `remark` field (usually alongside empty `elements`). Treat it as an error so
     // it neither renders as "no buildings here" nor gets cached as a real result.
-    if let Some(remark) = json.get("remark").and_then(|r| r.as_str()) {
+    if let Some(remark) = doc.remark.as_deref() {
         return Err(format!("Overpass remark: {}", remark.trim()));
     }
-    let elements = json
-        .get("elements")
-        .and_then(|e| e.as_array())
+    // A document with no `elements` is an error here, not an empty cell.
+    let elements = doc
+        .elements
         .ok_or_else(|| "no elements in Overpass response".to_string())?;
 
     let mut out = Vec::new();
-    for el in elements {
-        if el.get("type").and_then(|t| t.as_str()) != Some("way") {
+    for el in &elements {
+        if el.kind != "way" {
             continue;
         }
-        let Some(geom) = el.get("geometry").and_then(|g| g.as_array()) else {
-            continue;
-        };
-        let ring: Vec<(f64, f64)> = geom
+        // `None` is a node Overpass clipped away.
+        let ring: Vec<(f64, f64)> = el
+            .geometry
             .iter()
-            .filter_map(|pt| Some((pt.get("lat")?.as_f64()?, pt.get("lon")?.as_f64()?)))
+            .flatten()
+            .map(|p| (p.lat, p.lon))
             .collect();
         if ring.len() < 3 {
             continue;
         }
-        let id = el.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let tags = el.get("tags");
+        let id = el.id;
+        let tags = Some(&el.tags);
         // A way with both tags is an outline that happens to also be a part
         // (mappers do this); treating it as an outline keeps it standing when
         // nothing else covers it.
@@ -3354,7 +3355,7 @@ fn resolve_parts(buildings: &mut Vec<Building>) {
 /// deterministic per-building jitter so same-type buildings aren't identical.
 /// Wall: `building:colour` → `building:material` → `building=<type>` → palette.
 /// Roof: `roof:colour` → `roof:material` → type-based tiled/flat default.
-fn derive_colors(tags: Option<&serde_json::Value>, ring0: (f64, f64)) -> ([f32; 3], [f32; 3]) {
+fn derive_colors(tags: Option<&Tags>, ring0: (f64, f64)) -> ([f32; 3], [f32; 3]) {
     let seed = color_seed(ring0);
     let btype = tag_str(tags, "building").unwrap_or("yes");
 
@@ -3416,11 +3417,11 @@ fn jitter(c: [f32; 3], seed: u64, amount: f32) -> [f32; 3] {
     ]
 }
 
-fn tag_str<'a>(tags: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {
+fn tag_str<'a>(tags: Option<&'a Tags>, key: &str) -> Option<&'a str> {
     tags?.get(key)?.as_str()
 }
 
-fn tag_color(tags: Option<&serde_json::Value>, keys: &[&str]) -> Option<[f32; 3]> {
+fn tag_color(tags: Option<&Tags>, keys: &[&str]) -> Option<[f32; 3]> {
     keys.iter()
         .find_map(|k| tag_str(tags, k).and_then(parse_color))
 }
@@ -3505,7 +3506,7 @@ fn palette_color(ring0: (f64, f64)) -> [f32; 3] {
 
 /// Whether an untagged building should default to a pitched (gabled) roof: small
 /// residential footprints, which are overwhelmingly pitched in European towns.
-fn default_pitched(tags: Option<&serde_json::Value>, ring: &[(f64, f64)]) -> bool {
+fn default_pitched(tags: Option<&Tags>, ring: &[(f64, f64)]) -> bool {
     let btype = tag_str(tags, "building").unwrap_or("yes");
     let residential = matches!(
         btype.to_ascii_lowercase().as_str(),
@@ -3550,7 +3551,7 @@ fn parse_roof_shape(s: Option<&str>) -> RoofShape {
 
 /// Building height and whether it's an eaves (wall-top) height. `height` → total;
 /// `building:levels` → eaves; otherwise a type-based estimate (with jitter) → eaves.
-fn building_height(tags: Option<&serde_json::Value>, seed: u64) -> (f32, bool) {
+fn building_height(tags: Option<&Tags>, seed: u64) -> (f32, bool) {
     if let Some(h) = tags.and_then(|t| t.get("height")).and_then(num_from_value) {
         return (h.max(2.0), false);
     }

@@ -39,9 +39,9 @@ use crate::systems::paving::{PavedArea, PavingKind, PavingMaterial};
 use crate::systems::scatter::TreeInstance;
 use cartopolis_core::world::tile_to_lat_lng;
 
-/// Fixed cache/streaming zoom — must match `map_geometry::GEOMETRY_ZOOM` and the
-/// `CACHE_ZOOM` the extractor bins into.
-const BGT_ZOOM: u32 = 14;
+/// Fixed cache/streaming zoom — the one the extractor bins into. Must also match
+/// `map_geometry::GEOMETRY_ZOOM`.
+const BGT_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 
 /// Which cells the host serves surveyed objects for.
 static COVERAGE: CoverageSlot = CoverageSlot::new("bgt", "/bgt/coverage.json", BGT_ZOOM);
@@ -133,18 +133,19 @@ const SURFACE_MATERIALS: [PavingMaterial; 12] = [
     PavingMaterial::Unpaved,
 ];
 
-/// One surface on the wire: its form, its rings, and — only where the register
-/// names one — what it is made of.
-///
-/// The material is a **trailing** element rather than a field, and the
-/// `#[serde(default)]` is what makes the two-element form still read. Two things
-/// need that. The register says nothing about the substance of roughly one drawn
-/// surface in six, so "unknown" has to cost no bytes; and a paving cell cached
-/// before this existed must keep parsing, because the alternative is that every
-/// stored cell in the country fails at once and silently re-downloads the second
-/// heaviest thing this client streams.
-#[derive(serde::Deserialize)]
-struct WireSurface(usize, Vec<Vec<(f64, f64)>>, #[serde(default)] Option<usize>);
+// One surface on the wire: its form, its rings, and — only where the register
+// names one — what it is made of.
+//
+// The material is a **trailing** element rather than a field, and the
+// `#[serde(default)]` is what makes the two-element form still read. Two things
+// need that. The register says nothing about the substance of roughly one drawn
+// surface in six, so "unknown" has to cost no bytes; and a paving cell cached
+// before this existed must keep parsing, because the alternative is that every
+// stored cell in the country fails at once and silently re-downloads the second
+// heaviest thing this client streams.
+//
+// The type is `cartopolis_geo::formats::bgt::Surface`, the one atlas writes.
+use cartopolis_geo::formats::bgt::Surface as WireSurface;
 
 /// One cell's surveyed paving, as rings of lat/lng: outer ring first, holes after.
 #[derive(Clone, Debug, Default)]
@@ -154,12 +155,7 @@ pub struct SurveyedPaving {
 
 /// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…],material?],…]}`.
 pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
-    #[derive(serde::Deserialize)]
-    struct Wire {
-        #[serde(default)]
-        surfaces: Vec<WireSurface>,
-    }
-    let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let wire = cartopolis_geo::formats::bgt::parse_paving(text)?;
     // Every surface in the layer shares one rung of the depth ladder, so two
     // copies of one polygon are a per-pixel z-fight that re-rolls with the view
     // matrix — the pavement shimmers wherever the camera moves. The extractor
@@ -279,27 +275,15 @@ const BRIDGE_PARTS: [BridgePart; 3] = [BridgePart::Deck, BridgePart::Pier, Bridg
 
 /// Parse a cell file: `{"trees":[[lat,lng],…],"props":[[lat,lng,kind],…]}`.
 pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
-    #[derive(serde::Deserialize)]
-    struct Wire {
-        #[serde(default)]
-        trees: Vec<(f64, f64)>,
-        #[serde(default)]
-        props: Vec<(f64, f64, usize)>,
-        #[serde(default)]
-        lines: Vec<WireLine>,
-        #[serde(default)]
-        bridges: Vec<(usize, i8, bool, Vec<Vec<(f64, f64)>>)>,
-    }
-    /// One boundary on the wire: its form, its points, and — only where the 3D
-    /// product has one — its measured height in metres.
-    ///
-    /// **Trailing**, on exactly the same terms as [`WireSurface`]'s material, and
-    /// for the same two reasons: most boundaries have no measurement (the 3D file
-    /// carries `Scheiding_vlak` and no `Scheiding_lijn` at all, so every surveyed
-    /// *line* is unmeasured), and every cell already cached must keep parsing.
-    #[derive(serde::Deserialize)]
-    struct WireLine(usize, Vec<(f64, f64)>, #[serde(default)] Option<f32>);
-    let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // One boundary on the wire: its form, its points, and — only where the 3D
+    // product has one — its measured height in metres.
+    //
+    // **Trailing**, on exactly the same terms as `WireSurface`'s material, and
+    // for the same two reasons: most boundaries have no measurement (the 3D file
+    // carries `Scheiding_vlak` and no `Scheiding_lijn` at all, so every surveyed
+    // *line* is unmeasured), and every cell already cached must keep parsing.
+    use cartopolis_geo::formats::bgt::Line as WireLine;
+    let wire = cartopolis_geo::formats::bgt::parse_objects(text)?;
     // Exact duplicates are ghost *versions* of one object, same as the paving
     // (see `parse_surveyed_paving`): a doubled tree or fence segment is two
     // identical meshes in one place, z-fighting their own surfaces.
@@ -341,7 +325,7 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
                 // positive number drops only the height, leaving the boundary drawn
                 // the way it was drawn before heights existed.
                 let kind = *LINE_KINDS.get(k)?;
-                let height = h.filter(|m| m.is_finite() && *m > 0.0);
+                let height = h.map(|m| m as f32).filter(|m| m.is_finite() && *m > 0.0);
                 Some((kind, height, pts))
             })
             .collect(),

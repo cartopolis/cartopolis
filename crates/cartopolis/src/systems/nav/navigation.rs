@@ -322,6 +322,18 @@ impl Default for RouteState {
 /// compared against, so it belongs to the data, not to the chrome.
 const PICKED_PREFIX: &str = "· ";
 
+/// A `--ui route` run holds until the solve lands — otherwise the shot documents
+/// an empty planner and a map with no line on it (ADR-037).
+impl crate::systems::stream_watch::StreamBusy for RouteState {
+    const NAME: &'static str = "routing";
+    fn stream_busy(&self) -> bool {
+        matches!(
+            self.status,
+            SolveStatus::Fetching(..) | SolveStatus::Solving
+        )
+    }
+}
+
 impl RouteState {
     fn waypoint_mut(&mut self, end: Endpoint) -> &mut Waypoint {
         match end {

@@ -2241,7 +2241,7 @@ mod tests {
     }
 
     /// Every system that draws into the **shared root `Ui`** must be in the panel
-    /// chain in `lib.rs`, and this test is the guard the chain's comment used to
+    /// chain in `systems/gui/plugin.rs`, and this test is the guard the chain's comment used to
     /// say did not exist.
     ///
     /// Leaving one out does not misplace a panel — it makes two panels swap
@@ -2322,17 +2322,19 @@ mod tests {
             "found only {drawers:?} root-`Ui` drawers — the scan has broken, not the chain"
         );
 
-        let lib = std::fs::read_to_string(src.join("lib.rs")).expect("lib.rs is readable");
-        let chain = lib
-            .split_once("Phase 7b")
-            // Past the prose, which quotes `.chain()` while explaining it.
-            .and_then(|(_, rest)| rest.split_once(".add_systems("))
-            .and_then(|(_, rest)| rest.split_once(".chain()"))
+        // The chain is two chained halves (one per `ClientPhase`) chained to each
+        // other, so it is found by its markers rather than by its first `.chain()`.
+        let plugin = std::fs::read_to_string(src.join("systems/gui/plugin.rs"))
+            .expect("systems/gui/plugin.rs is readable");
+        let chain = plugin
+            .split_once("// panel-chain:begin")
+            .and_then(|(_, rest)| rest.split_once("// panel-chain:end"))
             .map(|(block, _)| block.to_string())
-            .expect("the Phase 7b panel chain still exists in lib.rs");
+            .expect("the panel chain still exists in systems/gui/plugin.rs");
         assert!(
-            chain.contains("render_place_pins"),
-            "the chain block was extracted but looks wrong — anchors in lib.rs moved"
+            chain.contains("render_main_menu") && chain.contains("render_place_pins"),
+            "the chain block was extracted but looks wrong — the markers in \
+             systems/gui/plugin.rs moved"
         );
 
         let missing: Vec<_> = drawers
@@ -2341,7 +2343,7 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "these draw into the shared root `Ui` but are not in the Phase 7b chain: \
+            "these draw into the shared root `Ui` but are not in the panel chain: \
              {missing:?}\nAdd them to that tuple — an unordered pair swaps composition \
              order between frames and the panel underneath stops taking clicks."
         );

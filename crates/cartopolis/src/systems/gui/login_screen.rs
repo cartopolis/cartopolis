@@ -35,7 +35,7 @@
 //! the main menu, which is itself a `Foreground` area (a `Middle`-order
 //! window would render *under* the menu it was opened from). It draws nothing at
 //! all when closed, so it costs no layers and no input the rest of the time — and
-//! it never touches `EguiManager::ui_mut`, so it stays out of the Phase 7b panel
+//! it never touches `EguiManager::ui_mut`, so it stays out of the panel
 //! chain by construction.
 //!
 //! **The backdrop is a widget, not a wash.** A full-screen `Sense::click_and_drag`

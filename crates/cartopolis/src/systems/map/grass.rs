@@ -595,6 +595,13 @@ impl Default for GrassPatches {
     }
 }
 
+impl crate::systems::stream_watch::StreamBusy for GrassPatches {
+    const NAME: &'static str = "grass";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl GrassPatches {
     /// Patch entities standing (all tiers), the blade slots they add up to, and
     /// how many the view actually drew.

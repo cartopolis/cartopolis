@@ -1058,7 +1058,7 @@ fn plausible_start(loc: &SavedLocation) -> bool {
 /// So the invariant is stated once, here: **nothing writes the store until
 /// everything that must read it has.** Joining this set is what a new restore
 /// system does, and the edge it needs then already exists — the same reason the
-/// panel chain in `lib.rs` is one `.chain()` tuple rather than a dozen scattered
+/// panel chain in `gui::plugin` is one `.chain()` tuple rather than a dozen scattered
 /// links.
 ///
 /// Deliberately *not* fixed by moving the autosave's first deadline: a grace
@@ -1373,7 +1373,8 @@ mod tests {
     /// launch defaults the autosave had just written instead of the file. See
     /// [`Restore`].
     ///
-    /// Read out of `lib.rs` rather than run, for the reason
+    /// Read out of `systems/net/plugin.rs` (where the restores and the autosave
+    /// are registered) rather than run, for the reason
     /// `egui_manager::every_root_ui_panel_is_in_the_chain` is: what has to hold
     /// is a property of the *registration*, and a test that builds its own
     /// two-system schedule would only be re-testing that Bevy honours
@@ -1381,8 +1382,9 @@ mod tests {
     /// is precisely the change that reintroduces the bug.
     #[test]
     fn the_autosave_is_ordered_after_every_restore() {
-        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
-        let text = std::fs::read_to_string(lib).expect("lib.rs is readable");
+        let plugin =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/systems/net/plugin.rs");
+        let text = std::fs::read_to_string(plugin).expect("systems/net/plugin.rs is readable");
 
         assert!(
             text.contains(".after(systems::user_store::Restore)"),
@@ -1405,7 +1407,7 @@ mod tests {
         ] {
             let at = text
                 .find(&format!("systems::user_store::{name}"))
-                .unwrap_or_else(|| panic!("{name} is registered in lib.rs"));
+                .unwrap_or_else(|| panic!("{name} is registered in systems/net/plugin.rs"));
             let set_at = text
                 .find(".in_set(systems::user_store::Restore)")
                 .expect("checked above");

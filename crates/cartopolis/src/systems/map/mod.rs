@@ -1,5 +1,10 @@
 //! `systems::map` — one file per concern; see systems/mod.rs for the map.
 
+/// The group's registration: its resources and its systems, each in its
+/// `crate::phase::ClientPhase`. Added by `run_client`.
+mod plugin;
+pub use plugin::MapPlugin;
+
 pub mod aerial;
 pub mod atmosphere_patch;
 pub mod building_facts;
@@ -9,6 +14,8 @@ pub mod building_windows;
 // Throwing the downloaded map away, and the three layers of cache that have to
 // be emptied in the right order for that to be visible.
 pub mod cache_reset;
+// The ring of cells a streamer wants around the camera, nearest first.
+pub mod cell_ring;
 pub mod coverage;
 // The fetching half of the level crossings (`cartopolis_geo::crossings` is the
 // pure one). Named for the layer rather than for ProRail, the way `surveyed`,
@@ -50,6 +57,8 @@ pub mod road_depth;
 pub mod sky;
 pub mod sky_dome;
 pub mod stream_ledger;
+// Which streamers the settle test waits for, registered beside each one.
+pub mod stream_watch;
 pub mod street_detail;
 pub mod street_furniture;
 pub mod street_labels;

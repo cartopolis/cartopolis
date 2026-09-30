@@ -37,9 +37,9 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::osm_buildings::{
     lat_lng_to_local, num_from_value, overpass_query, overpass_remark, tdbag_url, MeshData,
@@ -609,6 +609,13 @@ impl Default for TallStructures {
     }
 }
 
+impl crate::systems::stream_watch::StreamBusy for TallStructures {
+    const NAME: &'static str = "tall_structures";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl TallStructures {
     /// Read by the `--shot` settle test alongside the other streamers.
     #[must_use]
@@ -650,10 +657,8 @@ pub fn update_tall_structures(
     let reanchored = ts.cells.sync(stream.anchor_generation);
     if reanchored || turned_off || ts.terrain_revision != terrain.revision {
         ts.terrain_revision = terrain.revision;
-        let retired: Vec<Entity> = ts.cell_entities.drain().flat_map(|(_, e)| e).collect();
-        ts.cells.retire_all(retired);
-        ts.cells.reset();
-        ts.anchor = None;
+        let ts = &mut *ts;
+        ts.cells.restart(&mut ts.cell_entities, &mut ts.anchor);
     }
     if !enabled {
         return;
@@ -674,30 +679,16 @@ pub fn update_tall_structures(
     if cam_altitude > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let center = (
-        ax + (world_x / tile_m).round() as i64,
-        ay + (world_z / tile_m).round() as i64,
-    );
-    let shift = z.saturating_sub(TALL_ZOOM);
-    let (ccx, ccy) = (
-        center.0.div_euclid(1i64 << shift),
-        center.1.div_euclid(1i64 << shift),
+    let (ccx, ccy) = cell_ring::coarsen(
+        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        TALL_ZOOM,
     );
 
     let now_secs = time.elapsed_secs_f64();
-    let mut to_request: Vec<(i64, i64)> = Vec::new();
-    for dy in -CELL_RADIUS..=CELL_RADIUS {
-        for dx in -CELL_RADIUS..=CELL_RADIUS {
-            to_request.push((ccx + dx, ccy + dy));
-        }
-    }
-    to_request.sort_by_key(|c| fetch_gate::ring_distance(*c, ccx, ccy));
-    for cell in to_request {
-        let rank = fetch_gate::ring_distance(cell, ccx, ccy);
-        ts.cells.request_ranked(cell, rank, now_secs);
-    }
+    cell_ring::request_ring(&mut ts.cells, (ccx, ccy), CELL_RADIUS, now_secs, |_, _| {
+        true
+    });
 
     // Hold dispatch until the manifest has answered — yes, no, or not reachable
     // within the wait — so a covered cell is not sent to Overpass in the moment
@@ -742,14 +733,9 @@ pub fn update_tall_structures(
         return;
     };
 
-    let mut done = ts.cells.take_results();
     let cap = crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME);
-    let mut take = 0usize;
-    for (_, built) in &done {
-        if take >= cap {
-            break;
-        }
-        let cost = match built {
+    let done =
+        crate::systems::stream_ledger::take_admitted(&mut ts.cells, cap, |built| match built {
             Ok(Some(b)) => {
                 b.mesh
                     .iter()
@@ -761,14 +747,7 @@ pub fn update_tall_structures(
                         .sum::<usize>()
             }
             _ => 0,
-        };
-        if !crate::systems::stream_ledger::admit(cost) {
-            break;
-        }
-        take += 1;
-    }
-    let deferred = done.split_off(take);
-    ts.cells.defer(deferred);
+        });
 
     for (cell, built) in done {
         match built {

@@ -747,7 +747,7 @@ pub fn setup_traffic(
     roots: Query<Entity, With<BigSpace>>,
 ) {
     let Ok(root) = roots.single() else {
-        // Ordered `.after(setup_camera)` in `lib.rs`, which is what spawns the
+        // Ordered `.after(setup_camera)` in `nav::plugin`, which is what spawns the
         // root — so this is unreachable, and it says so rather than returning in
         // silence. Silence is exactly how this went unnoticed the first time.
         tracing::warn!("no BigSpace root at traffic setup; ambient traffic is off for this run");

@@ -405,6 +405,22 @@ where
         self.live = Arc::new(AtomicBool::new(true));
     }
 
+    /// Start a ring over: queue every entity the caller holds per cell for
+    /// bounded teardown, [`reset`](Self::reset) the bookkeeping, and clear the
+    /// caller's anchor so the next pass re-establishes it where the map is now.
+    ///
+    /// The shared shape of "the anchor moved, the ground under the cells
+    /// changed, or the layer was switched off": every cell was placed in a frame
+    /// or on a field that no longer holds, so all of them go. Through the
+    /// despawn queue, not straight out — a whole ring freed in one command
+    /// buffer is the device-loss burst. Anything else the caller keeps per cell
+    /// (colliders, lamp lists, counters) is still the caller's to clear.
+    pub fn restart<C, A>(&mut self, live: &mut HashMap<C, Vec<Entity>>, anchor: &mut Option<A>) {
+        self.retire_all(live.drain().flat_map(|(_, entities)| entities));
+        self.reset();
+        *anchor = None;
+    }
+
     /// Backoff before retrying a cell that has failed `attempts` times.
     fn backoff_for(&self, attempts: u32) -> f64 {
         let doublings = attempts
@@ -680,6 +696,31 @@ mod tests {
             2,
             "the concurrency cap leaked a slot"
         );
+    }
+
+    /// A restart retires every held entity through the bounded queue — none
+    /// freed at once — and leaves the caller with no anchor and no cells.
+    #[test]
+    fn a_restart_retires_every_cell_and_drops_the_anchor() {
+        let mut s = stream();
+        s.request(1, 0.0);
+        let mut live: HashMap<i32, Vec<Entity>> = HashMap::new();
+        live.insert(
+            1,
+            vec![
+                Entity::from_raw_u32(3).unwrap(),
+                Entity::from_raw_u32(4).unwrap(),
+            ],
+        );
+        live.insert(2, vec![Entity::from_raw_u32(5).unwrap()]);
+        let mut anchor = Some((10_i64, 20_i64));
+
+        s.restart(&mut live, &mut anchor);
+
+        assert!(live.is_empty());
+        assert_eq!(anchor, None);
+        assert_eq!(s.despawn_backlog(), 3);
+        assert!(!s.is_requested(&1), "a restart must reset the bookkeeping");
     }
 
     #[test]

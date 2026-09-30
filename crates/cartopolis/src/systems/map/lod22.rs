@@ -41,15 +41,16 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
+use crate::systems::cell_ring;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::load_control;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, tdbag_url, MeshData};
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
-/// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` (the cells
-/// the server binned into, and the cells `osm_buildings` skips).
-const LOD22_ZOOM: u32 = 14;
+/// Fixed cache/streaming zoom — the cells the server binned into, and the cells
+/// `osm_buildings` skips; the same constant both of those read.
+const LOD22_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 
 /// Concurrent cell fetch+mesh tasks. Our own 3DBAG host has no external rate limit,
 /// so this is a citizenship/throughput cap, not a throttle (min-interval 0). Six,
@@ -516,6 +517,13 @@ pub struct Lod22Buildings {
     warm_restored: u32,
 }
 
+impl crate::systems::stream_watch::StreamBusy for Lod22Buildings {
+    const NAME: &'static str = "lod22";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl Lod22Buildings {
     /// Are 3DBAG cells still being fetched or meshed? Read by the `--shot`
     /// harness's settle test — these are the buildings a city shot is *of*.
@@ -840,18 +848,18 @@ pub fn update_lod22(
         );
         lod.terrain_revision = terrain.revision;
         lod.bag_revision = bag_revision;
-        let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.built_rev.clear();
         lod.built_digest.clear();
         lod.dated.clear();
         lod.doors.clear();
         lod.built_detail.clear();
         lod.heights.clear();
-        lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
-        lod.stream.reset();
-        lod.anchor = None;
+        {
+            let lod = &mut *lod;
+            lod.stream.restart(&mut lod.cells, &mut lod.anchor);
+        }
         lod.partial = None;
         // Held cells go with the live ones, and for a stronger reason than
         // tidiness: each carries a `GridCell` that means a place under the *old*
@@ -918,22 +926,15 @@ pub fn update_lod22(
     if globe.altitude_m(cell, tf) as f32 > GLOBE_SHOW_ALT {
         return;
     }
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let center = (
-        ax + (world_x / tile_m).round() as i64,
-        ay + (world_z / tile_m).round() as i64,
-    );
-
     let Ok(root) = bigspace.single() else {
         return;
     };
 
     // Camera's CACHE_ZOOM cell from its base-zoom tile coords.
-    let shift = z.saturating_sub(LOD22_ZOOM);
-    let (ccx, ccy) = (
-        center.0.div_euclid(1i64 << shift),
-        center.1.div_euclid(1i64 << shift),
+    let (ccx, ccy) = cell_ring::coarsen(
+        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        LOD22_ZOOM,
     );
 
     // **Cells that came closer than they were built for.** A cell's detail is
@@ -983,23 +984,18 @@ pub fn update_lod22(
     }
 
     // Queue missing covered cells, nearest first. `CellStream::request` is also the
-    // retry pump — it refuses a cell that has spent its attempts.
-    let mut to_request: Vec<(i64, i64)> = Vec::new();
-    let radius = lod22_radius();
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            let c = (ccx + dx, ccy + dy);
-            if lod22_covers(c.0, c.1) && dx.abs().max(dy.abs()) <= lod22_ring(c.0, c.1) {
-                to_request.push(c);
-            }
-        }
-    }
-    // The sort is what put the nearest cell first when the queue was arrival
+    // retry pump — it refuses a cell that has spent its attempts. Not
+    // `cell_ring::request_ring`: the list is also where the restore below looks
+    // for the nearest held cell, so it is built first and requested after.
+    //
+    // Nearest first is what put the nearest cell first when the queue was arrival
     // ordered; the rank says the same thing to the queue and to the global
     // `fetch_gate`, and keeps saying it when the camera moves under a queue that
     // was filled from somewhere else.
+    let to_request = cell_ring::ring((ccx, ccy), lod22_radius(), |c, d| {
+        lod22_covers(c.0, c.1) && d <= lod22_ring(c.0, c.1)
+    });
     use crate::platform::fetch_gate::ring_distance;
-    to_request.sort_by_key(|c| ring_distance(*c, ccx, ccy));
 
     // Re-spawn one held cell, nearest first, before anything is queued for it.
     //
@@ -1837,7 +1833,7 @@ fn build_lod22_from_body(
 /// point.** 3DBAG publishes `b3_h_dak_70p`, `b3_opp_dak_plat + b3_opp_dak_schuin`
 /// and `b3_volume_lod22` as attributes, so the obvious way to put a roof area and
 /// a volume on the building card is to ship them from atlas's extractor — a
-/// format change on both sides of a hand-synced seam, a pipeline re-run for every city and a cache-key
+/// format change on both sides of the atlas/client seam, a pipeline re-run for every city and a cache-key
 /// bump, all to carry numbers *derived from the very triangles already in this
 /// buffer*. Measuring them here costs one pass over a soup this function was
 /// walking anyway, needs no wire change, and works on any cell already cached.
@@ -2135,109 +2131,12 @@ fn cell_file(cell: cartopolis_geo::lod22_cell::Cell) -> CellFile {
 /// The JSON cell file as the host wrote it, before [`cell_file`]'s validation —
 /// the shape [`cartopolis_geo::lod22_cell`] encodes, so the two formats can be
 /// compared element for element.
+///
+/// The wire types — the string-or-legacy-number id, the three-or-four-element
+/// triangle row — live in `cartopolis_geo::formats::lod22`, which atlas writes
+/// the file with.
 fn parse_lod22_json(text: &str) -> Result<cartopolis_geo::lod22_cell::Cell, String> {
-    #[derive(serde::Deserialize)]
-    struct File {
-        elements: Vec<El>,
-        /// Only an imported-model cell carries this; a shell cell has no such key
-        /// and `serde` fills the default.
-        #[serde(default)]
-        pands: Vec<String>,
-    }
-    #[derive(serde::Deserialize)]
-    struct El {
-        #[serde(default)]
-        id: WireId,
-        /// Which solid of a split pand this is; absent when 0. Not read by the
-        /// mesh build, carried so the binary encoding holds everything the JSON
-        /// does.
-        #[serde(default)]
-        part: u32,
-        #[serde(default)]
-        p: Vec<(f64, f64, f32)>,
-        #[serde(default)]
-        t: Vec<Tri>,
-        /// The IFC class, on an imported model only. Absent on every shell, which
-        /// is what the default is for.
-        #[serde(default)]
-        class: String,
-    }
-    /// The element's BAG id, which is a **string** since the extractor stopped
-    /// mangling it into an integer — and a number in every cell file written
-    /// before that, including the ones already sitting in users' caches (a cache
-    /// entry is evicted when it fails to parse, so a strict `String` here would
-    /// silently re-fetch every cell on the first run after an upgrade). Absent
-    /// entirely in the oldest files, which `Default` reads as "no id".
-    #[derive(Default)]
-    struct WireId(String);
-    impl<'de> serde::Deserialize<'de> for WireId {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            struct V;
-            impl serde::de::Visitor<'_> for V {
-                type Value = WireId;
-                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                    f.write_str("a BAG identificatie as a string, or a legacy number")
-                }
-                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<WireId, E> {
-                    Ok(WireId(v.to_string()))
-                }
-                fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<WireId, E> {
-                    // A legacy id joins with nothing — it was the digits of the
-                    // identificatie shifted by the part suffix — so it is dropped
-                    // rather than carried as a key that would never match.
-                    Ok(WireId(String::new()))
-                }
-                fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<WireId, E> {
-                    Ok(WireId(String::new()))
-                }
-            }
-            d.deserialize_any(V)
-        }
-    }
-    struct Tri(u32, u32, u32, u8);
-    impl<'de> serde::Deserialize<'de> for Tri {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            struct V;
-            impl<'de> serde::de::Visitor<'de> for V {
-                type Value = Tri;
-                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                    f.write_str("[i, j, k, roof?]")
-                }
-                fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                    self,
-                    mut seq: A,
-                ) -> Result<Tri, A::Error> {
-                    let missing = || serde::de::Error::custom("bad triangle");
-                    let i = seq.next_element()?.ok_or_else(missing)?;
-                    let j = seq.next_element()?.ok_or_else(missing)?;
-                    let k = seq.next_element()?.ok_or_else(missing)?;
-                    let rf = seq.next_element()?.unwrap_or(0);
-                    Ok(Tri(i, j, k, rf))
-                }
-            }
-            d.deserialize_seq(V)
-        }
-    }
-
-    let file: File = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    Ok(cartopolis_geo::lod22_cell::Cell {
-        elements: file
-            .elements
-            .into_iter()
-            .map(|el| cartopolis_geo::lod22_cell::Element {
-                id: el.id.0,
-                part: el.part,
-                class: el.class,
-                p: el.p,
-                t: el
-                    .t
-                    .into_iter()
-                    .map(|Tri(i, j, k, rf)| (i, j, k, rf))
-                    .collect(),
-            })
-            .collect(),
-        pands: file.pands,
-    })
+    cartopolis_geo::formats::lod22::parse(text)
 }
 
 #[cfg(test)]

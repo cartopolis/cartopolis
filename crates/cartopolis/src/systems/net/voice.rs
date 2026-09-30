@@ -656,7 +656,7 @@ impl VoiceState {
     ///
     /// **Taken, not read.** [`Self::talk_held`] has two writers — the V key and
     /// the panel's Hold-to-talk button — and neither may clear it without eating
-    /// the other's press: the panel runs late in the frame (Phase 7b) and the key
+    /// the other's press: the panel runs late in the frame (`ClientPhase::Present`) and the key
     /// reader early in the next one, so whichever cleared would erase a flag it
     /// did not set. Both OR into it; this is the single consumer.
     pub fn take_talk(&mut self) -> bool {

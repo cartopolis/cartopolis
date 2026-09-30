@@ -32,10 +32,9 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::components::FreeCamera;
-use crate::grid::WORLD_CELL_EDGE;
-use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
@@ -43,9 +42,8 @@ use crate::systems::osm_buildings::tdbag_url;
 use big_space::prelude::GridCell;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_meters};
 
-/// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` and the
-/// `CACHE_ZOOM` the extractor bins into.
-const BAG_ZOOM: u32 = 14;
+/// Fixed cache/streaming zoom — the one the extractor bins into.
+const BAG_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 
 /// Cells streamed around the camera. Matches the LoD2.2 ring: these facts exist to
 /// describe buildings you can see, and a cell is ~200 kB against that lane's ~4 MB.
@@ -317,99 +315,43 @@ impl BagCell {
 /// `lod22::parse_lod22` documents — this is smaller, but it runs on the same
 /// worker and there is no reason to pay the DOM for it.
 pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
-    #[derive(serde::Deserialize)]
-    struct WireCell {
-        #[serde(default)]
-        streets: Vec<String>,
-        #[serde(default)]
-        districts: Vec<String>,
-        #[serde(default)]
-        buildings: Vec<WireBuilding>,
-        #[serde(default)]
-        addresses: Vec<WireAddress>,
-        #[serde(default)]
-        berths: Vec<WireBerth>,
-    }
-    #[derive(serde::Deserialize)]
-    struct WireBuilding {
-        id: String,
-        #[serde(default)]
-        year: Option<u16>,
-        #[serde(default)]
-        #[serde(rename = "use")]
-        uses: u16,
-        #[serde(default)]
-        area: Option<u32>,
-        #[serde(default)]
-        area_max: Option<u32>,
-        #[serde(default)]
-        units: u16,
-        #[serde(default)]
-        status: Option<String>,
-        #[serde(default)]
-        mon: Option<u32>,
-        #[serde(default)]
-        mcat: Option<String>,
-        #[serde(default)]
-        district: Option<usize>,
-        #[serde(default)]
-        fp: Vec<(f64, f64)>,
-        #[serde(default)]
-        doors: Vec<(f64, f64)>,
-    }
-    #[derive(serde::Deserialize)]
-    struct WireAddress {
-        at: (f64, f64),
-        #[serde(default)]
-        id: Option<String>,
-        #[serde(default)]
-        street: Option<usize>,
-        #[serde(default)]
-        nr: Option<String>,
-        #[serde(default)]
-        postcode: Option<String>,
-        #[serde(default)]
-        #[serde(rename = "use")]
-        uses: u16,
-        #[serde(default)]
-        area: Option<u32>,
-    }
-    #[derive(serde::Deserialize)]
-    struct WireBerth {
-        at: (f64, f64),
-        kind: String,
-        #[serde(default)]
-        street: Option<usize>,
-        #[serde(default)]
-        nr: Option<String>,
-        #[serde(default)]
-        postcode: Option<String>,
-    }
-
-    let wire: WireCell = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // The file's own types, shared with the writer (atlas's `pipeline/bag.rs`).
+    // Either of a cell's two files parses: each array the file lacks is `None`.
+    let wire = cartopolis_geo::formats::bag::parse(text)?;
     // Intern once per cell: a street name is repeated by every unit on it, and
     // handing each `AddressFact` its own `String` would allocate thousands of
     // copies of "Paterswoldseweg" per cell.
-    let streets: Vec<Arc<str>> = wire.streets.into_iter().map(Arc::from).collect();
+    let streets: Vec<Arc<str>> = wire
+        .streets
+        .unwrap_or_default()
+        .into_iter()
+        .map(Arc::from)
+        .collect();
     let street_of = |ix: Option<usize>| ix.and_then(|i| streets.get(i).cloned());
-    let districts: Vec<Arc<str>> = wire.districts.into_iter().map(Arc::from).collect();
+    let districts: Vec<Arc<str>> = wire
+        .districts
+        .unwrap_or_default()
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+    let wire_buildings = wire.buildings.unwrap_or_default();
 
     // Monument categories are a closed vocabulary of a dozen phrases spread over
     // every listed building in the cell, so they are interned as they are seen
     // rather than shipped as a table: the table would have to be built by the
     // extractor for a saving the parser can make for itself.
     let mut categories: HashMap<String, Arc<str>> = HashMap::new();
-    let mut buildings = HashMap::with_capacity(wire.buildings.len());
-    for b in wire.buildings {
+    let mut buildings = HashMap::with_capacity(wire_buildings.len());
+    for b in wire_buildings {
         buildings.insert(
             Arc::from(b.id.as_str()),
             BuildingFact {
                 // A year of 0 is a placeholder, not a building from the year nought.
                 year: b.year.filter(|y| *y > 0),
-                uses: b.uses,
+                uses: b.uses.unwrap_or(0),
                 area_m2: b.area,
                 area_max_m2: b.area_max,
-                units: b.units,
+                units: b.units.unwrap_or(0),
                 status: b
                     .status
                     .as_deref()
@@ -431,6 +373,7 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
     }
     let addresses = wire
         .addresses
+        .unwrap_or_default()
         .into_iter()
         .map(|a| AddressFact {
             at: a.at,
@@ -438,15 +381,16 @@ pub fn parse_bag_cell(text: &str) -> Result<BagCell, String> {
             street: street_of(a.street),
             number: a.nr,
             postcode: a.postcode,
-            uses: a.uses,
+            uses: a.uses.unwrap_or(0),
             area_m2: a.area,
         })
         .collect();
     let berths = wire
         .berths
+        .unwrap_or_default()
         .into_iter()
         .map(|b| BerthFact {
-            kind: if b.kind == "plot" {
+            kind: if b.kind == cartopolis_geo::formats::bag::KIND_PLOT {
                 BerthKind::Plot
             } else {
                 BerthKind::Mooring
@@ -870,6 +814,15 @@ impl Default for BuildingFacts {
     }
 }
 
+/// Only ever busy over covered ground below the globe tier: nothing is requested
+/// for a cell the host does not serve, and a stream that was never asked is quiet.
+impl crate::systems::stream_watch::StreamBusy for BuildingFacts {
+    const NAME: &'static str = "building_facts";
+    fn stream_busy(&self) -> bool {
+        self.stream.busy()
+    }
+}
+
 impl BuildingFacts {
     /// What the register says about a building, if its cell is loaded.
     pub fn building(&self, id: &str) -> Option<&BuildingFact> {
@@ -1014,27 +967,14 @@ pub fn update_building_facts(
         return;
     }
 
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let center = (
-        ax + (world_x / tile_m).round() as i64,
-        ay + (world_z / tile_m).round() as i64,
+    let centre = cell_ring::coarsen(
+        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        BAG_ZOOM,
     );
-    let shift = z.saturating_sub(BAG_ZOOM);
-    let (ccx, ccy) = (
-        center.0.div_euclid(1i64 << shift),
-        center.1.div_euclid(1i64 << shift),
-    );
-
-    for dy in -BAG_RADIUS..=BAG_RADIUS {
-        for dx in -BAG_RADIUS..=BAG_RADIUS {
-            let c = (ccx + dx, ccy + dy);
-            if bag_covers(c.0, c.1) {
-                let rank = fetch_gate::ring_distance(c, ccx, ccy);
-                facts.stream.request_ranked(c, rank, now);
-            }
-        }
-    }
+    cell_ring::request_ring(&mut facts.stream, centre, BAG_RADIUS, now, |c, _| {
+        bag_covers(c.0, c.1)
+    });
 
     let sink = facts.stream.sink();
     while let Some((cx, cy)) = facts.stream.next_job(now) {

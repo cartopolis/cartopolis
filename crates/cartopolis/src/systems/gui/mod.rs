@@ -1,5 +1,10 @@
 //! `systems::gui` — one file per concern; see systems/mod.rs for the map.
 
+/// The group's registration: its resources and its systems, each in its
+/// `crate::phase::ClientPhase`. Added by `run_client`.
+mod plugin;
+pub use plugin::GuiPlugin;
+
 pub mod bookmarks;
 pub mod building_card;
 pub mod chat;

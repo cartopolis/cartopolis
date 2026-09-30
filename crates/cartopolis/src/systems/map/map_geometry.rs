@@ -2043,6 +2043,13 @@ fn spawn_geometry_task(
         .detach();
 }
 
+impl crate::systems::stream_watch::StreamBusy for MapSurfaces {
+    const NAME: &'static str = "surfaces";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl MapSurfaces {
     /// Are surface cells still being tessellated, placed or retired? The `--shot`
     /// harness's settle test reads this alongside the tile streamers': the ground
@@ -2470,31 +2477,21 @@ pub fn update_map_surfaces(
     // bounding memory as well as work). Priced by the same `VERTEX_BYTES`
     // arithmetic `build_mesh` below makes true — every gap the tessellator left
     // is filled to that layout before the GPU sees it.
-    let mut ready = surfaces.stream.take_results();
     let cap = crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME);
-    let mut take = 0usize;
-    for (_, (outcome, ..)) in &ready {
-        if take >= cap {
-            break;
-        }
-        let cost = outcome.as_ref().map_or(0, |surface_meshes| {
-            surface_meshes
-                .iter()
-                .map(|sm| {
-                    crate::systems::vector_tiles::mesh_upload_bytes(
-                        sm.positions.len(),
-                        sm.indices.len(),
-                    )
-                })
-                .sum()
+    let ready =
+        crate::systems::stream_ledger::take_admitted(&mut surfaces.stream, cap, |(outcome, ..)| {
+            outcome.as_ref().map_or(0, |surface_meshes| {
+                surface_meshes
+                    .iter()
+                    .map(|sm| {
+                        crate::systems::vector_tiles::mesh_upload_bytes(
+                            sm.positions.len(),
+                            sm.indices.len(),
+                        )
+                    })
+                    .sum()
+            })
         });
-        if !crate::systems::stream_ledger::admit(cost) {
-            break;
-        }
-        take += 1;
-    }
-    let deferred = ready.split_off(take);
-    surfaces.stream.defer(deferred);
     for (
         c,
         (

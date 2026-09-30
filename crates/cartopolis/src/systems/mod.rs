@@ -20,7 +20,10 @@
 //! `use systems::*`.
 //!
 //! Adding a system means one `pub mod` in the group's `mod.rs` and one name in the
-//! matching `pub use` here. Both are alphabetical; keep them that way.
+//! matching `pub use` here. Both are alphabetical; keep them that way. Its
+//! registration goes in the group's `plugin.rs` (`NetPlugin`, `MapPlugin`, …),
+//! inside the `crate::phase::ClientPhase` it belongs to — that module's note says
+//! what each phase is for.
 //!
 //! The group is named `gui` rather than `ui` deliberately — `systems::ui` is one of
 //! the panels, and a group of the same name could not coexist with its re-export.
@@ -57,13 +60,13 @@ pub use gui::{
 };
 pub use map::{
     aerial, atmosphere_patch, building_facts, building_fade, building_select, building_windows,
-    cache_reset, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather, grass,
-    ground_detail, height, interiors, light_shafts, load_control, lod22, lod3, map_geometry,
+    cache_reset, cell_ring, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather,
+    grass, ground_detail, height, interiors, light_shafts, load_control, lod22, lod3, map_geometry,
     map_stream, model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
     render_features, render_scale, rendering, road_depth, sky, sky_dome, stream_ledger,
-    street_detail, street_furniture, street_labels, sun_rays, surveyed, tall_structures, terrain,
-    terrain_tiles, tile_loader, tile_source, tunnels, vegetation, water, water_levels, weather,
-    wet_surfaces, world_places,
+    stream_watch, street_detail, street_furniture, street_labels, sun_rays, surveyed,
+    tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tunnels, vegetation, water,
+    water_levels, weather, wet_surfaces, world_places,
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,

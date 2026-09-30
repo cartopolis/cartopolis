@@ -18,7 +18,7 @@
 //!   a body you share a world with is what makes "go there" a distinct act.
 //!
 //! It is a floating `Area` like the dock and the main menu, deliberately not in
-//! the Phase 7b panel chain, and it follows the dock's suppression rules: driver
+//! the panel chain, and it follows the dock's suppression rules: driver
 //! mode, the on-screen keyboard and (on a compact viewport) an open panel each
 //! own the screen the card would float over. Suppression *hides* the card rather
 //! than closing it — the place survives a trip through the Route panel.

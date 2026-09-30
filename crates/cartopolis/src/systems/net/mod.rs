@@ -1,5 +1,10 @@
 //! `systems::net` — one file per concern; see systems/mod.rs for the map.
 
+/// The group's registration: its resources and its systems, each in its
+/// `crate::phase::ClientPhase`. Added by `run_client`.
+mod plugin;
+pub use plugin::NetPlugin;
+
 /// Keeping the connection alive while the app is off screen (Android's
 /// foreground service).
 pub mod background;

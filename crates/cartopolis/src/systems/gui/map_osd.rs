@@ -52,7 +52,7 @@
 //! ## Two rules it obeys, both learned elsewhere in this tree
 //!
 //! **It draws into floating `Area`s, never the shared root `Ui`**, so it stays
-//! out of the Phase 7b panel chain (like the dock and the HUD) — but for the
+//! out of the panel chain (like the dock and the HUD) — but for the
 //! same reason egui paints those areas *over* a panel, it hides itself whenever
 //! a right-hand panel is open rather than sitting on top of one, which is what
 //! `hud::render_map_controls` does and for the same reason: an invisible control
@@ -345,7 +345,7 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 
 /// Draw the controls and record what they asked for.
 ///
-/// Ordered before `free_camera::camera_controls` in `lib.rs`, so a push is acted
+/// Ordered before `free_camera::camera_controls` in `gui::plugin`, so a push is acted
 /// on in the frame it was made rather than the next one — at 20 fps on a phone
 /// one frame of input lag on a *held* control is visible as the camera lagging
 /// the thumb.

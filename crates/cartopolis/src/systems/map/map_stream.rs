@@ -339,6 +339,13 @@ impl MapStream {
     }
 }
 
+impl crate::systems::stream_watch::StreamBusy for MapStream {
+    const NAME: &'static str = "map_tiles";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl MapStream {
     /// The geo anchor (lat, lng of the world origin + base zoom) — the geo↔world
     /// mapping other systems build on.
@@ -905,6 +912,16 @@ fn level_y(base_zoom: u32, zoom: u32) -> f32 {
 /// resource came from.
 #[derive(Resource, Default)]
 pub struct ReliefBacklog(pub usize);
+
+/// Not the same question as `MapStream`'s: that one is "has the field arrived",
+/// this one is "is the ground drawn with it yet". They are ~83 frames apart over
+/// a city and only the second decides what the picture shows.
+impl crate::systems::stream_watch::StreamBusy for ReliefBacklog {
+    const NAME: &'static str = "relief";
+    fn stream_busy(&self) -> bool {
+        self.0 > 0
+    }
+}
 
 /// Clipmap tiles whose sheet has a tunnel opening taken out of it.
 ///
@@ -2073,7 +2090,6 @@ pub fn apply_stream_textures(
     // a pan lands a batch.
     const MAX_UPLOADS_PER_FRAME: usize = 8;
     let uploads = crate::quality::budget().per_frame(MAX_UPLOADS_PER_FRAME);
-    let mut ready = stream.tiles.take_results();
 
     // …and the same bound in **bytes**, which is the one that decides whether a
     // mobile driver survives the frame.
@@ -2118,20 +2134,10 @@ pub fn apply_stream_textures(
     // surfaces and the far buildings each spent their own caps beside it and the
     // frame queued 27 MB with every individual bound in force. The ledger is that
     // tally lifted out to where every streamer draws from it.
-    let mut take = 0usize;
-    for (_, outcome) in ready.iter() {
-        if take >= uploads {
-            break;
-        }
-        let cost = outcome.as_ref().map_or(0, |tile| tile.data.len());
-        if !crate::systems::stream_ledger::admit(cost) {
-            break;
-        }
-        take += 1;
-    }
-
-    let deferred = ready.split_off(take);
-    stream.tiles.defer(deferred);
+    let ready =
+        crate::systems::stream_ledger::take_admitted(&mut stream.tiles, uploads, |outcome| {
+            outcome.as_ref().map_or(0, |tile| tile.data.len())
+        });
     for (key, outcome) in ready {
         // Retired before its fetch landed: the entity is gone, so nobody will ever
         // consume this mip chain. A tile re-entering range re-fetches, so dropping

@@ -170,7 +170,7 @@ fn observe_peak(state: &mut SettingsState, gain: f32) -> Option<(f32, f32)> {
     Some((meter, state.peak))
 }
 
-/// The Settings panel. Ordered in the Phase 7b `.chain()` like every other panel
+/// The Settings panel. Ordered in the panel `.chain()` like every other panel
 /// — see the note there; an unordered panel loses egui's hit test at random.
 #[allow(clippy::too_many_arguments)]
 pub fn render_settings_panel(
@@ -1831,7 +1831,7 @@ pub fn parse_notices(text: &str) -> Vec<Notice> {
 
 /// The About panel: what this build is, and everything it is built from.
 ///
-/// In the Phase 7b `.chain()` with the other panels — it draws into the shared
+/// In the panel `.chain()` with the other panels — it draws into the shared
 /// root `Ui`, so leaving it out is the dead-click failure that note describes.
 pub fn render_about_panel(
     mut egui: ResMut<EguiManager>,

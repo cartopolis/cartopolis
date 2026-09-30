@@ -15,7 +15,7 @@
 //! them instead, in the pass that was already walking the soup. Nothing on this
 //! card needs a new request, a new field on the wire or a re-run of anything.
 //!
-//! It is a floating `Area` above the dock, deliberately outside the Phase 7b
+//! It is a floating `Area` above the dock, deliberately outside the
 //! panel chain, and it follows `place_card`'s suppression rules for
 //! `place_card`'s reasons — driver mode, the on-screen keyboard and (on a compact
 //! viewport) an open panel each own the screen it would float over. Suppression

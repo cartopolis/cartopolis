@@ -61,10 +61,9 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::components::FreeCamera;
-use crate::grid::WORLD_CELL_EDGE;
-use crate::platform::fetch_gate;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
@@ -72,8 +71,8 @@ use crate::systems::osm_buildings::tdbag_url;
 use big_space::prelude::GridCell;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_meters};
 
-/// Fixed cache/streaming zoom — must match the bin the extractor writes into.
-const WATER_ZOOM: u32 = 14;
+/// Fixed cache/streaming zoom — the one the extractor bins into.
+const WATER_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 
 /// Cells streamed around the camera. The same reach as the flood defences, and for a
 /// cheaper reason: a whole city's water is tens of kilobytes, so the ring is sized by
@@ -117,15 +116,10 @@ pub struct WaterCell {
     pub rings: Vec<WaterRing>,
 }
 
-/// Parse a cell body. Public for the round-trip test, and because the format is a seam
-/// with an extractor in another repository.
+/// Parse a cell body, through `cartopolis_geo::formats::water` — the type atlas's
+/// `pipeline/water.rs` writes it with.
 pub fn parse_water_cell(text: &str) -> Result<WaterCell, String> {
-    #[derive(serde::Deserialize)]
-    struct Wire {
-        #[serde(default)]
-        rings: Vec<(f32, Vec<f64>)>,
-    }
-    let wire: Wire = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let wire = cartopolis_geo::formats::water::parse(text)?;
     Ok(WaterCell {
         rings: wire
             .rings
@@ -134,10 +128,11 @@ pub fn parse_water_cell(text: &str) -> Result<WaterCell, String> {
             // writes a shorter one; a truncated cache entry can, and a two-point
             // "ring" would make every point-in-polygon test below answer nonsense
             // rather than fail.
-            .filter(|(_, flat)| flat.len() >= 6 && flat.len() % 2 == 0)
-            .map(|(level_nap_m, flat)| WaterRing {
-                level_nap_m,
-                points: flat.chunks_exact(2).map(|p| (p[0], p[1])).collect(),
+            .filter_map(|(level, flat)| {
+                cartopolis_geo::formats::water::ring_points(&flat).map(|points| WaterRing {
+                    level_nap_m: level as f32,
+                    points,
+                })
             })
             .collect(),
     })
@@ -199,6 +194,15 @@ impl WaterLevels {
     fn clear(&mut self) {
         self.cells.clear();
         self.revision = self.revision.wrapping_add(1);
+    }
+}
+
+/// Only ever busy over covered ground below the globe tier: nothing is requested
+/// for a cell the host does not serve, and a stream that was never asked is quiet.
+impl crate::systems::stream_watch::StreamBusy for WaterLevels {
+    const NAME: &'static str = "water_levels";
+    fn stream_busy(&self) -> bool {
+        self.loading()
     }
 }
 
@@ -692,27 +696,14 @@ pub fn update_water_levels(
         return;
     }
 
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let center = (
-        ax + (world_x / tile_m).round() as i64,
-        ay + (world_z / tile_m).round() as i64,
+    let centre = cell_ring::coarsen(
+        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        WATER_ZOOM,
     );
-    let shift = z.saturating_sub(WATER_ZOOM);
-    let (ccx, ccy) = (
-        center.0.div_euclid(1i64 << shift),
-        center.1.div_euclid(1i64 << shift),
-    );
-
-    for dy in -WATER_RADIUS..=WATER_RADIUS {
-        for dx in -WATER_RADIUS..=WATER_RADIUS {
-            let c = (ccx + dx, ccy + dy);
-            if water_covers(c.0, c.1) {
-                let rank = fetch_gate::ring_distance(c, ccx, ccy);
-                levels.stream.request_ranked(c, rank, now);
-            }
-        }
-    }
+    cell_ring::request_ring(&mut levels.stream, centre, WATER_RADIUS, now, |c, _| {
+        water_covers(c.0, c.1)
+    });
 
     let sink = levels.stream.sink();
     while let Some((cx, cy)) = levels.stream.next_job(now) {

@@ -43,9 +43,9 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::{FreeCamera, VegetationSurface};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::platform::fetch_gate;
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
+use crate::systems::cell_ring;
 use crate::systems::collision::{BuildingColliders, Footprint};
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::osm_buildings::{
@@ -1337,6 +1337,13 @@ impl Default for StreetDetail {
     }
 }
 
+impl crate::systems::stream_watch::StreamBusy for StreetDetail {
+    const NAME: &'static str = "street_detail";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl StreetDetail {
     /// Read by the `--shot` settle test alongside the other streamers.
     #[must_use]
@@ -1391,13 +1398,11 @@ pub fn update_street_detail(
         sd.wants_was = Some(wants);
         sd.terrain_revision = terrain.revision;
         sd.lid_digest = lids;
-        let retired: Vec<Entity> = sd.cell_entities.drain().flat_map(|(_, e)| e).collect();
         sd.spawned_meshes = 0;
-        sd.cells.retire_all(retired);
         sd.lamps.clear();
         colliders.clear_features();
-        sd.cells.reset();
-        sd.anchor = None;
+        let sd = &mut *sd;
+        sd.cells.restart(&mut sd.cell_entities, &mut sd.anchor);
     }
     if !wants.0 {
         return;
@@ -1417,32 +1422,18 @@ pub fn update_street_detail(
     if cam_altitude > crate::systems::globe::GLOBE_SHOW_ALT {
         return;
     }
-    let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
-    let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
-    let center = (
-        ax + (world_x / tile_m).round() as i64,
-        ay + (world_z / tile_m).round() as i64,
-    );
-    let shift = z.saturating_sub(DETAIL_ZOOM);
-    let (ccx, ccy) = (
-        center.0.div_euclid(1i64 << shift),
-        center.1.div_euclid(1i64 << shift),
+    let (ccx, ccy) = cell_ring::coarsen(
+        cell_ring::camera_tile((ax, ay), tile_m, cell, tf),
+        z,
+        DETAIL_ZOOM,
     );
 
     // Queue missing cells, nearest first; frozen at altitude.
     let now_secs = time.elapsed_secs_f64();
     if cam_altitude < FREEZE_ALT {
-        let mut to_request: Vec<(i64, i64)> = Vec::new();
-        for dy in -CELL_RADIUS..=CELL_RADIUS {
-            for dx in -CELL_RADIUS..=CELL_RADIUS {
-                to_request.push((ccx + dx, ccy + dy));
-            }
-        }
-        to_request.sort_by_key(|c| fetch_gate::ring_distance(*c, ccx, ccy));
-        for cell in to_request {
-            let rank = fetch_gate::ring_distance(cell, ccx, ccy);
-            sd.cells.request_ranked(cell, rank, now_secs);
-        }
+        cell_ring::request_ring(&mut sd.cells, (ccx, ccy), CELL_RADIUS, now_secs, |_, _| {
+            true
+        });
     }
 
     // Dispatch: fetch on the IO pool, parse + mesh on the worker pool.
@@ -1509,28 +1500,16 @@ pub fn update_street_detail(
     };
 
     // Apply completed cells: item-capped and byte-bounded, overflow deferred.
-    let mut done = sd.cells.take_results();
     let cap = crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME);
-    let mut take = 0usize;
-    for (_, built) in &done {
-        if take >= cap {
-            break;
-        }
-        let cost = match built {
+    let done =
+        crate::systems::stream_ledger::take_admitted(&mut sd.cells, cap, |built| match built {
             Ok(Some(b)) => b
                 .meshes
                 .iter()
                 .map(|(_, m)| crate::systems::stream_ledger::mesh_cost(m))
                 .sum(),
             _ => 0,
-        };
-        if !crate::systems::stream_ledger::admit(cost) {
-            break;
-        }
-        take += 1;
-    }
-    let deferred = done.split_off(take);
-    sd.cells.defer(deferred);
+        });
 
     for (cell, built) in done {
         match built {

@@ -86,6 +86,44 @@ pub fn admit(bytes: usize) -> bool {
     true
 }
 
+/// The finished results a streamer may apply this frame: at most `cap` of
+/// them, in arrival order, and only as many as the frame's ledger [`admit`]s.
+/// Everything behind the first refusal goes back through
+/// `CellStream::defer` — still holding its concurrency slot, so the stream's
+/// bound keeps bounding memory as well as work — and lands on a later frame.
+///
+/// The per-item cap is checked **before** the ledger, so an item past the cap
+/// is never priced and never spends the frame's allowance, and the first
+/// refusal ends the take rather than skipping to a cheaper item behind it:
+/// arrival order is kept, and a big item that cannot fit beside anything lands
+/// on the frame where it comes first (the module doc's first rule).
+///
+/// `cost` is what the result will hand the GPU, in bytes; a failure or an
+/// empty cell is 0, which always passes and spends nothing.
+pub fn take_admitted<K, R>(
+    stream: &mut crate::platform::stream::CellStream<K, R>,
+    cap: usize,
+    mut cost: impl FnMut(&R) -> usize,
+) -> Vec<(K, R)>
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    let mut done = stream.take_results();
+    let mut take = 0usize;
+    for (_, result) in &done {
+        if take >= cap {
+            break;
+        }
+        if !admit(cost(result)) {
+            break;
+        }
+        take += 1;
+    }
+    let deferred = done.split_off(take);
+    stream.defer(deferred);
+    done
+}
+
 /// What one [`bevy::prelude::Mesh`] will cost the GPU, by the same arithmetic
 /// [`crate::systems::upload_meter`] measures with — so what the ledger admits
 /// and what the meter reports are the same number.
@@ -106,7 +144,8 @@ fn refund(ceiling: Option<usize>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{admit, refund};
+    use super::{admit, refund, take_admitted};
+    use crate::platform::stream::{CellStream, Policy};
 
     /// The tests share one process-wide ledger, so they run under one lock —
     /// otherwise a parallel test's `refund` lands mid-assertion and the failure
@@ -149,5 +188,52 @@ mod tests {
         refund(None);
         assert!(admit(usize::MAX));
         assert!(admit(usize::MAX));
+    }
+
+    /// The streamers' shared drain: the item cap first, then the ledger, and the
+    /// first refusal ends the take — a cheaper result behind it waits its turn
+    /// rather than jumping the queue. Whatever is not taken keeps its slot.
+    #[test]
+    fn take_admitted_stops_at_the_first_refusal_and_defers_the_rest() {
+        let _guard = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = CellStream::<i32, usize>::new(Policy {
+            max_in_flight: 8,
+            min_interval_secs: 0.0,
+            max_attempts: 1,
+            backoff_secs: 0.0,
+            backoff_doublings: 0,
+            cooldown_secs: 0.0,
+            despawns_per_frame: 1,
+        });
+        // Near rank, so the global fetch gate's reserve admits them even while
+        // other tests hold its slots.
+        for k in 0..4 {
+            s.request_ranked(k, crate::platform::fetch_gate::NEAR, 0.0);
+        }
+        while s.next_job(0.0).is_some() {}
+        s.sink()
+            .lock()
+            .unwrap()
+            .extend([(0, 60), (1, 60), (2, 10), (3, 10)]);
+
+        refund(Some(100));
+        let taken = take_admitted(&mut s, 3, |bytes| *bytes);
+        assert_eq!(
+            taken,
+            vec![(0, 60)],
+            "the ledger's refusal must end the take"
+        );
+        assert_eq!(s.in_flight(), 3, "deferred results must keep their slots");
+
+        refund(None);
+        let taken = take_admitted(&mut s, 2, |bytes| *bytes);
+        assert_eq!(
+            taken,
+            vec![(1, 60), (2, 10)],
+            "the item cap applies uncapped too"
+        );
+        assert_eq!(s.in_flight(), 1);
     }
 }

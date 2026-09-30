@@ -92,7 +92,6 @@ use crate::resources::{CameraState, MapAnchor, ScreenshotState};
 use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
 use crate::systems::globe::{GlobeState, GlobeSurfaceAlbedo};
 use crate::systems::map_stream::MapStream;
-use crate::systems::weather::WeatherState;
 
 /// The world state a viewpoint wants to be shot in — the parts of "what does it
 /// look like from there" that aren't the camera. Set per shot by a preset
@@ -3235,6 +3234,13 @@ pub struct VisualCounts<'w, 's> {
 /// still arriving. The accidental 45 s sleep had been doing the waiting, so the
 /// test has to name the streamers it was covering for.
 ///
+/// It is no longer a list written here. It was, and it fell behind — the water
+/// levels, the dikes, the BAG facts and the data layers were never on it — so
+/// the list is now [`StreamRegistry`](crate::systems::stream_watch::StreamRegistry),
+/// filled by the plugin that initialises each resource
+/// (`app.watch_stream::<R>()`, `systems::stream_watch`). The relief backlog, the
+/// route solve and the live weather sample are registered the same way.
+///
 /// It is a parameter of its own rather than a block inside [`drive_capture`]
 /// because it has a second caller: `systems::mcp`'s `state` tool answers "is the
 /// world finished, and if not, what is it still doing" **without taking a
@@ -3243,22 +3249,7 @@ pub struct VisualCounts<'w, 's> {
 /// month.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct StreamWatch<'w> {
-    globe: Res<'w, GlobeState>,
-    tiles: Res<'w, MapStream>,
-    surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
-    osm_buildings: Res<'w, crate::systems::osm_buildings::OsmBuildings>,
-    lod22: Res<'w, crate::systems::lod22::Lod22Buildings>,
-    terrain: Res<'w, crate::systems::terrain::TerrainField>,
-    relief_backlog: Res<'w, crate::systems::map_stream::ReliefBacklog>,
-    grass: Res<'w, crate::systems::grass::GrassPatches>,
-    street_detail: Res<'w, crate::systems::street_detail::StreetDetail>,
-    tall_structures: Res<'w, crate::systems::tall_structures::TallStructures>,
-    /// A `--weather-live` run holds until the first met.no sample lands, so the
-    /// capture shows real conditions rather than the default clear sky.
-    weather: Res<'w, WeatherState>,
-    /// A `--ui route` run holds until the solve lands — otherwise the shot
-    /// documents an empty planner and a map with no line on it (ADR-037).
-    route: Res<'w, crate::systems::navigation::RouteState>,
+    registry: Res<'w, crate::systems::stream_watch::StreamRegistry>,
 }
 
 impl StreamWatch<'_> {
@@ -3267,33 +3258,11 @@ impl StreamWatch<'_> {
     /// **Names, not a single `||` chain.** When a capture gives up at `--wait`,
     /// *which* streamer was still going is the entire diagnosis, and a bare "not
     /// settled" sends you back to re-run with a longer cap just to learn it.
+    ///
+    /// As of the last [`StreamReport`](crate::systems::stream_watch::StreamReport):
+    /// this frame's for `drive_capture`, which is ordered after it.
     pub fn busy(&self) -> Vec<&'static str> {
-        let routing = matches!(
-            self.route.status,
-            crate::systems::navigation::SolveStatus::Fetching(..)
-                | crate::systems::navigation::SolveStatus::Solving
-        );
-        [
-            ("globe", self.globe.streaming_busy()),
-            ("map_tiles", self.tiles.streaming_busy()),
-            ("surfaces", self.surfaces.streaming_busy()),
-            ("osm_buildings", self.osm_buildings.streaming_busy()),
-            ("lod22", self.lod22.streaming_busy()),
-            ("terrain", self.terrain.streaming_busy()),
-            // Not the same question as `terrain`: that one is "has the field
-            // arrived", this one is "is the ground drawn with it yet". They are
-            // ~83 frames apart over a city and only the second decides what the
-            // picture shows.
-            ("relief", self.relief_backlog.0 > 0),
-            ("grass", self.grass.streaming_busy()),
-            ("street_detail", self.street_detail.streaming_busy()),
-            ("tall_structures", self.tall_structures.streaming_busy()),
-            ("routing", routing),
-            ("weather", self.weather.live && !self.weather.ready()),
-        ]
-        .into_iter()
-        .filter_map(|(name, busy)| busy.then_some(name))
-        .collect()
+        self.registry.busy()
     }
 }
 
@@ -3307,10 +3276,10 @@ pub fn drive_capture(
     mut exit: MessageWriter<AppExit>,
     globe: Res<GlobeState>,
     stream: Res<MapStream>,
-    // The settle test's inputs, as one parameter — see `StreamWatch`. It holds
-    // its own handles on the globe and the tile stream; those two stay named
-    // above because the metrics read altitude, tier and tile counts off them,
-    // which is a different question from "is it still working".
+    // The settle test's inputs, as one parameter — see `StreamWatch`. The globe
+    // and the tile stream are named above because the metrics read altitude,
+    // tier and tile counts off them, which is a different question from "is it
+    // still working".
     watch: StreamWatch,
     cam_state: Res<CameraState>,
     readouts: ShotReadouts,

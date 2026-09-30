@@ -599,6 +599,13 @@ const GRADED_WATER_HOLD_S: f32 = 3.0;
 /// flat anyway. It lands in ~3 s warm and ~5 s cold on the Deck (2026-09-24).
 const GRADED_HOLD_S: f32 = 8.0;
 
+impl crate::systems::stream_watch::StreamBusy for TerrainField {
+    const NAME: &'static str = "terrain";
+    fn stream_busy(&self) -> bool {
+        self.streaming_busy()
+    }
+}
+
 impl TerrainField {
     /// Whether cells for this anchor should wait before they are built.
     ///
