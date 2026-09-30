@@ -312,6 +312,10 @@
     <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
          root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
     <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
+    <!-- Calls: the encoded-transform worker and its SFrame, loaded as a module
+         worker by `web/webcall.js` (which wasm-bindgen bundles itself, as a
+         snippet). docs/notes/calls.md. -->
+    <link data-trunk rel="copy-dir" href="web" data-target-path="web" />
     <!-- Android App Links. The phone fetches /.well-known/assetlinks.json at
          install time and will only open `https://cartopolis.org/go?place=…` in the
          app if it names that package *and* the certificate the APK is signed with

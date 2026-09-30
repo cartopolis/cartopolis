@@ -27,6 +27,8 @@
 #[cfg(target_os = "android")]
 pub mod android;
 pub mod audio;
+// Not on the web: a call there uses the browser's camera (`web_call`).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod camera;
 pub mod cell_source;
 pub mod fetch_gate;
@@ -39,5 +41,7 @@ pub mod storage;
 pub mod stream;
 pub mod warm;
 pub mod watchdog;
+#[cfg(target_arch = "wasm32")]
+pub mod web_call;
 pub mod work;
 pub mod workers;

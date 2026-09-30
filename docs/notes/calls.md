@@ -139,3 +139,65 @@ chosen when there is one. Three decisions:
 
 **Not run on a device**: the emulator on the VPS cannot run this app, so the
 permission prompt, the orientation and the picture itself are unverified.
+
+## Calls in the browser (2026-09-30)
+
+The browser's own WebRTC, microphone, camera, Opus and VP8 (`web/webcall.js`,
+driven from `platform::web_call`), in the same shape as the native link: one
+connection up, one down, both to the forwarder. Every encoded frame passes
+through an encoded-transform worker (`web/call-worker.js`) that seals it on the
+way out and opens it on the way in, so the forwarder carries SFrame from a
+browser exactly as from the app. Decisions:
+
+- **SFrame in JavaScript over WebCrypto, not the Rust compiled twice.** The
+  worker would need its own wasm build with the threads flags; ~200 lines of
+  HKDF and AES-GCM are cheaper. What keeps it identical is
+  `crates/calls/testdata/sframe-vectors.json`, written by the Rust test
+  `the_browser_vectors_are_what_this_seals` and checked by
+  `bun test crates/cartopolis/web`.
+- **Two deviations the port had to copy, found by those vectors.** The suite
+  id in the key-derivation label is RFC 9605's `0x0004` for AES-128-GCM, not
+  `1`; and the `sframe` crate authenticates the clear VP8 bytes *before* the
+  header, where RFC 9605 §4.4 puts the header first. The native client is what
+  a browser has to agree with, so the port follows the crate. Another SFrame
+  implementation would not interoperate with either until that is settled.
+- **Both transform APIs.** `RTCRtpScriptTransform` where it exists (Firefox,
+  Safari, Chrome 141+ — this container's Chrome 154 has it), Chrome's older
+  `createEncodedStreams()` otherwise; neither means no call, and the button
+  says so.
+- **The address switches of the call harness (`?call=`, `?answer`) only work
+  on a page served from this machine.** On the public site a link carrying
+  `?answer` would open a visitor's microphone to whoever rang.
+
+**Verified 2026-09-30**, `tools/web_call_test.ts`: the web client in headless
+Chrome 154 (its fake camera and microphone) and the native client (stand-in
+camera and tone) in one call through a local simulator. After four minutes the
+app had decoded 3,391 pictures and ~11,300 audio frames from the browser; the
+browser's RTP statistics showed 3,063 pictures and 11.3 million audio samples
+decoded from the app. Every frame both ways was sealed and opened by the two
+SFrame implementations, so this is also the cross-check the vectors are for.
+
+What the test found along the way, all fixed:
+
+- **No browser could sign in to a simulator** (`ws_transport::send`): the
+  threaded build's memory is a `SharedArrayBuffer`, `WebSocket.send` refuses a
+  view onto it, and the hello was sent as one. Fixed by copying first. The call
+  keys handed to the worker had the same hazard.
+- **The camera pressed in the first moment of a call did nothing**: the video
+  sender does not exist until the microphone has opened, and the request was
+  dropped while the app went on believing the camera was on.
+
+And what a test has to know:
+
+- **Two people must be contacts** (or have a contact request between them)
+  before the server opens a private chat, so before they can call
+  (`simulator::contacts`, rule 4). The test inserts the contact.
+- **This container's default WebGPU adapter loses the device on the first
+  canvas present.** `--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan
+  --use-angle=vulkan` keeps it; the renderer still halts on a pipeline this
+  software GPU rejects, and the call runs on regardless.
+- **A debug web build dies on two things that are not calls**: rodio 0.22's WAV
+  `size_hint` subtracts a count that is already decreasing (an overflow panic
+  under overflow checks), and after a renderer halt a system whose resource was
+  removed panics where a release build only logs. Build the test with debug
+  assertions and overflow checks off, as the shipped build has them.

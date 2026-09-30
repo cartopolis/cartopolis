@@ -22,7 +22,7 @@ impl Plugin for NetPlugin {
             .init_resource::<systems::voice::VoiceState>();
         // Headless call tests (`CARTO_CALL`, `CARTO_ANSWER`): writes the request
         // `drive_calls` takes, so it runs first.
-        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        #[cfg(not(target_os = "android"))]
         app.add_systems(
             Update,
             systems::calls::drive_call_harness

@@ -126,7 +126,14 @@ impl CallKeys {
     /// Keys for a new join, under a context nobody has used before.
     #[must_use]
     pub fn new() -> Self {
-        let context = uuid::Uuid::new_v4().as_u128() as u32;
+        Self::with_context(uuid::Uuid::new_v4().as_u128() as u32)
+    }
+
+    /// Keys under a chosen context: for test vectors, which must come out the
+    /// same every run. A real join always takes [`Self::new`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_context(context: u32) -> Self {
         Self {
             context,
             epochs: VecDeque::new(),
@@ -388,5 +395,67 @@ mod tests {
         let mut d = keys_for(&dave, &g);
         assert!(d.open(Codec::Opus, &late).is_err());
         assert_eq!(d.open(Codec::Opus, &fresh).unwrap().frame, b"new epoch");
+    }
+
+    /// The frames the browser's copy of this (`crates/cartopolis/web/sframe.js`)
+    /// is held to, byte for byte: its own test seals the same frames under the
+    /// same keys and must produce these, and opens these back to the frames.
+    ///
+    /// The file is written by this test and compared on every run, so a change
+    /// to the encryption here fails until the file — and so the browser's
+    /// test — is updated with it. `UPDATE_SFRAME_VECTORS=1` rewrites it.
+    #[test]
+    fn the_browser_vectors_are_what_this_seals() {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let base_key = [0x11u8; BASE_KEY_LEN];
+        let (epoch, context) = (7u64, 0x1234_5678u32);
+        let frames: Vec<(u32, Codec, Vec<u8>)> = vec![
+            (2, Codec::Opus, (1..=40).collect()),
+            (2, Codec::Vp8, [0x10].into_iter().chain(2..=30).collect()), // keyframe
+            (2, Codec::Vp8, [0x31].into_iter().chain(2..=20).collect()), // delta
+            (
+                300,
+                Codec::Opus,
+                b"a second sender, index past one byte".to_vec(),
+            ),
+        ];
+        let mut senders: HashMap<u32, CallKeys> = HashMap::new();
+        let mut rows = Vec::new();
+        for (index, codec, frame) in &frames {
+            let keys = senders.entry(*index).or_insert_with(|| {
+                let mut k = CallKeys::with_context(context);
+                k.set_epoch(epoch, base_key.to_vec(), *index, vec![2, 300]);
+                k
+            });
+            let sealed = keys.seal(*codec, frame).unwrap();
+            // And it opens, by a receiver in the same epoch.
+            let mut rx = CallKeys::with_context(1);
+            rx.set_epoch(epoch, base_key.to_vec(), 9, vec![2, 300]);
+            assert_eq!(rx.open(*codec, &sealed).unwrap().frame, *frame);
+            let codec = match codec {
+                Codec::Opus => "opus",
+                Codec::Vp8 => "vp8",
+            };
+            rows.push(format!(
+                "    {{\"index\": {index}, \"codec\": \"{codec}\", \"frame\": \"{}\", \"sealed\": \"{}\"}}",
+                hex(frame),
+                hex(&sealed)
+            ));
+        }
+        let json = format!(
+            "{{\n  \"suite\": \"AES_128_GCM_SHA256_128\",\n  \"context\": {context},\n  \"epoch\": {epoch},\n  \"base_key\": \"{}\",\n  \"frames\": [\n{}\n  ]\n}}\n",
+            hex(&base_key),
+            rows.join(",\n")
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/sframe-vectors.json");
+        if std::env::var_os("UPDATE_SFRAME_VECTORS").is_some() {
+            std::fs::create_dir_all(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata")).unwrap();
+            std::fs::write(path, &json).unwrap();
+        }
+        let on_disk = std::fs::read_to_string(path).unwrap_or_default();
+        assert_eq!(
+            on_disk, json,
+            "rerun with UPDATE_SFRAME_VECTORS=1, then the browser test"
+        );
     }
 }

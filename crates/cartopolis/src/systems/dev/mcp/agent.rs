@@ -2119,8 +2119,12 @@ fn settle(
                         if asked {
                             "the call did not start in time."
                         } else {
-                            "no private chat with them could be opened (no such account, or \
-                             none of their devices has signed in since private chats existed)."
+                            "no private chat with them could be opened. Most often you are \
+                             not contacts yet: the server opens a private chat only between \
+                             contacts, or once one of you has sent the other a contact \
+                             request. Otherwise \
+                             there is no such account, or none of their devices has signed in \
+                             since private chats existed."
                         }
                     ));
                     finish(bridge, "call", answer, reply, now);

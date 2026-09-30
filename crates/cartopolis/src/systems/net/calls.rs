@@ -22,25 +22,30 @@
 //! Proximity voice is switched off for the length of a call: both would open
 //! the microphone, and nobody wants to be heard by passers-by while on a call.
 //!
-//! **The browser has no call yet.** Its WebRTC is the browser's own and the
-//! frame encryption needs an encoded-transform worker; until that exists the
-//! web build says so rather than offering a button that does nothing.
+//! **In the browser the media is the browser's own** (`platform::web_call`):
+//! its WebRTC, microphone, camera and codecs, with every frame sealed and
+//! opened in an encoded-transform worker by the same SFrame as here. This module
+//! carries its signalling and keys the same way and tells it about mute and
+//! the camera rather than feeding it samples.
 
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use cartopolis_core::{CallMember, NetMessage};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::platform::audio::AudioInput;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::platform::camera::Camera;
 use crate::resources::{AppPrefs, AuthIdentity, ConnectAddr, OnlineSession};
 use crate::systems::private_chat::{channel_key, PrivateChats};
-use crate::systems::voice::{self, Resampler, VoiceMode, VoiceState};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::systems::voice::Resampler;
+use crate::systems::voice::{self, VoiceMode, VoiceState};
 
 /// Request ids for call traffic, so a refusal (`ServerError`) finds its way
 /// here rather than to the prim editor, which deselects on a 403.
 const REQUEST_BASE: u32 = 0xCA11_0000;
-#[cfg(any(not(target_arch = "wasm32"), test))]
 const JOIN_REQUEST: u32 = REQUEST_BASE | 1;
 
 /// Whether a request id is a call's.
@@ -90,21 +95,34 @@ struct Active {
     participant: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     session: cartopolis_calls::session::Session,
+    /// The browser's own call (`platform::web_call`): its WebRTC, microphone,
+    /// camera and codecs, with our encryption on every frame.
+    #[cfg(target_arch = "wasm32")]
+    web: crate::platform::web_call::WebSession,
+    /// What the browser's camera was last told.
+    #[cfg(target_arch = "wasm32")]
+    web_camera: bool,
     connected: bool,
     /// The chat epoch last handed to the session.
     epoch: Option<u64>,
     started: web_time::Instant,
+    #[cfg(not(target_arch = "wasm32"))]
     mic: Option<AudioInput>,
+    #[cfg(not(target_arch = "wasm32"))]
     resampler: Resampler,
+    #[cfg(not(target_arch = "wasm32"))]
     capture: Vec<i16>,
+    #[cfg(not(target_arch = "wasm32"))]
     pending: Vec<i16>,
     /// Who is heard, by participant: the ring their audio goes into.
     speakers: HashMap<u64, Speaker>,
     /// The camera, while it is on.
+    #[cfg(not(target_arch = "wasm32"))]
     camera: Option<Camera>,
     /// The newest picture from each person seen, by participant.
     pictures: HashMap<u64, Picture>,
     /// The stand-in microphone's frame count (`CARTO_FAKE_MIC`).
+    #[cfg(not(target_arch = "wasm32"))]
     fake_mic_sent: u64,
     /// Received so far, per participant: (audio frames, pictures). Logged
     /// every few seconds, which is what a headless test reads.
@@ -249,7 +267,10 @@ impl Calls {
     /// Whether this build can place a call at all.
     #[must_use]
     pub fn available() -> bool {
-        cfg!(not(target_arch = "wasm32"))
+        #[cfg(target_arch = "wasm32")]
+        return crate::platform::web_call::WebSession::supported();
+        #[cfg(not(target_arch = "wasm32"))]
+        true
     }
 }
 
@@ -312,7 +333,7 @@ pub fn drive_calls(
                     #[cfg(not(target_arch = "wasm32"))]
                     a.session.joined(answer);
                     #[cfg(target_arch = "wasm32")]
-                    let _ = answer;
+                    a.web.joined(&answer);
                 }
             }
             NetMessage::CallOffer { group, sdp, tracks } => {
@@ -333,7 +354,9 @@ pub fn drive_calls(
                     a.session.offered(sdp, tracks);
                 }
                 #[cfg(target_arch = "wasm32")]
-                let _ = (group, sdp, tracks);
+                if let Some(a) = calls.active.as_ref().filter(|a| a.group == group) {
+                    a.web.offered(&sdp, &tracks);
+                }
             }
             NetMessage::ServerError { message, .. } => {
                 tracing::warn!(%message, "call refused by the server");
@@ -349,7 +372,11 @@ pub fn drive_calls(
             if calls.active_group() == Some(group.as_slice()) {
                 // Already in it.
             } else if !Calls::available() {
-                calls.notice = Some("Calls need the app for now; the browser comes later.".into());
+                calls.notice = Some(
+                    "This browser cannot make an encrypted call. A recent Chrome, Firefox or \
+                     Safari can, and so can the app."
+                        .into(),
+                );
             } else if private.call_epoch(&group).is_none() {
                 calls.notice = Some("This chat is not ready for a call yet.".into());
             } else {
@@ -399,7 +426,78 @@ pub fn drive_calls(
                 e.own_index,
                 e.members.iter().map(|m| m.0).collect(),
             );
+            #[cfg(target_arch = "wasm32")]
+            a.web.epoch(e.epoch, &e.base_key, e.own_index);
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use crate::platform::web_call::Event;
+        let mut failed = None;
+        for ev in a.web.events() {
+            match ev {
+                Event::Offer(offer) => {
+                    online.send(
+                        "call join",
+                        NetMessage::CallJoin {
+                            request_id: JOIN_REQUEST,
+                            group: a.group.clone(),
+                            offer,
+                        },
+                    );
+                }
+                Event::Answer(sdp) => {
+                    online.send(
+                        "call answer",
+                        NetMessage::CallAnswer {
+                            group: a.group.clone(),
+                            sdp,
+                        },
+                    );
+                }
+                Event::Connected => a.connected = true,
+                Event::Notice(text) => *notice = Some(text),
+                Event::CameraOff => {
+                    *camera_on = false;
+                    a.web_camera = false;
+                }
+                Event::Failed(why) => failed = Some(why),
+            }
+        }
+        for p in a.web.pictures() {
+            a.received.entry(p.participant).or_default().1 += 1;
+            a.pictures.insert(
+                p.participant,
+                Picture {
+                    width: p.width,
+                    height: p.height,
+                    rgba: p.rgba,
+                    fresh: true,
+                },
+            );
+        }
+        if let Some(why) = failed {
+            tracing::warn!(%why, "call ended");
+            *notice = Some(format!("Call ended: {why}"));
+            online.send(
+                "call leave",
+                NetMessage::CallLeave {
+                    group: a.group.clone(),
+                },
+            );
+            *active = None;
+            *level = 0.0;
+            return;
+        }
+        // The browser owns the microphone and the camera; they are told, not fed.
+        a.web.set_muted(*muted);
+        if a.web_camera != *camera_on {
+            a.web_camera = *camera_on;
+            a.web.set_camera(*camera_on);
+        }
+        *level = 0.0;
+        let _ = (fake_media, &prefs);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -482,8 +580,19 @@ pub fn drive_calls(
         }
     }
 
-    capture(a, *muted, *fake_media, &prefs, level, notice);
-    send_camera(a, camera_on, *fake_media, notice);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        capture(a, *muted, *fake_media, &prefs, level, notice);
+        send_camera(a, camera_on, *fake_media, notice);
+    }
+}
+
+/// Whether this device can send a camera in a call.
+fn camera_available() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    return true;
+    #[cfg(not(target_arch = "wasm32"))]
+    Camera::available()
 }
 
 /// Start a call's session towards the simulator this client is connected to.
@@ -499,16 +608,26 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         // it on mid-call must not need a renegotiation, and a track with no
         // frames on it costs nothing.
         session: cartopolis_calls::session::Session::start(host, RATE, true),
+        #[cfg(target_arch = "wasm32")]
+        web: crate::platform::web_call::WebSession::start(),
+        #[cfg(target_arch = "wasm32")]
+        web_camera: false,
         connected: false,
         epoch: None,
         started: web_time::Instant::now(),
+        #[cfg(not(target_arch = "wasm32"))]
         mic: None,
+        #[cfg(not(target_arch = "wasm32"))]
         resampler: Resampler::default(),
+        #[cfg(not(target_arch = "wasm32"))]
         capture: Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
         pending: Vec::new(),
         speakers: HashMap::new(),
+        #[cfg(not(target_arch = "wasm32"))]
         camera: None,
         pictures: HashMap::new(),
+        #[cfg(not(target_arch = "wasm32"))]
         fake_mic_sent: 0,
         received: HashMap::new(),
         last_report: web_time::Instant::now(),
@@ -518,6 +637,7 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
 /// Camera to the session, at the call's frame rate, while it is on. The
 /// stand-in camera (`CARTO_FAKE_CAMERA`) is on from the start, since a
 /// headless test has nobody to press the button.
+#[cfg(not(target_arch = "wasm32"))]
 fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Option<String>) {
     let fake = fake_media || crate::env_flag("CARTO_FAKE_CAMERA");
     if fake && !fake_media {
@@ -548,6 +668,7 @@ fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Opt
 /// Microphone to the session, in 20 ms frames at [`RATE`]. The device stays
 /// open while muted, so unmuting does not cost the first word to a device
 /// opening; the audio is simply not sent.
+#[cfg(not(target_arch = "wasm32"))]
 fn capture(
     a: &mut Active,
     muted: bool,
@@ -772,7 +893,8 @@ pub fn render_call_bar(
                             if theme::action_button(ui, mute).clicked() {
                                 calls.muted = !calls.muted;
                             }
-                            if Camera::available() {
+                            // In the browser the camera is the browser's (`web_call`).
+                            if camera_available() {
                                 let cam = if calls.camera_on {
                                     "Camera off"
                                 } else {
@@ -847,8 +969,12 @@ pub fn render_call_bar(
 /// With `CARTO_FAKE_CAMERA` and `CARTO_FAKE_MIC`, two headless clients signed
 /// in to one simulator place a real call — every step after the camera and the
 /// microphone on the real path — and `calls: received` in each log says what
-/// arrived. Desktop only: an environment is what a harness sets.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+/// arrived. On the web the same switches are read from the page address
+/// (`?call=bob`, `?answer`, and `?camera` to send the camera once in the
+/// call) — **only for a page served from this machine**:
+/// on the public site a link carrying `?answer` would open somebody's
+/// microphone to whoever rang, so there they do nothing.
+#[cfg(not(target_os = "android"))]
 #[allow(clippy::too_many_arguments)]
 pub fn drive_call_harness(
     mut calls: ResMut<Calls>,
@@ -859,6 +985,16 @@ pub fn drive_call_harness(
     mut asked: Local<bool>,
     mut last_try: Local<Option<web_time::Instant>>,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    if !page_is_local() {
+        return;
+    }
+    // `?camera` on the web: send the browser's camera once in a call (a
+    // desktop run has `CARTO_FAKE_CAMERA`, which does this itself).
+    #[cfg(target_arch = "wasm32")]
+    if calls.active_group().is_some() && crate::env_flag("CARTO_CAMERA") && !calls.camera_on {
+        calls.camera_on = true;
+    }
     if online.is_none() || calls.request.is_some() || calls.active_group().is_some() {
         return;
     }
@@ -866,7 +1002,7 @@ pub fn drive_call_harness(
     if last_try.is_some_and(|t| t.elapsed().as_secs_f32() < 2.0) {
         return;
     }
-    if let Ok(peer) = std::env::var("CARTO_CALL") {
+    if let Some(peer) = crate::env_value("CARTO_CALL") {
         match private.direct_chat_with(&peer) {
             Some(group) => {
                 calls.notice = None;
@@ -888,6 +1024,16 @@ pub fn drive_call_harness(
             *last_try = Some(web_time::Instant::now());
         }
     }
+}
+
+/// Whether this page was served from this machine: the only place the call
+/// harness's address switches are honoured.
+#[cfg(target_arch = "wasm32")]
+fn page_is_local() -> bool {
+    let host = web_sys::window()
+        .and_then(|w| w.location().hostname().ok())
+        .unwrap_or_default();
+    matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]")
 }
 
 #[cfg(test)]

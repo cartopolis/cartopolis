@@ -1149,7 +1149,7 @@ impl PrivateChats {
     }
     /// The direct chat with `username`, if this device has one — for the call
     /// harness (`calls::drive_call_harness`), which calls a person by name.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(not(target_os = "android"))]
     #[must_use]
     pub fn direct_chat_with(&self, username: &str) -> Option<Vec<u8>> {
         self.engine.as_ref()?.direct_with(username).cloned()

@@ -53,17 +53,18 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// Whether this build can open a real camera at all.
+    /// Whether this build can open a real camera at all. (Not compiled for
+    /// the web, where a call uses the browser's camera.)
     #[must_use]
     pub const fn available() -> bool {
-        cfg!(not(target_arch = "wasm32"))
+        true
     }
 
     /// Open the default camera.
     #[must_use]
     pub fn open() -> Self {
         let shared = Arc::new(Shared::default());
-        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        #[cfg(not(target_os = "android"))]
         {
             let s = Arc::clone(&shared);
             if let Err(e) = std::thread::Builder::new()
@@ -82,10 +83,6 @@ impl Camera {
             {
                 *shared.error.lock().unwrap() = Some(format!("Camera: {e}"));
             }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            *shared.error.lock().unwrap() = Some("No camera support on this device yet".into());
         }
         Self { shared }
     }
@@ -115,9 +112,6 @@ impl Camera {
     /// Send every picture to `sink` as it is taken, at most at the call's
     /// frame rate, from the camera's own thread — so video does not wait on
     /// the app's frame loop.
-    // The web build has no call session to sink into yet (calls there are
-    // the browser's own WebRTC, not built), so nothing calls this on wasm.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn set_sink(&self, sink: Sink) {
         *self.shared.sink.lock().unwrap() = Some(sink);
     }
@@ -135,7 +129,7 @@ impl Drop for Camera {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 mod webcam {
     use super::{Shared, I420};
     use nokhwa::pixel_format::YuyvFormat;

@@ -257,6 +257,8 @@ impl AudioInput {
     /// (`docs/notes/voice-chat.md`). Everywhere else it is `start`: cpal offers
     /// no such mode, and the desktop answer is headphones.
     #[must_use]
+    // The browser's call opens its own microphone (`platform::web_call`).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn start_for_call() -> Self {
         Self::open(true)
     }
