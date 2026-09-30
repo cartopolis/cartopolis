@@ -134,7 +134,10 @@ async fn signalling(
                         kind: if t.video { Kind::Video } else { Kind::Audio },
                     })
                     .collect();
-                let answer = phone.link.accept_offer(&sdp, &tracks).unwrap();
+                let answer = phone
+                    .link
+                    .accept_offer(std::time::Instant::now(), &sdp, &tracks)
+                    .unwrap();
                 send(
                     c,
                     &NetMessage::CallAnswer {

@@ -160,6 +160,10 @@ struct Participant {
     alive: bool,
     /// When either connection last went `Disconnected` without coming back.
     lost_since: Option<Instant>,
+    /// Whether an offer has been made on the down connection. It is not
+    /// driven before: alone in a call there is nothing to negotiate, and its
+    /// handshake timer would otherwise end the participant at ~30 s.
+    down_started: bool,
 }
 
 /// Media that arrived on somebody's up connection, waiting to be forwarded.
@@ -191,11 +195,7 @@ impl Sfu {
     }
 
     fn rtc(&self, now: Instant) -> Result<Rtc, Error> {
-        let mut rtc = Rtc::builder().set_ice_lite(true).build(now);
-        let candidate = Candidate::host(self.public, "udp").map_err(rtc_err)?;
-        rtc.add_local_candidate(candidate)
-            .ok_or_else(|| Error::Rtc("candidate refused".into()))?;
-        Ok(rtc)
+        fresh_rtc(self.public, now)
     }
 
     /// Admit a participant to `room` with the offer for its up connection.
@@ -247,6 +247,7 @@ impl Sfu {
             pending: None,
             alive: true,
             lost_since: None,
+            down_started: false,
         });
         Ok((id, answer.to_sdp_string()))
     }
@@ -376,6 +377,9 @@ impl Sfu {
 
         for p in self.participants.iter_mut().filter(|p| p.alive) {
             for up in [true, false] {
+                if !up && !p.down_started {
+                    continue;
+                }
                 let rtc = if up { &mut p.up } else { &mut p.down };
                 if rtc.handle_input(Input::Timeout(now)).is_err() {
                     p.alive = false;
@@ -469,7 +473,7 @@ impl Sfu {
             self.request_keyframe(from, mid, kind, now);
         }
         self.retire_dead();
-        self.negotiate();
+        self.negotiate(now);
 
         // Forwarding and negotiating queued output on the down connections.
         for p in self.participants.iter_mut().filter(|p| p.alive) {
@@ -592,12 +596,39 @@ impl Sfu {
     /// Start an offer on every down connection that has track changes and no
     /// offer already outstanding. The one-offer-at-a-time rule is what keeps a
     /// burst of joins from producing offers that cross.
-    fn negotiate(&mut self) {
+    fn negotiate(&mut self, now: Instant) {
+        let public = self.public;
         for p in self
             .participants
             .iter_mut()
             .filter(|p| p.alive && p.pending.is_none())
         {
+            // The down connection is made at its first offer, not at the join:
+            // its handshake timer starts when it is created, and somebody alone
+            // in a call can wait a minute for the first person to pick up.
+            if !p.down_started
+                && p.tracks_out
+                    .iter()
+                    .any(|t| matches!(t.state, OutState::ToOpen))
+            {
+                match fresh_rtc(public, now) {
+                    Ok(rtc) => p.down = rtc,
+                    Err(_) => continue,
+                }
+            }
+            // Never renegotiate down to nothing. An offer that stops every
+            // track carries no BUNDLE group, and the receiving side refuses it
+            // ("a=group missing"), which ended the call for the last person
+            // left in it. The departed tracks carry nothing anyway; they are
+            // stopped with the next offer, when somebody joins.
+            if !p.tracks_out.iter().any(|t| {
+                matches!(
+                    t.state,
+                    OutState::ToOpen | OutState::Negotiating(_) | OutState::Open(_)
+                )
+            }) {
+                continue;
+            }
             let mut change = p.down.sdp_api();
             for t in &mut p.tracks_out {
                 match t.state {
@@ -625,6 +656,7 @@ impl Sfu {
                 continue;
             };
             p.pending = Some(pending);
+            p.down_started = true;
             let tracks = p
                 .tracks_out
                 .iter()
@@ -652,4 +684,13 @@ impl Sfu {
     fn participant_mut(&mut self, who: ParticipantId) -> Option<&mut Participant> {
         self.participants.iter_mut().find(|p| p.id == who)
     }
+}
+
+/// An ICE-lite connection with the forwarder's one public candidate.
+fn fresh_rtc(public: SocketAddr, now: Instant) -> Result<Rtc, Error> {
+    let mut rtc = Rtc::builder().set_ice_lite(true).build(now);
+    let candidate = Candidate::host(public, "udp").map_err(rtc_err)?;
+    rtc.add_local_candidate(candidate)
+        .ok_or_else(|| Error::Rtc("candidate refused".into()))?;
+    Ok(rtc)
 }

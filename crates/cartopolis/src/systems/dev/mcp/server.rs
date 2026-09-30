@@ -30,8 +30,8 @@ use futures_channel::oneshot;
 use std::sync::Arc;
 
 use super::agent::{
-    AgentRequest, BuildArgs, CallArgs, EmoteArgs, IdArgs, IdsArgs, OutputArgs, PlaceArgs,
-    ReadChatArgs, SayArgs, ScriptArgs, VideoArgs, WalkArgs,
+    AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EmoteArgs, IdArgs, IdsArgs,
+    OutputArgs, PlaceArgs, ReadChatArgs, SayArgs, ScriptArgs, VideoArgs, WalkArgs,
 };
 use super::{Config, ImageFormat, Job, McpAuth, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
 use crate::systems::shot_harness::ShotEnv;
@@ -498,7 +498,8 @@ impl Tools {
                        private chat with them (opened first if there is none). This client \
                        has no camera or microphone, so it sends a moving test pattern and a \
                        tone. Returns once the call is ringing for them; `call_status` says \
-                       when they pick up."
+                       when they pick up. You must be contacts first (`request_contact`, and \
+                       they accept)."
     )]
     async fn call(
         &self,
@@ -523,6 +524,31 @@ impl Tools {
     )]
     async fn call_status(&self) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::CallStatus).await
+    }
+
+    #[tool(
+        description = "Ask somebody to be your contact, optionally with a first message. A call \
+                       or a private chat needs you to be contacts (or a request between you): \
+                       send this, and they accept it in their app."
+    )]
+    async fn request_contact(
+        &self,
+        Parameters(args): Parameters<ContactArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::RequestContact(args)).await
+    }
+
+    #[tool(description = "Accept or decline somebody's request to be your contact.")]
+    async fn answer_contact(
+        &self,
+        Parameters(args): Parameters<AnswerContactArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::AnswerContact(args)).await
+    }
+
+    #[tool(description = "Your contacts (and who is online), and the requests either way.")]
+    async fn contacts(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Contacts).await
     }
 
     #[tool(description = "Stop walking.")]

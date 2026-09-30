@@ -86,6 +86,11 @@ pub struct Link {
     /// When a connection last went `Disconnected` and has not come back. Not
     /// failed yet: see `sfu::RECONNECT_GRACE`, which this mirrors.
     lost_since: Option<Instant>,
+    /// Whether the down connection has been offered anything yet. Until it
+    /// has it is not driven at all: nobody else is in the call, nothing is
+    /// negotiated on it, and its handshake timer would otherwise run out at
+    /// ~30 s and end a call that is only waiting to be picked up.
+    down_started: bool,
 }
 
 impl Link {
@@ -125,6 +130,7 @@ impl Link {
                 connected: false,
                 failed: None,
                 lost_since: None,
+                down_started: false,
             },
             offer.to_sdp_string(),
         ))
@@ -142,8 +148,22 @@ impl Link {
 
     /// The forwarder offers (a new set of) other participants' tracks. Returns
     /// the answer to send back.
-    pub fn accept_offer(&mut self, sdp: &str, tracks: &[TrackInfo]) -> Result<String, Error> {
+    pub fn accept_offer(
+        &mut self,
+        now: Instant,
+        sdp: &str,
+        tracks: &[TrackInfo],
+    ) -> Result<String, Error> {
         let offer = SdpOffer::from_sdp_string(sdp).map_err(|e| Error::Sdp(e.to_string()))?;
+        if !self.down_started {
+            // Made now rather than at the join: its handshake timer starts when
+            // it is created, and the first offer can come a minute later.
+            self.down = Rtc::new(now);
+            self.down
+                .add_local_candidate(Candidate::host(self.down_local, "udp").map_err(rtc_err)?)
+                .ok_or_else(|| Error::Rtc("candidate refused".into()))?;
+            self.down_started = true;
+        }
         let answer = self.down.sdp_api().accept_offer(offer).map_err(rtc_err)?;
         self.tracks = tracks.iter().map(|t| (t.mid.clone(), t.clone())).collect();
         Ok(answer.to_sdp_string())
@@ -231,6 +251,9 @@ impl Link {
         let mut out = Vec::new();
         let mut next = now + Duration::from_millis(100);
         for leg in [Leg::Up, Leg::Down] {
+            if leg == Leg::Down && !self.down_started {
+                continue;
+            }
             let rtc = match leg {
                 Leg::Up => &mut self.up,
                 Leg::Down => &mut self.down,
@@ -349,6 +372,133 @@ mod tests {
         call_of_three(Duration::from_secs(20));
     }
 
+    /// The caller is alone while it rings, and a phone can take a while to be
+    /// picked up — longer still when it is woken from closed (`push`). Nothing
+    /// is negotiated on anybody's receiving connection until a second person
+    /// joins, and that must not end the call: it used to, at ~30 s, when the
+    /// idle receiving connection's handshake timer ran out on both sides.
+    #[test]
+    fn a_caller_alone_for_a_minute_is_still_in_the_call() {
+        struct Leg2 {
+            link: Link,
+            id: ParticipantId,
+            up: UdpSocket,
+            down: UdpSocket,
+            heard: usize,
+        }
+        let sfu_sock = socket();
+        let mut sfu = Sfu::new(sfu_sock.local_addr().unwrap());
+        let start = Instant::now();
+        let room = vec![7u8];
+        let join = |sfu: &mut Sfu, now: Instant| {
+            let (up, down) = (socket(), socket());
+            let (mut link, offer) = Link::new(
+                now,
+                up.local_addr().unwrap(),
+                down.local_addr().unwrap(),
+                true,
+            )
+            .unwrap();
+            let (id, answer) = sfu.join(now, room.clone(), &offer).unwrap();
+            link.accept_answer(&answer).unwrap();
+            Leg2 {
+                link,
+                id,
+                up,
+                down,
+                heard: 0,
+            }
+        };
+        let mut people = vec![join(&mut sfu, start)];
+        let mut buf = vec![0u8; 2000];
+        let mut sent = 0u64;
+        // Simulated time in 50 ms steps; the datagrams still go over loopback,
+        // and each step waits for them so nothing is outrun by the clock.
+        let mut heard_while_both = Vec::new();
+        for step in 0..1900u64 {
+            let now = start + Duration::from_millis(50 * step);
+            // A minute in, somebody picks up.
+            if step == 1200 {
+                people.push(join(&mut sfu, now));
+            }
+            // Ten seconds later they hang up; the caller stays, alone again.
+            if step == 1400 {
+                heard_while_both = people.iter().map(|p| p.heard).collect();
+                let gone = people.pop().unwrap();
+                sfu.leave(gone.id);
+            }
+            // And somebody else joins: the departed tracks are cleared then.
+            if step == 1600 {
+                people.push(join(&mut sfu, now));
+            }
+            let (tx, _) = sfu.poll(now);
+            for t in tx {
+                let _ = sfu_sock.send_to(&t.contents, t.destination);
+            }
+            let signals: Vec<Signal> = sfu.signals().collect();
+            for s in signals {
+                if let Signal::Offer { to, sdp, tracks } = s {
+                    let p = people.iter_mut().find(|p| p.id == to).unwrap();
+                    let answer = p.link.accept_offer(now, &sdp, &tracks).unwrap();
+                    sfu.answer(now, to, &answer).unwrap();
+                }
+            }
+            std::thread::sleep(Duration::from_micros(300));
+            for p in &mut people {
+                for (leg, sock) in [(Leg::Up, &p.up), (Leg::Down, &p.down)] {
+                    while let Ok((n, from)) = sock.recv_from(&mut buf) {
+                        p.link.receive(now, leg, from, &buf[..n]);
+                    }
+                }
+                let (outs, _) = p.link.poll(now);
+                for o in outs {
+                    match o {
+                        Output::Transmit {
+                            leg,
+                            destination,
+                            contents,
+                        } => {
+                            let s = if leg == Leg::Up { &p.up } else { &p.down };
+                            let _ = s.send_to(&contents, destination);
+                        }
+                        Output::Media { .. } => p.heard += 1,
+                        Output::Failed(why) => panic!("failed after {} s: {why}", step / 20),
+                        _ => {}
+                    }
+                }
+            }
+            // Once both are in, each talks every step.
+            if people.len() == 2 && people.iter().all(|p| p.link.is_connected()) {
+                for p in &mut people {
+                    let _ = p.link.send(
+                        now,
+                        Codec::Opus,
+                        Duration::from_millis(50 * sent),
+                        b"frame".to_vec(),
+                    );
+                }
+                sent += 1;
+            }
+            std::thread::sleep(Duration::from_micros(300));
+            while let Ok((n, from)) = sfu_sock.recv_from(&mut buf) {
+                sfu.receive(now, from, &buf[..n]);
+            }
+        }
+        for heard in heard_while_both {
+            assert!(heard > 50, "heard {heard} of {sent}");
+        }
+        assert_eq!(
+            sfu.members(&room).len(),
+            2,
+            "the caller stayed, and the newcomer got in"
+        );
+        assert!(
+            people[1].heard > 50,
+            "the newcomer heard {}",
+            people[1].heard
+        );
+    }
+
     fn call_of_three(late: Duration) {
         let mut devs: Vec<Device> = ["alice", "bob", "carol"]
             .iter()
@@ -430,7 +580,7 @@ mod tests {
             for s in signals {
                 if let Signal::Offer { to, sdp, tracks } = s {
                     let p = phones.iter_mut().find(|p| p.id == to).unwrap();
-                    let answer = p.link.accept_offer(&sdp, &tracks).unwrap();
+                    let answer = p.link.accept_offer(now, &sdp, &tracks).unwrap();
                     sfu.answer(fwd, to, &answer).unwrap();
                 }
             }

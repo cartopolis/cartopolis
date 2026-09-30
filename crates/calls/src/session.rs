@@ -302,7 +302,7 @@ fn run(
                 }
                 Ok(Cmd::Offered(sdp, tracks)) => {
                     let answer = link
-                        .accept_offer(&sdp, &tracks)
+                        .accept_offer(now, &sdp, &tracks)
                         .map_err(|e| e.to_string())?;
                     events.send(Event::Answer(answer)).map_err(|_| "app gone")?;
                 }

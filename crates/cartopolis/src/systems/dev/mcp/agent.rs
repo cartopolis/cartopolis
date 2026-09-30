@@ -100,6 +100,9 @@ const SCRIPT_WAIT_S: f64 = 4.0;
 /// answers a refused create to the sender only, and not in a form tied to it.
 const BUILD_WAIT_S: f64 = 10.0;
 
+/// How long `request_contact` waits for the server to confirm the request.
+const CONTACT_WAIT_S: f64 = 8.0;
+
 /// How long `play_video` waits for an upload and the server's answer: a clip is
 /// up to 64 MB.
 const VIDEO_WAIT_S: f64 = 300.0;
@@ -315,6 +318,25 @@ pub struct IdsArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ContactArgs {
+    #[schemars(description = "Their username.")]
+    pub username: String,
+    #[schemars(
+        description = "A first message, sent into a private chat with them once the request \
+                       is on record. Optional."
+    )]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AnswerContactArgs {
+    #[schemars(description = "The username whose request to answer.")]
+    pub username: String,
+    #[schemars(description = "true to accept, false to decline (a decline is silent).")]
+    pub accept: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CallArgs {
     #[schemars(
         description = "Who to call, by username. Must be somebody you are allowed to hear."
@@ -360,6 +382,9 @@ pub enum AgentRequest {
     AnswerCall,
     HangUp,
     CallStatus,
+    RequestContact(ContactArgs),
+    AnswerContact(AnswerContactArgs),
+    Contacts,
 }
 
 impl AgentRequest {
@@ -386,6 +411,9 @@ impl AgentRequest {
             Self::AnswerCall => "answer call",
             Self::HangUp => "hang up",
             Self::CallStatus => "call status",
+            Self::RequestContact(_) => "request contact",
+            Self::AnswerContact(_) => "answer contact",
+            Self::Contacts => "contacts",
         }
     }
 }
@@ -528,6 +556,13 @@ enum Pending {
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
+    /// A `request_contact`, until the server has the request on record (or
+    /// refused it).
+    Contact {
+        to: String,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
     /// A `play_video`: the upload, if there is one, then the server's
     /// announcement of the prim with the clip on it (or without, to stop).
     Video {
@@ -583,6 +618,7 @@ pub struct AgentWorld<'w, 's> {
     prims: Query<'w, 's, (&'static Prim, Option<&'static PrimGeo>)>,
     calls: ResMut<'w, crate::systems::calls::Calls>,
     videos: Res<'w, crate::systems::prim_video::PrimVideos>,
+    contacts: ResMut<'w, crate::systems::contacts::Contacts>,
 }
 
 impl AgentWorld<'_, '_> {
@@ -1126,6 +1162,50 @@ fn handle(
             }
         }
         AgentRequest::CallStatus => call_status(w),
+        AgentRequest::RequestContact(args) => {
+            if w.online.is_none() {
+                return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+            }
+            let who = args.username.trim().to_string();
+            if w.contacts.is_contact(&who) {
+                AgentReply::ok(
+                    format!("You and {who} are already contacts."),
+                    json!({ "contact": who }),
+                )
+            } else {
+                w.contacts.error = None;
+                w.contacts
+                    .say_hi(&who, args.message.as_deref().unwrap_or_default(), None);
+                state.pending.push(Pending::Contact {
+                    to: who,
+                    until: now + CONTACT_WAIT_S,
+                    reply,
+                });
+                return None;
+            }
+        }
+        AgentRequest::AnswerContact(args) => {
+            if w.online.is_none() {
+                return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+            }
+            let who = args.username.trim().to_string();
+            if w.contacts.incoming_from(&who).is_none() {
+                AgentReply::refuse(format!(
+                    "There is no request from {who} waiting. `contacts` lists the ones there are."
+                ))
+            } else {
+                w.contacts.answer(&who, args.accept);
+                AgentReply::ok(
+                    if args.accept {
+                        format!("Accepted {who}'s request: you are contacts now.")
+                    } else {
+                        format!("Declined {who}'s request. They are not told.")
+                    },
+                    json!({ "username": who, "accepted": args.accept }),
+                )
+            }
+        }
+        AgentRequest::Contacts => contacts_list(w),
         AgentRequest::SignIn => {
             if w.session.is_online() {
                 AgentReply::ok("Already signed in.", json!({ "online": true }))
@@ -1443,6 +1523,40 @@ fn answer_call(audience: &Audience, w: &mut AgentWorld) -> AgentReply {
     AgentReply::ok(
         format!("Answering the call from {}.", r.who.join(", ")),
         json!({ "answering": r.who }),
+    )
+}
+
+/// Contacts, and requests either way.
+fn contacts_list(w: &AgentWorld) -> AgentReply {
+    let c = &w.contacts;
+    if !c.loaded {
+        return AgentReply::refuse("The contact list has not arrived yet; ask again in a moment.");
+    }
+    let names = |v: Vec<String>| {
+        if v.is_empty() {
+            "nobody".to_string()
+        } else {
+            v.join(", ")
+        }
+    };
+    let contacts: Vec<String> = c
+        .contacts
+        .iter()
+        .map(|x| match x.online {
+            Some(true) => format!("{} (online)", x.username),
+            _ => x.username.clone(),
+        })
+        .collect();
+    let incoming: Vec<String> = c.incoming.iter().map(|r| r.username.clone()).collect();
+    let outgoing: Vec<String> = c.outgoing.iter().map(|r| r.username.clone()).collect();
+    AgentReply::ok(
+        format!(
+            "Contacts: {}. Asking you: {}. You asked: {}.",
+            names(contacts.clone()),
+            names(incoming.clone()),
+            names(outgoing.clone())
+        ),
+        json!({ "contacts": contacts, "incoming": incoming, "outgoing": outgoing }),
     )
 }
 
@@ -2294,6 +2408,39 @@ fn settle(
                 }
                 let answer = read_chat(state, audience, w, &args);
                 finish(bridge, "read chat", answer, reply, now);
+            }
+            Pending::Contact { to, until, reply } => {
+                if let Some(why) = w.contacts.error.clone() {
+                    finish(
+                        bridge,
+                        "request contact",
+                        AgentReply::refuse(why),
+                        reply,
+                        now,
+                    );
+                } else if w.contacts.sent_to(&to) || w.contacts.is_contact(&to) {
+                    let answer = AgentReply::ok(
+                        if w.contacts.is_contact(&to) {
+                            format!("You and {to} are contacts now: they had asked you too.")
+                        } else {
+                            format!(
+                                "Asked {to} to be contacts. They accept it in their app; \
+                                 `contacts` says when they have. Until then you may send them \
+                                 one message, and a call cannot start."
+                            )
+                        },
+                        json!({ "requested": to, "contact": w.contacts.is_contact(&to) }),
+                    );
+                    finish(bridge, "request contact", answer, reply, now);
+                } else if now > until {
+                    let answer = AgentReply::refuse(format!(
+                        "The server did not confirm a request to {to}. There may be nobody by \
+                         that name, or they only take requests from people they have met."
+                    ));
+                    finish(bridge, "request contact", answer, reply, now);
+                } else {
+                    still.push(Pending::Contact { to, until, reply });
+                }
             }
             Pending::Video {
                 id,

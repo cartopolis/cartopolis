@@ -229,3 +229,20 @@ roster rings as it does for any connected device. Decisions:
   broadcast exchange with a real distributor and the notification are
   untested; the server half is tested with a database and the Java is
   compiled against android-34.
+
+## A call that waits (2026-09-30)
+
+Both ends used to create the *down* (receiving) connection at the join and
+tick it from then on, though nothing is negotiated on it until a second person
+joins. Its DTLS handshake timer ran from creation, so a caller alone for ~30 s
+was dropped ("DTLS error: timeout: handshake"), and one answered later still
+failed the moment it was used ("timeout: connect"). The down connection is now
+**made at its first offer**, on both sides. And the forwarder **never
+renegotiates a receiving connection down to nothing**: an offer stopping every
+track has no BUNDLE group, str0m refuses it, and that ended the call for the
+last person left in it. The departed tracks wait to be stopped by the next
+offer; the client drops their pictures on the roster.
+`link::tests::a_caller_alone_for_a_minute_is_still_in_the_call` covers all three.
+
+Agents reach contacts through MCP (`request_contact`, `answer_contact`,
+`contacts`), because a call needs two people to be contacts first.

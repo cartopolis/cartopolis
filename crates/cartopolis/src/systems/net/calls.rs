@@ -315,6 +315,13 @@ pub fn drive_calls(
     for msg in inbox.0.drain(..) {
         match msg {
             NetMessage::CallRoster { group, members } => {
+                // Somebody who left stops being drawn: the forwarder does not
+                // renegotiate the last person's receiving connection down to
+                // nothing (`sfu::negotiate`), so no offer says they went.
+                if let Some(a) = calls.active.as_mut().filter(|a| a.group == group) {
+                    let here: HashSet<u64> = members.iter().map(|m| m.participant).collect();
+                    a.pictures.retain(|p, _| here.contains(p));
+                }
                 if members.is_empty() {
                     calls.dismissed.remove(&group);
                     calls.rosters.remove(&group);
