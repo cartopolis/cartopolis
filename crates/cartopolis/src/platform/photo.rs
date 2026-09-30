@@ -281,34 +281,100 @@ mod imp {
 
 #[cfg(target_os = "android")]
 mod imp {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
     use super::{Outcome, Slot};
+    use crate::platform::android::{self, CameraCapture};
 
     pub const AVAILABLE: bool = true;
     pub const ACTION_LABEL: &str = "Take a photo…";
 
-    pub struct Inner {
-        capture: crate::platform::android::CameraCapture,
+    type Answer = Arc<Mutex<Option<Result<bool, String>>>>;
+
+    /// Asking for the camera permission first, then the camera app.
+    ///
+    /// The manifest declares `CAMERA` for calls (`platform::camera`), and an app
+    /// that declares it must *hold* it before Android honours
+    /// `ACTION_IMAGE_CAPTURE` — so the photo, which needed no permission before,
+    /// now asks for the same one. The ask blocks, so it runs on a thread.
+    pub enum Inner {
+        Asking {
+            answer: Answer,
+            cancel: Arc<AtomicBool>,
+        },
+        Capturing(CameraCapture),
+        Finished,
     }
 
     impl Inner {
         pub fn poll(&mut self, slot: &Slot) {
-            let Some(outcome) = self.capture.poll() else {
-                return;
+            let finish = |outcome: Outcome| {
+                if let Ok(mut slot) = slot.lock() {
+                    *slot = Some(outcome);
+                }
             };
-            if let Ok(mut slot) = slot.lock() {
-                *slot = Some(match outcome {
-                    Ok(bytes) => Outcome::Ready(bytes),
-                    Err(message) => Outcome::Failed(message),
-                });
+            match self {
+                Self::Asking { answer, .. } => {
+                    let Some(got) = answer.lock().ok().and_then(|mut a| a.take()) else {
+                        return;
+                    };
+                    match got {
+                        Ok(true) => match android::start_camera_capture() {
+                            Ok(capture) => *self = Self::Capturing(capture),
+                            Err(e) => {
+                                finish(Outcome::Failed(e));
+                                *self = Self::Finished;
+                            }
+                        },
+                        Ok(false) => {
+                            finish(Outcome::Failed(
+                                "Camera access was refused. It can be allowed in the \
+                                 system settings for this app."
+                                    .into(),
+                            ));
+                            *self = Self::Finished;
+                        }
+                        Err(e) => {
+                            finish(Outcome::Failed(e));
+                            *self = Self::Finished;
+                        }
+                    }
+                }
+                Self::Capturing(capture) => {
+                    if let Some(outcome) = capture.poll() {
+                        finish(match outcome {
+                            Ok(bytes) => Outcome::Ready(bytes),
+                            Err(message) => Outcome::Failed(message),
+                        });
+                    }
+                }
+                Self::Finished => {}
             }
         }
 
         pub fn cancel(&mut self) {
-            self.capture.discard();
+            match self {
+                Self::Asking { cancel, .. } => cancel.store(true, Ordering::Relaxed),
+                Self::Capturing(capture) => capture.discard(),
+                Self::Finished => {}
+            }
         }
     }
 
     pub fn start(_slot: Slot) -> Result<Inner, String> {
-        crate::platform::android::start_camera_capture().map(|capture| Inner { capture })
+        let answer = Answer::default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (out, stop) = (answer.clone(), cancel.clone());
+        std::thread::Builder::new()
+            .name("cartopolis-photo-permission".into())
+            .spawn(move || {
+                let got = android::ensure_permission(android::PERM_CAMERA, &stop);
+                if let Ok(mut a) = out.lock() {
+                    *a = Some(got);
+                }
+            })
+            .map_err(|e| format!("could not ask for the camera: {e}"))?;
+        Ok(Inner::Asking { answer, cancel })
     }
 }

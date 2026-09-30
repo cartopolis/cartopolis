@@ -45,6 +45,15 @@ pub struct I420 {
     pub v: Vec<u8>,
 }
 
+/// One plane of a picture as a camera hands it over: the bytes, how far apart
+/// its rows are, and how far apart its samples are within a row.
+#[derive(Clone, Copy, Debug)]
+pub struct Plane<'a> {
+    pub data: &'a [u8],
+    pub row_stride: usize,
+    pub pixel_stride: usize,
+}
+
 fn chroma(width: u32, height: u32) -> (usize, usize) {
     (width.div_ceil(2) as usize, height.div_ceil(2) as usize)
 }
@@ -103,6 +112,89 @@ impl I420 {
             out.v[i] = uv[1];
         }
         Some(out)
+    }
+
+    /// From three separate planes, each with its own row stride and (for the
+    /// chroma) pixel stride: Android's `YUV_420_888`, which is planar or
+    /// semi-planar depending on the device and says which only through the
+    /// strides. `None` if a plane is too short for what the strides claim.
+    #[must_use]
+    pub fn from_planes(
+        width: u32,
+        height: u32,
+        y: Plane<'_>,
+        u: Plane<'_>,
+        v: Plane<'_>,
+    ) -> Option<Self> {
+        let (w, h) = (width as usize, height as usize);
+        let (cw, ch) = chroma(width, height);
+        let mut out = Self::black(width, height);
+        let copy = |p: Plane<'_>, pw: usize, ph: usize, dst: &mut [u8]| -> Option<()> {
+            if ph == 0 || pw == 0 {
+                return Some(());
+            }
+            let last = (ph - 1) * p.row_stride + (pw - 1) * p.pixel_stride;
+            if p.data.len() <= last {
+                return None;
+            }
+            for row in 0..ph {
+                let src = &p.data[row * p.row_stride..];
+                let dst = &mut dst[row * pw..(row + 1) * pw];
+                if p.pixel_stride == 1 {
+                    dst.copy_from_slice(&src[..pw]);
+                } else {
+                    for (x, d) in dst.iter_mut().enumerate() {
+                        *d = src[x * p.pixel_stride];
+                    }
+                }
+            }
+            Some(())
+        };
+        copy(y, w, h, &mut out.y)?;
+        copy(u, cw, ch, &mut out.u)?;
+        copy(v, cw, ch, &mut out.v)?;
+        Some(out)
+    }
+
+    /// Turned clockwise by `degrees` (0, 90, 180 or 270; anything else is
+    /// taken as 0), then mirrored left-to-right if `mirror` — a phone camera's
+    /// picture upright, and a front camera's the way a mirror shows it.
+    #[must_use]
+    pub fn rotated(&self, degrees: u32, mirror: bool) -> Self {
+        let quarter = match degrees % 360 {
+            90 => 1,
+            180 => 2,
+            270 => 3,
+            _ => 0,
+        };
+        let (w, h) = if quarter % 2 == 1 {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        };
+        let mut out = Self::black(w, h);
+        // For each destination pixel, the source pixel it comes from.
+        let plane = |src: &[u8], sw: usize, sh: usize, dst: &mut [u8], dw: usize, dh: usize| {
+            for y in 0..dh {
+                for x in 0..dw {
+                    let (sx, sy) = match quarter {
+                        1 => (y, sh - 1 - x),
+                        2 => (sw - 1 - x, sh - 1 - y),
+                        3 => (sw - 1 - y, x),
+                        _ => (x, y),
+                    };
+                    let dx = if mirror { dw - 1 - x } else { x };
+                    dst[y * dw + dx] = src[sy * sw + sx];
+                }
+            }
+        };
+        let (sw, sh) = (self.width as usize, self.height as usize);
+        plane(&self.y, sw, sh, &mut out.y, w as usize, h as usize);
+        let (scw, sch) = chroma(self.width, self.height);
+        let (dcw, dch) = chroma(w, h);
+        plane(&self.u, scw, sch, &mut out.u, dcw, dch);
+        plane(&self.v, scw, sch, &mut out.v, dcw, dch);
+        out
     }
 
     /// Scaled to `width`×`height` by nearest neighbour — a camera's picture
@@ -167,6 +259,10 @@ pub struct Encoder {
 impl Encoder {
     #[must_use]
     pub fn new() -> Self {
+        Self::sized(WIDTH, HEIGHT)
+    }
+
+    fn sized(width: u32, height: u32) -> Self {
         let params = KeyframeParams {
             y_ac_qi: QINDEX,
             loop_filter_level: 20,
@@ -178,14 +274,30 @@ impl Encoder {
         Self {
             inner: Vp8InterStreamEncoder::new(params, KEYFRAME_INTERVAL)
                 .expect("a nonzero keyframe interval"),
-            width: WIDTH,
-            height: HEIGHT,
+            width,
+            height,
         }
     }
 
     /// Encode one picture, scaled to the call's size first if it is not.
     /// `key` forces a full picture — the answer to a receiver's request.
+    ///
+    /// The call's size turns with the picture: an upright phone sends
+    /// [`HEIGHT`]×[`WIDTH`], not a portrait squashed into landscape. A turn
+    /// starts the stream again with a full picture, which is what VP8 needs to
+    /// change size and what every receiver's decoder already follows.
     pub fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<u8>, Error> {
+        let size = if frame.height > frame.width {
+            (HEIGHT, WIDTH)
+        } else {
+            (WIDTH, HEIGHT)
+        };
+        let key = if size == (self.width, self.height) {
+            key
+        } else {
+            *self = Self::sized(size.0, size.1);
+            true
+        };
         let frame = frame.scaled(self.width, self.height);
         let f = I420Frame::packed(frame.width, frame.height, &frame.y, &frame.u, &frame.v);
         self.inner
@@ -324,6 +436,101 @@ pub fn test_tone(rate: u32, n: u64) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 4×2 picture whose luma counts 0..8 row by row.
+    fn counting() -> I420 {
+        let mut p = I420::black(4, 2);
+        p.y = (0..8).collect();
+        p.u = vec![1, 2];
+        p.v = vec![3, 4];
+        p
+    }
+
+    #[test]
+    fn a_quarter_turn_puts_the_top_left_at_the_top_right() {
+        let p = counting();
+        // 0 1 2 3      turned clockwise:   4 0
+        // 4 5 6 7                          5 1
+        //                                  6 2
+        //                                  7 3
+        let r = p.rotated(90, false);
+        assert_eq!((r.width, r.height), (2, 4));
+        assert_eq!(r.y, vec![4, 0, 5, 1, 6, 2, 7, 3]);
+        assert_eq!(r.u, vec![1, 2]);
+        assert_eq!(p.rotated(270, false).y, vec![3, 7, 2, 6, 1, 5, 0, 4]);
+        assert_eq!(p.rotated(180, false).y, vec![7, 6, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(p.rotated(0, true).y, vec![3, 2, 1, 0, 7, 6, 5, 4]);
+        // Four quarter turns are nothing, and so is a mirrored quarter turn
+        // done twice (the mirror reverses the second turn).
+        let mut q = p.clone();
+        for _ in 0..4 {
+            q = q.rotated(90, false);
+        }
+        assert_eq!(q, p);
+        assert_eq!(p.rotated(90, true).rotated(90, true), p);
+    }
+
+    #[test]
+    fn a_stream_turns_with_the_phone() {
+        let mut enc = Encoder::new();
+        let mut dec = Decoder::new();
+        let upright = test_pattern(0).rotated(90, false);
+        for (n, picture) in [test_pattern(0), test_pattern(1), upright.clone(), upright]
+            .iter()
+            .enumerate()
+        {
+            let bytes = enc.encode(picture, n == 0).unwrap();
+            let got = dec.decode(&bytes).unwrap();
+            let want = if n < 2 {
+                (WIDTH, HEIGHT)
+            } else {
+                (HEIGHT, WIDTH)
+            };
+            assert_eq!((got.width, got.height), want, "frame {n}");
+        }
+    }
+
+    #[test]
+    fn strided_planes_are_read_as_planar_or_interleaved() {
+        // Luma padded to a row stride of 6; chroma interleaved (pixel stride 2)
+        // the way semi-planar devices hand it over, V one byte after U.
+        let y = [0, 1, 2, 3, 99, 99, 4, 5, 6, 7, 99, 99];
+        let uv = [10, 20, 11, 21];
+        let p = I420::from_planes(
+            4,
+            2,
+            Plane {
+                data: &y,
+                row_stride: 6,
+                pixel_stride: 1,
+            },
+            Plane {
+                data: &uv,
+                row_stride: 4,
+                pixel_stride: 2,
+            },
+            Plane {
+                data: &uv[1..],
+                row_stride: 4,
+                pixel_stride: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(p.y, (0..8).collect::<Vec<u8>>());
+        assert_eq!((p.u, p.v), (vec![10, 11], vec![20, 21]));
+        // A plane shorter than its strides claim is refused, not read past.
+        let short = Plane {
+            data: &y[..7],
+            row_stride: 6,
+            pixel_stride: 1,
+        };
+        let c = Plane {
+            data: &uv,
+            row_stride: 4,
+            pixel_stride: 2,
+        };
+        assert!(I420::from_planes(4, 2, short, c, c).is_none());
+    }
 
     #[test]
     fn the_test_pattern_survives_the_codec_and_says_which_frame_it_is() {

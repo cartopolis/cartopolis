@@ -716,9 +716,19 @@ pub fn render_call_bar(
         }
     }
     tiles.retain(|id, _| present.contains(id));
-    let mut faces: Vec<(String, egui::TextureId)> = tiles
+    // Each tile 120 px tall at its own shape: an upright phone sends a
+    // portrait picture (`cartopolis_calls::video::Encoder::encode`).
+    let mut faces: Vec<(String, egui::TextureId, egui::Vec2)> = tiles
         .iter()
-        .map(|(id, t)| (calls.name_of(*id).unwrap_or("someone").to_string(), t.id()))
+        .map(|(id, t)| {
+            let [w, h] = t.size();
+            let size = egui::vec2(120.0 * w as f32 / h.max(1) as f32, 120.0);
+            (
+                calls.name_of(*id).unwrap_or("someone").to_string(),
+                t.id(),
+                size,
+            )
+        })
         .collect();
     faces.sort_by(|a, b| a.0.cmp(&b.0));
     let mut request = None;
@@ -779,9 +789,9 @@ pub fn render_call_bar(
                         // The people in the call who have their camera on.
                         if !faces.is_empty() {
                             ui.horizontal(|ui| {
-                                for (name, texture) in &faces {
+                                for (name, texture, size) in &faces {
                                     ui.vertical(|ui| {
-                                        ui.image((*texture, egui::vec2(160.0, 120.0)));
+                                        ui.image((*texture, *size));
                                         ui.label(
                                             egui::RichText::new(name.as_str())
                                                 .size(12.0)

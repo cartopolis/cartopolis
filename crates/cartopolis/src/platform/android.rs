@@ -1843,6 +1843,10 @@ enum Permission {
 /// the only caller.
 pub const PERM_RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
 
+/// The camera, for calls (`platform::camera`) and — because declaring it makes
+/// holding it a condition of `ACTION_IMAGE_CAPTURE` — for a place photo too.
+pub const PERM_CAMERA: &str = "android.permission.CAMERA";
+
 /// Ask for one runtime permission and block until it is answered.
 ///
 /// The generic form of what location has always done here, exposed because the
@@ -2549,12 +2553,10 @@ pub struct CameraCapture {
 
 /// Ask the camera app for a photo.
 ///
-/// Note what is *not* here: `android.permission.CAMERA` is deliberately absent
-/// from the manifest, and adding it would break this. `ACTION_IMAGE_CAPTURE`
-/// needs no permission from the app that sends it — but Android's contract says
-/// that an app which *declares* the CAMERA permission must also hold it before
-/// the intent will be honoured. Declaring it would therefore cost a runtime
-/// prompt to do the same thing we can already do without one.
+/// `ACTION_IMAGE_CAPTURE` needs no permission from the app that sends it — but
+/// an app that *declares* `CAMERA` must also hold it before the intent is
+/// honoured, and this one declares it for calls. So `platform::photo` asks for
+/// [`PERM_CAMERA`] before calling this.
 pub fn start_camera_capture() -> Result<CameraCapture, String> {
     let java_vm = vm()?;
     let mut env = java_vm

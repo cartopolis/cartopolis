@@ -119,3 +119,23 @@ which cpal cannot set; the browser's encoded-transform worker glue against our
 wasm build; whether the Adreno 840 has a hardware VP8/VP9 encoder; how the
 phone's upload budget (`upload-bursts.md`) copes with a decoded video stream,
 which matters doubly for video on a prim.
+
+## The phone's camera (2026-09-30)
+
+Camera2 through its C API (`libcamera2ndk`) into an `AImageReader`
+(`platform::camera`'s `phone` module): no Java and no GPU surface, and the
+pictures arrive as 4:2:0 planes the call encodes directly. The front camera is
+chosen when there is one. Three decisions:
+
+- **Upright by the sensor's orientation, assuming a portrait phone.** Following
+  the phone as it turns needs the display rotation, which only Java has.
+- **The stream turns with the picture.** A portrait picture is sent as 240×320
+  rather than squashed into 320×240; a turn starts the stream again with a full
+  picture (`video::Encoder::encode`), and the call tiles take each picture's
+  own shape.
+- **Declaring `CAMERA` changes the place photo.** An app that declares the
+  permission must hold it before Android honours `ACTION_IMAGE_CAPTURE`, so
+  `platform::photo` now asks for it before opening the camera app.
+
+**Not run on a device**: the emulator on the VPS cannot run this app, so the
+permission prompt, the orientation and the picture itself are unverified.

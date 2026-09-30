@@ -122,11 +122,10 @@
          RELATIVE_PATH column and the same insert needs this, so it is requested at
          runtime on those devices only.
 
-         Note what is deliberately **absent**: android.permission.CAMERA.
-         ACTION_IMAGE_CAPTURE needs no permission from the app that sends it — but
-         Android's contract says an app that *declares* CAMERA must also hold it
-         before the intent is honoured. Declaring it would buy a runtime prompt in
-         exchange for something already permitted. -->
+
+         CAMERA is declared below for calls, and an app that declares it must hold
+         it before ACTION_IMAGE_CAPTURE is honoured, so the photo asks for it too
+         (`platform::photo`). -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
@@ -153,6 +152,11 @@
          that opened it. Backgrounded, the connection stays up and the microphone
          does not. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- The camera, for video in calls (`platform::camera`, Camera2 through the
+         NDK). Dangerous, so asked for at runtime from the camera thread, like
+         the microphone above; a denial is `Camera::error`. -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- The background connection (`ConnectionService`, `systems::background`).
          FOREGROUND_SERVICE is normal, granted at install. The typed permission

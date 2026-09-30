@@ -343,7 +343,9 @@ jni = "0.21.1"
 # `android-activity` (and so under bevy's Android backend), so naming it here
 # compiles nothing extra. `ndk` 0.9's safe wrappers do not cover sensors, which is
 # why this is the `-sys` crate.
-ndk-sys = "0.6"
+# `media` for `AImageReader`, which is how the call camera (`platform::camera`)
+# reads Camera2's pictures; it links `libmediandk`, a system library.
+ndk-sys = { version = "0.6", features = ["media"] }
 # AAudio through its safe wrapper, for one thing cpal cannot ask for: a
 # microphone opened with the `VOICE_COMMUNICATION` input preset, which is where
 # an Android device's echo cancellation lives (`platform::audio::call_capture`,
