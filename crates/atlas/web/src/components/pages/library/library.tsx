@@ -14,10 +14,13 @@ import {
     loadLibrary,
     loadLibraryAssets,
     loadPlaceholders,
+    modelNameFromFile,
     PLACEHOLDER_KINDS,
     PLACEHOLDER_LABELS,
     setPlaceholder,
     unhideEntry,
+    UPLOAD_ACCEPT,
+    uploadFormatHint,
     uploadModel,
 } from '@/lib/library'
 import {formatTimestamp} from '@/lib/utils'
@@ -373,22 +376,18 @@ const Upload = () => {
                 <span style="flex:1" />
             </div>
             {/*
-              * What the simulator accepts, said before a 16 MB upload finds out.
-              * The numbers are `simulator::assets`' and are enforced there, for
-              * everyone; this is a courtesy, not the guard.
+              * What the simulator accepts, said before a large upload finds out.
+              * Built from `UPLOAD_LIMITS` (see `uploadFormatHint`), which a Rust
+              * test pins to the numbers the server enforces.
               */}
-            <p class="hint">
-                Binary glTF (.glb) only, with the textures and buffers inside the file — anything
-                it points at is refused rather than fetched. Up to 16 MB, 250,000 triangles,
-                4,000 nodes and 2048 px textures.
-            </p>
+            <p class="hint">{uploadFormatHint()}</p>
             <input
-                accept=".glb,model/gltf-binary"
+                accept={UPLOAD_ACCEPT}
                 onChange={(e) => {
                     const picked = (e.target as HTMLInputElement).files?.[0] ?? null
                     setFile(picked)
                     if (picked && name === '') {
-                        setName(picked.name.replace(/\.glb$/i, ''))
+                        setName(modelNameFromFile(picked.name))
                     }
                 }}
                 type="file"

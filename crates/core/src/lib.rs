@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod geo;
+pub mod model_limits;
 pub mod moderation;
 pub mod motion;
 pub mod particles;
@@ -9,6 +10,7 @@ pub mod placeholders;
 pub mod point;
 pub mod protocol;
 pub mod script_api;
+pub mod ts_mirror;
 pub mod world;
 pub mod yaw;
 

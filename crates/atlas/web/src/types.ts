@@ -4,6 +4,10 @@
  * There is no `pw_hash` here because there is none there — the server type omits
  * it deliberately (see its doc comment), so this interface is a description of
  * the wire rather than a filter applied to it.
+ *
+ * Checked, not only hand-synced: the Rust test `web_mirror::account_row` in
+ * `crates/simulator/tests/integration/` serialises an `AccountRow` and fails
+ * when its keys and this interface's fields differ.
  */
 export interface Account {
     admin: boolean
@@ -178,6 +182,8 @@ export interface PipelineLogLine {
 /**
  * The autonomous development lane's throttle. A hand-synced seam, like the
  * account row: this must match `Config` in cartopolis' `tools/autopilot.ts`.
+ * Guarded by the Rust test `autopilot::web_mirror` in atlas, which serialises
+ * `AutopilotConfig` and compares its keys with this and with that `Config`.
  */
 export interface AutopilotConfig {
     enabled: boolean
@@ -195,7 +201,10 @@ export interface AutopilotConfig {
     planRevision: number
 }
 
-/** One piece of work under the focus, as the web UI orders and the lane files it. */
+/**
+ * One piece of work under the focus, as the web UI orders and the lane files it.
+ * Guarded with the config above, against atlas's `PlanItem`.
+ */
 export interface AutopilotPlanItem {
     /** Stable key. The lane's ticket marker is `autopilot:focus-<id>`. */
     id: string
@@ -249,6 +258,10 @@ export interface LibraryEntry {
  * register rather than placed by anyone, so there is nothing in the world to
  * select and change. This is the one statement an operator can make about them,
  * and it is world-wide: two people on one street must not see different streets.
+ *
+ * Guarded by the Rust test `web_mirror::placeholder_model` in
+ * `crates/simulator/tests/integration/`, which compares its serialised keys
+ * with these fields.
  */
 export interface PlaceholderModel {
     /** The model's content hash, from the shared library. */

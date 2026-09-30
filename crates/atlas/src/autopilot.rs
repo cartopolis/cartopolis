@@ -485,3 +485,86 @@ mod tests {
         assert_eq!(rows, [("second", 0), ("first", 41)]);
     }
 }
+
+/// The two TypeScript copies of these types — the web UI's `AutopilotConfig` /
+/// `AutopilotPlanItem` (`crates/atlas/web/src/types.ts`) and the autopilot's own
+/// `Config` / `PlanItem` (`tools/autopilot.ts`) — read against what serde
+/// actually writes. A field added on one side and not the other is silently
+/// stripped by the next save, which is the failure these exist to catch.
+#[cfg(test)]
+mod web_mirror {
+    use super::*;
+    use cartopolis_core::ts_mirror;
+
+    const WEB_TYPES: &str = include_str!("../web/src/types.ts");
+    const AUTOPILOT_TS: &str = include_str!("../../../tools/autopilot.ts");
+
+    /// The keys serde writes for `value`, sorted.
+    fn keys<T: Serialize>(value: &T) -> Vec<String> {
+        let Value::Object(map) = serde_json::to_value(value).unwrap() else {
+            panic!("not serialised as an object");
+        };
+        let mut keys: Vec<String> = map.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// The fields of a TypeScript type, sorted.
+    fn ts_fields(src: &str, file: &str, name: &str) -> Vec<String> {
+        let mut fields = ts_mirror::type_fields(src, name)
+            .unwrap_or_else(|| panic!("`{name}` is not declared in {file}"));
+        fields.sort();
+        fields
+    }
+
+    fn plan_item() -> PlanItem {
+        PlanItem {
+            id: String::new(),
+            issue: 0,
+            note: String::new(),
+            title: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_config_matches_both_typescript_copies() {
+        let config = AutopilotConfig {
+            enabled: false,
+            focus: String::new(),
+            focus_plan: vec![plan_item()],
+            max_open: 0,
+            plan_revision: 0,
+            qa_max_open: 0,
+            qa_per_day: 0,
+            retro_every_days: 0,
+            ship: false,
+            tickets_per_day: 0,
+        };
+        let rust = keys(&config);
+        assert_eq!(
+            ts_fields(WEB_TYPES, "atlas/web/src/types.ts", "AutopilotConfig"),
+            rust,
+            "atlas/web/src/types.ts's AutopilotConfig has drifted from autopilot::AutopilotConfig"
+        );
+        assert_eq!(
+            ts_fields(AUTOPILOT_TS, "tools/autopilot.ts", "Config"),
+            rust,
+            "tools/autopilot.ts's Config has drifted from atlas's autopilot::AutopilotConfig"
+        );
+    }
+
+    #[test]
+    fn the_plan_item_matches_both_typescript_copies() {
+        let rust = keys(&plan_item());
+        assert_eq!(
+            ts_fields(WEB_TYPES, "atlas/web/src/types.ts", "AutopilotPlanItem"),
+            rust,
+            "atlas/web/src/types.ts's AutopilotPlanItem has drifted from autopilot::PlanItem"
+        );
+        assert_eq!(
+            ts_fields(AUTOPILOT_TS, "tools/autopilot.ts", "PlanItem"),
+            rust,
+            "tools/autopilot.ts's PlanItem has drifted from atlas's autopilot::PlanItem"
+        );
+    }
+}

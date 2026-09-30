@@ -39,14 +39,24 @@ use crate::systems::{icons, theme};
 
 /// What the store accepts, said before the file dialog opens.
 ///
-/// Kept in step with `simulator::assets` by hand — the limits are the server's
-/// and are enforced there, for everyone, because a client that skipped them
-/// could not be detected. Saying them here is so a person exports the right
-/// thing, not so anything is decided here.
-const UPLOAD_FORMAT_HINT: &str = "glTF: .glb, or a .gltf with everything embedded in it \
-                                  (the server repacks that one). A file that points at a .bin or \
-                                  a texture beside it is refused, not fetched. Up to 16 MB, \
-                                  250,000 triangles, 4,000 nodes, 2048 px textures.";
+/// The limits are the server's and are enforced there, for everyone, because a
+/// client that skipped them could not be detected. Saying them here is so a
+/// person exports the right thing, not so anything is decided here — which is
+/// why the numbers are read from `cartopolis_core::model_limits`, the constants
+/// `simulator::assets` enforces, rather than typed a second time.
+fn upload_format_hint() -> String {
+    use cartopolis_core::model_limits::{
+        with_thousands, MAX_ASSET_MB, MAX_NODES, MAX_TEXTURE_EDGE, MAX_TRIANGLES,
+    };
+    format!(
+        "glTF: .glb, or a .gltf with everything embedded in it (the server repacks \
+         that one). A file that points at a .bin or a texture beside it is refused, \
+         not fetched. Up to {MAX_ASSET_MB} MB, {} triangles, {} nodes, \
+         {MAX_TEXTURE_EDGE} px textures.",
+        with_thousands(MAX_TRIANGLES),
+        with_thousands(MAX_NODES as u64),
+    )
+}
 
 /// One line of somebody's inventory, as the server describes it.
 #[derive(Debug, Clone, Default)]
@@ -650,10 +660,11 @@ pub fn render_model_library_panel(
                             // What to export before opening the dialog, because a
                             // refusal after a 12 MB upload is a slow way to learn
                             // it. The numbers are the server's
-                            // (`simulator::assets`) and this says the same thing
+                            // (`cartopolis_core::model_limits`, enforced in
+                            // `simulator::assets`) and this says the same thing
                             // its refusals do.
                             ui.label(
-                                egui::RichText::new(UPLOAD_FORMAT_HINT)
+                                egui::RichText::new(upload_format_hint())
                                     .small()
                                     .color(theme::TEXT_DIM),
                             );
@@ -903,6 +914,20 @@ fn place_model(game_state: &mut GameState, avatar_state: &AvatarState, hash: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hint says the server's numbers, grouped the way a person reads them,
+    /// and names both forms the store takes.
+    #[test]
+    fn the_upload_hint_states_the_servers_limits() {
+        use cartopolis_core::model_limits::{with_thousands, MAX_ASSET_MB, MAX_TRIANGLES};
+        let hint = upload_format_hint();
+        assert!(hint.contains(".glb") && hint.contains(".gltf"), "{hint}");
+        assert!(hint.contains(&format!("{MAX_ASSET_MB} MB")), "{hint}");
+        assert!(
+            hint.contains(&format!("{} triangles", with_thousands(MAX_TRIANGLES))),
+            "{hint}"
+        );
+    }
 
     /// The list the server sends is the list the panel shows, including the two
     /// fields a row is useless without.

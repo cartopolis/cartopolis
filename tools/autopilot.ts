@@ -89,7 +89,10 @@ const FILED_BY_AUTOPILOT = "autopilot";
 // Since 2026-08-30 the atlas web UI writes it too — atlas's
 // `crates/atlas/src/autopilot.rs` (the Autopilot tab's sliders) — which makes this Config
 // a hand-synced seam like `AccountRow`: add a field here and add it there, or
-// the web UI silently strips it on the next save.
+// the web UI silently strips it on the next save. The Rust test
+// `autopilot::web_mirror` in `crates/atlas/src/autopilot.rs` reads the Config
+// and PlanItem declarations below and fails when their fields differ from
+// atlas's, so a missed half shows up in `cargo test` rather than as a lost field.
 //
 //   { "enabled": false,        // file tickets at all
 //     "ticketsPerDay": 1,      // how many new feature tickets a day

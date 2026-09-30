@@ -157,9 +157,11 @@ export const CATEGORIES = [
  * The street objects a model may stand in for, mirroring
  * `cartopolis_core::placeholders::PLACEHOLDER_KINDS`.
  *
- * The **seventh hand-synced seam** between these two repositories. The server
- * refuses a slug that is not in its own list, so a name that drifts here fails
- * loudly rather than quietly — which is why a refusal is shown verbatim.
+ * A hand-synced seam, and a checked one: the Rust test
+ * `placeholders::tests::the_web_copy_lists_the_same_slugs` in `cartopolis_core`
+ * reads this array and fails when it differs from the Rust list, in membership
+ * or in order. The server also refuses a slug that is not in its own list, so a
+ * name that drifts fails loudly — which is why a refusal is shown verbatim.
  */
 export const PLACEHOLDER_KINDS = [
     'lamp',
@@ -241,6 +243,45 @@ export async function clearPlaceholder(kind: string): Promise<boolean> {
 }
 
 /**
+ * What the simulator's model store accepts, mirroring
+ * `cartopolis_core::model_limits` (enforced in `simulator::assets`).
+ *
+ * Guarded by the Rust test `model_limits::tests::the_web_upload_limits_match_these`
+ * in `cartopolis_core`, which reads this object — so keep each value a number
+ * literal or a product of them, and keep the keys as they are.
+ */
+export const UPLOAD_LIMITS = {
+    maxBytes: 16 * 1024 * 1024,
+    maxTriangles: 250_000,
+    maxNodes: 4_000,
+    maxTextureEdge: 2048,
+} as const
+
+/**
+ * What to export, said before the file dialog opens — in the same words as the
+ * game client's Models panel. The limits are the server's and are enforced
+ * there, for everyone; this is a courtesy, not the guard.
+ */
+export function uploadFormatHint(): string {
+    const mb = UPLOAD_LIMITS.maxBytes / (1024 * 1024)
+    const n = (x: number) => x.toLocaleString('en-US')
+    return (
+        'glTF: .glb, or a .gltf with everything embedded in it (the server repacks that one). ' +
+        'A file that points at a .bin or a texture beside it is refused, not fetched. ' +
+        `Up to ${mb} MB, ${n(UPLOAD_LIMITS.maxTriangles)} triangles, ` +
+        `${n(UPLOAD_LIMITS.maxNodes)} nodes, ${UPLOAD_LIMITS.maxTextureEdge} px textures.`
+    )
+}
+
+/** The file picker's filter: both forms the store takes. */
+export const UPLOAD_ACCEPT = '.glb,.gltf,model/gltf-binary,model/gltf+json'
+
+/** A picked file's name without its glTF extension, as a default model name. */
+export function modelNameFromFile(fileName: string): string {
+    return fileName.replace(/\.gl(b|tf)$/i, '')
+}
+
+/**
  * Upload a model from here, and publish it in the same breath.
  *
  * The same route a player's client posts to (`POST /api/assets`), not an admin
@@ -267,7 +308,9 @@ export async function uploadModel(
         const item = await api.upload<{id: number}>(
             `/api/assets?${query.toString()}`,
             bytes,
-            'model/gltf-binary',
+            // The server decides the form from the bytes (`assets::repack_gltf`),
+            // not from this header; it is said correctly anyway.
+            /\.gltf$/i.test(file.name) ? 'model/gltf+json' : 'model/gltf-binary',
         )
         if (meta.share && meta.licence !== 'other') {
             // The share is a second request because it is a second decision the

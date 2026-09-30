@@ -31,3 +31,4 @@ mod presence;
 mod private_chat;
 mod scripting_wire;
 mod voice;
+mod web_mirror;

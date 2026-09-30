@@ -81,4 +81,22 @@ mod tests {
         assert!(!is_placeholder_kind("lamppost"));
         assert!(!is_placeholder_kind(""));
     }
+
+    /// The atlas web UI's copy, `PLACEHOLDER_KINDS` in
+    /// `crates/atlas/web/src/lib/library.ts`, is what the operator's dropdown
+    /// offers. A slug missing there cannot be set; one only there is refused by
+    /// the server. Same order too, since both are the order a person reads.
+    #[test]
+    fn the_web_copy_lists_the_same_slugs() {
+        let web = crate::ts_mirror::string_array(
+            include_str!("../../atlas/web/src/lib/library.ts"),
+            "PLACEHOLDER_KINDS",
+        )
+        .expect("`PLACEHOLDER_KINDS` is missing from atlas/web/src/lib/library.ts");
+        assert_eq!(
+            web, PLACEHOLDER_KINDS,
+            "atlas/web/src/lib/library.ts's PLACEHOLDER_KINDS has drifted from \
+             cartopolis_core::placeholders::PLACEHOLDER_KINDS"
+        );
+    }
 }
