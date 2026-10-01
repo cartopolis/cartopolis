@@ -354,6 +354,7 @@ pub fn furniture(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Boat => TRANSPORT,
         // Solid and not interactable, like a street light: never drawn.
         FurnitureKind::TrafficLight => CABINET,
+        FurnitureKind::Yacht | FurnitureKind::Houseboat => TRANSPORT,
     }
 }
 

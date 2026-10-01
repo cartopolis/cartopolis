@@ -841,6 +841,7 @@ fn walker_mesh() -> Mesh {
         luma: 1.0,
         paint: cartopolis_geo::vector_tiles::palette::FURNITURE,
         over_water: false,
+        hull_only: false,
     }];
     let meshes = cartopolis_geo::furniture::build_furniture_meshes(&items, None);
     let sm = meshes
@@ -1385,6 +1386,7 @@ fn car_mesh() -> Mesh {
         luma: 1.0,
         paint: cartopolis_geo::vector_tiles::palette::FURNITURE,
         over_water: false,
+        hull_only: false,
     }];
     debug_assert!(!parts(FurnitureKind::Car).is_empty());
     let meshes = cartopolis_geo::furniture::build_furniture_meshes(&items, None);

@@ -6732,6 +6732,26 @@ pub(crate) mod synth {
         layer(name, extent, &[feature])
     }
 
+    /// One layer holding a single polygon through `ring` (not repeated at the
+    /// end), in tile-local integer coordinates. Clockwise in tile space (y
+    /// down) is an exterior ring, as the MVT specification has it.
+    pub fn polygon_layer(name: &str, extent: u32, ring: &[(i32, i32)]) -> Vec<u8> {
+        let mut geometry = varint(9);
+        let (mut cx, mut cy) = (0, 0);
+        for (i, &(x, y)) in ring.iter().enumerate() {
+            if i == 1 {
+                geometry.extend(varint(((ring.len() as u64 - 1) << 3) | 2));
+            }
+            geometry.extend(varint(zigzag(x - cx)));
+            geometry.extend(varint(zigzag(y - cy)));
+            (cx, cy) = (x, y);
+        }
+        geometry.extend(varint(15)); // ClosePath
+        let mut feature = varint_field(3, 3); // type = POLYGON
+        feature.extend(bytes_field(4, &geometry));
+        layer(name, extent, &[feature])
+    }
+
     /// [`line_layer`] with one string tag on the feature — the shape a
     /// Shortbread `streets` feature really has, where the discriminator is a
     /// `kind` **value** in the layer's value table rather than the layer's own

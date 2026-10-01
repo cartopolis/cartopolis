@@ -1171,6 +1171,11 @@ fn spawn_geometry_task(
             let crop_task = io.spawn(crate::systems::crops::load_crop_cell(cell.0, cell.1));
             let decks_task = io.spawn(crate::systems::terrain_tiles::load_atlas_decks(cell.0, cell.1));
             let roads_task = io.spawn(crate::systems::terrain_tiles::load_road_heights(cell.0, cell.1));
+            // …and the registered houseboat berths, which ride in the BAG's places
+            // file (shared with `building_facts`, which fetches it anyway).
+            let berths_task = wants
+                .furniture
+                .then(|| io.spawn(crate::systems::building_facts::load_berths(cell.0, cell.1)));
             // The marks and crossings below decide whether to ask at all from the
             // tile body, so they start once it is here; everything else is
             // already on its way.
@@ -1220,6 +1225,10 @@ fn spawn_geometry_task(
             let crop_cell = crop_task.await;
             let atlas_decks = decks_task.await;
             let road_heights = roads_task.await;
+            let berths = match berths_task {
+                Some(task) => task.await,
+                None => Vec::new(),
+            };
             // The ground last, after every fetch: a job waiting for graded ground
             // has spent the wait downloading.
             let (ground, built_rev) = match ground {
@@ -1883,16 +1892,68 @@ fn spawn_geometry_task(
                                         // out of the terrain drape below, which
                                         // would tip a hull up a sloping bank
                                         // (`build_furniture_meshes_lifted`).
+                                        // Where no level is registered the water is
+                                        // drawn at the median of its own outline
+                                        // (`water_surface`'s fallback), so a boat is
+                                        // floated on that same number — the carve's
+                                        // floor sank yachts to their cabin roofs.
+                                        let drawn_water = ground.as_ref().map(|(g, origin)| {
+                                            g.level_over(
+                                                meshes
+                                                    .iter()
+                                                    .filter(|m| m.group == SurfaceGroup::Water)
+                                                    .flat_map(|m| m.positions.iter())
+                                                    .map(|p| [origin.x + p[0], origin.y + p[2]]),
+                                            )
+                                        });
                                         let level = |b: &furniture::FurnitureInstance| -> f32 {
                                             let Some((g, origin)) = ground.as_ref() else {
                                                 return 0.0;
                                             };
                                             let (x, z) = (origin.x + b.x, origin.y + b.z);
-                                            g.water_surface_at(x, z).unwrap_or_else(|| g.sunk_at(x, z))
+                                            g.water_surface_at(x, z)
+                                                .or(drawn_water)
+                                                .unwrap_or_else(|| g.sunk_at(x, z))
                                         };
                                         floating.extend(furniture::build_furniture_meshes_lifted(
                                             &items, wants.modelled, mesh_bytes, &level,
                                         ));
+                                        // …and the marinas' yachts, along the
+                                        // jetties, and the registered houseboats,
+                                        // afloat the same way.
+                                        let berth_points: Vec<([f32; 2], bool)> = berths
+                                            .iter()
+                                            .filter_map(|&((lat, lng), housed)| {
+                                                crate::systems::surveyed::cell_local(
+                                                    lat,
+                                                    lng,
+                                                    cell.0,
+                                                    cell.1,
+                                                    cartopolis_geo::formats::CACHE_ZOOM,
+                                                    tile_m,
+                                                )
+                                                .map(|(x, z)| ([x, z], housed))
+                                            })
+                                            .collect();
+                                        let berth_xy: Vec<[f32; 2]> =
+                                            berth_points.iter().map(|b| b.0).collect();
+                                        let mut afloat = moorings::extract_marina(
+                                            &tile,
+                                            tile_m,
+                                            veg_seed(cell),
+                                            &berth_xy,
+                                        )
+                                        .unwrap_or_default();
+                                        afloat.extend(moorings::place_houseboats(
+                                            &tile,
+                                            tile_m,
+                                            &berth_points,
+                                            veg_seed(cell),
+                                        ));
+                                        floating.extend(furniture::build_furniture_meshes_lifted(
+                                            &afloat, wants.modelled, mesh_bytes, &level,
+                                        ));
+                                        cell_places.vehicles.extend(afloat);
                                         // Boats are not solid — a collider on
                                         // water the avatar cannot walk on is an
                                         // invisible wall in a canal — so they go

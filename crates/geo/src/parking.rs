@@ -276,6 +276,7 @@ pub fn extract_parking(
                         luma: 1.0 + (rand01(h, 1) - 0.5) * 0.08,
                         paint: paints_pick(paints, h),
                         over_water: false,
+                        hull_only: false,
                     });
                     // Collected past the ceiling, then thinned evenly to it below;
                     // the collection bound only stops an absurd cell running away.

@@ -224,6 +224,8 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Person => "Person",
         FurnitureKind::Boat => "Boat",
         FurnitureKind::TrafficLight => "Traffic light",
+        FurnitureKind::Yacht => "Yacht",
+        FurnitureKind::Houseboat => "Houseboat",
     }
 }
 
@@ -272,6 +274,8 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         FurnitureKind::Boat => 0.0,
         // Slim and in the way, like a lamp column.
         FurnitureKind::TrafficLight => 0.2,
+        // On water, like the canal boats: a collider there is a wall in a basin.
+        FurnitureKind::Yacht | FurnitureKind::Houseboat => 0.0,
     }
 }
 
@@ -536,6 +540,7 @@ mod tests {
             luma: 1.0,
             paint: crate::systems::vector_tiles::palette::FURNITURE,
             over_water: false,
+            hull_only: false,
         }
     }
 

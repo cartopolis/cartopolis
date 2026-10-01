@@ -209,6 +209,7 @@ fn moor_along_ring(
                 // be true and unread: the flag drives the fountain's form and the
                 // client's collider pass, and a hull is meant to stop you.
                 over_water: false,
+                hull_only: false,
             });
             // Collected past the ceiling and thinned evenly to it afterwards
             // (`scatter::thin_evenly`); this bound only stops a runaway cell.
@@ -264,11 +265,387 @@ fn on_tile_border(a: [f32; 2], b: [f32; 2], tile_m: f32) -> bool {
         || (on(a[1], tile_m) && on(b[1], tile_m))
 }
 
+// ─── Marinas ─────────────────────────────────────────────────────────────────
+
+/// The jetty layers: OSM's `man_made=pier` as areas and as lines.
+const PIER_LAYERS: [&str; 2] = ["pier_polygons", "pier_lines"];
+
+/// Metres between yachts along a jetty: a 10 m hull and the gap to the next.
+const YACHT_PITCH_M: f32 = 14.0;
+/// A jetty segment shorter than this carries no berths: it is the elbow where a
+/// finger meets the walkway.
+const MIN_JETTY_EDGE_M: f32 = 6.0;
+/// From the jetty's line to a yacht's centre: half a jetty, a fender, half a
+/// beam. A city harbour moors its yachts *alongside* the jetties — the
+/// Oosterhaven's photograph shows them so — and the dense comb of boxes this
+/// first laid read as a raft of planks rather than as boats.
+const YACHT_OFFSET_M: f32 = 2.8;
+/// No two yachts closer than this, centre to centre: a jetty mapped both as an
+/// area and as a line would otherwise moor two boats in one place.
+const YACHT_SPACING_M: f32 = 7.0;
+/// No yacht within this of a registered houseboat berth.
+const BERTH_CLEARANCE_M: f32 = 7.0;
+/// How far from a jetty a marina basin's quay still takes yachts, metres.
+const MARINA_REACH_M: f32 = 120.0;
+/// Fraction of yacht berths left empty.
+const YACHT_VACANCY: f32 = 0.35;
+/// Ceiling per cell, on the terms of [`MAX_BOATS_PER_CELL`].
+pub const MAX_YACHTS_PER_CELL: usize = 400;
+/// Yacht hulls: mostly white and cream, the odd navy or racing green.
+const YACHT_PAINTS: &[u32] = &[
+    0xEC_EC_E8, 0xF2_F0_E8, 0xE4_E6_EA, 0xEC_EC_E8, 0xE0_DC_D2, 0x2E_3A_55, 0x2F_4A_3C,
+];
+
+/// Yachts moored at a tile's jetties.
+///
+/// **A jetty in water is a marina's berth line**, whatever the polygon around
+/// it is called. The canal moorings above refuse wide water on purpose — lining
+/// a lake's shore is the failure they guard against — so a harbour basin with
+/// fifty boats in it stood empty (the Oosterhaven, 2026-10-01). What a harbour
+/// has that a lake does not is jetties, and OSM maps them (`man_made=pier`,
+/// sixty-three around Groningen). So the yachts follow the jetties: one per
+/// pitch on each side, bow in, kept only where the whole hull is over water and
+/// clear of every jetty — which is also what keeps a jetty on land, or a pier
+/// along a canal wall, from growing boats on the dry side.
+pub fn extract_marina(
+    tile: &TileData,
+    tile_m: f32,
+    seed: u64,
+    berths: &[[f32; 2]],
+) -> Result<Vec<FurnitureInstance>, String> {
+    use geo_types::Geometry;
+    // Every water polygon and every jetty area, as rings in tile metres.
+    let mut water: Vec<Vec<Vec<[f32; 2]>>> = Vec::new();
+    let mut piers: Vec<Vec<Vec<[f32; 2]>>> = Vec::new();
+    // The lines berths are laid along: jetty lines, and jetty areas' edges.
+    let mut lines: Vec<Vec<[f32; 2]>> = Vec::new();
+    for meta in tile.layers() {
+        let name = meta.name.as_str();
+        let is_water = WATER_LAYERS.contains(&name);
+        let is_pier = PIER_LAYERS.contains(&name);
+        if !is_water && !is_pier {
+            continue;
+        }
+        let extent = TileData::extent(meta);
+        let scale = tile_m / extent;
+        for feature in tile.features(meta) {
+            match &feature.geometry {
+                Geometry::Polygon(p) => {
+                    let rings = clipped_rings(p, scale, extent);
+                    if rings.is_empty() {
+                        continue;
+                    }
+                    if is_pier {
+                        lines.push(rings[0].clone());
+                        piers.push(rings);
+                    } else {
+                        water.push(rings);
+                    }
+                }
+                Geometry::MultiPolygon(mp) => {
+                    for p in mp {
+                        let rings = clipped_rings(p, scale, extent);
+                        if rings.is_empty() {
+                            continue;
+                        }
+                        if is_pier {
+                            lines.push(rings[0].clone());
+                            piers.push(rings);
+                        } else {
+                            water.push(rings);
+                        }
+                    }
+                }
+                Geometry::LineString(ls) if is_pier => {
+                    lines.push(ls.0.iter().map(|c| [c.x * scale, c.y * scale]).collect());
+                }
+                Geometry::MultiLineString(mls) if is_pier => {
+                    for ls in mls {
+                        lines.push(ls.0.iter().map(|c| [c.x * scale, c.y * scale]).collect());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if lines.is_empty() || water.is_empty() {
+        return Ok(Vec::new());
+    }
+    // **A basin with a jetty in it is a marina, and its quays are berths too.**
+    // The Oosterhaven's yachts lie along the quay wall as much as along the
+    // jetties; its banks are added as berth lines, and the probes below keep
+    // each yacht on the water side of them.
+    let jetty_points: Vec<[f32; 2]> = lines.iter().flat_map(|l| l.iter().copied()).collect();
+    // Only the quay near the jetties: a long canal with one jetty in it is not
+    // a marina along its whole length.
+    let near_jetty = |p: [f32; 2]| {
+        jetty_points.iter().any(|q| {
+            let (dx, dz) = (q[0] - p[0], q[1] - p[1]);
+            dx * dx + dz * dz < MARINA_REACH_M * MARINA_REACH_M
+        })
+    };
+    let quays: Vec<Vec<[f32; 2]>> = water
+        .iter()
+        .filter(|rings| jetty_points.iter().any(|&p| inside_rings(rings, p)))
+        .flat_map(|rings| rings.iter())
+        .flat_map(|ring| {
+            ring.windows(2)
+                .map(|w| vec![w[0], w[1]])
+                .collect::<Vec<_>>()
+        })
+        .filter(|seg| near_jetty([(seg[0][0] + seg[1][0]) * 0.5, (seg[0][1] + seg[1][1]) * 0.5]))
+        .collect();
+    lines.extend(quays);
+    let in_water = |p: [f32; 2]| water.iter().any(|rings| inside_rings(rings, p));
+    let on_pier = |p: [f32; 2]| piers.iter().any(|rings| inside_rings(rings, p));
+    let inside_tile = |p: [f32; 2]| (0.0..tile_m).contains(&p[0]) && (0.0..tile_m).contains(&p[1]);
+
+    let mut out = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        for (ei, w) in line.windows(2).enumerate() {
+            let (a, b) = (w[0], w[1]);
+            if on_tile_border(a, b, tile_m) {
+                continue;
+            }
+            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < MIN_JETTY_EDGE_M {
+                continue;
+            }
+            let (ux, uz) = (dx / len, dz / len);
+            // A finger shorter than a pitch still takes one yacht, at its middle.
+            let mut s = (YACHT_PITCH_M * 0.5).min(len * 0.5);
+            let mut slot = 0i32;
+            while s < len {
+                let at = s;
+                s += YACHT_PITCH_M;
+                for side in [-1.0f32, 1.0] {
+                    let h = hash3(
+                        seed ^ (li as u64) << 20,
+                        ei as i32,
+                        slot * 2 + (side > 0.0) as i32,
+                    );
+                    if rand01(h, 0) < YACHT_VACANCY {
+                        continue;
+                    }
+                    // Alongside the jetty, on this side.
+                    let (nx, nz) = (-uz * side, ux * side);
+                    let base = [a[0] + ux * at, a[1] + uz * at];
+                    let c = [base[0] + nx * YACHT_OFFSET_M, base[1] + nz * YACHT_OFFSET_M];
+                    // Bow, stern and both beams over water, none on a jetty.
+                    let probes = [
+                        c,
+                        [c[0] - ux * 4.8, c[1] - uz * 4.8],
+                        [c[0] + ux * 4.8, c[1] + uz * 4.8],
+                        [c[0] + nx * 1.5, c[1] + nz * 1.5],
+                        [c[0] - nx * 1.5, c[1] - nz * 1.5],
+                    ];
+                    let near = |q: [f32; 2], r: f32| {
+                        let (dx, dz) = (q[0] - c[0], q[1] - c[1]);
+                        dx * dx + dz * dz < r * r
+                    };
+                    if !inside_tile(c)
+                        || !probes.iter().all(|&p| in_water(p) && !on_pier(p))
+                        || berths.iter().any(|&b| near(b, BERTH_CLEARANCE_M))
+                        || out
+                            .iter()
+                            .any(|y: &FurnitureInstance| near([y.x, y.z], YACHT_SPACING_M))
+                    {
+                        continue;
+                    }
+                    // The bow along the jetty: the form's +z is its bow.
+                    let yaw = ux.atan2(uz);
+                    out.push(FurnitureInstance {
+                        x: c[0],
+                        z: c[1],
+                        yaw,
+                        kind: FurnitureKind::Yacht,
+                        luma: 1.0 + (rand01(h, 1) - 0.5) * 0.06,
+                        paint: YACHT_PAINTS[((rand01(h, 2) * YACHT_PAINTS.len() as f32) as usize)
+                            .min(YACHT_PAINTS.len() - 1)],
+                        over_water: false,
+                        hull_only: false,
+                    });
+                }
+                slot += 1;
+            }
+        }
+    }
+    Ok(crate::scatter::thin_evenly(out, MAX_YACHTS_PER_CELL))
+}
+
+/// Houseboats on registered berths (tile-local points, the BAG `ligplaats`
+/// centres), each lying along the nearest bank of the water it is in.
+///
+/// A berth is a *surveyed* boat — the register says somebody lives there — so
+/// it is drawn wherever it is, with no vacancy and no shape test; the bank only
+/// decides which way the hull lies. A berth with no water edge within
+/// [`HOUSEBOAT_BANK_M`] keeps the cell's default heading rather than being
+/// dropped: it is still a home, and the register is the better witness.
+///
+/// A berth paired with `true` has a registered building standing on it, which
+/// is the house; only the hull is drawn under it (`FurnitureInstance::hull_only`).
+pub fn place_houseboats(
+    tile: &TileData,
+    tile_m: f32,
+    berths: &[([f32; 2], bool)],
+    seed: u64,
+) -> Vec<FurnitureInstance> {
+    use geo_types::Geometry;
+    if berths.is_empty() {
+        return Vec::new();
+    }
+    let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
+    for meta in tile.layers() {
+        if !WATER_LAYERS.contains(&meta.name.as_str()) {
+            continue;
+        }
+        let extent = TileData::extent(meta);
+        let scale = tile_m / extent;
+        for feature in tile.features(meta) {
+            let polys: Vec<&geo_types::Polygon<f32>> = match &feature.geometry {
+                Geometry::Polygon(p) => vec![p],
+                Geometry::MultiPolygon(mp) => mp.iter().collect(),
+                _ => continue,
+            };
+            for p in polys {
+                for ring in clipped_rings(p, scale, extent) {
+                    for w in ring.windows(2) {
+                        if !on_tile_border(w[0], w[1], tile_m) {
+                            edges.push((w[0], w[1]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    berths
+        .iter()
+        .enumerate()
+        .map(|(i, &(p, housed))| {
+            let h = hash3(seed, i as i32, 7);
+            let nearest = edges
+                .iter()
+                .map(|&(a, b)| (dist2_to_segment(p, a, b), a, b))
+                .filter(|(d, _, _)| *d < HOUSEBOAT_BANK_M * HOUSEBOAT_BANK_M)
+                .min_by(|x, y| x.0.total_cmp(&y.0));
+            let yaw = nearest.map_or(0.0, |(_, a, b)| (b[0] - a[0]).atan2(b[1] - a[1]));
+            FurnitureInstance {
+                x: p[0],
+                z: p[1],
+                yaw,
+                kind: FurnitureKind::Houseboat,
+                luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
+                paint: BOAT_PAINTS[((rand01(h, 2) * BOAT_PAINTS.len() as f32) as usize)
+                    .min(BOAT_PAINTS.len() - 1)],
+                over_water: false,
+                hull_only: housed,
+            }
+        })
+        .collect()
+}
+
+/// How far a berth looks for the bank it lies along, metres.
+const HOUSEBOAT_BANK_M: f32 = 30.0;
+
+/// Squared distance from `p` to the segment `a`–`b`.
+fn dist2_to_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dz * dz;
+    let t = if l2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (qx, qz) = (a[0] + dx * t - p[0], a[1] + dz * t - p[1]);
+    qx * qx + qz * qz
+}
+
+/// Even-odd point-in-polygon over a polygon's rings (outer and holes).
+fn inside_rings(rings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
+    let mut inside = false;
+    for ring in rings {
+        for w in ring.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::testdata::groningen as fixture;
+
+    /// A jetty sticking out into a harbour grows yachts on both sides, bow in,
+    /// all over water; the same jetty on dry land grows none.
+    #[test]
+    fn a_jetty_in_water_is_lined_with_yachts() {
+        use crate::vector_tiles::synth::{line_layer, polygon_layer, tile};
+        // A 4096-unit tile over 4096 m: a harbour basin in the west half, and a
+        // north-south jetty down its middle; a second jetty on dry land east.
+        let basin = polygon_layer(
+            "water_polygons",
+            4096,
+            &[(500, 500), (1500, 500), (1500, 3500), (500, 3500)],
+        );
+        let jetty = line_layer("pier_lines", 4096, &[(1000, 800), (1000, 3200)]);
+        let dry = line_layer("pier_lines", 4096, &[(3000, 800), (3000, 3200)]);
+        let t = TileData::parse(&tile(&[basin, jetty, dry])).expect("synthetic tile");
+        let yachts = extract_marina(&t, 4096.0, 9, &[]).expect("extract");
+        assert!(
+            yachts.len() > 100,
+            "both sides of 2.4 km of jetty: {}",
+            yachts.len()
+        );
+        for y in &yachts {
+            assert!(
+                (500.0..1500.0).contains(&y.x),
+                "a yacht off the water at {}",
+                y.x
+            );
+            assert!((y.x - 1000.0).abs() > 2.0, "a yacht on the jetty");
+            // Alongside: the bow runs along the north-south jetty.
+            assert!(y.yaw.sin().abs() < 1e-3, "{}", y.yaw);
+        }
+        for (i, a) in yachts.iter().enumerate() {
+            for b in &yachts[i + 1..] {
+                assert!((a.x - b.x).hypot(a.z - b.z) >= YACHT_SPACING_M - 1e-3);
+            }
+        }
+        // A registered berth keeps its stretch of jetty for its houseboat.
+        let berth = [1003.0, 2000.0];
+        let kept = extract_marina(&t, 4096.0, 9, &[berth]).expect("extract");
+        assert!(kept
+            .iter()
+            .all(|y| (y.x - berth[0]).hypot(y.z - berth[1]) >= BERTH_CLEARANCE_M));
+    }
+
+    /// The houseboat lies along the bank it is moored to.
+    #[test]
+    fn a_houseboat_lies_along_its_bank() {
+        let d = dist2_to_segment([5.0, 3.0], [0.0, 0.0], [10.0, 0.0]);
+        assert!((d - 9.0).abs() < 1e-4);
+        let d = dist2_to_segment([15.0, 0.0], [0.0, 0.0], [10.0, 0.0]);
+        assert!((d - 25.0).abs() < 1e-4);
+    }
+
+    /// The fixture's harbour jetties grow yachts, every one over water.
+    #[test]
+    fn the_fixture_has_yachts_at_its_jetties() {
+        let yachts = extract_marina(&fixture(), TILE_M, 5, &[]).expect("extract");
+        assert!(yachts.len() <= MAX_YACHTS_PER_CELL);
+        for y in &yachts {
+            assert_eq!(y.kind, FurnitureKind::Yacht);
+            assert!(y.x >= 0.0 && y.x < TILE_M && y.z >= 0.0 && y.z < TILE_M);
+        }
+    }
 
     const TILE_M: f32 = 1472.0;
 

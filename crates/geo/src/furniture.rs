@@ -116,6 +116,12 @@ pub struct FurnitureInstance {
     /// [`FurnitureKind::slug`], and a jet and a basin should still both be "the
     /// fountain" to all three of those.
     pub over_water: bool,
+    /// For a houseboat: draw the hull alone. Where the register's own building
+    /// stands on the berth — a `woonark` registered as a pand, which 3DBAG then
+    /// models — that building *is* the house, and a second one drawn into it
+    /// was a box inside a box (Woonschepenhaven, 2026-10-01). A flag for the
+    /// reason [`Self::over_water`] is one. `false` everywhere else.
+    pub hull_only: bool,
 }
 
 /// The vocabulary of things this module can stand on a street.
@@ -175,6 +181,13 @@ pub enum FurnitureKind {
     /// Surveyed by the city (`systems::municipal`), not by the BGT. Appended
     /// last, so the masks' existing bits keep their places.
     TrafficLight,
+    /// A yacht in a marina, moored alongside a jetty ([`crate::moorings`]):
+    /// white, with a cabin and a mast — the leisure boats of a harbour, where
+    /// the canal boats are dark working hulls.
+    Yacht,
+    /// A houseboat on a registered berth (the BAG's `ligplaats`): a long flat
+    /// hull with a house on it, lying along the bank.
+    Houseboat,
 }
 
 impl FurnitureKind {
@@ -214,6 +227,8 @@ impl FurnitureKind {
             Self::Person => "person",
             Self::Boat => "boat",
             Self::TrafficLight => "traffic-light",
+            Self::Yacht => "yacht",
+            Self::Houseboat => "houseboat",
         }
     }
 
@@ -239,13 +254,13 @@ impl FurnitureKind {
 /// walk on the frame loop, and — worse — `DetailWants` is `Copy` precisely so it
 /// can be handed to a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FurnitureMask(u16);
+pub struct FurnitureMask(u32);
 
 impl FurnitureMask {
     /// The empty set: every form draws the shape built into this client.
     pub const NONE: Self = Self(0);
 
-    fn bit(kind: FurnitureKind) -> u16 {
+    fn bit(kind: FurnitureKind) -> u32 {
         // `position` over the table rather than a discriminant cast: the enum has
         // no explicit values, and a reordering must not silently re-point a bit.
         let index = ALL_FURNITURE_KINDS
@@ -290,6 +305,8 @@ pub const ALL_FURNITURE_KINDS: &[FurnitureKind] = &[
     FurnitureKind::Person,
     FurnitureKind::Boat,
     FurnitureKind::TrafficLight,
+    FurnitureKind::Yacht,
+    FurnitureKind::Houseboat,
 ];
 
 /// Where a form can be sat on, in the object's own frame (+z front).
@@ -529,6 +546,7 @@ pub fn extract_furniture(
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
             paint: default_paint(kind),
             over_water,
+            hull_only: false,
         });
         if out.len() >= MAX_FURNITURE_PER_CELL {
             truncated = true;
@@ -1097,6 +1115,24 @@ mod form {
         part([0.0, 0.46, -0.90], [0.95, 0.06, 2.60], Roof),
         part([0.0, 0.78, -1.30], [0.80, 0.32, 1.60], Metal),
     ];
+    /// A 10 m sailing yacht: a painted (usually white) hull, a pale cabin aft of
+    /// the mast and the mast itself, which is what reads as "marina" from any
+    /// height — a forest of masts over the jetties.
+    pub const YACHT: [Part; 4] = [
+        part([0.0, 0.15, 0.0], [1.60, 0.45, 5.00], Paint),
+        // Deck and cabin in the hull's own paint: from the air a yacht is its
+        // deck, and a beige deck on a white hull read as a jetty plank.
+        part([0.0, 0.62, 3.80], [0.90, 0.03, 1.20], Paint),
+        part([0.0, 0.95, -0.60], [1.05, 0.38, 2.20], Paint),
+        part([0.0, 6.20, 1.00], [0.06, 5.60, 0.06], Metal),
+    ];
+    /// A Dutch houseboat (`woonschip`): a long, low hull and a house on it.
+    pub const HOUSEBOAT: [Part; 3] = [
+        part([0.0, 0.10, 0.0], [2.50, 0.45, 9.00], Paint),
+        part([0.0, 1.85, -0.50], [2.20, 1.30, 7.00], Wood),
+        // Grey: the roofs the photograph shows are steel and bitumen.
+        part([0.0, 3.20, -0.50], [2.40, 0.08, 7.30], Metal),
+    ];
 }
 
 pub fn parts(kind: FurnitureKind) -> &'static [Part] {
@@ -1117,6 +1153,8 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Person => &form::PERSON,
         FurnitureKind::Boat => &form::BOAT,
         FurnitureKind::TrafficLight => &form::TRAFFIC_LIGHT,
+        FurnitureKind::Yacht => &form::YACHT,
+        FurnitureKind::Houseboat => &form::HOUSEBOAT,
     }
 }
 
@@ -1151,6 +1189,10 @@ impl FurnitureInstance {
 pub fn parts_for(item: &FurnitureInstance) -> &'static [Part] {
     if item.over_water && matches!(item.kind, FurnitureKind::Fountain) {
         return &form::FOUNTAIN_JET;
+    }
+    // The hull is the form's first part (`form::HOUSEBOAT`).
+    if item.hull_only && matches!(item.kind, FurnitureKind::Houseboat) {
+        return &form::HOUSEBOAT[..1];
     }
     parts(item.kind)
 }
@@ -1200,6 +1242,7 @@ pub fn place_surveyed(
             luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
             paint: paint.unwrap_or_else(|| default_paint(kind)),
             over_water,
+            hull_only: false,
         });
     }
     out
@@ -1765,13 +1808,14 @@ mod tests {
         );
     }
 
-    /// Fifteen forms into sixteen bits. This is the test that fails the day a
-    /// sixteenth is added, which is the only warning the mask can give.
+    /// The forms into thirty-two bits (a `u16` until the marina boats made
+    /// seventeen). The test that fails the day a form too many is added, which
+    /// is the only warning the mask can give.
     #[test]
     fn the_mask_holds_every_form() {
         assert!(
-            ALL_FURNITURE_KINDS.len() <= 16,
-            "FurnitureMask is a u16 and there are now {} forms",
+            ALL_FURNITURE_KINDS.len() <= 32,
+            "FurnitureMask is a u32 and there are now {} forms",
             ALL_FURNITURE_KINDS.len()
         );
         let mut mask = FurnitureMask::NONE;
@@ -2135,6 +2179,7 @@ mod tests {
             luma: 1.0,
             paint: palette::FURNITURE,
             over_water: false,
+            hull_only: false,
         }];
         let m = &build_furniture_meshes(&one, None)[0];
         let extent = |axis: usize| {
@@ -2279,6 +2324,7 @@ mod tests {
             luma: 1.0,
             paint: palette::FURNITURE,
             over_water,
+            hull_only: false,
         };
         assert_eq!(
             parts_for(&at(false)).len(),
@@ -2390,6 +2436,7 @@ mod tests {
             luma: 1.0,
             paint: palette::FURNITURE,
             over_water,
+            hull_only: false,
         };
         assert!(at(false).takes_placeholder_model(), "a basin takes a model");
         assert!(!at(true).takes_placeholder_model(), "a jet does not");
@@ -2415,6 +2462,7 @@ mod tests {
             luma: 1.0,
             paint: palette::FURNITURE,
             over_water: false,
+            hull_only: false,
         }];
         let m = &build_furniture_meshes(&one, None)[0];
         for n in &m.normals {

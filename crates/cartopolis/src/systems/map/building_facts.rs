@@ -772,6 +772,54 @@ pub(crate) async fn load_bag_cell(cx: i64, cy: i64) -> BagCell {
     }
 }
 
+/// A cell's registered houseboat berths (`ligplaats`), as lat/lng, each with
+/// whether a registered building stands on it — for `map_geometry`, which floats
+/// a houseboat on each (`moorings::place_houseboats`) and draws only the hull
+/// under a building 3DBAG already models. Reads the places and buildings files
+/// `building_facts` and `lod22` stream anyway, through the same shared
+/// downloads. Empty for an uncovered or unreachable cell.
+pub(crate) async fn load_berths(cx: i64, cy: i64) -> Vec<((f64, f64), bool)> {
+    if !bag_covers(cx, cy) {
+        return Vec::new();
+    }
+    let Ok(text) = fetch_bag_text(cx, cy, BagPart::Places).await else {
+        return Vec::new();
+    };
+    let berths: Vec<(f64, f64)> = parse_bag_cell(&text)
+        .map(|c| {
+            c.berths
+                .into_iter()
+                .filter(|b| b.kind == BerthKind::Mooring)
+                .map(|b| b.at)
+                .collect()
+        })
+        .unwrap_or_default();
+    if berths.is_empty() {
+        return Vec::new();
+    }
+    let buildings = load_bag_cell(cx, cy).await;
+    let housed = |p: (f64, f64)| {
+        buildings
+            .buildings
+            .values()
+            .any(|b| b.footprint.len() >= 3 && point_in_latlng_ring(&b.footprint, p))
+    };
+    berths.into_iter().map(|p| (p, housed(p))).collect()
+}
+
+/// Even-odd point-in-ring over lat/lng, for rings the size of a building.
+fn point_in_latlng_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        if (a.0 > p.0) != (b.0 > p.0) && p.1 < (b.1 - a.1) * (p.0 - a.0) / (b.0 - a.0) + a.1 {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 // ─── The resource and its streamer ───────────────────────────────────────────
 
 /// Every BAG fact the client is currently holding, keyed by building id.
