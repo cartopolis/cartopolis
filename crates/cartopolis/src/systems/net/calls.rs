@@ -384,12 +384,35 @@ impl Calls {
             a.started = web_time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(83))
                 .unwrap_or_else(web_time::Instant::now);
+            // Not the stand-in camera's test card: its bottom third is black by
+            // design, which in a capture reads as a picture that stops short of
+            // the screen's edge. A portrait frame (what an upright phone sends)
+            // with a gradient to its edges and a white border shows exactly
+            // where the picture ends.
             let picture = |n: u64| {
-                let frame = cartopolis_calls::video::test_pattern(n);
+                let (width, height) = (240u32, 320u32);
+                let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+                let hue = (n % 6) as f32 / 6.0;
+                for y in 0..height {
+                    for x in 0..width {
+                        let border = x < 4 || y < 4 || x >= width - 4 || y >= height - 4;
+                        let t = y as f32 / height as f32;
+                        let (r, g, b) = if border {
+                            (255, 255, 255)
+                        } else {
+                            (
+                                (60.0 + 160.0 * (1.0 - t) * hue) as u8,
+                                (90.0 + 100.0 * t) as u8,
+                                (140.0 + 90.0 * (1.0 - hue)) as u8,
+                            )
+                        };
+                        rgba.extend_from_slice(&[r, g, b, 255]);
+                    }
+                }
                 Picture {
-                    width: frame.width,
-                    height: frame.height,
-                    rgba: frame.to_rgba(),
+                    width,
+                    height,
+                    rgba,
                     fresh: true,
                 }
             };
