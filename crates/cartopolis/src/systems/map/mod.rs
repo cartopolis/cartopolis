@@ -36,6 +36,7 @@ pub mod interiors;
 // sun carry the other two halves (`free_camera::setup_camera`, `sky`).
 pub mod light_shafts;
 // Sunbeams through cloud gaps and past buildings: a pass over the finished frame.
+pub mod ground_probe;
 pub mod load_control;
 pub mod lod22;
 pub mod lod3;
@@ -50,6 +51,7 @@ pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
+pub mod roof_colours;
 // The clip player is a thread of its own, which the browser build does not have.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod prim_video;

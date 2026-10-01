@@ -64,12 +64,12 @@ pub use map::prim_video;
 pub use map::{
     aerial, atmosphere_patch, building_facts, building_fade, building_select, building_windows,
     cache_reset, cell_ring, coverage, crops, crossings, dikes, globe, globe_ocean, globe_weather,
-    grass, ground_detail, height, interiors, light_shafts, load_control, lod22, lod3, map_geometry,
-    map_stream, model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
-    render_features, render_scale, rendering, road_depth, sky, sky_bake, sky_dome, stream_ledger,
-    stream_watch, street_detail, street_furniture, street_labels, sun_rays, surveyed,
-    tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tunnels, vegetation, water,
-    water_levels, weather, wet_surfaces, world_places,
+    grass, ground_detail, ground_probe, height, interiors, light_shafts, load_control, lod22, lod3,
+    map_geometry, map_stream, model_assets, municipal, nav_marks, osm_buildings, particles,
+    placeholder_models, render_features, render_scale, rendering, road_depth, roof_colours, sky,
+    sky_bake, sky_dome, stream_ledger, stream_watch, street_detail, street_furniture,
+    street_labels, sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader,
+    tile_source, tunnels, vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };
 pub use nav::{
     driver, geo_nav, locate, navigation, place_link, route_ahead, traffic, transit_live,

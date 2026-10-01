@@ -2455,6 +2455,11 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::lod3::lod3_attribution() {
                     ui.small(credit);
                 }
+                // The roof colours are measured from PDOK's aerial photograph,
+                // which is CC BY: its own line, since no photo is shown.
+                if let Some(credit) = crate::systems::roof_colours::roofs_attribution() {
+                    ui.small(credit);
+                }
                 ui.small(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );

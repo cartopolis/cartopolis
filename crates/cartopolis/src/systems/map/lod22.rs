@@ -236,6 +236,219 @@ const DOOR_PROUD_M: f32 = 0.04;
 /// colour like everything else in this mesh, so it costs no material.
 const DOOR_COLOR: [f32; 4] = [0.115, 0.075, 0.055, 1.0];
 
+/// A doorway built onto a wall face: the leaf set back inside a surround that
+/// stands off the wall, reveals on three sides of the recess, and a step.
+///
+/// **Built proud, not cut in.** The wall is a finished triangle soup and a hole
+/// would mean re-triangulating it; the surround instead stands
+/// [`SURROUND_PROUD_M`] off the brick and the leaf sits back inside it, so the
+/// recess is real geometry — its reveals take the sun and throw a shadow onto
+/// the leaf — without touching the wall. Placed on the wall's own plane (the
+/// face `WallFaces` found), not on the register's outline, which can run a few
+/// centimetres off the surveyed wall and hung doors in the air or inside it.
+///
+/// Every part carries a negative UV0.y, which `building_windows.wgsl` reads as
+/// "not a wall": the surround and step are drawn plain, the leaf with its
+/// panels, glass and handle from its own coordinates (`x` across it plus ten
+/// times its style, `-1 - height` up it).
+fn push_doorway(
+    buf: &mut MeshData,
+    face: &crate::systems::building_windows::WallFace,
+    at: Vec2,
+    base: f32,
+    origin: Vec2,
+    era: u8,
+    uses: u16,
+) {
+    let n = face.outward;
+    let t = face.tangent();
+    let p = |u: f32, y: f32, out: f32| {
+        let q = at + t * u + n * out;
+        Vec3::new(q.x - origin.x, base + y, q.y - origin.y)
+    };
+    let (n3, t3) = (Vec3::new(n.x, 0.0, n.y), Vec3::new(t.x, 0.0, t.y));
+    let w = DOOR_WIDTH_M * 0.5;
+    let h = DOOR_HEIGHT_M;
+    let (fw, proud, leaf_out) = (SURROUND_M, SURROUND_PROUD_M, 0.015);
+    let plain = [0.0, -0.5];
+    let shop = uses & crate::systems::building_facts::uses::SHOP != 0;
+    // The style of the leaf: panelled with a glass transom before the war,
+    // flush with a glass strip in the system-built decades, glass in a shop or
+    // a new building.
+    let style: u8 = if shop || era == 4 {
+        1
+    } else if era == 3 || era == 0 {
+        2
+    } else {
+        0
+    };
+    // Surround: painted timber on an old house, dark aluminium on a new one.
+    let surround = if era == 1 || era == 2 {
+        [0.58, 0.56, 0.5, 1.0]
+    } else {
+        [0.045, 0.045, 0.05, 1.0]
+    };
+    // Front doors are painted, and not all the same colour: picked by where the
+    // door is, so it is stable from one build to the next.
+    const LEAVES: [[f32; 4]; 6] = [
+        [0.018, 0.06, 0.03, 1.0],
+        [0.02, 0.03, 0.085, 1.0],
+        [0.13, 0.018, 0.02, 1.0],
+        [0.014, 0.014, 0.016, 1.0],
+        [0.16, 0.075, 0.03, 1.0],
+        [0.2, 0.2, 0.19, 1.0],
+    ];
+    let pick = ((at.x * 7.13 + at.y * 3.71).abs() as usize) % LEAVES.len();
+    let leaf = if style == 1 {
+        [0.05, 0.05, 0.055, 1.0]
+    } else {
+        LEAVES[pick]
+    };
+    let step = [0.26, 0.26, 0.24, 1.0];
+    let s = 10.0 * f32::from(style);
+
+    // The leaf, set back in the opening.
+    buf.quad_facing_uv(
+        [
+            p(-w, 0.0, leaf_out),
+            p(w, 0.0, leaf_out),
+            p(w, h, leaf_out),
+            p(-w, h, leaf_out),
+        ],
+        leaf,
+        n3,
+        [
+            [s, -1.0],
+            [s + 2.0 * w, -1.0],
+            [s + 2.0 * w, -1.0 - h],
+            [s, -1.0 - h],
+        ],
+    );
+    // The recess: two reveals and the soffit over the leaf.
+    buf.quad_facing_uv(
+        [
+            p(-w, 0.0, leaf_out),
+            p(-w, 0.0, proud),
+            p(-w, h, proud),
+            p(-w, h, leaf_out),
+        ],
+        surround,
+        t3,
+        [plain; 4],
+    );
+    buf.quad_facing_uv(
+        [
+            p(w, 0.0, leaf_out),
+            p(w, 0.0, proud),
+            p(w, h, proud),
+            p(w, h, leaf_out),
+        ],
+        surround,
+        -t3,
+        [plain; 4],
+    );
+    buf.quad_facing_uv(
+        [
+            p(-w, h, leaf_out),
+            p(w, h, leaf_out),
+            p(w, h, proud),
+            p(-w, h, proud),
+        ],
+        surround,
+        -Vec3::Y,
+        [plain; 4],
+    );
+    // The surround's face: two jambs and a head.
+    let (ow, top) = (w + fw, h + fw);
+    for (u0, u1, y0, y1) in [(-ow, -w, 0.0, top), (w, ow, 0.0, top), (-w, w, h, top)] {
+        buf.quad_facing_uv(
+            [
+                p(u0, y0, proud),
+                p(u1, y0, proud),
+                p(u1, y1, proud),
+                p(u0, y1, proud),
+            ],
+            surround,
+            n3,
+            [plain; 4],
+        );
+    }
+    // …and its outer sides and top, back to the wall.
+    buf.quad_facing_uv(
+        [
+            p(-ow, 0.0, 0.0),
+            p(-ow, 0.0, proud),
+            p(-ow, top, proud),
+            p(-ow, top, 0.0),
+        ],
+        surround,
+        -t3,
+        [plain; 4],
+    );
+    buf.quad_facing_uv(
+        [
+            p(ow, 0.0, 0.0),
+            p(ow, 0.0, proud),
+            p(ow, top, proud),
+            p(ow, top, 0.0),
+        ],
+        surround,
+        t3,
+        [plain; 4],
+    );
+    buf.quad_facing_uv(
+        [
+            p(-ow, top, 0.0),
+            p(ow, top, 0.0),
+            p(ow, top, proud),
+            p(-ow, top, proud),
+        ],
+        surround,
+        Vec3::Y,
+        [plain; 4],
+    );
+    // A step, a little wider than the surround.
+    let (sw, sd, sh) = (ow + 0.1, STEP_DEPTH_M, STEP_HEIGHT_M);
+    buf.quad_facing_uv(
+        [
+            p(-sw, sh, 0.0),
+            p(sw, sh, 0.0),
+            p(sw, sh, sd),
+            p(-sw, sh, sd),
+        ],
+        step,
+        Vec3::Y,
+        [plain; 4],
+    );
+    buf.quad_facing_uv(
+        [
+            p(-sw, 0.0, sd),
+            p(sw, 0.0, sd),
+            p(sw, sh, sd),
+            p(-sw, sh, sd),
+        ],
+        step,
+        n3,
+        [plain; 4],
+    );
+    for (u, facing) in [(-sw, -t3), (sw, t3)] {
+        buf.quad_facing_uv(
+            [p(u, 0.0, 0.0), p(u, 0.0, sd), p(u, sh, sd), p(u, sh, 0.0)],
+            step,
+            facing,
+            [plain; 4],
+        );
+    }
+}
+
+/// How far the door surround stands off the wall, and how wide it is. The
+/// recess is the difference between this and the leaf's own 15 mm.
+const SURROUND_PROUD_M: f32 = 0.09;
+const SURROUND_M: f32 = 0.11;
+/// The front step.
+const STEP_DEPTH_M: f32 = 0.32;
+const STEP_HEIGHT_M: f32 = 0.16;
+
 /// The point on a ring nearest `p`, and the **outward** normal of the edge it
 /// lies on.
 ///
@@ -779,11 +992,14 @@ pub fn update_lod22(
     // one built on flat ground. Unlike the terrain it can only change once.
     crate::systems::building_facts::prefetch_coverage(now);
     crate::systems::lod3::prefetch_coverage(now);
-    // Both additive manifests are folded in the same way and for the same reason:
-    // one decides a building's colours, the other decides whether it is drawn from
-    // a shell or from a model, and a cell built before either landed has neither.
+    crate::systems::roof_colours::prefetch_coverage(now);
+    // The additive manifests are folded in the same way and for the same reason:
+    // the BAG and the roofs decide a building's colours, lod3 decides whether it
+    // is drawn from a shell or from a model, and a cell built before one landed
+    // has none of what it says.
     let bag_revision = crate::systems::building_facts::coverage_revision()
-        | (crate::systems::lod3::coverage_revision() << 1);
+        | (crate::systems::lod3::coverage_revision() << 1)
+        | (crate::systems::roof_colours::coverage_revision() << 2);
     let reanchored = lod.stream.sync(stream.anchor_generation);
     // **A new field alone rebuilds only the cells built on an older one**, as the
     // ground cells do (`MapSurfaces::built_rev`). Over graded ground the cells were
@@ -1121,6 +1337,8 @@ pub fn update_lod22(
                 // fetch the streamer then reads. Uncovered cells return an empty
                 // set without asking anything.
                 let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
+                // …the roof colours measured from the aerial photo, likewise baked.
+                let roofs = crate::systems::roof_colours::load_roof_cell(cx, cy).await;
                 // …and the imported models for the same cell, on the same terms.
                 let lod3 = crate::systems::lod3::load_lod3_text(cx, cy).await;
                 // The ground last, after every fetch.
@@ -1160,6 +1378,7 @@ pub fn update_lod22(
                             lat,
                             &ground,
                             &facts,
+                            &roofs,
                             lod3.as_deref(),
                             detail,
                             streets.as_deref(),
@@ -1465,6 +1684,7 @@ fn build_lod22_from_body(
     lat: f64,
     ground: &crate::systems::terrain::TerrainSnapshot,
     facts: &crate::systems::building_facts::BagCell,
+    roofs: &cartopolis_geo::formats::roofs::Cell,
     lod3_text: Option<&str>,
     detail: load_control::Detail,
     streets: Option<&cartopolis_geo::vector_tiles::TileData>,
@@ -1513,7 +1733,7 @@ fn build_lod22_from_body(
     // index list, and the loop below expands it triangle-by-triangle. Without this
     // a dense cell ballooned to three unshared vertices per triangle (~720k for a
     // ~240k-triangle cell) behind a useless identity index buffer.
-    let mut buf = MeshData::with_dedup();
+    let mut buf = MeshData::with_dedup().with_uvs();
     // Imported models mesh into their own buffer: they are drawn with culling off
     // (see [`Piece`]) and so cannot share a mesh with the shells.
     let mut interior = MeshData::with_dedup();
@@ -1574,9 +1794,31 @@ fn build_lod22_from_body(
         // shader reads out of `base_color.a`, the same free channel
         // `globe_ocean` puts its sea mask in. 1.0 for a building we know nothing
         // about, which is exactly the look this lane had before.
-        let lit = crate::systems::osm_buildings::night_lit_scale(
-            fact.map_or(0, |f| f.uses),
-            fact.map_or(0, |f| f.units),
+        // …and beside it, packed into the same float, what the facade shader
+        // draws the walls from: the era, a shop on the ground floor, and the
+        // eaves — the 25th percentile of the roof's vertex heights, so a low
+        // annex does not pull a terrace's eaves down to its own.
+        let eave_m = {
+            let mut h: Vec<f32> =
+                b.t.iter()
+                    .filter(|t| t.3 == 1)
+                    .flat_map(|t| [t.0, t.1, t.2])
+                    .filter_map(|i| b.p.get(i as usize).map(|p| p.2))
+                    .collect();
+            h.sort_by(f32::total_cmp);
+            h.get(h.len() / 4).copied().filter(|&e| e > 2.0)
+        };
+        let lit = crate::systems::building_windows::pack_facade(
+            crate::systems::building_windows::Facade {
+                occupancy: crate::systems::osm_buildings::night_lit_scale(
+                    fact.map_or(0, |f| f.uses),
+                    fact.map_or(0, |f| f.units),
+                ),
+                shop: fact
+                    .is_some_and(|f| f.uses & crate::systems::building_facts::uses::SHOP != 0),
+                era: crate::systems::building_windows::era(fact.and_then(|f| f.year)),
+                eave_m,
+            },
         );
         let wall = [wall[0], wall[1], wall[2], lit];
         let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
@@ -1584,6 +1826,16 @@ fn build_lod22_from_body(
         // linear space (same exit rule as `building_palette`).
         let flat_lin = crate::systems::scatter::srgb_to_linear_f32(FLAT_ROOF_COLOR);
         let flat = [flat_lin[0], flat_lin[1], flat_lin[2], lit];
+        // The roof's measured colours, where atlas has photographed it: its flat
+        // planes and its pitched ones separately, each falling back to the
+        // generated tone when that half could not be measured.
+        let measured = (!b.id.is_empty()).then(|| roofs.roofs.get(&b.id)).flatten();
+        let flat = measured.and_then(|r| r.f.as_ref()).map_or(flat, |s| {
+            crate::systems::roof_colours::vertex_colour(s, lit)
+        });
+        let roof_tile = measured.and_then(|r| r.p.as_ref()).map_or(roof_tile, |s| {
+            crate::systems::roof_colours::vertex_colour(s, lit)
+        });
 
         // World-XZ position of each vertex (before the cell offset).
         let world_xz: Vec<Vec2> =
@@ -1630,6 +1882,30 @@ fn build_lod22_from_body(
         } else {
             crate::systems::collision::convex_hull_xz(world_xz.clone())
         };
+        // The walls as flat faces, each entrance placed on one of them
+        // (`building_windows::WallFaces`). Done before the collider below so
+        // the opening it leaves is where the door is drawn — within the snap
+        // of `DOOR_STEP_M` and the clearance from the face's corners, of the
+        // point the register gives.
+        let era = crate::systems::building_windows::era(fact.and_then(|f| f.year));
+        let shell_pts: Vec<Vec3> =
+            b.p.iter()
+                .zip(&world_xz)
+                .map(|(&(_, _, h), &w)| Vec3::new(w.x, h, w.y))
+                .collect();
+        let mut faces = crate::systems::building_windows::WallFaces::new(&shell_pts, &b.t, era);
+        let placed: Vec<(Option<usize>, Vec2)> = doors
+            .iter()
+            .filter_map(|&d| {
+                use crate::systems::building_windows::DoorPlacement;
+                match faces.place_door(d) {
+                    DoorPlacement::On(i, at) => Some((Some(i), at)),
+                    DoorPlacement::Merged => None,
+                    DoorPlacement::Nowhere => Some((None, d)),
+                }
+            })
+            .collect();
+        let doors: Vec<Vec2> = placed.iter().map(|p| p.1).collect();
         // Hollow if there is a door *and* a room behind it, which is one question
         // asked in one place: `interiors` builds the room from this same outline,
         // so a building the avatar can walk into is a building with a floor,
@@ -1658,7 +1934,9 @@ fn build_lod22_from_body(
         // promoted.
         if detail == load_control::Detail::Near && !doors.is_empty() && outline.len() >= 3 {
             let base = ground.level_over(outline.iter().map(|w| [w.x, w.y]));
-            for &door in &doors {
+            // Only the entrances no wall face could take; the rest are built
+            // as doorways further down, once the building's base is known.
+            for door in placed.iter().filter(|p| p.0.is_none()).map(|p| p.1) {
                 let Some((at, normal)) = nearest_edge_point(&outline, door) else {
                     continue;
                 };
@@ -1702,7 +1980,23 @@ fn build_lod22_from_body(
         if let Some(fp) = pending_fp {
             footprints.push(fp.with_extent(base - 3.0, base + wall_h.max(3.0)));
         }
-        for &(i, j, k, is_roof) in &b.t {
+        if detail == load_control::Detail::Near {
+            for (face, _) in placed.iter().filter_map(|p| p.0.map(|i| (i, p.1))) {
+                let face = &faces.faces[face];
+                let Some(at) = face.door_at() else { continue };
+                push_doorway(
+                    &mut buf,
+                    face,
+                    at,
+                    base,
+                    Vec2::new(ox, oz),
+                    era,
+                    fact.map_or(0, |f| f.uses),
+                );
+                drawn_doors += 1;
+            }
+        }
+        for (ti, &(i, j, k, is_roof)) in b.t.iter().enumerate() {
             let (a, bb, c) = (local[i], local[j], local[k]);
             if is_roof == 1 {
                 let n = (bb - a).cross(c - a).normalize_or_zero();
@@ -1732,7 +2026,21 @@ fn build_lod22_from_body(
                 let d = crate::systems::osm_buildings::wall_shade(wall_h, v.y - base);
                 [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
             };
-            buf.tri_graded(a, bb, c, [tone(a), tone(bb), tone(c)]);
+            match faces.of_triangle.get(ti).copied().flatten() {
+                Some(fi) => {
+                    let face = &faces.faces[fi as usize];
+                    buf.tri_graded_uv(
+                        [a, bb, c],
+                        [tone(a), tone(bb), tone(c)],
+                        [
+                            face.uv(world_xz[i]),
+                            face.uv(world_xz[j]),
+                            face.uv(world_xz[k]),
+                        ],
+                    );
+                }
+                None => buf.tri_graded(a, bb, c, [tone(a), tone(bb), tone(c)]),
+            }
         }
     }
     if struck > 0 {
@@ -2237,6 +2545,13 @@ mod tests {
     }
 
     fn build(body: &Lod22Body) -> Result<Option<Lod22Build>, String> {
+        build_with_roofs(body, &cartopolis_geo::formats::roofs::Cell::default())
+    }
+
+    fn build_with_roofs(
+        body: &Lod22Body,
+        roofs: &cartopolis_geo::formats::roofs::Cell,
+    ) -> Result<Option<Lod22Build>, String> {
         let (clat, clng) = (53.2194, 6.5665);
         let z = 16;
         let (ax, ay) = lat_lng_to_tile(clat, clng, z);
@@ -2250,6 +2565,7 @@ mod tests {
             clat,
             &crate::systems::terrain::TerrainSnapshot::default(),
             &crate::systems::building_facts::BagCell::default(),
+            roofs,
             None,
             load_control::Detail::Near,
             None,
@@ -2293,6 +2609,50 @@ mod tests {
                 assert!(d <= 1e-3, "a vertex moved {d} m");
             }
         }
+    }
+
+    /// A roof atlas photographed is drawn in the colour it measured, on its
+    /// pitched planes and its flat ones, and nothing else is.
+    #[test]
+    fn a_measured_roof_is_drawn_in_its_measured_colour() {
+        use cartopolis_geo::formats::roofs::{Cell, Material, Roof, Surface};
+        let text = sample_json();
+        let cell = parse_lod22_json(&text).unwrap();
+        let magenta = Surface {
+            c: [255, 0, 255],
+            m: Material::Tile,
+            n: 100,
+        };
+        let mut roofs = Cell::default();
+        for e in &cell.elements {
+            roofs.roofs.insert(
+                e.id.clone(),
+                Roof {
+                    f: Some(magenta.clone()),
+                    p: Some(magenta.clone()),
+                },
+            );
+        }
+        let count = |roofs: &Cell| {
+            let (_, pieces, ..) = build_with_roofs(&Lod22Body::Json(text.clone()), roofs)
+                .unwrap()
+                .unwrap();
+            pieces
+                .iter()
+                .map(|(mesh, _)| match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+                    Some(bevy::mesh::VertexAttributeValues::Float32x4(v)) => v
+                        .iter()
+                        .filter(|c| c[0] == 1.0 && c[1] == 0.0 && c[2] == 1.0)
+                        .count(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+        };
+        assert_eq!(count(&Cell::default()), 0);
+        assert!(
+            count(&roofs) > 1000,
+            "the measured colour never reached a roof"
+        );
     }
 
     /// A cut-off download is a failed cell — which evicts the cache entry and

@@ -22,6 +22,8 @@ pub struct MapPlugin {
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
+        // `CARTO_PROBE`: where each ground sheet is drawn (`systems::ground_probe`).
+        app.add_systems(Update, systems::ground_probe::update_ground_probes);
         // Video on a prim (protocol 28): after the prims' own textures are put
         // back, so a screen keeps its picture through an edit.
         #[cfg(not(target_arch = "wasm32"))]

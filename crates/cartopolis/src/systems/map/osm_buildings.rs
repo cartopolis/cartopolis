@@ -2051,10 +2051,13 @@ pub(crate) struct MeshData {
     /// Per-vertex copy of [`Self::base_y`] when the buffer was built with
     /// [`MeshData::with_bases`]; `None` on every buffer that never fades.
     bases: Option<Vec<f32>>,
+    /// Per-vertex UV0 when built with [`MeshData::with_uvs`] — the facade
+    /// layout `building_windows::WallFaces` hands the shader.
+    uvs: Option<Vec<[f32; 2]>>,
 }
 
-/// A vertex's position, flat normal and colour, as raw bit patterns.
-type VertexKey = [u32; 10];
+/// A vertex's position, flat normal, colour and UV, as raw bit patterns.
+type VertexKey = [u32; 12];
 
 /// Hasher for [`VertexKey`], replacing the default `HashMap`'s SipHash-1-3.
 ///
@@ -2145,6 +2148,17 @@ impl MeshData {
         self
     }
 
+    /// Also carry a UV0 per vertex (`[0, 0]` for anything pushed without one).
+    ///
+    /// Eight bytes a vertex, on the largest meshes in the app: `lod22` pays it so
+    /// the facade shader can lay a wall's windows out from the wall's own corner
+    /// and know where its door is (`building_windows::WallFaces`), which nothing
+    /// derivable in the shader can tell it.
+    pub(crate) fn with_uvs(mut self) -> Self {
+        self.uvs = Some(Vec::new());
+        self
+    }
+
     /// Lift every vertex pushed from now on by `base` metres — the measured ground
     /// under the building about to be written (`systems::terrain`).
     ///
@@ -2158,6 +2172,12 @@ impl MeshData {
 
     /// Append (or, in dedup mode, look up) one vertex and return its index.
     fn vertex(&mut self, v: Vec3, n: Vec3, color: [f32; 4]) -> u32 {
+        self.vertex_uv(v, n, color, [0.0, 0.0])
+    }
+
+    /// [`MeshData::vertex`] with a UV0, which joins the dedup key: two walls
+    /// meeting at a corner share its position and not its place along either.
+    fn vertex_uv(&mut self, v: Vec3, n: Vec3, color: [f32; 4], uv: [f32; 2]) -> u32 {
         let v = Vec3::new(v.x, v.y + self.base_y, v.z);
         // Hash the bit patterns, not the floats: these are copied values, so equal
         // corners are bit-equal. (NaN can't arise here — `normalize_or_zero`.)
@@ -2173,6 +2193,8 @@ impl MeshData {
                 color[1].to_bits(),
                 color[2].to_bits(),
                 color[3].to_bits(),
+                uv[0].to_bits(),
+                uv[1].to_bits(),
             ]
         });
         if let (Some(k), Some(map)) = (&key, &self.dedup) {
@@ -2190,6 +2212,9 @@ impl MeshData {
         // only share a vertex if they stand at the same height there.
         if let Some(bases) = &mut self.bases {
             bases.push(self.base_y);
+        }
+        if let Some(uvs) = &mut self.uvs {
+            uvs.push(uv);
         }
         if let (Some(k), Some(map)) = (key, &mut self.dedup) {
             map.insert(k, idx);
@@ -2220,6 +2245,43 @@ impl MeshData {
         let ib = self.vertex(b, n, colors[1]);
         let ic = self.vertex(c, n, colors[2]);
         self.indices.extend_from_slice(&[ia, ib, ic]);
+    }
+
+    /// [`MeshData::tri_graded`] with a UV0 per corner.
+    pub(crate) fn tri_graded_uv(
+        &mut self,
+        [a, b, c]: [Vec3; 3],
+        colors: [[f32; 4]; 3],
+        uvs: [[f32; 2]; 3],
+    ) {
+        let n = (b - a).cross(c - a).normalize_or_zero();
+        let ia = self.vertex_uv(a, n, colors[0], uvs[0]);
+        let ib = self.vertex_uv(b, n, colors[1], uvs[1]);
+        let ic = self.vertex_uv(c, n, colors[2], uvs[2]);
+        self.indices.extend_from_slice(&[ia, ib, ic]);
+    }
+
+    /// A planar quad (a→b→c→d) wound to face `outward`, with a UV0 per corner.
+    pub(crate) fn quad_facing_uv(
+        &mut self,
+        [a, b, c, d]: [Vec3; 4],
+        color: [f32; 4],
+        outward: Vec3,
+        uvs: [[f32; 2]; 4],
+    ) {
+        let (verts, uv) = if (b - a).cross(c - a).dot(outward) < 0.0 {
+            ([d, c, b, a], [uvs[3], uvs[2], uvs[1], uvs[0]])
+        } else {
+            ([a, b, c, d], uvs)
+        };
+        let n = (verts[1] - verts[0])
+            .cross(verts[2] - verts[0])
+            .normalize_or_zero();
+        let i: Vec<u32> = (0..4)
+            .map(|k| self.vertex_uv(verts[k], n, color, uv[k]))
+            .collect();
+        self.indices
+            .extend_from_slice(&[i[0], i[1], i[2], i[0], i[2], i[3]]);
     }
 
     /// Push a planar quad (a→b→c→d) as two triangles over **four** shared vertices.
@@ -2330,6 +2392,9 @@ impl MeshData {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
+        if let Some(uvs) = self.uvs {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        }
         if let Some(bases) = self.bases {
             mesh.insert_attribute(
                 crate::systems::building_fade::ATTRIBUTE_BUILDING_BASE,
@@ -2376,9 +2441,9 @@ impl MeshData {
         // Position + normal + colour, matching the three attributes below, and the
         // index that points at them. The same arithmetic `RenderMesh::byte_len`
         // uses, which is what makes `max_bytes` comparable with the upload budget.
-        const VERTEX_BYTES: usize = 12 + 12 + 16;
+        let vertex_bytes: usize = 12 + 12 + 16 + if self.uvs.is_some() { 8 } else { 0 };
         const INDEX_BYTES: usize = 4;
-        let total = self.positions.len() * VERTEX_BYTES + self.indices.len() * INDEX_BYTES;
+        let total = self.positions.len() * vertex_bytes + self.indices.len() * INDEX_BYTES;
         if total <= max_bytes {
             return self.into_mesh().into_iter().collect();
         }
@@ -2387,7 +2452,7 @@ impl MeshData {
         // triangle, so budget for that rather than for the average — a chunk that
         // overshoots the budget it was split to serve is the one outcome this must
         // not have.
-        let per_triangle = 3 * (VERTEX_BYTES + INDEX_BYTES);
+        let per_triangle = 3 * (vertex_bytes + INDEX_BYTES);
         let triangles_per_chunk = (max_bytes / per_triangle).max(1);
         let mut meshes = Vec::new();
         // Remap by old index, allocated once for the whole cell and cleared per
@@ -2401,6 +2466,7 @@ impl MeshData {
             let mut positions = Vec::new();
             let mut normals = Vec::new();
             let mut colors = Vec::new();
+            let mut uvs = Vec::new();
             let mut indices = Vec::with_capacity(triangles.len());
             for &old in triangles {
                 let slot = &mut remap[old as usize];
@@ -2409,6 +2475,9 @@ impl MeshData {
                     positions.push(self.positions[old as usize]);
                     normals.push(self.normals[old as usize]);
                     colors.push(self.colors[old as usize]);
+                    if let Some(u) = &self.uvs {
+                        uvs.push(u[old as usize]);
+                    }
                 }
                 indices.push(*slot);
             }
@@ -2419,6 +2488,9 @@ impl MeshData {
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            if self.uvs.is_some() {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+            }
             mesh.insert_indices(Indices::U32(indices));
             meshes.push(mesh);
             for &old in triangles {
