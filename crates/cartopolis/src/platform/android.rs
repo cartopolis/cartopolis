@@ -1161,6 +1161,47 @@ fn open_url_inner(env: &mut JNIEnv, activity: &JObject, url: &str) -> Result<(),
     })
 }
 
+/// Send the app to the background, as Back on a messenger's root screen does.
+///
+/// Back from the root used to write `AppExit`, which on this platform ends the
+/// process — the activity cannot be recreated inside a live one
+/// (`MainActivity.java`) — so the next tap on the icon started from nothing:
+/// a reload of the map, a sign-in, the Chats tab gone, any call dropped.
+/// Android itself has done the same as this since 12 for a launcher's root
+/// activity, and Signal and WhatsApp do it everywhere.
+///
+/// `Activity.moveTaskToBack` is a binder call, safe from any thread and taking
+/// none of `AndroidApp`'s locks (`set_keep_screen_on` has why that matters);
+/// it runs on a thread of its own anyway, to keep the round-trip off the frame.
+pub fn move_task_to_back() {
+    if ANDROID_APP.get().is_none() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("carto to-back".to_string())
+        .spawn(|| {
+            let result = vm().and_then(|java_vm| {
+                let mut env = java_vm
+                    .attach_current_thread()
+                    .map_err(|e| format!("attach_current_thread: {e}"))?;
+                let activity = activity();
+                let moved =
+                    env.call_method(&activity, "moveTaskToBack", "(Z)Z", &[JValue::Bool(1)]);
+                if let Err(e) = moved {
+                    clear_pending(&env);
+                    return Err(format!("moveTaskToBack: {e}"));
+                }
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "could not move the app to the background");
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "could not move the app to the background");
+    }
+}
+
 /// Hand a block of text to the system share sheet.
 ///
 /// This exists so a crash on a phone can be read **without a workstation**. The

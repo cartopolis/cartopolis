@@ -2988,6 +2988,15 @@ fn handle_back_gesture(
     // here.
     let text_focused = egui.ctx.text_edit_focused();
     if dismissable.dismiss_innermost(text_focused).is_none() {
+        // On the phone the last rung is "to the background", not "quit": quitting
+        // ends the process there, so coming back was a cold start that had
+        // forgotten the tab, the open chat and any call (`move_task_to_back`).
+        #[cfg(target_os = "android")]
+        {
+            let _ = &mut exit;
+            platform::android::move_task_to_back();
+        }
+        #[cfg(not(target_os = "android"))]
         exit.write(AppExit::Success);
     }
 }
