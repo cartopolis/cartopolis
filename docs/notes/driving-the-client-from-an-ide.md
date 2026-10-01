@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection"]
-updated: 2026-09-27
+triggers: [mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory"]
+updated: 2026-10-01
 ---
 
 # Driving the client from an editor
@@ -134,6 +134,26 @@ at, on a box that is shared. The cap is a minimum frame time, so on a renderer
 already slower than 33 ms — this container draws a city in about four seconds —
 it changes nothing.
 
+**Between calls it drops to 2 fps** (`mcp::pace_idle`, 2026-10-01). 30 fps was
+still the whole city drawn thirty times a second for nobody: measured on the
+Deck bot, idle, **GPU 99 % busy and 0.91 of a core → GPU 6 % and 0.08 of a
+core**, every tool unchanged. The full rate comes back for anything in flight —
+a capture, a `view` waiting, a walk, a build or a line being confirmed — and
+while any streamer is still busy, because every streamer is bounded per frame:
+idling through a fill left the Deck bot without shops or benches for minutes
+after it started. A call arriving mid-sleep waits at most 0.5 s. A parked `read_chat` or `wait` does
+**not** count as in flight: that is how a bot sits in a conversation, for
+minutes at a time, and counting it would keep the full rate for exactly the
+stretch the idle rate is for. On this container it saves nothing, since an idle
+frame on lavapipe already takes 1.3 s.
+
+Not drawing at all between calls was tried and Bevy 0.19 cannot do it: with the
+only camera's `is_active` false, `bevy_pbr`'s
+`prepare_atmosphere_probe_bind_groups` unwraps an empty transform buffer and the
+client panics on the next frame. The types are private to `bevy_pbr`, so there
+is nothing on this side to switch off instead. The remaining 6 % is what that
+would buy.
+
 ## The token is in `user.json`, and on screen
 
 It is a secret from other processes, not from its owner: the person who needs it
@@ -254,6 +274,49 @@ only be walked up to once they have spoken in public, because avatars carry no
 names on the wire. And nothing can be shown to one player only, so a card game
 with hidden hands cannot be scripted. `scripting_guide` says so, and builds the
 rest of itself from `cartopolis_core::script_api`, so it cannot drift.
+
+## Knowing where it is (2026-10-01)
+
+The first bots could act but could not *perceive* without a picture, and a
+picture is the most expensive thing they can ask for. So the second set of tools
+(`mcp::surroundings`, `mcp::agent`) is mostly about knowing where it is:
+
+- `look_around` describes the surroundings **in words**: the address or the
+  building it is inside, people, objects people built (and which are scripted),
+  named places, street furniture by kind, and buildings with the register's
+  use, year and monument status, each with a distance and a compass direction.
+  It reads only what is already loaded for the person at the keyboard
+  (`WorldPlaces`, `BuildingFacts`, the prims), so it costs a lookup. Its
+  structured half is capped at ten of each, because a city square has a hundred
+  things on it and the data is read in full by the model.
+- `find_place` is the address bar's Nominatim lookup, biased (not bounded) to a
+  box around the avatar so "the station" means the nearby one.
+- `look` photographs **through the avatar's eyes**: the first-person camera,
+  captured in place, so it neither teleports nor stands a seated avatar up —
+  a `view` in free mode does both. Seated, it turns the head and not the body,
+  which faces out of the seat.
+- `wait` parks until something happens (chat, somebody arriving, a call, a
+  contact request, one of its objects printing, its walk ending), the same long
+  poll `read_chat` already was, generalised.
+- `follow`, `sit` / `stand`, `interact` (what E does, walking there first),
+  `face`, and `edit_object` (an `UpdatePrim` carrying the object's whole current
+  state, as the gizmo sends, with only the named fields changed).
+- `save_place` / `my_places` and `remember` / `recall`: named places and a
+  notebook, per account and server in the `Data` namespace beside the build list
+  (`mcp/places/…`, `mcp/notes/…`), because the bot's instructions are a
+  read-only file and nothing else outlives a restart. `me` now also says the
+  time, the sun and the weather.
+
+**An outfit is not among them, and cannot be yet.** Appearance is not on the
+wire at all — every other client draws a remote avatar in the default — so a
+bot changing clothes would change only its own screen.
+
+**An arrival has to allow for the next frame.** The sim keeps moving the avatar
+on the last wish until the next intent, so a goal nearer than one frame's step
+is passed before the steering runs again. At 30 fps that is 6 cm; on this
+container's 3-second frames it walked a bot 5 m past the box it was going to
+press and into a building. `steer` now arrives when the goal is within the
+coming step and strolls the last four metres.
 
 ## The bot on the Steam Deck
 

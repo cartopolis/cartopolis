@@ -499,6 +499,16 @@ impl WorldPlaces {
     }
 
     /// The nearest house number to `pos`, within `radius` metres.
+    /// Everything a person could act on within `radius`, with its distance, in
+    /// no particular order — what an agent's `look_around` lists.
+    pub fn within(&self, pos: Vec2, radius: f32) -> impl Iterator<Item = (&Interactable, f32)> {
+        self.cells
+            .values()
+            .flatten()
+            .map(move |i| (i, i.pos.distance(pos)))
+            .filter(move |(_, d)| *d <= radius)
+    }
+
     #[must_use]
     pub fn nearest_address(&self, pos: Vec2, radius: f32) -> Option<&str> {
         let r2 = radius * radius;

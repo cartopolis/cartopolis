@@ -47,6 +47,7 @@ use futures_channel::oneshot;
 use rmcp::schemars;
 use serde_json::{json, Value};
 
+use super::surroundings::{self as around, Note, SavedPlace};
 use super::{McpBridge, Outcome, Reply};
 use crate::components::{Avatar, Prim, PrimGeo, RemoteAvatar};
 use crate::resources::{
@@ -56,10 +57,12 @@ use crate::resources::{
 use crate::systems::avatar::AgentWalk;
 use crate::systems::chat::{ChatLine, ChatState};
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
+use crate::systems::interact::INTERACT_RADIUS;
 use crate::systems::locomotion::Gait;
 use crate::systems::private_chat::{self, PrivateChats};
 use crate::systems::script_editor::ScriptEditorState;
 use crate::systems::session::SessionState;
+use crate::systems::world_places::Interactable;
 use cartopolis_core::{ChatScope, Emote, NetMessage};
 
 /// Furthest an agent may *walk* in one call, in metres.
@@ -128,6 +131,27 @@ const MAX_BUILD: usize = 64;
 /// Shapes the server accepts (`simulator::authoring::SHAPES`), checked here so a
 /// typo is refused before anything is created rather than halfway through.
 const SHAPES: &[&str] = &["box", "sphere", "cylinder", "cone", "torus"];
+
+/// How far `sit` and `interact` look for the thing named, and walk to it.
+/// Further than this is a `walk_to` the agent should choose to make.
+const REACH_FOR_M: f32 = 40.0;
+
+/// How long `find_place` waits for the geocoder.
+const GEOCODE_WAIT_S: f64 = 10.0;
+
+/// How long `edit_object` waits for the server to announce the change back.
+const EDIT_WAIT_S: f64 = 6.0;
+
+/// Following: the gap kept by default, and how far past it the person must get
+/// before the avatar sets off again — without the margin it twitches after
+/// every step they take.
+const FOLLOW_GAP_M: f32 = 2.5;
+const FOLLOW_SLACK_M: f32 = 1.5;
+/// Past this the follower runs to catch up.
+const FOLLOW_RUN_M: f32 = 12.0;
+
+/// How near counts as "arrived" for `wait`'s arrival event, unless asked.
+const ARRIVAL_M: f32 = 20.0;
 
 // ---------------------------------------------------------------------------
 // The allow-list
@@ -239,6 +263,8 @@ pub struct WalkArgs {
     pub lat: Option<f64>,
     #[schemars(description = "Longitude to walk to.")]
     pub lng: Option<f64>,
+    #[schemars(description = "A place you saved with `save_place`, by its name.")]
+    pub place: Option<String>,
     #[schemars(
         description = "Walk up to this person instead of to a place. They must be somebody \
                        you are allowed to hear, and they must have said something in \
@@ -257,8 +283,144 @@ pub struct WalkArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PlaceArgs {
-    pub lat: f64,
-    pub lng: f64,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    #[schemars(description = "A place you saved with `save_place`, by its name, instead.")]
+    pub place: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LookAroundArgs {
+    #[schemars(description = "How far to look, in metres. Default 60, at most 300.")]
+    pub radius_m: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FindPlaceArgs {
+    #[schemars(
+        description = "What to look for: a name ('Grote Markt Groningen'), an address \
+                       ('Vismarkt 12, Groningen') or a kind of place with a town."
+    )]
+    pub query: String,
+    #[schemars(description = "At most this many answers. Default 5.")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SavePlaceArgs {
+    #[schemars(description = "What to call it: 'home', 'where Jeroen likes to meet'.")]
+    pub name: String,
+    #[schemars(description = "Where. Omit both to save where your avatar is standing.")]
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    #[schemars(description = "Anything worth remembering about it.")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NameArgs {
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WaitArgs {
+    #[schemars(
+        description = "What to wait for, any of: 'chat' (somebody you can hear says \
+                       something), 'arrival' (somebody comes near), 'call' (a call rings), \
+                       'contact' (somebody asks to be your contact), 'script' (one of your \
+                       objects prints something), 'walk' (your walk ends). Default: all."
+    )]
+    pub events: Option<Vec<String>>,
+    #[schemars(description = "Give up after this many seconds, at most 600. Default 300.")]
+    pub timeout_s: Option<u32>,
+    #[schemars(description = "How near counts as an arrival, in metres. Default 20.")]
+    pub near_m: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FollowArgs {
+    #[schemars(
+        description = "Who to follow. They must be somebody you can hear who has said \
+                       something in public chat since you arrived."
+    )]
+    pub person: String,
+    #[schemars(description = "How close to keep, in metres. Default 2.5.")]
+    pub distance_m: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NearArgs {
+    #[schemars(
+        description = "Part of its name, e.g. 'bench', 'Vismarkt', or an object's name. Omit \
+                       for the nearest one."
+    )]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FaceArgs {
+    #[schemars(description = "Turn to face this person.")]
+    pub person: Option<String>,
+    #[schemars(description = "Turn to face this object, by id.")]
+    pub object: Option<i64>,
+    #[schemars(description = "Turn to face this place.")]
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    #[schemars(description = "Turn to this compass bearing, degrees (0 north, 90 east).")]
+    pub bearing_deg: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EditArgs {
+    #[schemars(description = "The object's id, as `build` or `my_builds` reported it.")]
+    pub id: i64,
+    #[schemars(description = "Move it here (both, or neither).")]
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    #[schemars(description = "Or nudge it this many metres east / north of where it is.")]
+    pub east_m: Option<f64>,
+    pub north_m: Option<f64>,
+    #[schemars(description = "Metres above the ground to its centre.")]
+    pub altitude: Option<f32>,
+    #[schemars(description = "Rotation [x, y, z] in degrees.")]
+    pub rotation: Option<[f32; 3]>,
+    #[schemars(description = "Size [x, y, z] in metres.")]
+    pub scale: Option<[f32; 3]>,
+    #[schemars(description = "Colour [r, g, b] from 0 to 1.")]
+    pub color: Option<[f32; 3]>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RememberArgs {
+    #[schemars(description = "The note, at most 2000 characters.")]
+    pub text: String,
+    #[schemars(description = "Who or what it is about: a person's name, a place, a build.")]
+    pub about: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RecallArgs {
+    #[schemars(description = "Only notes about this.")]
+    pub about: Option<String>,
+    #[schemars(description = "Only notes containing this word.")]
+    pub search: Option<String>,
+    #[schemars(description = "At most this many, newest first. Default 30.")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NoteIdArgs {
+    pub id: u32,
+}
+
+/// Where `look` turns the avatar before it photographs: the same choices as
+/// [`FaceArgs`], or none to look where it already faces.
+#[derive(Debug, Default)]
+pub struct LookPrep {
+    pub face: Option<FaceArgs>,
+    /// Degrees, negative looking down, as `view` takes it.
+    pub pitch_deg: f32,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -386,6 +548,25 @@ pub enum AgentRequest {
     RequestContact(ContactArgs),
     AnswerContact(AnswerContactArgs),
     Contacts,
+    LookAround(LookAroundArgs),
+    FindPlace(FindPlaceArgs),
+    SavePlace(SavePlaceArgs),
+    MyPlaces,
+    ForgetPlace(NameArgs),
+    Wait(WaitArgs),
+    Follow(FollowArgs),
+    Sit(NearArgs),
+    Stand,
+    Interact(NearArgs),
+    Face(FaceArgs),
+    /// The first half of `look`: turn, and put the camera in the avatar's eyes.
+    PrepareLook(LookPrep),
+    /// The last half: take the camera back out of the head.
+    EndLook,
+    Edit(EditArgs),
+    Remember(RememberArgs),
+    Recall(RecallArgs),
+    Forget(NoteIdArgs),
 }
 
 impl AgentRequest {
@@ -416,6 +597,22 @@ impl AgentRequest {
             Self::RequestContact(_) => "request contact",
             Self::AnswerContact(_) => "answer contact",
             Self::Contacts => "contacts",
+            Self::LookAround(_) => "look around",
+            Self::FindPlace(_) => "find place",
+            Self::SavePlace(_) => "save place",
+            Self::MyPlaces => "my places",
+            Self::ForgetPlace(_) => "forget place",
+            Self::Wait(_) => "wait",
+            Self::Follow(_) => "follow",
+            Self::Sit(_) => "sit",
+            Self::Stand => "stand",
+            Self::Interact(_) => "interact",
+            Self::Face(_) => "face",
+            Self::PrepareLook(_) | Self::EndLook => "look",
+            Self::Edit(_) => "edit object",
+            Self::Remember(_) => "remember",
+            Self::Recall(_) => "recall",
+            Self::Forget(_) => "forget",
         }
     }
 }
@@ -470,6 +667,13 @@ pub struct AgentState {
     /// `sign_out`. `None` for a run that was not told a server, which then has
     /// nothing to sign back in to.
     sign_in: Option<crate::systems::session::SessionRequest>,
+    /// Places the agent named and notes it wrote, for whoever is signed in
+    /// now, and the account they were loaded for ([`sync_keeps`]).
+    places: Vec<SavedPlace>,
+    notes: Vec<Note>,
+    keeps_key: Option<String>,
+    /// What a walk that has just ended was for, still to be done.
+    due: Option<Then>,
 }
 
 impl AgentState {
@@ -485,8 +689,50 @@ impl AgentState {
     /// Is a call still being carried out over several frames — a walk, or a
     /// line or a build waiting to be confirmed? A headless client idles only
     /// when this is false (`mcp::pace_idle`).
+    ///
+    /// **A call that is only listening is not work.** `read_chat` and `wait`
+    /// with a timeout are how a bot sits in a conversation, for minutes at a
+    /// time; counting them would keep it at the full frame rate for exactly the
+    /// stretch the idle rate exists for. Half a second's delay on noticing a
+    /// line is nothing beside a model's turn.
     pub fn is_working(&self) -> bool {
-        self.walk.is_some() || !self.pending.is_empty()
+        self.walk.is_some()
+            || self
+                .pending
+                .iter()
+                .any(|p| !matches!(p, Pending::Chat { .. } | Pending::Wait { .. }))
+    }
+}
+
+/// What a walk does when it gets there.
+#[derive(Clone)]
+enum Then {
+    /// Sit on this.
+    Sit(Interactable),
+    /// Use this, as the E key does.
+    Use(Target),
+}
+
+/// Something `interact` can act on: a streamed place or prop, or a prim.
+#[derive(Clone)]
+enum Target {
+    Thing(Interactable),
+    Prim { id: i64, name: String, at: Vec2 },
+}
+
+impl Target {
+    fn at(&self) -> Vec2 {
+        match self {
+            Self::Thing(i) => i.pos,
+            Self::Prim { at, .. } => *at,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Thing(i) => &i.name,
+            Self::Prim { name, .. } => name,
+        }
     }
 }
 
@@ -514,6 +760,13 @@ struct Walk {
     /// one in progress: which way, and until when.
     unstick: u8,
     sidestep: Option<(Vec2, f64)>,
+    /// Following rather than walking up: the gap to keep. The walk does not
+    /// end on arrival; it waits for the person to move off again.
+    follow: Option<f32>,
+    /// Following, and standing by them right now.
+    holding: bool,
+    /// What to do on getting there.
+    then: Option<Then>,
 }
 
 enum Goal {
@@ -589,6 +842,89 @@ enum Pending {
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
+    /// A `find_place`, until the geocoder answers.
+    Geocode {
+        query: String,
+        limit: usize,
+        slot: GeocodeSlot,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
+    /// A `wait`, until one of the things it names happens.
+    Wait {
+        events: Vec<Event>,
+        base: WaitBase,
+        near_m: f32,
+        started: f64,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
+    /// An `edit_object`, until the server announces the object as asked.
+    Edit {
+        id: i64,
+        want: EditWant,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
+}
+
+/// A geocoder answer in flight.
+type GeocodeSlot = std::sync::Arc<
+    std::sync::Mutex<Option<Result<Vec<crate::systems::geo_nav::GeoSuggestion>, String>>>,
+>;
+
+/// What `wait` can wake for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    Chat,
+    Arrival,
+    Call,
+    Contact,
+    Script,
+    Walk,
+}
+
+impl Event {
+    const ALL: [Self; 6] = [
+        Self::Chat,
+        Self::Arrival,
+        Self::Call,
+        Self::Contact,
+        Self::Script,
+        Self::Walk,
+    ];
+
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "chat" => Self::Chat,
+            "arrival" | "arrivals" => Self::Arrival,
+            "call" | "calls" => Self::Call,
+            "contact" | "contacts" => Self::Contact,
+            "script" | "scripts" => Self::Script,
+            "walk" => Self::Walk,
+            _ => return None,
+        })
+    }
+}
+
+/// How things stood when a `wait` began, so it wakes for what is *new*.
+struct WaitBase {
+    /// Avatars already near.
+    near: Vec<u64>,
+    /// Contact requests already waiting.
+    incoming: Vec<String>,
+    /// Console lines from the agent's own objects already printed.
+    script_lines: usize,
+    /// Whether it was walking.
+    walking: bool,
+}
+
+/// What an edit asked for, to recognise it when the server echoes it.
+struct EditWant {
+    lat: f64,
+    lng: f64,
+    name: String,
+    scale: Vec3,
 }
 
 /// One object of a build: what was asked for, and the id once it is known.
@@ -628,9 +964,53 @@ pub struct AgentWorld<'w, 's> {
     calls: ResMut<'w, crate::systems::calls::Calls>,
     videos: Res<'w, crate::systems::prim_video::PrimVideos>,
     contacts: ResMut<'w, crate::systems::contacts::Contacts>,
+    around: Around<'w, 's>,
+}
+
+/// What the agent reads about its surroundings, as one parameter: the walk-up
+/// prompt's places, the building register, the weather, and each prim's
+/// transform (for editing one, which needs its whole state).
+#[derive(SystemParam)]
+pub struct Around<'w, 's> {
+    places: Res<'w, crate::systems::world_places::WorldPlaces>,
+    facts: Res<'w, crate::systems::building_facts::BuildingFacts>,
+    weather: Option<Res<'w, crate::systems::weather::WeatherState>>,
+    prim_tf: Query<
+        'w,
+        's,
+        (
+            &'static Prim,
+            Option<&'static big_space::prelude::GridCell>,
+            &'static Transform,
+        ),
+    >,
 }
 
 impl AgentWorld<'_, '_> {
+    /// Anchored world XZ of a lat/lng, if the map has an anchor.
+    fn to_world(&self, lat: f64, lng: f64) -> Option<Vec2> {
+        let a = self.anchor.geo?;
+        let (x, z) = geo_nav::lat_lng_to_world(a, lat, lng);
+        Some(Vec2::new(x as f32, z as f32))
+    }
+
+    /// The avatar's anchored world XZ.
+    fn here(&self) -> Vec2 {
+        Vec2::new(self.avatar.position.x, self.avatar.position.z)
+    }
+
+    /// Who this installation keeps something under, by kind: builds, places,
+    /// notes.
+    fn keep_key(&self, kind: &str) -> Option<String> {
+        let user = self.identity.username.as_deref()?;
+        let server = self.addr.as_ref().map(|a| a.0.as_str()).unwrap_or("");
+        Some(format!(
+            "mcp/{kind}/{}/{}.json",
+            clean(server),
+            clean(&user.to_lowercase())
+        ))
+    }
+
     /// Where the avatar stands, on Earth, if there is one and a map to measure
     /// it on.
     fn avatar_geo(&self) -> Option<(f64, f64)> {
@@ -725,6 +1105,8 @@ pub fn serve(
 ) {
     let now = real.elapsed_secs_f64();
     sync_builds(&mut state, &world);
+    sync_keeps(&mut state, &world);
+    arrive_if_due(&mut state, &mut world);
     let jobs = std::mem::take(&mut bridge.agent);
     for (request, reply) in jobs {
         let label = request.label();
@@ -846,7 +1228,34 @@ pub fn steer(
         }),
         (Some(t), Some(aim)) => {
             let d = here.distance(t);
-            if d <= radius {
+            if let Some(gap) = w.follow {
+                // Following: stand by them, and set off again only once they
+                // are properly away — and run if they have got far ahead.
+                let hold_until = if w.holding { gap + FOLLOW_SLACK_M } else { gap };
+                if d <= hold_until {
+                    w.holding = true;
+                    w.moved_from = here;
+                    w.moved_at = now;
+                    if walk.dir != Vec3::ZERO {
+                        *walk = AgentWalk::default();
+                    }
+                    return;
+                }
+                w.holding = false;
+                w.gait = if d > FOLLOW_RUN_M {
+                    Gait::Run
+                } else {
+                    Gait::Walk
+                };
+            }
+            // The step the next frame will take: the sim keeps moving the
+            // avatar on the last wish until the next intent arrives, so a goal
+            // closer than that is passed before this system runs again. A
+            // fraction of a centimetre at a normal frame rate; metres on a
+            // software renderer, which walked a bot clean past what it was
+            // walking to.
+            let step = w.gait.speed() * real.delta_secs().min(1.0);
+            if w.follow.is_none() && d <= radius.max(step) {
                 Some(match &w.goal {
                     Goal::Person { name, .. } => format!("arrived next to {name}"),
                     Goal::Place { .. } => "arrived".to_string(),
@@ -911,17 +1320,45 @@ pub fn steer(
                     }
                     let dir = (aim - here).normalize_or_zero();
                     walk.dir = Vec3::new(dir.x, 0.0, dir.y);
-                    walk.gait = w.gait;
+                    // The last few metres at a stroll, so arriving is a stop
+                    // rather than a run-on.
+                    walk.gait = if w.follow.is_none() && d < 4.0 {
+                        Gait::Stroll
+                    } else {
+                        w.gait
+                    };
                     None
                 }
             }
         }
     };
     if let Some(how) = ended {
-        state.walk = None;
+        // What it was walking there to do is done by `serve`, which can reach
+        // the session and the seat; this system steers and nothing else.
+        state.due = state.walk.take().and_then(|w| w.then);
         state.walk_ended = Some(how);
         *walk = AgentWalk::default();
     }
+}
+
+/// Do what a finished walk was for — sit, or use the thing — if it got near
+/// enough. Stopped short against a bench is the ordinary way to arrive at one,
+/// so it is the distance that decides, not how the walk ended.
+fn arrive_if_due(state: &mut AgentState, w: &mut AgentWorld) {
+    let Some(then) = state.due.take() else {
+        return;
+    };
+    let (at, what) = match &then {
+        Then::Sit(i) => (i.pos, format!("sit on the {}", i.name.to_lowercase())),
+        Then::Use(t) => (t.at(), format!("use {}", t.name())),
+    };
+    let how = state.walk_ended.take().unwrap_or_default();
+    let d = w.here().distance(at);
+    state.walk_ended = Some(if d <= INTERACT_RADIUS + 0.5 {
+        format!("got there and {}", arrive(&then, w))
+    } else {
+        format!("{how} — {d:.0} m short, too far to {what}")
+    });
 }
 
 /// Load the list of built objects for whoever is signed in now.
@@ -938,6 +1375,36 @@ fn sync_builds(state: &mut AgentState, world: &AgentWorld) {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     state.built_key = key;
+}
+
+/// Load the saved places and notes for whoever is signed in now. Keyed by the
+/// places file; the notes file sits beside it under the same account.
+fn sync_keeps(state: &mut AgentState, world: &AgentWorld) {
+    let key = world.keep_key("places");
+    if key == state.keeps_key {
+        return;
+    }
+    state.places = key.as_deref().map(around::load_list).unwrap_or_default();
+    state.notes = world
+        .keep_key("notes")
+        .as_deref()
+        .map(around::load_list)
+        .unwrap_or_default();
+    state.keeps_key = key;
+}
+
+fn save_places(state: &AgentState) {
+    if let Some(key) = &state.keeps_key {
+        around::save_list(key, &state.places);
+    }
+}
+
+fn save_notes(state: &AgentState) {
+    if let Some(key) = &state.keeps_key {
+        // The notes file is the places file's sibling: same account, same
+        // server, `notes` for `places`.
+        around::save_list(&key.replacen("mcp/places/", "mcp/notes/", 1), &state.notes);
+    }
 }
 
 fn save_builds(state: &AgentState) {
@@ -1231,6 +1698,216 @@ fn handle(
             }
         }
         AgentRequest::Contacts => contacts_list(w),
+        AgentRequest::LookAround(args) => look_around(state, audience, w, &args),
+        AgentRequest::FindPlace(args) => {
+            let query = args.query.trim().to_string();
+            if query.is_empty() {
+                return Some((reply, AgentReply::refuse("Say what to look for.")));
+            }
+            let limit = args.limit.unwrap_or(5).clamp(1, 10);
+            let slot = GeocodeSlot::default();
+            let out = slot.clone();
+            // Biased toward where the avatar is, not bounded to it: "the station"
+            // should mean the nearby one, and "Amsterdam" should still work.
+            let near = w.avatar_geo().map_or(String::new(), |(lat, lng)| {
+                format!(
+                    "&viewbox={},{},{},{}&bounded=0",
+                    lng - 0.3,
+                    lat + 0.2,
+                    lng + 0.3,
+                    lat - 0.2
+                )
+            });
+            let url = format!(
+                "{}/search?format=jsonv2&limit={limit}&q={}{near}",
+                crate::systems::geo_nav::nominatim_base_url(),
+                crate::systems::geo_nav::percent_encode(&query),
+            );
+            bevy::tasks::IoTaskPool::get()
+                .spawn(async move {
+                    let got = crate::systems::geo_nav::geocode_fetch(url).await;
+                    if let Ok(mut s) = out.lock() {
+                        *s = Some(got);
+                    }
+                })
+                .detach();
+            state.pending.push(Pending::Geocode {
+                query,
+                limit,
+                slot,
+                until: now + GEOCODE_WAIT_S,
+                reply,
+            });
+            return None;
+        }
+        AgentRequest::SavePlace(args) => save_place(state, w, args),
+        AgentRequest::MyPlaces => my_places(state, w),
+        AgentRequest::ForgetPlace(args) => {
+            let before = state.places.len();
+            state
+                .places
+                .retain(|p| !p.name.eq_ignore_ascii_case(args.name.trim()));
+            if state.places.len() == before {
+                AgentReply::refuse(format!("No saved place is called \"{}\".", args.name))
+            } else {
+                save_places(state);
+                AgentReply::ok(
+                    format!("Forgot \"{}\".", args.name.trim()),
+                    json!({ "forgot": args.name.trim() }),
+                )
+            }
+        }
+        AgentRequest::Wait(args) => {
+            let mut events = Vec::new();
+            for e in args.events.unwrap_or_default() {
+                match Event::parse(&e) {
+                    Some(e) if !events.contains(&e) => events.push(e),
+                    Some(_) => {}
+                    None => {
+                        return Some((
+                            reply,
+                            AgentReply::refuse(format!(
+                                "`{e}` is not something to wait for; use chat, arrival, call, \
+                                 contact, script or walk"
+                            )),
+                        ))
+                    }
+                }
+            }
+            if events.is_empty() {
+                events = Event::ALL.to_vec();
+            }
+            let near_m = args.near_m.unwrap_or(ARRIVAL_M).clamp(2.0, 300.0);
+            let base = WaitBase {
+                near: near_ids(w, near_m),
+                incoming: w
+                    .contacts
+                    .incoming
+                    .iter()
+                    .map(|r| r.username.clone())
+                    .collect(),
+                script_lines: own_script_lines(state, w),
+                walking: state.walk.is_some(),
+            };
+            // Already-unread chat answers at once, as `read_chat` would.
+            let timeout = f64::from(args.timeout_s.unwrap_or(300).min(MAX_CHAT_WAIT_S));
+            state.pending.push(Pending::Wait {
+                events,
+                base,
+                near_m,
+                started: now,
+                until: now + timeout,
+                reply,
+            });
+            return None;
+        }
+        AgentRequest::Follow(args) => follow(state, audience, w, &args, now),
+        AgentRequest::Sit(args) => sit(state, w, args.name.as_deref(), now),
+        AgentRequest::Stand => {
+            if w.avatar.is_seated() {
+                w.avatar.stand_up();
+                AgentReply::ok("Stood up.", json!({ "seated": false }))
+            } else {
+                AgentReply::ok("Already standing.", json!({ "seated": false }))
+            }
+        }
+        AgentRequest::Interact(args) => interact(state, w, args.name.as_deref(), now),
+        AgentRequest::Face(args) => face(audience, w, &args),
+        AgentRequest::PrepareLook(prep) => {
+            if w.bodies.is_empty() {
+                return Some((
+                    reply,
+                    AgentReply::refuse(
+                        "There is no avatar to look through: this client is offline.",
+                    ),
+                ));
+            }
+            let mut said = None;
+            // Where the eyes look: along the body, or — sitting, when the body
+            // faces out of the seat — a turn of the head alone.
+            let mut look_yaw = w.avatar.facing_yaw;
+            if let Some(f) = &prep.face {
+                match face_yaw(audience, w, f) {
+                    Err(refusal) => return Some((reply, refusal)),
+                    Ok((yaw, what)) => {
+                        if !w.avatar.is_seated() {
+                            w.avatar.facing_yaw = yaw;
+                        }
+                        look_yaw = yaw;
+                        said = Some(format!("Looking toward {what}."));
+                    }
+                }
+            }
+            // The camera's azimuth is measured the other way round from the
+            // facing (`free_camera`'s first-person arm builds its rotation from
+            // it), hence the half turn.
+            w.camera.mode = CameraMode::Avatar;
+            w.camera.first_person = true;
+            w.camera.azimuth = look_yaw + std::f32::consts::PI;
+            w.camera.pitch = (-prep.pitch_deg).to_radians();
+            AgentReply::ok(
+                said.unwrap_or_else(|| "Looking ahead.".into()),
+                json!({ "facing_deg": facing_bearing(w) }),
+            )
+        }
+        AgentRequest::EndLook => {
+            w.camera.first_person = false;
+            AgentReply::ok("", Value::Null)
+        }
+        AgentRequest::Edit(args) => match edit(w, &args) {
+            Ok(want) => {
+                state.pending.push(Pending::Edit {
+                    id: args.id,
+                    want,
+                    until: now + EDIT_WAIT_S,
+                    reply,
+                });
+                return None;
+            }
+            Err(why) => AgentReply::refuse(why),
+        },
+        AgentRequest::Remember(args) => remember(state, args),
+        AgentRequest::Recall(args) => {
+            let limit = args.limit.unwrap_or(30).clamp(1, 200);
+            let found = around::recall(
+                &state.notes,
+                args.about.as_deref(),
+                args.search.as_deref(),
+                limit,
+            );
+            if found.is_empty() {
+                AgentReply::ok(
+                    if state.notes.is_empty() {
+                        "You have no notes yet; `remember` writes one."
+                    } else {
+                        "No note matches."
+                    },
+                    json!({ "notes": [] }),
+                )
+            } else {
+                let lines: Vec<String> = found
+                    .iter()
+                    .map(|n| match &n.about {
+                        Some(a) => format!("#{} [{a}] {}", n.id, n.text),
+                        None => format!("#{} {}", n.id, n.text),
+                    })
+                    .collect();
+                AgentReply::ok(lines.join("\n"), json!({ "notes": found }))
+            }
+        }
+        AgentRequest::Forget(args) => {
+            let before = state.notes.len();
+            state.notes.retain(|n| n.id != args.id);
+            if state.notes.len() == before {
+                AgentReply::refuse(format!("There is no note #{}.", args.id))
+            } else {
+                save_notes(state);
+                AgentReply::ok(
+                    format!("Forgot note #{}.", args.id),
+                    json!({ "forgot": args.id }),
+                )
+            }
+        }
         AgentRequest::SignIn => {
             if w.session.is_online() {
                 AgentReply::ok("Already signed in.", json!({ "online": true }))
@@ -1285,9 +1962,17 @@ fn me(state: &AgentState, audience: &Audience, w: &AgentWorld) -> AgentReply {
     people.truncate(12);
 
     let walking = state.walk.as_ref().map(|w| {
-        let to = match &w.goal {
-            Goal::Place { lat, lng } => format!("walking to {lat:.6}, {lng:.6}"),
-            Goal::Person { name, .. } => format!("walking to {name}"),
+        let to = match (&w.goal, w.follow, &w.then) {
+            (Goal::Person { name, .. }, Some(_), _) if w.holding => {
+                format!("following {name}, standing by them")
+            }
+            (Goal::Person { name, .. }, Some(_), _) => format!("following {name}"),
+            (_, _, Some(Then::Sit(i))) => {
+                format!("walking to the {} to sit on it", i.name.to_lowercase())
+            }
+            (_, _, Some(Then::Use(t))) => format!("walking to {} to use it", t.name()),
+            (Goal::Place { lat, lng }, ..) => format!("walking to {lat:.6}, {lng:.6}"),
+            (Goal::Person { name, .. }, ..) => format!("walking to {name}"),
         };
         match (&w.planning, &w.plan) {
             (Some(_), _) => format!("{to} (planning the route)"),
@@ -1326,10 +2011,36 @@ fn me(state: &AgentState, audience: &Audience, w: &AgentWorld) -> AgentReply {
             );
         }
     }
+    if w.avatar.is_seated() {
+        text.push_str(" You are sitting down.");
+    }
     text.push_str(&format!(" You can hear: {}.", audience.describe()));
+    let (clock, clock_data) = around::clock_line(at, around::now_unix());
+    text.push_str(&format!(" {clock}."));
+    let weather = w
+        .around
+        .weather
+        .as_ref()
+        .and_then(|s| s.latest)
+        .map(|o| around::weather_line(&o));
+    if let Some((line, _)) = &weather {
+        text.push_str(&format!(" Weather: {line}."));
+    }
+    if !state.places.is_empty() || !state.notes.is_empty() {
+        text.push_str(&format!(
+            " You keep {} saved place(s) and {} note(s) (`my_places`, `recall`).",
+            state.places.len(),
+            state.notes.len()
+        ));
+    }
     AgentReply::ok(
         text,
         json!({
+            "seated": w.avatar.is_seated(),
+            "time": clock_data,
+            "weather": weather.map(|(_, d)| d),
+            "saved_places": state.places.len(),
+            "notes": state.notes.len(),
             "online": online,
             "username": username,
             "server": server,
@@ -1761,8 +2472,18 @@ fn walk(
         }
     };
     let here = Vec2::new(w.avatar.position.x, w.avatar.position.z);
-    let (goal, target) = match (&args.person, args.lat, args.lng) {
-        (Some(name), None, None) => {
+    let coords = match (&args.person, args.lat, args.lng, &args.place) {
+        (Some(_), None, None, None) => None,
+        (Some(_), ..) => {
+            return AgentReply::refuse("Give a person, or a place — not both.");
+        }
+        (None, ..) => match resolve_place(state, args.lat, args.lng, args.place.as_deref()) {
+            Ok((lat, lng, _)) => Some((lat, lng)),
+            Err(why) => return AgentReply::refuse(why),
+        },
+    };
+    let (goal, target) = match (&args.person, coords) {
+        (Some(name), None) => {
             if !audience.hears(name) {
                 return AgentReply::refuse(format!(
                     "{name} is not somebody you are allowed to hear. You can hear: {}.",
@@ -1787,15 +2508,14 @@ fn walk(
                 Vec2::new(p.x, p.z),
             )
         }
-        (None, Some(lat), Some(lng)) => {
-            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
-                return AgentReply::refuse(format!("{lat}, {lng} is not a place on Earth."));
-            }
+        (None, Some((lat, lng))) => {
             let (x, z) = geo_nav::lat_lng_to_world(anchor, lat, lng);
             (Goal::Place { lat, lng }, Vec2::new(x as f32, z as f32))
         }
         _ => {
-            return AgentReply::refuse("Give either `lat` and `lng`, or `person` — not both.");
+            return AgentReply::refuse(
+                "Give `lat` and `lng`, a saved `place`, or a `person` — one of them.",
+            );
         }
     };
     let distance = here.distance(target);
@@ -1841,8 +2561,12 @@ fn walk(
         moved_at: now,
         unstick: 0,
         sidestep: None,
+        follow: None,
+        holding: false,
+        then: None,
     });
     state.walk_ended = None;
+    w.avatar.stand_up();
     w.camera.mode = CameraMode::Avatar;
     AgentReply::ok(
         format!(
@@ -1859,23 +2583,21 @@ fn walk(
 }
 
 fn teleport(state: &mut AgentState, w: &mut AgentWorld, args: &PlaceArgs) -> AgentReply {
-    if !(-90.0..=90.0).contains(&args.lat) || !(-180.0..=180.0).contains(&args.lng) {
-        return AgentReply::refuse(format!(
-            "{}, {} is not a place on Earth.",
-            args.lat, args.lng
-        ));
-    }
+    let (lat, lng, named) = match resolve_place(state, args.lat, args.lng, args.place.as_deref()) {
+        Ok(p) => p,
+        Err(why) => return AgentReply::refuse(why),
+    };
     state.walk = None;
-    w.nav.pending_teleport = Some(Teleport::geo(args.lat, args.lng, None));
+    w.nav.pending_teleport = Some(Teleport::geo(lat, lng, None));
     if !w.bodies.is_empty() {
         w.camera.mode = CameraMode::Avatar;
     }
     AgentReply::ok(
         format!(
-            "Teleporting to {:.6}, {:.6}. The map around it takes a few seconds to arrive.",
-            args.lat, args.lng
+            "Teleporting to {}. The map around it takes a few seconds to arrive.",
+            named.map_or(format!("{lat:.6}, {lng:.6}"), |n| format!("\"{n}\""))
         ),
-        json!({ "lat": args.lat, "lng": args.lng }),
+        json!({ "lat": lat, "lng": lng }),
     )
 }
 
@@ -1900,6 +2622,845 @@ fn emote(w: &mut AgentWorld, args: &EmoteArgs) -> AgentReply {
     AgentReply::ok(
         format!("{}.", args.name.trim()),
         json!({ "emote": args.name.trim() }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Being comfortable in the world
+// ---------------------------------------------------------------------------
+
+/// The people near, as `me` and `look_around` name them: by the name they
+/// spoke under in public if the agent may hear them, "someone" otherwise.
+fn people_near(audience: &Audience, w: &AgentWorld, radius: f32) -> Vec<(f32, String)> {
+    if !w.session.is_online() {
+        return Vec::new();
+    }
+    let names = public_names(w);
+    let here = w.here();
+    let mut people: Vec<(f32, String)> = w
+        .remotes
+        .iter()
+        .map(|r| {
+            let p = r.net_position + r.net_velocity * r.net_age;
+            let d = Vec2::new(p.x - here.x, p.z - here.y).length();
+            let name = names
+                .iter()
+                .find(|(id, _)| *id == r.sim_id)
+                .map(|(_, n)| n.clone())
+                .filter(|n| audience.hears(n))
+                .unwrap_or_else(|| "someone".into());
+            (d, name)
+        })
+        .filter(|(d, _)| *d <= radius)
+        .collect();
+    people.sort_by(|a, b| a.0.total_cmp(&b.0));
+    people
+}
+
+fn look_around(
+    state: &AgentState,
+    audience: &Audience,
+    w: &AgentWorld,
+    args: &LookAroundArgs,
+) -> AgentReply {
+    let Some(geo) = w.avatar_geo() else {
+        return AgentReply::refuse(
+            "There is no avatar to look around from: this client is offline, or the map has \
+             not started. `view` can still photograph a place.",
+        );
+    };
+    let radius = args
+        .radius_m
+        .unwrap_or(around::DEFAULT_LOOK_M)
+        .clamp(5.0, around::MAX_LOOK_M);
+    let prims = w
+        .prims
+        .iter()
+        .filter_map(|(p, g)| {
+            let g = g?;
+            Some(around::SeenPrim {
+                id: p.id,
+                name: if p.name.trim().is_empty() {
+                    "object".into()
+                } else {
+                    p.name.clone()
+                },
+                at: w.to_world(g.latitude, g.longitude)?,
+                scripted: p.scripted,
+                mine: state.built.contains(&p.id),
+            })
+        })
+        .collect();
+    let scene = around::Scene {
+        here: w.here(),
+        geo,
+        radius,
+        places: &w.around.places,
+        facts: &w.around.facts,
+        prims,
+        people: people_near(audience, w, radius),
+    };
+    let (mut text, mut data) = around::describe(&scene);
+    if w.avatar.is_seated() {
+        text.insert_str(0, "You are sitting down. ");
+        data["seated"] = json!(true);
+    }
+    text.push_str(&format!(
+        "\nYou are facing {}.",
+        around::compass(facing_bearing(w))
+    ));
+    data["facing_deg"] = json!(facing_bearing(w));
+    AgentReply::ok(text, data)
+}
+
+/// The avatar's facing as a compass bearing.
+fn facing_bearing(w: &AgentWorld) -> f32 {
+    // `facing_yaw` is `atan2(x, z)` of the direction faced (`avatar::yaw_from_dir`),
+    // and the world's +z is south.
+    let yaw = w.avatar.facing_yaw;
+    around::bearing_deg(yaw.sin(), yaw.cos())
+}
+
+/// A place by name or by coordinates, as the walking and teleporting tools
+/// take it.
+fn resolve_place(
+    state: &AgentState,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    place: Option<&str>,
+) -> Result<(f64, f64, Option<String>), String> {
+    match (lat, lng, place) {
+        (Some(lat), Some(lng), None) => {
+            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+                return Err(format!("{lat}, {lng} is not a place on Earth."));
+            }
+            Ok((lat, lng, None))
+        }
+        (None, None, Some(name)) => around::find_saved(&state.places, name)
+            .map(|p| (p.lat, p.lng, Some(p.name.clone())))
+            .ok_or_else(|| {
+                let known: Vec<&str> = state.places.iter().map(|p| p.name.as_str()).collect();
+                format!(
+                    "You have no saved place called \"{name}\"{}. `find_place` looks a place \
+                     up by name; `save_place` keeps one.",
+                    if known.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (you have: {})", known.join(", "))
+                    }
+                )
+            }),
+        _ => Err("Give `lat` and `lng`, or `place` — one or the other.".into()),
+    }
+}
+
+fn save_place(state: &mut AgentState, w: &AgentWorld, args: SavePlaceArgs) -> AgentReply {
+    if state.keeps_key.is_none() {
+        return AgentReply::refuse(NOT_ONLINE);
+    }
+    let name = args.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 80 {
+        return AgentReply::refuse("Give the place a name of at most 80 characters.");
+    }
+    let (lat, lng) = match (args.lat, args.lng) {
+        (Some(lat), Some(lng)) => (lat, lng),
+        (None, None) => match w.avatar_geo() {
+            Some(at) => at,
+            None => return AgentReply::refuse("There is no avatar standing anywhere to save."),
+        },
+        _ => return AgentReply::refuse("Give both `lat` and `lng`, or neither."),
+    };
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+        return AgentReply::refuse(format!("{lat}, {lng} is not a place on Earth."));
+    }
+    let place = SavedPlace {
+        name: name.clone(),
+        lat,
+        lng,
+        note: args.note.filter(|n| !n.trim().is_empty()),
+    };
+    let replaced = match state
+        .places
+        .iter_mut()
+        .find(|p| p.name.eq_ignore_ascii_case(&name))
+    {
+        Some(p) => {
+            *p = place;
+            true
+        }
+        None => {
+            if state.places.len() >= around::MAX_PLACES {
+                return AgentReply::refuse(format!(
+                    "You already keep {} places; forget one first.",
+                    around::MAX_PLACES
+                ));
+            }
+            state.places.push(place);
+            false
+        }
+    };
+    save_places(state);
+    AgentReply::ok(
+        format!(
+            "{} \"{name}\" at {lat:.6}, {lng:.6}. `walk_to` and `teleport` take it by name.",
+            if replaced { "Moved" } else { "Saved" }
+        ),
+        json!({ "name": name, "lat": lat, "lng": lng }),
+    )
+}
+
+fn my_places(state: &AgentState, w: &AgentWorld) -> AgentReply {
+    if state.places.is_empty() {
+        return AgentReply::ok(
+            "You have no saved places yet; `save_place` keeps one.",
+            json!({ "places": [] }),
+        );
+    }
+    let here = w.avatar_geo();
+    let mut rows: Vec<(Option<f32>, &SavedPlace)> = state
+        .places
+        .iter()
+        .map(|p| {
+            (
+                here.map(|h| around::geo_step(h, (p.lat, p.lng)).length()),
+                p,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.unwrap_or(f32::MAX).total_cmp(&b.0.unwrap_or(f32::MAX)));
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|(d, p)| {
+            let mut s = p.name.clone();
+            if let (Some(d), Some(h)) = (d, here) {
+                let step = around::geo_step(h, (p.lat, p.lng));
+                if *d < 3.0 {
+                    s.push_str(" — here");
+                } else {
+                    s.push_str(&format!(
+                        " — {} {}",
+                        distance_words(*d),
+                        around::compass(around::bearing_deg(step.x, step.y))
+                    ));
+                }
+            }
+            if let Some(n) = &p.note {
+                s.push_str(&format!(" ({n})"));
+            }
+            s
+        })
+        .collect();
+    AgentReply::ok(
+        lines.join("\n"),
+        json!({ "places": rows.iter().map(|(d, p)| json!({
+            "name": p.name, "lat": p.lat, "lng": p.lng, "note": p.note, "distance_m": d,
+        })).collect::<Vec<_>>() }),
+    )
+}
+
+/// The geocoder's hits, with how far each is from the avatar.
+fn geocode_answer(
+    w: &AgentWorld,
+    hits: &[crate::systems::geo_nav::GeoSuggestion],
+    limit: usize,
+) -> AgentReply {
+    let here = w.avatar_geo();
+    let rows: Vec<(String, Value)> = hits
+        .iter()
+        .take(limit)
+        .map(|h| {
+            let mut line = h.name.clone();
+            if let Some(k) = &h.kind {
+                line.push_str(&format!(" ({k})"));
+            }
+            if !h.context.is_empty() {
+                line.push_str(&format!(", {}", h.context));
+            }
+            line.push_str(&format!(" — {:.6}, {:.6}", h.lat, h.lng));
+            let away = here.map(|at| around::geo_step(at, (h.lat, h.lng)));
+            if let Some(step) = away {
+                line.push_str(&format!(
+                    ", {} {} of you",
+                    distance_words(step.length()),
+                    around::compass(around::bearing_deg(step.x, step.y))
+                ));
+            }
+            (
+                line,
+                json!({
+                    "name": h.name, "kind": h.kind, "context": h.context,
+                    "lat": h.lat, "lng": h.lng,
+                    "distance_m": away.map(|s| s.length()),
+                }),
+            )
+        })
+        .collect();
+    let mut text = rows
+        .iter()
+        .map(|(l, _)| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push_str(
+        "\n`walk_to` goes there (up to 2 km), `teleport` anywhere; `save_place` keeps one by name.",
+    );
+    AgentReply::ok(
+        text,
+        json!({ "results": rows.into_iter().map(|(_, v)| v).collect::<Vec<_>>() }),
+    )
+}
+
+/// What a `wait` woke for, if anything has happened since it began.
+fn what_happened(
+    state: &AgentState,
+    audience: &Audience,
+    w: &AgentWorld,
+    events: &[Event],
+    base: &WaitBase,
+    near_m: f32,
+) -> Option<(String, Value)> {
+    let mut said: Vec<String> = Vec::new();
+    let mut kinds: Vec<&str> = Vec::new();
+    for e in events {
+        match e {
+            Event::Chat if anything_to_hear(audience, w, state.cursor) => {
+                said.push("Somebody said something: `read_chat` has it.".into());
+                kinds.push("chat");
+            }
+            Event::Arrival => {
+                let names = public_names(w);
+                let arrived: Vec<String> = near_ids(w, near_m)
+                    .into_iter()
+                    .filter(|id| !base.near.contains(id))
+                    .map(|id| {
+                        names
+                            .iter()
+                            .find(|(i, _)| *i == id)
+                            .map(|(_, n)| n.clone())
+                            .filter(|n| audience.hears(n))
+                            .unwrap_or_else(|| "someone".into())
+                    })
+                    .collect();
+                if !arrived.is_empty() {
+                    said.push(format!("{} came within {near_m:.0} m.", arrived.join(", ")));
+                    kinds.push("arrival");
+                }
+            }
+            Event::Call => {
+                let me = w.identity.username.clone().unwrap_or_default();
+                if let Some(r) = w.calls.ringing(&me).into_iter().next() {
+                    said.push(format!(
+                        "A call is ringing from {}: `answer_call` or `decline_call`.",
+                        r.who.join(", ")
+                    ));
+                    kinds.push("call");
+                }
+            }
+            Event::Contact => {
+                let new: Vec<&str> = w
+                    .contacts
+                    .incoming
+                    .iter()
+                    .map(|r| r.username.as_str())
+                    .filter(|n| !base.incoming.iter().any(|b| b == n))
+                    .collect();
+                if !new.is_empty() {
+                    said.push(format!(
+                        "{} asked to be your contact: `answer_contact`.",
+                        new.join(", ")
+                    ));
+                    kinds.push("contact");
+                }
+            }
+            Event::Script if own_script_lines(state, w) > base.script_lines => {
+                said.push("One of your objects printed something: `script_output` has it.".into());
+                kinds.push("script");
+            }
+            Event::Walk if base.walking && state.walk.is_none() => {
+                said.push(format!(
+                    "Your walk ended: {}.",
+                    state.walk_ended.as_deref().unwrap_or("stopped")
+                ));
+                kinds.push("walk");
+            }
+            _ => {}
+        }
+    }
+    (!said.is_empty()).then(|| (said.join(" "), json!({ "happened": kinds })))
+}
+
+/// `"350 m"` or `"4.2 km"`.
+fn distance_words(m: f32) -> String {
+    if m < 1000.0 {
+        format!("{m:.0} m")
+    } else {
+        format!("{:.1} km", m / 1000.0)
+    }
+}
+
+/// The avatars within `radius`, by id.
+fn near_ids(w: &AgentWorld, radius: f32) -> Vec<u64> {
+    let here = w.here();
+    w.remotes
+        .iter()
+        .filter(|r| {
+            let p = r.net_position + r.net_velocity * r.net_age;
+            Vec2::new(p.x, p.z).distance(here) <= radius
+        })
+        .map(|r| r.sim_id)
+        .collect()
+}
+
+/// How many console lines the agent's own objects have printed.
+fn own_script_lines(state: &AgentState, w: &AgentWorld) -> usize {
+    w.script
+        .console
+        .iter()
+        .filter(|l| state.built.contains(&l.prim_id))
+        .count()
+}
+
+fn follow(
+    state: &mut AgentState,
+    audience: &Audience,
+    w: &mut AgentWorld,
+    args: &FollowArgs,
+    now: f64,
+) -> AgentReply {
+    let answer = walk(
+        state,
+        audience,
+        w,
+        &WalkArgs {
+            lat: None,
+            lng: None,
+            place: None,
+            person: Some(args.person.clone()),
+            pace: None,
+            wait_s: None,
+        },
+        now,
+    );
+    if answer.error {
+        return answer;
+    }
+    let gap = args.distance_m.unwrap_or(FOLLOW_GAP_M).clamp(1.0, 30.0);
+    if let Some(walk) = state.walk.as_mut() {
+        walk.follow = Some(gap);
+    }
+    AgentReply::ok(
+        format!(
+            "Following {} at about {gap:.0} m, walking or running to keep up, until `stop` \
+             or they go out of sight.",
+            args.person
+        ),
+        json!({ "following": args.person, "gap_m": gap }),
+    )
+}
+
+/// Start a walk to a thing near by, which does `then` on arrival — or do it now
+/// if the avatar is already within reach.
+fn go_and(state: &mut AgentState, w: &mut AgentWorld, at: Vec2, then: Then, now: f64) -> bool {
+    if w.here().distance(at) <= INTERACT_RADIUS {
+        return false;
+    }
+    let Some(anchor) = w.anchor.geo else {
+        return false;
+    };
+    let (lat, lng) = geo_nav::world_to_lat_lng(anchor, f64::from(at.x), f64::from(at.y));
+    let here = w.here();
+    state.walk = Some(Walk {
+        goal: Goal::Place { lat, lng },
+        gait: Gait::Walk,
+        // A thing within forty metres is walked at directly: a route along the
+        // street would bend away to the nearest path and back.
+        planning: None,
+        path: Vec::new(),
+        next: 0,
+        plan: None,
+        started: now,
+        moved_from: here,
+        moved_at: now,
+        unstick: 0,
+        sidestep: None,
+        follow: None,
+        holding: false,
+        then: Some(then),
+    });
+    state.walk_ended = None;
+    w.avatar.stand_up();
+    w.camera.mode = CameraMode::Avatar;
+    true
+}
+
+/// Do a walk's `then`, now the avatar is there.
+fn arrive(then: &Then, w: &mut AgentWorld) -> String {
+    match then {
+        Then::Sit(thing) => sit_on(thing, w),
+        Then::Use(target) => use_target(target, w),
+    }
+}
+
+/// Sit on a seat that is within reach.
+fn sit_on(thing: &Interactable, w: &mut AgentWorld) -> String {
+    let from = w.here();
+    let Some(seat) = thing.seat_spot(from) else {
+        return format!("{} is not something to sit on", thing.name.to_lowercase());
+    };
+    // Sitting lives in Follow: leaving it stands the avatar up
+    // (`avatar::handle_avatar_movement`).
+    w.camera.mode = CameraMode::Avatar;
+    w.avatar.seated = Some(crate::resources::Seated {
+        offset: seat.pos - from,
+        yaw: seat.yaw,
+        blend: 0.0,
+        rising: false,
+    });
+    format!(
+        "sat down on the {}; `stand` gets up, and so does walking anywhere",
+        thing.name.to_lowercase()
+    )
+}
+
+/// Use something within reach, as the E key does.
+fn use_target(target: &Target, w: &mut AgentWorld) -> String {
+    match target {
+        Target::Thing(i) if i.seat_spot(w.here()).is_some() => sit_on(i, w),
+        Target::Thing(i) => {
+            w.avatar.pending_emote = Some(Emote::Interact);
+            match i.kind.detail() {
+                Some(d) => format!("{} {} ({d})", i.kind.verb().to_lowercase(), i.name),
+                None => format!(
+                    "{} the {}",
+                    i.kind.verb().to_lowercase(),
+                    i.name.to_lowercase()
+                ),
+            }
+        }
+        Target::Prim { id, name, .. } => {
+            w.avatar.pending_emote = Some(Emote::Interact);
+            if let Some(online) = &w.online {
+                online.send(
+                    "agent touch",
+                    NetMessage::TouchPrim {
+                        request_id: 0,
+                        prim_id: *id,
+                    },
+                );
+            }
+            format!(
+                "pressed \"{name}\" (#{id}); its script hears it — `read_chat` or \
+                 `script_output` may show what it did"
+            )
+        }
+    }
+}
+
+/// The nearest thing matching `name` within [`REACH_FOR_M`]: places and props,
+/// and — unless only seats will do — scripted prims.
+fn find_near(w: &AgentWorld, name: Option<&str>, seats_only: bool) -> Option<(Target, f32)> {
+    let here = w.here();
+    let wanted = name.map(|n| n.trim().to_lowercase());
+    let matches = |s: &str, detail: Option<&str>| {
+        wanted.as_deref().is_none_or(|n| {
+            s.to_lowercase().contains(n) || detail.is_some_and(|d| d.to_lowercase().contains(n))
+        })
+    };
+    let mut best: Option<(Target, f32)> = None;
+    for (i, d) in w.around.places.within(here, REACH_FOR_M) {
+        if seats_only && i.seat_spot(here).is_none() {
+            continue;
+        }
+        if !matches(&i.name, i.kind.detail()) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, b)| d < *b) {
+            best = Some((Target::Thing(i.clone()), d));
+        }
+    }
+    if !seats_only {
+        for (p, g) in w.prims.iter() {
+            let Some(g) = g else { continue };
+            if !p.scripted || !matches(&p.name, None) {
+                continue;
+            }
+            let Some(at) = w.to_world(g.latitude, g.longitude) else {
+                continue;
+            };
+            let d = at.distance(here);
+            if d <= REACH_FOR_M && best.as_ref().is_none_or(|(_, b)| d < *b) {
+                best = Some((
+                    Target::Prim {
+                        id: p.id,
+                        name: p.name.clone(),
+                        at,
+                    },
+                    d,
+                ));
+            }
+        }
+    }
+    best
+}
+
+fn sit(state: &mut AgentState, w: &mut AgentWorld, name: Option<&str>, now: f64) -> AgentReply {
+    if w.bodies.is_empty() {
+        return AgentReply::refuse("There is no avatar: this client is offline.");
+    }
+    let Some((Target::Thing(thing), d)) = find_near(w, name, true) else {
+        return AgentReply::refuse(format!(
+            "There is nothing to sit on within {REACH_FOR_M:.0} m{}. `look_around` lists \
+             what is near.",
+            name.map_or(String::new(), |n| format!(" called \"{n}\""))
+        ));
+    };
+    state.walk = None;
+    if go_and(state, w, thing.pos, Then::Sit(thing.clone()), now) {
+        return AgentReply::ok(
+            format!(
+                "Walking to the {} {d:.0} m away, to sit on it.",
+                thing.name.to_lowercase()
+            ),
+            json!({ "walking_to": thing.name, "distance_m": d }),
+        );
+    }
+    let said = sit_on(&thing, w);
+    AgentReply::ok(capitalise(&said) + ".", json!({ "seated": true }))
+}
+
+fn interact(
+    state: &mut AgentState,
+    w: &mut AgentWorld,
+    name: Option<&str>,
+    now: f64,
+) -> AgentReply {
+    if w.bodies.is_empty() {
+        return AgentReply::refuse("There is no avatar: this client is offline.");
+    }
+    let Some((target, d)) = find_near(w, name, false) else {
+        return AgentReply::refuse(format!(
+            "There is nothing to use within {REACH_FOR_M:.0} m{}. `look_around` lists what \
+             is near.",
+            name.map_or(String::new(), |n| format!(" called \"{n}\""))
+        ));
+    };
+    state.walk = None;
+    if go_and(state, w, target.at(), Then::Use(target.clone()), now) {
+        return AgentReply::ok(
+            format!("Walking to {} {d:.0} m away, to use it.", target.name()),
+            json!({ "walking_to": target.name(), "distance_m": d }),
+        );
+    }
+    w.avatar.stand_up();
+    let said = use_target(&target, w);
+    AgentReply::ok(capitalise(&said) + ".", json!({ "used": target.name() }))
+}
+
+fn face(audience: &Audience, w: &mut AgentWorld, args: &FaceArgs) -> AgentReply {
+    let (yaw, what) = match face_yaw(audience, w, args) {
+        Ok(aim) => aim,
+        Err(refusal) => return refusal,
+    };
+    if w.avatar.is_seated() {
+        return AgentReply::refuse(
+            "You are sitting down and face out of the seat; `stand` first. (`look` can still \
+             turn your head.)",
+        );
+    }
+    w.avatar.facing_yaw = yaw;
+    let bearing = facing_bearing(w);
+    AgentReply::ok(
+        format!("Facing {what} ({}).", around::compass(bearing)),
+        json!({ "facing_deg": bearing }),
+    )
+}
+
+/// Which way to turn to face what `args` names, as an avatar yaw, and what to
+/// call it.
+fn face_yaw(
+    audience: &Audience,
+    w: &AgentWorld,
+    args: &FaceArgs,
+) -> Result<(f32, String), AgentReply> {
+    if w.bodies.is_empty() {
+        return Err(AgentReply::refuse(
+            "There is no avatar: this client is offline.",
+        ));
+    }
+    let here = w.here();
+    let (toward, what) = if let Some(b) = args.bearing_deg {
+        let r = b.to_radians();
+        (
+            Some(here + Vec2::new(r.sin(), -r.cos())),
+            format!("{:.0}°", b.rem_euclid(360.0)),
+        )
+    } else if let Some(name) = &args.person {
+        if !audience.hears(name) {
+            return Err(AgentReply::refuse(format!(
+                "{name} is not somebody you are allowed to hear."
+            )));
+        }
+        let at = w
+            .avatar_of(name)
+            .and_then(|id| w.remote_position(id))
+            .map(|p| Vec2::new(p.x, p.z));
+        (at, name.clone())
+    } else if let Some(id) = args.object {
+        let at = w
+            .prims
+            .iter()
+            .find(|(p, _)| p.id == id)
+            .and_then(|(_, g)| g.and_then(|g| w.to_world(g.latitude, g.longitude)));
+        (at, format!("object {id}"))
+    } else if let (Some(lat), Some(lng)) = (args.lat, args.lng) {
+        (w.to_world(lat, lng), format!("{lat:.5}, {lng:.5}"))
+    } else {
+        return Err(AgentReply::refuse(
+            "Say what to face: `person`, `object`, `lat`+`lng` or `bearing_deg`.",
+        ));
+    };
+    let Some(toward) = toward else {
+        return Err(AgentReply::refuse(format!(
+            "Cannot see where {what} is from here (a person shows only after saying something \
+             in public chat)."
+        )));
+    };
+    let dir = toward - here;
+    // Standing on it already: keep facing the way it faces.
+    let yaw = crate::systems::avatar::yaw_from_dir(Vec3::new(dir.x, 0.0, dir.y))
+        .unwrap_or(w.avatar.facing_yaw);
+    Ok((yaw, what))
+}
+
+/// Send an `UpdatePrim` for one of the agent's objects, changing only what was
+/// asked. The message carries the whole object, so everything else is read off
+/// it as it stands.
+fn edit(w: &AgentWorld, args: &EditArgs) -> Result<EditWant, String> {
+    let Some(online) = &w.online else {
+        return Err(NOT_ONLINE.into());
+    };
+    let Some((prim, cell, tf)) = w.around.prim_tf.iter().find(|(p, ..)| p.id == args.id) else {
+        return Err(format!(
+            "There is no object {} in view. `my_builds` lists yours.",
+            args.id
+        ));
+    };
+    let geo = w
+        .prims
+        .iter()
+        .find(|(p, _)| p.id == args.id)
+        .and_then(|(_, g)| g.copied())
+        .ok_or_else(|| format!("Object {} has no place on Earth to move from.", args.id))?;
+    let (mut lat, mut lng) = (geo.latitude, geo.longitude);
+    match (args.lat, args.lng) {
+        (Some(a), Some(b)) => (lat, lng) = (a, b),
+        (None, None) => {}
+        _ => return Err("Give both `lat` and `lng`, or neither.".into()),
+    }
+    if args.east_m.is_some() || args.north_m.is_some() {
+        let (per_lat, per_lng) = cartopolis_core::degree_scale_m(lat);
+        lat += args.north_m.unwrap_or(0.0) / per_lat;
+        lng += args.east_m.unwrap_or(0.0) / per_lng;
+    }
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+        return Err(format!("{lat}, {lng} is not a place on Earth."));
+    }
+    let world = crate::systems::prim_geo::world_position(cell, tf);
+    let (rx, ry, rz) = tf.rotation.to_euler(EulerRot::XYZ);
+    let rotation = args.rotation.map_or(Vec3::new(rx, ry, rz), |r| {
+        Vec3::from(r.map(f32::to_radians))
+    });
+    let scale = args.scale.map_or(tf.scale, Vec3::from);
+    if scale.min_element() <= 0.0 {
+        return Err("Every side of `scale` must be more than 0.".into());
+    }
+    let srgb = prim.color.to_srgba();
+    let color = args
+        .color
+        .unwrap_or([srgb.red, srgb.green, srgb.blue])
+        .map(|c| c.clamp(0.0, 1.0));
+    let name = args.name.clone().unwrap_or_else(|| prim.name.clone());
+    online.send(
+        "agent edit",
+        NetMessage::UpdatePrim {
+            request_id: 0,
+            prim_id: prim.id,
+            // Only the height is the object's own (ADR-029); x/z follow the anchor.
+            position: Vec3::new(0.0, args.altitude.unwrap_or(world.y as f32), 0.0),
+            rotation,
+            scale,
+            color,
+            texture_id: prim.texture_id.clone(),
+            name: name.clone(),
+            surface: prim.surface,
+            geometry: cartopolis_core::PrimGeometry {
+                path_cut_begin: prim.path_cut_begin,
+                path_cut_end: prim.path_cut_end,
+                hollow: prim.hollow,
+                twist_begin: prim.twist_begin,
+                twist_end: prim.twist_end,
+                taper_x: prim.taper_x,
+                taper_y: prim.taper_y,
+                top_shear_x: prim.top_shear_x,
+                top_shear_y: prim.top_shear_y,
+                slice_begin: prim.slice_begin,
+                slice_end: prim.slice_end,
+            },
+            geo: cartopolis_core::GeoAnchor {
+                latitude: lat,
+                longitude: lng,
+            },
+            // Passed through: an `UpdatePrim` is the whole object, and `None`
+            // would put out its fire or take off its model.
+            particles: prim.particles,
+            model: prim.model.clone(),
+        },
+    );
+    Ok(EditWant {
+        lat,
+        lng,
+        name,
+        scale,
+    })
+}
+
+fn remember(state: &mut AgentState, args: RememberArgs) -> AgentReply {
+    if state.keeps_key.is_none() {
+        return AgentReply::refuse(NOT_ONLINE);
+    }
+    let text = args.text.trim().to_string();
+    if text.is_empty() {
+        return AgentReply::refuse("Nothing to remember.");
+    }
+    if text.chars().count() > around::MAX_NOTE_CHARS {
+        return AgentReply::refuse(format!(
+            "A note is at most {} characters; split it.",
+            around::MAX_NOTE_CHARS
+        ));
+    }
+    if state.notes.len() >= around::MAX_NOTES {
+        return AgentReply::refuse(format!(
+            "You keep {} notes already; `forget` some first.",
+            around::MAX_NOTES
+        ));
+    }
+    let id = state.notes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+    let about = args
+        .about
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    state.notes.push(Note {
+        id,
+        at: around::now_unix() as u64,
+        about: about.clone(),
+        text,
+    });
+    save_notes(state);
+    AgentReply::ok(
+        format!(
+            "Noted (#{id}){}. `recall` reads it back, in this and later conversations.",
+            about.map_or(String::new(), |a| format!(" about {a}"))
+        ),
+        json!({ "id": id }),
     )
 }
 
@@ -2401,7 +3962,9 @@ fn settle(
                     (None, Some(how)) => AgentReply {
                         text: format!("{} after {took:.0} s.", capitalise(how)),
                         data: json!({ "walking": false, "ended": how, "after_s": took }),
-                        error: !(how.starts_with("arrived") || how.starts_with("stopped when")),
+                        error: !(how.starts_with("arrived")
+                            || how.starts_with("got there")
+                            || how.starts_with("stopped when")),
                     },
                     (None, None) => AgentReply::ok("The walk ended.", json!({ "walking": false })),
                 };
@@ -2588,6 +4151,102 @@ fn settle(
                     error: failed,
                 };
                 finish(bridge, "script", answer, reply, now);
+            }
+            Pending::Geocode {
+                query,
+                limit,
+                slot,
+                until,
+                reply,
+            } => {
+                let landed = slot.lock().ok().and_then(|mut s| s.take());
+                let answer = match landed {
+                    None if now <= until => {
+                        still.push(Pending::Geocode {
+                            query,
+                            limit,
+                            slot,
+                            until,
+                            reply,
+                        });
+                        continue;
+                    }
+                    None => AgentReply::refuse("The place search did not answer in time."),
+                    Some(Err(why)) => AgentReply::refuse(format!("The place search failed: {why}")),
+                    Some(Ok(hits)) if hits.is_empty() => AgentReply::ok(
+                        format!("Nothing found for \"{query}\"."),
+                        json!({ "results": [] }),
+                    ),
+                    Some(Ok(hits)) => geocode_answer(w, &hits, limit),
+                };
+                finish(bridge, "find place", answer, reply, now);
+            }
+            Pending::Wait { reply, .. } if reply.is_canceled() => {}
+            Pending::Wait {
+                events,
+                base,
+                near_m,
+                started,
+                until,
+                reply,
+            } => match what_happened(state, audience, w, &events, &base, near_m) {
+                Some((text, data)) => {
+                    finish(bridge, "wait", AgentReply::ok(text, data), reply, now);
+                }
+                None if now > until => {
+                    let answer = AgentReply::ok(
+                        format!("Nothing happened in {:.0} s.", now - started),
+                        json!({ "happened": [] }),
+                    );
+                    finish(bridge, "wait", answer, reply, now);
+                }
+                None => still.push(Pending::Wait {
+                    events,
+                    base,
+                    near_m,
+                    started,
+                    until,
+                    reply,
+                }),
+            },
+            Pending::Edit {
+                id,
+                want,
+                until,
+                reply,
+            } => {
+                let applied = w.prims.iter().any(|(p, g)| {
+                    p.id == id
+                        && p.name == want.name
+                        && g.is_some_and(|g| {
+                            (g.latitude - want.lat).abs() < 1e-9
+                                && (g.longitude - want.lng).abs() < 1e-9
+                        })
+                }) && w.around.prim_tf.iter().any(|(p, _, tf)| {
+                    p.id == id && (tf.scale - want.scale).abs().max_element() < 1e-3
+                });
+                if !applied && now <= until {
+                    still.push(Pending::Edit {
+                        id,
+                        want,
+                        until,
+                        reply,
+                    });
+                    continue;
+                }
+                let answer = if applied {
+                    AgentReply::ok(
+                        format!("Changed object {id}."),
+                        json!({ "id": id, "lat": want.lat, "lng": want.lng }),
+                    )
+                } else {
+                    AgentReply::refuse(format!(
+                        "The server did not apply the change to object {id} within \
+                         {EDIT_WAIT_S:.0} s. Most often it is not yours: only the account that \
+                         built an object may change it."
+                    ))
+                };
+                finish(bridge, "edit object", answer, reply, now);
             }
         }
     }

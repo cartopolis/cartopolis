@@ -1055,7 +1055,7 @@ fn spawn_geocode(query: String, results: Arc<Mutex<Vec<GeocodeReply>>>) {
 }
 
 /// Fetch and parse a Nominatim `/search` response into suggestions.
-async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
+pub(crate) async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
     let body = http::fetch_string(http::Request::get(url)).await?;
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let items = json.as_array().ok_or("unexpected Nominatim response")?;

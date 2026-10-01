@@ -19,7 +19,7 @@ use cartopolis_core::GeoAnchor;
 /// Reconstruct a prim's absolute world position from its `GridCell` + local
 /// `Transform`. A missing cell means the prim still sits at the big_space root
 /// (cell `0,0,0`), so the local translation *is* the world position.
-fn world_position(cell: Option<&GridCell>, local: &Transform) -> DVec3 {
+pub(crate) fn world_position(cell: Option<&GridCell>, local: &Transform) -> DVec3 {
     let edge = WORLD_CELL_EDGE as f64;
     let base = cell.map_or(DVec3::ZERO, |c| {
         DVec3::new(c.x as f64 * edge, c.y as f64 * edge, c.z as f64 * edge)

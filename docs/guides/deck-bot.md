@@ -63,10 +63,11 @@ The service listens on `127.0.0.1:4760`, not the default 4750, because other
 agents run clients on the Deck and 4750 is theirs. `--mcp-allow jeroen` is the
 allow-list. Change it in the unit and `systemctl restart viberbot`.
 
-**On and off.** The service is installed but **not enabled** (since
-2026-09-27), so it does not start at boot.
-`ssh deck 'sudo systemctl start viberbot'` brings the client up, and it signs in
-at launch. Its `sign_out` and `sign_in` tools take the avatar out of the world
+**On and off.** The service is **enabled** (since 2026-10-01; it was off from
+2026-09-27), so it starts at boot and restarts itself if it crashes. Idle it
+costs about 0.1 of a core and 6 % of the GPU. `ssh deck 'sudo systemctl stop
+viberbot'` takes it down, `disable` keeps it down across a reboot, and `start`
+brings it back; it signs in at launch. Its `sign_out` and `sign_in` tools take the avatar out of the world
 and back without stopping it. `stop` ends the process.
 
 **Updating the client** means copying a new binary and the `assets/` it was

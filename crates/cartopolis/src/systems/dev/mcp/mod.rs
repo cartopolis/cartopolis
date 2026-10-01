@@ -51,6 +51,7 @@
 pub mod agent;
 pub mod overlay;
 pub mod server;
+pub mod surroundings;
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -854,10 +855,17 @@ pub fn pace_idle(
     progress: Res<ShotProgress>,
     bridge: Res<McpBridge>,
     agent: Res<agent::AgentState>,
+    streams: Res<crate::systems::stream_watch::StreamRegistry>,
 ) {
+    // **Not while the map is still arriving.** Every streamer is bounded per
+    // *frame*, so at the idle rate a teleport took minutes to fill in: the Deck
+    // bot's `look_around` found buildings (which stream without a frame cap)
+    // and no shops, benches or anything to sit on, for several minutes after
+    // starting. The same `busy` list the capture's settle test waits on.
     let idle = !crate::systems::shot_harness::shot_in_progress(harness, progress)
         && !bridge.busy()
-        && !agent.is_working();
+        && !agent.is_working()
+        && streams.busy().is_empty();
     if !idle {
         return;
     }
