@@ -29,6 +29,19 @@ pub(super) async fn on_register_device<T: FrameTransport>(
         Ok(left) => {
             ctx.e2ee_device = Some(device);
             ctx.chat.set_device(ctx.avatar_id, device);
+            // A call already running in one of this account's chats rings here
+            // now, not at the next join or departure: a phone opened from a
+            // call's push connects after the call started.
+            if let Some(calls) = &ctx.calls {
+                let account = ctx.principal_key.clone();
+                let blocked = db::call(&ctx.conn, {
+                    let account = account.clone();
+                    move |c| blocked_lowercase(c, &account)
+                })
+                .await
+                .unwrap_or_default();
+                calls.catch_up(account, device, blocked);
+            }
             ctx.send(&NetMessage::E2eeDeviceStatus {
                 request_id,
                 key_packages: left,

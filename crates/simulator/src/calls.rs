@@ -62,6 +62,14 @@ enum Command {
     Leave {
         participant: u64,
     },
+    /// A device just came online: tell it about every call already running
+    /// in a chat its account is in, or a call it was woken for (an Android
+    /// push opening the app) never rings, because nothing changed since.
+    Catchup {
+        account: String,
+        device: uuid::Uuid,
+        blocked: HashSet<String>,
+    },
 }
 
 /// A connection's place in a call. Dropping it leaves the call, which is what
@@ -100,6 +108,16 @@ impl CallsHandle {
             },
             answer,
         ))
+    }
+
+    /// Tell a device that has just registered about the calls already
+    /// running in its chats (see [`Command::Catchup`]).
+    pub fn catch_up(&self, account: String, device: uuid::Uuid, blocked: HashSet<String>) {
+        let _ = self.tx.send(Command::Catchup {
+            account,
+            device,
+            blocked,
+        });
     }
 
     /// The answer to the last offer this seat was sent.
@@ -206,6 +224,26 @@ async fn run(
                         }
                     }
                     Command::Leave { participant } => sfu.leave(ParticipantId(participant)),
+                    Command::Catchup { account, device, blocked } => {
+                        for (group, accounts) in &members {
+                            if !accounts.contains(&account) {
+                                continue;
+                            }
+                            let list = roster_of(&sfu, &info, group);
+                            // A call made only of people this account blocks
+                            // does not ring for it, as `deliver_private` rules
+                            // for a live roster.
+                            if list.is_empty()
+                                || list.iter().all(|m| blocked.contains(&m.username.to_lowercase()))
+                            {
+                                continue;
+                            }
+                            let msg = NetMessage::CallRoster { group: group.clone(), members: list };
+                            if let Ok(frame) = encode_app_frame(&msg) {
+                                chat.deliver_to_device(device, &Bytes::from(frame));
+                            }
+                        }
+                    }
                 }
             }
             got = socket.recv_from(&mut buf) => {
@@ -273,8 +311,18 @@ fn roster(
     let Some(accounts) = members.get(group) else {
         return;
     };
-    let list: Vec<CallMember> = sfu
-        .members(group)
+    let msg = NetMessage::CallRoster {
+        group: group.to_vec(),
+        members: roster_of(sfu, info, group),
+    };
+    if let Ok(frame) = encode_app_frame(&msg) {
+        chat.deliver_private(accounts, from, false, &Bytes::from(frame));
+    }
+}
+
+/// Who is in a chat's call now.
+fn roster_of(sfu: &Sfu, info: &HashMap<ParticipantId, Info>, group: &[u8]) -> Vec<CallMember> {
+    sfu.members(group)
         .into_iter()
         .filter_map(|id| {
             let i = info.get(&id)?;
@@ -284,12 +332,5 @@ fn roster(
                 device: i.device,
             })
         })
-        .collect();
-    let msg = NetMessage::CallRoster {
-        group: group.to_vec(),
-        members: list,
-    };
-    if let Ok(frame) = encode_app_frame(&msg) {
-        chat.deliver_private(accounts, from, false, &Bytes::from(frame));
-    }
+        .collect()
 }

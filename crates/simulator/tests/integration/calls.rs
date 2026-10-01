@@ -267,3 +267,41 @@ async fn two_members_of_a_chat_call_each_other_through_the_server() {
     let refused = join(&mut c, &carol, &group).await;
     assert!(matches!(refused, Err((403, _))), "{:?}", refused.err());
 }
+
+/// A device that comes online while a call is already running in one of its
+/// chats is rung at once. Before, it heard of the call only when the roster
+/// next changed — and a phone opened from the call's push notification connects
+/// after the call started, so it never showed the incoming call at all.
+#[tokio::test]
+async fn a_device_that_connects_mid_call_is_rung() {
+    let (s, _dir) = start(&["alice", "bob"]).await;
+    let addr = s.local_addr.to_string();
+    let mut alice = Device::new("alice", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob", Uuid::new_v4()).unwrap();
+    let mut a = online(&addr, &mut alice).await;
+    let mut b = online(&addr, &mut bob).await;
+    let group = start_direct(&mut a, &mut alice, "bob").await;
+    let (welcome, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::E2eeInvite { welcome, .. } => Some(welcome),
+        _ => None,
+    })
+    .await
+    .expect("invitation delivered");
+    bob.join(&welcome).unwrap();
+    // Bob's app is closed.
+    drop(b);
+
+    let (_pa, alice_id) = join(&mut a, &alice, &group).await.expect("alice joins");
+
+    // And opened again, from the notification.
+    let mut b = online(&addr, &mut bob).await;
+    let (ring, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::CallRoster { group: g, members } if g == group => Some(members),
+        _ => None,
+    })
+    .await
+    .expect("the running call rings for bob as soon as he is back");
+    assert_eq!(ring.len(), 1);
+    assert_eq!(ring[0].username, "alice");
+    assert_eq!(ring[0].participant, alice_id);
+}
