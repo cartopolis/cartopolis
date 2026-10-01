@@ -15,6 +15,11 @@ use crate::vector_tiles::{SurfaceGroup, SurfaceMesh, INDEX_BYTES, VERTEX_BYTES};
 pub(crate) struct FlatFill<'a> {
     pub rings: &'a [Vec<[f32; 2]>],
     pub rgb: u32,
+    /// The surface pattern `ground_detail.wgsl` draws over it, carried in the
+    /// vertex colour's alpha as `1 + pattern` — 0 is none, and alpha 1.0 is
+    /// what every fill carried before, so a fill with no pattern is unchanged.
+    /// See `paving::PavingMaterial::pattern`.
+    pub pattern: u8,
 }
 
 /// What one triangle costs to upload, in the units the frame budget is in.
@@ -70,7 +75,8 @@ pub(crate) fn build_flat_fills(
                 out.push(std::mem::replace(&mut buf, Buf::new(group)).finish());
             }
         }
-        let tint = srgb_to_linear(fill.rgb);
+        let mut tint = srgb_to_linear(fill.rgb);
+        tint[3] = 1.0 + f32::from(fill.pattern);
         // Unshared vertices per triangle. A shared-vertex mesh would be smaller,
         // but every surface here is flat and faces up, so there is no shading to
         // gain from sharing and the winding fix below needs to own its corners.

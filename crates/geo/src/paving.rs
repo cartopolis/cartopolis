@@ -53,6 +53,11 @@ pub struct PavedArea {
     pub material: Option<PavingMaterial>,
     /// Outer ring first, holes after. Open rings — no repeated closing vertex.
     pub rings: Vec<Vec<[f32; 2]>>,
+    /// Its colour as the aerial photo shows it (atlas's `roofs` step), where it
+    /// was measured. Wins over every generated tone: the register says what a
+    /// street is made of and never what colour, and Groningen's centre is paved
+    /// in yellow brick where the generated brick is red.
+    pub measured: Option<u32>,
 }
 
 /// The paved forms. Mirrors `SURFACE_KINDS` in atlas's `pipeline/bgt.rs` —
@@ -80,6 +85,20 @@ pub enum PavingKind {
     /// A flight of steps in a footway. Drawn flat like the rest — the survey
     /// gives the outline, not the treads.
     Steps,
+    /// A local street's carriageway (`rijbaan lokale weg`). Over a cell that
+    /// carries these, the residential and service streets are drawn from the
+    /// survey's shapes rather than as OSM ribbons
+    /// (`road_texture::surveyed_streets_supersede`).
+    Street,
+    /// A `woonerf`: the shared, usually brick-paved, residential street.
+    LivingStreet,
+    /// A regional road or motorway carriageway. OSM keeps drawing these — they
+    /// carry the lane markings — so this is only ever the strip either side of
+    /// the ribbon, cut out from under it.
+    Road,
+    /// Paved open ground with no traffic function: squares, yards, forecourts
+    /// (`onbegroeid terreindeel`).
+    Yard,
 }
 
 impl PavingKind {
@@ -89,26 +108,31 @@ impl PavingKind {
     /// `Canopy`, `Trunk` and `Furniture` already follow, and the reason a city's
     /// worth of paving is a handful of draw calls.
     ///
-    /// The tones sit in the same pale cartographic family as the rest of the map
-    /// (see `scatter.rs` on why nothing here is saturated). They are separated
-    /// enough to read as different materials from a first-floor window and not
-    /// enough to stripe the street.
+    /// These were pale cartographic tones while a surface was one flat colour.
+    /// Since `ground_detail.wgsl` draws each material's stones over it
+    /// (2026-10-01) they are the materials' own colours — a brick street is the
+    /// red-brown of its bricks and a carriageway the grey of asphalt — because a
+    /// pattern over a pastel reads as a printed sheet, not as paving.
     #[must_use]
     pub fn rgb(self) -> u32 {
         match self {
             // Brick and concrete tile: warmer and lighter than tarmac.
-            Self::Footway => 0xC8_C2_B8,
-            Self::Cycleway => 0xC0_9A_8E,
+            Self::Footway => 0xB4_AF_A6,
+            Self::Cycleway => 0xA8_5E_50,
             // A bay is the same tarmac as the road, a shade lighter so the bays
             // read as a band along the kerb rather than as more carriageway.
-            Self::Parking => 0xB4_B2_AE,
-            Self::Drive => 0xC2_BD_B4,
+            Self::Parking => 0x86_84_80,
+            Self::Drive => 0xA9_A5_9D,
             // The one green here, and it is the grass the map already uses, so a
             // verge is the same substance as the lawn it runs into.
             Self::Verge => palette::GRASS,
-            Self::Island => 0xC5_C1_B6,
-            Self::Paved => 0xBE_BB_B4,
-            Self::Steps => 0xBC_B7_AE,
+            Self::Island => 0xAE_AA_A1,
+            Self::Paved => 0xA4_A1_9A,
+            Self::Steps => 0xA0_9B_92,
+            Self::Street => 0x6E_6D_6A,
+            Self::LivingStreet => 0x98_64_52,
+            Self::Road => 0x60_5F_5C,
+            Self::Yard => 0xA8_A4_9C,
         }
     }
 
@@ -195,12 +219,12 @@ impl PavingMaterial {
     #[must_use]
     pub fn rgb(self) -> u32 {
         match self {
-            Self::Asphalt => 0xAE_AC_A8,
-            Self::Concrete => 0xC4_C2_BC,
-            Self::Brick => 0xC7_A3_92,
-            Self::ConcretePaver => 0xBF_BC_B4,
-            Self::Tiles => 0xC9_C6_BF,
-            Self::Stone => 0xBD_B6_AA,
+            Self::Asphalt => 0x72_71_6E,
+            Self::Concrete => 0xAC_A9_A2,
+            Self::Brick => 0x9E_62_4E,
+            Self::ConcretePaver => 0x9F_9C_95,
+            Self::Tiles => 0xB8_B5_AD,
+            Self::Stone => 0x94_8E_84,
             // Half lawn, half concrete grid, and toned as the mixture it is.
             Self::GrassPaver => 0xB8_C0_A9,
             Self::Grass => palette::GRASS,
@@ -209,6 +233,60 @@ impl PavingMaterial {
             Self::Sand => palette::SAND,
             Self::Unpaved => 0xB9_AC_98,
         }
+    }
+}
+
+/// The surface patterns `ground_detail.wgsl` can draw: what a surface is made
+/// of, at the scale of its stones. **The numbers are the shader's** — its
+/// `paving_pattern` switches on them.
+pub mod pattern {
+    pub const NONE: u8 = 0;
+    pub const ASPHALT: u8 = 1;
+    pub const CONCRETE: u8 = 2;
+    pub const BRICK: u8 = 3;
+    pub const PAVER: u8 = 4;
+    pub const TILES: u8 = 5;
+    pub const SETTS: u8 = 6;
+    pub const GRASS_PAVER: u8 = 7;
+    pub const LOOSE: u8 = 8;
+}
+
+impl PavingMaterial {
+    /// The pattern this material is drawn with.
+    #[must_use]
+    pub fn pattern(self) -> u8 {
+        match self {
+            Self::Asphalt => pattern::ASPHALT,
+            Self::Concrete => pattern::CONCRETE,
+            Self::Brick => pattern::BRICK,
+            Self::ConcretePaver => pattern::PAVER,
+            Self::Tiles => pattern::TILES,
+            Self::Stone => pattern::SETTS,
+            Self::GrassPaver => pattern::GRASS_PAVER,
+            Self::Gravel | Self::Sand | Self::Unpaved => pattern::LOOSE,
+            Self::Grass | Self::Planting => pattern::NONE,
+        }
+    }
+}
+
+/// The pattern one surface is drawn with: its material's where the survey names
+/// one, otherwise what that kind of surface is usually laid in here — a
+/// pavement in tiles, a cycle path and a parking bay in asphalt, a drive in
+/// concrete pavers. A guess, as the tone for an unnamed surface always was, and
+/// a sixth of the surfaces get it.
+#[must_use]
+pub fn area_pattern(kind: PavingKind, material: Option<PavingMaterial>) -> u8 {
+    match material {
+        Some(m) => m.pattern(),
+        None => match kind {
+            PavingKind::Footway | PavingKind::Island | PavingKind::Steps => pattern::TILES,
+            PavingKind::Cycleway | PavingKind::Parking => pattern::ASPHALT,
+            PavingKind::Drive | PavingKind::Paved => pattern::PAVER,
+            PavingKind::Verge => pattern::NONE,
+            PavingKind::Street | PavingKind::Road => pattern::ASPHALT,
+            PavingKind::LivingStreet => pattern::BRICK,
+            PavingKind::Yard => pattern::PAVER,
+        },
     }
 }
 
@@ -235,7 +313,8 @@ pub fn build_paving_meshes(areas: &[PavedArea], max_bytes: Option<usize>) -> Vec
         .iter()
         .map(|a| FlatFill {
             rings: &a.rings,
-            rgb: area_rgb(a.kind, a.material),
+            rgb: a.measured.unwrap_or_else(|| area_rgb(a.kind, a.material)),
+            pattern: area_pattern(a.kind, a.material),
         })
         .collect();
     build_flat_fills(&fills, SurfaceGroup::Paving, max_bytes)
@@ -285,6 +364,31 @@ pub fn cut_paving_under_roads(paving: &mut Vec<SurfaceMesh>, roads: &[SurfaceMes
     crate::road_stitch::cut_under_roads(paving, roads);
 }
 
+/// Take the paving out of every ground sheet below it, so nothing lies under a
+/// pavement to show through it.
+///
+/// The roads were cut out of the landuse fills for this reason and the crops
+/// were made a partition for it; the paving was the one sheet still laid over
+/// a second one — `Built` under nearly every pavement and square. On flat
+/// ground the ladder's millimetre held it. On the measured ground each sheet is
+/// bent onto the terrain against its own triangles, and across the Herestraat
+/// the built-land fill stood through the brick in pale wedges with straight
+/// triangle edges (Deck, 2026-10-01) — which read as an AHN artefact and is
+/// the stack's, the same failure `cut_paving_under_roads` documents.
+pub fn cut_ground_under_paving(meshes: &mut Vec<SurfaceMesh>, paving: &[SurfaceMesh]) {
+    if paving.is_empty() {
+        return;
+    }
+    let level = SurfaceGroup::Paving.layer();
+    let (mut below, rest): (Vec<_>, Vec<_>) = std::mem::take(meshes).into_iter().partition(|m| {
+        let l = m.group.layer();
+        l.is_sheet() && l < level
+    });
+    crate::road_stitch::cut_under_roads(&mut below, paving);
+    meshes.extend(below);
+    meshes.extend(rest);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,7 +399,41 @@ mod tests {
             kind,
             material: None,
             rings: vec![vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]]],
+            measured: None,
         }
+    }
+
+    fn area(m: &SurfaceMesh) -> f32 {
+        m.indices
+            .chunks_exact(3)
+            .map(|t| {
+                let p = |i: u32| m.positions[i as usize];
+                let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                ((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])).abs() / 2.0
+            })
+            .sum()
+    }
+
+    /// The built land under a pavement goes; the built land beside it stays.
+    #[test]
+    fn the_ground_under_the_paving_is_cut_out() {
+        let built_rings = vec![vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]];
+        let mut ground = build_flat_fills(
+            &[FlatFill {
+                rings: &built_rings,
+                rgb: 0,
+                pattern: 0,
+            }],
+            SurfaceGroup::Built,
+            None,
+        );
+        let paving = build_paving_meshes(&[square(PavingKind::Footway, 10.0)], None);
+        cut_ground_under_paving(&mut ground, &paving);
+        let left: f32 = ground.iter().map(area).sum();
+        assert!(
+            (left - 300.0).abs() < 1.0,
+            "{left} m² of built land left, want 300"
+        );
     }
 
     #[test]
@@ -342,6 +480,7 @@ mod tests {
             kind: PavingKind::Footway,
             material: None,
             rings: vec![vec![[0.0, 0.0], [1.0, 0.0]]],
+            measured: None,
         };
         assert!(build_paving_meshes(&[area], None).is_empty());
         assert!(build_paving_meshes(&[], None).is_empty());
@@ -370,7 +509,18 @@ mod tests {
     fn every_kind_has_its_own_tone() {
         use PavingKind::*;
         let kinds = [
-            Footway, Cycleway, Parking, Drive, Verge, Island, Paved, Steps,
+            Footway,
+            Cycleway,
+            Parking,
+            Drive,
+            Verge,
+            Island,
+            Paved,
+            Steps,
+            Street,
+            LivingStreet,
+            Road,
+            Yard,
         ];
         for (i, a) in kinds.iter().enumerate() {
             for b in &kinds[i + 1..] {
@@ -419,6 +569,10 @@ mod tests {
             PavingKind::Island,
             PavingKind::Paved,
             PavingKind::Steps,
+            PavingKind::Street,
+            PavingKind::LivingStreet,
+            PavingKind::Road,
+            PavingKind::Yard,
         ] {
             assert_eq!(area_rgb(kind, None), kind.rgb(), "{kind:?} drifted");
         }

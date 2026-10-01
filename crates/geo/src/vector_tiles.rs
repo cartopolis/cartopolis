@@ -33,9 +33,7 @@ use tiny_skia::{
 use std::collections::HashMap;
 
 use crate::ground_stack::GroundLayer;
-use crate::road_texture::{
-    road_class, road_width_m, surveyed_paving_supersedes, RoadClass, StreetFlags,
-};
+use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags, SurveyedCover};
 
 /// One tile body, parsed **once**, with its decoded features memoised per layer.
 ///
@@ -3793,6 +3791,23 @@ pub fn tessellate_roads(
     max_bytes: Option<usize>,
     surveyed_paving: bool,
 ) -> Result<RoadTessellation, String> {
+    let cover = if surveyed_paving {
+        SurveyedCover::Paths
+    } else {
+        SurveyedCover::Nothing
+    };
+    tessellate_roads_surveyed(tile, tile_m, decks, max_bytes, cover)
+}
+
+/// [`tessellate_roads`], told how much of the cell the survey draws
+/// ([`SurveyedCover`]) so it can leave those ribbons out.
+pub fn tessellate_roads_surveyed(
+    tile: &TileData,
+    tile_m: f32,
+    decks: &mut [BridgeDeck],
+    max_bytes: Option<usize>,
+    cover: SurveyedCover,
+) -> Result<RoadTessellation, String> {
     let Some(meta) = tile.layer("streets") else {
         return Ok(RoadTessellation::default());
     };
@@ -3861,7 +3876,7 @@ pub fn tessellate_roads(
         // pedestrian street is a `RoadClass::Minor`, so a class-level rule left it
         // paving squares in tarmac. Everything else on the vehicle network stays
         // with OSM, marked and cased, everywhere.
-        if surveyed_paving && surveyed_paving_supersedes(kind_of(feature).unwrap_or("")) {
+        if cover.supersedes(kind_of(feature).unwrap_or("")) {
             continue;
         }
         let bridge = flag_of(feature, "bridge");

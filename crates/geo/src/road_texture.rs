@@ -229,6 +229,43 @@ pub fn surveyed_paving_supersedes(kind: &str) -> bool {
     )
 }
 
+/// Does a survey of the carriageways describe this `streets` kind as a real
+/// shape — the residential network, which in this country carries no lane
+/// markings and is as often brick as tarmac?
+///
+/// Asked only over a cell whose paving includes surveyed carriageways
+/// (`paving::PavingKind::Street`), so a cell surveyed before atlas took them
+/// keeps its ribbons rather than losing its streets. `tertiary` and up stay
+/// with OSM everywhere: those are the ones with markings.
+#[must_use]
+pub fn surveyed_streets_supersede(kind: &str) -> bool {
+    matches!(
+        kind,
+        "residential" | "living_street" | "service" | "unclassified" | "pedestrian"
+    )
+}
+
+/// How much of a cell's ground the survey covers, for which OSM ribbons to drop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SurveyedCover {
+    /// Nothing surveyed: every ribbon is drawn.
+    #[default]
+    Nothing,
+    /// Pavements, paths and pedestrian streets ([`surveyed_paving_supersedes`]).
+    Paths,
+    /// …and the local streets' carriageways ([`surveyed_streets_supersede`]).
+    Streets,
+}
+
+impl SurveyedCover {
+    /// Whether a ribbon of this kind is drawn by the survey instead.
+    #[must_use]
+    pub fn supersedes(self, kind: &str) -> bool {
+        (self >= Self::Paths && surveyed_paving_supersedes(kind))
+            || (self >= Self::Streets && surveyed_streets_supersede(kind))
+    }
+}
+
 /// Is this `streets` kind track rather than road?
 ///
 /// Deliberately beside [`road_class`] so the two cannot drift: it names the same

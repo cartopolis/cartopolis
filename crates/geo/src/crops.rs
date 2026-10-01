@@ -264,6 +264,7 @@ pub fn build_crop_meshes(parcels: &[CropParcel], max_bytes: Option<usize>) -> Ve
         .map(|p| FlatFill {
             rings: &p.rings,
             rgb: field_rgb(p.category, p.code, p.seed),
+            pattern: 0,
         })
         .collect();
     build_flat_fills(&fills, SurfaceGroup::Crop, max_bytes)
@@ -381,6 +382,7 @@ mod tests {
             &[FlatFill {
                 rings: &rings,
                 rgb: 0,
+                pattern: 0,
             }],
             group,
             None,

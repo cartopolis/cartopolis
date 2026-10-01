@@ -1236,6 +1236,28 @@ pub fn apply_terrain_to_tiles(
         let mesh = crate::systems::terrain::displaced_grid(
             &field, &globe, centre, gs, divisions, &rings, &lid,
         );
+        for (i, p) in crate::systems::ground_probe::probes().iter().enumerate() {
+            let local = *p - centre;
+            if local.x.abs() <= gs * 0.5 && local.y.abs() <= gs * 0.5 {
+                if let (
+                    Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)),
+                    Some(bevy::mesh::Indices::U32(idx)),
+                ) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices())
+                {
+                    let y = crate::systems::ground_probe::height_at(pos, idx, local.x, local.y);
+                    info!(
+                        probe = i,
+                        zoom = tile.key.z,
+                        tile_m = gs,
+                        step = gs / divisions.max(1) as f32,
+                        mesh_y = ?y,
+                        entity_y = tf.translation.y,
+                        drawn = ?y.map(|y| y + tf.translation.y),
+                        "ground probe: basemap"
+                    );
+                }
+            }
+        }
         commands
             .entity(entity)
             .insert(Mesh3d(meshes.add(mesh)))
@@ -1566,12 +1588,20 @@ fn occluded_by_finer(
     tiles: &HashMap<TileKey, bool>,
     finest: u32,
     coarsest: u32,
+    built: &HashSet<(i64, i64)>,
 ) -> HashSet<TileKey> {
     let mut covering: HashSet<TileKey> = HashSet::new();
     let mut occluded: HashSet<TileKey> = HashSet::new();
-    // The finest level has no children, so it covers exactly where it is ready.
+    // The finest level has no children, so it covers exactly where it is ready —
+    // or where the vector ground is built over it, which hides it outright.
     for (&key, &ready) in tiles {
-        if key.z == finest && ready {
+        if key.z != finest {
+            continue;
+        }
+        if under_built_ground(key, built) {
+            occluded.insert(key);
+            covering.insert(key);
+        } else if ready {
             covering.insert(key);
         }
     }
@@ -1583,7 +1613,7 @@ fn occluded_by_finer(
             let all_children_cover = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().all(|(dx, dy)| {
                 covering.contains(&TileKey::new(key.x * 2 + dx, key.y * 2 + dy, z + 1))
             });
-            if all_children_cover {
+            if all_children_cover || under_built_ground(key, built) {
                 occluded.insert(key);
                 covering.insert(key);
             } else if ready {
@@ -1592,6 +1622,35 @@ fn occluded_by_finer(
         }
     }
     occluded
+}
+
+/// Whether a basemap tile lies wholly under built vector ground — every z14
+/// cell its footprint touches is in `map_geometry::MapSurfaces::complete`.
+///
+/// **The basemap is not drawn under the vector ground any more.** It used to
+/// stand in under every hole at 3 cm below, which held while both were flat;
+/// bent onto the measured terrain, each against its own triangles, they disagree
+/// about the ground's height by more than that and the basemap stood through
+/// the paving in bands (`CARTO_PROBE`, Vismarkt, 2026-10-01). The cell's own
+/// ground is complete now (`cartopolis_geo::gap_fill`), so the tile under it
+/// can go — which also stops shading the city's ground twice.
+fn under_built_ground(key: TileKey, built: &HashSet<(i64, i64)>) -> bool {
+    const CELL_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
+    if built.is_empty() {
+        return false;
+    }
+    if key.z >= CELL_ZOOM {
+        let s = key.z - CELL_ZOOM;
+        return built.contains(&(key.x >> s, key.y >> s));
+    }
+    // A coarser tile spans several cells; only a modest block is worth asking
+    // about, and a coarser one is never wholly built anyway.
+    let s = CELL_ZOOM - key.z;
+    if s > 2 {
+        return false;
+    }
+    let n = 1i64 << s;
+    (0..n).all(|dy| (0..n).all(|dx| built.contains(&((key.x << s) + dx, (key.y << s) + dy))))
 }
 
 /// Recompute which clipmap tiles are hidden behind finer ones.
@@ -1609,6 +1668,7 @@ fn occluded_by_finer(
 pub fn update_tile_occlusion(
     mut stream: ResMut<MapStream>,
     tiles: Query<(&StreamTile, Has<StreamTileReady>)>,
+    surfaces: Res<crate::systems::map_geometry::MapSurfaces>,
     mut live: Local<HashMap<TileKey, bool>>,
 ) {
     live.clear();
@@ -1617,7 +1677,7 @@ pub fn update_tile_occlusion(
     if finest < MIN_ZOOM {
         return; // no pyramid yet (no anchor)
     }
-    let occluded = occluded_by_finer(&live, finest, MIN_ZOOM);
+    let occluded = occluded_by_finer(&live, finest, MIN_ZOOM, &surfaces.complete);
     // Compared before it is written: this is a `ResMut`, and assigning
     // unconditionally would mark `MapStream` changed on every frame of the run for
     // every reader that watches it.
@@ -2278,13 +2338,35 @@ mod tests {
             }
             tiles
         };
-        assert!(occluded_by_finer(&children(4), 15, 14).contains(&parent));
+        assert!(occluded_by_finer(&children(4), 15, 14, &HashSet::new()).contains(&parent));
         for partial in 0..4 {
             assert!(
-                !occluded_by_finer(&children(partial), 15, 14).contains(&parent),
+                !occluded_by_finer(&children(partial), 15, 14, &HashSet::new()).contains(&parent),
                 "{partial} ready children must not hide the parent"
             );
         }
+    }
+
+    /// Under a built cell the basemap goes, at every level that fits inside it,
+    /// ready or not; next to it, nothing changes; and a coarser tile spanning
+    /// built and unbuilt cells stays.
+    #[test]
+    fn the_basemap_is_not_drawn_under_built_ground() {
+        let built: HashSet<(i64, i64)> = [(8490, 5320)].into_iter().collect();
+        let mut tiles = HashMap::new();
+        // z17 tiles inside the built cell (one not yet textured) and beside it.
+        tiles.insert(TileKey::new(8490 * 8 + 3, 5320 * 8 + 4, 17), true);
+        tiles.insert(TileKey::new(8490 * 8 + 5, 5320 * 8 + 1, 17), false);
+        tiles.insert(TileKey::new(8491 * 8, 5320 * 8, 17), true);
+        // The cell's own z14 tile, and a z13 tile spanning it and three unbuilt ones.
+        tiles.insert(TileKey::new(8490, 5320, 14), true);
+        tiles.insert(TileKey::new(8490 / 2, 5320 / 2, 13), true);
+        let hidden = occluded_by_finer(&tiles, 17, 13, &built);
+        assert!(hidden.contains(&TileKey::new(8490 * 8 + 3, 5320 * 8 + 4, 17)));
+        assert!(hidden.contains(&TileKey::new(8490 * 8 + 5, 5320 * 8 + 1, 17)));
+        assert!(hidden.contains(&TileKey::new(8490, 5320, 14)));
+        assert!(!hidden.contains(&TileKey::new(8491 * 8, 5320 * 8, 17)));
+        assert!(!hidden.contains(&TileKey::new(8490 / 2, 5320 / 2, 13)));
     }
 
     /// A missing child is not a covering child. The clipmap's coarse levels span a
@@ -2295,7 +2377,7 @@ mod tests {
     fn a_tile_with_no_children_at_all_stays_visible() {
         let lone = TileKey::new(3, 4, 12);
         let tiles = HashMap::from([(lone, true)]);
-        assert!(occluded_by_finer(&tiles, 17, 10).is_empty());
+        assert!(occluded_by_finer(&tiles, 17, 10, &HashSet::new()).is_empty());
     }
 
     /// Coverage is transitive: a z14 tile hidden behind its own hidden children is
@@ -2319,7 +2401,7 @@ mod tests {
                 }
             }
         }
-        let hidden = occluded_by_finer(&tiles, 14, 12);
+        let hidden = occluded_by_finer(&tiles, 14, 12, &HashSet::new());
         assert!(
             hidden.contains(&root),
             "the root must hide behind two levels"

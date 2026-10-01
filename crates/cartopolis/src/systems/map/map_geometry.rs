@@ -757,6 +757,12 @@ pub struct MapSurfaces {
     /// What each live cell's ground was when it was built
     /// (`TerrainField::cell_digest`).
     built_digest: HashMap<Cell, u64>,
+    /// Live cells whose flat ground is drawn and **complete** — the vector sheets
+    /// plus `gap_fill` over whatever they leave — so the basemap under them is
+    /// never seen and must not be drawn (`map_stream::update_tile_occlusion`).
+    /// A cell leaves the set the moment it is retired, which is what puts the
+    /// basemap back under a cell being rebuilt rather than leaving a hole.
+    pub complete: HashSet<Cell>,
     /// Requested/failed/in-flight bookkeeping, the results sink, the despawn queue
     /// and the anchor generation (`platform::stream`).
     stream: CellStream<Cell, Tessellated>,
@@ -802,6 +808,7 @@ impl Default for MapSurfaces {
             loaded: HashMap::new(),
             built_rev: HashMap::new(),
             built_digest: HashMap::new(),
+            complete: HashSet::new(),
             stream: CellStream::new(Policy {
                 max_in_flight: SURFACE_MAX_IN_FLIGHT,
                 min_interval_secs: 0.0,
@@ -1153,6 +1160,9 @@ fn spawn_geometry_task(
             // …and its surveyed paving, in a file of its own because it is by far
             // the heavier half.
             let paving_task = io.spawn(crate::systems::surveyed::load_surveyed_paving(cell.0, cell.1));
+            // …and the paving's colours as the aerial photo measured them, which
+            // ride in the roofs file (atlas's `roofs` step measures both).
+            let measured_task = io.spawn(crate::systems::roof_colours::load_roof_cell(cell.0, cell.1));
             // …and the cell's registered crop parcels, which ride along for the
             // same reason: they are merged into this cell's meshes, and the
             // arable ones are a keep-out the grass area is built against. Empty
@@ -1206,6 +1216,7 @@ fn spawn_geometry_task(
                 None => crate::systems::municipal::RegisteredCell::default(),
             };
             let paving = paving_task.await;
+            let measured = measured_task.await;
             let crop_cell = crop_task.await;
             let atlas_decks = decks_task.await;
             let road_heights = roads_task.await;
@@ -1296,9 +1307,26 @@ fn spawn_geometry_task(
                             // since this cell draws those as real shapes rather
                             // than as constant-width lines.
                             let paved = crate::systems::surveyed::surveyed_paving(
-                                &paving, cell.0, cell.1, tile_m,
+                                &paving, &measured, cell.0, cell.1, tile_m,
                             );
-                            let surveyed_paving = !paved.is_empty();
+                            // How much of the ground the survey draws: nothing,
+                            // the paths, or the local streets too — the last only
+                            // where the paving file carries carriageways, so a
+                            // cell surveyed before atlas took them keeps its
+                            // ribbons.
+                            let cover = if paved.iter().any(|a| {
+                                matches!(
+                                    a.kind,
+                                    crate::systems::paving::PavingKind::Street
+                                        | crate::systems::paving::PavingKind::LivingStreet
+                                )
+                            }) {
+                                cartopolis_geo::road_texture::SurveyedCover::Streets
+                            } else if paved.is_empty() {
+                                cartopolis_geo::road_texture::SurveyedCover::Nothing
+                            } else {
+                                cartopolis_geo::road_texture::SurveyedCover::Paths
+                            };
                             cell_places.surveyed.3 = paved.len();
                             // Held back rather than appended here: the carriageways
                             // have to come out of it, and they do not exist yet.
@@ -1323,12 +1351,12 @@ fn spawn_geometry_task(
                                 &parcels, mesh_bytes,
                             );
                             lap.mark("paving");
-                            match vector_tiles::tessellate_roads(
+                            match vector_tiles::tessellate_roads_surveyed(
                                 &tile,
                                 tile_m,
                                 &mut decks,
                                 mesh_bytes,
-                                surveyed_paving,
+                                cover,
                             ) {
                                 Ok(roads) => {
                                     // **The carriageways come out of the paving
@@ -1362,6 +1390,12 @@ fn spawn_geometry_task(
                                         &mut meshes,
                                         &roads.ground,
                                     );
+                                    // …and from under the paving, for the same
+                                    // reason (`paving::cut_ground_under_paving`).
+                                    cartopolis_geo::paving::cut_ground_under_paving(
+                                        &mut meshes,
+                                        &paving_meshes,
+                                    );
                                     meshes.extend(std::mem::take(&mut paving_meshes));
                                     meshes.extend(roads.ground);
                                     // The stretches on a deck cannot be placed
@@ -1385,6 +1419,7 @@ fn spawn_geometry_task(
                             // uncut because there is nothing to cut them against.
                             // `take` above makes this the empty vector on the
                             // ordinary path rather than a second copy.
+                            cartopolis_geo::paving::cut_ground_under_paving(&mut meshes, &paving_meshes);
                             meshes.extend(std::mem::take(&mut paving_meshes));
                             // And the crop parcels rejoin here, on both paths,
                             // with the ground made a partition around them: the
@@ -1396,6 +1431,20 @@ fn spawn_geometry_task(
                             // place in the ground stack is its group's rung.
                             cartopolis_geo::crops::cut_into_ground(&mut meshes, &mut crop_meshes);
                             meshes.extend(crop_meshes);
+                            // **And the ground nothing covered.** Every flat sheet
+                            // is in by now; what is left of the cell is a hole that
+                            // used to show the basemap underneath, and the basemap
+                            // is no longer drawn under a built cell
+                            // (`cartopolis_geo::gap_fill`).
+                            if let Some(fill) = cartopolis_geo::gap_fill::gap_fill(
+                                &meshes,
+                                [0.0, 0.0],
+                                [tile_m, tile_m],
+                                cartopolis_geo::vector_tiles::palette::RESIDENTIAL,
+                            ) {
+                                meshes.push(fill);
+                            }
+                            lap.mark("gap fill");
                             // The roads that are *not* on the road sheet, because
                             // they run below the ground (`cartopolis_geo::tunnels`):
                             // a tunnel, its ramps and the cuttings between, each a
@@ -2159,6 +2208,7 @@ impl MapSurfaces {
         }
         self.built_rev.clear();
         self.built_digest.clear();
+        self.complete.clear();
         self.pending_decks.clear();
         // Drops the requested/failed bookkeeping and orphans the results sink, so
         // in-flight tasks cannot deliver a cell placed in the old origin's frame.
@@ -2174,6 +2224,7 @@ fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     }
     surfaces.built_rev.remove(&c);
     surfaces.built_digest.remove(&c);
+    surfaces.complete.remove(&c);
     surfaces.pending_decks.remove(&c);
     surfaces.stream.forget(&c);
     stores.labels.remove_cell(&c);
@@ -2652,6 +2703,12 @@ pub fn update_map_surfaces(
                 .add(sea_state.material(field, bank, Vec2::new(wx, wz), tile_m))
         });
 
+        // A cell is complete ground when it draws flat sheets at all: the worker
+        // always closes those with `gap_fill`, and drops them together above
+        // `FLAT_GROUND_OFF_M`, where the basemap is the ground again.
+        let complete = surface_meshes
+            .iter()
+            .any(|m| is_flat_ground(m.group) && m.group.layer().is_sheet());
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
             let stand = if placed {
@@ -2774,6 +2831,11 @@ pub fn update_map_surfaces(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
+        if complete {
+            surfaces.complete.insert(c);
+        } else {
+            surfaces.complete.remove(&c);
+        }
         if !decks.is_empty() {
             // Measured by atlas while it graded this ground: nothing to ask PDOK.
             let known = atlas_decks
@@ -4434,6 +4496,20 @@ fn stand_on_terrain<G: MeasuredGround>(
     {
         for p in positions.iter_mut() {
             p[1] += field.at(origin.x + p[0], origin.y + p[2]);
+        }
+    }
+    for (i, p) in crate::systems::ground_probe::probes().iter().enumerate() {
+        let local = *p - origin;
+        if let Some(y) =
+            crate::systems::ground_probe::height_at(positions, indices, local.x, local.y)
+        {
+            bevy::log::info!(
+                probe = i,
+                group = ?group,
+                drawn = y,
+                field = field.at(p.x, p.y),
+                "ground probe: sheet"
+            );
         }
     }
     let t2 = bevy::platform::time::Instant::now();

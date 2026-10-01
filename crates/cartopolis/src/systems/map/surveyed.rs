@@ -105,7 +105,7 @@ const LINE_KINDS: [LineKind; 3] = [LineKind::Fence, LineKind::Wall, LineKind::He
 
 /// The paved forms, in wire order. Mirrors `SURFACE_KINDS` in
 /// atlas's `pipeline/bgt.rs` — **append, never renumber**.
-const SURFACE_KINDS: [PavingKind; 8] = [
+const SURFACE_KINDS: [PavingKind; 12] = [
     PavingKind::Footway,
     PavingKind::Cycleway,
     PavingKind::Parking,
@@ -114,6 +114,10 @@ const SURFACE_KINDS: [PavingKind; 8] = [
     PavingKind::Island,
     PavingKind::Paved,
     PavingKind::Steps,
+    PavingKind::Street,
+    PavingKind::LivingStreet,
+    PavingKind::Road,
+    PavingKind::Yard,
 ];
 
 /// The surveyed materials, in wire order. Mirrors `SURFACE_MATERIALS` in
@@ -209,7 +213,13 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
 /// cut is a filled patch, which is wrong but local, where a dropped outer ring
 /// loses the whole surface.
 #[must_use]
-pub fn surveyed_paving(paving: &SurveyedPaving, cx: i64, cy: i64, tile_m: f32) -> Vec<PavedArea> {
+pub fn surveyed_paving(
+    paving: &SurveyedPaving,
+    measured: &cartopolis_geo::formats::roofs::Cell,
+    cx: i64,
+    cy: i64,
+    tile_m: f32,
+) -> Vec<PavedArea> {
     let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
         let out: Vec<[f32; 2]> = pts
             .iter()
@@ -221,13 +231,22 @@ pub fn surveyed_paving(paving: &SurveyedPaving, cx: i64, cy: i64, tile_m: f32) -
         .areas
         .iter()
         .filter_map(|(kind, material, rings)| {
+            let first = *rings.first()?.first()?;
             let outer = to_local(rings.first()?)?;
             let mut local = vec![outer];
             local.extend(rings[1..].iter().filter_map(to_local));
+            // The photo's measurement, where atlas took one (`roofs` step).
+            let measured = measured
+                .paving
+                .get(&cartopolis_geo::formats::roofs::paving_key(
+                    first.0, first.1,
+                ))
+                .map(|m| u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2]));
             Some(PavedArea {
                 kind: *kind,
                 material: *material,
                 rings: local,
+                measured,
             })
         })
         .collect()
@@ -784,7 +803,7 @@ mod tests {
                 ]],
             )],
         };
-        let built = surveyed_paving(&paving, cx, cy, 1500.0);
+        let built = surveyed_paving(&paving, &Default::default(), cx, cy, 1500.0);
         assert_eq!(built[0].material, Some(PavingMaterial::Brick));
     }
 
@@ -822,7 +841,7 @@ mod tests {
                 (PavingKind::Footway, None, vec![leaves]),
             ],
         };
-        let built = surveyed_paving(&paving, cx, cy, 1500.0);
+        let built = surveyed_paving(&paving, &Default::default(), cx, cy, 1500.0);
         assert_eq!(built.len(), 1, "only the wholly-inside surface survives");
     }
 

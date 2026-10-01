@@ -94,6 +94,7 @@ pub mod presets;
 // sheet, which is how the surveyed pavements and the landuse fills are taken out
 // from under the carriageways. Everything else in it stays crate-private — a
 // `Ribbon` is a stage in a cut, not a thing a caller holds.
+pub mod gap_fill;
 pub mod road_stitch;
 // Flattening the height survey along the roads, so a carriageway is graded rather
 // than draped over every bump. The other half of the ground-tearing story: the cut
