@@ -29,6 +29,7 @@ pub mod geom;
 pub mod http;
 pub mod lod22;
 pub mod rd;
+pub mod roofs;
 pub mod tall;
 pub mod terrain;
 pub mod terrain_grade;
@@ -480,6 +481,17 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "lod22/coverage.json",
         typical_minutes: 1,
         run: lod22::run,
+    },
+    Dataset {
+        id: "roofs",
+        label: "Roof colours (aerial photo)",
+        description: "What each LoD2.2 roof is made of and what colour it is — red tiles, \
+                      anthracite, bitumen, gravel, sedum, solar panels — measured from PDOK's \
+                      aerial photograph inside the roof's own outline. Reads the LoD2.2 \
+                      cells, so it runs after them.",
+        coverage: "roofs/coverage.json",
+        typical_minutes: 10,
+        run: roofs::run,
     },
     Dataset {
         id: "bag",

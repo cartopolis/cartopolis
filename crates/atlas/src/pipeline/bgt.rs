@@ -67,8 +67,19 @@ fn bridge_part(props: &Value) -> Option<&'static str> {
 }
 
 /// Paved forms in wire order, mirrored by `SURFACE_KINDS`.
-const SURFACE_KINDS: [&str; 8] = [
-    "footway", "cycleway", "parking", "drive", "verge", "island", "paved", "steps",
+const SURFACE_KINDS: [&str; 12] = [
+    "footway",
+    "cycleway",
+    "parking",
+    "drive",
+    "verge",
+    "island",
+    "paved",
+    "steps",
+    "street",
+    "living_street",
+    "road",
+    "yard",
 ];
 /// Materials in wire order, mirrored by `SURFACE_MATERIALS` and `PavingMaterial`.
 const SURFACE_MATERIALS: [&str; 12] = [
@@ -104,10 +115,17 @@ fn line_form(t: &str) -> Option<&'static str> {
 
 const MEASURED_ONLY_TYPES: [&str; 3] = ["kademuur", "damwand", "walbescherming"];
 
-/// `wegdeel.functie` / `ondersteunendwegdeel.functie` → our paved form. **The
-/// carriageways are deliberately absent**: OpenStreetMap draws those with lane
-/// markings, kerbs and a depth ladder the BGT cannot supply; the BGT adds what is
-/// *beside* the carriageway.
+/// `wegdeel.functie` / `ondersteunendwegdeel.functie` → our paved form.
+///
+/// The carriageways were left out at first, on the ground that OpenStreetMap
+/// draws them with lane markings, kerbs and a depth ladder the BGT cannot
+/// supply. That is true of a through road and false of a residential street,
+/// which has no markings, is often brick, and is a surveyed shape where OSM has
+/// a nominal width — so the gaps between the two were plain fill, and a brick
+/// street was drawn as tarmac (2026-10-01). Local streets and `woonerven` now
+/// come from here; the client draws the residential classes from them and
+/// keeps OSM's ribbons for the roads that carry markings. Regional roads are
+/// here too, but only ever as the strip the ribbon does not cover.
 fn surface_form(f: &str) -> Option<&'static str> {
     Some(match f {
         "voetpad" | "voetgangersgebied" | "ruiterpad" => "footway",
@@ -119,6 +137,19 @@ fn surface_form(f: &str) -> Option<&'static str> {
         "transitie" => "paved",
         "berm" => "verge",
         "verkeerseiland" => "island",
+        "rijbaan lokale weg" | "overweg" => "street",
+        "woonerf" => "living_street",
+        "rijbaan regionale weg" | "rijbaan autoweg" | "rijbaan autosnelweg" | "OV-baan" => "road",
+        _ => return None,
+    })
+}
+
+/// `onbegroeidterreindeel.fysiek_voorkomen` → a form, for the hard and the
+/// bare ground: squares, forecourts and yards. Its `plus` field names the
+/// material the same way a road's does.
+fn yard_form(v: &str) -> Option<&'static str> {
+    Some(match v {
+        "gesloten verharding" | "open verharding" | "half verhard" | "erf" | "onverhard" => "yard",
         _ => return None,
     })
 }
@@ -142,13 +173,22 @@ fn plus_material(v: &str) -> Option<&'static str> {
     })
 }
 
-/// `fysiek_voorkomen` → material, for the two coarse values that name a
-/// *substance*; `open`/`gesloten verharding` describe a construction and would be
-/// a guess.
+/// `fysiek_voorkomen` → material, where the fine field is silent.
+///
+/// `open`/`gesloten verharding` name a construction rather than a substance,
+/// and were left unmapped as a guess. They are a better guess than the kind's
+/// default, though, which is what an unmapped surface fell back to: the
+/// Vismarkt is `voetpad` / `open verharding` with nothing finer, was drawn as
+/// pale pavement tiles, and is grey pavers in the 2026 aerial photo. Open
+/// paving is laid in elements with joints — in this country overwhelmingly
+/// concrete pavers — and closed paving is poured: asphalt, mostly.
 fn coarse_material(v: &str) -> Option<&'static str> {
     Some(match v {
         "groenvoorziening" => "grass",
         "onverhard" => "unpaved",
+        "open verharding" => "concrete_paver",
+        "gesloten verharding" => "asphalt",
+        "half verhard" => "gravel",
         _ => return None,
     })
 }
@@ -220,7 +260,7 @@ fn truthy(v: &Value) -> bool {
 }
 
 /// The object types the extract is asked for.
-const FEATURETYPES: [&str; 7] = [
+const FEATURETYPES: [&str; 8] = [
     "vegetatieobject",
     "paal",
     "straatmeubilair",
@@ -228,6 +268,7 @@ const FEATURETYPES: [&str; 7] = [
     "overbruggingsdeel",
     "wegdeel",
     "ondersteunendwegdeel",
+    "onbegroeidterreindeel",
 ];
 
 /// The OGC API collection names this module was written against, as an object
@@ -627,18 +668,25 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     })
 }
 
-/// `wegdeel` + `ondersteunendwegdeel` → the paving beside the carriageway.
+/// `wegdeel` + `ondersteunendwegdeel` + `onbegroeidterreindeel` → the paving:
+/// pavements, cycle paths, the local streets themselves, and the squares.
 fn collect_surfaces(
     ctx: &Ctx,
     extract: &Extract,
     cells: &mut HashMap<Cell, CellData>,
 ) -> Outcome<usize> {
     let (mut n, mut dropped_level, mut n_material) = (0usize, 0usize, 0usize);
-    for collection in ["wegdeel", "ondersteunendwegdeel"] {
+    for collection in ["wegdeel", "ondersteunendwegdeel", "onbegroeidterreindeel"] {
         ctx.log(format!("{collection}…"));
         items(ctx, extract, collection, |feat| {
             let props = &feat["properties"];
-            let Some(form) = surface_form(&js_str(&props["functie"])) else {
+            // Bare ground has no `functie`: what it is, is what it is paved with.
+            let form = if collection == "onbegroeidterreindeel" {
+                yard_form(&js_str(&props["fysiek_voorkomen"]))
+            } else {
+                surface_form(&js_str(&props["functie"]))
+            };
+            let Some(form) = form else {
                 return;
             };
             // Ground level only: paving on a bridge or in a tunnel would otherwise
@@ -721,8 +769,11 @@ mod tests {
         assert!(simplified_rings(&square(0.000_001)).is_empty());
     }
 
+    /// The fine field wins; where it is silent the coarse one decides, open
+    /// paving as pavers and closed as asphalt (see `coarse_material` for why
+    /// that guess was taken after all).
     #[test]
-    fn the_fine_material_wins_and_constructions_are_not_substances() {
+    fn the_fine_material_wins_and_the_coarse_one_fills_in() {
         assert_eq!(
             surface_material(&json!({"plus_fysiek_voorkomen": "tegels"})),
             Some(4)
@@ -735,7 +786,17 @@ mod tests {
         );
         assert_eq!(
             surface_material(&json!({"fysiek_voorkomen": "gesloten verharding"})),
-            None
+            Some(0)
+        );
+        assert_eq!(
+            surface_material(&json!({"fysiek_voorkomen": "open verharding"})),
+            Some(3)
+        );
+        assert_eq!(
+            surface_material(
+                &json!({"plus_fysiek_voorkomen": "gebakken klinkers", "fysiek_voorkomen": "open verharding"})
+            ),
+            Some(2)
         );
     }
 

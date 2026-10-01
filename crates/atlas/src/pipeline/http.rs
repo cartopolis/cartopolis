@@ -177,12 +177,27 @@ pub fn get_json_with(
     timeout: Duration,
     attempts: u32,
 ) -> Outcome<Value> {
+    get_parsed_with(ctx, url, label, timeout, attempts, |b| {
+        serde_json::from_slice(b).map_err(|e| e.to_string())
+    })
+}
+
+/// A GET through the source cache, retried as [`get_json`] is, whose body is
+/// turned into a `T` by `parse` — a body that will not parse is evicted and
+/// fetched again, the way a truncated JSON answer is. For an image, where a
+/// 200 carrying an XML service exception instead of a JPEG is the failure.
+pub fn get_parsed_with<T>(
+    ctx: &Ctx,
+    url: &str,
+    label: &str,
+    timeout: Duration,
+    attempts: u32,
+    parse: impl Fn(&[u8]) -> Result<T, String>,
+) -> Outcome<T> {
     let mut last = String::new();
     for attempt in 0..attempts {
         ctx.check()?;
-        match cached(ctx, url, || fetch(url, timeout))
-            .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
-        {
+        match cached(ctx, url, || fetch(url, timeout)).and_then(|b| parse(&b)) {
             Ok(v) => return Ok(v),
             Err(e) => {
                 ctx.check()?;
