@@ -50,9 +50,29 @@ const MAX_MOSAIC_PX: f64 = 3072.0;
 /// How much ground to show around the camera and the aim, metres.
 const MARGIN_M: f64 = 50.0;
 
-/// How far along the ground the camera-matched view is drawn, metres; beyond, it
-/// fades into haze, as a render's own distance does.
-const MAX_DIST_M: f32 = 900.0;
+/// How far along the ground the camera-matched view is drawn at least, metres;
+/// beyond its reach it fades into haze, as a render's own distance does.
+const MIN_REACH_M: f32 = 900.0;
+
+/// The reach in camera heights. A fixed 900 m drew a straight-down capture from
+/// 1.5 km as a disc in a grey frame, since its corners are ~1.3 km out; six
+/// heights covers the corners of any view down to ~10° below the horizon.
+const REACH_PER_HEIGHT: f32 = 6.0;
+
+/// The farthest any reference reaches, metres — at [`MIN_ZOOM`] a mosaic of
+/// [`MAX_MOSAIC_PX`] spans ~18 km at Groningen's latitude.
+const MAX_REACH_M: f32 = 12_000.0;
+
+/// How the photograph is layered from the camera outwards: one mosaic per
+/// fraction of the reach, each at the finest zoom that fits it, so the ground
+/// under a low camera is not drawn at the zoom the horizon needed.
+const LAYERS: [f32; 3] = [1.0, 0.25, 0.0625];
+
+/// Smallest layer worth its own mosaic, metres.
+const MIN_LAYER_M: f32 = 60.0;
+
+/// Tries per tile; PDOK answers the odd tile with a 502.
+const TILE_TRIES: u32 = 3;
 
 /// What a reference is drawn around: where the camera is and where it looks, as
 /// latitude and longitude, and — for the camera-matched view — the camera itself.
@@ -171,26 +191,59 @@ fn frame(view: View) -> (u32, [f64; 4]) {
     frame_points(&[view.camera, view.aim], MARGIN_M, MAX_SIDE_PX)
 }
 
+/// One tile of the photograph, tried [`TILE_TRIES`] times.
+fn fetch_tile(template: &str, z: u32, tx: u32, ty: u32) -> Result<RgbImage, String> {
+    let url = template
+        .replace("{z}", &z.to_string())
+        .replace("{x}", &tx.to_string())
+        .replace("{y}", &ty.to_string());
+    let mut last = String::new();
+    for attempt in 0..TILE_TRIES {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(400 * u64::from(attempt)));
+        }
+        let got = futures_lite::future::block_on(crate::platform::http::fetch(
+            crate::platform::http::Request::get(url.clone()),
+        ))
+        .and_then(|bytes| {
+            image::load_from_memory(&bytes)
+                .map(|i| i.to_rgb8())
+                .map_err(|e| format!("tile {z}/{tx}/{ty}: {e}"))
+        });
+        match got {
+            Ok(tile) => return Ok(tile),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// The photograph over the pixel box `[x0, y0, x1, y1]` at zoom `z`, stitched
 /// from its tiles.
+///
+/// **A tile that will not come is a grey square, not a lost reference**: one 502
+/// out of dozens used to discard the whole picture. Only a mosaic with no tile
+/// at all is an error.
 fn mosaic(z: u32, [x0, y0, x1, y1]: [f64; 4]) -> Result<RgbImage, String> {
     let (tx0, ty0) = ((x0 / TILE_PX).floor() as u32, (y0 / TILE_PX).floor() as u32);
     let (tx1, ty1) = ((x1 / TILE_PX).floor() as u32, (y1 / TILE_PX).floor() as u32);
     let (w, h) = ((x1 - x0).ceil() as u32, (y1 - y0).ceil() as u32);
     let mut out = RgbImage::from_pixel(w, h, Rgb([40, 40, 40]));
     let template = crate::systems::aerial::template();
+    let (mut got, mut missing, mut last) = (0u32, 0u32, String::new());
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let url = template
-                .replace("{z}", &z.to_string())
-                .replace("{x}", &tx.to_string())
-                .replace("{y}", &ty.to_string());
-            let bytes = futures_lite::future::block_on(crate::platform::http::fetch(
-                crate::platform::http::Request::get(url),
-            ))?;
-            let tile = image::load_from_memory(&bytes)
-                .map_err(|e| format!("tile {z}/{tx}/{ty}: {e}"))?
-                .to_rgb8();
+            let tile = match fetch_tile(&template, z, tx, ty) {
+                Ok(tile) => {
+                    got += 1;
+                    tile
+                }
+                Err(e) => {
+                    missing += 1;
+                    last = e;
+                    continue;
+                }
+            };
             let (ox, oy) = (f64::from(tx) * TILE_PX - x0, f64::from(ty) * TILE_PX - y0);
             for (px, py, c) in tile.enumerate_pixels() {
                 let (dx, dy) = (ox + f64::from(px), oy + f64::from(py));
@@ -199,6 +252,12 @@ fn mosaic(z: u32, [x0, y0, x1, y1]: [f64; 4]) -> Result<RgbImage, String> {
                 }
             }
         }
+    }
+    if got == 0 {
+        return Err(last);
+    }
+    if missing > 0 {
+        tracing::warn!(zoom = z, missing, error = %last, "aerial reference: tiles missing, drawn grey");
     }
     Ok(out)
 }
@@ -239,29 +298,63 @@ fn ground_hit(pose: &Pose, u: f32, v: f32) -> Option<([f32; 2], f32)> {
     Some((p, along))
 }
 
+/// How far along the ground the camera-matched view is drawn before it has faded
+/// to haze: [`REACH_PER_HEIGHT`] camera heights, within
+/// [`MIN_REACH_M`]..=[`MAX_REACH_M`].
+fn reach(pose: &Pose) -> f32 {
+    let height = (pose.position[1] - pose.ground_y).max(0.0);
+    (height * REACH_PER_HEIGHT).clamp(MIN_REACH_M, MAX_REACH_M)
+}
+
 /// The reference from the capture's own camera: every pixel's ray followed down
 /// to the ground and the photograph sampled where it lands.
 fn from_camera(pose: Pose) -> Result<RgbImage, String> {
     let ll = |p: [f32; 2]| {
         crate::systems::geo_nav::world_to_lat_lng(pose.anchor, f64::from(p[0]), f64::from(p[1]))
     };
+    let reach_m = reach(&pose);
     // The ground the view reaches, from a coarse grid of rays, and the camera's
     // own foot.
     let (w, h) = pose.size;
-    let mut reach: Vec<(f64, f64)> = vec![ll([pose.position[0], pose.position[2]])];
+    let foot = ll([pose.position[0], pose.position[2]]);
+    let mut hits: Vec<((f64, f64), f32)> = Vec::new();
     for j in 0..=32 {
         for i in 0..=32 {
             let (u, v) = (w as f32 * i as f32 / 32.0, h as f32 * j as f32 / 32.0);
             if let Some((p, along)) = ground_hit(&pose, u, v) {
-                if along <= MAX_DIST_M {
-                    reach.push(ll(p));
+                if along <= reach_m {
+                    hits.push((ll(p), along));
                 }
             }
         }
     }
-    let (z, b) = frame_points(&reach, 20.0, MAX_MOSAIC_PX);
-    let photo = mosaic(z, b)?;
-    let (pw, ph) = (photo.width() as f64, photo.height() as f64);
+    // One mosaic per layer, coarsest first; a finer layer that lands on the same
+    // zoom as the one before it adds nothing and is skipped.
+    let mut layers: Vec<(u32, [f64; 4], RgbImage)> = Vec::new();
+    for (k, frac) in LAYERS.iter().enumerate() {
+        let layer_m = reach_m * frac;
+        if k > 0 && layer_m < MIN_LAYER_M {
+            break;
+        }
+        let pts: Vec<(f64, f64)> = std::iter::once(foot)
+            .chain(hits.iter().filter(|(_, a)| *a <= layer_m).map(|(p, _)| *p))
+            .collect();
+        if k > 0 && pts.len() < 2 {
+            break;
+        }
+        let (z, b) = frame_points(&pts, 20.0, MAX_MOSAIC_PX);
+        if layers.last().is_some_and(|l| l.0 >= z) {
+            continue;
+        }
+        match mosaic(z, b) {
+            Ok(photo) => layers.push((z, b, photo)),
+            // The coarsest layer is the picture; a finer one only sharpens it.
+            Err(e) if layers.is_empty() => return Err(e),
+            Err(e) => {
+                tracing::warn!(zoom = z, error = %e, "aerial reference: finer layer not fetched")
+            }
+        }
+    }
     let sky = |v: f32| {
         let k = (v / h as f32).clamp(0.0, 1.0);
         Rgb([
@@ -280,16 +373,23 @@ fn from_camera(pose: Pose) -> Result<RgbImage, String> {
                 continue;
             };
             let (lat, lng) = ll(p);
-            let (x, y) = world_px(lat, lng, z);
-            let (sx, sy) = (x - b[0], y - b[1]);
-            let c = if sx >= 0.0 && sy >= 0.0 && sx < pw && sy < ph {
-                *photo.get_pixel(sx as u32, sy as u32)
-            } else {
-                haze
-            };
+            // The finest layer that holds this point.
+            let c = layers
+                .iter()
+                .rev()
+                .find_map(|(z, b, photo)| {
+                    let (x, y) = world_px(lat, lng, *z);
+                    let (sx, sy) = (x - b[0], y - b[1]);
+                    (sx >= 0.0
+                        && sy >= 0.0
+                        && sx < f64::from(photo.width())
+                        && sy < f64::from(photo.height()))
+                    .then(|| *photo.get_pixel(sx as u32, sy as u32))
+                })
+                .unwrap_or(haze);
             // Fade into haze towards the edge of what was fetched, as distance
             // fades a render.
-            let f = ((along - MAX_DIST_M * 0.7) / (MAX_DIST_M * 0.3)).clamp(0.0, 1.0);
+            let f = ((along - reach_m * 0.7) / (reach_m * 0.3)).clamp(0.0, 1.0);
             let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - f) + f32::from(b) * f) as u8;
             out.put_pixel(
                 u,
@@ -415,5 +515,37 @@ mod tests {
             "the top of the view hit the ground"
         );
         assert!(ground_hit(&level, 50.0, 100.0).is_some());
+    }
+
+    /// **A high capture is photographed to its corners.** Straight down from
+    /// 1.5 km at a 45° field of view, the corners of a 16:9 frame are ~1.3 km
+    /// out along the ground; the reference must still be clear there, not haze.
+    #[test]
+    fn a_high_view_reaches_its_corners() {
+        let pose = Pose {
+            anchor: (53.2, 6.57, 14),
+            position: [0.0, 1500.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, -1.0],
+            forward: [0.0, -1.0, 0.0],
+            fov_y: 45f32.to_radians(),
+            size: (1280, 720),
+            ground_y: 0.0,
+        };
+        let (_, corner) = ground_hit(&pose, 0.0, 0.0).expect("the corner hits the ground");
+        assert!(
+            corner > 900.0,
+            "the old fixed reach was shorter than this: {corner}"
+        );
+        assert!(
+            corner < reach(&pose) * 0.7,
+            "the corner fades: {corner} vs {}",
+            reach(&pose)
+        );
+        let low = Pose {
+            position: [0.0, 10.0, 0.0],
+            ..pose
+        };
+        assert_eq!(reach(&low), MIN_REACH_M, "a low camera keeps the floor");
     }
 }

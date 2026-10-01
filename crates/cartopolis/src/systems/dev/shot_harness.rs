@@ -495,6 +495,18 @@ pub struct ShotMetrics {
     pub name: Option<String>,
     pub lat: f64,
     pub lng: f64,
+    /// Where the camera **actually** is, read back out of the drawn world
+    /// (`lat`/`lng` are what `--at` asked for). The two differing is a misplaced
+    /// capture that would otherwise be filed under the place it was meant for.
+    /// `NaN` (null in the JSON) before the map has an anchor.
+    pub camera_lat: f64,
+    /// See [`Self::camera_lat`].
+    pub camera_lng: f64,
+    /// The ground point in the middle of the view, the same way; `NaN` when the
+    /// camera looks above the horizon.
+    pub aim_lat: f64,
+    /// See [`Self::aim_lat`].
+    pub aim_lng: f64,
     /// Whether the settle test actually passed, or the capture gave up at
     /// `--wait`. Without it the two are indistinguishable in the output: a run
     /// that timed out reports a large `settled_s` and reads as a slow success,
@@ -1202,7 +1214,7 @@ pub struct ShotMetrics {
 /// The order is deliberately not the struct's declaration order (related columns
 /// were grouped as they were added), which is exactly why a row must be built by
 /// name rather than by position.
-const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,flicker_px,\
+const CSV_HEADER: &str = "shot,name,lat,lng,camera_lat,camera_lng,aim_lat,aim_lng,settled,settled_s,busy,frame_ms,frame_ms_max,flicker_px,\
 draws,tris_total,tris_shadow,shadow_casters,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,fetch_outstanding,radius_bias,\
 tiles_occluded,aerial_tiles,\
 alt_m,space_factor,in_space,\
@@ -3693,6 +3705,22 @@ pub fn drive_capture(
                 "tunnel entrance"
             );
         }
+        // Where the camera and its aim actually are on Earth, out of the frame the
+        // world is drawn in — not the `--at` that was asked for.
+        let geo_of = |p: Vec2| {
+            readouts
+                .map_anchor
+                .geo
+                .map_or((f64::NAN, f64::NAN), |anchor| {
+                    crate::systems::geo_nav::world_to_lat_lng(
+                        anchor,
+                        f64::from(p.x),
+                        f64::from(p.y),
+                    )
+                })
+        };
+        let camera_geo = geo_of(Vec2::new(cam_world.x, cam_world.z));
+        let aim_geo = aim.map_or((f64::NAN, f64::NAN), geo_of);
         let nearest_tunnel = aim.and_then(|p| readouts.tunnels.nearest_tunnel(p));
         // Walked once here rather than twice in the struct literal below: the
         // descendant walk is the only metric that costs a traversal.
@@ -3724,6 +3752,10 @@ pub fn drive_capture(
             name: shot.name.clone(),
             lat: shot.lat,
             lng: shot.lng,
+            camera_lat: camera_geo.0,
+            camera_lng: camera_geo.1,
+            aim_lat: aim_geo.0,
+            aim_lng: aim_geo.1,
             settled,
             settled_s: verdict.at,
             busy: verdict.busy.iter().map(|s| (*s).to_string()).collect(),
@@ -4483,6 +4515,10 @@ mod tests {
             name: Some("city".into()),
             lat: 0.0,
             lng: 0.0,
+            camera_lat: 0.0,
+            camera_lng: 0.0,
+            aim_lat: 0.0,
+            aim_lng: 0.0,
             flicker_px: 0,
             settled: false,
             // Two entries on purpose: `busy` is the one list-valued column, and
