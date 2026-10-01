@@ -1074,8 +1074,11 @@ const BRICK: usize = 2;
 /// (the Herestraat), anthracite where it is dark, buff otherwise.
 fn brick_colour(c: [u8; 3]) -> [u8; 3] {
     let [r, g, b] = c.map(i32::from);
+    // A weathered red clay paver, not a new facing brick: the first value here,
+    // (150, 82, 66) lifted by the photo's lightness, put the Grote Markt at
+    // (188, 103, 83), which read on the phone as painted red (2026-10-01).
     let base: [f64; 3] = if r - g >= 7 {
-        [150.0, 82.0, 66.0]
+        [128.0, 76.0, 64.0]
     } else if g - b >= 9 && r - g >= -2 {
         [196.0, 170.0, 122.0]
     } else if lum(c) < 95.0 {
@@ -1084,10 +1087,12 @@ fn brick_colour(c: [u8; 3]) -> [u8; 3] {
         [176.0, 150.0, 126.0]
     };
     // At the measured lightness, within reason: a brick street in a dull photo
-    // is not a different brick.
+    // is not a different brick. Darkened by a shaded photo, never brightened
+    // past the brick's own colour — a bright open square is sunlit, which the
+    // engine already lights, and lifting the colour as well lit it twice.
     let target = f64::from(lum(c));
     let own = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
-    let k = (target / own).clamp(0.8, 1.25);
+    let k = (target / own).clamp(0.8, 1.0);
     base.map(|v| (v * k).round().clamp(0.0, 255.0) as u8)
 }
 
