@@ -43,6 +43,7 @@ use bevy::core_pipeline::fullscreen_material::FullscreenMaterial;
 use bevy::prelude::*;
 use bevy::render::extract_component::ExtractComponent;
 use bevy::render::render_resource::ShaderType;
+use bevy::render::sync_component::SyncComponent;
 use bevy::shader::ShaderRef;
 
 use crate::components::FreeCamera;
@@ -61,7 +62,7 @@ const OFFSCREEN_FADE: f32 = 1.8;
 /// The pass's uniform, and the marker that turns it on for a camera.
 ///
 /// Laid out for WGSL as `SunRays` in `sun_rays.wgsl`: keep the two in step.
-#[derive(Component, Default, Clone, Copy, ExtractComponent, ShaderType)]
+#[derive(Component, Default, Clone, Copy, ShaderType)]
 pub struct SunRays {
     /// Where the sun is in the frame, 0..1 with y down (it may lie outside).
     pub sun_uv: Vec2,
@@ -72,6 +73,24 @@ pub struct SunRays {
     pub aspect: f32,
     /// The sunlight's colour, brightest channel 1.
     pub tint: Vec4,
+}
+
+impl SyncComponent for SunRays {
+    type Target = Self;
+}
+
+/// Extracted only while there are beams to draw. The pass is a full read and write of
+/// the frame whatever `strength` says, and `strength` is 0 at night, with the sun
+/// behind the camera, or with it far off screen — most frames. With nothing in the
+/// render world, bevy drops the pass for that view.
+impl ExtractComponent for SunRays {
+    type QueryData = &'static Self;
+    type QueryFilter = ();
+    type Out = Self;
+
+    fn extract_component(rays: &Self) -> Option<Self> {
+        (rays.strength > 0.0).then_some(*rays)
+    }
 }
 
 impl FullscreenMaterial for SunRays {
