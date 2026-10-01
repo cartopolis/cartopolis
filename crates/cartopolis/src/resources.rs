@@ -940,6 +940,10 @@ pub struct ScreenshotState {
     /// A capture was requested this frame; the driver spawns the `Screenshot` and
     /// clears this on its next run (while `hide_ui` is still active).
     pub capture_requested: bool,
+    /// A snapshot of the map for a private chat, by channel key (the messenger's
+    /// "Send a snapshot"). Captured the same chrome-free way, and handed to the
+    /// chat as a picture rather than saved.
+    pub chat_snapshot: Option<String>,
     /// Group the dev panel's "Copy as preset" writes into the block it copies —
     /// the subject a remembered viewpoint is *for* (`tunnels`, `bridges`,
     /// `doors`). Empty means the published documentation set.

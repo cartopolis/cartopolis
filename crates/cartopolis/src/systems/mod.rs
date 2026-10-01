@@ -77,7 +77,9 @@ pub use nav::{
 };
 #[cfg(target_os = "android")]
 pub use net::push;
-pub use net::{background, call_tones, calls, network, private_chat, session, user_store, voice};
+pub use net::{
+    background, call_tones, calls, chat_pictures, network, private_chat, session, user_store, voice,
+};
 pub use player::{
     avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, sit_pose, touch,
 };

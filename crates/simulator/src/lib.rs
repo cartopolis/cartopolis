@@ -22,6 +22,7 @@ pub mod http;
 pub mod library;
 pub mod mail;
 pub mod net;
+pub mod pictures;
 pub mod prims;
 pub mod push;
 pub mod registration;

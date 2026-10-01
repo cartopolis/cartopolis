@@ -138,6 +138,8 @@ pub enum Event {
         from: String,
         body: String,
         point: Option<Point>,
+        /// Set when what they sent was a picture; `body` is then its caption.
+        picture: Option<crate::systems::chat_pictures::PictureRef>,
         sent_at_ms: u64,
     },
     /// Somebody in a chat shared where their phone is, until `until_ms`.
@@ -162,20 +164,72 @@ pub enum Event {
 /// Anything this build cannot read becomes a line saying so rather than an
 /// error: the entry has been applied either way (the ratchet moved on), and a
 /// chat that silently skips a message reads as a friend who never answered.
-fn read_payload(bytes: &[u8]) -> (String, Option<Point>) {
+type ReadLine = (
+    String,
+    Option<Point>,
+    Option<crate::systems::chat_pictures::PictureRef>,
+);
+
+fn read_payload(bytes: &[u8]) -> ReadLine {
     const UNREADABLE: &str = "(a message this version can't display)";
     match Payload::decode(bytes) {
-        Ok(Payload::Text { body, .. }) => (body, None),
+        Ok(Payload::Text { body, .. }) => (body, None, None),
         Ok(Payload::Object { json, .. }) => match Point::from_activity_json(&json) {
-            Ok(point) => (point_caption(&point), Some(point)),
-            Err(_) => (UNREADABLE.into(), None),
+            Ok(point) => (point_caption(&point), Some(point), None),
+            Err(_) => (UNREADABLE.into(), None, None),
         },
+        Ok(Payload::Picture {
+            hash,
+            key,
+            nonce,
+            width,
+            height,
+            caption,
+            ..
+        }) => (
+            picture_caption(&caption),
+            None,
+            Some(crate::systems::chat_pictures::PictureRef {
+                hash,
+                key,
+                nonce,
+                width,
+                height,
+            }),
+        ),
         // Location updates are not lines; `on_deliver` handles them before this.
         Ok(
             Payload::Location { .. } | Payload::LocationStopped { .. } | Payload::GroupName { .. },
         )
-        | Err(_) => (UNREADABLE.into(), None),
+        | Err(_) => (UNREADABLE.into(), None, None),
     }
+}
+
+/// How a picture reads as a line of text — in the chat list, a notification,
+/// an agent's transcript: that it is a picture, and its caption.
+///
+/// Words, not 📷: that is not in the bundled font and paints as a tofu box.
+/// The thread draws `icons::CAMERA` beside the picture instead.
+#[must_use]
+pub fn picture_caption(caption: &str) -> String {
+    let caption = caption.trim();
+    if caption.is_empty() {
+        PICTURE_LINE.to_string()
+    } else {
+        format!("{PICTURE_LINE}: {caption}")
+    }
+}
+
+/// The text of a picture line with no caption, and the prefix of one with.
+pub const PICTURE_LINE: &str = "Picture";
+
+/// The caption back out of a picture line's text, if it has one.
+#[must_use]
+pub fn caption_of(line_body: &str) -> Option<&str> {
+    line_body
+        .strip_prefix(PICTURE_LINE)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .filter(|c| !c.is_empty())
 }
 
 /// How a point reads as a line of chat: its text, else its name, else "a place".
@@ -543,6 +597,31 @@ impl Engine {
             group,
             &Payload::Object {
                 json,
+                sent_at_ms: now_ms,
+            },
+            out,
+        )
+    }
+
+    /// Seal and send a picture that is already in the picture store: its hash
+    /// and the key that opens it (`chat_pictures`).
+    pub fn send_picture(
+        &mut self,
+        group: &[u8],
+        picture: &crate::systems::chat_pictures::PictureRef,
+        caption: &str,
+        now_ms: u64,
+        out: &mut Vec<NetMessage>,
+    ) -> Result<(), String> {
+        self.send_payload(
+            group,
+            &Payload::Picture {
+                hash: picture.hash.clone(),
+                key: picture.key,
+                nonce: picture.nonce,
+                width: picture.width,
+                height: picture.height,
+                caption: caption.to_string(),
                 sent_at_ms: now_ms,
             },
             out,
@@ -1088,12 +1167,13 @@ impl Engine {
                     }
                 }
                 _ => {
-                    let (body, point) = read_payload(&bytes);
+                    let (body, point, picture) = read_payload(&bytes);
                     events.push(Event::Line {
                         group,
                         from: from.username,
                         body,
                         point,
+                        picture,
                         sent_at_ms,
                     });
                 }
@@ -1329,6 +1409,7 @@ pub fn drive_private_chats(
     mut inbox: ResMut<PrivateInbox>,
     mut private: ResMut<PrivateChats>,
     mut chat: ResMut<crate::systems::chat::ChatState>,
+    mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
 ) {
     let (Some(online), Some(username)) = (online, identity.username.clone()) else {
         private.connected = false;
@@ -1405,6 +1486,47 @@ pub fn drive_private_chats(
         }
         private.dirty = true;
     }
+    // A picture goes up first and is announced after: the line that names it
+    // must never reach anybody before the thing it names can be fetched.
+    for outgoing in std::mem::take(&mut chat.private_pictures) {
+        if group_of(&outgoing.channel).is_some() {
+            pictures.send(outgoing);
+        }
+    }
+    for (channel, result) in pictures.poll_uploads() {
+        let Some(group) = group_of(&channel) else {
+            continue;
+        };
+        let uploaded = match result {
+            Ok(u) => u,
+            Err(e) => {
+                events.push(Event::Notice(format!("picture not sent: {e}")));
+                continue;
+            }
+        };
+        match engine.send_picture(
+            &group,
+            &uploaded.picture,
+            &uploaded.caption,
+            now_ms(),
+            &mut out,
+        ) {
+            Ok(()) => {
+                pictures.insert_local(&uploaded.picture.hash, uploaded.jpeg);
+                let me = engine.username().to_string();
+                let my_id = chat.my_id.unwrap_or(0);
+                chat.receive_picture(
+                    &channel,
+                    my_id,
+                    me,
+                    picture_caption(&uploaded.caption),
+                    uploaded.picture,
+                );
+            }
+            Err(e) => events.push(Event::Notice(format!("picture not sent: {e}"))),
+        }
+        private.dirty = true;
+    }
     share_location(&mut engine, &mut private, &mut chat, &mut out, &mut events);
     for (channel, point) in std::mem::take(&mut chat.private_points) {
         let Some(group) = group_of(&channel) else {
@@ -1473,12 +1595,17 @@ pub fn drive_private_chats(
                 from,
                 body,
                 point,
+                picture,
                 ..
             } => {
                 let filter = private
                     .filter
                     .get_or_insert_with(cartopolis_core::Filter::seeded);
                 let (body, _) = filter.mask(&body);
+                if let Some(picture) = picture {
+                    chat.receive_picture(&channel_key(&group), 0, from, body, picture);
+                    continue;
+                }
                 // A point's own text is masked too: it is shown in the same log.
                 let point = point.map(|mut p| {
                     p.text = p.text.map(|t| filter.mask(&t).0);

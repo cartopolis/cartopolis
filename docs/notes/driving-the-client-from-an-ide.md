@@ -307,6 +307,14 @@ picture is the most expensive thing they can ask for. So the second set of tools
   read-only file and nothing else outlives a restart. `me` now also says the
   time, the sun and the weather.
 
+- `send_picture` / `see_picture`: pictures in private chats, both ways
+  ([pictures-in-private-chats.md](pictures-in-private-chats.md)).
+- A **place card** and a **live location share** reach the agent as
+  coordinates. A card's text is only its caption, which for an unnamed place is
+  "a place", so the first bot told the person who sent one that nothing had
+  arrived; `read_chat` now prints the card's latitude and longitude, and `me`,
+  `read_chat` and `wait` (`location`) report anybody sharing where they are.
+
 **An outfit is not among them, and cannot be yet.** Appearance is not on the
 wire at all — every other client draws a remote avatar in the default — so a
 bot changing clothes would change only its own screen.

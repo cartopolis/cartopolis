@@ -15,6 +15,7 @@ impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<systems::private_chat::PrivateInbox>()
             .init_resource::<systems::private_chat::PrivateChats>()
+            .init_resource::<systems::chat_pictures::ChatPictures>()
             .init_resource::<systems::calls::CallInbox>()
             .init_resource::<systems::calls::Calls>()
             .init_resource::<systems::contacts::ContactsInbox>()
@@ -56,6 +57,9 @@ impl Plugin for NetPlugin {
                 // After the network system has sorted this frame's private-chat
                 // traffic into the inbox it drains.
                 systems::private_chat::drive_private_chats.after(network::apply_network_snapshot),
+                // Fetches and decodes of chat pictures, folded in before the
+                // panels that draw them.
+                systems::chat_pictures::poll_chat_pictures,
                 // After the chats: a call reads the chat's epoch, which a commit
                 // applied there this frame has just moved.
                 systems::calls::drive_calls.after(systems::private_chat::drive_private_chats),

@@ -501,6 +501,7 @@ impl WorldPlaces {
     /// The nearest house number to `pos`, within `radius` metres.
     /// Everything a person could act on within `radius`, with its distance, in
     /// no particular order — what an agent's `look_around` lists.
+    #[cfg_attr(not(mcp), allow(dead_code))]
     pub fn within(&self, pos: Vec2, radius: f32) -> impl Iterator<Item = (&Interactable, f32)> {
         self.cells
             .values()

@@ -218,6 +218,44 @@ pub async fn fetch_video(hash: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Store an encrypted chat picture (`/api/pictures`) and answer its hash.
+pub async fn api_upload_picture(sealed: Vec<u8>) -> Result<String, String> {
+    if sealed.len() > cartopolis_core::picture_limits::MAX_PICTURE_BYTES {
+        return Err("the picture is too large to send".into());
+    }
+    let request = api_request(http::Request::post, "/api/pictures")
+        .ok_or("not signed in")?
+        .header("Content-Type", "application/octet-stream")
+        .timeout(std::time::Duration::from_secs(120))
+        .body(sealed);
+    let bytes = http::fetch(request).await?;
+    let body = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|j| j["hash"].as_str().map(str::to_string))
+        .ok_or_else(|| format!("the server did not store it: {body}"))
+}
+
+/// A chat picture's *encrypted* bytes: from the cache if this device has
+/// fetched it before, else from the server. Cached as it arrived — still
+/// ciphertext — so the cache on disk holds nothing a chat key does not open.
+pub async fn fetch_picture(hash: &str) -> Result<Vec<u8>, String> {
+    use crate::platform::storage::{self, Namespace};
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("not a picture's name".into());
+    }
+    let key = format!("pictures/{hash}.bin");
+    if let Some(bytes) = storage::get(Namespace::Cache, &key).await {
+        return Ok(bytes);
+    }
+    let request = api_request(http::Request::get, &format!("/api/pictures/{hash}"))
+        .ok_or("not signed in")?
+        .timeout(std::time::Duration::from_secs(120));
+    let bytes = http::fetch(request).await?;
+    storage::put(Namespace::Cache, &key, &bytes).await;
+    Ok(bytes)
+}
+
 /// Upload a model. The file is the body; everything about it is the query string.
 ///
 /// A raw body rather than a multipart form for the reason the route's own note

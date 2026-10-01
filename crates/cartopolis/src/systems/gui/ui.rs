@@ -527,6 +527,32 @@ pub fn drive_screenshots(
 ) {
     use bevy::render::view::screenshot::Screenshot;
 
+    if let Some(channel) = shot.chat_snapshot.take() {
+        // The pixels go to the chat as raw RGBA: encoding a full window here
+        // would stall the frame, and `chat_pictures` re-encodes on a worker
+        // anyway. `hide_ui` stays set for this frame, as below.
+        shot.hide_ui = true;
+        commands.spawn(Screenshot::primary_window()).observe(
+            move |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+                  mut chat: ResMut<crate::systems::chat::ChatState>| {
+                let image = &captured.image;
+                let size = image.size();
+                match image.clone().try_into_dynamic() {
+                    Ok(dynamic) => {
+                        chat.private_pictures
+                            .push(crate::systems::chat_pictures::OutgoingPicture {
+                                channel: channel.clone(),
+                                bytes: dynamic.to_rgba8().into_raw(),
+                                caption: String::new(),
+                                rgba: Some([size.x, size.y]),
+                            })
+                    }
+                    Err(e) => warn!("a chat snapshot could not be read: {e}"),
+                }
+            },
+        );
+        return;
+    }
     if shot.capture_requested {
         // The `docs/img/` dir must exist or the save fails with an IO error.
         if let Err(e) = std::fs::create_dir_all("docs/img") {

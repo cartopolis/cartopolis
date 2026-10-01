@@ -74,6 +74,10 @@ pub struct ChatState {
     /// Points to seal and send this frame: (channel key, point). Drained by
     /// `systems::private_chat`, like [`Self::private_outbox`].
     pub private_points: Vec<(String, cartopolis_core::point::Point)>,
+    /// Pictures to send into private chats. Drained by
+    /// `systems::private_chat`, which hands them to `chat_pictures` to encrypt
+    /// and upload before the line goes out.
+    pub private_pictures: Vec<crate::systems::chat_pictures::OutgoingPicture>,
     /// A view waiting for the person to pick which private chat it goes to —
     /// set by "Send this view to a chat" and offered at the top of the panel.
     pub point_draft: Option<cartopolis_core::point::Point>,
@@ -184,6 +188,9 @@ pub struct ChatLine {
     /// A place that came with the line (private chats only for now): the log
     /// draws it as a button that puts the camera where the sender's was.
     pub point: Option<cartopolis_core::point::Point>,
+    /// A picture that came with the line (private chats only): where it is
+    /// stored and the key that opens it. `body` is then its caption.
+    pub picture: Option<crate::systems::chat_pictures::PictureRef>,
     /// Wall-clock Unix milliseconds this line arrived on this device, for the
     /// time a bubble shows. Only for showing: everything that fades or orders
     /// runs on [`Self::arrived`].
@@ -243,6 +250,7 @@ impl Default for ChatState {
             private_outbox: Vec::new(),
             private_input: String::new(),
             private_points: Vec::new(),
+            private_pictures: Vec::new(),
             point_draft: None,
             point_text: String::new(),
             world: None,
@@ -425,6 +433,7 @@ impl ChatState {
             distance,
             arrived,
             point,
+            picture: None,
             at_ms: web_time::SystemTime::now()
                 .duration_since(web_time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -434,6 +443,22 @@ impl ChatState {
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
             lines.drain(0..excess);
+        }
+    }
+
+    /// [`Self::receive`], for a line that is a picture.
+    pub fn receive_picture(
+        &mut self,
+        channel: &str,
+        sender_id: u64,
+        sender: String,
+        caption: String,
+        picture: crate::systems::chat_pictures::PictureRef,
+    ) {
+        self.receive_point(channel, sender_id, sender, caption, None, None);
+        let idx = self.channel_index(channel);
+        if let Some(line) = self.channels[idx].lines.last_mut() {
+            line.picture = Some(picture);
         }
     }
 

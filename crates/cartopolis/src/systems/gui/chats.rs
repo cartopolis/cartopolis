@@ -80,6 +80,13 @@ pub struct ChatsView {
     pub demo: bool,
     /// A contacts screen shown instead of the list (`systems::contacts`).
     pub sub: Option<crate::systems::contacts::Sub>,
+    /// A picture being picked or taken, and the chat it goes to. One at a time:
+    /// every platform arm puts a modal in front of the person.
+    capture: Option<(String, crate::platform::photo::Capture)>,
+    /// The picture open full size, if any.
+    viewing: Option<crate::systems::chat_pictures::PictureRef>,
+    /// Why the last picture could not be picked, until the next try.
+    picture_error: Option<String>,
 }
 
 impl ChatsView {
@@ -533,6 +540,12 @@ struct Actions {
     call: Option<crate::systems::calls::CallRequest>,
     /// Open a contacts screen.
     sub: Option<crate::systems::contacts::Sub>,
+    /// Pick or take a picture to send to this chat.
+    pick_picture: Option<String>,
+    /// Open a picture full size.
+    view_picture: Option<crate::systems::chat_pictures::PictureRef>,
+    /// Send a snapshot of the map to this chat.
+    snapshot: Option<String>,
 }
 
 /// What a private chat's header offers about the chat's call.
@@ -580,7 +593,12 @@ pub fn render_chats_panel(
     mut calls: ResMut<crate::systems::calls::Calls>,
     mut contacts: ResMut<crate::systems::contacts::Contacts>,
     identity: Res<crate::resources::AuthIdentity>,
+    mut pictures: ResMut<crate::systems::chat_pictures::ChatPictures>,
+    mut screenshot: ResMut<crate::resources::ScreenshotState>,
 ) {
+    // A picture being picked keeps arriving whether or not the panel is open:
+    // the camera app or the file dialog is in front of it.
+    poll_picture_capture(&mut view, &mut chat);
     // The report dialog is not part of the panel: it hangs off names in the
     // overlay and over avatars too, and must stay up with the panel shut.
     if !right_panel.is(RightPanel::Chat) || (online.is_none() && !view.demo) {
@@ -634,7 +652,16 @@ pub fn render_chats_panel(
                 (None, Some(key)) => {
                     let call = call_button(&calls, &key);
                     chat_screen(
-                        ui, &mut chat, &mut view, &contacts, &key, &mut act, now, lift, call,
+                        ui,
+                        &mut chat,
+                        &mut view,
+                        &contacts,
+                        &key,
+                        &mut act,
+                        now,
+                        lift,
+                        call,
+                        &mut pictures,
                     );
                 }
             }
@@ -645,6 +672,30 @@ pub fn render_chats_panel(
     if let Some(request) = act.call.take() {
         calls.request = Some(request);
     }
+    if let Some(channel) = act.pick_picture.take() {
+        view.picture_error = None;
+        match crate::platform::photo::start() {
+            Ok(capture) => {
+                if let Some((_, mut old)) = view.capture.take() {
+                    old.cancel();
+                }
+                view.capture = Some((channel, capture));
+            }
+            Err(why) => view.picture_error = Some(why),
+        }
+    }
+    if let Some(picture) = act.view_picture.take() {
+        view.viewing = Some(picture);
+    }
+    if let Some(channel) = act.snapshot.take() {
+        // Taken by `ui::drive_screenshots` with the panels hidden for the one
+        // frame it captures, and handed back to this chat as a picture.
+        screenshot.chat_snapshot = Some(channel);
+        screenshot.hide_ui = true;
+        view.attach = false;
+    }
+    let viewport = egui.viewport_pts();
+    picture_viewer(&egui.ctx, viewport, &mut view, &mut pictures);
 
     apply(
         act,
@@ -1079,6 +1130,7 @@ fn chat_screen(
     now: u64,
     lift: f32,
     call: CallButton,
+    pictures: &mut crate::systems::chat_pictures::ChatPictures,
 ) {
     let Some(channel) = chat.channels.iter().find(|c| c.key == key) else {
         act.back = true;
@@ -1140,6 +1192,31 @@ fn chat_screen(
                 egui::Stroke::new(1.0, GLINE),
             );
             ui.add_space(10.0);
+            let sending = pictures.sending(key);
+            if sending > 0 {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new(if sending == 1 {
+                            "Sending a picture…".to_string()
+                        } else {
+                            format!("Sending {sending} pictures…")
+                        })
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                    );
+                });
+            }
+            if view.capture.as_ref().is_some_and(|(k, _)| k == key) {
+                theme::note(ui, "Waiting for a picture…");
+            }
+            if let Some(why) = view.picture_error.clone() {
+                ui.label(
+                    egui::RichText::new(format!("Could not get a picture: {why}"))
+                        .size(theme::SIZE_SUB)
+                        .color(theme::WARN),
+                );
+            }
             composer(ui, chat, view, key, kind, act, now);
             ui.add_space(6.0 + lift);
         });
@@ -1177,7 +1254,7 @@ fn chat_screen(
                     number += 1;
                     number
                 });
-                bubble(ui, chat, line, group, n, act);
+                bubble(ui, chat, line, group, n, act, pictures);
                 ui.add_space(4.0);
             }
         });
@@ -1244,6 +1321,7 @@ fn bubble(
     group: bool,
     number: Option<usize>,
     act: &mut Actions,
+    pictures: &mut crate::systems::chat_pictures::ChatPictures,
 ) {
     let mine = is_mine(chat, line);
     let max_w = (ui.available_width() * 0.78).max(120.0);
@@ -1278,6 +1356,72 @@ fn bubble(
             se: BUBBLE_R,
         }
     };
+    // A picture is a Polaroid, not a bubble: a white card with a narrow edge
+    // on three sides and a deep one at the bottom, where the caption is
+    // written. The same card whoever sent it, so it reads as a photograph
+    // handed over rather than as a message in somebody's colour.
+    if let Some(picture) = &line.picture {
+        if group && !mine {
+            ui.with_layout(layout, |ui| {
+                ui.label(
+                    egui::RichText::new(&line.sender)
+                        .size(theme::SIZE_SUB)
+                        .strong()
+                        .color(theme::ACCENT_TEXT),
+                );
+            });
+        }
+        ui.with_layout(layout, |ui| {
+            let size = crate::systems::chat_pictures::fit(
+                picture,
+                max_w.min(PICTURE_MAX_PT),
+                PICTURE_MAX_PT,
+            );
+            egui::Frame::NONE
+                .fill(POLAROID_WHITE)
+                .corner_radius(2.0)
+                .inner_margin(egui::Margin {
+                    left: POLAROID_EDGE,
+                    right: POLAROID_EDGE,
+                    top: POLAROID_EDGE,
+                    bottom: POLAROID_EDGE / 2,
+                })
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 10,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(110),
+                })
+                .show(ui, |ui| {
+                    ui.set_max_width(size.x);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        picture_tile(ui, pictures, picture, size, act);
+                        // The deep bottom edge: the caption, else blank paper.
+                        ui.add_space(6.0);
+                        let caption = crate::systems::private_chat::caption_of(&line.body);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(caption.unwrap_or(" "))
+                                    .size(14.0)
+                                    .italics()
+                                    .color(POLAROID_INK),
+                            )
+                            .wrap(),
+                        );
+                        if line.at_ms > 0 {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                ui.label(
+                                    egui::RichText::new(clock_time(line.at_ms))
+                                        .size(10.5)
+                                        .color(POLAROID_DIM),
+                                );
+                            });
+                        }
+                    });
+                });
+        });
+        return;
+    }
     // A place is its own card, not a bubble with a card inside it.
     if let (Some(point), Some(n)) = (&line.point, number) {
         ui.with_layout(layout, |ui| {
@@ -1333,6 +1477,138 @@ fn bubble(
                 });
             });
     });
+}
+
+/// The longest edge of a picture in the thread, in points. Big enough to see
+/// what it is; tapping it opens it full size.
+const PICTURE_MAX_PT: f32 = 240.0;
+
+/// A Polaroid's paper: warm white rather than pure white, which would glare
+/// against the ink of the panel, and the edge it leaves round the picture.
+const POLAROID_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF4, 0xF2, 0xEC);
+const POLAROID_EDGE: i8 = 10;
+/// What is written on it, and the time in the corner.
+const POLAROID_INK: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x2E, 0x33);
+const POLAROID_DIM: egui::Color32 = egui::Color32::from_rgb(0x7A, 0x7E, 0x82);
+
+/// A picture in the thread: the image once it has arrived, a placeholder of
+/// its own size until then — so the thread does not jump when it lands.
+fn picture_tile(
+    ui: &mut egui::Ui,
+    pictures: &mut crate::systems::chat_pictures::ChatPictures,
+    picture: &crate::systems::chat_pictures::PictureRef,
+    size: egui::Vec2,
+    act: &mut Actions,
+) {
+    use crate::systems::chat_pictures::Shown;
+    match pictures.show(ui.ctx(), picture) {
+        Shown::Ready(texture) => {
+            let response = ui
+                .add(
+                    egui::Image::new(egui::load::SizedTexture::new(texture.id(), size))
+                        .corner_radius(1.0)
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_text("Open full size");
+            if response.clicked() {
+                act.view_picture = Some(picture.clone());
+            }
+        }
+        Shown::Loading => {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, 10.0, theme::SURFACE);
+            ui.put(rect, egui::Spinner::new());
+        }
+        Shown::Failed(_) => {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, 10.0, theme::SURFACE);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "This picture could not be opened",
+                egui::FontId::proportional(12.0),
+                theme::TEXT_DIM,
+            );
+        }
+    }
+}
+
+/// The picture open full size, over everything. The same window, order and
+/// sizing as a place's photo (`bookmarks::photo_viewer`), for the same reasons.
+fn picture_viewer(
+    ctx: &egui::Context,
+    viewport: egui::Vec2,
+    view: &mut ChatsView,
+    pictures: &mut crate::systems::chat_pictures::ChatPictures,
+) {
+    use crate::systems::chat_pictures::Shown;
+    let Some(picture) = view.viewing.clone() else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new("Picture")
+        .id(egui::Id::new(("chat_picture", &picture.hash)))
+        .open(&mut open)
+        .order(egui::Order::Foreground)
+        .collapsible(false)
+        .resizable(true)
+        .max_size(viewport * 0.9)
+        .default_size(viewport * 0.8)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| match pictures.show(ctx, &picture) {
+            Shown::Ready(texture) => {
+                ui.add(
+                    egui::Image::new(egui::load::SizedTexture::new(
+                        texture.id(),
+                        texture.size_vec2(),
+                    ))
+                    .max_size(ui.available_size())
+                    .maintain_aspect_ratio(true)
+                    .corner_radius(4.0),
+                );
+            }
+            Shown::Loading => {
+                ui.spinner();
+            }
+            Shown::Failed(why) => {
+                ui.label(
+                    egui::RichText::new(format!("This picture could not be opened: {why}"))
+                        .size(13.0)
+                        .color(theme::WARN),
+                );
+            }
+        });
+    if !open {
+        view.viewing = None;
+    }
+}
+
+/// Fold in a picture the person picked or took, and queue it for the chat it
+/// was asked for in.
+fn poll_picture_capture(view: &mut ChatsView, chat: &mut ChatState) {
+    use crate::platform::photo::Outcome;
+    let Some((_, capture)) = view.capture.as_mut() else {
+        return;
+    };
+    match capture.poll() {
+        Outcome::Pending => {}
+        Outcome::Ready(bytes) => {
+            if let Some((channel, _)) = view.capture.take() {
+                chat.private_pictures
+                    .push(crate::systems::chat_pictures::OutgoingPicture {
+                        channel,
+                        bytes,
+                        caption: String::new(),
+                        rgba: None,
+                    });
+            }
+        }
+        Outcome::Cancelled => view.capture = None,
+        Outcome::Failed(why) => {
+            view.capture = None;
+            view.picture_error = Some(why);
+        }
+    }
 }
 
 /// A point as the thread shows it: a numbered card that is also a button. The
@@ -1552,6 +1828,28 @@ fn composer(
         raised_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if kind == ChatKind::Private {
+                if crate::platform::photo::is_available()
+                    && ui
+                        .button(format!("{} Send a picture", icons::CAMERA))
+                        .on_hover_text(
+                            "A photo or an image file. Encrypted on this device: only this \
+                             chat can open it.",
+                        )
+                        .clicked()
+                {
+                    act.pick_picture = Some(key.to_string());
+                    view.attach = false;
+                }
+                if ui
+                    .button(format!("{} Send a snapshot", icons::CAMERA))
+                    .on_hover_text(
+                        "A picture of the map as you see it now, without the panels. \
+                         Encrypted on this device: only this chat can open it.",
+                    )
+                    .clicked()
+                {
+                    act.snapshot = Some(key.to_string());
+                }
                 if ui
                     .button(format!("{} Send this view", icons::PIN))
                     .on_hover_text("Send where the camera is looking, as a place people can tap")
@@ -2311,6 +2609,23 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
             4,
         );
         push(chat, sanne, ME, "You", "Perfect, see you there", None, 6);
+        // A snapshot, so a capture shows what a picture looks like in the
+        // thread (`chat_pictures::DEMO_HASH` is drawn locally, never fetched).
+        chat.receive_picture(
+            sanne,
+            0,
+            "Sanne".into(),
+            crate::systems::private_chat::picture_caption("the view from the Martinitoren!"),
+            crate::systems::chat_pictures::demo_picture(),
+        );
+        if let Some(l) = chat
+            .channels
+            .iter_mut()
+            .find(|c| c.key == sanne)
+            .and_then(|c| c.lines.last_mut())
+        {
+            l.at_ms = at(8);
+        }
         let joris = "dm:10a5";
         chat.open_channel(joris, &crate::systems::private_chat::private_label("Joris"));
         push(

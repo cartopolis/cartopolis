@@ -6,6 +6,7 @@ pub mod model_limits;
 pub mod moderation;
 pub mod motion;
 pub mod particles;
+pub mod picture_limits;
 pub mod placeholders;
 pub mod point;
 pub mod protocol;

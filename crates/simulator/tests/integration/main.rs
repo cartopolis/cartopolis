@@ -23,6 +23,7 @@ mod auth_handshake;
 mod authoring;
 mod calls;
 mod chat;
+mod chat_pictures;
 mod connection_teardown;
 mod http_surface;
 mod model_library;

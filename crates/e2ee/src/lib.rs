@@ -176,6 +176,56 @@ pub enum Payload {
         name: String,
         sent_at_ms: u64,
     },
+    /// A picture: where its ciphertext is stored (the simulator's picture
+    /// store, by hash) and the key that opens it ([`seal_attachment`]).
+    ///
+    /// The picture itself is not in here because the server refuses a log
+    /// entry over 64 KB, on purpose; the key is, because this message is the
+    /// one thing only the chat's members can read. `width`/`height` are the
+    /// picture's own, so a bubble can be laid out before it has arrived.
+    Picture {
+        hash: String,
+        key: [u8; 32],
+        nonce: [u8; 12],
+        width: u32,
+        height: u32,
+        caption: String,
+        sent_at_ms: u64,
+    },
+}
+
+/// An attachment encrypted for upload, and what opens it.
+#[derive(Debug, Clone)]
+pub struct SealedAttachment {
+    pub bytes: Vec<u8>,
+    pub key: [u8; 32],
+    pub nonce: [u8; 12],
+}
+
+/// Encrypt an attachment under a key made for it alone.
+///
+/// ChaCha20-Poly1305 through the same RustCrypto provider MLS runs on, so this
+/// adds no dependency and no C. A fresh random key per attachment means the
+/// nonce can never repeat under one key; it is random too, rather than zero,
+/// only so nobody has to re-derive that argument.
+pub fn seal_attachment(plain: &[u8]) -> Result<SealedAttachment, Error> {
+    let provider = OpenMlsRustCrypto::default();
+    let key: [u8; 32] = provider.rand().random_array().map_err(mls)?;
+    let nonce: [u8; 12] = provider.rand().random_array().map_err(mls)?;
+    let bytes = provider
+        .crypto()
+        .aead_encrypt(AeadType::ChaCha20Poly1305, &key, plain, &nonce, &[])
+        .map_err(mls)?;
+    Ok(SealedAttachment { bytes, key, nonce })
+}
+
+/// Open an attachment. Fails — never returns garbage — if a byte of it, the
+/// key or the nonce is wrong: the tag is checked first.
+pub fn open_attachment(sealed: &[u8], key: &[u8; 32], nonce: &[u8; 12]) -> Result<Vec<u8>, Error> {
+    OpenMlsRustCrypto::default()
+        .crypto()
+        .aead_decrypt(AeadType::ChaCha20Poly1305, key, sealed, nonce, &[])
+        .map_err(|e| Error::Decode(format!("attachment does not open: {e:?}")))
 }
 
 impl Payload {
@@ -536,6 +586,48 @@ fn credential_for(me: &Identity, signer: &SignatureKeyPair) -> CredentialWithKey
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_attachment_opens_with_its_key_and_with_nothing_else() {
+        let picture = b"\xff\xd8 pretend this is a jpeg".repeat(100);
+        let sealed = seal_attachment(&picture).unwrap();
+        assert_ne!(
+            sealed.bytes[..picture.len()],
+            picture[..],
+            "it is encrypted"
+        );
+        assert_eq!(
+            open_attachment(&sealed.bytes, &sealed.key, &sealed.nonce).unwrap(),
+            picture
+        );
+        let mut wrong_key = sealed.key;
+        wrong_key[0] ^= 1;
+        assert!(open_attachment(&sealed.bytes, &wrong_key, &sealed.nonce).is_err());
+        let mut tampered = sealed.bytes.clone();
+        tampered[3] ^= 1;
+        assert!(open_attachment(&tampered, &sealed.key, &sealed.nonce).is_err());
+        // Two seals of one picture share nothing.
+        let again = seal_attachment(&picture).unwrap();
+        assert_ne!(again.key, sealed.key);
+        assert_ne!(again.bytes, sealed.bytes);
+    }
+
+    #[test]
+    fn a_picture_payload_round_trips_and_is_appended_last() {
+        let p = Payload::Picture {
+            hash: "ab".repeat(32),
+            key: [7; 32],
+            nonce: [9; 12],
+            width: 1600,
+            height: 900,
+            caption: "the Vismarkt".into(),
+            sent_at_ms: 42,
+        };
+        assert_eq!(Payload::decode(&p.encode()).unwrap(), p);
+        // Postcard writes the variant index first: an older build must meet a
+        // variant it lacks, never a renumbered one it thinks it knows.
+        assert_eq!(p.encode()[0], 5);
+    }
 
     /// The server's chat log, reduced to what the ordering rule needs: entries
     /// in order, and the epoch a commit must have been made in.

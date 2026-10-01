@@ -35,6 +35,7 @@ use super::agent::{
     NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs, RememberArgs,
     SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, WaitArgs, WalkArgs,
 };
+use super::agent::{PictureSend, SeePictureArgs, IMAGE_KEY};
 use super::{Config, ImageFormat, Job, McpAuth, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
 use crate::systems::shot_harness::ShotEnv;
 
@@ -297,6 +298,31 @@ pub struct LookArgs {
     pub format: Option<String>,
     #[schemars(description = "Longest edge of the returned image in pixels. Default 1024.")]
     pub max_edge_px: Option<u32>,
+}
+
+/// `send_picture`'s arguments.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SendPictureArgs {
+    #[schemars(description = "Who to send it to, by username: somebody you can hear.")]
+    pub to: String,
+    #[schemars(description = "A line to go with it. Optional.")]
+    pub caption: Option<String>,
+    #[schemars(
+        description = "An image file on this machine (JPEG, PNG, WebP). Omit to send what you \
+                       see through your own eyes now."
+    )]
+    pub file: Option<String>,
+    #[schemars(description = "Without `file`: turn to face this person first.")]
+    pub person: Option<String>,
+    #[schemars(description = "Without `file`: turn to face this object first, by id.")]
+    pub object: Option<i64>,
+    #[schemars(description = "Without `file`: turn to face this place first.")]
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    #[schemars(description = "Without `file`: turn to this compass bearing first.")]
+    pub bearing_deg: Option<f32>,
+    #[schemars(description = "Without `file`: up or down in degrees, negative down. Default -5.")]
+    pub pitch_deg: Option<f32>,
 }
 
 /// The measurements a `view` returns unless asked for all of them: where the
@@ -811,53 +837,90 @@ impl Tools {
         &self,
         Parameters(args): Parameters<LookArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let turn = args.person.is_some()
-            || args.object.is_some()
-            || args.lat.is_some()
-            || args.bearing_deg.is_some();
-        let prep = LookPrep {
-            face: turn.then(|| FaceArgs {
-                person: args.person.clone(),
-                object: args.object,
-                lat: args.lat,
-                lng: args.lng,
-                bearing_deg: args.bearing_deg,
-            }),
-            pitch_deg: args.pitch_deg.unwrap_or(-5.0).clamp(-80.0, 80.0),
-        };
-        let prepared = self.agent(AgentRequest::PrepareLook(prep)).await?;
-        if prepared.error {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                prepared.text,
-            )]));
-        }
-        let req = ViewRequest {
-            lat: 0.0,
-            lng: 0.0,
-            alt: 0.0,
-            pitch_deg: 0.0,
-            yaw_deg: 0.0,
-            // Avatar mode holds the follow camera for the capture, and in place
-            // so nothing is teleported — a teleport would also lift the avatar
-            // off a seat.
-            mode: "avatar".to_string(),
-            in_place: true,
-            // Long enough for the camera to move into the head, not to restream.
-            settle: Some(0.6),
-            wait: Some(15.0),
-            hide_ui: Some(args.hide_ui.unwrap_or(true)),
-            env: ShotEnv::default(),
-            out: args.out.map(Into::into),
-            format: parse_format(args.format.as_deref())?,
-            max_edge: args.max_edge_px.unwrap_or(DEFAULT_MAX_EDGE),
+        let (prepared, req) = match self.prepare_look(&args).await? {
+            Ok(both) => both,
+            Err(refusal) => return Ok(refusal),
         };
         let mut result = self.capture(req, false).await;
         // Out of the head again, whatever happened to the picture.
         let _ = self.agent(AgentRequest::EndLook).await;
         if let Ok(r) = &mut result {
-            r.content.insert(0, ContentBlock::text(prepared.text));
+            r.content.insert(0, ContentBlock::text(prepared));
         }
         result
+    }
+
+    #[tool(
+        description = "Send a picture privately to somebody you can hear, end to end \
+                       encrypted: what you see through your own eyes right now (optionally \
+                       turning to a person, object, place or bearing first, as `look` does), \
+                       or an image `file` on this machine — a `view`'s saved PNG, say. They \
+                       see it in their chat with you."
+    )]
+    async fn send_picture(
+        &self,
+        Parameters(args): Parameters<SendPictureArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let bytes = match &args.file {
+            Some(path) => match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => return Ok(refused(format!("Could not read {path}: {e}"))),
+            },
+            None => {
+                let look = LookArgs {
+                    person: args.person.clone(),
+                    object: args.object,
+                    lat: args.lat,
+                    lng: args.lng,
+                    bearing_deg: args.bearing_deg,
+                    pitch_deg: args.pitch_deg,
+                    hide_ui: Some(true),
+                    out: None,
+                    format: None,
+                    max_edge_px: None,
+                };
+                let (_, req) = match self.prepare_look(&look).await? {
+                    Ok(both) => both,
+                    Err(refusal) => return Ok(refusal),
+                };
+                let shot = self.ask(Request::View(Box::new(req))).await;
+                let _ = self.agent(AgentRequest::EndLook).await;
+                match shot? {
+                    // The full-resolution PNG the capture wrote, not the
+                    // shrunken copy handed back to a model.
+                    Reply::View(v) if v.image.is_some() => match std::fs::read(&v.path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return Ok(refused(format!(
+                                "The picture was taken but could not be read back: {e}"
+                            )))
+                        }
+                    },
+                    Reply::View(_) => return Ok(refused("The picture could not be taken.".into())),
+                    Reply::Error(why) => return Ok(refused(why)),
+                    Reply::State(_) | Reply::Agent(_) => {
+                        return Err(ErrorData::internal_error("wrong reply kind", None))
+                    }
+                }
+            }
+        };
+        self.act(AgentRequest::SendPicture(PictureSend {
+            to: args.to,
+            bytes,
+            caption: args.caption.unwrap_or_default(),
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Look at a picture somebody sent you in a private chat, by the line \
+                       number `read_chat` gave it. Returns the image."
+    )]
+    async fn see_picture(
+        &self,
+        Parameters(args): Parameters<SeePictureArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::SeePicture(args)).await
     }
 
     #[tool(
@@ -965,6 +1028,60 @@ impl Tools {
         }
     }
 
+    /// Turn the avatar as asked and put the camera in its eyes: the first half
+    /// of `look` and of `send_picture`. Answers what the turn said and the
+    /// capture to take, or the refusal to hand back. Whoever takes the capture
+    /// owes an `EndLook` after it.
+    async fn prepare_look(
+        &self,
+        args: &LookArgs,
+    ) -> Result<Result<(String, ViewRequest), CallToolResult>, ErrorData> {
+        let turn = args.person.is_some()
+            || args.object.is_some()
+            || args.lat.is_some()
+            || args.bearing_deg.is_some();
+        let prep = LookPrep {
+            face: turn.then(|| FaceArgs {
+                person: args.person.clone(),
+                object: args.object,
+                lat: args.lat,
+                lng: args.lng,
+                bearing_deg: args.bearing_deg,
+            }),
+            pitch_deg: args.pitch_deg.unwrap_or(-5.0).clamp(-80.0, 80.0),
+        };
+        let prepared = self.agent(AgentRequest::PrepareLook(prep)).await?;
+        if prepared.error {
+            return Ok(Err(CallToolResult::error(vec![ContentBlock::text(
+                prepared.text,
+            )])));
+        }
+        Ok(Ok((
+            prepared.text,
+            ViewRequest {
+                lat: 0.0,
+                lng: 0.0,
+                alt: 0.0,
+                pitch_deg: 0.0,
+                yaw_deg: 0.0,
+                // Avatar mode holds the follow camera for the capture, and in
+                // place so nothing is teleported — a teleport would also lift the
+                // avatar off a seat.
+                mode: "avatar".to_string(),
+                in_place: true,
+                // Long enough for the camera to move into the head, not to
+                // restream.
+                settle: Some(0.6),
+                wait: Some(15.0),
+                hide_ui: Some(args.hide_ui.unwrap_or(true)),
+                env: ShotEnv::default(),
+                out: args.out.clone().map(Into::into),
+                format: parse_format(args.format.as_deref())?,
+                max_edge: args.max_edge_px.unwrap_or(DEFAULT_MAX_EDGE),
+            },
+        )))
+    }
+
     /// One agent request's answer as it stands, for a tool made of several.
     async fn agent(&self, request: AgentRequest) -> Result<AgentReply, ErrorData> {
         match self.ask(Request::Agent(request)).await? {
@@ -984,10 +1101,23 @@ impl Tools {
     async fn act(&self, request: AgentRequest) -> Result<CallToolResult, ErrorData> {
         match self.ask(Request::Agent(request)).await? {
             Reply::Agent(answer) => {
+                let mut answer = *answer;
+                // A picture rides in the data (`agent::IMAGE_KEY`); it goes to
+                // the model as an image block, and out of the data, where it
+                // would be read as a megabyte of text.
+                let image = answer
+                    .data
+                    .as_object_mut()
+                    .and_then(|o| o.remove(IMAGE_KEY))
+                    .and_then(|v| v.as_str().map(str::to_string));
+                let mut content = vec![ContentBlock::text(answer.text)];
+                if let Some(data) = image {
+                    content.insert(0, ContentBlock::image(data, "image/jpeg"));
+                }
                 let mut result = if answer.error {
-                    CallToolResult::error(vec![ContentBlock::text(answer.text)])
+                    CallToolResult::error(content)
                 } else {
-                    CallToolResult::success(vec![ContentBlock::text(answer.text)])
+                    CallToolResult::success(content)
                 };
                 if !answer.data.is_null() {
                     result.structured_content = Some(answer.data);

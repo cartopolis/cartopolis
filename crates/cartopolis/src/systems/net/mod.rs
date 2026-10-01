@@ -13,6 +13,8 @@ pub mod call_tones;
 /// Private chats: this installation's encryption keys and the conversations
 /// they open (protocol 25).
 pub mod calls;
+/// Pictures in private chats: encrypted, stored on the server, opened here.
+pub mod chat_pictures;
 pub mod network;
 pub mod private_chat;
 /// Where the simulator wakes this phone when the app is closed (UnifiedPush).

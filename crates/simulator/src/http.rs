@@ -125,6 +125,7 @@ pub fn router(state: HttpState) -> Router {
         // reverse-proxy prefix to configure.
         .merge(crate::library::routes())
         .merge(crate::videos::routes())
+        .merge(crate::pictures::routes())
         .with_state(state)
 }
 
