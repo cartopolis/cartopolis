@@ -809,6 +809,64 @@ pub fn land_captures(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Idling (`--mcp-headless` only)
+// ---------------------------------------------------------------------------
+
+/// How often a headless client wakes while it has nothing to do.
+///
+/// A call that arrives while it sleeps waits at most this long to be picked up,
+/// which is nothing beside a model's own turn. Everything that has to move
+/// smoothly — a walk, a capture's settle — runs at the full rate, because it is
+/// not idle (`pace_idle`).
+const IDLE_HZ: f64 = 2.0;
+
+/// When this frame started, for [`pace_idle`].
+#[derive(Resource)]
+pub struct FrameStart(std::time::Instant);
+
+impl Default for FrameStart {
+    fn default() -> Self {
+        Self(std::time::Instant::now())
+    }
+}
+
+pub fn mark_frame_start(mut start: ResMut<FrameStart>) {
+    start.0 = std::time::Instant::now();
+}
+
+/// **A headless client slows right down between calls.** It renders into an
+/// image nobody looks at except through `view`, and it used to draw the whole
+/// city into it at the run loop's full rate (`MCP_IDLE_HZ` in `lib.rs`) while
+/// waiting. That rate is kept for a capture, a walk or a call still being
+/// carried out; with nothing in flight the frame is stretched to [`IDLE_HZ`]
+/// here, at the end of it.
+///
+/// **Not drawing at all while idle was tried, and Bevy 0.19 cannot do it.**
+/// Setting the camera's `is_active` to false panics on the next frame in
+/// `bevy_pbr`'s `prepare_atmosphere_probe_bind_groups`, which builds the sky's
+/// environment-light bind group with no active view and `unwrap`s the empty
+/// transform buffer. The types involved are private to `bevy_pbr`, so there is
+/// nothing on this side to switch off instead.
+pub fn pace_idle(
+    start: Res<FrameStart>,
+    harness: Option<Res<ShotHarness>>,
+    progress: Res<ShotProgress>,
+    bridge: Res<McpBridge>,
+    agent: Res<agent::AgentState>,
+) {
+    let idle = !crate::systems::shot_harness::shot_in_progress(harness, progress)
+        && !bridge.busy()
+        && !agent.is_working();
+    if !idle {
+        return;
+    }
+    let frame = std::time::Duration::from_secs_f64(1.0 / IDLE_HZ);
+    if let Some(rest) = frame.checked_sub(start.0.elapsed()) {
+        std::thread::sleep(rest);
+    }
+}
+
 /// Where a capture goes when the caller did not say.
 fn default_out(index: usize) -> PathBuf {
     std::env::temp_dir().join(format!("cartopolis-view-{index:04}.png"))

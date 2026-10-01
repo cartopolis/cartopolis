@@ -435,7 +435,13 @@ impl Plugin for McpPlugin {
                 )
                     .chain(),
             );
-        if !headless {
+        if headless {
+            // Nobody sees a headless client between calls, so it slows right
+            // down then (`mcp::pace_idle`).
+            app.init_resource::<systems::mcp::FrameStart>()
+                .add_systems(First, systems::mcp::mark_frame_start)
+                .add_systems(Last, systems::mcp::pace_idle);
+        } else {
             app.add_systems(
                 Update,
                 systems::mcp::overlay::render_mcp_activity

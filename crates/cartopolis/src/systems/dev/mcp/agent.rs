@@ -481,6 +481,13 @@ impl AgentState {
             ..Self::default()
         }
     }
+
+    /// Is a call still being carried out over several frames — a walk, or a
+    /// line or a build waiting to be confirmed? A headless client idles only
+    /// when this is false (`mcp::pace_idle`).
+    pub fn is_working(&self) -> bool {
+        self.walk.is_some() || !self.pending.is_empty()
+    }
 }
 
 struct Walk {
