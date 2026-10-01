@@ -156,6 +156,23 @@ pub struct UserData {
     /// `--mcp-allow` overrides it for a run.
     #[serde(default)]
     pub mcp_allow: Option<String>,
+    /// Which of Chats and World was showing, and which chat was open, so a phone
+    /// that Android stopped in the background comes back to the same screen
+    /// (`chats::remember_screen`, `chats::restore_screen`). `None` on files from
+    /// before the field existed, and on every run that never signed in.
+    #[serde(default)]
+    pub screen: Option<SavedScreen>,
+}
+
+/// See [`UserData::screen`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedScreen {
+    /// The Chats tab was up (the chat list, or a chat in its Chat view).
+    #[serde(default)]
+    pub chats: bool,
+    /// The chat that was open, by channel key.
+    #[serde(default)]
+    pub open: Option<String>,
 }
 
 /// Snapshot of the sky switchers in the HUD — the sun's Auto/☀/🌙 (plus the dev

@@ -43,7 +43,22 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::model_library::ModelLibraryState>()
             // Drawn over everything until the first tiles are up. Mirrors the
             // splash in index.html, which covers the wasm load this cannot.
-            .init_resource::<systems::splash::BootSplash>();
+            .init_resource::<systems::splash::BootSplash>()
+            .init_resource::<systems::chats::ScreenRestore>();
+
+        // Chats or World, and the open chat, kept across Android stopping the
+        // app (`chats::remember_screen`). Before the panels, so a restored tab
+        // is drawn on the frame it is restored.
+        app.add_systems(
+            Update,
+            (
+                systems::chats::restore_screen,
+                systems::chats::remember_screen,
+            )
+                .chain()
+                .in_set(ClientPhase::Input)
+                .before(systems::chats::render_chats_panel),
+        );
 
         // Drop egui geometry for the screenshot frame, after end_egui_frame has
         // written it.

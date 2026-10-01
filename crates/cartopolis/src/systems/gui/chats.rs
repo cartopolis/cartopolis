@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::chat::{person_menu, ChatLine, ChatState, PersonAction, ReportDraft};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::user_store::SavedScreen;
 use crate::systems::{icons, theme};
 
 // Every colour and size below is the design's (`docs/mockups/chat-world/
@@ -1885,6 +1886,125 @@ fn top_offset(chat: &ChatState) -> f32 {
         theme::OSD_MARGIN
     } else {
         theme::OSD_MARGIN + 44.0
+    }
+}
+
+/// What [`remember_screen`] would save now: the Chats tab and its open chat, or
+/// a chat's World view (`chats: false` with a chat open), or plain World.
+fn screen_now(chat: &ChatState, view: &ChatsView, panel: RightPanel) -> SavedScreen {
+    if panel.is(RightPanel::Chat) {
+        SavedScreen {
+            chats: true,
+            open: view.open.clone(),
+        }
+    } else {
+        SavedScreen {
+            chats: false,
+            open: chat.world.clone(),
+        }
+    }
+}
+
+/// Keep the screen in `user.json` as it changes, so Android stopping the app in
+/// the background does not also forget where the person was (`SavedScreen`).
+///
+/// Only while signed in and not mid-restore: the chats exist only then, and a
+/// session still coming up (or a chat still arriving) would otherwise overwrite
+/// the screen about to be put back with World.
+pub fn remember_screen(
+    chat: Res<ChatState>,
+    view: Res<ChatsView>,
+    panel: Res<RightPanel>,
+    online: Option<Res<OnlineSession>>,
+    restored: Res<ScreenRestore>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+) {
+    if online.is_none() || view.demo || !restored.done || restored.pending.is_some() {
+        return;
+    }
+    let now = screen_now(&chat, &view, *panel);
+    if store.data.screen.as_ref() != Some(&now) {
+        store.data.screen = Some(now);
+        store.dirty = true;
+    }
+}
+
+/// How far [`restore_screen`] has got with this session.
+#[derive(Resource, Default)]
+pub struct ScreenRestore {
+    /// The saved screen has been put back for the session that is up now.
+    pub done: bool,
+    /// A chat to open once it exists: private chats arrive a moment after the
+    /// session does, and a chat's World view whose chat is missing closes itself.
+    pending: Option<(SavedScreen, web_time::Instant)>,
+}
+
+/// How long a remembered chat is waited for before the list is left showing.
+const RESTORE_WAIT_SECS: f32 = 20.0;
+
+/// Put the remembered screen back whenever a session comes up — at a cold start,
+/// and after a resume, where the socket died while the phone was suspended and
+/// the private chats are re-synced from nothing.
+///
+/// A call ringing is drawn over all of it (`call_screen`), so it needs no rule
+/// here; anything else that already chose a panel (a place link, the sign-in
+/// card's follow-up) wins over a memory.
+pub fn restore_screen(
+    mut chat: ResMut<ChatState>,
+    mut view: ResMut<ChatsView>,
+    mut panel: ResMut<RightPanel>,
+    online: Option<Res<OnlineSession>>,
+    store: Res<crate::systems::user_store::UserStore>,
+    mut restore: ResMut<ScreenRestore>,
+) {
+    if view.demo {
+        return;
+    }
+    if online.is_none() {
+        restore.done = false;
+        restore.pending = None;
+        return;
+    }
+    if !restore.done {
+        restore.done = true;
+        let Some(saved) = store.data.screen.clone() else {
+            return;
+        };
+        let free = panel.is(RightPanel::None) || panel.is(RightPanel::Chat);
+        if !free {
+            return;
+        }
+        if saved.chats {
+            *panel = RightPanel::Chat;
+        }
+        if saved.open.is_some() {
+            restore.pending = Some((saved, web_time::Instant::now()));
+        }
+    }
+    let Some((saved, since)) = restore.pending.clone() else {
+        return;
+    };
+    let Some(key) = saved.open.as_deref() else {
+        restore.pending = None;
+        return;
+    };
+    // The person moved on while the chat was still arriving.
+    let still_there = if saved.chats {
+        panel.is(RightPanel::Chat) && view.open.as_deref().is_none_or(|k| k == key)
+    } else {
+        panel.is(RightPanel::None) && chat.world.as_deref().is_none_or(|k| k == key)
+    };
+    if !still_there || since.elapsed().as_secs_f32() > RESTORE_WAIT_SECS {
+        restore.pending = None;
+        return;
+    }
+    if chat.channels.iter().any(|c| c.key == key) {
+        if saved.chats {
+            view.open_chat(key);
+        } else {
+            chat.world = Some(key.to_string());
+        }
+        restore.pending = None;
     }
 }
 
