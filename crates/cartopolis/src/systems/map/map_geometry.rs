@@ -2744,6 +2744,9 @@ pub fn update_map_surfaces(
                     .clone();
                 commands.spawn((placement, MeshMaterial3d(material))).id()
             };
+            if !casts_shadow(sm.group) {
+                commands.entity(id).insert(bevy::light::NotShadowCaster);
+            }
             if matches!(sm.group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
                 // Read the *current* ramp at spawn, the way new globe tiles read
                 // the current albedo: a cell streaming in above the fade band must
@@ -3588,6 +3591,37 @@ fn road_surface_image(class: RoadClass) -> Image {
 /// one blotch, i.e. the flat sheet this exists to break up, just at a different
 /// level.
 const GROUND_FINISH_M: f32 = 7.0;
+
+/// Whether a group's meshes go into the sun's shadow maps.
+///
+/// Only what stands up off the ground. A flat sheet cannot throw a shadow onto
+/// anything — nothing it could fall on is underneath it — but each one is a
+/// single mesh across a whole ~1.5 km cell, wider than every cascade, so it is
+/// drawn into all four of them on every frame for nothing. The clipmap tiles under
+/// them opted out for the same reason (`map_stream`). With the Height layer on, the
+/// ground keeps its relief shading from its normals; what it gives up is a hill's
+/// shadow over the next valley, which the clipmap never cast either.
+#[must_use]
+pub fn casts_shadow(group: SurfaceGroup) -> bool {
+    match group {
+        SurfaceGroup::BridgeDeck
+        | SurfaceGroup::Canopy
+        | SurfaceGroup::Trunk
+        | SurfaceGroup::Furniture
+        | SurfaceGroup::TunnelStructure
+        | SurfaceGroup::QuayWall => true,
+        SurfaceGroup::Water
+        | SurfaceGroup::Forest
+        | SurfaceGroup::Grass
+        | SurfaceGroup::Sand
+        | SurfaceGroup::Built
+        | SurfaceGroup::Road(_)
+        | SurfaceGroup::RoadCasing(_)
+        | SurfaceGroup::Paving
+        | SurfaceGroup::Crop
+        | SurfaceGroup::TunnelRoad(_) => false,
+    }
+}
 
 /// Which groups take the ground finish.
 ///
