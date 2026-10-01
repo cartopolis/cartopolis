@@ -530,10 +530,10 @@ pub fn update_building_shells(
         .and_then(|(id, geo)| prism(&id, &facts, &lod, &ground, geo, |m| m.datum_m))
         .map(|p| offset_ring(&p.ring, GHOST_GROW_M));
 
-    // The shader's ring, every frame: it is in render space and the floating
-    // origin moves under it. Cheap enough to be unconditional — one material, one
-    // ring — and unconditional is what keeps it from being wrong for a frame after
-    // a grid crossing.
+    // The shader's ring, computed every frame: it is in render space and the
+    // floating origin moves under it, so recomputing is what keeps it from being
+    // wrong for a frame after a grid crossing. It is *written* only when it
+    // differs from what the material holds.
     if let Ok(cell) = cameras.single() {
         write_ghost_uniform(&mut building_materials, &lod, ghost_ring.as_deref(), cell);
     }
@@ -829,6 +829,17 @@ fn write_ghost_uniform(
         }
     }
     for handle in lod.material_handles() {
+        // Only on a change. Writing a material re-prepares it and re-specialises
+        // every mesh that uses it, which for this one is every LoD2.2 building in
+        // range: 0.4 ms of render thread a frame on the Deck (2026-09-30), for a
+        // value that is all zeros whenever nobody is indoors.
+        if materials.get(&handle).is_some_and(|m| {
+            m.extension.ghost == ghost
+                && m.extension.ghost_bounds == bounds
+                && m.extension.ghost_ring == packed
+        }) {
+            continue;
+        }
         let Some(mut material) = materials.get_mut(&handle) else {
             continue;
         };
