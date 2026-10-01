@@ -1,7 +1,7 @@
 ---
 topic: calls
 triggers: [calls, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim"]
-updated: 2026-09-29
+updated: 2026-10-01
 ---
 
 # Calls: encrypted voice and video, forwarded by the simulator
@@ -108,8 +108,6 @@ in any firewall. `calls_addr` on `SimHandle` says what was bound.
 ## Known gaps in the server
 
 - A block made during a call applies from the next join, not at once.
-- A device that connects while a call is already running learns of it only
-  when the roster next changes (someone joins or leaves).
 - Ringing reaches connected devices, and a closed Android app through
   UnifiedPush (below). A closed desktop app or browser tab is not rung.
 
@@ -258,3 +256,44 @@ on the wire** (`CallDecline` → `CallDeclined` to the chat's connected
 devices): in a one-to-one chat the caller's call ends at once with
 "… declined", in a group it is only said, and the decliner's other devices
 stop ringing without counting it as missed. Agents have `decline_call`.
+
+## The call screen, and coming back to it (2026-10-01)
+
+`systems::call_screen` draws calls the way Signal and WhatsApp do: an incoming
+call takes the whole screen (Decline red left, Answer green right, at thumb
+height); in a call the other person fills the screen — their picture cropped to
+fill when it is the screen's way up, letterboxed when not — with your own
+picture in a corner, a grid for groups, and the controls on the bottom edge,
+fading over a picture after 4 s. The arrow, or Back, folds it to a green bar at
+the top so the chats and the map work during a call; it never ends a call.
+`--ui callincoming|call|callvideo|callgroup|callfolded` captures each.
+
+Four faults behind "the call flow is broken", each with its cause:
+
+- **Hanging up with the camera on froze the app.** `Session::drop` stopped
+  the call thread by closing its command channel and then joined it, but the
+  camera thread's `PictureSink` is a second sender, so the channel never
+  closed and the main thread waited forever. The session now sends an explicit
+  `Stop` and does not join (`a_session_ends_while_a_camera_still_holds_its_sink`).
+- **A phone opened from a call's push never rang.** It connected after the
+  call started, and the roster was only sent on a change. Registering a
+  private-chat device now asks the forwarder for every running call in the
+  account's chats (`a_device_that_connects_mid_call_is_rung`).
+- **Back on the root screen quit the app**, and on Android quitting ends the
+  process, so coming back was a cold start: the map streamed again, the
+  session signed in again and the tab was gone. It now moves the task to the
+  background (`platform::android::move_task_to_back`), as Android 12+ does for
+  a launcher's root activity.
+- **Reconnecting opened the wardrobe.** Every resume drops the socket, and
+  the Appearance panel's "close on sign-out" was a *toggle*, which opened it
+  whenever something else was on screen.
+
+When Android does stop the process (a swipe from recents, a reclaim), Chats or
+World and the open chat come back from `user.json` (`UserData::screen`), put
+back at each sign-in, including the one after a resume. A ringing call is drawn
+over whatever was restored. The map itself still streams again after a real
+cold start — from the disk cache, not the network — because the GPU state does
+not survive the process.
+
+**Not verified on a device**: the emulator cannot run the app, so the back
+gesture, the restore and the call screen on a phone are unwatched.

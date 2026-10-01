@@ -38,7 +38,7 @@ use crate::platform::audio::AudioInput;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::camera::Camera;
 use crate::resources::{AppPrefs, AuthIdentity, ConnectAddr, OnlineSession};
-use crate::systems::private_chat::{channel_key, PrivateChats};
+use crate::systems::private_chat::PrivateChats;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::systems::voice::Resampler;
 use crate::systems::voice::{self, VoiceMode, VoiceState};
@@ -191,6 +191,17 @@ pub struct Calls {
     /// environment switches (`CARTO_FAKE_CAMERA`, `CARTO_FAKE_MIC`) do the same
     /// for a whole run.
     pub fake_media: bool,
+    /// The call screen is folded down to the bar at the top (Back, or its own
+    /// arrow), so the chats and the world can be used during a call. Unfolded
+    /// again by a new call ringing or by joining one.
+    pub minimized: bool,
+    /// Whether the full-screen call was drawn last frame, for the Back/Escape
+    /// ladder (`dismiss::Rung::CallScreen`), which cannot work out ringing
+    /// without the account name.
+    pub screen_shown: bool,
+    /// A scripted capture's stand-in call (`--ui call…`, [`Calls::seed_demo`]):
+    /// kept while offline, where a real call is dropped.
+    pub demo: bool,
 }
 
 /// What the UI shows about a chat's call.
@@ -202,6 +213,12 @@ pub struct Ringing {
 }
 
 impl Calls {
+    /// Whether the full-screen call is up: see [`Calls::screen_shown`].
+    #[must_use]
+    pub fn screen_up(&self) -> bool {
+        self.screen_shown
+    }
+
     /// The chat whose call this device is in.
     #[must_use]
     pub fn active_group(&self) -> Option<&[u8]> {
@@ -323,6 +340,72 @@ impl Calls {
         v
     }
 
+    /// Stand in a call for a scripted capture of the call screen, or take the
+    /// stand-in away (`None`). `screen` is the `--ui` name: `callincoming`,
+    /// `call` (voice), `callvideo`, `callgroup` or `callfolded`. The pictures
+    /// are the stand-in camera's test pattern; the session is a real one
+    /// pointed at nothing, so the screen reads exactly the state a call has.
+    pub fn seed_demo(&mut self, screen: Option<&str>) {
+        let group = vec![0xDE; 16];
+        if self.demo {
+            self.active = None;
+            self.rosters.clear();
+            self.minimized = false;
+            self.camera_on = false;
+            self.demo = false;
+        }
+        let Some(screen) = screen else {
+            return;
+        };
+        self.demo = true;
+        let member = |name: &str, participant: u64| CallMember {
+            participant,
+            username: name.into(),
+            device: uuid::Uuid::from_u128(u128::from(participant)),
+        };
+        if screen == "callincoming" {
+            self.rosters.insert(group, vec![member("Jeroen", 2)]);
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut members = vec![member("You", 1), member("Jeroen", 2)];
+            if screen == "callgroup" {
+                members.push(member("Annemiek", 3));
+                members.push(member("Sven", 4));
+            }
+            self.rosters.insert(group.clone(), members);
+            let Some(mut a) = start(&group, None) else {
+                return;
+            };
+            a.participant = Some(1);
+            a.connected = true;
+            a.others_seen = true;
+            a.started = web_time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(83))
+                .unwrap_or_else(web_time::Instant::now);
+            let picture = |n: u64| {
+                let frame = cartopolis_calls::video::test_pattern(n);
+                Picture {
+                    width: frame.width,
+                    height: frame.height,
+                    rgba: frame.to_rgba(),
+                    fresh: true,
+                }
+            };
+            if matches!(screen, "callvideo" | "callgroup") {
+                a.pictures.insert(2, picture(3));
+                a.pictures.insert(SELF_TILE, picture(9));
+                self.camera_on = true;
+            }
+            if screen == "callgroup" {
+                a.pictures.insert(4, picture(5));
+            }
+            self.minimized = screen == "callfolded";
+            self.active = Some(a);
+        }
+    }
+
     /// Whether this build can place a call at all.
     #[must_use]
     pub fn available() -> bool {
@@ -367,6 +450,10 @@ pub fn drive_calls(
 ) {
     let me = identity.username.clone().unwrap_or_default();
     let Some(online) = online else {
+        if calls.demo {
+            inbox.0.clear();
+            return;
+        }
         // No connection, no call: the forwarder has already dropped us.
         calls.active = None;
         calls.rosters.clear();
@@ -488,6 +575,7 @@ pub fn drive_calls(
                 voice.set_mode(VoiceMode::Off);
                 calls.dismissed.remove(&group);
                 calls.active = start(&group, addr.as_deref());
+                calls.minimized = false;
             }
         }
         Some(CallRequest::Leave) => {
@@ -729,7 +817,8 @@ pub fn drive_calls(
 }
 
 /// Whether this device can send a camera in a call.
-fn camera_available() -> bool {
+#[must_use]
+pub fn camera_available() -> bool {
     #[cfg(target_arch = "wasm32")]
     return true;
     #[cfg(not(target_arch = "wasm32"))]
@@ -931,417 +1020,6 @@ pub fn play_calls(
 /// Marks an entity playing a call participant.
 #[derive(Component)]
 pub struct CallSink;
-
-/// Height of a tile in the call bar, in points; the self-view is smaller.
-const TILE_HEIGHT: f32 = 120.0;
-const SELF_TILE_HEIGHT: f32 = 68.0;
-
-/// One person's tile in the call bar.
-struct CallTile {
-    /// Their picture and its width over its height, when their camera is on.
-    texture: Option<(egui::TextureId, f32)>,
-    name: String,
-    speaking: bool,
-    /// Shows a muted-microphone badge (known only for yourself).
-    muted: bool,
-}
-
-impl CallTile {
-    /// Width at `height`: the picture's own shape (an upright phone sends a
-    /// portrait one), or square for a tile with no picture.
-    fn width(&self, height: f32) -> f32 {
-        self.texture.map_or(height, |(_, aspect)| height * aspect)
-    }
-}
-
-/// Draw one tile: the picture, or an initial on a plate when the camera is
-/// off; the name on a dark label over the corner, where it reads on any
-/// picture; and a ring in the brand colour while they are speaking.
-fn call_tile(ui: &mut egui::Ui, t: &CallTile, height: f32) {
-    use crate::systems::theme;
-    let size = egui::vec2(t.width(height), height);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let p = ui.painter();
-    let radius = egui::CornerRadius::same(8);
-    match t.texture {
-        Some((id, _)) => {
-            egui::Image::new((id, size))
-                .corner_radius(radius)
-                .paint_at(ui, rect);
-        }
-        None => {
-            p.rect_filled(rect, radius, theme::SURFACE_RAISED);
-            let initial: String = t
-                .name
-                .chars()
-                .next()
-                .map_or_else(String::new, |c| c.to_uppercase().collect());
-            p.circle_filled(rect.center(), height * 0.26, theme::ACCENT_MUTED);
-            p.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                initial,
-                egui::FontId::proportional(height * 0.24),
-                theme::CREAM,
-            );
-        }
-    }
-    // The name, on a chip over the bottom-left corner.
-    let font = egui::FontId::proportional(if height < TILE_HEIGHT { 11.0 } else { 12.5 });
-    let label = if t.muted {
-        format!("{} {}", crate::systems::icons::MIC_OFF, t.name)
-    } else {
-        t.name.clone()
-    };
-    let galley = p.layout_no_wrap(label, font, theme::CREAM);
-    let pad = egui::vec2(6.0, 2.0);
-    let chip = egui::Rect::from_min_size(
-        egui::pos2(
-            rect.min.x + 5.0,
-            rect.max.y - 5.0 - galley.size().y - 2.0 * pad.y,
-        ),
-        galley.size() + 2.0 * pad,
-    );
-    p.rect_filled(
-        chip,
-        egui::CornerRadius::same(5),
-        egui::Color32::from_black_alpha(170),
-    );
-    p.galley(chip.min + pad, galley, theme::CREAM);
-    if t.speaking {
-        p.rect_stroke(
-            rect,
-            radius,
-            egui::Stroke::new(2.5, theme::BRAND),
-            egui::StrokeKind::Outside,
-        );
-    }
-}
-
-/// The bar at the top of the screen: a call ringing, or the call you are in.
-///
-/// An `Area` of its own at the top centre, below the location-sharing notice
-/// when that is up (which must never be covered), rather than part of the chat
-/// panel — a call rings whatever panel is open, and a call in progress has to
-/// be hang-up-able from anywhere.
-pub fn render_call_bar(
-    mut egui: ResMut<crate::systems::egui_manager::EguiManager>,
-    mut calls: ResMut<Calls>,
-    identity: Res<AuthIdentity>,
-    chat: Res<crate::systems::chat::ChatState>,
-    online: Option<Res<OnlineSession>>,
-    mut tiles: Local<HashMap<u64, egui::TextureHandle>>,
-) {
-    use crate::systems::theme;
-    if online.is_none() {
-        return;
-    }
-    let me = identity.username.clone().unwrap_or_default();
-    let ringing = calls.ringing(&me);
-    let active = calls.active_group().map(<[u8]>::to_vec);
-    let notice = calls.notice.clone();
-    if ringing.is_empty() && active.is_none() && notice.is_none() {
-        return;
-    }
-    let label_of = |group: &[u8]| {
-        let key = channel_key(group);
-        chat.channels
-            .iter()
-            .find(|c| c.key == key)
-            .map(|c| crate::systems::private_chat::peer_of_label(&c.label).to_string())
-            .unwrap_or_else(|| "a chat".into())
-    };
-    let top = if chat.sharing.is_empty() { 8.0 } else { 52.0 };
-    let ctx = egui.ctx_mut().clone();
-
-    // Each person's newest picture, uploaded only when it changed: a texture
-    // per person, reused, so a call is one small upload per picture received
-    // rather than a texture allocated per frame (`docs/notes/upload-bursts.md`).
-    let mut present = HashSet::new();
-    for (id, p) in calls.pictures_mut() {
-        present.insert(id);
-        if !p.fresh {
-            continue;
-        }
-        p.fresh = false;
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [p.width as usize, p.height as usize],
-            &p.rgba,
-        );
-        match tiles.get_mut(&id) {
-            Some(t) => t.set(image, egui::TextureOptions::LINEAR),
-            None => {
-                let t = ctx.load_texture(
-                    format!("call-video-{id}"),
-                    image,
-                    egui::TextureOptions::LINEAR,
-                );
-                tiles.insert(id, t);
-            }
-        }
-    }
-    tiles.retain(|id, _| present.contains(id));
-    // One tile for everybody else in the call, camera or not, by name; then
-    // your own picture, small, at the end — the room is for the people you
-    // are talking to.
-    let texture_of = |id: u64| {
-        tiles.get(&id).map(|t| {
-            let [w, h] = t.size();
-            (t.id(), w as f32 / h.max(1) as f32)
-        })
-    };
-    let mut people: Vec<CallTile> = calls
-        .others()
-        .into_iter()
-        .map(|(id, name)| CallTile {
-            texture: texture_of(id),
-            speaking: calls.speaking(id),
-            name,
-            muted: false,
-        })
-        .collect();
-    people.sort_by(|a, b| a.name.cmp(&b.name));
-    let own = texture_of(SELF_TILE).map(|texture| CallTile {
-        texture: Some(texture),
-        speaking: calls.speaking(SELF_TILE),
-        name: "You".into(),
-        muted: calls.muted,
-    });
-    let gap = 8.0;
-    let tiles_width: f32 = people
-        .iter()
-        .map(|t| t.width(TILE_HEIGHT) + gap)
-        .chain(own.iter().map(|t| t.width(SELF_TILE_HEIGHT) + gap))
-        .sum();
-    let bar_width = tiles_width.clamp(300.0, 900.0);
-    let mut request = None;
-    let mut clear_notice = false;
-    egui::Area::new(egui::Id::new("call_bar"))
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
-        .order(egui::Order::Foreground)
-        .show(&ctx, |ui| {
-            egui::Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-                .corner_radius(12.0)
-                .inner_margin(egui::Margin::symmetric(12, 6))
-                .show(ui, |ui| {
-                    if let Some(group) = &active {
-                        let secs = calls.elapsed_secs();
-                        let status = if people.is_empty() {
-                            // Nobody else in it yet: it is ringing on their side.
-                            "ringing…".to_string()
-                        } else if calls.connected() {
-                            format!("{:02}:{:02}", secs / 60, secs % 60)
-                        } else {
-                            "connecting…".into()
-                        };
-                        let others: Vec<String> = calls
-                            .in_call(group)
-                            .into_iter()
-                            .filter(|n| !n.eq_ignore_ascii_case(&me))
-                            .collect();
-                        let with = if others.is_empty() {
-                            format!("Calling {}", label_of(group))
-                        } else {
-                            format!("In call with {}", others.join(", "))
-                        };
-                        // The box's width is pinned, never left to its contents: a
-                        // size-to-content `Area` that centres anything feeds its own
-                        // width back and grows (`hud`'s module note).
-                        ui.set_width(bar_width);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} {with} · {status}",
-                                crate::systems::icons::LOCK
-                            ))
-                            .color(theme::CREAM),
-                        );
-                        if !people.is_empty() || own.is_some() {
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                // Bottom-aligned, so the small self-view sits on
-                                // the same line as the others' feet.
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::Max),
-                                    |ui| {
-                                        for t in &people {
-                                            call_tile(ui, t, TILE_HEIGHT);
-                                        }
-                                        if let Some(t) = &own {
-                                            call_tile(ui, t, SELF_TILE_HEIGHT);
-                                        }
-                                    },
-                                );
-                            });
-                        }
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            use crate::systems::icons;
-                            let n = if camera_available() { 3.0 } else { 2.0 };
-                            let gap = ui.spacing().item_spacing.x;
-                            let row = n * theme::ROUND_BUTTON_SIZE + (n - 1.0) * gap;
-                            ui.add_space(((bar_width - row) * 0.5).max(0.0));
-                            let (icon, tip) = if calls.muted {
-                                (icons::MIC_OFF, "Unmute")
-                            } else {
-                                (icons::MIC, "Mute")
-                            };
-                            if theme::call_button(
-                                ui,
-                                icon,
-                                tip,
-                                if calls.muted {
-                                    theme::CallTone::Off
-                                } else {
-                                    theme::CallTone::On
-                                },
-                                false,
-                            )
-                            .clicked()
-                            {
-                                calls.muted = !calls.muted;
-                            }
-                            if camera_available() {
-                                let (icon, tip) = if calls.camera_on {
-                                    (icons::VIDEOCAM, "Turn the camera off")
-                                } else {
-                                    (icons::VIDEOCAM_OFF, "Turn the camera on")
-                                };
-                                if theme::call_button(
-                                    ui,
-                                    icon,
-                                    tip,
-                                    if calls.camera_on {
-                                        theme::CallTone::On
-                                    } else {
-                                        theme::CallTone::Off
-                                    },
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    calls.camera_on = !calls.camera_on;
-                                }
-                            }
-                            if theme::call_button(
-                                ui,
-                                icons::CALL_END,
-                                "Hang up",
-                                theme::CallTone::HangUp,
-                                false,
-                            )
-                            .clicked()
-                            {
-                                request = Some(CallRequest::Leave);
-                            }
-                        });
-                    }
-                    // A call coming in, as a phone shows one: who, big; what
-                    // it is, small; decline on the left in red, answer on the
-                    // right in green.
-                    for r in &ringing {
-                        use crate::systems::icons;
-                        ui.set_width(bar_width);
-                        let name = r.who.join(", ");
-                        let chat = label_of(&r.group);
-                        let subtitle = if active.is_some() {
-                            "Calling you · answering ends this call".to_string()
-                        } else if chat.eq_ignore_ascii_case(&name) {
-                            "Incoming call".to_string()
-                        } else {
-                            format!("Incoming call · {chat}")
-                        };
-                        ui.add_space(6.0);
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(bar_width, 116.0),
-                            egui::Sense::hover(),
-                        );
-                        let p = ui.painter();
-                        let x = rect.center().x;
-                        let disc = egui::pos2(x, rect.min.y + 30.0);
-                        p.circle_filled(disc, 30.0, theme::ACCENT_MUTED);
-                        let initial: String = name
-                            .chars()
-                            .next()
-                            .map_or_else(String::new, |c| c.to_uppercase().collect());
-                        p.text(
-                            disc,
-                            egui::Align2::CENTER_CENTER,
-                            initial,
-                            egui::FontId::proportional(26.0),
-                            theme::CREAM,
-                        );
-                        p.text(
-                            egui::pos2(x, rect.min.y + 78.0),
-                            egui::Align2::CENTER_CENTER,
-                            &name,
-                            egui::FontId::proportional(19.0),
-                            theme::CREAM,
-                        );
-                        p.text(
-                            egui::pos2(x, rect.min.y + 102.0),
-                            egui::Align2::CENTER_CENTER,
-                            subtitle,
-                            egui::FontId::proportional(13.0),
-                            theme::TEXT_DIM,
-                        );
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            let d = theme::ROUND_BUTTON_SIZE * 1.4;
-                            let gap = 64.0;
-                            ui.add_space(((bar_width - 2.0 * d - gap) * 0.5).max(0.0));
-                            if theme::call_button(
-                                ui,
-                                icons::CALL_END,
-                                "Decline",
-                                theme::CallTone::HangUp,
-                                true,
-                            )
-                            .clicked()
-                            {
-                                request = Some(CallRequest::Dismiss(r.group.clone()));
-                            }
-                            ui.add_space(gap);
-                            if theme::call_button(
-                                ui,
-                                icons::CALL,
-                                "Answer",
-                                theme::CallTone::Accept,
-                                true,
-                            )
-                            .clicked()
-                            {
-                                request = Some(CallRequest::Join(r.group.clone()));
-                            }
-                        });
-                        ui.add_space(6.0);
-                    }
-                    if let Some(text) = &notice {
-                        // The same width as the call box, so a notice covers the
-                        // switch under it cleanly rather than half of it.
-                        ui.set_width(bar_width);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(text).color(theme::CREAM));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if theme::action_button(ui, "OK").clicked() {
-                                        clear_notice = true;
-                                    }
-                                },
-                            );
-                        });
-                    }
-                });
-        });
-    if request.is_some() {
-        calls.request = request;
-    }
-    if clear_notice {
-        calls.notice = None;
-    }
-}
 
 /// Test switches for placing a call with nobody at the keyboard:
 ///

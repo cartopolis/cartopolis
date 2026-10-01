@@ -71,6 +71,7 @@ pub struct Dismissable<'w> {
     pub driver: ResMut<'w, DriverState>,
     pub panel: ResMut<'w, RightPanel>,
     pub composer: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
+    pub calls: ResMut<'w, crate::systems::calls::Calls>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -93,6 +94,11 @@ pub enum Rung {
     /// ladder declining to do anything else. Without it a single Escape would
     /// blur the search box and close the panel the box lives in.
     TextFocus,
+    /// The full-screen call: a call ringing, or the one you are in. It covers
+    /// everything, so a press goes to it before anything behind it; and it is
+    /// *minimised* to the bar at the top, never ended — hanging up and declining
+    /// are buttons, as on every phone, and not a gesture made in passing.
+    CallScreen,
     /// The prim edit dialog's texture picker: a window opened *from* the dialog,
     /// so the inner of the two.
     TexturePicker,
@@ -131,6 +137,7 @@ pub enum Rung {
 pub struct OpenSurfaces {
     pub keyboard: bool,
     pub text_focused: bool,
+    pub call_screen: bool,
     pub texture_picker: bool,
     pub edit_dialog: bool,
     pub context_menu: bool,
@@ -154,6 +161,8 @@ impl OpenSurfaces {
             Some(Rung::Keyboard)
         } else if self.text_focused {
             Some(Rung::TextFocus)
+        } else if self.call_screen {
+            Some(Rung::CallScreen)
         } else if self.edit_dialog && self.texture_picker {
             Some(Rung::TexturePicker)
         } else if self.edit_dialog {
@@ -187,6 +196,7 @@ impl Dismissable<'_> {
         OpenSurfaces {
             keyboard: self.keyboard.is_open(),
             text_focused,
+            call_screen: self.calls.screen_up(),
             texture_picker: self.dialog.texture_picker_open,
             edit_dialog: self.dialog.visible,
             context_menu: self.context_menu.visible,
@@ -208,6 +218,7 @@ impl Dismissable<'_> {
             Rung::Keyboard => self.keyboard.dismiss(),
             // egui already did it; claiming the press is the whole point.
             Rung::TextFocus => {}
+            Rung::CallScreen => self.calls.minimized = true,
             Rung::TexturePicker => self.dialog.texture_picker_open = false,
             Rung::EditDialog => self.dialog.visible = false,
             Rung::ContextMenu => self.context_menu.visible = false,
@@ -242,6 +253,7 @@ mod tests {
         OpenSurfaces {
             keyboard: true,
             text_focused: true,
+            call_screen: true,
             texture_picker: true,
             edit_dialog: true,
             context_menu: true,
@@ -259,6 +271,7 @@ mod tests {
         match rung {
             Rung::Keyboard => s.keyboard = false,
             Rung::TextFocus => s.text_focused = false,
+            Rung::CallScreen => s.call_screen = false,
             Rung::TexturePicker => s.texture_picker = false,
             Rung::EditDialog => s.edit_dialog = false,
             Rung::ContextMenu => s.context_menu = false,
@@ -291,6 +304,7 @@ mod tests {
             vec![
                 Rung::Keyboard,
                 Rung::TextFocus,
+                Rung::CallScreen,
                 Rung::TexturePicker,
                 Rung::EditDialog,
                 Rung::ContextMenu,

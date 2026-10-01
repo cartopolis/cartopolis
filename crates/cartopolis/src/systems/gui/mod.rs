@@ -7,6 +7,7 @@ pub use plugin::GuiPlugin;
 
 pub mod bookmarks;
 pub mod building_card;
+pub mod call_screen;
 pub mod chat;
 pub mod chat_overlay;
 pub mod chat_people;

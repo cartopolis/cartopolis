@@ -2051,6 +2051,9 @@ pub struct ScriptedChat<'w, 's> {
     /// The contacts screens (`--ui contacts` / `requests` / `request` /
     /// `addcontact` / `privacy` / `personcard`).
     contacts: ResMut<'w, crate::systems::contacts::Contacts>,
+    /// The call screens (`--ui callincoming` / `call` / `callvideo` /
+    /// `callgroup` / `callfolded`, `systems::call_screen`).
+    calls: ResMut<'w, crate::systems::calls::Calls>,
     seeded: Query<'w, 's, Entity, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
     avatar: Query<
         'w,
@@ -2110,6 +2113,11 @@ const UI_ELEMENTS: &[&str] = &[
     "locate",
     "firstperson",
     "fire",
+    "callincoming",
+    "call",
+    "callvideo",
+    "callgroup",
+    "callfolded",
     "all",
 ];
 
@@ -2268,6 +2276,19 @@ pub fn open_scripted_ui(
             cards.chat.contacts.whereabouts.clear();
         }
     }
+    // The call screens (`systems::call_screen`): a call ringing, a voice call, a
+    // video call, a group, and a call folded to its bar — seeded, since a
+    // scripted run is offline and has nobody to call.
+    let call_screen = [
+        "callincoming",
+        "callvideo",
+        "callgroup",
+        "callfolded",
+        "call",
+    ]
+    .into_iter()
+    .find(|k| !all && want(k));
+    cards.chat.calls.seed_demo(call_screen);
     // The contacts screens (`systems::contacts`), over the same demo chats.
     // `Some(None)` is the person card over the map rather than a panel screen.
     use crate::systems::contacts::Sub;

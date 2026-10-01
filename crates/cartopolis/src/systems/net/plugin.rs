@@ -134,11 +134,12 @@ impl Plugin for NetPlugin {
         .add_systems(
             Update,
             (
-                // The call bar: a call ringing, or the one you are in. Its own
-                // `Foreground` area like the sharing notice it sits under, so it
-                // is not in the panel chain; after the pins only so it is drawn
-                // over them.
-                systems::calls::render_call_bar.after(systems::place_pins::render_place_pins),
+                // The call screen: a call ringing, or the one you are in, full
+                // screen or folded to a bar (`systems::call_screen`). Its own
+                // `Foreground` areas, so it is not in the panel chain; after the
+                // pins only so it is drawn over them.
+                systems::call_screen::render_call_screen
+                    .after(systems::place_pins::render_place_pins),
                 systems::user_store::autosave_user_store
                     // Never before a restore has read the document this overwrites:
                     // its first deadline is time zero, so without this it wrote the

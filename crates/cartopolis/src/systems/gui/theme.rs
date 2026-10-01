@@ -1547,9 +1547,10 @@ pub const CALL_ACCEPT_GREEN: Color32 = Color32::from_rgb(0x2E, 0xA0, 0x5A);
 /// What a [`call_button`] is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallTone {
-    /// A switch that is on (the microphone, the camera).
+    /// A switch that is on (the microphone, the camera): a frosted plate that
+    /// reads over a picture as well as over the dark call screen.
     On,
-    /// A switch that is *off* wears the inverted plate: that is the state
+    /// A switch that is *off* wears the solid cream plate: that is the state
     /// worth noticing, and the icon says which (`MIC_OFF`, `VIDEOCAM_OFF`).
     Off,
     /// Hang up, or decline: [`CALL_END_RED`].
@@ -1558,33 +1559,48 @@ pub enum CallTone {
     Accept,
 }
 
-/// A round button in a call bar or on an incoming call. `large` is the
-/// incoming call's pair, which a hand reaches for in a hurry.
+/// The call screen's big buttons: a thumb's width, as on a phone's call screen.
+pub const CALL_BUTTON_LARGE: f32 = 64.0;
+/// The bar a minimised call or a ringing banner shows.
+pub const CALL_BUTTON_SMALL: f32 = 36.0;
+
+/// A round call control, `diameter` across.
 pub fn call_button(
     ui: &mut egui::Ui,
     icon: &str,
     tooltip: &str,
     tone: CallTone,
-    large: bool,
+    diameter: f32,
 ) -> egui::Response {
-    let diameter = if large {
-        ROUND_BUTTON_SIZE * 1.4
-    } else {
-        ROUND_BUTTON_SIZE
-    };
     let size = egui::Vec2::splat(diameter);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let hovered = resp.hovered();
+    let pressed = resp.is_pointer_button_down_on();
     let solid = |c: Color32| {
-        let c = if hovered { c.gamma_multiply(1.15) } else { c };
+        let c = if pressed {
+            c.gamma_multiply(0.85)
+        } else if hovered {
+            c.gamma_multiply(1.15)
+        } else {
+            c
+        };
         (c, c, CREAM)
     };
-    let (fill, ring, ink) = match (tone, hovered) {
-        (CallTone::HangUp, _) => solid(CALL_END_RED),
-        (CallTone::Accept, _) => solid(CALL_ACCEPT_GREEN),
-        (CallTone::Off, _) => (CREAM, ACCENT_RING, INK),
-        (CallTone::On, true) => (SURFACE_HOVER, ACCENT, CREAM),
-        (CallTone::On, false) => (SURFACE_RAISED, OVERLAY_LINE, TEXT),
+    let (fill, ring, ink) = match tone {
+        CallTone::HangUp => solid(CALL_END_RED),
+        CallTone::Accept => solid(CALL_ACCEPT_GREEN),
+        CallTone::Off => (if hovered { ACCENT_RING } else { CREAM }, ACCENT_RING, INK),
+        CallTone::On => (
+            Color32::from_white_alpha(if pressed {
+                70
+            } else if hovered {
+                56
+            } else {
+                38
+            }),
+            Color32::from_white_alpha(46),
+            CREAM,
+        ),
     };
     paint_disc(
         ui.painter(),
@@ -1595,8 +1611,8 @@ pub fn call_button(
             ring,
             ink,
             icon,
-            icon_size: if large { 26.0 } else { 19.0 },
-            ring_width: 1.5,
+            icon_size: (diameter * 0.44).round(),
+            ring_width: 1.0,
         },
     );
     paint_focus_ring(ui, &resp, rect, true);
