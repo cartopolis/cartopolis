@@ -362,7 +362,13 @@ pub fn render_avatar_chooser(
 ) {
     let online = session.is_online();
     if std::mem::replace(&mut was_online, online) && !online {
-        right_panel.toggle(RightPanel::Appearance);
+        // Closed if it is open, never toggled: a toggle *opened* the wardrobe
+        // whenever a session ended with something else on screen — and every
+        // phone resume ends one (the socket dies while suspended), so the app
+        // came back to Appearance instead of where it was.
+        if right_panel.is(RightPanel::Appearance) {
+            *right_panel = RightPanel::None;
+        }
         chooser.seeded = false;
     }
     use crate::systems::avatar::{accessory_styles_for, styles_for};
