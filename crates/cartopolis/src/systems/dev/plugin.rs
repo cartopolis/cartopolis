@@ -329,12 +329,12 @@ impl Plugin for McpPlugin {
         // autosave — so marking the store dirty there would be a promise nothing
         // keeps, and the next launch would mint a different token having appeared
         // to remember one. It logs the token instead.
-        let token = match std::env::var("CARTO_MCP_TOKEN") {
-            Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+        let (token, minted_here) = match std::env::var("CARTO_MCP_TOKEN") {
+            Ok(t) if !t.trim().is_empty() => (t.trim().to_string(), false),
             _ => {
                 let store = app.world().resource::<systems::user_store::UserStore>();
                 match store.data.mcp_token.clone() {
-                    Some(t) if !t.trim().is_empty() => t,
+                    Some(t) if !t.trim().is_empty() => (t, false),
                     _ => {
                         let minted = systems::mcp::mint_token();
                         if !cfg.headless {
@@ -344,13 +344,17 @@ impl Plugin for McpPlugin {
                             store.data.mcp_token = Some(minted.clone());
                             store.dirty = true;
                         }
-                        minted
+                        (minted, true)
                     }
                 }
             }
         };
-        // A windowless run has no Settings panel to read the token off, so it is
-        // logged — once, at startup, beside where it *will* serve.
+        // A windowless run has no Settings panel to read the token off, so a token
+        // it *made up* is logged — once, at startup, beside where it *will* serve —
+        // because that is the only place anybody could find it. One that came from
+        // `CARTO_MCP_TOKEN` or the store is not: whoever set it already has it, and
+        // a system log is read by more people than the bearer token is meant for
+        // (the Deck bot's was in its journal on every start until 2026-10-01).
         //
         // "will", and the wording matters: the socket is opened a frame later by
         // `reconcile_listener`, which is the only thing that knows whether the
@@ -358,7 +362,11 @@ impl Plugin for McpPlugin {
         // make, and the run that proves it is the second client on one port,
         // which logged "serving" and then "cannot serve" three lines apart.
         if cfg.headless {
-            tracing::info!(listen = %cfg.listen, token = %token, "mcp: headless, will serve");
+            if minted_here {
+                tracing::info!(listen = %cfg.listen, token = %token, "mcp: headless, will serve (set CARTO_MCP_TOKEN to keep this token out of the log)");
+            } else {
+                tracing::info!(listen = %cfg.listen, "mcp: headless, will serve, with the token it was given");
+            }
         }
         let auth = systems::mcp::McpAuth(std::sync::Arc::new(std::sync::RwLock::new(token)));
         let (tx, rx) = futures_channel::mpsc::unbounded();
