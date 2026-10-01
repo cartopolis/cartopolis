@@ -1077,7 +1077,12 @@ fn brick_colour(c: [u8; 3]) -> [u8; 3] {
     // A weathered red clay paver, not a new facing brick: the first value here,
     // (150, 82, 66) lifted by the photo's lightness, put the Grote Markt at
     // (188, 103, 83), which read on the phone as painted red (2026-10-01).
-    let base: [f64; 3] = if r - g >= 7 {
+    // Red is red-over-green *more than* green-over-blue. Warm yellow brick is
+    // warm too — over the Vismarkt eleven yellow surfaces measured red minus
+    // green of 7–14 and were drawn red — but what makes it yellow is that its
+    // green stands well clear of its blue: (198, 191, 172) is 7 and 19, where
+    // the Grote Markt's red is 10 and 7.
+    let base: [f64; 3] = if r - g >= 7 && r - g > g - b {
         [128.0, 76.0, 64.0]
     } else if g - b >= 9 && r - g >= -2 {
         [196.0, 170.0, 122.0]
@@ -1273,6 +1278,9 @@ mod tests {
     fn brick_is_told_by_the_way_it_leans() {
         let red = brick_colour([161, 151, 144]);
         assert!(i32::from(red[0]) - i32::from(red[1]) > 50, "{red:?}");
+        // The Vismarkt's warm yellow, which leans red-over-green as well.
+        let warm = brick_colour([198, 191, 172]);
+        assert!(warm[1] > warm[2] + 30 && warm[0] - warm[1] < 40, "{warm:?}");
         let yellow = brick_colour([170, 168, 155]);
         assert!(
             yellow[1] > yellow[2] + 30 && yellow[0] >= yellow[1],
