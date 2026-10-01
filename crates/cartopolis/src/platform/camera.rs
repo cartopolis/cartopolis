@@ -142,6 +142,11 @@ impl Camera {
 impl Drop for Camera {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        // Let go of the call's sender now rather than whenever the camera
+        // thread next looks at `stop` (a Camera2 open can take seconds).
+        if let Ok(mut sink) = self.shared.sink.lock() {
+            sink.take();
+        }
     }
 }
 

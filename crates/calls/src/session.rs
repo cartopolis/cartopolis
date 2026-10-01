@@ -42,6 +42,10 @@ enum Cmd {
     },
     Pcm(Vec<f32>),
     Picture(video::I420),
+    /// End the call. Said, not implied by the channel closing: a camera
+    /// thread's [`PictureSink`] holds a sender of its own, so the channel stays
+    /// open for as long as the camera does.
+    Stop,
 }
 
 /// What the thread tells the app.
@@ -175,12 +179,19 @@ impl PictureSink {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Closing the channel is the stop signal; the thread notices on its next
-        // turn, a couple of milliseconds away.
-        self.tx = None;
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
+        // Told to stop, then left to do it: the thread notices on its next turn,
+        // a couple of milliseconds away, and closes its sockets as it returns.
+        //
+        // Closing the channel used to be the stop signal, with a join after it.
+        // But a camera's `PictureSink` is a sender too, and it lives on the
+        // camera's thread until that thread notices *its* stop flag — so with
+        // the camera on, hanging up waited on a channel that never closed and
+        // the app froze on the button. Not joining also keeps a hang-up from
+        // waiting out a video encode (~200 ms on a phone).
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Cmd::Stop);
         }
+        drop(self.thread.take());
     }
 }
 
@@ -336,8 +347,8 @@ fn run(
                         }
                     }
                 }
+                Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
         }
 
@@ -428,6 +439,27 @@ mod tests {
     use cartopolis_e2ee::Device;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+
+    /// Hanging up with the camera on: the camera thread still holds a sender
+    /// when the session is dropped, and the session thread must end anyway.
+    /// It used to wait for the channel to close, and the app waited on it.
+    #[test]
+    fn a_session_ends_while_a_camera_still_holds_its_sink() {
+        let mut s = Session::start("127.0.0.1".into(), 16_000, true);
+        let sink = s.picture_sink();
+        let thread = s.thread.take().expect("the call thread started");
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = thread.join();
+            let _ = done.send(());
+        });
+        drop(s);
+        assert!(
+            ended.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the call thread outlived its session"
+        );
+        drop(sink);
+    }
 
     /// Two members' sessions, each on its own thread, through a forwarder on a
     /// third — the shape a real call has, minus the simulator connection, whose
