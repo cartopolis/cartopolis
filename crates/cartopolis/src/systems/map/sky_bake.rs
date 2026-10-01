@@ -108,6 +108,13 @@ pub struct SkyBake {
     held: u32,
 }
 
+/// `CARTO_SKY_BAKE_EVERY_FRAME=1` restores bevy's own behaviour, for an A/B of
+/// this module's saving — or of its picture — without a rebuild.
+fn every_frame() -> bool {
+    static EVERY_FRAME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EVERY_FRAME.get_or_init(|| std::env::var_os("CARTO_SKY_BAKE_EVERY_FRAME").is_some())
+}
+
 /// Whether the sky has moved far enough since `last` to be worth a bake.
 pub(crate) fn sky_moved(last: &BakeInputs, now: &BakeInputs) -> bool {
     let turn = TURN_DEG.to_radians().cos();
@@ -173,7 +180,8 @@ pub fn decide_sky_bake(
         height_m: from_centre.length() - atmosphere.inner_radius,
     };
 
-    let bake = now_s < state.warm_until_s
+    let bake = every_frame()
+        || now_s < state.warm_until_s
         || now_s - state.last_bake_s >= HEARTBEAT_S
         || state.last.as_ref().is_none_or(|last| sky_moved(last, &now));
     order.bake = bake;
