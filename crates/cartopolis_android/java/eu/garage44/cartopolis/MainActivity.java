@@ -63,11 +63,22 @@ public final class MainActivity extends NativeActivity {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
-        // `super` has told the native glue, which is all it needs. Whatever the
-        // reason for the destruction, this process has no way to host another
-        // activity (`bevy::android::ANDROID_APP` is set once per process), so
-        // leaving is what lets the next launch start clean.
+        // **Before** `super`, never after it. `NativeActivity.onDestroy` calls into
+        // android-activity's glue (`native_activity/glue.rs`, `on_destroy`), which
+        // posts `Destroy` to the `android_main` thread and then blocks *this*, the
+        // UI thread, until that thread has returned. winit never forwards
+        // `Destroy`, so `android_main` never returns and `super.onDestroy()` never
+        // comes back: a kill placed after it was unreachable. The process stayed
+        // up with its main thread wedged — held there by the background
+        // connection's foreground service — and every later launch went into that
+        // process and got as far as the theme's splash, for good. That is what a
+        // swipe from recents, a tap on the notification and "the app does not
+        // reopen" all were.
+        //
+        // Whatever the reason for the destruction, this process has no way to host
+        // another activity (`bevy::android::ANDROID_APP` is set once per process),
+        // so leaving is what lets the next launch start clean.
         Process.killProcess(Process.myPid());
+        super.onDestroy();
     }
 }

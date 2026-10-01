@@ -146,6 +146,36 @@ that works. `MainActivity` (a `NativeActivity` subclass, `java/`) now kills the
 process in `onDestroy`, which is the one place that is told. Not run on a device:
 this container has no JDK or SDK to build the APK, and the emulator lane is gone.
 
+**And that kill never ran until 2026-10-01**, because it came after
+`super.onDestroy()`. `NativeActivity.onDestroy` calls android-activity's
+`on_destroy`, which posts `Destroy` and then **blocks the UI thread until
+`android_main` has returned** — which, per the paragraph above, it never does. So
+the activity's destruction wedged the Java main thread, the foreground service
+held the wedged process up, the notification stayed in the shade, and every later
+launch went into that process and showed the theme's splash forever (reported
+2026-10-01 with a recents card showing exactly that). The kill now comes first.
+The consequence to know: destroying the activity ends the process, so it ends the
+service and its notification with it — the held connection survives the screen
+going off, never a swipe out of recents.
+
+## Why there is often no notification
+
+It shows only when all three hold: the setting is on (off by default), there is
+an online session (offline has nothing to hold), and POST_NOTIFICATIONS was
+granted. Until 2026-10-01 a fourth, accidental condition applied: a change of
+want that arrived while the previous one was still being applied was logged and
+dropped, after the caller had already recorded it as applied — and startup is
+that case, "off, no session yet" followed by a session restored from a
+remembered token.
+
+Signal, for comparison, does what this does on phones without Google Play
+services — a foreground service holding its websocket, with a permanent
+"background connection" notification — and nothing visible on phones with them,
+because FCM wakes it. The difference that matters is not the service but the
+activity: Signal's UI is ordinary Java views, so the system can destroy and
+recreate its activity inside a live process. Ours cannot (one window handle per
+process), which is why ours must die with its activity.
+
 Anything that wants the process to
 outlive its activity has to solve the window handle first; until then, a held
 connection is a thing that survives a screen going off, not a thing that

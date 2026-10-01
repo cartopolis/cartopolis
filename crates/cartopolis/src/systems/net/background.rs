@@ -46,10 +46,13 @@ use crate::resources::{AppPrefs, OnlineSession};
 ///
 /// The permission ask blocks for as long as the user takes to answer (up to two
 /// minutes — see `platform::android::ensure_permission`), so the work cannot run
-/// on the schedule and a second request must not pile up behind the first. A
-/// plain flag is enough because the reconcile always applies the *current* want,
-/// not the one it was spawned with.
+/// on the schedule and a second request must not pile up behind the first: one
+/// worker runs at a time, and it applies [`WANT`] — the current want, not the one
+/// it was spawned with.
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// The latest want, published by `reconcile` for the worker to pick up.
+static WANT: AtomicBool = AtomicBool::new(false);
 
 /// Start or stop the background connection service to match the settings.
 ///
@@ -75,37 +78,63 @@ pub fn apply_background_connection(
 
 #[cfg(target_os = "android")]
 fn reconcile(want: bool) {
-    if IN_FLIGHT.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        tracing::warn!(want, "background connection: a change is still in flight");
+    use std::sync::atomic::Ordering::SeqCst;
+
+    // Published before the in-flight check, so a worker that is already running
+    // sees it. This used to warn and return instead, and the caller had already
+    // recorded the change as applied — so a want that arrived while the previous
+    // one was still in flight was lost for good. Startup is exactly that: the
+    // first reconcile is "off" (no session yet), and a session restored from a
+    // remembered token can come up before it finishes.
+    WANT.store(want, SeqCst);
+    if IN_FLIGHT.swap(true, SeqCst) {
         return;
     }
     std::thread::spawn(move || {
-        // POST_NOTIFICATIONS is dangerous from API 33, and the service is
-        // obliged to show one. A refusal is **not** fatal and is not treated as
-        // one: the service still runs and stays alive, Android simply does not
-        // draw its notification. Asking is still right — a silent ongoing
-        // notification the user never agreed to is worse than a prompt.
-        if want {
-            let cancel = AtomicBool::new(false);
-            match crate::platform::android::ensure_permission(
-                "android.permission.POST_NOTIFICATIONS",
-                &cancel,
-            ) {
-                Ok(true) => {}
-                Ok(false) => tracing::warn!(
-                    "background connection: notifications refused; the service will run \
-                     without a visible indicator"
-                ),
-                Err(e) => tracing::warn!(error = %e, "background connection: could not ask \
-                     for the notification permission"),
+        let mut applied: Option<bool> = None;
+        loop {
+            let want = WANT.load(SeqCst);
+            if applied != Some(want) {
+                apply(want);
+                applied = Some(want);
+            }
+            IN_FLIGHT.store(false, SeqCst);
+            // A want published between the load above and the store just made
+            // found IN_FLIGHT set and left it to us. Take the flag back and go
+            // round again, unless another reconcile already has.
+            if WANT.load(SeqCst) == want || IN_FLIGHT.swap(true, SeqCst) {
+                break;
             }
         }
-        match crate::platform::android::set_background_service(want) {
-            Ok(()) => tracing::info!(running = want, "background connection service"),
-            Err(e) => tracing::error!(error = %e, want, "background connection service failed"),
-        }
-        IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
     });
+}
+
+#[cfg(target_os = "android")]
+fn apply(want: bool) {
+    // POST_NOTIFICATIONS is dangerous from API 33, and the service is
+    // obliged to show one. A refusal is **not** fatal and is not treated as
+    // one: the service still runs and stays alive, Android simply does not
+    // draw its notification. Asking is still right — a silent ongoing
+    // notification the user never agreed to is worse than a prompt.
+    if want {
+        let cancel = AtomicBool::new(false);
+        match crate::platform::android::ensure_permission(
+            "android.permission.POST_NOTIFICATIONS",
+            &cancel,
+        ) {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!(
+                "background connection: notifications refused; the service will run \
+                 without a visible indicator"
+            ),
+            Err(e) => tracing::warn!(error = %e, "background connection: could not ask \
+                 for the notification permission"),
+        }
+    }
+    match crate::platform::android::set_background_service(want) {
+        Ok(()) => tracing::info!(running = want, "background connection service"),
+        Err(e) => tracing::error!(error = %e, want, "background connection service failed"),
+    }
 }
 
 /// Everywhere else this is a no-op, and deliberately not an error.
@@ -116,7 +145,7 @@ fn reconcile(want: bool) {
 /// rather than disabled on that build (`systems::settings`).
 #[cfg(not(target_os = "android"))]
 fn reconcile(want: bool) {
-    let _ = &IN_FLIGHT;
+    let _ = (&IN_FLIGHT, &WANT);
     tracing::debug!(
         want,
         "background connection: nothing to do on this platform"
