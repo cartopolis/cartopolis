@@ -34,6 +34,22 @@ impl Plugin for MapPlugin {
                     .after(systems::network::apply_network_snapshot),
             )
             .add_systems(Update, systems::prim_video::drive_video_actions);
+        // The sky's reflections re-bake when the sky moves, not every frame
+        // (`systems::sky_bake`): decided here, held in the render world after the
+        // extract commands have put the bake's components back.
+        app.init_resource::<systems::sky_bake::SkyBake>()
+            .init_resource::<systems::sky_bake::SkyBakeOrder>()
+            .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+                systems::sky_bake::SkyBakeOrder,
+            >::default());
+        if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render_app.add_systems(
+                bevy::render::Render,
+                systems::sky_bake::hold_sky_bake
+                    .after(bevy::render::RenderSystems::ExtractCommands)
+                    .before(bevy::render::RenderSystems::PrepareAssets),
+            );
+        }
         app.init_resource::<systems::rendering::MeshCache>()
             .init_resource::<systems::rendering::MaterialCache>()
             // Every streamer is watched on the line after it is initialised:
@@ -443,6 +459,9 @@ impl Plugin for MapPlugin {
                     systems::render_features::apply_render_features,
                     systems::render_features::apply_sky,
                     systems::render_features::find_env_map_component,
+                    // Whether the sky's reflections re-bake this frame, from
+                    // what the camera carries once `apply_sky` has settled it.
+                    systems::sky_bake::decide_sky_bake,
                 )
                     .chain()
                     .after(systems::free_camera::camera_controls),

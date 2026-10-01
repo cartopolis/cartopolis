@@ -64,6 +64,7 @@ pub mod render_scale;
 pub mod rendering;
 pub mod road_depth;
 pub mod sky;
+pub mod sky_bake;
 pub mod sky_dome;
 pub mod stream_ledger;
 // Which streamers the settle test waits for, registered beside each one.

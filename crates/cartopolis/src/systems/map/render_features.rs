@@ -307,6 +307,15 @@ pub struct EnvMapComponent {
     stashed: Option<GeneratedEnvironmentMapLight>,
 }
 
+impl EnvMapComponent {
+    /// The private component's id, once [`find_env_map_component`] has found it.
+    /// `sky_bake` carries its `TypeId` into the render world.
+    #[must_use]
+    pub fn id(&self) -> Option<ComponentId> {
+        self.id
+    }
+}
+
 /// The layout the private component has: a `Handle<Image>` and a `UVec2`.
 ///
 /// Only a filter on top of the archetype difference, never the identification on

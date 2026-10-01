@@ -53,6 +53,40 @@ rasteriser's and are **not** comparable to a device; the counts are exact.
 | 150 m, −20° | 653 | 70 | 971 |
 | 3 km, −30°, `CARTO_QUALITY=phone` | 209 | — | 491 |
 
+## Correction: the 2026-09-22 Deck runs had three effects switched off (2026-09-30)
+
+**Every `deck-1` figure dated 2026-09-22 below was measured with shadows, light
+shafts and sky lighting all off.** Those runs set no `CARTO_DATA_DIR`, so the
+client read the Deck bot's own `user.json`, which has all three switched off. The
+mechanisms below still hold. The absolute figures describe that configuration,
+not the default. In particular, "`CARTO_NO_SHADOWS` moves nothing" was measured
+with shadows already off.
+
+Re-run 2026-09-30 at `636c6c5` with a fresh data directory (same setup otherwise,
+every steady window `quiet=true`, one run per row; repeats agreed within 0.3 %):
+
+| city, steady | frame | `submit_pending_command_buffers` |
+|---|---|---|
+| defaults (desktop tier) | 29.9 ms | 12.6 ms |
+| sky lighting off | **12.4 ms** | 2.4 ms |
+| shadows off (light shafts go with them) | 25.3 ms | 6.7 ms |
+| light shafts off | 26.1 ms | 9.8 ms |
+| sun rays, bloom, anti-aliasing, or `CARTO_NO_CLOUDS` | ~30 ms each | — |
+
+Orbit: 25.3 ms with defaults, 10.4 ms with sky lighting off. The same comparison
+at `917a2f6`, the 2026-09-22 commit, gives 31.4 ms against 12.1 ms, so no commit
+made this slower: it was always the default cost.
+
+**Sky lighting (`AtmosphereEnvironmentMapLight`) is about 17.5 ms of a 30 ms
+frame.** Bevy re-renders the sky cubemap and re-filters it into the diffuse and
+specular maps every frame. It is GPU time that the render thread waits for inside
+`submit_pending_command_buffers`. **None of it appears in `RenderDiagnosticsPlugin`'s
+pass list**: bevy_pbr opens `lightprobe_*` spans, and they never reach
+`DiagnosticsStore`. The shadow passes are also missing from that list. So the
+"measured GPU passes" column cannot see the largest cost in the frame.
+`systems::sky_bake` re-bakes only when the sun, the moon or the camera's place
+in the atmosphere has moved.
+
 ## On a real GPU the frame is none of the things this note was optimising (2026-09-22)
 
 Everything above was measured on the container's CPU rasteriser, where the table
