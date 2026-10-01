@@ -1,7 +1,7 @@
 ---
 topic: rendering
 triggers: [ground_stack.rs, GroundLayer, depth_bias, depth_rung, y_offset, DEPTH_BIAS_STEP, road_rung_ceiling, "z-fight", "z fight", "bleeds through", "bleeding through", "draws over", "flicker", "shimmer", "layer order", "z-index", "surfaces flicker", "water through the grass", "grass through the road", tessellate_surfaces, road_stitch.rs, "coplanar"]
-updated: 2026-09-15
+updated: 2026-10-01
 ---
 
 # The ground stack: one list, and a sheet that does not overlap itself
@@ -324,3 +324,25 @@ not a per-cell pass.
 * **Measure duplication in the data before tuning depth.** That recurrence was
   seven superseded versions of one footway sharing a rung, and 79 % of the paved
   area covered twice. No rung arithmetic could have said so.
+
+## The basemap is not drawn under built ground (2026-10-01)
+
+The basemap's finest relief level used to lie 3 cm under the vector ground as a
+stand-in for its holes. On the measured terrain that is not a margin: each sheet
+is a chord of the field over its own triangles (5.7 m quads for the basemap, up
+to ~12 m edges for the vector sheets), and `CARTO_PROBE` over the Vismarkt
+measured the basemap **0.8 cm** under the paving where it stood through it in
+green-and-white bands, with the paving 11 cm under the field one probe over.
+The earlier pale wedges were the same failure one layer up (`Built` through the
+paving), which is why cutting `Built` out from under the paving only exposed the
+basemap.
+
+So the overlap is gone instead: every built cell closes its own ground with
+`cartopolis_geo::gap_fill` (a grid cut out from under every other sheet, ~22 ms
+on the Groningen fixture), `MapSurfaces::complete` records it, and
+`map_stream::update_tile_occlusion` hides every basemap tile wholly inside such a
+cell. A cell leaves the set when it is retired, so a rebuild or a cell still
+streaming shows the basemap rather than a hole. Above `FLAT_GROUND_OFF_M` the
+vector flat ground is dropped, the cell is not complete, and the basemap is the
+ground again. `CARTO_PROBE="lat,lng;…"` logs where every sheet is drawn at a
+point, which is how the next one of these should be found.
