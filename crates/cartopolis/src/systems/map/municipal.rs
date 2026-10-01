@@ -350,7 +350,18 @@ fn source_fingerprint(register: &Register, source: &Source) -> u32 {
         // A fixture that no longer parses is itself a change worth invalidating
         // on, and it is caught at test time by `every_source_reads_the_fixture`.
         .unwrap_or_else(|e| format!("unreadable:{e}"));
-    fnv1a(format!("{}\u{1}{}\u{1}{parsed}", source.layer, source.attribute).as_bytes())
+    // …and what it asks the server for. A request that changes changes the
+    // answer even when the reader does not: the `srsName` fix below left every
+    // cell cached before it holding trees placed in the wrong country, behind a
+    // key the reader alone would never have moved.
+    let request = (register.url)(source, 0, 0);
+    fnv1a(
+        format!(
+            "{}\u{1}{}\u{1}{request}\u{1}{parsed}",
+            source.layer, source.attribute
+        )
+        .as_bytes(),
+    )
 }
 
 /// Fingerprints, computed once. Keyed by the two ids that already have to be
@@ -653,6 +664,41 @@ const GRONINGEN: Register = Register {
             },
             supplies: &[Supply::Prop(FurnitureKind::Cabinet)],
         },
+        Source {
+            id: "shelters",
+            layer: "geo-data:Bushaltes gemeente Groningen",
+            // The bus-stop layer is the lighting register's schema: every one of
+            // its 286 objects is an `Abri`, the shelter itself, with the lamp
+            // number it is wired to.
+            attribute: "LICHTPUNT_SOORT",
+            yields: Yields::Props {
+                kind: |f| match f.str("LICHTPUNT_SOORT") {
+                    Some("Abri") => Some(Placed::plain(FurnitureKind::Shelter)),
+                    _ => None,
+                },
+            },
+            supplies: &[Supply::Prop(FurnitureKind::Shelter)],
+        },
+        Source {
+            id: "signals",
+            layer: "geo-data:Verkeerslichten gemeente Groningen",
+            // The lighting register's schema again. Over the whole city: 1,097
+            // `Verkeerslicht`, 393 `VRI Voetgangerslicht` and 557 `Schakelkast`,
+            // the controller cabinet at the kerb — a box, which is `Cabinet`.
+            attribute: "LICHTPUNT_SOORT",
+            yields: Yields::Props {
+                kind: |f| match f.str("LICHTPUNT_SOORT") {
+                    Some("Verkeerslicht" | "VRI Voetgangerslicht") => {
+                        Some(Placed::plain(FurnitureKind::TrafficLight))
+                    }
+                    Some("Schakelkast") => Some(Placed::plain(FurnitureKind::Cabinet)),
+                    _ => None,
+                },
+            },
+            // Not `Cabinet`: these are only the signal controllers, and the
+            // chargers source already speaks for the city's cabinets.
+            supplies: &[Supply::Prop(FurnitureKind::TrafficLight)],
+        },
     ],
 };
 
@@ -696,11 +742,32 @@ const GRONINGEN_FIXTURE: &str = r#"{"type":"FeatureCollection","features":[
   {"geometry":{"type":"Point","coordinates":[234900.0,582600.0]},
    "properties":{"BOOMHOOGTE":null,"LICHTPUNT_SOORT":"Lichtmast",
                  "FRACTIE":"TEXTIEL","SOORT_KUNSTWERK":"Fontein",
+                 "STATUS_LAADPAAL":null}},
+  {"geometry":{"type":"Point","coordinates":[234950.0,582650.0]},
+   "properties":{"BOOMHOOGTE":null,"LICHTPUNT_SOORT":"Abri",
+                 "FRACTIE":null,"SOORT_KUNSTWERK":null,
+                 "STATUS_LAADPAAL":null}},
+  {"geometry":{"type":"Point","coordinates":[235000.0,582700.0]},
+   "properties":{"BOOMHOOGTE":null,"LICHTPUNT_SOORT":"Verkeerslicht",
+                 "FRACTIE":null,"SOORT_KUNSTWERK":null,
+                 "STATUS_LAADPAAL":null}},
+  {"geometry":{"type":"Point","coordinates":[235050.0,582750.0]},
+   "properties":{"BOOMHOOGTE":null,"LICHTPUNT_SOORT":"Schakelkast",
+                 "FRACTIE":null,"SOORT_KUNSTWERK":null,
                  "STATUS_LAADPAAL":null}}]}"#;
 
 /// One cell of one Groningen layer, as GeoJSON in RD metres.
 ///
-/// Two query parameters are load-bearing. `propertyName` asks for the geometry
+/// **`srsName` is what makes it RD metres, and the server's default is not.**
+/// By 2026-10-01 the GeoServer answered in Web Mercator metres
+/// (`[732717, 7024297]` for a poplar at RD `234806, 582449`) while
+/// `parse_geoserver_rd` read every coordinate as RD — so every tree and lamp
+/// post from the city landed outside its cell, and because the city's register
+/// *replaces* the BGT's trees and lamps wherever it covers, Groningen drew
+/// street trees from neither (a nearby square: 174 registered, none drawn). The
+/// output projection is now asked for rather than assumed.
+///
+/// Two more query parameters are load-bearing. `propertyName` asks for the geometry
 /// and the source's one attribute and nothing else. And `count` is
 /// [`MAX_PER_SOURCE_PER_CELL`], so one pathological cell cannot hand the streamer
 /// an unbounded download; a cell that hits it is logged rather than silently
@@ -712,6 +779,7 @@ fn groningen_url(source: &Source, cx: i64, cy: i64) -> String {
          ?service=WFS&version=2.0.0&request=GetFeature\
          &typeNames={layer}&outputFormat=application%2Fjson\
          &propertyName=GEOM%2C{attribute}&count={MAX_PER_SOURCE_PER_CELL}\
+         &srsName=EPSG%3A28992\
          &bbox={x0:.1},{y0:.1},{x1:.1},{y1:.1},EPSG:28992",
         layer = urlencode(source.layer),
         attribute = source.attribute,
@@ -828,11 +896,20 @@ fn parse_geoserver_rd(text: &str, yields: &Yields) -> Result<RegisteredCell, Str
     // place z-fight their own surfaces.
     let mut seen = std::collections::HashSet::new();
     let mut cell = RegisteredCell::default();
+    let mut not_rd = 0usize;
     for f in wire.features {
         let Some(g) = f.geometry else { continue };
         let (Some(&x), Some(&y)) = (g.coordinates.first(), g.coordinates.get(1)) else {
             continue;
         };
+        // RD's grid covers the Netherlands at 0–300 km east and 289–629 km
+        // north. Anything else is another projection — Web Mercator is what the
+        // server sent when nobody asked (`groningen_url`) — and converting it as
+        // RD silently plants the object in another country.
+        if !(RD_EASTING_M.contains(&x) && RD_NORTHING_M.contains(&y)) {
+            not_rd += 1;
+            continue;
+        }
         if !seen.insert((x.to_bits(), y.to_bits())) {
             continue;
         }
@@ -856,10 +933,28 @@ fn parse_geoserver_rd(text: &str, yields: &Yields) -> Result<RegisteredCell, Str
             }
         }
     }
+    if not_rd > 0 {
+        // An error rather than an empty cell when nothing was usable, so the
+        // wrong answer is not stored as the register's own.
+        if cell.trees.is_empty() && cell.props.is_empty() {
+            return Err(format!(
+                "{not_rd} objects outside the RD grid: not RD coordinates"
+            ));
+        }
+        tracing::warn!(
+            not_rd,
+            "municipal register sent objects outside the RD grid"
+        );
+    }
     cell.trees.truncate(MAX_PER_SOURCE_PER_CELL);
     cell.props.truncate(MAX_PER_SOURCE_PER_CELL);
     Ok(cell)
 }
+
+/// RD New's eastings over the Netherlands, metres.
+const RD_EASTING_M: std::ops::Range<f64> = 0.0..300_000.0;
+/// RD New's northings over the Netherlands, metres.
+const RD_NORTHING_M: std::ops::Range<f64> = 289_000.0..629_000.0;
 
 /// A Dutch height band — `"15 tot 18 m."`, `"tot 6 m."`, `"24 m. en hoger"` — as
 /// one number in metres.
@@ -980,6 +1075,7 @@ fn prop_token(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Cabinet => "cabinet",
         FurnitureKind::Board => "board",
         FurnitureKind::Artwork => "artwork",
+        FurnitureKind::TrafficLight => "traffic-light",
         // Not reachable from any register: these are inferred forms, not
         // surveyed ones. Naming them would invite a source to claim it had
         // surveyed a parked car.
@@ -999,6 +1095,7 @@ fn prop_kind(token: &str) -> Option<FurnitureKind> {
         "cabinet" => FurnitureKind::Cabinet,
         "board" => FurnitureKind::Board,
         "artwork" => FurnitureKind::Artwork,
+        "traffic-light" => FurnitureKind::TrafficLight,
         _ => return None,
     })
 }
@@ -1093,6 +1190,35 @@ mod tests {
     /// The fixture is the fingerprint's contract, so every source must actually
     /// read something out of it. A source whose branch the fixture never
     /// exercises has a fingerprint that cannot move when that branch changes.
+    /// **The request names its projection, and an answer in another one is
+    /// refused.** The server once defaulted to Web Mercator and every tree read as
+    /// RD landed in another country — and was cached there.
+    #[test]
+    fn coordinates_are_asked_for_in_rd_and_refused_otherwise() {
+        let url = groningen_url(
+            &GRONINGEN.sources[0],
+            STUDY_CELL.0,
+            STUDY_CELL.1,
+        );
+        assert!(url.contains("srsName=EPSG%3A28992"), "{url}");
+        let mercator = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[732717.02,7024297.87]},
+             "properties":{"BOOMHOOGTE":"15 tot 18 m."}}]}"#;
+        assert!(
+            parse_geoserver_rd(mercator, &GRONINGEN.sources[0].yields).is_err(),
+            "a page of Web Mercator metres must not parse as an RD cell"
+        );
+        let rd = mercator.replace("732717.02,7024297.87", "234806.13,582449.68");
+        let cell = parse_geoserver_rd(&rd, &GRONINGEN.sources[0].yields).unwrap();
+        let t = &cell.trees[0];
+        assert!(
+            (t.lat - 53.2227).abs() < 1e-3 && (t.lng - 6.5821).abs() < 1e-3,
+            "the poplar on the study quay: {} {}",
+            t.lat,
+            t.lng
+        );
+    }
+
     #[test]
     fn every_source_reads_the_fixture() {
         for r in REGISTERS {

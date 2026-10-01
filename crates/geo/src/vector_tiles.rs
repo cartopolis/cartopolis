@@ -415,7 +415,15 @@ pub mod palette {
     pub const WATER: u32 = 0x2C_48_62;
     pub const FOREST: u32 = 0x4A_5A_36;
     /// Meadow olive: a muted green at the value of mown grass from the air.
-    pub const GRASS: u32 = 0x6E_8A_4C;
+    ///
+    /// Measured against PDOK's aerial photograph on 2026-10-01: Groningen's
+    /// lawns and parks sample at about (60–95, 87–113, 71–96), and the old
+    /// `0x6E8A4C` rendered sunlit at about (110, 125, 82) — a third too bright
+    /// and leaning yellow where the photo leans blue-green. A lawn is mostly
+    /// blades shading each other, which is why it is darker than the paint chip
+    /// says. This one tone feeds the flat fill, the image and the blades
+    /// (`systems::grass` derives from it), so they move together.
+    pub const GRASS: u32 = 0x52_6E_44;
     /// Canopy tone: one step down the [`FOREST`] hue ramp, at the same muted
     /// saturation — a game green here reads as confetti (see the module note).
     pub const CANOPY: u32 = 0x4A_6A_36;
@@ -551,6 +559,12 @@ const LAND_KINDS: &[(&str, u32)] = &[
 ];
 
 const PAINT_ORDER: &[(&str, Draw)] = &[
+    // **`sites` under `land`, as the meshes stack them.** A site is built ground
+    // (`SurfaceGroup::Built`, the bottom of `GroundLayer`) and a park or lawn
+    // inside it is grass, one rung up — so up close the Martinikerkhof was a lawn
+    // and from 500 m, where this image takes over, it was the site's beige
+    // (2026-10-01). Painted first, the grass covers it here too.
+    ("sites", Draw::Fill(palette::SITE)),
     (
         "land",
         Draw::FillByKind {
@@ -558,7 +572,6 @@ const PAINT_ORDER: &[(&str, Draw)] = &[
             kinds: LAND_KINDS,
         },
     ),
-    ("sites", Draw::Fill(palette::SITE)),
     ("ocean", Draw::Fill(palette::WATER)),
     ("water_polygons", Draw::Fill(palette::WATER)),
     ("dam_polygons", Draw::Fill(palette::BUILDING)),
@@ -736,6 +749,72 @@ pub struct OverlayFill {
     pub rgb: u32,
 }
 
+/// What the survey (the BGT) says about the ground under a basemap tile, so the
+/// image paints the ground the meshes draw rather than a cartographic one.
+///
+/// **The image takes over from the meshes, so it has to be the same picture.**
+/// Above `FLAT_GROUND_OFF_M` the client stops meshing the flat ground and this
+/// image is all of it; until 2026-10-01 it was painted from the OSM tile alone,
+/// so the Grote Markt went from its surveyed brick red to the near-white of
+/// OSM's pedestrian fill, and every street from its paving to a tarmac band, at
+/// the moment of the hand-over. The colours here come from the same function the
+/// meshes are coloured by (`paving::far_rgb`), averaged over the stone pattern the
+/// shader draws.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Survey {
+    /// The surveyed paving, in the source tile's unit square, each in the colour
+    /// it reads as from the air. Painted over OSM's pedestrian areas and under
+    /// its streets, which is the order the meshes stack in.
+    pub paving: Vec<OverlayFill>,
+    /// The cells whose survey replaces OSM's ribbons, and how far
+    /// (`road_texture::SurveyedCover`), as the same decision `map_geometry` takes
+    /// per cell.
+    pub cells: Vec<CoveredCell>,
+}
+
+/// One cell's [`SurveyedCover`], with its bounds in the source tile's unit square
+/// (`[x0, y0, x1, y1]`, y down).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoveredCell {
+    pub bounds: [f32; 4],
+    pub cover: SurveyedCover,
+}
+
+impl Survey {
+    /// Whether a street of `kind` starting at `p` (unit square) is drawn by the
+    /// survey instead — the raster half of `tessellate_roads_surveyed`. A way is
+    /// judged by its first vertex, as the meshes judge a cell's ownership.
+    #[must_use]
+    pub fn supersedes(&self, kind: &str, p: [f32; 2]) -> bool {
+        self.cells.iter().any(|c| {
+            p[0] >= c.bounds[0]
+                && p[0] < c.bounds[2]
+                && p[1] >= c.bounds[1]
+                && p[1] < c.bounds[3]
+                && c.cover.supersedes(kind)
+        })
+    }
+}
+
+/// The empty survey: what every caller that does not know one passes.
+pub static NO_SURVEY: Survey = Survey {
+    paving: Vec::new(),
+    cells: Vec::new(),
+};
+
+/// A geometry's first vertex.
+fn first_coord(geom: &Geometry<f32>) -> Option<(f32, f32)> {
+    let c = match geom {
+        Geometry::LineString(ls) => ls.0.first(),
+        Geometry::MultiLineString(m) => m.0.first().and_then(|ls| ls.0.first()),
+        Geometry::Polygon(p) => p.exterior().0.first(),
+        Geometry::MultiPolygon(m) => m.0.first().and_then(|p| p.exterior().0.first()),
+        Geometry::Point(p) => Some(&p.0),
+        _ => None,
+    }?;
+    Some((c.x, c.y))
+}
+
 /// Deepest zoom the land-cover tile set is published at. A deeper source tile
 /// reads its ancestor at this zoom ([`landcover_fills`]).
 pub const LANDCOVER_MAX_ZOOM: u32 = 10;
@@ -847,9 +926,22 @@ pub fn render_mvt_layered(
     underlay: &[OverlayFill],
     overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
+    render_mvt_surveyed(tile, sub, size, source_m, underlay, overlay, &NO_SURVEY)
+}
+
+/// [`render_mvt_layered`] with the survey's ground painted in ([`Survey`]).
+pub fn render_mvt_surveyed(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    underlay: &[OverlayFill],
+    overlay: &[OverlayFill],
+    survey: &Survey,
+) -> Result<Vec<u8>, String> {
     // Cull only when overzooming: at `factor == 1` the window is the whole tile,
     // so every feature passes and the bounds scan is pure overhead.
-    render_mvt_banded(
+    render_mvt_banded_surveyed(
         tile,
         sub,
         size,
@@ -858,6 +950,7 @@ pub fn render_mvt_layered(
         raster_bands(size),
         underlay,
         overlay,
+        survey,
     )
 }
 
@@ -959,6 +1052,9 @@ pub(crate) fn render_mvt_serial(
 /// bounds that delta, the total differing bytes per seam, and the worst single
 /// row, because the failure that matters looks nothing like the residue: a band
 /// that lost a road is a long run of one row at full channel range.
+///
+/// The tests' entry; production goes through [`render_mvt_surveyed`].
+#[cfg(test)]
 fn render_mvt_banded(
     tile: &TileData,
     sub: SubTile,
@@ -969,8 +1065,28 @@ fn render_mvt_banded(
     underlay: &[OverlayFill],
     overlay: &[OverlayFill],
 ) -> Result<Vec<u8>, String> {
+    render_mvt_banded_surveyed(
+        tile, sub, size, source_m, cull, bands, underlay, overlay, &NO_SURVEY,
+    )
+}
+
+/// [`render_mvt_banded`] with a [`Survey`].
+#[allow(clippy::too_many_arguments)]
+fn render_mvt_banded_surveyed(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+    cull: bool,
+    bands: u32,
+    underlay: &[OverlayFill],
+    overlay: &[OverlayFill],
+    survey: &Survey,
+) -> Result<Vec<u8>, String> {
     if bands <= 1 {
-        return render_rows(tile, sub, size, source_m, cull, 0, size, underlay, overlay);
+        return render_rows(
+            tile, sub, size, source_m, cull, 0, size, underlay, overlay, survey,
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -985,7 +1101,9 @@ fn render_mvt_banded(
                         if h == 0 {
                             return Ok(Vec::new());
                         }
-                        render_rows(tile, sub, size, source_m, cull, y0, h, underlay, overlay)
+                        render_rows(
+                            tile, sub, size, source_m, cull, y0, h, underlay, overlay, survey,
+                        )
                     })
                 })
                 .collect();
@@ -1005,7 +1123,9 @@ fn render_mvt_banded(
     }
 
     #[cfg(target_arch = "wasm32")]
-    render_rows(tile, sub, size, source_m, cull, 0, size, underlay, overlay)
+    render_rows(
+        tile, sub, size, source_m, cull, 0, size, underlay, overlay, survey,
+    )
 }
 
 /// `rows` rows of the raster, starting at `y0`. `size` stays the whole tile's
@@ -1021,6 +1141,7 @@ fn render_rows(
     want_rows: u32,
     underlay: &[OverlayFill],
     overlay: &[OverlayFill],
+    survey: &Survey,
 ) -> Result<Vec<u8>, String> {
     // **Bleed, because a band edge is not neutral.** The first version of this
     // assumed a pixel's anti-aliased coverage depends only on the path inside
@@ -1066,8 +1187,8 @@ fn render_rows(
     };
 
     // The overlay goes down as the first thing after `land`, whatever the tile
-    // holds: `land` is first in `PAINT_ORDER`, so this is the top of the second
-    // pass — or after the loop, for an order that ever ends at `land`.
+    // holds: `sites` and `land` open `PAINT_ORDER`, so this is the top of the
+    // third pass.
     let overlay_transform = Transform::from_row(
         px * f,
         0.0,
@@ -1081,10 +1202,18 @@ fn render_rows(
     // the tile paints over it, so it only shows where the map says nothing.
     paint_overlay(&mut pixmap, &mut paint, underlay, &overlay_transform);
 
+    // The survey's paving goes down just under the streets: over OSM's pedestrian
+    // areas (which it replaces where it lies) and under the ribbons that stay
+    // OSM's — the order `map_geometry` stacks the meshes in.
+    let mut paving_pending = !survey.paving.is_empty();
     for (layer_name, draw) in PAINT_ORDER {
-        if overlay_pending && *layer_name != "land" {
+        if overlay_pending && !matches!(*layer_name, "sites" | "land") {
             paint_overlay(&mut pixmap, &mut paint, overlay, &overlay_transform);
             overlay_pending = false;
+        }
+        if paving_pending && *layer_name == "streets" {
+            paint_overlay(&mut pixmap, &mut paint, &survey.paving, &overlay_transform);
+            paving_pending = false;
         }
         // Timed per pass (not per layer — `streets` and `buildings` are each two
         // passes with very different costs) so `dump_paint_split` attributes the
@@ -1205,12 +1334,31 @@ fn render_rows(
             }
         };
 
-        let ordered: Vec<&Feature> = match street_order {
+        let mut ordered: Vec<&Feature> = match street_order {
             Some(list) => list,
             None => features.iter().collect(),
         };
+        // **Built land first, then everything that grows on it** — the order the
+        // meshes stack in (`GroundLayer::Built` is the bottom rung). In tile
+        // order a residential area painted after the park inside it covered the
+        // park: the Martinikerkhof was a lawn up close and the residential beige
+        // from the air (2026-10-01). Stable, so equal kinds keep the tile's order.
+        if *layer_name == "land" {
+            ordered.sort_by_key(|f| kind_of(f).and_then(land_group) != Some(SurfaceGroup::Built));
+        }
+        // A street or pedestrian area the survey draws instead is not painted:
+        // its paving is already down, in its own colour.
+        let surveyed_layer =
+            !survey.cells.is_empty() && matches!(*layer_name, "streets" | "street_polygons");
         for feature in ordered {
             let kind = kind_of(feature);
+            if surveyed_layer
+                && first_coord(&feature.geometry).is_some_and(|(x, y)| {
+                    survey.supersedes(kind.unwrap_or("pedestrian"), [x / extent, y / extent])
+                })
+            {
+                continue;
+            }
             // Bounds once per feature, reused by whichever arm draws it. tiny-skia
             // has no early-out of its own: `fill_path` clones and transforms the
             // whole path before any bounds test (its `// TODO: ignore paths
@@ -11065,6 +11213,95 @@ mod tests {
 
         // Entirely outside: nothing at all.
         assert!(clip_polyline(&[[-10.0, -10.0], [-5.0, -5.0]], 0.0, 100.0).is_empty());
+    }
+
+    /// **The image paints the surveyed ground and drops what it replaces.** Over a
+    /// cell whose survey carries carriageways, the residential streets the meshes
+    /// draw from the survey are not stroked in OSM's tarmac, and the paving shows
+    /// in its own colour where they were; the streets that stay OSM's still draw.
+    #[test]
+    fn the_survey_is_painted_and_replaces_its_streets() {
+        let tile = crate::testdata::groningen();
+        let size = 256;
+        let minor = RoadClass::Minor.flat_rgb();
+        let count = |px: &[u8], rgb: u32| {
+            px.chunks_exact(4)
+                .filter(|p| u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]) == rgb)
+                .count()
+        };
+        let plain = render_mvt_surveyed(
+            &tile,
+            SubTile::WHOLE,
+            size,
+            NOMINAL_Z14_TILE_M,
+            &[],
+            &[],
+            &NO_SURVEY,
+        )
+        .unwrap();
+        let brick = 0x98_64_52;
+        let survey = Survey {
+            paving: vec![OverlayFill {
+                rings: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]],
+                rgb: brick,
+            }],
+            cells: vec![CoveredCell {
+                bounds: [0.0, 0.0, 1.0, 1.0],
+                cover: SurveyedCover::Streets,
+            }],
+        };
+        let surveyed = render_mvt_surveyed(
+            &tile,
+            SubTile::WHOLE,
+            size,
+            NOMINAL_Z14_TILE_M,
+            &[],
+            &[],
+            &survey,
+        )
+        .unwrap();
+        // `tertiary` shares the minor tone and stays OSM's (it carries markings),
+        // so what must go is the rest: everything the residential network drew.
+        let only_paths = Survey {
+            cells: vec![CoveredCell {
+                bounds: [0.0, 0.0, 1.0, 1.0],
+                cover: SurveyedCover::Paths,
+            }],
+            ..survey.clone()
+        };
+        let paths = render_mvt_surveyed(
+            &tile,
+            SubTile::WHOLE,
+            size,
+            NOMINAL_Z14_TILE_M,
+            &[],
+            &[],
+            &only_paths,
+        )
+        .unwrap();
+        let (before, after) = (count(&paths, minor), count(&surveyed, minor));
+        assert!(
+            before > 500,
+            "the fixture strokes residential streets: {before}"
+        );
+        assert!(
+            after * 10 < before * 7,
+            "the survey's streets are not stroked in OSM's tarmac: {before} → {after}"
+        );
+        assert!(
+            count(&paths, RoadClass::Path.flat_rgb()) * 2
+                < count(&plain, RoadClass::Path.flat_rgb()),
+            "over a surveyed cell the paths are the survey's too"
+        );
+        assert!(
+            count(&surveyed, brick) > count(&plain, brick) + 1000,
+            "the paving shows in its own colour"
+        );
+        assert!(
+            count(&surveyed, RoadClass::Major.flat_rgb()) * 2
+                >= count(&plain, RoadClass::Major.flat_rgb()),
+            "the marked roads stay OSM's"
+        );
     }
 
     #[test]

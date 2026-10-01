@@ -1082,8 +1082,13 @@ fn brick_colour(c: [u8; 3]) -> [u8; 3] {
     // green of 7–14 and were drawn red — but what makes it yellow is that its
     // green stands well clear of its blue: (198, 191, 172) is 7 and 19, where
     // the Grote Markt's red is 10 and 7.
+    // …and weathered further, to the photograph: (128, 76, 64) still drew the
+    // square as a red carpet beside PDOK's own picture of it, which is a taupe
+    // with a red lean (about (130, 135, 120) under the photo's cool cast,
+    // 2026-10-01). Half the chroma keeps it a red brick and puts it with the
+    // photo rather than against it.
     let base: [f64; 3] = if r - g >= 7 && r - g > g - b {
-        [128.0, 76.0, 64.0]
+        [132.0, 102.0, 90.0]
     } else if g - b >= 9 && r - g >= -2 {
         [196.0, 170.0, 122.0]
     } else if lum(c) < 95.0 {
@@ -1277,7 +1282,10 @@ mod tests {
     #[test]
     fn brick_is_told_by_the_way_it_leans() {
         let red = brick_colour([161, 151, 144]);
-        assert!(i32::from(red[0]) - i32::from(red[1]) > 50, "{red:?}");
+        let lean = i32::from(red[0]) - i32::from(red[1]);
+        // A red brick, and a weathered one: redder than any grey the photo
+        // measures, well short of the painted red the aerial contradicts.
+        assert!((20..=40).contains(&lean), "{red:?}");
         // The Vismarkt's warm yellow, which leans red-over-green as well.
         let warm = brick_colour([198, 191, 172]);
         assert!(warm[1] > warm[2] + 30 && warm[0] - warm[1] < 40, "{warm:?}");

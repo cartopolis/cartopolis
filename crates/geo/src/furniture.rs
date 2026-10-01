@@ -171,6 +171,10 @@ pub enum FurnitureKind {
     /// the water polygon rather than any tag to decide there is a canal there at
     /// all.
     Boat,
+    /// A traffic signal: a post with a signal head, for cars or for pedestrians.
+    /// Surveyed by the city (`systems::municipal`), not by the BGT. Appended
+    /// last, so the masks' existing bits keep their places.
+    TrafficLight,
 }
 
 impl FurnitureKind {
@@ -209,6 +213,7 @@ impl FurnitureKind {
             Self::Bicycle => "bicycle",
             Self::Person => "person",
             Self::Boat => "boat",
+            Self::TrafficLight => "traffic-light",
         }
     }
 
@@ -284,6 +289,7 @@ pub const ALL_FURNITURE_KINDS: &[FurnitureKind] = &[
     FurnitureKind::Bicycle,
     FurnitureKind::Person,
     FurnitureKind::Boat,
+    FurnitureKind::TrafficLight,
 ];
 
 /// Where a form can be sat on, in the object's own frame (+z front).
@@ -1010,6 +1016,11 @@ mod form {
         part([0.0, 3.98, 0.28], [0.05, 0.04, 0.28], Metal),
         part([0.0, 3.90, 0.52], [0.14, 0.06, 0.22], Roof),
     ];
+    /// A signal post: a 3 m pole and the head on it, dark, facing the road.
+    pub const TRAFFIC_LIGHT: [Part; 2] = [
+        part([0.0, 1.50, 0.0], [0.05, 1.50, 0.05], Metal),
+        part([0.0, 2.75, 0.12], [0.14, 0.45, 0.10], Tyre),
+    ];
     pub const ARTWORK: [Part; 2] = [
         part([0.0, 0.35, 0.0], [0.45, 0.35, 0.45], Stone),
         part([0.0, 1.10, 0.0], [0.25, 0.40, 0.25], Metal),
@@ -1105,6 +1116,7 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Bicycle => &form::BICYCLE,
         FurnitureKind::Person => &form::PERSON,
         FurnitureKind::Boat => &form::BOAT,
+        FurnitureKind::TrafficLight => &form::TRAFFIC_LIGHT,
     }
 }
 
@@ -1253,10 +1265,42 @@ pub fn build_furniture_meshes_except(
     build_furniture_meshes(&kept, max_bytes)
 }
 
+/// [`build_furniture_meshes_except`] with every instance raised by `lift(item)`,
+/// one height for the whole object.
+///
+/// For the things that do not stand on the ground. A moored boat floats: its
+/// hull is level at the water's surface whatever the bank beside it does, and
+/// draped vertex by vertex on the ground like a bench it was tipped up the slope
+/// of a pond's bank and stood at quay level in a canal (the study pond,
+/// 2026-10-01). The caller places these meshes itself rather than handing them
+/// to the terrain drape.
+#[must_use]
+pub fn build_furniture_meshes_lifted(
+    items: &[FurnitureInstance],
+    skip: FurnitureMask,
+    max_bytes: Option<usize>,
+    lift: &dyn Fn(&FurnitureInstance) -> f32,
+) -> Vec<SurfaceMesh> {
+    let kept: Vec<FurnitureInstance> = items
+        .iter()
+        .filter(|item| !skip.contains(item.kind) || !item.takes_placeholder_model())
+        .copied()
+        .collect();
+    build_furniture_meshes_with(&kept, max_bytes, lift)
+}
+
 #[must_use]
 pub fn build_furniture_meshes(
     items: &[FurnitureInstance],
     max_bytes: Option<usize>,
+) -> Vec<SurfaceMesh> {
+    build_furniture_meshes_with(items, max_bytes, &|_| 0.0)
+}
+
+fn build_furniture_meshes_with(
+    items: &[FurnitureInstance],
+    max_bytes: Option<usize>,
+    lift: &dyn Fn(&FurnitureInstance) -> f32,
 ) -> Vec<SurfaceMesh> {
     if items.is_empty() {
         return Vec::new();
@@ -1274,13 +1318,24 @@ pub fn build_furniture_meshes(
             }
         }
         let (sn, cs) = item.yaw.sin_cos();
+        let up = lift(item);
         for p in parts_for(item) {
             let m = match p.tone {
                 Tone::Paint => paint_multiplier(item.paint),
                 tone => tone.multiplier(),
             };
             let tint = [m[0] * item.luma, m[1] * item.luma, m[2] * item.luma, 1.0];
-            push_box(&mut buf, item.x, item.z, (sn, cs), p, tint);
+            let raised;
+            let part = if up == 0.0 {
+                p
+            } else {
+                raised = Part {
+                    at: [p.at[0], p.at[1] + up, p.at[2]],
+                    ..*p
+                };
+                &raised
+            };
+            push_box(&mut buf, item.x, item.z, (sn, cs), part, tint);
         }
     }
     if !buf.positions.is_empty() {
@@ -1328,6 +1383,10 @@ pub enum LineKind {
     Wall,
     /// A clipped hedge.
     Hedge,
+    /// A retaining wall — a quay wall, sheet piling, bank protection. Its top
+    /// is the ground at its line and its measured height is the face *below*
+    /// that, so only the side where the ground or the water drops away shows.
+    Quay,
 }
 
 impl LineKind {
@@ -1365,6 +1424,8 @@ impl LineKind {
             // reason to keep walling off every canal in the country.
             Self::Wall => (0.9, 0.09, Tone::Stone),
             Self::Hedge => (1.1, 0.35, Tone::Foliage),
+            // Only ever drawn at a measured height (atlas gates the type on one).
+            Self::Quay => (0.9, 0.12, Tone::Stone),
         }
     }
 }
@@ -1406,6 +1467,36 @@ const MIN_SEGMENT_M: f32 = 0.15;
 /// layer is visible at.
 #[must_use]
 pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Vec<SurfaceMesh> {
+    build_line_meshes_footed(lines, max_bytes, &|_, _| 0.0)
+}
+
+/// Longest box a measured wall is drawn in, metres. A straight surveyed segment
+/// can run fifty metres along a bank whose ground falls away under it; cut into
+/// equal pieces it can follow that ground and find its foot along the way, and
+/// equal pieces of one straight segment meet end to end, so nothing is lost at
+/// a corner.
+pub const WALL_PIECE_M: f32 = 6.0;
+
+/// [`build_line_meshes`] with the ground beside each wall taken into account.
+///
+/// **A measured wall's height is measured from its foot, and its foot is the
+/// lower side.** A bank or quay wall holds the walkway up: the register measures
+/// the face from the water or the lower terrace, and the top is flush with the
+/// ground behind it. Stood on the ground at its own line — which is the upper
+/// side — it was drawn that whole height *above* the walkway: two 2 m slabs down
+/// the study pond's stepped bank at a nearby square (2026-10-01). `foot(mid,
+/// dir)` answers how far the ground on the lower side of a piece of wall lies
+/// below the ground at the wall, metres (≥ 0), for the piece centred at `mid`
+/// running along unit `dir`, both tile-local; the piece is sunk by that much,
+/// never by more than its own height, so a freestanding wall on level ground is
+/// unchanged. Only measured walls are asked — a nominal height is a guess about
+/// a wall standing on the ground, and has no foot to find.
+#[must_use]
+pub fn build_line_meshes_footed(
+    lines: &[SurveyedLine],
+    max_bytes: Option<usize>,
+    foot: &dyn Fn([f32; 2], [f32; 2]) -> f32,
+) -> Vec<SurfaceMesh> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -1436,11 +1527,6 @@ pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Ve
             if len < MIN_SEGMENT_M {
                 continue;
             }
-            if let Some(max) = max_bytes {
-                if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
-                    out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
-                }
-            }
             // `push_box` maps the box's local +x onto world `(cos, -sin)`, so the
             // rotation that lays a box along `(dx, dz)` is this one. Same
             // convention as [`WayField::facing`], which maps local +z instead —
@@ -1448,19 +1534,39 @@ pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Ve
             // used, because guessing wrong lays every fence across its own line.
             let (ux, uz) = (dx / len, dz / len);
             let (sn, cs) = (-uz, ux);
-            let part = Part {
-                at: [0.0, height * 0.5, 0.0],
-                half: [len * 0.5, height * 0.5, half_thick],
-                tone,
+            // Only a measured wall is cut into pieces and footed; see
+            // [`build_line_meshes_footed`].
+            let measured = line.height_m.is_some();
+            let pieces = if measured {
+                (len / WALL_PIECE_M).ceil().max(1.0) as usize
+            } else {
+                1
             };
-            push_box(
-                &mut buf,
-                (a[0] + b[0]) * 0.5,
-                (a[1] + b[1]) * 0.5,
-                (sn, cs),
-                &part,
-                tint,
-            );
+            let piece = len / pieces as f32;
+            for k in 0..pieces {
+                if let Some(max) = max_bytes {
+                    if buf.bytes() + BOX_BYTES > max && !buf.positions.is_empty() {
+                        out.push(std::mem::take(&mut buf).finish(SurfaceGroup::Furniture));
+                    }
+                }
+                let t = (k as f32 + 0.5) * piece;
+                let mid = [a[0] + ux * t, a[1] + uz * t];
+                // A retaining wall's top *is* the ground at its line, so it is
+                // sunk its whole height; any other measured wall finds its foot.
+                let sink = if line.kind == LineKind::Quay {
+                    height
+                } else if measured {
+                    foot(mid, [ux, uz]).clamp(0.0, height)
+                } else {
+                    0.0
+                };
+                let part = Part {
+                    at: [0.0, height * 0.5 - sink, 0.0],
+                    half: [piece * 0.5, height * 0.5, half_thick],
+                    tone,
+                };
+                push_box(&mut buf, mid[0], mid[1], (sn, cs), &part, tint);
+            }
         }
     }
     if !buf.positions.is_empty() {
@@ -2086,6 +2192,62 @@ mod tests {
             (measured - 1.29).abs() < 0.01,
             "a measured wall stands at its measurement, got {measured}"
         );
+    }
+
+    /// **A bank wall's top meets the ground behind it.** The register measures a
+    /// wall from its foot, and beside water the foot is the lower side: a 2 m
+    /// wall along a pond whose water lies 2 m down is flush with the walkway, not
+    /// two metres above it. On level ground the foot is the ground itself and the
+    /// wall is unchanged; a sink is never deeper than the wall is tall; and a long
+    /// segment is cut into pieces so each can find its own foot.
+    #[test]
+    fn a_measured_wall_stands_on_its_lower_side() {
+        let wall = SurveyedLine {
+            points: vec![[0.0, 0.0], [50.0, 0.0]],
+            kind: LineKind::Wall,
+            height_m: Some(2.06),
+        };
+        let span = |m: &[SurfaceMesh]| {
+            m.iter()
+                .flat_map(|m| m.positions.iter())
+                .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                    (lo.min(p[1]), hi.max(p[1]))
+                })
+        };
+        let level = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 0.0);
+        let (lo, hi) = span(&level);
+        assert!(
+            lo.abs() < 1e-4 && (hi - 2.06).abs() < 1e-4,
+            "level ground: {lo}..{hi}"
+        );
+        let bank = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 2.0);
+        let (lo, hi) = span(&bank);
+        assert!((lo + 2.0).abs() < 1e-4, "the foot is the water side: {lo}");
+        assert!((hi - 0.06).abs() < 1e-4, "the top meets the walkway: {hi}");
+        let deep = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 9.0);
+        let (_, hi) = span(&deep);
+        assert!(hi.abs() < 1e-4, "never sunk past its own height: {hi}");
+        let pieces: usize = bank.iter().map(|m| m.positions.len()).sum::<usize>() / 24;
+        assert_eq!(pieces, 9, "50 m in pieces of at most {WALL_PIECE_M} m");
+        let unmeasured = SurveyedLine {
+            height_m: None,
+            ..wall
+        };
+        let (lo, _) = span(&build_line_meshes_footed(
+            &[unmeasured.clone()],
+            None,
+            &|_, _| 2.0,
+        ));
+        assert!(lo.abs() < 1e-4, "a nominal wall has no foot to find");
+        // A quay wall is flush with the quay whatever the ground beside it says:
+        // the survey line and the map's water rarely agree on where the edge is.
+        let quay = SurveyedLine {
+            kind: LineKind::Quay,
+            height_m: Some(4.25),
+            ..unmeasured
+        };
+        let (lo, hi) = span(&build_line_meshes_footed(&[quay], None, &|_, _| 0.0));
+        assert!(hi.abs() < 1e-4 && (lo + 4.25).abs() < 1e-4, "{lo}..{hi}");
     }
 
     /// Below the floor there is no wall to draw. The 3D product drapes its objects

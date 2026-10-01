@@ -144,10 +144,10 @@ pub fn extract_moorings(
     if truncated {
         tracing::warn!(
             cap = MAX_BOATS_PER_CELL,
-            "moorings hit the per-cell cap; this cell is moored short"
+            "moorings ran past the collection bound; this cell is moored short"
         );
     }
-    Ok(out)
+    Ok(crate::scatter::thin_evenly(out, MAX_BOATS_PER_CELL))
 }
 
 /// Lay boats along one ring's edges.
@@ -210,7 +210,9 @@ fn moor_along_ring(
                 // client's collider pass, and a hull is meant to stop you.
                 over_water: false,
             });
-            if out.len() >= MAX_BOATS_PER_CELL {
+            // Collected past the ceiling and thinned evenly to it afterwards
+            // (`scatter::thin_evenly`); this bound only stops a runaway cell.
+            if out.len() >= MAX_BOATS_PER_CELL * 4 {
                 *truncated = true;
                 return;
             }

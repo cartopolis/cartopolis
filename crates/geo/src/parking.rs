@@ -277,7 +277,9 @@ pub fn extract_parking(
                         paint: paints_pick(paints, h),
                         over_water: false,
                     });
-                    if out.len() >= MAX_VEHICLES_PER_CELL {
+                    // Collected past the ceiling, then thinned evenly to it below;
+                    // the collection bound only stops an absurd cell running away.
+                    if out.len() >= MAX_VEHICLES_PER_CELL * COLLECT_PAST_CAP {
                         truncated = true;
                         break;
                     }
@@ -298,11 +300,22 @@ pub fn extract_parking(
     if truncated {
         tracing::warn!(
             cap = MAX_VEHICLES_PER_CELL,
-            "parked vehicles hit the per-cell cap; this cell is parked short"
+            "parked vehicles ran past the collection bound; this cell is parked short"
         );
     }
-    Ok(out)
+    if out.len() > MAX_VEHICLES_PER_CELL {
+        tracing::debug!(
+            laid = out.len(),
+            cap = MAX_VEHICLES_PER_CELL,
+            "parked vehicles thinned evenly to the per-cell cap"
+        );
+    }
+    Ok(crate::scatter::thin_evenly(out, MAX_VEHICLES_PER_CELL))
 }
+
+/// How far past [`MAX_VEHICLES_PER_CELL`] a cell is laid before it is thinned
+/// (`scatter::thin_evenly`).
+const COLLECT_PAST_CAP: usize = 4;
 
 /// One body colour off the instance hash.
 fn paints_pick(paints: &[u32], h: u64) -> u32 {

@@ -1024,6 +1024,26 @@ pub fn hash3(seed: u64, i: i32, j: i32) -> u64 {
     h ^ (h >> 31)
 }
 
+/// Keep `cap` of `items`, spread evenly through the list, in order.
+///
+/// For an inferred layer that outgrows its per-cell ceiling: cutting the list
+/// at the ceiling empties whatever comes last — whole car parks beside full
+/// ones, a canal moored on one bank and bare on the next — where thinning every
+/// part by the same fraction keeps the layer looking like itself, only sparser.
+/// Deterministic, so a cell that streams out and back is the same.
+pub fn thin_evenly<T>(items: Vec<T>, cap: usize) -> Vec<T> {
+    let n = items.len();
+    if n <= cap {
+        return items;
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| (i + 1) * cap / n > i * cap / n)
+        .map(|(_, t)| t)
+        .collect()
+}
+
 pub fn rand01(h: u64, stream: u32) -> f32 {
     let mut x = h.rotate_left(stream * 11 + 7);
     x ^= x >> 33;
@@ -1035,6 +1055,18 @@ pub fn rand01(h: u64, stream: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Thinning keeps exactly the cap, in order, and takes from every part of
+    /// the list alike — the last quarter keeps a quarter of the survivors.
+    #[test]
+    fn thinning_is_even_and_exact() {
+        let kept = thin_evenly((0..1000).collect::<Vec<_>>(), 300);
+        assert_eq!(kept.len(), 300);
+        assert!(kept.windows(2).all(|w| w[0] < w[1]));
+        let tail = kept.iter().filter(|&&i| i >= 750).count();
+        assert!((70..=80).contains(&tail), "{tail}");
+        assert_eq!(thin_evenly(vec![1, 2, 3], 5), vec![1, 2, 3]);
+    }
 
     // The scatter takes a shared `TileData` now (one parse per streamed cell,
     // shared with the tessellators — `TileData`'s docs say why), so each test

@@ -144,6 +144,9 @@ pub enum TilePayload {
         /// The land cover under `source`, painted under everything
         /// ([`landcover_underlay`]). Empty where the host serves none.
         underlay: Arc<Vec<vector_tiles::OverlayFill>>,
+        /// The surveyed ground over `source`, painted as the meshes draw it
+        /// (`surveyed::raster_survey`). Empty outside the BGT coverage.
+        survey: Arc<vector_tiles::Survey>,
     },
 }
 
@@ -169,15 +172,17 @@ impl TilePayload {
                 source,
                 crops,
                 underlay,
+                survey,
             } => {
                 let tile = parse_shared(source, &bytes)?;
-                let rgba = vector_tiles::render_mvt_layered(
+                let rgba = vector_tiles::render_mvt_surveyed(
                     &tile,
                     sub,
                     size,
                     source_ground_m(source),
                     &underlay,
                     &crops,
+                    &survey,
                 )
                 .map_err(|e| e.to_string())?;
                 let mut img = image::RgbaImage::from_raw(size, size, rgba)
@@ -216,7 +221,10 @@ fn pack_land_alpha(img: &mut image::RgbaImage, mask: Result<Vec<u8>, String>) {
 /// `cartopolis_geo`, and the water mask is packed on this side of the seam
 /// (`pack_land_alpha`), so without this an entry drawn before the mask existed
 /// would be read back as a tile with no water in it.
-const RENDERED_FORMAT: u32 = 2;
+///
+/// 3: the surveyed ground is painted in (`surveyed::raster_survey`), built on this
+/// side of the seam.
+const RENDERED_FORMAT: u32 = 3;
 
 /// Where a finished basemap tile is kept on disk, or `None` when it is not kept.
 ///
@@ -244,6 +252,7 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
         bytes,
         crops,
         underlay,
+        survey,
         ..
     } = payload
     else {
@@ -255,9 +264,14 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     // The crops are drawn into the same pixels, so they are part of what the
     // picture is of: a field re-registered next year, or a tile first drawn
     // before the host served the register at all, must not be read back. The
-    // land cover likewise.
+    // land cover and the survey likewise.
     hash_fills(&mut h, crops);
     hash_fills(&mut h, underlay);
+    hash_fills(&mut h, &survey.paving);
+    for c in &survey.cells {
+        c.bounds.map(f32::to_bits).hash(&mut h);
+        (c.cover as u8).hash(&mut h);
+    }
     use std::hash::Hasher;
     Some(format!(
         "rendered/{}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
@@ -419,12 +433,14 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
 
     let crops = Arc::new(crate::systems::crops::raster_overlay(source).await);
     let underlay = Arc::new(landcover_underlay(source, template).await);
+    let survey = crate::systems::surveyed::raster_survey(source).await;
     Ok(TilePayload::Vector {
         bytes,
         sub,
         source,
         crops,
         underlay,
+        survey,
     })
 }
 
@@ -655,6 +671,7 @@ mod tests {
             source: key,
             crops: Arc::default(),
             underlay: Arc::default(),
+            survey: Arc::default(),
         };
         let size = 256;
         let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
@@ -683,6 +700,7 @@ mod tests {
             source: key,
             crops: Arc::default(),
             underlay: Arc::default(),
+            survey: Arc::default(),
         };
         let b = TilePayload::Vector {
             bytes: Arc::new(other),
@@ -690,6 +708,7 @@ mod tests {
             source: key,
             crops: Arc::default(),
             underlay: Arc::default(),
+            survey: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),
@@ -710,6 +729,7 @@ mod tests {
                 rgb: 0xE1_D3_A4,
             }]),
             underlay: Arc::default(),
+            survey: Arc::default(),
         };
         assert_ne!(
             rendered_cache_key(&key, &a, 256),

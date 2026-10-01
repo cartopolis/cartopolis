@@ -101,7 +101,12 @@ const PROP_KINDS: [FurnitureKind; 10] = [
 
 /// The linear forms, in wire order. Mirrors `LINE_KINDS` in
 /// atlas's `pipeline/bgt.rs` — **append, never renumber**.
-const LINE_KINDS: [LineKind; 3] = [LineKind::Fence, LineKind::Wall, LineKind::Hedge];
+const LINE_KINDS: [LineKind; 4] = [
+    LineKind::Fence,
+    LineKind::Wall,
+    LineKind::Hedge,
+    LineKind::Quay,
+];
 
 /// The paved forms, in wire order. Mirrors `SURFACE_KINDS` in
 /// atlas's `pipeline/bgt.rs` — **append, never renumber**.
@@ -590,6 +595,128 @@ pub fn surveyed_props(
     crate::systems::furniture::place_surveyed(tile, tile_m, seed, &points)
 }
 
+/// Shallowest basemap source the survey is painted into. A z12 source tile
+/// spans sixteen cells of multi-megabyte paving for a raster on which a street is
+/// a pixel; it is drawn from high enough that the paving is one tone anyway, and
+/// the meshes hand over at z13–z14 distances.
+const RASTER_MIN_ZOOM: u32 = 13;
+
+/// How long the basemap holds its first tiles for the BGT's coverage answer —
+/// the crops' wait, for the crops' reason (`crops::RASTER_WAIT_S`): a tile drawn
+/// before it is drawn without the survey and kept that way, on disk too.
+const RASTER_WAIT_S: f32 = 3.0;
+
+/// Whether the basemap may start drawing as far as the survey is concerned.
+pub(crate) fn raster_ready() -> bool {
+    static SINCE: std::sync::OnceLock<bevy::platform::time::Instant> = std::sync::OnceLock::new();
+    (COVERAGE.revision() != 0 && crate::systems::roof_colours::coverage_answered())
+        || SINCE
+            .get_or_init(bevy::platform::time::Instant::now)
+            .elapsed()
+            .as_secs_f32()
+            > RASTER_WAIT_S
+}
+
+/// Recently built surveys, by source tile. Up to 64 overzoomed tiles share one
+/// source, and each would otherwise re-read and re-parse every paving file
+/// under it — the crops can afford that and a city's paving cannot.
+static RASTER_SURVEYS: std::sync::Mutex<
+    Vec<(
+        cartopolis_core::TileKey,
+        std::sync::Arc<cartopolis_geo::vector_tiles::Survey>,
+    )>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// Surveys kept in [`RASTER_SURVEYS`].
+const RASTER_SURVEYS_KEPT: usize = 24;
+
+/// The surveyed ground over one basemap source tile, as the basemap paints it
+/// (`vector_tiles::Survey`): every paved surface in the colour the meshes give it
+/// from the air (`paving::far_rgb`), and for each covered cell which OSM ribbons
+/// the survey replaces — the same per-cell decision `map_geometry` takes.
+///
+/// **This is what keeps the ground one picture across the hand-over.** Above
+/// `FLAT_GROUND_OFF_M` the meshes go and this image is the ground; painted from
+/// OSM alone it put a white square where the Grote Markt's brick had been.
+///
+/// Empty outside z13–z14 and for every cell the host does not cover.
+pub(crate) async fn raster_survey(
+    source: cartopolis_core::TileKey,
+) -> std::sync::Arc<cartopolis_geo::vector_tiles::Survey> {
+    use cartopolis_geo::road_texture::SurveyedCover;
+    use cartopolis_geo::vector_tiles::{CoveredCell, OverlayFill, Survey};
+    if source.z < RASTER_MIN_ZOOM || source.z > BGT_ZOOM {
+        return std::sync::Arc::default();
+    }
+    let lock = || {
+        RASTER_SURVEYS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some((_, s)) = lock().iter().find(|(k, _)| *k == source) {
+        return s.clone();
+    }
+    let shift = BGT_ZOOM - source.z;
+    let (x0, y0) = (source.x << shift, source.y << shift);
+    let span = 1i64 << shift;
+    let to_unit = |&(lat, lng): &(f64, f64)| {
+        let (fx, fy) = cartopolis_core::world::lat_lng_to_tile_frac(lat, lng, source.z);
+        [(fx - source.x as f64) as f32, (fy - source.y as f64) as f32]
+    };
+    let mut survey = Survey::default();
+    for cx in x0..x0 + span {
+        for cy in y0..y0 + span {
+            if !COVERAGE.covers(cx, cy) {
+                continue;
+            }
+            let paving = load_surveyed_paving(cx, cy).await;
+            if paving.areas.is_empty() {
+                continue;
+            }
+            let measured = crate::systems::roof_colours::load_roof_cell(cx, cy).await;
+            // `map_geometry`'s choice, made on the same file.
+            let cover = if paving
+                .areas
+                .iter()
+                .any(|(k, _, _)| matches!(k, PavingKind::Street | PavingKind::LivingStreet))
+            {
+                SurveyedCover::Streets
+            } else {
+                SurveyedCover::Paths
+            };
+            let s = span as f32;
+            let (u, v) = ((cx - x0) as f32 / s, (cy - y0) as f32 / s);
+            survey.cells.push(CoveredCell {
+                bounds: [u, v, u + 1.0 / s, v + 1.0 / s],
+                cover,
+            });
+            for (kind, material, rings) in &paving.areas {
+                let Some(&(lat, lng)) = rings.first().and_then(|r| r.first()) else {
+                    continue;
+                };
+                let measured = measured
+                    .paving
+                    .get(&cartopolis_geo::formats::roofs::paving_key(lat, lng))
+                    .map(|m| u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2]));
+                survey.paving.push(OverlayFill {
+                    rings: rings
+                        .iter()
+                        .map(|r| r.iter().map(to_unit).collect())
+                        .collect(),
+                    rgb: cartopolis_geo::paving::far_rgb(*kind, *material, measured),
+                });
+            }
+        }
+    }
+    let survey = std::sync::Arc::new(survey);
+    let mut kept = lock();
+    if kept.len() >= RASTER_SURVEYS_KEPT {
+        kept.remove(0);
+    }
+    kept.push((source, survey.clone()));
+    survey
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -869,7 +996,12 @@ mod tests {
         );
         assert_eq!(
             LINE_KINDS.to_vec(),
-            vec![LineKind::Fence, LineKind::Wall, LineKind::Hedge]
+            vec![
+                LineKind::Fence,
+                LineKind::Wall,
+                LineKind::Hedge,
+                LineKind::Quay
+            ]
         );
     }
 

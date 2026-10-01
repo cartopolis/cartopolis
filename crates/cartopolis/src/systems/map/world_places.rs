@@ -223,6 +223,7 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         FurnitureKind::Bicycle => "Bicycle",
         FurnitureKind::Person => "Person",
         FurnitureKind::Boat => "Boat",
+        FurnitureKind::TrafficLight => "Traffic light",
     }
 }
 
@@ -269,6 +270,8 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         // walks.
         FurnitureKind::Person => 0.0,
         FurnitureKind::Boat => 0.0,
+        // Slim and in the way, like a lamp column.
+        FurnitureKind::TrafficLight => 0.2,
     }
 }
 

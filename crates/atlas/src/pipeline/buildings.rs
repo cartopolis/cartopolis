@@ -65,6 +65,17 @@ pub fn height_tags(props: &Value) -> Option<Tags> {
 
     let mut tags = Tags::new();
     tags.insert("building".into(), "yes".into());
+    // **Who the block is, and when it was built**, so the client colours it as
+    // it colours the same building's LoD2.2 shell: by the roof atlas measured
+    // from the photo (keyed by this id, `roofs` dataset) and by its era. Without
+    // them every block fell back to a random terracotta, and a city's grey flat
+    // roofs turned red the moment the camera rose past the shells' ring.
+    if let Some(oid) = props.get("identificatie").and_then(Value::as_str) {
+        tags.insert("ref:bag".into(), super::lod22::object_id(oid).0.into());
+    }
+    if let Some(year) = num(props, "oorspronkelijkbouwjaar").filter(|y| *y > 1000.0) {
+        tags.insert("start_date".into(), format!("{}", year as i64).into());
+    }
     if let Some(l) = lagen {
         tags.insert(
             "building:levels".into(),
@@ -297,6 +308,22 @@ mod tests {
         assert_eq!(t["roof:shape"], "flat");
         assert!(height_tags(&json!({"b3_h_70p": 9.0})).is_none());
         assert!(height_tags(&json!({"b3_h_70p": 9.0, "b3_bouwlagen": 0})).is_none());
+    }
+
+    /// The block carries the key the roofs file is written under, and its year,
+    /// so the client can colour it as it colours the building's shell.
+    #[test]
+    fn a_block_names_its_building_and_its_year() {
+        let t = height_tags(&json!({
+            "b3_h_maaiveld": 1.0, "b3_h_70p": 7.0, "b3_bouwlagen": 2,
+            "identificatie": "NL.IMBAG.Pand.0014100010920520",
+            "oorspronkelijkbouwjaar": 1931
+        }))
+        .unwrap();
+        assert_eq!(t["ref:bag"], "0014100010920520");
+        assert_eq!(t["start_date"], "1931");
+        let bare = height_tags(&json!({"b3_h_maaiveld": 1.0, "b3_h_70p": 7.0})).unwrap();
+        assert!(bare.get("ref:bag").is_none() && bare.get("start_date").is_none());
     }
 
     #[test]

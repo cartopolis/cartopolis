@@ -628,6 +628,10 @@ struct Building {
     /// tower over its nave); where they cover an outline, the outline's own
     /// one-block extrusion is skipped (see [`resolve_parts`]).
     part: bool,
+    /// The BAG pand id (`ref:bag`), bare digits as the roofs file keys it.
+    bag: Option<String>,
+    /// The construction year (`start_date`), when it is a plain year.
+    year: Option<u16>,
 }
 
 /// A detail patch fully prepared on the background thread — fetched footprints
@@ -1457,11 +1461,27 @@ pub fn update_buildings(
                 .spawn(async move {
                     match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
                         Ok(text) => {
+                            // A register block is coloured from the register
+                            // (`register_colours`); an Overpass one keeps its tags.
+                            let roofs = if tdbag {
+                                Some(crate::systems::roof_colours::load_roof_cell(cx, cy).await)
+                            } else {
+                                None
+                            };
                             crate::platform::workers::submit(
                                 "osm_buildings",
                                 Box::new(move || {
                                     let built = build_far_from_text(
-                                        &text, cx, cy, ax, ay, z, lat, &ground, &lids,
+                                        &text,
+                                        cx,
+                                        cy,
+                                        ax,
+                                        ay,
+                                        z,
+                                        lat,
+                                        &ground,
+                                        &lids,
+                                        roofs.as_ref(),
                                     );
                                     if let Ok(mut g) = results.lock() {
                                         g.push(((cx, cy), built));
@@ -1811,8 +1831,14 @@ fn build_far_from_text(
     lat: f64,
     ground: &crate::systems::terrain::TerrainSnapshot,
     lids: &crate::systems::tunnels::LidSnapshot,
+    roofs: Option<&cartopolis_geo::formats::roofs::Cell>,
 ) -> Result<Option<FarCellBuild>, String> {
-    let buildings = parse_buildings(text)?;
+    let mut buildings = parse_buildings(text)?;
+    if let Some(roofs) = roofs {
+        for b in &mut buildings {
+            register_colours(b, roofs);
+        }
+    }
     let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, CACHE_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -3329,6 +3355,12 @@ fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
             .and_then(|t| t.get("roof:height"))
             .and_then(num_from_value);
         let roof_across = tag_str(tags, "roof:orientation") == Some("across");
+        let bag = tag_str(tags, "ref:bag")
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .map(|s| format!("{s:0>16}"));
+        let year = tag_str(tags, "start_date")
+            .and_then(|s| s.get(..4))
+            .and_then(|s| s.parse::<u16>().ok());
         out.push(Building {
             id,
             ring,
@@ -3341,6 +3373,8 @@ fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
             roof_across,
             min_height,
             part,
+            bag,
+            year,
         });
     }
     Ok(out)
@@ -3449,6 +3483,38 @@ fn derive_colors(tags: Option<&Tags>, ring0: (f64, f64)) -> ([f32; 3], [f32; 3])
     // `base_color` in linear space — convert here, at the single exit, or every
     // wall displays a stop too bright and terracotta reads as salmon.
     (srgb_to_linear_f32(wall), srgb_to_linear_f32(roof))
+}
+
+/// Colour a register block (the `far_tdbag` lane's LoD1.2) the way `lod22`
+/// colours the same building's shell: the era's wall, and the roof atlas
+/// measured from the photo — flat or pitched by the block's own shape, each
+/// falling back to the other and then to what `lod22` generates (the flat-roof
+/// grey, the era's tile).
+///
+/// **The block is what the camera sees between the shells' ring and the image**,
+/// so a colour of its own is a colour step on the way up. It had one: every
+/// block is `building=yes` and nothing else, which `default_roof` answers with a
+/// random terracotta four times in five — so from 3 km a city of grey flat
+/// roofs, industrial halls included, came out red (2026-10-01). A block without
+/// an id (written before atlas carried one) still gets the shape rule, which
+/// alone puts the flat roofs back to grey.
+fn register_colours(b: &mut Building, roofs: &cartopolis_geo::formats::roofs::Cell) {
+    let (lat, lng) = b.ring[0];
+    let (wall, tile) = building_palette_dated(lat, lng, b.year);
+    let flat = srgb_to_linear_f32(crate::systems::lod22::FLAT_ROOF_COLOR);
+    let measured = b.bag.as_ref().and_then(|id| roofs.roofs.get(id));
+    let lin = |s: &cartopolis_geo::formats::roofs::Surface| {
+        let v = crate::systems::roof_colours::linear(s.c, 1.0);
+        [v[0], v[1], v[2]]
+    };
+    let f = measured.and_then(|r| r.f.as_ref()).map(lin);
+    let p = measured.and_then(|r| r.p.as_ref()).map(lin);
+    b.wall_color = wall;
+    b.roof_color = if b.roof_shape == RoofShape::Flat {
+        f.or(p).unwrap_or(flat)
+    } else {
+        p.or(f).unwrap_or(tile)
+    };
 }
 
 /// Default roof tone for a building type without `roof:*` tags: flat grey for
@@ -4046,6 +4112,8 @@ mod tests {
             roof_across: false,
             min_height: 0.0,
             part: false,
+            bag: None,
+            year: None,
         };
         let part = |id: i64, lat: f64, lng: f64, half: f64| Building {
             part: true,

@@ -49,7 +49,7 @@ const PROP_KINDS: [&str; 7] = [
     "cabinet",
 ];
 /// Linear forms in wire order, mirrored by `LINE_KINDS`.
-const LINE_KINDS: [&str; 3] = ["fence", "wall", "hedge"];
+const LINE_KINDS: [&str; 4] = ["fence", "wall", "hedge", "quay"];
 /// Bridge parts in wire order, mirrored by `BRIDGE_PARTS` in the client.
 ///
 /// The BGT's `type_overbruggingsdeel` is `dek`, `pijler` (a pier) or `landhoofd`
@@ -108,7 +108,13 @@ fn ix(table: &[&str], name: &str) -> usize {
 fn line_form(t: &str) -> Option<&'static str> {
     Some(match t {
         "hek" | "draadraster" => "fence",
-        "muur" | "geluidsscherm" | "kademuur" | "damwand" | "walbescherming" => "wall",
+        "muur" | "geluidsscherm" => "wall",
+        // Retaining walls: their top is the ground behind them and their
+        // measured height is the face below it, down to the water. Drawn as a
+        // `wall` they stood that height *above* the quay (the Westerhaven's
+        // 243 m, 4.25 m `kademuur`, 2026-10-01). Appended to `LINE_KINDS`, so
+        // a client that predates it drops the line rather than misdrawing it.
+        "kademuur" | "damwand" | "walbescherming" => "quay",
         _ => return None,
     })
 }
@@ -729,6 +735,17 @@ fn collect_surfaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Retaining walls are their own form, at the end of the table, so a wall
+    /// that holds a quay up is not drawn standing on it.
+    #[test]
+    fn quay_walls_are_their_own_form() {
+        for t in ["kademuur", "damwand", "walbescherming"] {
+            assert_eq!(line_form(t), Some("quay"), "{t}");
+        }
+        assert_eq!(line_form("muur"), Some("wall"));
+        assert_eq!(ix(&LINE_KINDS, "quay"), 3, "appended, never renumbered");
+    }
 
     /// The register's part types, as the API answered them over the Emmaviaduct
     /// (2026-09-24): a deck, a pier, an abutment, an untyped part over something,

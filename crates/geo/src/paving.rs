@@ -130,7 +130,9 @@ impl PavingKind {
             Self::Paved => 0xA4_A1_9A,
             Self::Steps => 0xA0_9B_92,
             Self::Street => 0x6E_6D_6A,
-            Self::LivingStreet => 0x98_64_52,
+            // Weathered red clay, as atlas draws a measured red brick (`roofs.rs`
+            // `brick_colour`): the aerial photograph never shows a painted red.
+            Self::LivingStreet => 0x84_66_5A,
             Self::Road => 0x60_5F_5C,
             Self::Yard => 0xA8_A4_9C,
         }
@@ -221,7 +223,7 @@ impl PavingMaterial {
         match self {
             Self::Asphalt => 0x72_71_6E,
             Self::Concrete => 0xAC_A9_A2,
-            Self::Brick => 0x9E_62_4E,
+            Self::Brick => 0x84_66_5A,
             Self::ConcretePaver => 0x9F_9C_95,
             Self::Tiles => 0xB8_B5_AD,
             Self::Stone => 0x94_8E_84,
@@ -298,6 +300,55 @@ pub fn area_rgb(kind: PavingKind, material: Option<PavingMaterial>) -> u32 {
         Some(m) if !kind.pins_its_own_tone() => m.rgb(),
         _ => kind.rgb(),
     }
+}
+
+/// What a pattern's stones average to once they are smaller than a pixel, as a
+/// linear multiplier on the surface's colour — the far end of `paving_look` in
+/// `ground_detail.wgsl`, which blurs each pattern to exactly these values. **The
+/// numbers are the shader's** and move with it; `the_far_tone_is_the_shaders`
+/// keeps the list in step with the pattern table.
+#[must_use]
+pub fn pattern_mean(pattern: u8) -> [f32; 3] {
+    match pattern {
+        pattern::CONCRETE => [0.99; 3],
+        pattern::BRICK => [0.96; 3],
+        pattern::PAVER | pattern::TILES => [0.97; 3],
+        pattern::SETTS => [0.93; 3],
+        // `mix(vec3(1.05), grass, 0.4)` with grass = (0.45, 0.85, 0.35).
+        pattern::GRASS_PAVER => [0.81, 0.97, 0.77],
+        // Asphalt and loose stone are zero-mean noise; no pattern is no tone.
+        _ => [1.0; 3],
+    }
+}
+
+/// The colour a surface reads as from the air: the colour [`build_paving_meshes`]
+/// gives it — the photo's measurement, else the material's, else the form's —
+/// times what its pattern averages to. This is what the basemap image paints for
+/// the same polygon, so the ground does not change colour where the image takes
+/// over from the meshes (`FLAT_GROUND_OFF_M` in the client).
+#[must_use]
+pub fn far_rgb(kind: PavingKind, material: Option<PavingMaterial>, measured: Option<u32>) -> u32 {
+    let rgb = measured.unwrap_or_else(|| area_rgb(kind, material));
+    let mean = pattern_mean(area_pattern(kind, material));
+    let to_lin = |c: u32| {
+        let s = c as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let to_srgb = |l: f32| {
+        let l = l.clamp(0.0, 1.0);
+        let s = if l <= 0.003_130_8 {
+            l * 12.92
+        } else {
+            1.055 * l.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round() as u32
+    };
+    let ch = |shift: u32, k: usize| to_srgb(to_lin((rgb >> shift) & 0xFF) * mean[k]) << shift;
+    ch(16, 0) | ch(8, 1) | ch(0, 2)
 }
 
 /// Triangulate a cell's paving into merged meshes, each no larger than
@@ -393,6 +444,56 @@ pub fn cut_ground_under_paving(meshes: &mut Vec<SurfaceMesh>, paving: &[SurfaceM
 mod tests {
     use super::*;
     use crate::flat_fill::TRI_BYTES;
+
+    /// **The image paints what the meshes draw, averaged.** Each stone pattern's
+    /// far-field mean is read out of the shader's own source, so moving one there
+    /// without moving [`pattern_mean`] fails here instead of putting a colour step
+    /// at the altitude where the image takes over.
+    #[test]
+    fn the_far_tone_is_the_shaders() {
+        let wgsl = include_str!("../../../assets/shaders/ground_detail.wgsl");
+        for (p, name) in [
+            (pattern::CONCRETE, "case 2u"),
+            (pattern::BRICK, "case 3u"),
+            (pattern::PAVER, "case 4u"),
+            (pattern::TILES, "case 5u"),
+            (pattern::SETTS, "case 6u"),
+        ] {
+            let arm = &wgsl[wgsl.find(name).expect(name)..];
+            let arm = &arm[..arm.find("\n        }").unwrap_or(arm.len())];
+            let stone = &arm[arm.find("stone(").expect("a stone pattern")..];
+            // The call's arguments nest parentheses; the statement ends at `);`.
+            let mean: f32 = stone[..stone.find(");").unwrap()]
+                .rsplit(',')
+                .next()
+                .unwrap()
+                .trim()
+                .parse()
+                .expect("the last argument of stone() is the far mean");
+            assert!(
+                (pattern_mean(p)[0] - mean).abs() < 1e-6,
+                "{name}: shader {mean}, pattern_mean {:?}",
+                pattern_mean(p)
+            );
+        }
+        // A measured colour wins over the material and is only darkened by the
+        // pattern's mean: brick at 0.96 linear is a few counts, never a new hue.
+        let measured = 0x98_64_52;
+        let far = far_rgb(
+            PavingKind::LivingStreet,
+            Some(PavingMaterial::Brick),
+            Some(measured),
+        );
+        for shift in [16, 8, 0] {
+            let (a, b) = ((measured >> shift) & 0xFF, (far >> shift) & 0xFF);
+            assert!(b <= a && a - b <= 4, "{a} → {b}");
+        }
+        assert_eq!(
+            far_rgb(PavingKind::Street, Some(PavingMaterial::Asphalt), None),
+            PavingMaterial::Asphalt.rgb(),
+            "asphalt's noise averages to its own colour"
+        );
+    }
 
     fn square(kind: PavingKind, size: f32) -> PavedArea {
         PavedArea {

@@ -19,6 +19,12 @@ static COVERAGE: CoverageSlot = CoverageSlot::new("roofs", "/roofs/coverage.json
 
 /// Keep the coverage manifest fetched. Called from `update_lod22`, the only
 /// consumer.
+/// Whether the roofs' coverage manifest has answered — what the basemap waits on
+/// before painting measured paving colours into a tile it then keeps.
+pub(crate) fn coverage_answered() -> bool {
+    COVERAGE.revision() != 0
+}
+
 pub(crate) fn prefetch_coverage(now: f64) {
     COVERAGE.ensure(now);
 }

@@ -204,7 +204,7 @@ pub(crate) fn max_cell_mesh_bytes_for(budget: &crate::quality::Budget) -> usize 
 /// faces get the tiled-roof tone. So flat commercial roofs and pitched houses
 /// colour correctly from the real geometry.
 const FLAT_ROOF_NORMAL_Y: f32 = 0.90;
-const FLAT_ROOF_COLOR: [f32; 3] = [0.52, 0.52, 0.54];
+pub(crate) const FLAT_ROOF_COLOR: [f32; 3] = [0.52, 0.52, 0.54];
 /// Shadow LOD: only cells within this Chebyshev radius of the camera cast into
 /// the sun/moon cascades (radius 1 → the 3×3 around the camera). Distant cells'
 /// shadows are sub-pixel, but rasterizing their ~240k-triangle geometry into up

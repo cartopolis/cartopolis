@@ -1263,6 +1263,9 @@ fn spawn_geometry_task(
                         crate::systems::tile_loader::parse_shared(key, &bytes)
                     });
                 lap.mark("parse");
+                // Meshes placed at their own heights rather than draped on the
+                // ground — the moored boats — joined to the cell after the drape.
+                let mut floating: Vec<vector_tiles::SurfaceMesh> = Vec::new();
                 let outcome = match parsed {
                     Ok(tile) => {
                     // The streets' own heights, where atlas solved them: matched
@@ -1711,8 +1714,10 @@ fn spawn_geometry_task(
                                         if !cell_tunnels.is_empty() {
                                             let before = lines.len();
                                             lines.retain(|l| {
-                                                l.kind != furniture::LineKind::Wall
-                                                    || !cartopolis_geo::tunnels::wall_of_a_sunken_road(
+                                                !matches!(
+                                                    l.kind,
+                                                    furniture::LineKind::Wall | furniture::LineKind::Quay
+                                                ) || !cartopolis_geo::tunnels::wall_of_a_sunken_road(
                                                         &cell_tunnels,
                                                         &cell_openings,
                                                         &l.points,
@@ -1763,8 +1768,10 @@ fn spawn_geometry_task(
                                                 .collect();
                                             let before = lines.len();
                                             lines.retain(|l| {
-                                                l.kind != furniture::LineKind::Wall
-                                                    || !vector_tiles::wall_of_a_bridge(
+                                                !matches!(
+                                                    l.kind,
+                                                    furniture::LineKind::Wall | furniture::LineKind::Quay
+                                                ) || !vector_tiles::wall_of_a_bridge(
                                                         &raised_decks,
                                                         &raised_ramps,
                                                         &l.points,
@@ -1780,8 +1787,38 @@ fn spawn_geometry_task(
                                             }
                                         }
                                         cell_places.surveyed.2 = lines.len();
-                                        meshes.extend(furniture::build_line_meshes(
-                                            &lines, mesh_bytes,
+                                        // A measured wall stands on its lower
+                                        // side (`build_line_meshes_footed`): the
+                                        // ground or water a metre or two either
+                                        // side, against the land at the wall that
+                                        // `stand_on_terrain` will put it on.
+                                        let foot = |mid: [f32; 2], dir: [f32; 2]| -> f32 {
+                                            let Some((g, origin)) = ground.as_ref() else {
+                                                return 0.0;
+                                            };
+                                            let at = |p: [f32; 2]| (origin.x + p[0], origin.y + p[1]);
+                                            let (x, z) = at(mid);
+                                            let base = g.land_at(x, z);
+                                            let mut low = base;
+                                            for d in [1.0, 2.5, WALL_FOOT_PROBE_M]
+                                                .into_iter()
+                                                .flat_map(|d| [-d, d])
+                                            {
+                                                let (px, pz) = at([mid[0] - dir[1] * d, mid[1] + dir[0] * d]);
+                                                // Ground only close by; out at the
+                                                // far reach only water counts, or a
+                                                // garden wall on a slope would sink.
+                                                if d.abs() < WALL_FOOT_PROBE_M {
+                                                    low = low.min(g.sunk_at(px, pz));
+                                                }
+                                                if let Some(w) = g.water_surface_at(px, pz) {
+                                                    low = low.min(w);
+                                                }
+                                            }
+                                            base - low
+                                        };
+                                        meshes.extend(furniture::build_line_meshes_footed(
+                                            &lines, mesh_bytes, &foot,
                                         ));
                                         // A bench or a lamppost standing in the
                                         // open cut has the same problem a tree
@@ -1841,8 +1878,20 @@ fn spawn_geometry_task(
                                 // same material, same toggle.
                                 match moorings::extract_moorings(&tile, tile_m, veg_seed(cell)) {
                                     Ok(items) => {
-                                        meshes.extend(furniture::build_furniture_meshes_except(
-                                            &items, wants.modelled, mesh_bytes,
+                                        // **A boat floats**: built at the water's
+                                        // surface under its own centre, and kept
+                                        // out of the terrain drape below, which
+                                        // would tip a hull up a sloping bank
+                                        // (`build_furniture_meshes_lifted`).
+                                        let level = |b: &furniture::FurnitureInstance| -> f32 {
+                                            let Some((g, origin)) = ground.as_ref() else {
+                                                return 0.0;
+                                            };
+                                            let (x, z) = (origin.x + b.x, origin.y + b.z);
+                                            g.water_surface_at(x, z).unwrap_or_else(|| g.sunk_at(x, z))
+                                        };
+                                        floating.extend(furniture::build_furniture_meshes_lifted(
+                                            &items, wants.modelled, mesh_bytes, &level,
                                         ));
                                         // Boats are not solid — a collider on
                                         // water the avatar cannot walk on is an
@@ -2050,6 +2099,10 @@ fn spawn_geometry_task(
                         meshes.push(walls);
                     }
                     placed = true;
+                }
+                // The boats, at the heights they were built at.
+                if let Some(meshes) = outcome.as_mut() {
+                    meshes.append(&mut floating);
                 }
                 lap.mark("ground");
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
@@ -4137,6 +4190,16 @@ fn water_surface<G: MeasuredGround>(
 /// wall. Below it the two meet as they always did — a ditch in a field, a lake
 /// shore, a canal too narrow for the field to have carved.
 const QUAY_WALL_MIN_M: f32 = 0.3;
+
+/// How far either side of a measured surveyed wall its foot is looked for,
+/// metres (also at 1 m and 2.5 m).
+///
+/// Further than the wall is thick because the survey's line and the map's water
+/// polygon do not agree about where the quay edge is: the 243 m, 4.25 m quay
+/// wall along the Westerhaven lies five-odd metres from OSM's water, and at a
+/// 2.5 m reach it found no water, stood its full height on the walkway and read
+/// as a grey screen down the bank (2026-10-01). Short of the next street.
+const WALL_FOOT_PROBE_M: f32 = 7.0;
 /// Tallest wall stood. Groningen's tallest registered quay wall is 4.45 m
 /// (`walls-have-a-measured-height.md`); past this a step is a bad join, not masonry.
 const QUAY_WALL_MAX_M: f32 = 8.0;

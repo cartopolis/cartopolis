@@ -179,6 +179,7 @@ export const PLACEHOLDER_KINDS = [
     'bicycle',
     'person',
     'boat',
+    'traffic-light',
 ] as const
 
 /** What each slug is, in the words a person would use for it. */
@@ -198,6 +199,7 @@ export const PLACEHOLDER_LABELS: Record<string, string> = {
     recycling: 'Bottle bank',
     shelter: 'Shelter',
     swing: 'Playground swing',
+    'traffic-light': 'Traffic light',
 }
 
 /** What this server draws its street objects with, or nothing for the default. */
