@@ -1,13 +1,20 @@
 //! The Cartopolis look: one palette, one `egui::Style`, one place to change them.
 //!
-//! A graphite ramp from `#13191B` up to `#283236` carries the chrome, a pale
-//! `#C7D3D8` carries every live thing, and `#F3F7F9` is the off-white. The
-//! chrome is **monochrome**: one hue, 197° — a blue-teal — at 6–14 % saturation
-//! for every surface, rim, fill and text tone in the ramp. Read the numbers and
-//! it is a cool grey; put it beside a true grey and it is glass. The only other
-//! colours in the palette are the two that are *statements* rather than
-//! decoration ([`WARN`] and [`ERROR`]) and the brand orange the splash and the
-//! app mark keep for themselves ([`BRAND`]).
+//! A graphite ramp from `#191615` up to `#332E2B` carries the chrome, a pale
+//! `#D4CECB` carries every live thing, and `#F8F6F4` is the off-white. The
+//! chrome is **monochrome**: one hue, 22° — the brand orange's — at 4–18 %
+//! saturation for every surface, rim, fill and text tone in the ramp. Read the
+//! numbers and it is a warm grey; put it beside a true grey and it is the
+//! logo's orange seen through smoked glass. The only other colours in the
+//! palette are the two that are *statements* rather than decoration ([`WARN`]
+//! and [`ERROR`]) and the brand orange the splash and the app mark keep for
+//! themselves ([`BRAND`]).
+//!
+//! **The hue moved from 197° (a blue-teal) to 22° on 2026-10-04**, at constant
+//! HSL lightness and at 55 % of the old saturation, on the ask that the grey
+//! carry "a bit of the orange": the cool cast sat beside the brand orange as a
+//! second, unrelated colour, and a grey drawn from the orange makes the two
+//! one family.
 //!
 //! **One hue, not none.** The ramp was neutral for half a day and it was flat:
 //! a colourless panel over a coloured map reads as a dialog pasted onto a
@@ -68,10 +75,10 @@
 //!     double the vertical rhythm and give buttons a real hit area.
 //!
 //! Contrast was checked against the surface each colour actually lands on:
-//! [`TEXT`] is 13.5:1 on [`SURFACE`], [`TEXT_DIM`] 8.2:1, [`ACCENT_TEXT`] 17.8:1.
+//! [`TEXT`] is 13.6:1 on [`SURFACE`], [`TEXT_DIM`] 8.1:1, [`ACCENT_TEXT`] 18.0:1.
 //! Plain [`ACCENT`] is 11.6:1 — it is a *light* tone, so it is comfortable as a
 //! fill, a rule or a focus ring on any surface in the ramp. Anything sitting *on*
-//! an accent fill is drawn in [`INK`] (12.7:1) rather than [`CREAM`] (1.4:1).
+//! an accent fill is drawn in [`INK`] (12.5:1) rather than [`CREAM`] (1.4:1).
 //!
 //! [`install`] is called once, from `EguiManager::default`, before the first
 //! pass — early enough that the brand font family is bound on frame one, which
@@ -99,19 +106,19 @@ use crate::systems::icons;
 
 /// Deeper than any of the surface tones: text-edit wells, code blocks, and the
 /// boot backdrop. Also the ink on an [`ACCENT`] plate.
-pub const INK: Color32 = Color32::from_rgb(0x0A, 0x0E, 0x10);
+pub const INK: Color32 = Color32::from_rgb(0x0F, 0x0D, 0x0B);
 /// The surface ramp's bottom, and the tone every glass surface is made of.
 ///
 /// Opaque, and used as such by the handful of call sites that need a solid
 /// panel colour; the *panel and window fill* is [`GLASS`], which is this at
 /// 95 %. Keep the two in step — a solid box beside a glass one that were meant
 /// to be the same surface is exactly the drift the shared frames exist to stop.
-pub const SURFACE: Color32 = Color32::from_rgb(0x13, 0x19, 0x1B);
+pub const SURFACE: Color32 = Color32::from_rgb(0x19, 0x16, 0x15);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
 /// striped rows, anything that should read as sitting *on* a panel.
-pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1D, 0x24, 0x27);
+pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x25, 0x21, 0x1F);
 /// The ramp's top. Hover, and open menus over a panel.
-pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x28, 0x32, 0x36);
+pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x33, 0x2E, 0x2B);
 /// Hairlines: separators, widget frames, indent guides.
 ///
 /// **Lightened on 2026-08-14, and the reason is WCAG 1.4.11.** (It was a slate
@@ -127,7 +134,7 @@ pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x28, 0x32, 0x36);
 /// It is a **solid grey, not white-at-an-alpha**, which the glass rims are: a
 /// hairline that has to clear a fixed ratio cannot be a translucent one, because
 /// what it composites over changes with the surface under it.
-pub const LINE: Color32 = Color32::from_rgb(0x69, 0x75, 0x7A);
+pub const LINE: Color32 = Color32::from_rgb(0x76, 0x70, 0x6D);
 
 /// The live tone. Focus rings, hover outlines, sliders, and the plate an engaged
 /// control wears — the brightest thing in the chrome, so it always means "this is
@@ -135,9 +142,9 @@ pub const LINE: Color32 = Color32::from_rgb(0x69, 0x75, 0x7A);
 ///
 /// **It is a light tone, and everything about the palette follows from that.**
 /// The orange it replaced was a mid tone that could carry [`CREAM`] badly and
-/// [`INK`] well; this one carries [`INK`] at 12.7:1 and [`CREAM`] at 1.4:1, i.e.
+/// [`INK`] well; this one carries [`INK`] at 12.5:1 and [`CREAM`] at 1.4:1, i.e.
 /// not at all. Anything filled with it is labelled in [`INK`].
-pub const ACCENT: Color32 = Color32::from_rgb(0xC7, 0xD3, 0xD8);
+pub const ACCENT: Color32 = Color32::from_rgb(0xD4, 0xCE, 0xCB);
 /// The accent at the top of its ladder: the text cursor, a text-selection
 /// handle, the rim on a *held* control (north-up lock, caps lock).
 ///
@@ -149,11 +156,11 @@ pub const ACCENT_BRIGHT: Color32 = Color32::WHITE;
 /// control, a dock disc whose panel is open, the panel header's medallion.
 ///
 /// Brighter than [`ACCENT`] on purpose, and it does two jobs at once now: on the
-/// dark [`ACCENT_MUTED`] of a pressed button it is the boundary (7.2:1, well over
+/// dark [`ACCENT_MUTED`] of a pressed button it is the boundary (7.4:1, well over
 /// the 3:1 a UI component needs), and on the light [`ACCENT`] plate of an engaged
 /// disc it is the lit top rim that makes the plate read as glass rather than as a
 /// sticker.
-pub const ACCENT_RING: Color32 = Color32::from_rgb(0xE5, 0xEC, 0xEF);
+pub const ACCENT_RING: Color32 = Color32::from_rgb(0xED, 0xE9, 0xE7);
 /// The accent, pushed *down* — the fill of an accent-filled button while the
 /// pointer is held on it.
 ///
@@ -171,7 +178,7 @@ pub const ACCENT_RING: Color32 = Color32::from_rgb(0xE5, 0xEC, 0xEF);
 /// (2.06:1) — it has to be a visible step down from a plate that is already pale,
 /// without falling out of the light half of the ramp and reading as a *different*
 /// control rather than the same one pressed.
-pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xA8, 0xB7, 0xBD);
+pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xB8, 0xB1, 0xAD);
 /// The top of the *text* ladder — [`TEXT`] → [`CREAM`] → this. Links, speaker
 /// names, emphasised values.
 ///
@@ -180,13 +187,13 @@ pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xA8, 0xB7, 0xBD);
 /// the headings rather than by being a different colour.
 pub const ACCENT_TEXT: Color32 = Color32::WHITE;
 /// The dark half of the accent: a pressed button, a selected row. Dark enough to
-/// carry [`CREAM`] at 8.0:1, light enough to be a clear step above
+/// carry [`CREAM`] at 8.3:1, light enough to be a clear step above
 /// [`SURFACE_HOVER`].
 ///
 /// This is what keeps the ladder safe. `active.weak_bg_fill` carries a label
 /// drawn in egui's `strong_text_color`, which is [`CREAM`]; filling it with the
 /// light [`ACCENT`] instead would make every pressed button's label vanish.
-pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x3E, 0x4E, 0x55);
+pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x50, 0x48, 0x43);
 
 /// **The brand orange, and the only saturated colour left in this file.**
 ///
@@ -210,9 +217,9 @@ pub const BRAND: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
 pub const REAL_LOCATION: Color32 = Color32::from_rgb(0x4F, 0xB2, 0xFF);
 
 /// Off-white. Headings and the one or two things that must read brightest.
-pub const CREAM: Color32 = Color32::from_rgb(0xF3, 0xF7, 0xF9);
+pub const CREAM: Color32 = Color32::from_rgb(0xF8, 0xF6, 0xF4);
 /// Body text.
-pub const TEXT: Color32 = Color32::from_rgb(0xDB, 0xE2, 0xE5);
+pub const TEXT: Color32 = Color32::from_rgb(0xE3, 0xDF, 0xDD);
 /// Secondary text: units, coordinates, hints. Also `index.html`'s muted tone,
 /// so the pre-wasm splash and this one agree — **change it in both**.
 ///
@@ -222,7 +229,7 @@ pub const TEXT: Color32 = Color32::from_rgb(0xDB, 0xE2, 0xE5);
 /// `weak_text_color`, i.e. the one that lands on every surface in the ramp: it
 /// measured 4.40:1 on [`SURFACE_HOVER`] and 4.12:1 inside an [`OVERLAY`] box
 /// over bright map imagery. Both now clear 4.5.
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xA5, 0xB2, 0xB7);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0xB3, 0xAD, 0xA9);
 /// Warnings — a desaturated gold.
 ///
 /// **One of the two colours the monochrome chrome keeps**, and it keeps them for
@@ -263,7 +270,7 @@ pub const ERROR: Color32 = Color32::from_rgb(0xF2, 0xA2, 0x96);
 /// between the two visits is that the tones themselves were lifted in between —
 /// this alpha is a *measured* floor now rather than an eyeballed one, and
 /// `text_clears_every_surface_it_can_land_on` is what keeps it one.
-pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0x1B, 215);
+pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 215);
 
 /// The panel and window fill: [`SURFACE`] at 84 %.
 ///
@@ -290,7 +297,20 @@ pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0
 /// ratios at once. Note what the test cannot know: it measures against the
 /// *unblurred* white, which is the honest worst case — a blur cannot make a
 /// white page darker.
-pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0x1B, 215);
+pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 215);
+
+/// The docked side panels' surface: solid [`INK`], with
+/// [`paint_panel_backdrop`]'s lift and glow over it.
+///
+/// **Not glass, since 2026-10-04.** The panels were [`GLASS`] and the Chats
+/// screen was solid ink by design (a conversation is read, and a map showing
+/// through text is noise), and side by side that read as two darknesses for
+/// one kind of surface — a glass panel over a bright map came out a mid grey.
+/// One answer for all of them is the Chats one: a panel is where you read.
+/// Floating readouts and menus over the map stay glass. Being opaque, a panel
+/// also no longer pays for `systems::glass`'s blur, which only runs behind the
+/// glass fills.
+pub const PANEL: Color32 = INK;
 
 /// The rim around a glass surface — an [`OVERLAY`] box, a panel, a window.
 ///
@@ -306,7 +326,7 @@ pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x
 /// labels, the drag ghost, a feature's hover card. Darker and more opaque than
 /// [`OVERLAY`] on purpose: these are a few words over an arbitrary tile, so
 /// legibility beats letting the map through.
-pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0A, 0x0E, 0x10, 235);
+pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x0D, 0x0B, 235);
 /// Halo behind map text that has no chip to sit on — the street names
 /// (`systems::street_labels`), which are painted *along* their street and would
 /// black it out under a chip. Pale and only mostly opaque: it has to lift
@@ -316,11 +336,11 @@ pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0A, 0x0E
 /// no tint left to carry, and a **neutral** halo is the better answer anyway —
 /// the map underneath supplies all the hue in the frame, and a coloured plate
 /// over it was a second opinion about what colour a road is.
-pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xDB, 0xE6, 0xEA, 205);
+pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xE7, 0xE1, 0xDE, 205);
 /// The stroke inside [`LABEL_HALO`]. A hair lighter than [`INK`] and not the
 /// same constant: this one lies on a pale halo over an arbitrary tile, that one
 /// is the chrome's text-well fill, and the two are free to move apart.
-pub const LABEL_INK: Color32 = Color32::from_rgb(0x0D, 0x13, 0x15);
+pub const LABEL_INK: Color32 = Color32::from_rgb(0x13, 0x10, 0x0F);
 
 // ─── Fonts ────────────────────────────────────────────────────────────────────
 
@@ -336,6 +356,21 @@ pub const BRAND_TTF: &[u8] = include_bytes!(concat!(
     "/../../assets/fonts/PlusJakartaSans-SemiBold.ttf"
 ));
 const BRAND_FAMILY: &str = "cartopolis-brand";
+
+/// The body face: Plus Jakarta Sans **Regular**, the brand face's own family
+/// one weight down, at the front of egui's `Proportional` stack.
+///
+/// **Until 2026-10-04 body text was egui's default, Ubuntu Light**, which is
+/// a fine debugging face and a poor one for this UI: a light weight in light
+/// ink on a dark panel thins out at the 11–12.5 pt the panels are full of,
+/// and next to a Jakarta heading it was a second, unrelated typeface. One
+/// family at two weights is what makes a heading and its rows read as one
+/// voice. Ubuntu stays behind it in the stack for the glyphs Jakarta lacks.
+const BODY_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/PlusJakartaSans-Regular.ttf"
+));
+const BODY_FAMILY: &str = "cartopolis-body";
 
 /// The brand face: Plus Jakarta Sans SemiBold, backed by egui's own stack so a
 /// glyph it lacks (emoji, arrows, the box-drawing the panels use) still resolves
@@ -377,9 +412,18 @@ fn fonts() -> egui::FontDefinitions {
             stack.push(icons::FONT_NAME.to_owned());
         }
     }
+    // The body face goes in front of the proportional stack (see [`BODY_TTF`]),
+    // before the brand stack below copies it.
+    fonts.font_data.insert(
+        BODY_FAMILY.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(BODY_TTF)),
+    );
+    if let Some(stack) = fonts.families.get_mut(&FontFamily::Proportional) {
+        stack.insert(0, BODY_FAMILY.to_owned());
+    }
     // Prepend to a *copy* of the proportional stack rather than pushing onto it:
     // the brand face wins where it has the glyph, egui's fallbacks cover the rest,
-    // and `Proportional` itself is left alone so body text keeps its own face.
+    // and `Proportional` itself is left alone so body text keeps the body face.
     let mut stack = fonts
         .families
         .get(&FontFamily::Proportional)
@@ -1383,7 +1427,7 @@ const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 /// alike: the sign-in CTA was a hand-built filled `Button` and the Route panel's
 /// equally-primary "▶ Driver mode" was a plain `ui.button`, so the same rank read
 /// as two different ones. `INK` on `ACCENT` and not white is the palette's rule for
-/// text on the accent (12.7:1 against 1.4:1) and is unit-tested below.
+/// text on the accent (12.5:1 against 1.4:1) and is unit-tested below.
 ///
 /// The width is always stated by the caller. A no-width `primary_button` wrapper
 /// over a `PRIMARY_BUTTON_MIN_WIDTH` constant shipped beside this and never grew
@@ -1662,7 +1706,7 @@ pub const OSD_GROUP_GAP: f32 = 18.0;
 /// own note is a contrast argument about the text inside a box, and there is no
 /// text here. The floor is the other direction: at alpha 90 the well vanished
 /// into pale beige map, and a stick you cannot see the travel of is a pad.
-pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x19, 0x1B, 140);
+pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 140);
 
 /// Where a [`map_disc`] wants its mark drawn, and in what ink.
 pub struct DiscFace {
@@ -1772,6 +1816,53 @@ fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
         FontId::proportional(d.icon_size),
         d.ink,
     );
+}
+
+/// Every docked panel's backdrop: the [`PANEL`] ink, lifted to a warm grey at the top and
+/// warmed by a soft brand glow behind the title, so the screen has a light
+/// source instead of being a black rectangle. Painted first, under everything.
+pub fn paint_panel_backdrop(p: &egui::Painter, rect: egui::Rect) {
+    // The lift, top 45 % of the screen: the warm grey one step up.
+    let top = egui::Color32::from_rgb(0x29, 0x22, 0x1E);
+    let fade = rect.top() + rect.height() * 0.45;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(egui::pos2(rect.right(), fade), INK);
+    mesh.colored_vertex(egui::pos2(rect.left(), fade), INK);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    p.add(mesh);
+    // The warm glow: a fan from a brand-tinted centre to a clear rim.
+    radial_glow(
+        p,
+        egui::pos2(rect.right() - rect.width() * 0.2, rect.top() + 10.0),
+        rect.width() * 0.75,
+        egui::Color32::from_rgba_unmultiplied(0xFD, 0x60, 0x12, 60),
+    );
+}
+
+/// A soft round glow: `colour` at the centre, transparent at `radius`.
+pub(crate) fn radial_glow(
+    p: &egui::Painter,
+    centre: egui::Pos2,
+    radius: f32,
+    colour: egui::Color32,
+) {
+    const SEGMENTS: u32 = 48;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(centre, colour);
+    for i in 0..=SEGMENTS {
+        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        mesh.colored_vertex(
+            centre + radius * egui::vec2(a.cos(), a.sin()),
+            egui::Color32::TRANSPARENT,
+        );
+        if i > 0 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+    }
+    p.add(mesh);
 }
 
 // ─── Panel header ─────────────────────────────────────────────────────────────
@@ -2968,18 +3059,18 @@ mod tests {
             // 11.8461 — the module note said "11.9:1" from the day it was
             // written, which is this rounded the wrong way. Nobody could have
             // caught that by reading it; that is the point of the test.
-            ("TEXT on SURFACE", TEXT, SURFACE, 13.5),
-            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 8.2),
-            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 17.8),
+            ("TEXT on SURFACE", TEXT, SURFACE, 13.6),
+            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 8.1),
+            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 18.0),
             ("ACCENT on SURFACE", ACCENT, SURFACE, 11.6),
-            ("INK on ACCENT", INK, ACCENT, 12.7),
-            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 8.0),
+            ("INK on ACCENT", INK, ACCENT, 12.5),
+            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 8.3),
             ("LINE on SURFACE", LINE, SURFACE, 3.7),
             (
                 "ACCENT_RING on ACCENT_MUTED",
                 ACCENT_RING,
                 ACCENT_MUTED,
-                7.2,
+                7.4,
             ),
             ("CREAM on ACCENT (the rejected pairing)", CREAM, ACCENT, 1.4),
         ] {

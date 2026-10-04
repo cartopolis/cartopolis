@@ -486,7 +486,38 @@ pub struct OnScreenKeyboard {
     shift: ShiftState,
     /// Last frame's slab, for [`Self::slab`].
     slab: Option<Slab>,
+    /// The fingers on the keys right now ([`Finger`]).
+    fingers: Vec<Finger>,
+    /// Has this device sent a touch? Once it has, the pointer events the touch
+    /// bridge synthesises for the primary finger are duplicates and are ignored.
+    touch_seen: bool,
 }
+
+/// One finger on the keys, tracked by its own touch id.
+///
+/// **Why the keys read touches rather than egui clicks.** A key used to type
+/// on `Response::clicked()`, and that lost keystrokes in the two ways fast
+/// thumbs make most: egui's pointer is one finger (`egui_manager::
+/// pointer_events` lets only the first finger down drive it), so a second thumb
+/// landing before the first lifted typed nothing; and a finger that drifted
+/// more than egui's ~6 pt click distance before lifting was a drag, not a
+/// click. A phone keyboard types the key under each finger as it lifts,
+/// however it got there — so this does.
+#[derive(Clone, Copy, Debug)]
+struct Finger {
+    id: u64,
+    pos: egui::Pos2,
+    /// When it went down, in `InputState::time`.
+    down_at: f64,
+    /// When backspace last repeated under it.
+    repeated_at: Option<f64>,
+}
+
+/// The pseudo touch id for a mouse driving the keys (`CARTO_OSK` on a desktop).
+const MOUSE_FINGER: u64 = u64::MAX;
+/// Held this long, backspace starts repeating, every [`REPEAT_EVERY_S`].
+const REPEAT_AFTER_S: f64 = 0.45;
+const REPEAT_EVERY_S: f64 = 0.06;
 
 impl Default for OnScreenKeyboard {
     fn default() -> Self {
@@ -501,6 +532,8 @@ impl Default for OnScreenKeyboard {
             layer: KeyLayer::default(),
             shift: ShiftState::default(),
             slab: None,
+            fingers: Vec::new(),
+            touch_seen: false,
         }
     }
 }
@@ -746,12 +779,15 @@ impl OnScreenKeyboard {
 
         // Read the state out before drawing: the arms below need `kb` mutably.
         let (layer, shift, target) = (kb.layer, kb.shift, kb.target);
-        let events = match draw(ctx, &slab, layer, shift) {
-            Some(cap) => kb.press(cap),
-            None => Vec::new(),
-        };
+        let caps = track_fingers(ctx, &slab, layer, &mut kb.fingers, &mut kb.touch_seen);
+        draw(ctx, &slab, layer, shift, &kb.fingers);
+        let mut events = Vec::new();
+        for cap in caps {
+            events.extend(kb.press(cap));
+        }
 
         if !kb.is_open() {
+            kb.fingers.clear();
             // The hide key. Drop the field's focus along with the keyboard, so
             // tapping the same field again is a fresh focus event and brings the
             // keyboard back — leaving it focused would make that one field
@@ -780,15 +816,158 @@ impl OnScreenKeyboard {
     }
 }
 
+// ─── Fingers ──────────────────────────────────────────────────────────────────
+
+/// The keyboard's own layer, at the `Order` [`draw`] explains.
+fn keyboard_layer() -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("onscreen_keyboard"))
+}
+
+/// Each key and its rect, in the layout [`draw`] paints.
+fn key_rects(slab: &Slab, layer: KeyLayer) -> Vec<(usize, usize, Cap, egui::Rect)> {
+    let mut out = Vec::new();
+    for (r, row) in rows(layer).iter().enumerate() {
+        let used: f32 = row.iter().map(|k| k.units).sum();
+        let mut col = (COLUMNS - used) * 0.5;
+        for (c, key) in row.iter().enumerate() {
+            out.push((r, c, key.cap, slab.key_rect(r, col, key.units)));
+            col += key.units;
+        }
+    }
+    out
+}
+
+/// The key a finger at `pos` is on: the one under it, or — in the gaps
+/// between keys, which a thumb lands in all the time — the nearest one.
+/// `None` off the slab.
+fn key_at(slab: &Slab, layer: KeyLayer, pos: egui::Pos2) -> Option<Cap> {
+    if !slab.rect.contains(pos) {
+        return None;
+    }
+    key_rects(slab, layer)
+        .into_iter()
+        .map(|(_, _, cap, rect)| (cap, rect.distance_sq_to_pos(pos)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(cap, _)| cap)
+}
+
+/// Follow every finger on the keys through this pass's events and answer the
+/// keys they typed, in order ([`Finger`] says why this is not `clicked()`).
+///
+/// A key types as its finger **lifts**, and it is the key under the finger
+/// then — a thumb that lands on the edge of `e` and rolls onto `r` types `r`,
+/// as on a phone's own keyboard. Backspace is the exception both ways: it
+/// types as the finger lands and repeats while it stays, because deleting is
+/// the one key people hold.
+fn track_fingers(
+    ctx: &egui::Context,
+    slab: &Slab,
+    layer: KeyLayer,
+    fingers: &mut Vec<Finger>,
+    touch_seen: &mut bool,
+) -> Vec<Cap> {
+    let (events, now) = ctx.input(|i| (i.events.clone(), i.time));
+    if events
+        .iter()
+        .any(|e| matches!(e, egui::Event::Touch { .. }))
+    {
+        *touch_seen = true;
+    }
+    let ours = keyboard_layer();
+    let mut caps = Vec::new();
+    let mut handle = |id: u64, phase: egui::TouchPhase, pos: egui::Pos2| match phase {
+        egui::TouchPhase::Start => {
+            // Only where the keyboard is what is drawn on top: a key under a
+            // tooltip or a popup is not being pressed.
+            let on_top = ctx.layer_id_at(pos).is_none_or(|l| l == ours);
+            if !on_top {
+                return;
+            }
+            let Some(cap) = key_at(slab, layer, pos) else {
+                return;
+            };
+            fingers.retain(|f| f.id != id);
+            fingers.push(Finger {
+                id,
+                pos,
+                down_at: now,
+                repeated_at: None,
+            });
+            if cap == Cap::Backspace {
+                caps.push(cap);
+            }
+        }
+        egui::TouchPhase::Move => {
+            if let Some(f) = fingers.iter_mut().find(|f| f.id == id) {
+                f.pos = pos;
+            }
+        }
+        egui::TouchPhase::End => {
+            let Some(i) = fingers.iter().position(|f| f.id == id) else {
+                return;
+            };
+            fingers.remove(i);
+            // Lifted off the slab altogether: the finger changed its mind.
+            match key_at(slab, layer, pos) {
+                Some(Cap::Backspace) | None => {}
+                Some(cap) => caps.push(cap),
+            }
+        }
+        egui::TouchPhase::Cancel => fingers.retain(|f| f.id != id),
+    };
+    for event in &events {
+        match *event {
+            egui::Event::Touch { id, phase, pos, .. } => handle(id.0, phase, pos),
+            // A mouse (`CARTO_OSK` on a desktop) is one finger. On a touch
+            // device these are the bridge's copies of the first finger's
+            // touches, already handled above.
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                ..
+            } if !*touch_seen => handle(
+                MOUSE_FINGER,
+                if pressed {
+                    egui::TouchPhase::Start
+                } else {
+                    egui::TouchPhase::End
+                },
+                pos,
+            ),
+            egui::Event::PointerMoved(pos) if !*touch_seen => {
+                handle(MOUSE_FINGER, egui::TouchPhase::Move, pos);
+            }
+            _ => {}
+        }
+    }
+    for f in fingers.iter_mut() {
+        if key_at(slab, layer, f.pos) != Some(Cap::Backspace) || now - f.down_at < REPEAT_AFTER_S {
+            continue;
+        }
+        let last = f
+            .repeated_at
+            .unwrap_or(f.down_at + REPEAT_AFTER_S - REPEAT_EVERY_S);
+        if now - last >= REPEAT_EVERY_S {
+            caps.push(Cap::Backspace);
+            f.repeated_at = Some(now);
+        }
+    }
+    // A lift that never arrived (the app went to the background mid-press)
+    // must not leave a key held for ever.
+    fingers.retain(|f| now - f.down_at < 20.0);
+    caps
+}
+
 // ─── Painting ─────────────────────────────────────────────────────────────────
 
-/// Draw the slab and return the key that was tapped this frame, if any.
-fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState) -> Option<Cap> {
+/// Draw the slab, with every key a finger is on pressed, and the character
+/// under each finger shown enlarged above it.
+fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fingers: &[Finger]) {
     let id = egui::Id::new("onscreen_keyboard");
     let glyphs = Glyphs::resolve();
-    let rows = rows(layer);
 
-    let inner = egui::Area::new(id)
+    egui::Area::new(id)
         // **Above `Foreground`, where the rest of the app's chrome lives, and
         // that is not a preference — it is the only place a layer that comes and
         // goes can survive.**
@@ -849,31 +1028,78 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState) ->
             // typing would move the map.
             let _backdrop = ui.allocate_rect(slab.rect, egui::Sense::click());
 
-            let mut hit = None;
-            for (r, row) in rows.iter().enumerate() {
-                let used: f32 = row.iter().map(|k| k.units).sum();
-                let mut col = (COLUMNS - used) * 0.5;
-                for (c, key) in row.iter().enumerate() {
-                    let rect = slab.key_rect(r, col, key.units);
-                    col += key.units;
-                    // An explicit id per slot, not `allocate_rect`'s auto-id: the
-                    // auto-ids shift by one every time the layer swaps to a row
-                    // with a different key count, and a widget whose id changes
-                    // between frames loses whatever interaction state it had
-                    // mid-press (the same trap `bookmarks::rename_row` documents).
-                    let resp = ui.interact(rect, id.with((r, c)), egui::Sense::click());
-                    paint_key(ui, rect, radius, key.cap, shift, &glyphs, &resp, &visuals);
-                    if resp.clicked() {
-                        hit = Some(key.cap);
-                    }
-                }
+            let held: Vec<Cap> = fingers
+                .iter()
+                .filter_map(|f| key_at(slab, layer, f.pos))
+                .collect();
+            for (r, c, cap, rect) in key_rects(slab, layer) {
+                // Still a widget per key, sensing clicks, so the primary finger's
+                // press is claimed by egui and never reaches the map. *What it
+                // typed* comes from [`track_fingers`]. An explicit id per slot,
+                // not `allocate_rect`'s auto-id: the auto-ids shift by one every
+                // time the layer swaps to a row with a different key count.
+                let _ = ui.interact(rect, id.with((r, c)), egui::Sense::click());
+                paint_key(
+                    ui,
+                    rect,
+                    radius,
+                    cap,
+                    shift,
+                    &glyphs,
+                    held.contains(&cap),
+                    &visuals,
+                );
             }
-            hit
         });
+
+    // The phone keyboard's key preview: the character under each finger,
+    // enlarged above it, because the thumb is covering the key itself. Painted
+    // on the top layer so it can rise past the slab's own edge.
+    let preview = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, id.with("preview")));
+    for f in fingers {
+        let Some(cap) = key_at(slab, layer, f.pos) else {
+            continue;
+        };
+        let Some((_, _, _, rect)) = key_rects(slab, layer).into_iter().find(|k| k.2 == cap) else {
+            continue;
+        };
+        let Cap::Char { base, alt } = cap else {
+            continue;
+        };
+        let ch = if shift.alt() { alt } else { base };
+        let size = egui::vec2(rect.width().max(30.0) * 1.35, rect.height() * 1.15);
+        let bubble = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, rect.top() - 6.0 - size.y / 2.0),
+            size,
+        )
+        .translate(egui::vec2(
+            // Kept on screen at the outer columns.
+            (slab.rect.left() + 2.0 - (rect.center().x - size.x / 2.0)).max(0.0)
+                - ((rect.center().x + size.x / 2.0) - (slab.rect.right() - 2.0)).max(0.0),
+            0.0,
+        ));
+        let radius = egui::CornerRadius::same(theme::RADIUS);
+        preview.add(
+            egui::epaint::Shadow {
+                offset: [0, 4],
+                blur: 14,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(120),
+            }
+            .as_shape(bubble, radius),
+        );
+        preview.rect_filled(bubble, radius, theme::CREAM);
+        preview.text(
+            bubble.center(),
+            egui::Align2::CENTER_CENTER,
+            ch,
+            egui::FontId::proportional(size.y * 0.55),
+            theme::INK,
+        );
+    }
 
     // Keep the keyboard above everything else at this `Order`, every frame.
     ctx.move_to_top(egui::LayerId::new(egui::Order::Tooltip, id));
-    inner.inner
 }
 
 /// The symbols on the non-character keys, out of the bundled subset
@@ -920,10 +1146,9 @@ fn paint_key(
     cap: Cap,
     shift: ShiftState,
     glyphs: &Glyphs,
-    resp: &egui::Response,
+    down: bool,
     visuals: &egui::Visuals,
 ) {
-    let down = resp.is_pointer_button_down_on();
     let active = &visuals.widgets.active;
 
     // Three resting looks, and the split is by role rather than by taste:
@@ -1259,6 +1484,60 @@ mod tests {
         assert_eq!(h.text, "aa", "the keyboard went dead under a new modal");
     }
 
+    fn touch(id: u64, phase: egui::TouchPhase, pos: egui::Pos2) -> egui::Event {
+        egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(id),
+            phase,
+            pos,
+            force: None,
+        }
+    }
+
+    /// Two thumbs: the second lands before the first lifts. Only the first
+    /// finger drives egui's pointer, so a key that typed on `clicked()` lost
+    /// the second letter every time.
+    #[test]
+    fn overlapping_thumbs_type_both_keys() {
+        use egui::TouchPhase::{End, Start};
+        let mut h = Harness::new();
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        h.tap(h.field.center());
+        let q = h.key_pos(Cap::Char {
+            base: 'q',
+            alt: 'Q',
+        });
+        let p = h.key_pos(Cap::Char {
+            base: 'p',
+            alt: 'P',
+        });
+        h.frame(vec![touch(50, Start, q)]);
+        h.frame(vec![touch(51, Start, p)]);
+        h.frame(vec![touch(50, End, q)]);
+        h.frame(vec![touch(51, End, p)]);
+        h.frame(Vec::new());
+        assert_eq!(h.text, "qp");
+    }
+
+    /// A finger that rolls a few points before lifting is a drag to egui, and
+    /// still a keystroke here: the key under it as it lifts.
+    #[test]
+    fn a_drifting_finger_types_the_key_it_lifts_from() {
+        use egui::TouchPhase::{End, Move, Start};
+        let mut h = Harness::new();
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        h.tap(h.field.center());
+        let a = h.key_pos(a());
+        let drift = a + egui::vec2(3.0, 9.0);
+        h.frame(vec![touch(60, Start, a)]);
+        h.frame(vec![touch(60, Move, drift)]);
+        h.frame(vec![touch(60, End, drift)]);
+        h.frame(Vec::new());
+        assert_eq!(h.text, "a");
+    }
+
     fn kb() -> OnScreenKeyboard {
         OnScreenKeyboard {
             enabled: true,
@@ -1267,6 +1546,8 @@ mod tests {
             layer: KeyLayer::default(),
             shift: ShiftState::default(),
             slab: None,
+            fingers: Vec::new(),
+            touch_seen: false,
         }
     }
 

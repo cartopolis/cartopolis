@@ -75,48 +75,6 @@ fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
     )
 }
 
-/// The Chats screen's backdrop: the ink, lifted to a cool slate at the top and
-/// warmed by a soft brand glow behind the title, so the screen has a light
-/// source instead of being a black rectangle. Painted first, under everything.
-pub(crate) fn paint_backdrop(p: &egui::Painter, rect: egui::Rect) {
-    // The cool lift, top 45 % of the screen.
-    let top = egui::Color32::from_rgb(0x1A, 0x27, 0x2D);
-    let fade = rect.top() + rect.height() * 0.45;
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(egui::pos2(rect.right(), fade), theme::INK);
-    mesh.colored_vertex(egui::pos2(rect.left(), fade), theme::INK);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    p.add(mesh);
-    // The warm glow: a fan from a brand-tinted centre to a clear rim.
-    radial_glow(
-        p,
-        egui::pos2(rect.right() - rect.width() * 0.2, rect.top() + 10.0),
-        rect.width() * 0.75,
-        egui::Color32::from_rgba_unmultiplied(0xFD, 0x60, 0x12, 60),
-    );
-}
-
-/// A soft round glow: `colour` at the centre, transparent at `radius`.
-fn radial_glow(p: &egui::Painter, centre: egui::Pos2, radius: f32, colour: egui::Color32) {
-    const SEGMENTS: u32 = 48;
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(centre, colour);
-    for i in 0..=SEGMENTS {
-        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-        mesh.colored_vertex(
-            centre + radius * egui::vec2(a.cos(), a.sin()),
-            egui::Color32::TRANSPARENT,
-        );
-        if i > 0 {
-            mesh.add_triangle(0, i, i + 1);
-        }
-    }
-    p.add(mesh);
-}
-
 /// A disc lit from above: `tone` in the middle, lighter at the top rim and
 /// deeper at the bottom, with a faint light edge. What makes an initial read
 /// as a token rather than a flat sticker.
@@ -152,7 +110,7 @@ fn lit_disc(p: &egui::Painter, c: egui::Pos2, r: f32, tone: egui::Color32) {
     );
 }
 /// The "Here" disc: the v1 inbox's dark slate, with a location pin on it.
-const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x34, 0x44, 0x4A);
+const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x45, 0x3D, 0x39);
 /// Bubble corners: round, with the corner nearest the speaker tucked in.
 const BUBBLE_R: u8 = 18;
 const TAIL_R: u8 = 6;
@@ -760,7 +718,7 @@ pub fn render_chats_panel(
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
-            paint_backdrop(ui.painter(), ui.clip_rect());
+            theme::paint_panel_backdrop(ui.painter(), ui.clip_rect());
             let me = identity.username.clone().unwrap_or_default();
             match (view.sub.clone(), view.open.clone()) {
                 (Some(sub), _) => crate::systems::contacts::screen(

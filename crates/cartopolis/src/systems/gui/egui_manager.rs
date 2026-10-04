@@ -222,12 +222,12 @@ pub fn responsive_right_panel(
     viewport_w: f32,
     wide_width: f32,
 ) -> egui::Panel {
-    // The surface every panel shares: the glass fill and rim the style already
-    // gives a panel, with room round the content. egui's own side-panel margin
+    // The surface every panel shares (`theme::PANEL`, solid, the Chats screen's
+    // ink) and the glass rim, with room round the content. egui's own side-panel margin
     // is 8 x 2 pt, which set every title and row against the panel's edge; the
     // Chats screen sets its own frame over this one.
     let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::GLASS)
+        .fill(crate::systems::theme::PANEL)
         .stroke(egui::Stroke::new(1.0, crate::systems::theme::OVERLAY_LINE))
         .inner_margin(egui::Margin::symmetric(14, 10));
     if compact {
@@ -279,6 +279,7 @@ pub fn right_panel(
         egui.ui_mut(),
         &mut open,
         |ui| {
+            crate::systems::theme::paint_panel_backdrop(ui.painter(), ui.clip_rect());
             close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
             body(ui);
         },

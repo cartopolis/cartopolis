@@ -179,4 +179,4 @@ notice: Star positions and magnitudes from the HYG Database v4.1 by David Nash, 
 role: The brand font — the boot splash wordmark and the UI's own family
 license: SIL Open Font License 1.1
 url: https://fonts.google.com/specimen/Plus+Jakarta+Sans
-notice: Plus Jakarta Sans by Tokotype, SIL Open Font License 1.1. The font file is redistributed with this software; see assets/fonts/README.md.
+notice: Plus Jakarta Sans by Tokotype, SIL Open Font License 1.1. The font files are redistributed with this software; see assets/fonts/README.md.
