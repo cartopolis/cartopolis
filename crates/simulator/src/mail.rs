@@ -213,6 +213,27 @@ pub fn verification_message(username: &str, link: &str, valid_hours: u64) -> (St
     (subject, body)
 }
 
+/// What is sent when an operator activates an account by hand.
+///
+/// The person registered, waited for a link that never came and may well have
+/// given up, so this is the mail that tells them it worked after all — and says
+/// nothing about a link, because there is none to click.
+#[must_use]
+pub fn activated_message(username: &str, sign_in_url: &str) -> (String, String) {
+    let subject = "Your Cartopolis account is active".to_string();
+    let body = format!(
+        "Hello {username},\n\
+         \n\
+         Your Cartopolis account has been activated. You can sign in now with\n\
+         the username {username} and the password you chose when you registered,\n\
+         in the Cartopolis app or here: {sign_in_url}\n\
+         \n\
+         If you did not register an account, reply to this mail and we will\n\
+         remove it.\n"
+    );
+    (subject, body)
+}
+
 /// What is sent when somebody registers with an address that already has an
 /// account.
 ///
@@ -284,6 +305,14 @@ mod tests {
             .send("someone@example.com", "hi", "body")
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn the_activation_mail_names_the_account() {
+        let (subject, body) = activated_message("ada", "https://example.com");
+        assert!(subject.contains("active"));
+        assert!(body.contains("ada"));
+        assert!(body.contains("https://example.com"));
     }
 
     #[test]

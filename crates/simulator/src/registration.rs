@@ -307,6 +307,51 @@ pub fn verify(conn: &mut Connection, token: &str) -> anyhow::Result<Verify> {
     Ok(Verify::Confirmed { username })
 }
 
+/// What [`activate`] made of an operator's request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Activate {
+    /// The account was pending and is now confirmed; mail the address.
+    Activated { username: String, email: String },
+    /// Already confirmed, or made by an operator with no address at all —
+    /// nothing to do and nobody to tell.
+    NotPending,
+    /// No such account.
+    Unknown,
+}
+
+/// Confirm a pending account without its link — the operator's way through when
+/// the verification mail never arrived.
+///
+/// Spends any outstanding token too, so a link that turns up late cannot be
+/// mistaken for a second, separate confirmation. The address is taken on the
+/// operator's word, which is the trade they are making by pressing the button.
+pub fn activate(conn: &mut Connection, principal: &str) -> anyhow::Result<Activate> {
+    let tx = conn.transaction()?;
+    let row: Option<(String, Option<String>, Option<String>)> = tx
+        .query_row(
+            "SELECT username, email, email_verified_at FROM accounts WHERE id = ?1",
+            [principal],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((username, email, verified_at)) = row else {
+        return Ok(Activate::Unknown);
+    };
+    let (Some(email), None) = (email, verified_at) else {
+        return Ok(Activate::NotPending);
+    };
+    tx.execute(
+        "UPDATE accounts SET email_verified_at = datetime('now') WHERE id = ?1",
+        [principal],
+    )?;
+    tx.execute(
+        "DELETE FROM email_verifications WHERE principal = ?1",
+        [principal],
+    )?;
+    tx.commit()?;
+    Ok(Activate::Activated { username, email })
+}
+
 /// Delete expired tokens and the accounts nobody ever confirmed.
 ///
 /// Returns how many accounts went. Run on the way into a registration and at
@@ -428,6 +473,34 @@ mod tests {
         assert!(normalize_email("ada@.com").is_err());
         assert!(normalize_email("ada @example.com").is_err());
         assert!(normalize_email(&format!("{}@example.com", "a".repeat(300))).is_err());
+    }
+
+    #[test]
+    fn an_operator_can_activate_a_pending_account_once() {
+        let mut conn = db();
+        let Begin::Created { principal, token } =
+            begin(&mut conn, "ada", "ada@example.com", &hash("pw")).unwrap()
+        else {
+            panic!("expected a pending account");
+        };
+        let id = principal.to_string();
+        assert_eq!(
+            activate(&mut conn, &id).unwrap(),
+            Activate::Activated {
+                username: "ada".into(),
+                email: "ada@example.com".into()
+            }
+        );
+        assert!(crate::auth::lookup_credential(&conn, "ada")
+            .unwrap()
+            .is_some_and(|c| !c.email_pending));
+        // The mailed link is spent with it, and a second press does nothing.
+        assert_eq!(verify(&mut conn, &token).unwrap(), Verify::Unknown);
+        assert_eq!(activate(&mut conn, &id).unwrap(), Activate::NotPending);
+        assert_eq!(
+            activate(&mut conn, &Uuid::new_v4().to_string()).unwrap(),
+            Activate::Unknown
+        );
     }
 
     #[test]

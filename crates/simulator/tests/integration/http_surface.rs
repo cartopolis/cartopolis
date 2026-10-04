@@ -569,6 +569,80 @@ async fn a_registration_cannot_sign_in_until_the_link_is_opened() {
     assert_eq!(status, 404);
 }
 
+/// The way through when the verification mail never arrives: an admin activates
+/// the account, and the same password then plays. Only an admin may, and only
+/// once.
+#[tokio::test]
+async fn an_admin_can_activate_a_registration_by_hand() {
+    let (handle, _dir) = server().await;
+    let base = http_base(&handle);
+    let (status, _) = api(
+        "POST",
+        format!("{base}/api/register"),
+        None,
+        Some(serde_json::json!({
+            "username": "grace",
+            "email": "grace@example.com",
+            "password": "correcthorse",
+        })),
+    )
+    .await;
+    assert_eq!(status, 202);
+
+    let (_, admin) = admin_token(&handle, "root", "adminpass").await;
+    let (_, list) = api(
+        "GET",
+        format!("{base}/api/admin/accounts"),
+        admin.clone(),
+        None,
+    )
+    .await;
+    let id = list["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["username"] == "grace")
+        .expect("the pending account is listed")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let url = format!("{base}/api/admin/accounts/{id}/activate");
+
+    let player = api(
+        "POST",
+        format!("{base}/api/login"),
+        None,
+        Some(serde_json::json!({"username": "player", "password": "playerpw"})),
+    )
+    .await
+    .1["token"]
+        .as_str()
+        .map(str::to_string);
+    let (status, _) = api("POST", url.clone(), player, None).await;
+    assert_eq!(status, 403, "a player may not activate accounts");
+
+    let (status, body) = api("POST", url.clone(), admin.clone(), None).await;
+    assert_eq!(status, 200, "activation: {body}");
+    assert_eq!(body["account"]["email_pending"], false);
+    // The test server has no relay, so nothing actually left the process.
+    assert_eq!(body["mailed"], false);
+
+    assert!(matches!(
+        tcp_hello(
+            &handle,
+            AuthCredential::Password {
+                username: "grace".into(),
+                password: "correcthorse".into(),
+            }
+        )
+        .await,
+        NetMessage::ServerHelloAck { .. }
+    ));
+
+    let (status, _) = api("POST", url, admin, None).await;
+    assert_eq!(status, 409, "a second activation is refused");
+}
+
 /// A taken *name* has to be reported — the form cannot be completed otherwise. A
 /// taken *address* must not be, or the form answers "does this person have an
 /// account here?" for anyone who types an address into it.

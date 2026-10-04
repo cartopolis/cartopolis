@@ -3,7 +3,7 @@ import {useState} from 'preact/hooks'
 import type {Account as AccountRow} from '@/types'
 
 import {$s} from '@/app'
-import {deleteAccount, updateAccount} from '@/lib/accounts'
+import {activateAccount, deleteAccount, updateAccount} from '@/lib/accounts'
 import {formatTimestamp} from '@/lib/utils'
 
 interface Props {
@@ -90,6 +90,11 @@ export const Account = ({account}: Props) => {
                         />
                     </label>
                     <div class="row-actions">
+                        {account.email_pending && (
+                            <button disabled={busy} onClick={() => act(() => activateAccount(account))} type="button">
+                                Activate and notify
+                            </button>
+                        )}
                         <button disabled={busy || password.length < 8} onClick={resetPassword} type="button">
                             Set password
                         </button>

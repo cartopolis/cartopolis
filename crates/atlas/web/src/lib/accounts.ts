@@ -117,6 +117,27 @@ export async function deleteAccount(account: Account): Promise<boolean> {
     }
 }
 
+/**
+ * Confirm a registration whose mail never arrived. The server mails the person
+ * that it is done; when it could not (no relay, or the relay refused), say so,
+ * because then the operator is the only one who can tell them.
+ */
+export async function activateAccount(account: Account): Promise<boolean> {
+    try {
+        const result = await api.post<{mailed: boolean}>(`/api/admin/accounts/${account.id}/activate`)
+        if (result.mailed) {
+            notifier.success(`Activated ${account.username} and mailed ${account.email}`)
+        } else {
+            notifier.info(`Activated ${account.username}, but the confirmation mail could not be sent`)
+        }
+        await loadAccounts()
+        return true
+    } catch (e) {
+        report(e, 'Could not activate that account')
+        return false
+    }
+}
+
 /** The visible rows: the search filter applied to the fetched list. */
 export function visibleAccounts(): Account[] {
     const needle = $s.search.trim().toLowerCase()

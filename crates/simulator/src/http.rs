@@ -110,6 +110,7 @@ pub fn router(state: HttpState) -> Router {
             get(list_accounts).post(create_account),
         )
         .route("/api/admin/accounts/{id}", patch(update_account))
+        .route("/api/admin/accounts/{id}/activate", post(activate_account))
         .route("/api/admin/accounts/{id}", delete(remove_account))
         .route("/api/admin/reports", get(list_reports))
         .route("/api/admin/reports/{id}", patch(resolve_report))
@@ -896,6 +897,45 @@ async fn update_account(
     let account = with_db(&state, |c| auth::get_account(c, &id))?;
     tracing::info!(%caller, target = %id, "account updated");
     Ok(Json(json!({ "account": account })))
+}
+
+/// Confirm a registration whose verification mail never arrived, and tell the
+/// person it is done.
+///
+/// `mailed` in the answer is whether the confirmation actually left this
+/// process: `false` with no relay configured or when the relay refused it, so
+/// the operator knows they have to tell the person some other way. The
+/// activation itself stands either way.
+async fn activate_account(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (caller, _) = require_admin(&state, &headers)?;
+    let outcome = with_db_mut(&state, |c| registration::activate(c, &id))?;
+    let (username, email) = match outcome {
+        registration::Activate::Activated { username, email } => (username, email),
+        registration::Activate::NotPending => {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "that account is not waiting for confirmation".into(),
+            ))
+        }
+        registration::Activate::Unknown => {
+            return Err(ApiError(StatusCode::NOT_FOUND, "no such account".into()))
+        }
+    };
+    let (subject, text) = mail::activated_message(&username, &state.config.public_base_url);
+    let mailed = match state.mailer.send(&email, &subject, &text).await {
+        Ok(()) => state.mailer.delivers(),
+        Err(e) => {
+            tracing::warn!("could not send {subject:?}: {e:#}");
+            false
+        }
+    };
+    tracing::info!(%caller, %username, mailed, "account activated by an operator");
+    let account = with_db(&state, |c| auth::get_account(c, &id))?;
+    Ok(Json(json!({ "account": account, "mailed": mailed })))
 }
 
 async fn remove_account(
