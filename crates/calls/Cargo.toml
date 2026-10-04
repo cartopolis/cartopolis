@@ -28,7 +28,7 @@ doctest = false
 
 [features]
 default = []
-client = ["dep:sframe", "dep:opus-pure", "dep:uuid", "dep:oxideav-vp8", "dep:matroska-demuxer"]
+client = ["dep:sframe", "dep:opus-pure", "dep:uuid", "dep:oxideav-vp8", "dep:rusty_vp9", "dep:matroska-demuxer"]
 sfu = []
 
 [dependencies]
@@ -41,6 +41,9 @@ opus-pure = { version = "0.2", optional = true }
 # VP8, encoder and decoder, pure Rust (`video`). Without the default
 # `registry` feature, which only adds a framework the crate can plug into.
 oxideav-vp8 = { version = "0.2.7", default-features = false, optional = true }
+# VP9, encoder and decoder, pure Rust with no dependencies (`video`): what the
+# app sends. Bit-exact against libvpx's conformance vectors.
+rusty_vp9 = { version = "0.1.1", optional = true }
 # WebM, for clips played on a prim (`clip`). Pure Rust, no dependencies.
 matroska-demuxer = { version = "0.8", optional = true }
 # Only for a random SFrame context id per join (`keys::Sender::new`).

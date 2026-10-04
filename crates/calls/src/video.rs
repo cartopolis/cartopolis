@@ -1,22 +1,25 @@
-//! Video for calls: VP8 through `oxideav-vp8`, pure Rust, on every target.
+//! Video for calls: VP9 through `rusty_vp9` and VP8 through `oxideav-vp8`,
+//! both pure Rust, on every target.
 //!
-//! VP8 because every participant must decode what every other sends and it is
-//! the codec every device can encode (`docs/notes/calls.md`). `oxideav-vp8`
-//! rather than libvpx because it has no C: the same encoder and decoder run on
-//! the desktop, the phone and in wasm. Measured before it was taken (the note
-//! has the numbers): it decodes a libvpx realtime stream bit-identically to
-//! ffmpeg, ffmpeg decodes what it encodes bit-identically to itself, and at
-//! 320×240 it encodes a frame in ~40 ms on this VPS under load — 15 fps with
-//! room. At 640×480 it does not keep up, which is why calls send 320×240 for
-//! now; a phone's hardware encoder is the way up, and the frames on the wire
-//! would be the same.
+//! The app sends VP9 and decodes both; a browser sends VP8 and decodes both
+//! (`docs/notes/calls.md`). Pure Rust rather than libvpx
+//! because it has no C: the same encoder and decoder run on the desktop, the
+//! phone and in wasm. Measured before each was taken (the note has the
+//! numbers): `oxideav-vp8` decodes a libvpx realtime stream bit-identically to
+//! ffmpeg and encodes 320×240 in ~40 ms on this VPS; `rusty_vp9` is bit-exact
+//! against libvpx's conformance vectors and encodes the same picture in
+//! ~25 ms at well under half the bytes. Neither keeps up at 640×480 on a CPU,
+//! which is why calls send 320×240 for now.
 //!
-//! Frames are I420 (planar 4:2:0), what VP8 codes and what cameras and
+//! Frames are I420 (planar 4:2:0), what both codecs code and what cameras and
 //! decoders speak; RGBA only at the end, for display.
 
 use oxideav_vp8::{
     I420Frame, KeyframeParams, TrellisStrength, Vp8DecoderState, Vp8InterStreamEncoder,
 };
+use rusty_vp9::{Vp9Decoder, Vp9Encoder, Vp9EncoderConfig};
+
+use crate::media::Codec;
 
 /// What a call sends: small enough that the pure-Rust encoder keeps up on a
 /// phone's CPU, big enough to see a face.
@@ -29,11 +32,16 @@ pub const FPS: u32 = 15;
 /// able to make it allocate without bound. 1280×720.
 pub const MAX_PIXELS: u64 = 1280 * 720;
 
-/// A full picture every two seconds, so a receiver that lost one recovers
-/// without asking; one on request ([`Encoder::encode`]'s `key`) sooner.
-const KEYFRAME_INTERVAL: u64 = 2 * FPS as u64;
-/// Quantiser: measured 39 dB luma PSNR at ~0.5 Mbit/s at 30 fps, 320×240.
+/// A full picture every four seconds, so a receiver that lost one recovers
+/// without asking; one on request ([`Encoder::encode`]'s `key`) sooner. A
+/// keyframe is several times the bytes of the pictures around it, and lost
+/// ones are repaired on request, so the schedule only has to bound the wait.
+const KEYFRAME_INTERVAL: u64 = 4 * FPS as u64;
+/// VP8 quantiser: measured 39 dB luma PSNR at ~0.5 Mbit/s at 30 fps, 320×240.
 const QINDEX: u8 = 60;
+/// VP9 constant quality (0..63): the same luma PSNR as VP8 at [`QINDEX`] on
+/// the measured clip, at ~40 % of its bytes.
+const VP9_CRF: u32 = 34;
 
 /// One picture, planar 4:2:0, tightly packed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +80,20 @@ impl I420 {
         }
     }
 
+    /// A picture every byte of which the caller is about to write: zeroed
+    /// pages, which the allocator hands over without touching them, rather
+    /// than [`I420::black`]'s fill.
+    fn zeroed(width: u32, height: u32) -> Self {
+        let (cw, ch) = chroma(width, height);
+        Self {
+            width,
+            height,
+            y: vec![0; (width * height) as usize],
+            u: vec![0; cw * ch],
+            v: vec![0; cw * ch],
+        }
+    }
+
     /// From packed YUYV (YUY2), the uncompressed format nearly every webcam
     /// offers. 4:2:2 to 4:2:0 keeps the even rows' chroma.
     #[must_use]
@@ -80,7 +102,7 @@ impl I420 {
         if w % 2 != 0 || yuyv.len() < w * h * 2 {
             return None;
         }
-        let mut out = Self::black(width, height);
+        let mut out = Self::zeroed(width, height);
         let (cw, _) = chroma(width, height);
         for row in 0..h {
             let src = &yuyv[row * w * 2..(row + 1) * w * 2];
@@ -105,7 +127,7 @@ impl I420 {
         if nv12.len() < w * h + cw * ch * 2 {
             return None;
         }
-        let mut out = Self::black(width, height);
+        let mut out = Self::zeroed(width, height);
         out.y.copy_from_slice(&nv12[..w * h]);
         for (i, uv) in nv12[w * h..w * h + cw * ch * 2].chunks_exact(2).enumerate() {
             out.u[i] = uv[0];
@@ -128,7 +150,7 @@ impl I420 {
     ) -> Option<Self> {
         let (w, h) = (width as usize, height as usize);
         let (cw, ch) = chroma(width, height);
-        let mut out = Self::black(width, height);
+        let mut out = Self::zeroed(width, height);
         let copy = |p: Plane<'_>, pw: usize, ph: usize, dst: &mut [u8]| -> Option<()> {
             if ph == 0 || pw == 0 {
                 return Some(());
@@ -172,7 +194,7 @@ impl I420 {
         } else {
             (self.width, self.height)
         };
-        let mut out = Self::black(w, h);
+        let mut out = Self::zeroed(w, h);
         // For each destination pixel, the source pixel it comes from.
         let plane = |src: &[u8], sw: usize, sh: usize, dst: &mut [u8], dw: usize, dh: usize| {
             for y in 0..dh {
@@ -204,7 +226,7 @@ impl I420 {
         if (width, height) == (self.width, self.height) {
             return self.clone();
         }
-        let mut out = Self::black(width, height);
+        let mut out = Self::zeroed(width, height);
         let plane = |src: &[u8], sw: usize, sh: usize, dst: &mut [u8], dw: usize, dh: usize| {
             for y in 0..dh {
                 let sy = y * sh / dh;
@@ -223,18 +245,30 @@ impl I420 {
         out
     }
 
-    /// RGBA for display, BT.601 limited range — what VP8 streams carry.
+    /// RGBA for display, BT.601 limited range — what VP8 and VP9 streams
+    /// carry. Opaque, so it is premultiplied as it stands.
     #[must_use]
     pub fn to_rgba(&self) -> Vec<u8> {
+        self.to_rgba_mirrored(false)
+    }
+
+    /// [`I420::to_rgba`], mirrored left-to-right if `mirror`: the person's own
+    /// view of themselves, without a mirrored copy of the picture first.
+    #[must_use]
+    pub fn to_rgba_mirrored(&self, mirror: bool) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         let (cw, _) = chroma(self.width, self.height);
         let mut out = vec![0u8; w * h * 4];
-        for row in 0..h {
-            for col in 0..w {
-                let y = 298 * (i32::from(self.y[row * w + col]) - 16);
-                let u = i32::from(self.u[(row / 2) * cw + col / 2]) - 128;
-                let v = i32::from(self.v[(row / 2) * cw + col / 2]) - 128;
-                let px = &mut out[(row * w + col) * 4..][..4];
+        for (row, line) in out.chunks_exact_mut(w * 4).enumerate().take(h) {
+            let ys = &self.y[row * w..(row + 1) * w];
+            let us = &self.u[(row / 2) * cw..];
+            let vs = &self.v[(row / 2) * cw..];
+            for (col, &y) in ys.iter().enumerate() {
+                let y = 298 * (i32::from(y) - 16);
+                let u = i32::from(us[col / 2]) - 128;
+                let v = i32::from(vs[col / 2]) - 128;
+                let dst = if mirror { w - 1 - col } else { col };
+                let px = &mut line[dst * 4..dst * 4 + 4];
                 px[0] = ((y + 409 * v + 128) >> 8).clamp(0, 255) as u8;
                 px[1] = ((y - 100 * u - 208 * v + 128) >> 8).clamp(0, 255) as u8;
                 px[2] = ((y + 516 * u + 128) >> 8).clamp(0, 255) as u8;
@@ -249,62 +283,152 @@ impl I420 {
 #[error("video: {0}")]
 pub struct Error(String);
 
-/// One sender's VP8 encoder.
+/// The call's size for `frame`: it turns with the picture, so an upright phone
+/// sends [`HEIGHT`]×[`WIDTH`] rather than a portrait squashed into landscape.
+#[must_use]
+pub fn call_size(width: u32, height: u32) -> (u32, u32) {
+    if height > width {
+        (HEIGHT, WIDTH)
+    } else {
+        (WIDTH, HEIGHT)
+    }
+}
+
+enum EncoderInner {
+    Vp8(Vp8InterStreamEncoder),
+    Vp9(Box<Vp9Encoder>),
+}
+
+/// One sender's encoder, VP9 unless asked for VP8.
+///
+/// VP9 through `rusty_vp9`, pure Rust like the VP8 one. Measured 2026-10-04 on
+/// the VPS (`docs/notes/calls.md`): at 320×240 and the same luma PSNR it
+/// encodes in ~25 ms against VP8's ~45 ms and sends ~180 kbit/s against
+/// ~420 kbit/s at 15 fps. Half the bitrate is the point on a phone's uplink,
+/// and the faster encode is battery.
 pub struct Encoder {
-    inner: Vp8InterStreamEncoder,
+    inner: EncoderInner,
+    codec: Codec,
     width: u32,
     height: u32,
+    /// Pictures since the last keyframe.
+    since_key: u64,
 }
 
 impl Encoder {
+    /// A VP9 encoder: what this app sends.
     #[must_use]
     pub fn new() -> Self {
-        Self::sized(WIDTH, HEIGHT)
+        Self::with_codec(Codec::Vp9)
     }
 
-    fn sized(width: u32, height: u32) -> Self {
-        let params = KeyframeParams {
-            y_ac_qi: QINDEX,
-            loop_filter_level: 20,
-            // Trellis quantisation buys a few percent of bitrate for a large
-            // share of the encode time, which is the budget that is short.
-            trellis_strength: TrellisStrength::OFF,
-            ..KeyframeParams::default()
+    /// An encoder for `codec`, which must be a video codec (VP8 otherwise).
+    #[must_use]
+    pub fn with_codec(codec: Codec) -> Self {
+        Self::sized(codec, WIDTH, HEIGHT)
+    }
+
+    fn sized(codec: Codec, width: u32, height: u32) -> Self {
+        let (inner, codec) = match codec {
+            Codec::Vp9 => (EncoderInner::Vp9(Box::new(vp9_encoder())), Codec::Vp9),
+            _ => {
+                let params = KeyframeParams {
+                    y_ac_qi: QINDEX,
+                    loop_filter_level: 20,
+                    // Trellis quantisation buys a few percent of bitrate for a
+                    // large share of the encode time, which is the budget that
+                    // is short.
+                    trellis_strength: TrellisStrength::OFF,
+                    ..KeyframeParams::default()
+                };
+                let enc = Vp8InterStreamEncoder::new(params, KEYFRAME_INTERVAL)
+                    .expect("a nonzero keyframe interval");
+                (EncoderInner::Vp8(enc), Codec::Vp8)
+            }
         };
         Self {
-            inner: Vp8InterStreamEncoder::new(params, KEYFRAME_INTERVAL)
-                .expect("a nonzero keyframe interval"),
+            inner,
+            codec,
             width,
             height,
+            since_key: 0,
         }
+    }
+
+    /// The codec this encoder writes.
+    #[must_use]
+    pub fn codec(&self) -> Codec {
+        self.codec
     }
 
     /// Encode one picture, scaled to the call's size first if it is not.
     /// `key` forces a full picture — the answer to a receiver's request.
     ///
-    /// The call's size turns with the picture: an upright phone sends
-    /// [`HEIGHT`]×[`WIDTH`], not a portrait squashed into landscape. A turn
-    /// starts the stream again with a full picture, which is what VP8 needs to
+    /// The call's size turns with the picture ([`call_size`]). A turn starts
+    /// the stream again with a full picture, which is what both codecs need to
     /// change size and what every receiver's decoder already follows.
     pub fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<u8>, Error> {
-        let size = if frame.height > frame.width {
-            (HEIGHT, WIDTH)
-        } else {
-            (WIDTH, HEIGHT)
-        };
-        let key = if size == (self.width, self.height) {
+        let size = call_size(frame.width, frame.height);
+        let mut key = if size == (self.width, self.height) {
             key
         } else {
-            *self = Self::sized(size.0, size.1);
+            *self = Self::sized(self.codec, size.0, size.1);
             true
         };
-        let frame = frame.scaled(self.width, self.height);
-        let f = I420Frame::packed(frame.width, frame.height, &frame.y, &frame.u, &frame.v);
-        self.inner
-            .encode_frame_with_force(&f, key)
-            .map(|e| e.bytes)
-            .map_err(|e| Error(format!("{e:?}")))
+        let scaled;
+        let frame = if (frame.width, frame.height) == size {
+            frame
+        } else {
+            scaled = frame.scaled(size.0, size.1);
+            &scaled
+        };
+        match &mut self.inner {
+            EncoderInner::Vp8(enc) => {
+                let f = I420Frame::packed(frame.width, frame.height, &frame.y, &frame.u, &frame.v);
+                enc.encode_frame_with_force(&f, key)
+                    .map(|e| e.bytes)
+                    .map_err(|e| Error(format!("{e:?}")))
+            }
+            EncoderInner::Vp9(enc) => {
+                key |= self.since_key >= KEYFRAME_INTERVAL;
+                if key {
+                    // `rusty_vp9` has no "force a keyframe": its first picture
+                    // is one, and a fresh encoder costs nothing to make.
+                    **enc = vp9_encoder();
+                    self.since_key = 0;
+                }
+                self.since_key += 1;
+                let (cw, _) = chroma(frame.width, frame.height);
+                enc.push_frame(
+                    [&frame.y, &frame.u, &frame.v],
+                    [frame.width as usize, cw, cw],
+                    frame.width,
+                    frame.height,
+                )
+                .map_err(|e| Error(format!("{e:?}")))?;
+                // No lookahead, so exactly one packet per picture.
+                enc.next_packet()
+                    .map(|p| p.data)
+                    .map_err(|e| Error(format!("{e:?}")))
+            }
+        }
     }
+}
+
+/// VP9 for a call: no lookahead (a hidden alt-ref is a picture of delay), the
+/// fastest speed preset, and a constant quality that measured the same luma
+/// PSNR as VP8 at [`QINDEX`] for well under half the bytes.
+fn vp9_encoder() -> Vp9Encoder {
+    let mut enc = Vp9Encoder::default();
+    enc.configure(&Vp9EncoderConfig {
+        crf: Some(VP9_CRF),
+        lag: Some(0),
+        speed: Some(6),
+        fps: Some(f64::from(FPS)),
+        ..Default::default()
+    })
+    .expect("a valid VP9 configuration");
+    enc
 }
 
 impl Default for Encoder {
@@ -313,33 +437,113 @@ impl Default for Encoder {
     }
 }
 
-/// One sender's VP8 decoder, as heard by one receiver.
+enum DecoderInner {
+    Vp8(Vp8DecoderState),
+    Vp9(Box<Vp9Decoder>),
+}
+
+/// One sender's decoder, as heard by one receiver. Follows the sender's codec:
+/// a frame in the other one starts a fresh decoder (and so needs a keyframe).
 pub struct Decoder {
-    inner: Vp8DecoderState,
+    inner: DecoderInner,
 }
 
 impl Decoder {
+    /// A decoder for VP8; it switches on the first VP9 frame it is handed.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: Vp8DecoderState::new().with_max_pixels_per_frame(MAX_PIXELS),
+        Self::with_codec(Codec::Vp8)
+    }
+
+    #[must_use]
+    pub fn with_codec(codec: Codec) -> Self {
+        let inner = match codec {
+            Codec::Vp9 => DecoderInner::Vp9(Box::default()),
+            _ => DecoderInner::Vp8(Vp8DecoderState::new().with_max_pixels_per_frame(MAX_PIXELS)),
+        };
+        Self { inner }
+    }
+
+    #[must_use]
+    pub fn codec(&self) -> Codec {
+        match self.inner {
+            DecoderInner::Vp8(_) => Codec::Vp8,
+            DecoderInner::Vp9(_) => Codec::Vp9,
         }
     }
 
-    /// Decode one frame. An error usually means a reference frame was lost;
-    /// the caller asks the sender for a keyframe.
+    /// Decode one VP8 frame. See [`Decoder::decode_as`].
     pub fn decode(&mut self, frame: &[u8]) -> Result<I420, Error> {
-        let f = self
-            .inner
-            .decode_frame(frame)
-            .map_err(|e| Error(format!("{e:?}")))?;
-        Ok(I420 {
-            width: f.width,
-            height: f.height,
-            y: f.y,
-            u: f.u,
-            v: f.v,
-        })
+        self.decode_as(Codec::Vp8, frame)
+    }
+
+    /// Decode one frame in `codec`. An error usually means a reference frame
+    /// was lost; the caller asks the sender for a keyframe.
+    pub fn decode_as(&mut self, codec: Codec, frame: &[u8]) -> Result<I420, Error> {
+        if codec != self.codec() {
+            *self = Self::with_codec(codec);
+        }
+        match &mut self.inner {
+            DecoderInner::Vp8(dec) => {
+                let f = dec
+                    .decode_frame(frame)
+                    .map_err(|e| Error(format!("{e:?}")))?;
+                Ok(I420 {
+                    width: f.width,
+                    height: f.height,
+                    y: f.y,
+                    u: f.u,
+                    v: f.v,
+                })
+            }
+            DecoderInner::Vp9(dec) => {
+                // `rusty_vp9` takes the size a header names on trust, so a
+                // hostile one is refused before it can allocate.
+                let header = rusty_vp9::parse_uncompressed_header(
+                    &mut rusty_vp9::BitReader::new(frame),
+                    &[(0, 0); 8],
+                )
+                .map_err(|e| Error(format!("{e:?}")))?;
+                if u64::from(header.width) * u64::from(header.height) > MAX_PIXELS {
+                    return Err(Error(format!(
+                        "{}×{} is larger than a call sends",
+                        header.width, header.height
+                    )));
+                }
+                dec.push(frame, None).map_err(|e| Error(format!("{e:?}")))?;
+                let mut shown = None;
+                loop {
+                    match dec.next_frame() {
+                        Ok(f) => shown = Some(f),
+                        Err(rusty_vp9::Error::Again) => break,
+                        Err(e) => return Err(Error(format!("{e:?}"))),
+                    }
+                }
+                let f = shown.ok_or_else(|| Error("no picture shown".into()))?;
+                if f.bit_depth != 8 || (f.subsampling_x, f.subsampling_y) != (1, 1) {
+                    return Err(Error("not 8-bit 4:2:0".into()));
+                }
+                let (cw, ch) = chroma(f.width, f.height);
+                let plane = |p: usize, w: usize, h: usize| -> Vec<u8> {
+                    let stride = f.strides[p];
+                    if stride == w {
+                        f.planes[p][..w * h].to_vec()
+                    } else {
+                        (0..h)
+                            .flat_map(|row| &f.planes[p][row * stride..row * stride + w])
+                            .copied()
+                            .collect()
+                    }
+                };
+                Ok(I420 {
+                    width: f.width,
+                    height: f.height,
+                    y: plane(0, f.width as usize, f.height as usize),
+                    u: plane(1, cw, ch),
+                    v: plane(2, cw, ch),
+                })
+            }
+        }
     }
 }
 
@@ -472,22 +676,63 @@ mod tests {
 
     #[test]
     fn a_stream_turns_with_the_phone() {
-        let mut enc = Encoder::new();
-        let mut dec = Decoder::new();
-        let upright = test_pattern(0).rotated(90, false);
-        for (n, picture) in [test_pattern(0), test_pattern(1), upright.clone(), upright]
-            .iter()
-            .enumerate()
-        {
-            let bytes = enc.encode(picture, n == 0).unwrap();
-            let got = dec.decode(&bytes).unwrap();
-            let want = if n < 2 {
-                (WIDTH, HEIGHT)
-            } else {
-                (HEIGHT, WIDTH)
-            };
-            assert_eq!((got.width, got.height), want, "frame {n}");
+        for codec in [Codec::Vp8, Codec::Vp9] {
+            let mut enc = Encoder::with_codec(codec);
+            let mut dec = Decoder::new();
+            let upright = test_pattern(0).rotated(90, false);
+            for (n, picture) in [test_pattern(0), test_pattern(1), upright.clone(), upright]
+                .iter()
+                .enumerate()
+            {
+                let bytes = enc.encode(picture, n == 0).unwrap();
+                let got = dec.decode_as(codec, &bytes).unwrap();
+                let want = if n < 2 {
+                    (WIDTH, HEIGHT)
+                } else {
+                    (HEIGHT, WIDTH)
+                };
+                assert_eq!((got.width, got.height), want, "{codec:?} frame {n}");
+            }
         }
+    }
+
+    #[test]
+    fn the_app_sends_vp9_and_a_decoder_follows_a_sender_that_changes_codec() {
+        assert_eq!(Encoder::new().codec(), Codec::Vp9);
+        let mut dec = Decoder::new();
+        let mut vp8 = Encoder::with_codec(Codec::Vp8);
+        let mut vp9 = Encoder::new();
+        let a = vp8.encode(&test_pattern(1), true).unwrap();
+        assert_eq!(
+            test_pattern_number(&dec.decode_as(Codec::Vp8, &a).unwrap()),
+            Some(1)
+        );
+        let b = vp9.encode(&test_pattern(2), false).unwrap();
+        assert!(
+            Codec::Vp9.is_keyframe(&b),
+            "a VP9 stream starts on a keyframe"
+        );
+        assert_eq!(
+            test_pattern_number(&dec.decode_as(Codec::Vp9, &b).unwrap()),
+            Some(2)
+        );
+        assert_eq!(dec.codec(), Codec::Vp9);
+    }
+
+    #[test]
+    fn a_vp9_header_naming_a_huge_picture_is_refused_before_it_allocates() {
+        let mut enc = Encoder::new();
+        let mut key = enc.encode(&test_pattern(0), true).unwrap();
+        // Profile 0 keyframe: byte 0, sync code (3), then 4 bits of colour
+        // config, then width-1 and height-1 as 16-bit fields. Set both to
+        // 0xffff by OR-ing ones into the bits they occupy.
+        let start_bit = 8 + 24 + 4;
+        for bit in start_bit..start_bit + 32 {
+            key[bit / 8] |= 0x80 >> (bit % 8);
+        }
+        assert!(Decoder::with_codec(Codec::Vp9)
+            .decode_as(Codec::Vp9, &key)
+            .is_err());
     }
 
     #[test]
@@ -534,26 +779,52 @@ mod tests {
 
     #[test]
     fn the_test_pattern_survives_the_codec_and_says_which_frame_it_is() {
-        let mut enc = Encoder::new();
-        let mut dec = Decoder::new();
-        for n in 0..40u64 {
-            let sent = test_pattern(n);
-            let got = dec.decode(&enc.encode(&sent, false).unwrap()).unwrap();
-            assert_eq!((got.width, got.height), (WIDTH, HEIGHT));
-            assert_eq!(test_pattern_number(&got), Some(n), "frame {n}");
+        for codec in [Codec::Vp8, Codec::Vp9] {
+            let mut enc = Encoder::with_codec(codec);
+            let mut dec = Decoder::with_codec(codec);
+            // Past the scheduled keyframe, so the stream restarts once.
+            for n in 0..(KEYFRAME_INTERVAL + 5) {
+                let sent = test_pattern(n);
+                let got = dec
+                    .decode_as(codec, &enc.encode(&sent, false).unwrap())
+                    .unwrap();
+                assert_eq!((got.width, got.height), (WIDTH, HEIGHT));
+                assert_eq!(test_pattern_number(&got), Some(n), "{codec:?} frame {n}");
+            }
         }
     }
 
     #[test]
     fn a_forced_keyframe_decodes_without_what_came_before() {
-        let mut enc = Encoder::new();
-        for n in 0..5 {
-            enc.encode(&test_pattern(n), false).unwrap();
+        for codec in [Codec::Vp8, Codec::Vp9] {
+            let mut enc = Encoder::with_codec(codec);
+            for n in 0..5 {
+                let delta = enc.encode(&test_pattern(n), false).unwrap();
+                assert_eq!(codec.is_keyframe(&delta), n == 0, "{codec:?} frame {n}");
+            }
+            let key = enc.encode(&test_pattern(5), true).unwrap();
+            assert!(
+                codec.is_keyframe(&key),
+                "{codec:?} frame header says keyframe"
+            );
+            let got = Decoder::with_codec(codec).decode_as(codec, &key).unwrap();
+            assert_eq!(test_pattern_number(&got), Some(5), "{codec:?}");
         }
-        let key = enc.encode(&test_pattern(5), true).unwrap();
-        assert_eq!(key[0] & 1, 0, "VP8 frame tag says keyframe");
-        let got = Decoder::new().decode(&key).unwrap();
-        assert_eq!(test_pattern_number(&got), Some(5));
+    }
+
+    #[test]
+    fn a_mirrored_conversion_is_the_mirror_of_the_plain_one() {
+        let f = test_pattern(3);
+        let (plain, mirrored) = (f.to_rgba(), f.to_rgba_mirrored(true));
+        let w = WIDTH as usize;
+        for row in [0, 100, HEIGHT as usize - 1] {
+            for col in [0, 7, w - 1] {
+                let a = &plain[(row * w + col) * 4..][..4];
+                let b = &mirrored[(row * w + (w - 1 - col)) * 4..][..4];
+                assert_eq!(a, b, "row {row} col {col}");
+            }
+        }
+        assert_eq!(f.rotated(0, true).to_rgba(), mirrored);
     }
 
     #[test]

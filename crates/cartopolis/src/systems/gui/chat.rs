@@ -69,6 +69,10 @@ pub struct ChatState {
     /// Drained by `systems::private_chat`, which seals and sends them — a
     /// private line must never go out as a `ChatSend`.
     pub private_outbox: Vec<(String, String)>,
+    /// Private lines that could not be sent: (channel key, text). Put back in
+    /// the chat's message box (`gui::chats`) rather than lost with the draft
+    /// that was cleared when Send was pressed.
+    pub unsent: Vec<(String, String)>,
     /// The "private chat with…" field in the panel.
     pub private_input: String,
     /// Points to seal and send this frame: (channel key, point). Drained by
@@ -248,6 +252,7 @@ impl Default for ChatState {
             notice: None,
             private_start: Vec::new(),
             private_outbox: Vec::new(),
+            unsent: Vec::new(),
             private_input: String::new(),
             private_points: Vec::new(),
             private_pictures: Vec::new(),

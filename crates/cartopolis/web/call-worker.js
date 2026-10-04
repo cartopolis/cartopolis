@@ -1,6 +1,7 @@
 // The encoded-transform worker for calls in the browser (docs/notes/calls.md).
 //
-// The browser encodes and decodes with its own Opus and VP8; each encoded frame
+// The browser encodes with its own Opus and VP8 and decodes VP8 and VP9 (what
+// the app sends); each encoded frame
 // passes through here on its way out (sealed) and on its way in (opened), so
 // the forwarder only ever carries SFrame, as it does for the native client.
 //
@@ -14,6 +15,30 @@ const keys = new CallKeys(crypto.getRandomValues(new Uint32Array(1))[0]);
 // Counted and reported now and then, so a call that carries nothing says why.
 const dropped = { send: 0, receive: 0 };
 
+/** The codec of one encoded frame. A video track carries VP8 or VP9 depending
+ *  on who sent it (the app sends VP9, a browser VP8), and the metadata says
+ *  which where the browser fills it in. */
+function codecOf(frame, fallback) {
+  const mime = frame.getMetadata?.().mimeType;
+  if (typeof mime === "string") {
+    if (/vp9/i.test(mime)) return "vp9";
+    if (/vp8/i.test(mime)) return "vp8";
+  }
+  return fallback;
+}
+
+/** Open a received frame. Without a mimeType to go on, a video frame is tried
+ *  as each codec: the clear prefix is authenticated, so only the right reading
+ *  of it opens. */
+async function open(codec, data, known) {
+  if (known || codec === "opus") return (await keys.open(codec, data)).frame;
+  try {
+    return (await keys.open("vp9", data)).frame;
+  } catch {
+    return (await keys.open("vp8", data)).frame;
+  }
+}
+
 function run(readable, writable, side, codec) {
   readable
     .pipeThrough(
@@ -21,8 +46,9 @@ function run(readable, writable, side, codec) {
         async transform(frame, out) {
           try {
             const data = new Uint8Array(frame.data);
-            const done =
-              side === "send" ? await keys.seal(codec, data) : (await keys.open(codec, data)).frame;
+            const c = codecOf(frame, codec);
+            const known = typeof frame.getMetadata?.().mimeType === "string";
+            const done = side === "send" ? await keys.seal(c, data) : await open(c, data, known);
             frame.data = done.buffer;
             out.enqueue(frame);
           } catch {

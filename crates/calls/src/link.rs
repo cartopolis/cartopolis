@@ -40,6 +40,14 @@ fn rtc_err(e: impl std::fmt::Display) -> Error {
     Error::Rtc(e.to_string())
 }
 
+fn rtp_codec(codec: Codec) -> RtpCodec {
+    match codec {
+        Codec::Opus => RtpCodec::Opus,
+        Codec::Vp8 => RtpCodec::Vp8,
+        Codec::Vp9 => RtpCodec::Vp9,
+    }
+}
+
 /// Which of the two connections a datagram belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leg {
@@ -62,6 +70,12 @@ pub enum Output {
     },
     /// The up connection is established and [`Link::send`] will be carried.
     Connected,
+    /// A connection stopped answering. Not over yet: it has
+    /// [`crate::media::RECONNECT_GRACE`] to come back, and a person should be
+    /// told it is trying rather than shown a timer running over silence.
+    Lost,
+    /// Every connection that was lost is answering again.
+    Restored,
     /// Somebody cannot decode this device's video and wants a full picture:
     /// the next video frame should be a keyframe.
     KeyframeWanted,
@@ -79,7 +93,7 @@ pub struct Link {
     audio: Mid,
     video: Option<Mid>,
     /// Down-connection tracks by mid, as the last offer named them.
-    tracks: HashMap<String, TrackInfo>,
+    tracks: HashMap<Mid, TrackInfo>,
     connected: bool,
     /// Why a connection failed, once one has.
     failed: Option<String>,
@@ -165,7 +179,10 @@ impl Link {
             self.down_started = true;
         }
         let answer = self.down.sdp_api().accept_offer(offer).map_err(rtc_err)?;
-        self.tracks = tracks.iter().map(|t| (t.mid.clone(), t.clone())).collect();
+        self.tracks = tracks
+            .iter()
+            .map(|t| (Mid::from(t.mid.as_str()), t.clone()))
+            .collect();
         Ok(answer.to_sdp_string())
     }
 
@@ -186,16 +203,19 @@ impl Link {
     ) -> Result<(), Error> {
         let (mid, want, rate) = match codec {
             Codec::Opus => (self.audio, RtpCodec::Opus, Frequency::FORTY_EIGHT_KHZ),
-            Codec::Vp8 => (
+            Codec::Vp8 | Codec::Vp9 => (
                 self.video.ok_or(Error::NotSending(codec))?,
-                RtpCodec::Vp8,
+                rtp_codec(codec),
                 Frequency::NINETY_KHZ,
             ),
         };
         let writer = self.up.writer(mid).ok_or(Error::NotSending(codec))?;
+        // VP9 is offered as profile 0 (8-bit 4:2:0, what `video` encodes) and
+        // profile 2; a profile-2 payload type would tell the receiver to
+        // expect ten bits.
         let pt = writer
             .payload_params()
-            .find(|p| p.spec().codec == want)
+            .find(|p| p.spec().codec == want && p.spec().format.profile_id.unwrap_or(0) == 0)
             .map(|p| p.pt())
             .ok_or(Error::NotSending(codec))?;
         let ticks = time.as_micros() as u64 * u64::from(rate.get()) / 1_000_000;
@@ -208,14 +228,14 @@ impl Link {
     /// packet took a reference frame with it). Goes to the forwarder, which
     /// passes it on, throttled.
     pub fn request_keyframe(&mut self, from: ParticipantId) {
-        let mids: Vec<String> = self
+        let mids: Vec<Mid> = self
             .tracks
-            .values()
-            .filter(|t| t.from == from && t.kind == crate::media::Kind::Video)
-            .map(|t| t.mid.clone())
+            .iter()
+            .filter(|(_, t)| t.from == from && t.kind == crate::media::Kind::Video)
+            .map(|(mid, _)| *mid)
             .collect();
         for mid in mids {
-            if let Some(mut w) = self.down.writer(Mid::from(mid.as_str())) {
+            if let Some(mut w) = self.down.writer(mid) {
                 let _ = w.request_keyframe(None, str0m::media::KeyframeRequestKind::Pli);
             }
         }
@@ -282,11 +302,18 @@ impl Link {
                             out.push(Output::Connected);
                         }
                         Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
-                            self.lost_since.get_or_insert(now);
+                            if self.lost_since.is_none() {
+                                self.lost_since = Some(now);
+                                out.push(Output::Lost);
+                            }
                         }
                         Event::IceConnectionStateChange(
                             IceConnectionState::Connected | IceConnectionState::Completed,
-                        ) => self.lost_since = None,
+                        ) => {
+                            if self.lost_since.take().is_some() {
+                                out.push(Output::Restored);
+                            }
+                        }
                         Event::Closed => {
                             self.failed
                                 .get_or_insert(format!("{leg:?} connection closed"));
@@ -295,10 +322,10 @@ impl Link {
                             let codec = match d.params.spec().codec {
                                 RtpCodec::Opus => Codec::Opus,
                                 RtpCodec::Vp8 => Codec::Vp8,
+                                RtpCodec::Vp9 => Codec::Vp9,
                                 _ => continue,
                             };
-                            let Some(from) = self.tracks.get(&d.mid.to_string()).map(|t| t.from)
-                            else {
+                            let Some(from) = self.tracks.get(&d.mid).map(|t| t.from) else {
                                 continue;
                             };
                             out.push(Output::Media {
@@ -611,7 +638,10 @@ mod tests {
                             p.heard.push((from, opened.sender, opened.frame));
                         }
                         Output::Failed(why) => panic!("a link failed: {why}"),
-                        Output::Connected | Output::KeyframeWanted => {}
+                        Output::Connected
+                        | Output::KeyframeWanted
+                        | Output::Lost
+                        | Output::Restored => {}
                     }
                 }
             }

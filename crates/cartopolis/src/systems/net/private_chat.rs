@@ -1482,7 +1482,12 @@ pub fn drive_private_chats(
                 let my_id = chat.my_id.unwrap_or(0);
                 chat.receive(&channel, my_id, me, text, None);
             }
-            Err(e) => events.push(Event::Notice(format!("not sent: {e}"))),
+            Err(e) => {
+                events.push(Event::Notice(format!(
+                    "Not sent ({e}). It is back in the message box."
+                )));
+                chat.unsent.push((channel, text));
+            }
         }
         private.dirty = true;
     }

@@ -17,7 +17,8 @@
 //   epoch), expanded with "SFrame 1.0 Secret key " / "SFrame 1.0 Secret salt "
 //   followed by the key ID (8 bytes) and the suite id (2 bytes), big-endian.
 // - A VP8 frame keeps its first 10 bytes (keyframe) or 3 (otherwise) in the
-//   clear, in front of the header, and they are authenticated with it: the
+//   clear, a VP9 frame its first 10 (keyframe) or 1, in front of the header,
+//   and they are authenticated with it: the
 //   forwarder needs them to see keyframes. The authenticated data is those
 //   bytes *then* the header — the order the `sframe` crate lays them out in
 //   its buffer, which is the reverse of RFC 9605 §4.4's header-then-metadata.
@@ -33,7 +34,18 @@ const enc = new TextEncoder();
 export function clearPrefix(codec, frame) {
   let n = 0;
   if (codec === "vp8" && frame.length > 0) n = (frame[0] & 1) === 0 ? 10 : 3;
+  if (codec === "vp9" && frame.length > 0) n = isVp9Keyframe(frame) ? 10 : 1;
   return Math.min(n, frame.length);
+}
+
+/** `cartopolis_calls::media::Codec::is_keyframe` for VP9: frame marker 0b10,
+ *  then the profile bits, then show_existing_frame and frame_type (one bit
+ *  lower in profiles 2 and 3), both 0 on a keyframe. */
+export function isVp9Keyframe(frame) {
+  const b = frame[0];
+  if ((b & 0xc0) !== 0x80) return false;
+  const shift = b & 0x10 ? 1 : 0;
+  return ((b >> (3 - shift)) & 1) === 0 && ((b >> (2 - shift)) & 1) === 0;
 }
 
 function be(value, len) {

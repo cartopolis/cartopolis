@@ -34,17 +34,23 @@ struct Shared {
 }
 
 impl Shared {
-    /// A new picture: handed to the sink at no more than the call's frame
-    /// rate, and dropped otherwise — a call wants what the camera sees now.
-    fn deliver(&self, picture: I420) {
+    /// Whether a picture taken now would be used: no more than the call's
+    /// frame rate. Asked *before* a picture is converted, since a webcam runs
+    /// at 30 fps and every other picture used to be converted, at full size,
+    /// only to be dropped here.
+    fn due(&self) -> bool {
         let period = std::time::Duration::from_micros(1_000_000 / u64::from(video::FPS));
-        {
-            let mut last = self.last_sunk.lock().unwrap();
-            if last.is_some_and(|t| t.elapsed() < period) {
-                return;
-            }
-            *last = Some(std::time::Instant::now());
+        let mut last = self.last_sunk.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < period) {
+            return false;
         }
+        *last = Some(std::time::Instant::now());
+        true
+    }
+
+    /// A new picture, already known to be [`Shared::due`]: handed to the sink,
+    /// and kept as the preview.
+    fn deliver(&self, picture: I420) {
         if let Ok(sink) = self.sink.lock() {
             if let Some(sink) = sink.as_ref() {
                 sink(picture.clone());
@@ -107,7 +113,9 @@ impl Camera {
                 let period = std::time::Duration::from_micros(1_000_000 / u64::from(video::FPS));
                 let mut n = 0u64;
                 while !s.stop.load(Ordering::Relaxed) {
-                    s.deliver(video::test_pattern(n));
+                    if s.due() {
+                        s.deliver(video::test_pattern(n));
+                    }
                     n += 1;
                     std::thread::sleep(period);
                 }
@@ -179,6 +187,9 @@ mod webcam {
                 Ok(f) => f,
                 Err(e) => return fail(format!("Camera stopped: {e}")),
             };
+            if !shared.due() {
+                continue;
+            }
             let r = frame.resolution();
             let picture = match frame.source_frame_format() {
                 FrameFormat::YUYV => I420::from_yuyv(r.width(), r.height(), frame.buffer()),
@@ -190,7 +201,7 @@ mod webcam {
                 }
             };
             if let Some(p) = picture {
-                shared.deliver(p);
+                shared.deliver(super::to_call_size(&p, 0));
             }
         }
         let _ = cam.stop_stream();
@@ -484,10 +495,15 @@ mod phone {
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
+            // Not wanted yet: give the image straight back unread.
+            if !shared.due() {
+                sys::AImage_delete(image);
+                continue;
+            }
             let picture = read(image);
             sys::AImage_delete(image);
             if let Some(p) = picture {
-                shared.deliver(p.rotated(turn, false));
+                shared.deliver(super::to_call_size(&p, turn));
             }
         }
         Ok(())
@@ -525,12 +541,69 @@ mod phone {
 /// other person should see you the right way round); only this view is.
 #[must_use]
 pub fn self_view(picture: &I420, max_width: u32) -> (u32, u32, Vec<u8>) {
-    let small = if picture.width > max_width {
+    if picture.width > max_width {
         let h = (picture.height * max_width / picture.width.max(1)) & !1;
-        picture.scaled(max_width, h.max(2))
+        let small = picture.scaled(max_width, h.max(2));
+        (small.width, small.height, small.to_rgba_mirrored(true))
     } else {
-        picture.clone()
+        (
+            picture.width,
+            picture.height,
+            picture.to_rgba_mirrored(true),
+        )
+    }
+}
+
+/// A camera's picture at the size a call sends, turned clockwise by `turn`
+/// degrees: shrunk *first*, so the turn is done on a quarter of the pixels
+/// (`video::call_size` is what the turned picture will be, so the shrink aims
+/// at that size before the turn). The encoder then finds it already the right
+/// size and copies nothing.
+#[must_use]
+pub fn to_call_size(picture: &I420, turn: u32) -> I420 {
+    let quarter = turn % 180 == 90;
+    let (w, h) = if quarter {
+        (picture.height, picture.width)
+    } else {
+        (picture.width, picture.height)
     };
-    let mirrored = small.rotated(0, true);
-    (mirrored.width, mirrored.height, mirrored.to_rgba())
+    let (cw, ch) = video::call_size(w, h);
+    let (sw, sh) = if quarter { (ch, cw) } else { (cw, ch) };
+    let small = picture.scaled(sw, sh);
+    if turn % 360 == 0 {
+        small
+    } else {
+        small.rotated(turn, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_camera_picture_is_shrunk_then_turned_to_the_calls_size() {
+        let landscape = I420::black(640, 480);
+        let p = to_call_size(&landscape, 0);
+        assert_eq!((p.width, p.height), (video::WIDTH, video::HEIGHT));
+        // A phone's sensor is landscape and the phone upright: turned a
+        // quarter, it is a portrait picture at the call's portrait size.
+        let p = to_call_size(&landscape, 90);
+        assert_eq!((p.width, p.height), (video::HEIGHT, video::WIDTH));
+        let p = to_call_size(&landscape, 270);
+        assert_eq!((p.width, p.height), (video::HEIGHT, video::WIDTH));
+        // And what it is equals turning first and shrinking after.
+        let src = video::test_pattern(7).scaled(640, 480);
+        let want = src.rotated(90, false).scaled(video::HEIGHT, video::WIDTH);
+        let got = to_call_size(&src, 90);
+        assert_eq!((got.width, got.height), (want.width, want.height));
+    }
+
+    #[test]
+    fn the_self_view_is_the_mirror_image() {
+        let p = video::test_pattern(2);
+        let (w, h, rgba) = self_view(&p, 320);
+        assert_eq!((w, h), (p.width, p.height));
+        assert_eq!(rgba, p.rotated(0, true).to_rgba());
+    }
 }

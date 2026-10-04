@@ -413,6 +413,8 @@ mod tests {
             (2, Codec::Opus, (1..=40).collect()),
             (2, Codec::Vp8, [0x10].into_iter().chain(2..=30).collect()), // keyframe
             (2, Codec::Vp8, [0x31].into_iter().chain(2..=20).collect()), // delta
+            (2, Codec::Vp9, [0x82].into_iter().chain(2..=30).collect()), // keyframe
+            (2, Codec::Vp9, [0x86].into_iter().chain(2..=20).collect()), // inter
             (
                 300,
                 Codec::Opus,
@@ -435,6 +437,7 @@ mod tests {
             let codec = match codec {
                 Codec::Opus => "opus",
                 Codec::Vp8 => "vp8",
+                Codec::Vp9 => "vp9",
             };
             rows.push(format!(
                 "    {{\"index\": {index}, \"codec\": \"{codec}\", \"frame\": \"{}\", \"sealed\": \"{}\"}}",

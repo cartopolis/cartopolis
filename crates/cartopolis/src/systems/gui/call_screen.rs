@@ -135,7 +135,11 @@ pub fn render_call_screen(
     }
 
     let ctx = egui.ctx_mut().clone();
-    upload_pictures(&ctx, &mut calls, &mut st.tiles);
+    // Folded to the bar, nothing shows a picture: leave the newest waiting
+    // (`fresh`) for when the screen comes back rather than upload it unseen.
+    if !calls.minimized {
+        upload_pictures(&ctx, &mut calls, &mut st.tiles);
+    }
 
     let label_of = |group: &[u8]| {
         let key = channel_key(group);
@@ -290,7 +294,9 @@ fn upload_pictures(
             continue;
         }
         p.fresh = false;
-        let image = egui::ColorImage::from_rgba_unmultiplied(
+        // Opaque pictures are premultiplied already, which skips the
+        // per-pixel multiply `from_rgba_unmultiplied` would do.
+        let image = egui::ColorImage::from_rgba_premultiplied(
             [p.width as usize, p.height as usize],
             &p.rgba,
         );
@@ -398,15 +404,12 @@ fn paint_shade(p: &egui::Painter, rect: egui::Rect, dark_at_top: bool) {
 
 /// A call's status line: the timer once it is up, or where it has got to.
 fn status_line(calls: &Calls, others: usize) -> String {
-    if others == 0 {
+    if calls.reconnecting() {
+        "Reconnecting…".into()
+    } else if others == 0 {
         "Ringing…".into()
     } else if calls.connected() {
-        let s = calls.elapsed_secs();
-        if s >= 3600 {
-            format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
-        } else {
-            format!("{:02}:{:02}", s / 60, s % 60)
-        }
+        crate::systems::calls::call_clock(calls.elapsed_secs())
     } else {
         "Connecting…".into()
     }
@@ -770,17 +773,21 @@ fn in_call_screen(
     let _ = me;
 
     // ── The bottom: camera, microphone, hang up ────────────────────────────
-    let y = full.max.y - BOTTOM_EDGE - CALL_BUTTON_LARGE * 0.5;
+    // Each button carries a word under it: a phone never shows a hover tip,
+    // and an icon alone left "is the crossed-out camera the state or the
+    // action?" to guess.
+    const LABEL_GAP: f32 = 16.0;
+    let y = full.max.y - BOTTOM_EDGE - CALL_BUTTON_LARGE * 0.5 - LABEL_GAP * 0.5;
     let step = CALL_BUTTON_LARGE + 24.0;
     let with_camera = camera_available();
     let n = if with_camera { 3.0 } else { 2.0 };
     let mut cx = x - (n - 1.0) * step * 0.5;
     // A dark rounded tray behind the row, so it reads over any picture.
     let tray = egui::Rect::from_center_size(
-        egui::pos2(x, y),
+        egui::pos2(x, y + LABEL_GAP * 0.5),
         egui::vec2(
             (n - 1.0) * step + CALL_BUTTON_LARGE + 28.0,
-            CALL_BUTTON_LARGE + 20.0,
+            CALL_BUTTON_LARGE + 20.0 + LABEL_GAP,
         ),
     );
     p.rect_filled(
@@ -788,6 +795,15 @@ fn in_call_screen(
         egui::CornerRadius::same(theme::RADIUS_PILL),
         egui::Color32::from_black_alpha(110),
     );
+    let label = |cx: f32, text: &str| {
+        centred(
+            &p,
+            egui::pos2(cx, y + CALL_BUTTON_LARGE * 0.5 + LABEL_GAP * 0.5 + 2.0),
+            text,
+            theme::SIZE_TINY,
+            theme::TEXT,
+        );
+    };
     let mut touched = false;
     if with_camera {
         let (icon, tip, tone) = if calls.camera_on {
@@ -799,6 +815,7 @@ fn in_call_screen(
             calls.camera_on = !calls.camera_on;
             touched = true;
         }
+        label(cx, "Camera");
         cx += step;
     }
     let (icon, tip, tone) = if calls.muted {
@@ -810,6 +827,7 @@ fn in_call_screen(
         calls.muted = !calls.muted;
         touched = true;
     }
+    label(cx, if calls.muted { "Unmute" } else { "Mute" });
     cx += step;
     if button_at(
         ui,
@@ -821,6 +839,7 @@ fn in_call_screen(
     ) {
         *request = Some(CallRequest::Leave);
     }
+    label(cx, "End");
     if touched {
         st.touched = Some(web_time::Instant::now());
     }

@@ -7,16 +7,26 @@
 //! frame passes through on its way in and out: the Opus codec, the SFrame keys,
 //! a decoder per person heard. The app hands it microphone frames and chat
 //! epochs and takes back decoded audio and the signalling to send; plaintext
-//! media never leaves this thread except as PCM.
+//! media never leaves this thread except as PCM and pictures ready to draw.
+//!
+//! Video is the expensive part, and none of it runs here or on the app's main
+//! thread: encoding has a thread ([`VideoEncoder`]), and so does decoding
+//! ([`VideoDecoder`]), which also converts each picture to RGBA and keeps only
+//! the newest one per person ([`Session::take_pictures`]). A queue of decoded
+//! pictures was what this used to hand the app, unbounded: an app that
+//! stalled (a phone in the background) came back to seconds of 115 KB
+//! pictures, every one of them converted on the main thread to draw only the
+//! last.
 //!
 //! Signalling is the app's to carry (it goes over the simulator connection the
 //! app already has): [`Event::Offer`] is what to send in `CallJoin`, and the
 //! forwarder's replies come back in through [`Session::joined`] and
 //! [`Session::offered`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -26,9 +36,22 @@ use crate::media::{Codec, ParticipantId, TrackInfo};
 use crate::opus;
 use crate::video;
 
-/// How long the thread sleeps between turns when nothing arrived. Well under a
-/// 20 ms frame, and cheap: a turn with nothing to do is two failed `recv`s.
-const IDLE: Duration = Duration::from_millis(2);
+/// The longest the thread sleeps between turns when nothing arrived: under a
+/// quarter of a 20 ms voice frame. It sleeps less when str0m has a timer due
+/// sooner.
+const IDLE: Duration = Duration::from_millis(4);
+
+/// The shortest gap between two keyframe requests this device makes of one
+/// sender. Every delta after a lost picture fails to decode until the
+/// keyframe lands, which at 15 fps was fifteen requests a second; the
+/// forwarder throttles to one a second anyway.
+const KEYFRAME_ASK_EVERY: Duration = Duration::from_millis(500);
+
+/// Sealed video frames waiting for the decoder. Every frame must be decoded in
+/// order (each refers to the last), so these are queued, not replaced; past
+/// this the decoder has fallen behind, the frame is dropped, and the sender is
+/// asked for a keyframe to start again from.
+const DECODE_QUEUE: usize = 16;
 
 /// What the app tells the thread.
 enum Cmd {
@@ -41,14 +64,16 @@ enum Cmd {
         members: Vec<u32>,
     },
     Pcm(Vec<f32>),
-    Picture(video::I420),
+    /// A camera picture and when it was taken.
+    Picture(video::I420, Instant),
     /// End the call. Said, not implied by the channel closing: a camera
     /// thread's [`PictureSink`] holds a sender of its own, so the channel stays
     /// open for as long as the camera does.
     Stop,
 }
 
-/// What the thread tells the app.
+/// What the thread tells the app. Pictures are not events: see
+/// [`Session::take_pictures`].
 #[derive(Debug)]
 pub enum Event {
     /// The offer for this device's sending connection: send it as `CallJoin`.
@@ -57,6 +82,11 @@ pub enum Event {
     Answer(String),
     /// Media is flowing out.
     Connected,
+    /// The connection stopped answering and is being given a chance to come
+    /// back ([`crate::media::RECONNECT_GRACE`]).
+    Reconnecting,
+    /// It came back.
+    Reconnected,
     /// 20 ms of somebody's voice, decoded, at the session's rate. `sender` is
     /// their leaf index in the chat, from the frame itself.
     Audio {
@@ -64,13 +94,36 @@ pub enum Event {
         sender: u32,
         pcm: Vec<f32>,
     },
-    /// One decoded video frame from somebody.
-    Video {
-        from: ParticipantId,
-        frame: video::I420,
-    },
     /// The call is over for this device. The text is for a person.
     Failed(String),
+}
+
+/// The newest picture from somebody, decoded and converted, ready to draw.
+#[derive(Debug, Clone)]
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    /// Opaque RGBA, so premultiplied as it stands.
+    pub rgba: Vec<u8>,
+    /// Pictures decoded from this person so far, including the ones replaced
+    /// before the app took them.
+    pub decoded: u64,
+    /// The stand-in camera's frame number, when it is that
+    /// ([`video::test_pattern_number`]): what a headless test reads.
+    pub test_number: Option<u64>,
+}
+
+/// Shared between the session and its decoder thread.
+#[derive(Default)]
+struct Shared {
+    /// The newest picture per person; replaced, never queued.
+    pictures: Mutex<HashMap<ParticipantId, Picture>>,
+    /// Whether anybody is looking: while the call screen is folded away
+    /// nothing is decoded at all.
+    video_wanted: AtomicBool,
+    /// Senders whose stream has a hole in it (a frame dropped before it was
+    /// decoded): the decoder skips them until their next keyframe.
+    resync: Mutex<HashSet<ParticipantId>>,
 }
 
 /// A running call. Dropping it ends the thread and closes both sockets.
@@ -79,7 +132,8 @@ pub enum Event {
 /// receiving end sits behind a mutex nobody else ever contends.
 pub struct Session {
     tx: Option<mpsc::Sender<Cmd>>,
-    rx: std::sync::Mutex<mpsc::Receiver<Event>>,
+    rx: Mutex<mpsc::Receiver<Event>>,
+    shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -94,17 +148,23 @@ impl Session {
     pub fn start(server: String, rate: u32, video: bool) -> Self {
         let (tx, cmd_rx) = mpsc::channel();
         let (ev_tx, rx) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            video_wanted: AtomicBool::new(true),
+            ..Shared::default()
+        });
+        let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("call".into())
             .spawn(move || {
-                if let Err(e) = run(&server, rate, video, &cmd_rx, &ev_tx) {
+                if let Err(e) = run(&server, rate, video, &cmd_rx, &ev_tx, &thread_shared) {
                     let _ = ev_tx.send(Event::Failed(e));
                 }
             })
             .ok();
         Self {
             tx: Some(tx),
-            rx: std::sync::Mutex::new(rx),
+            rx: Mutex::new(rx),
+            shared,
             thread,
         }
     }
@@ -141,11 +201,12 @@ impl Session {
         self.send(Cmd::Pcm(pcm));
     }
 
-    /// One camera picture, any size (it is scaled to [`video::WIDTH`] ×
-    /// [`video::HEIGHT`]). Send at [`video::FPS`]; a picture that arrives while
-    /// the encoder is still busy with the last one is dropped, not queued.
+    /// One camera picture, any size (it is scaled to the call's size,
+    /// [`video::call_size`]). Send at [`video::FPS`]; a picture that arrives
+    /// while the encoder is still busy with the last one is dropped, not
+    /// queued.
     pub fn send_picture(&self, frame: video::I420) {
-        self.send(Cmd::Picture(frame));
+        self.send(Cmd::Picture(frame, Instant::now()));
     }
 
     /// A handle a camera thread can send pictures through directly, so video
@@ -163,6 +224,22 @@ impl Session {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default()
     }
+
+    /// The newest picture from each person since last asked.
+    pub fn take_pictures(&self) -> Vec<(ParticipantId, Picture)> {
+        self.shared
+            .pictures
+            .lock()
+            .map(|mut p| p.drain().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether anybody is looking at the call's video. Off, nothing is
+    /// decoded; back on, every sender is asked for a keyframe, since what was
+    /// skipped is what the next delta refers to.
+    pub fn set_video_wanted(&self, wanted: bool) {
+        self.shared.video_wanted.store(wanted, Ordering::Relaxed);
+    }
 }
 
 /// See [`Session::picture_sink`]. Sending after the call ended does nothing.
@@ -172,7 +249,7 @@ pub struct PictureSink(Option<mpsc::Sender<Cmd>>);
 impl PictureSink {
     pub fn send(&self, frame: video::I420) {
         if let Some(tx) = &self.0 {
-            let _ = tx.send(Cmd::Picture(frame));
+            let _ = tx.send(Cmd::Picture(frame, Instant::now()));
         }
     }
 }
@@ -218,27 +295,28 @@ fn bind(ip: IpAddr) -> Result<UdpSocket, String> {
     Ok(s)
 }
 
-/// The video encoder, on a thread of its own: a 320×240 frame is ~40 ms of
-/// CPU, and on the session thread that would hold up two voice frames every
+/// The video encoder, on a thread of its own: a 320×240 frame is tens of ms
+/// of CPU, and on the session thread that would hold up voice frames every
 /// time. It takes the newest picture (dropping any that queued behind a slow
-/// encode — stale video is worth nothing) and hands back VP8 bytes.
+/// encode — stale video is worth nothing) and hands back the coded bytes with
+/// their codec and capture time.
 struct VideoEncoder {
-    tx: Option<mpsc::SyncSender<(video::I420, bool)>>,
-    rx: mpsc::Receiver<Vec<u8>>,
+    tx: Option<mpsc::SyncSender<(video::I420, Instant, bool)>>,
+    rx: mpsc::Receiver<(Codec, Instant, Vec<u8>)>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl VideoEncoder {
     fn start() -> Self {
-        let (tx, frames) = mpsc::sync_channel::<(video::I420, bool)>(1);
+        let (tx, frames) = mpsc::sync_channel::<(video::I420, Instant, bool)>(1);
         let (out, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("call-video".into())
             .spawn(move || {
                 let mut enc = video::Encoder::new();
-                while let Ok((frame, key)) = frames.recv() {
+                while let Ok((frame, taken, key)) = frames.recv() {
                     if let Ok(bytes) = enc.encode(&frame, key) {
-                        if out.send(bytes).is_err() {
+                        if out.send((enc.codec(), taken, bytes)).is_err() {
                             return;
                         }
                     }
@@ -253,14 +331,113 @@ impl VideoEncoder {
     }
 
     /// Hand a picture over if the encoder is free; drop it if not.
-    fn offer(&self, frame: video::I420, key: bool) -> bool {
+    fn offer(&self, frame: video::I420, taken: Instant, key: bool) -> bool {
         self.tx
             .as_ref()
-            .is_some_and(|tx| tx.try_send((frame, key)).is_ok())
+            .is_some_and(|tx| tx.try_send((frame, taken, key)).is_ok())
     }
 }
 
 impl Drop for VideoEncoder {
+    fn drop(&mut self) {
+        self.tx = None;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// The video decoders, one per sender, on a thread of their own: a keyframe
+/// is several ms to decode, and on the session thread it held up the voice
+/// frames queued behind it. Converts each picture for display as it goes, so
+/// the app's main thread only uploads.
+struct VideoDecoder {
+    tx: Option<mpsc::SyncSender<(ParticipantId, Codec, Vec<u8>)>>,
+    /// Senders whose stream would not decode: ask them for a keyframe.
+    broken: mpsc::Receiver<ParticipantId>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl VideoDecoder {
+    fn start(shared: Arc<Shared>) -> Self {
+        let (tx, frames) = mpsc::sync_channel::<(ParticipantId, Codec, Vec<u8>)>(DECODE_QUEUE);
+        let (broken_tx, broken) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("call-video-in".into())
+            .spawn(move || {
+                let mut decoders: HashMap<ParticipantId, (video::Decoder, u64)> = HashMap::new();
+                // Waiting for a keyframe: a delta refers to a picture this
+                // decoder never saw, and would decode to garbage or fail.
+                let mut waiting: HashSet<ParticipantId> = HashSet::new();
+                let mut was_wanted = true;
+                while let Ok((from, codec, frame)) = frames.recv() {
+                    let wanted = shared.video_wanted.load(Ordering::Relaxed);
+                    if !wanted {
+                        was_wanted = false;
+                        continue;
+                    }
+                    if !was_wanted {
+                        // Back from not decoding: every stream has a hole.
+                        was_wanted = true;
+                        waiting.extend(decoders.keys().copied());
+                        for who in decoders.keys() {
+                            let _ = broken_tx.send(*who);
+                        }
+                    }
+                    if let Ok(mut gaps) = shared.resync.lock() {
+                        waiting.extend(gaps.drain());
+                    }
+                    let key = codec.is_keyframe(&frame);
+                    if waiting.contains(&from) && !key {
+                        continue;
+                    }
+                    waiting.remove(&from);
+                    let (dec, decoded) = decoders
+                        .entry(from)
+                        .or_insert_with(|| (video::Decoder::with_codec(codec), 0));
+                    match dec.decode_as(codec, &frame) {
+                        Ok(picture) => {
+                            *decoded += 1;
+                            let p = Picture {
+                                width: picture.width,
+                                height: picture.height,
+                                rgba: picture.to_rgba(),
+                                decoded: *decoded,
+                                test_number: video::test_pattern_number(&picture),
+                            };
+                            if let Ok(mut all) = shared.pictures.lock() {
+                                all.insert(from, p);
+                            }
+                        }
+                        // A lost reference frame: nothing decodes until the
+                        // next keyframe, so skip to it and ask for one.
+                        Err(_) => {
+                            waiting.insert(from);
+                            if broken_tx.send(from).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            })
+            .ok();
+        Self {
+            tx: Some(tx),
+            broken,
+            thread,
+        }
+    }
+
+    /// Queue a frame for decoding. `false` if the queue was full and it was
+    /// dropped: the stream now has a hole, and needs a keyframe.
+    fn offer(&self, from: ParticipantId, codec: Codec, frame: Vec<u8>) -> bool {
+        self.tx
+            .as_ref()
+            .is_some_and(|tx| tx.try_send((from, codec, frame)).is_ok())
+    }
+}
+
+impl Drop for VideoDecoder {
     fn drop(&mut self) {
         self.tx = None;
         if let Some(t) = self.thread.take() {
@@ -275,6 +452,7 @@ fn run(
     send_video: bool,
     cmds: &mpsc::Receiver<Cmd>,
     events: &mpsc::Sender<Event>,
+    shared: &Arc<Shared>,
 ) -> Result<(), String> {
     let server_ip = (server, 0)
         .to_socket_addrs()
@@ -294,10 +472,14 @@ fn run(
     events.send(Event::Offer(offer)).map_err(|_| "app gone")?;
 
     let video_encoder = send_video.then(VideoEncoder::start);
+    let video_decoder = VideoDecoder::start(Arc::clone(shared));
     // A receiver asked for a full picture; the next one sent is a keyframe.
     let mut keyframe_wanted = false;
-    let mut sent_pictures: u64 = 0;
-    let mut pictures: HashMap<ParticipantId, video::Decoder> = HashMap::new();
+    // The capture time of the first picture sent: video's RTP clock runs from
+    // it, so a picture the busy encoder dropped leaves a gap in time rather
+    // than pulling every later picture earlier.
+    let mut first_picture: Option<Instant> = None;
+    let mut asked_keyframe: HashMap<ParticipantId, Instant> = HashMap::new();
 
     let mut keys = CallKeys::new();
     let mut encoder = opus::Encoder::new(rate).map_err(|e| e.to_string())?;
@@ -340,9 +522,9 @@ fn run(
                     sent_frames += 1;
                     let _ = link.send(now, Codec::Opus, time, sealed);
                 }
-                Ok(Cmd::Picture(frame)) => {
+                Ok(Cmd::Picture(frame, taken)) => {
                     if let Some(enc) = &video_encoder {
-                        if link.is_connected() && enc.offer(frame, keyframe_wanted) {
+                        if link.is_connected() && enc.offer(frame, taken, keyframe_wanted) {
                             keyframe_wanted = false;
                         }
                     }
@@ -354,13 +536,25 @@ fn run(
 
         // Encoded pictures back from the encoder thread: seal and send.
         if let Some(enc) = &video_encoder {
-            for bytes in enc.rx.try_iter() {
-                let Ok(sealed) = keys.seal(Codec::Vp8, &bytes) else {
+            for (codec, taken, bytes) in enc.rx.try_iter() {
+                let Ok(sealed) = keys.seal(codec, &bytes) else {
                     continue;
                 };
-                let time = Duration::from_micros(sent_pictures * 1_000_000 / u64::from(video::FPS));
-                sent_pictures += 1;
-                let _ = link.send(now, Codec::Vp8, time, sealed);
+                let first = *first_picture.get_or_insert(taken);
+                let time = taken.saturating_duration_since(first);
+                let _ = link.send(now, codec, time, sealed);
+            }
+        }
+
+        // Streams the decoder could not follow: ask for a fresh start, though
+        // not on every failed delta.
+        for from in video_decoder.broken.try_iter() {
+            let due = asked_keyframe
+                .get(&from)
+                .is_none_or(|at| now.duration_since(*at) >= KEYFRAME_ASK_EVERY);
+            if due {
+                asked_keyframe.insert(from, now);
+                link.request_keyframe(from);
             }
         }
 
@@ -371,7 +565,7 @@ fn run(
                 busy = true;
             }
         }
-        let (outs, _) = link.poll(now);
+        let (outs, next) = link.poll(now);
         for o in outs {
             match o {
                 Output::Transmit {
@@ -392,15 +586,18 @@ fn run(
                     let Ok(opened) = keys.open(codec, &sealed) else {
                         continue;
                     };
-                    if codec == Codec::Vp8 {
-                        let dec = pictures.entry(from).or_default();
-                        match dec.decode(&opened.frame) {
-                            Ok(frame) => {
-                                let _ = events.send(Event::Video { from, frame });
+                    if codec.is_video() {
+                        if !video_decoder.offer(from, codec, opened.frame) {
+                            if let Ok(mut gaps) = shared.resync.lock() {
+                                gaps.insert(from);
                             }
-                            // A lost reference frame: nothing decodes until
-                            // the next keyframe, so ask for one now.
-                            Err(_) => link.request_keyframe(from),
+                            if asked_keyframe
+                                .get(&from)
+                                .is_none_or(|at| now.duration_since(*at) >= KEYFRAME_ASK_EVERY)
+                            {
+                                asked_keyframe.insert(from, now);
+                                link.request_keyframe(from);
+                            }
                         }
                         continue;
                     }
@@ -421,12 +618,19 @@ fn run(
                 Output::Connected => {
                     let _ = events.send(Event::Connected);
                 }
+                Output::Lost => {
+                    let _ = events.send(Event::Reconnecting);
+                }
+                Output::Restored => {
+                    let _ = events.send(Event::Reconnected);
+                }
                 Output::KeyframeWanted => keyframe_wanted = true,
                 Output::Failed(why) => return Err(format!("the call's connection failed: {why}")),
             }
         }
         if !busy {
-            std::thread::sleep(IDLE);
+            let wait = next.saturating_duration_since(Instant::now());
+            std::thread::sleep(wait.clamp(Duration::from_millis(1), IDLE));
         }
     }
 }
@@ -552,14 +756,18 @@ mod tests {
                             assert_eq!(from, ids[0]);
                             heard.extend(pcm);
                         }
-                        Event::Video { from, frame } if i == 1 => {
-                            assert_eq!(from, ids[0]);
-                            seen.extend(video::test_pattern_number(&frame));
-                        }
                         Event::Failed(e) => panic!("session {i} failed: {e}"),
                         _ => {}
                     }
                 }
+            }
+            for (from, picture) in sb.take_pictures() {
+                assert_eq!(from, ids[0]);
+                assert_eq!(
+                    picture.rgba.len(),
+                    (picture.width * picture.height * 4) as usize
+                );
+                seen.extend(picture.test_number);
             }
             if connected {
                 let pcm: Vec<f32> = (0..frame)

@@ -1,7 +1,7 @@
 ---
 topic: calls
 triggers: [calls, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim"]
-updated: 2026-10-01
+updated: 2026-10-04
 ---
 
 # Calls: encrypted voice and video, forwarded by the simulator
@@ -39,13 +39,21 @@ as it is: it is public, like nearby chat.
 - **Opus via `opus-pure`** (pure Rust, BSD-3). This reverses the ADPCM decision
   in `voice-chat.md` for calls only: the reason Opus lost (every binding needed
   `cc`) no longer holds.
-- **VP8 is the baseline video codec, VP9 an upgrade later.** Every Android
-  device must ship Google's software VP8 encoder (`c2.android.vp8.encoder`,
-  CDD §5.1), reachable through MediaCodec, so no C is compiled for the phone.
-  Hardware VP8 *encoding* is the chip maker's choice and often absent. VP9
-  decodes everywhere but software VP9 encoding is too slow for a phone; a
-  sender may use it only where it has a hardware encoder. Receivers decode
-  both, so senders can differ within one call.
+- **VP8 was the baseline; the app sends VP9 since 2026-10-04 (protocol 32).**
+  The 2026-09-29 assumption that "software VP9 encoding is too slow for a
+  phone" was about libvpx and was never measured here. `rusty_vp9` (pure Rust,
+  no dependencies, decoder bit-exact against libvpx's 315 conformance vectors)
+  measured faster than the VP8 encoder already in use, at well under half the
+  bitrate (below). Every receiver decodes both — the app through `video::Decoder`,
+  which follows a sender's codec frame by frame, a browser through its own
+  WebRTC — so senders differ within one call: the app sends VP9, a browser still
+  sends VP8 (`webcall.js`), because its encoded-transform worker must know each
+  frame's codec to seal it and the frame's `mimeType` metadata is not in every
+  browser. A browser *receiving* reads `mimeType` where it has it and otherwise
+  tries both clear prefixes, which is safe because the prefix is authenticated.
+  Hardware VP9 *encoding* is still rare on phones (Qualcomm has historically
+  shipped a VP9 decoder only); it does not matter at 320×240, where the CPU
+  keeps up.
 - **H.264 is ruled out.** Cisco's openh264 licence only covers Cisco's own
   downloaded binary; building it ourselves is a patent question we will not take.
 - **Galène is a reference, not a dependency.** Go, and it decrypts media on the
@@ -94,6 +102,56 @@ as it is: it is public, like nearby chat.
   pattern drawn in the call bar with the right colours. Video arrived at ~1
   picture a second because a picture is sent once per app frame and lavapipe
   renders about one; the session and forwarder are not the limit.
+
+- **VP9 against VP8** (2026-10-04, release build, VPS at load 0.4, 45 frames
+  of a synthetic camera-like picture: a moving bright disc on a gradient with
+  sensor noise; VP8 at the call's settings, VP9 with no lookahead):
+
+  | 320×240                 | encode   | decode | kbit/s at 15 fps | luma PSNR |
+  |-------------------------|----------|--------|------------------|-----------|
+  | VP8 (`oxideav-vp8`, q60) | 45.1 ms | 2.1 ms | 421              | 33.8 dB   |
+  | VP9 speed 6, crf 32     | 25.2 ms  | 1.6 ms | 182              | 34.4 dB   |
+  | VP9 speed 6, crf 40     | 16.0 ms  | 1.3 ms | 84               | 33.8 dB   |
+
+  At 640×480: VP8 169 ms, VP9 speed 6 crf 32 102 ms — neither keeps up at
+  15 fps on a CPU, so the call stays 320×240. The call uses crf 34. Synthetic
+  content flatters a codec less than it seems to (noise is the hard part, and
+  it is there), but a real face over a webcam is the measurement still owed.
+  `rusty_vp9` has no "force a keyframe", so a request makes a fresh encoder,
+  whose first picture is one.
+
+## Where the call's CPU goes (2026-10-04)
+
+An audit of the media path found the main thread doing work for pictures
+nobody saw. What changed, so it is not undone:
+
+- **Decoding has its own thread** (`session::VideoDecoder`), which converts
+  each picture to RGBA there and keeps only the **newest per person**
+  (`Session::take_pictures`). Before, decode ran on the session thread between
+  voice frames, and every decoded picture was an event on an unbounded
+  channel converted to RGBA on the main thread: a phone back from the
+  background converted seconds of pictures in one frame to show the last.
+- **Folded to the bar, nothing is decoded or uploaded** (`set_video_wanted`).
+  Unfolding asks every sender for a keyframe, since what was skipped is what
+  the next delta refers to.
+- **Keyframe requests are throttled per sender (500 ms) and deltas are
+  skipped until the keyframe arrives**: after a loss every delta failed and
+  asked again, fifteen requests a second.
+- **The camera skips a frame before converting it, and shrinks before
+  turning it** (`platform::camera::to_call_size`): a 30 fps webcam converted
+  every picture at full size and dropped half, and the phone turned
+  640×480 pixel by pixel before the encoder shrank it.
+- Video RTP time is the **capture time**, not "pictures sent / 15", which ran
+  behind wall-clock whenever the busy encoder dropped one.
+- The session thread sleeps until str0m's next timer, at most 4 ms (was a
+  fixed 2 ms: ~500 wakeups a second for nothing).
+
+And on the screen: the timer counts from the answer, not from dialling;
+"Reconnecting…" shows while the connection is in its 30 s grace
+(`link::Output::Lost`); a remote picture with nothing after it for 3 s goes
+back to the person's initial (a camera turned off used to freeze on its last
+frame); the in-call buttons carry labels; hanging up says "Call ended · 04:12";
+and a private message that fails to send goes back into the message box.
 
 ## Running it
 

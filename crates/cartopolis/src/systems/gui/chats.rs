@@ -1997,6 +1997,25 @@ fn apply(
     if act.dismiss_notice {
         chat.notice = None;
     }
+    // A line that failed to send goes back in its chat's box, ahead of
+    // anything typed since, so nothing typed is lost to a failed send.
+    for (key, text) in std::mem::take(&mut chat.unsent) {
+        if view.open.as_deref() == Some(key.as_str()) {
+            view.draft = if view.draft.trim().is_empty() {
+                text
+            } else {
+                format!("{text}\n{}", view.draft)
+            };
+            view.claim_focus = true;
+        } else {
+            // Its chat is not open, so there is no box to put it in: say it
+            // with the text, so it can be copied and sent again.
+            chat.notice = Some(crate::systems::chat::ChatNotice {
+                text: format!("A private message was not sent: \u{201c}{text}\u{201d}"),
+                error: true,
+            });
+        }
+    }
     if let Some(sub) = act.sub {
         view.sub = Some(sub);
         view.new_chat = false;

@@ -111,8 +111,9 @@ export class WebCall {
     }
     const audio = this.up.addTransceiver(this.mic, { direction: "sendonly" });
     const video = this.up.addTransceiver("video", { direction: "sendonly" });
-    // VP8 only: it is the codec every device in the call can decode
-    // (`cartopolis_calls::video`), and the forwarder reads its first bytes.
+    // VP8 to send: every device in the call decodes it (`cartopolis_calls::video`)
+    // and the forwarder reads its first bytes. Received video may be VP8 or VP9
+    // (the app sends VP9); `call-worker.js` tells them apart per frame.
     if (video.setCodecPreferences && RTCRtpSender.getCapabilities) {
       const vp8 = RTCRtpSender.getCapabilities("video").codecs.filter((c) => /vp8/i.test(c.mimeType));
       if (vp8.length) video.setCodecPreferences(vp8);

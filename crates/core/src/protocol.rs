@@ -148,6 +148,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "declining a call — CallDecline from the device that declines; CallDeclined to the chat's connected devices, so the caller hears at once instead of ringing out, and the decliner's other devices stop ringing (docs/notes/calls.md)",
     },
+    ProtocolRevision {
+        version: 32,
+        adr: "",
+        summary: "VP9 in calls — no message changes, but the app now sends VP9 video (receivers must decode VP8 and VP9, with VP9's own clear SFrame prefix), so a client that decodes only VP8 must not share a call (docs/notes/calls.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects

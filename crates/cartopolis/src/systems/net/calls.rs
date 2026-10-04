@@ -108,9 +108,15 @@ struct Active {
     #[cfg(target_arch = "wasm32")]
     web_camera: bool,
     connected: bool,
+    /// The connection stopped answering and has not come back yet.
+    reconnecting: bool,
     /// The chat epoch last handed to the session.
     epoch: Option<u64>,
     started: web_time::Instant,
+    /// When somebody else was first in the call with this device connected:
+    /// what the timer counts from. Not `started`, or a call that rang for
+    /// twenty seconds would show 00:20 the moment it was answered.
+    answered_at: Option<web_time::Instant>,
     #[cfg(not(target_arch = "wasm32"))]
     mic: Option<AudioInput>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -145,7 +151,15 @@ pub struct Picture {
     pub rgba: Vec<u8>,
     /// Arrived since the UI last uploaded it.
     pub fresh: bool,
+    /// When it arrived: a person whose pictures stop (they turned their
+    /// camera off) goes back to their initial rather than freezing.
+    pub at: web_time::Instant,
 }
+
+/// How long somebody else's last picture stays up with nothing after it. Not
+/// shorter: a slow sender (a software renderer manages about one picture a
+/// second) would flicker between picture and initial.
+const PICTURE_STALE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// One person heard in the call.
 struct Speaker {
@@ -231,12 +245,28 @@ impl Calls {
         self.active.as_ref().is_some_and(|a| a.connected)
     }
 
-    /// How long this device has been in its call.
+    /// How long this device's call has been answered: zero while it rings.
     #[must_use]
     pub fn elapsed_secs(&self) -> u64 {
         self.active
             .as_ref()
-            .map_or(0, |a| a.started.elapsed().as_secs())
+            .and_then(|a| a.answered_at)
+            .map_or(0, |t| t.elapsed().as_secs())
+    }
+
+    /// What to say when this device's call ends: how long it lasted, as a
+    /// phone does, once it was ever answered.
+    fn ended_notice(&self) -> String {
+        match self.active.as_ref().and_then(|a| a.answered_at) {
+            Some(_) => format!("Call ended · {}", call_clock(self.elapsed_secs())),
+            None => "Call ended".into(),
+        }
+    }
+
+    /// Whether the call's connection dropped and is being waited for.
+    #[must_use]
+    pub fn reconnecting(&self) -> bool {
+        self.active.as_ref().is_some_and(|a| a.reconnecting)
     }
 
     /// Who is in a chat's call, by name.
@@ -384,6 +414,7 @@ impl Calls {
             a.started = web_time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(83))
                 .unwrap_or_else(web_time::Instant::now);
+            a.answered_at = Some(a.started);
             // Not the stand-in camera's test card: its bottom third is black by
             // design, which in a capture reads as a picture that stops short of
             // the screen's edge. A portrait frame (what an upright phone sends)
@@ -414,6 +445,7 @@ impl Calls {
                     height,
                     rgba,
                     fresh: true,
+                    at: web_time::Instant::now(),
                 }
             };
             if matches!(screen, "callvideo" | "callgroup") {
@@ -602,7 +634,9 @@ pub fn drive_calls(
             }
         }
         Some(CallRequest::Leave) => {
+            let ended = calls.ended_notice();
             if let Some(a) = calls.active.take() {
+                calls.notice = Some(ended);
                 online.send("call leave", NetMessage::CallLeave { group: a.group });
             }
         }
@@ -628,23 +662,24 @@ pub fn drive_calls(
         let (seen, since) = match calls.active.as_mut() {
             Some(a) => {
                 a.others_seen |= others > 0;
+                if others > 0 && a.connected && a.answered_at.is_none() {
+                    a.answered_at = Some(web_time::Instant::now());
+                }
                 (a.others_seen, a.started.elapsed())
             }
             None => (true, std::time::Duration::ZERO),
         };
         let end = if seen && others == 0 {
-            Some(None)
+            Some(calls.ended_notice())
         } else if !seen && since > NO_ANSWER {
-            Some(Some("No answer"))
+            Some("No answer".into())
         } else {
             None
         };
         if let Some(why) = end {
             online.send("call leave", NetMessage::CallLeave { group });
             calls.active = None;
-            if let Some(why) = why {
-                calls.notice = Some(why.into());
-            }
+            calls.notice = Some(why);
         }
     }
 
@@ -655,8 +690,13 @@ pub fn drive_calls(
         level,
         camera_on,
         fake_media,
+        minimized,
+        demo,
         ..
     } = &mut *calls;
+    // Folded down to the bar, the call shows no pictures, so none are fetched
+    // or decoded; the newest of each waits for the screen to come back.
+    let looking = !*minimized;
     let Some(a) = active.as_mut() else {
         *level = 0.0;
         return;
@@ -712,7 +752,7 @@ pub fn drive_calls(
                 Event::Failed(why) => failed = Some(why),
             }
         }
-        for p in a.web.pictures() {
+        for p in looking.then(|| a.web.pictures()).unwrap_or_default() {
             a.received.entry(p.participant).or_default().1 += 1;
             a.pictures.insert(
                 p.participant,
@@ -721,6 +761,7 @@ pub fn drive_calls(
                     height: p.height,
                     rgba: p.rgba,
                     fresh: true,
+                    at: web_time::Instant::now(),
                 },
             );
         }
@@ -792,22 +833,28 @@ pub fn drive_calls(
                         }
                     }
                 }
-                Event::Video { from, frame } => {
-                    a.received.entry(from.0).or_default().1 += 1;
-                    if let Some(n) = cartopolis_calls::video::test_pattern_number(&frame) {
-                        tracing::debug!(from = from.0, n, "call picture");
-                    }
-                    a.pictures.insert(
-                        from.0,
-                        Picture {
-                            width: frame.width,
-                            height: frame.height,
-                            rgba: frame.to_rgba(),
-                            fresh: true,
-                        },
-                    );
-                }
+                Event::Reconnecting => a.reconnecting = true,
+                Event::Reconnected => a.reconnecting = false,
                 Event::Failed(why) => failed = Some(why),
+            }
+        }
+        a.session.set_video_wanted(looking);
+        if looking {
+            for (from, p) in a.session.take_pictures() {
+                a.received.entry(from.0).or_default().1 = p.decoded;
+                if let Some(n) = p.test_number {
+                    tracing::debug!(from = from.0, n, "call picture");
+                }
+                a.pictures.insert(
+                    from.0,
+                    Picture {
+                        width: p.width,
+                        height: p.height,
+                        rgba: p.rgba,
+                        fresh: true,
+                        at: web_time::Instant::now(),
+                    },
+                );
             }
         }
         if let Some(why) = failed {
@@ -825,6 +872,14 @@ pub fn drive_calls(
         }
     }
 
+    // A camera turned off on the other end leaves its last picture behind;
+    // nothing says it went, so its age does. Not while folded, when nothing
+    // is fetched and every picture ages.
+    if looking && !*demo {
+        a.pictures
+            .retain(|id, p| *id == SELF_TILE || p.at.elapsed() < PICTURE_STALE);
+    }
+
     if a.last_report.elapsed().as_secs() >= 5 {
         a.last_report = web_time::Instant::now();
         for (from, (audio, pictures)) in &a.received {
@@ -835,7 +890,17 @@ pub fn drive_calls(
     #[cfg(not(target_arch = "wasm32"))]
     {
         capture(a, *muted, *fake_media, &prefs, level, notice);
-        send_camera(a, camera_on, *fake_media, notice);
+        send_camera(a, camera_on, *fake_media, looking, notice);
+    }
+}
+
+/// A call's length as a phone shows it: `04:12`, or `1:04:12` past an hour.
+#[must_use]
+pub fn call_clock(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)
+    } else {
+        format!("{:02}:{:02}", secs / 60, secs % 60)
     }
 }
 
@@ -866,8 +931,10 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         #[cfg(target_arch = "wasm32")]
         web_camera: false,
         connected: false,
+        reconnecting: false,
         epoch: None,
         started: web_time::Instant::now(),
+        answered_at: None,
         #[cfg(not(target_arch = "wasm32"))]
         mic: None,
         #[cfg(not(target_arch = "wasm32"))]
@@ -892,7 +959,13 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
 /// stand-in camera (`CARTO_FAKE_CAMERA`) is on from the start, since a
 /// headless test has nobody to press the button.
 #[cfg(not(target_arch = "wasm32"))]
-fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Option<String>) {
+fn send_camera(
+    a: &mut Active,
+    on: &mut bool,
+    fake_media: bool,
+    looking: bool,
+    notice: &mut Option<String>,
+) {
     let fake = fake_media || crate::env_flag("CARTO_FAKE_CAMERA");
     if fake && !fake_media {
         *on = true;
@@ -921,7 +994,13 @@ fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Opt
         return;
     }
     // What the camera sees, for the person's own tile: mirrored, and small.
-    if let Some(p) = a.camera.as_ref().and_then(Camera::take_preview) {
+    // Not built while folded, where there is no tile to put it in.
+    if let Some(p) = a
+        .camera
+        .as_ref()
+        .filter(|_| looking)
+        .and_then(Camera::take_preview)
+    {
         let (width, height, rgba) = crate::platform::camera::self_view(&p, 320);
         a.pictures.insert(
             SELF_TILE,
@@ -930,6 +1009,7 @@ fn send_camera(a: &mut Active, on: &mut bool, fake_media: bool, notice: &mut Opt
                 height,
                 rgba,
                 fresh: true,
+                at: web_time::Instant::now(),
             },
         );
     }
