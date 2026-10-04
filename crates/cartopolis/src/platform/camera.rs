@@ -14,7 +14,7 @@
 //! On the phone it is Camera2 through the NDK (the `phone` module below): the
 //! front camera, asked for at runtime like the microphone.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cartopolis_calls::video::{self, I420};
@@ -28,6 +28,10 @@ struct Shared {
     stop: AtomicBool,
     sink: Mutex<Option<Sink>>,
     last_sunk: Mutex<Option<std::time::Instant>>,
+    /// The size the call sends, landscape, packed `width << 32 | height`
+    /// ([`Camera::set_send_size`]); 0 until told, which means the software
+    /// encoder's size.
+    send_size: AtomicU64,
     /// The newest picture, for the person's own view of themselves
     /// ([`Camera::take_preview`]); replaced, never queued.
     preview: Mutex<Option<I420>>,
@@ -46,6 +50,17 @@ impl Shared {
         }
         *last = Some(std::time::Instant::now());
         true
+    }
+
+    /// A camera picture at the call's send size, turned by `turn` degrees.
+    fn fit(&self, picture: &I420, turn: u32) -> I420 {
+        let v = self.send_size.load(Ordering::Relaxed);
+        let size = if v == 0 {
+            (video::WIDTH, video::HEIGHT)
+        } else {
+            ((v >> 32) as u32, v as u32)
+        };
+        to_size(picture, turn, size)
     }
 
     /// A new picture, already known to be [`Shared::due`]: handed to the sink,
@@ -133,6 +148,14 @@ impl Camera {
         *self.shared.sink.lock().unwrap() = Some(sink);
     }
 
+    /// The size the call's encoder sends (landscape): pictures are handed over
+    /// at it, so a hardware encoder gets the camera's full 640×480 and the
+    /// software one a quarter of that, shrunk before anything else is done.
+    pub fn set_send_size(&self, size: (u32, u32)) {
+        let v = (u64::from(size.0) << 32) | u64::from(size.1);
+        self.shared.send_size.store(v, Ordering::Relaxed);
+    }
+
     /// The newest picture since the last call, for showing the person
     /// themselves: a call's self-view, the camera test in Settings.
     #[must_use]
@@ -201,7 +224,7 @@ mod webcam {
                 }
             };
             if let Some(p) = picture {
-                shared.deliver(super::to_call_size(&p, 0));
+                shared.deliver(shared.fit(&p, 0));
             }
         }
         let _ = cam.stop_stream();
@@ -503,7 +526,7 @@ mod phone {
             let picture = read(image);
             sys::AImage_delete(image);
             if let Some(p) = picture {
-                shared.deliver(super::to_call_size(&p, turn));
+                shared.deliver(shared.fit(&p, turn));
             }
         }
         Ok(())
@@ -554,20 +577,20 @@ pub fn self_view(picture: &I420, max_width: u32) -> (u32, u32, Vec<u8>) {
     }
 }
 
-/// A camera's picture at the size a call sends, turned clockwise by `turn`
-/// degrees: shrunk *first*, so the turn is done on a quarter of the pixels
-/// (`video::call_size` is what the turned picture will be, so the shrink aims
-/// at that size before the turn). The encoder then finds it already the right
-/// size and copies nothing.
+/// A camera's picture at `size` (landscape; the call's send size), turned
+/// clockwise by `turn` degrees: shrunk *first*, so the turn is done on as few
+/// pixels as possible (`video::oriented` is what the turned picture will be,
+/// so the shrink aims at that size before the turn). The encoder then finds it
+/// already the right size and copies nothing.
 #[must_use]
-pub fn to_call_size(picture: &I420, turn: u32) -> I420 {
+pub fn to_size(picture: &I420, turn: u32, size: (u32, u32)) -> I420 {
     let quarter = turn % 180 == 90;
     let (w, h) = if quarter {
         (picture.height, picture.width)
     } else {
         (picture.width, picture.height)
     };
-    let (cw, ch) = video::call_size(w, h);
+    let (cw, ch) = video::oriented(size, w, h);
     let (sw, sh) = if quarter { (ch, cw) } else { (cw, ch) };
     let small = picture.scaled(sw, sh);
     if turn % 360 == 0 {
@@ -583,19 +606,28 @@ mod tests {
 
     #[test]
     fn a_camera_picture_is_shrunk_then_turned_to_the_calls_size() {
+        const CALL: (u32, u32) = (video::WIDTH, video::HEIGHT);
+        // With a hardware encoder the call sends the camera's own size: no
+        // shrink at all, only the turn.
+        let hw = to_size(
+            &I420::black(640, 480),
+            90,
+            (video::HW_WIDTH, video::HW_HEIGHT),
+        );
+        assert_eq!((hw.width, hw.height), (video::HW_HEIGHT, video::HW_WIDTH));
         let landscape = I420::black(640, 480);
-        let p = to_call_size(&landscape, 0);
+        let p = to_size(&landscape, 0, CALL);
         assert_eq!((p.width, p.height), (video::WIDTH, video::HEIGHT));
         // A phone's sensor is landscape and the phone upright: turned a
         // quarter, it is a portrait picture at the call's portrait size.
-        let p = to_call_size(&landscape, 90);
+        let p = to_size(&landscape, 90, CALL);
         assert_eq!((p.width, p.height), (video::HEIGHT, video::WIDTH));
-        let p = to_call_size(&landscape, 270);
+        let p = to_size(&landscape, 270, CALL);
         assert_eq!((p.width, p.height), (video::HEIGHT, video::WIDTH));
         // And what it is equals turning first and shrinking after.
         let src = video::test_pattern(7).scaled(640, 480);
         let want = src.rotated(90, false).scaled(video::HEIGHT, video::WIDTH);
-        let got = to_call_size(&src, 90);
+        let got = to_size(&src, 90, CALL);
         assert_eq!((got.width, got.height), (want.width, want.height));
     }
 

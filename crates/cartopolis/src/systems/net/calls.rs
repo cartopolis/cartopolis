@@ -1001,6 +1001,11 @@ fn send_camera(
         }
         a.camera = Some(camera);
     }
+    // The encoder decides the size (a hardware one sends more, and a failed
+    // one hands back to software mid-call), so the camera is told each frame.
+    if let Some(camera) = a.camera.as_ref() {
+        camera.set_send_size(a.session.send_size());
+    }
     if let Some(err) = a.camera.as_ref().and_then(Camera::error) {
         *notice = Some(err);
         *on = false;

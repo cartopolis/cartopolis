@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -127,6 +127,14 @@ struct Shared {
     /// Senders whose stream has a hole in it (a frame dropped before it was
     /// decoded): the decoder skips them until their next keyframe.
     resync: Mutex<HashSet<ParticipantId>>,
+    /// The size the encoder sends, landscape, packed `width << 32 | height`:
+    /// set by the encoder thread once it knows (hardware sends more), read by
+    /// the app to tell the camera ([`Session::send_size`]).
+    send_size: AtomicU64,
+}
+
+fn pack(size: (u32, u32)) -> u64 {
+    (u64::from(size.0) << 32) | u64::from(size.1)
 }
 
 /// A running call. Dropping it ends the thread and closes both sockets.
@@ -171,6 +179,7 @@ impl Session {
         let (ev_tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
             video_wanted: AtomicBool::new(true),
+            send_size: AtomicU64::new(pack((video::WIDTH, video::HEIGHT))),
             ..Shared::default()
         });
         let thread_shared = Arc::clone(&shared);
@@ -264,6 +273,14 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// The picture size the encoder sends, landscape way up
+    /// ([`video::oriented`] turns it): what to ask the camera for.
+    #[must_use]
+    pub fn send_size(&self) -> (u32, u32) {
+        let v = self.shared.send_size.load(Ordering::Relaxed);
+        ((v >> 32) as u32, v as u32)
+    }
+
     /// Whether anybody is looking at the call's video. Off, nothing is
     /// decoded; back on, every sender is asked for a keyframe, since what was
     /// skipped is what the next delta refers to.
@@ -337,7 +354,7 @@ struct VideoEncoder {
 }
 
 impl VideoEncoder {
-    fn start(make: EncoderFactory) -> Self {
+    fn start(make: EncoderFactory, shared: Arc<Shared>) -> Self {
         let (tx, frames) = mpsc::sync_channel::<(video::I420, Instant, bool)>(1);
         let (out, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -347,8 +364,18 @@ impl VideoEncoder {
                 // seconds to open on some phones, and that is the call's
                 // first picture late, not the call.
                 let mut enc = make();
+                let say_size = |enc: &dyn video::VideoEncode| {
+                    shared
+                        .send_size
+                        .store(pack(enc.picture_size()), Ordering::Relaxed);
+                };
+                say_size(enc.as_ref());
                 while let Ok((frame, taken, key)) = frames.recv() {
-                    let Ok(coded) = enc.encode(&frame, key) else {
+                    let coded = enc.encode(&frame, key);
+                    // A platform encoder that failed has handed over to
+                    // software, which sends less.
+                    say_size(enc.as_ref());
+                    let Ok(coded) = coded else {
                         continue;
                     };
                     for bytes in coded {
@@ -508,7 +535,7 @@ fn run(
     .map_err(|e| e.to_string())?;
     events.send(Event::Offer(offer)).map_err(|_| "app gone")?;
 
-    let video_encoder = send_video.then(|| VideoEncoder::start(make_encoder));
+    let video_encoder = send_video.then(|| VideoEncoder::start(make_encoder, Arc::clone(shared)));
     let video_decoder = VideoDecoder::start(Arc::clone(shared));
     // A receiver asked for a full picture; the next one sent is a keyframe.
     let mut keyframe_wanted = false;

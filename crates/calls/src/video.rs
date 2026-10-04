@@ -299,6 +299,31 @@ pub trait VideoEncode: Send {
     fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error>;
     /// The codec of what [`VideoEncode::encode`] last returned.
     fn codec(&self) -> Codec;
+    /// The size this encoder sends, landscape way up ([`oriented`] turns it
+    /// with the picture): [`WIDTH`]×[`HEIGHT`] in software, more where a
+    /// hardware encoder has the room. The camera is told, so it hands over
+    /// pictures already this size rather than bigger ones to shrink.
+    fn picture_size(&self) -> (u32, u32) {
+        (WIDTH, HEIGHT)
+    }
+}
+
+/// A hardware encoder's size: four times the pixels of the software one, which
+/// a phone's encoder does in a few ms where the pure-Rust ones take ~100
+/// (`docs/notes/calls.md`). Also what the phone's camera is asked for, so it
+/// is a shrink-free picture.
+pub const HW_WIDTH: u32 = 640;
+pub const HW_HEIGHT: u32 = 480;
+
+/// `size` (landscape) turned to match a `width`×`height` picture: an upright
+/// phone sends portrait rather than a portrait squashed into landscape.
+#[must_use]
+pub fn oriented(size: (u32, u32), width: u32, height: u32) -> (u32, u32) {
+    if height > width {
+        (size.1, size.0)
+    } else {
+        size
+    }
 }
 
 impl VideoEncode for Encoder {
@@ -349,17 +374,18 @@ impl VideoEncode for WithFallback {
     fn codec(&self) -> Codec {
         self.primary.as_ref().map_or(Codec::Vp9, |p| p.codec())
     }
+    fn picture_size(&self) -> (u32, u32) {
+        self.primary
+            .as_ref()
+            .map_or((WIDTH, HEIGHT), |p| p.picture_size())
+    }
 }
 
-/// The call's size for `frame`: it turns with the picture, so an upright phone
-/// sends [`HEIGHT`]×[`WIDTH`] rather than a portrait squashed into landscape.
+/// The software encoder's size for `frame`: [`WIDTH`]×[`HEIGHT`], turned with
+/// the picture ([`oriented`]).
 #[must_use]
 pub fn call_size(width: u32, height: u32) -> (u32, u32) {
-    if height > width {
-        (HEIGHT, WIDTH)
-    } else {
-        (WIDTH, HEIGHT)
-    }
+    oriented((WIDTH, HEIGHT), width, height)
 }
 
 enum EncoderInner {
@@ -898,6 +924,9 @@ mod tests {
         fn codec(&self) -> Codec {
             Codec::Vp8
         }
+        fn picture_size(&self) -> (u32, u32) {
+            (HW_WIDTH, HW_HEIGHT)
+        }
     }
 
     #[test]
@@ -907,9 +936,19 @@ mod tests {
             left: 2,
         })));
         let mut dec = Decoder::new();
+        assert_eq!(enc.picture_size(), (HW_WIDTH, HW_HEIGHT));
         for n in 0..5u64 {
-            let out = enc.encode(&test_pattern(n), n == 0).unwrap();
+            // What the camera hands over while the hardware size is asked
+            // for; software shrinks it once it has taken over.
+            let picture = test_pattern(n).scaled(HW_WIDTH, HW_HEIGHT);
+            let out = enc.encode(&picture, n == 0).unwrap();
             let codec = enc.codec();
+            let size = if n < 2 {
+                (HW_WIDTH, HW_HEIGHT)
+            } else {
+                (WIDTH, HEIGHT)
+            };
+            assert_eq!(enc.picture_size(), size, "frame {n}");
             assert_eq!(
                 codec,
                 if n < 2 { Codec::Vp8 } else { Codec::Vp9 },

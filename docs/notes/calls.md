@@ -134,9 +134,24 @@ requests become `request-sync`; a turn of the phone reopens the codec at the
 new size. It sits behind `video::WithFallback`, so its first error hands the
 stream to the Rust encoder from a keyframe for the rest of the call.
 
+**A hardware encoder sends 640×480** (`video::HW_WIDTH`/`HW_HEIGHT`), four
+times the pixels — the camera's own size, so the phone's picture is only
+turned, never shrunk. The encoder says its size (`VideoEncode::picture_size`),
+the session publishes it (`Session::send_size`) and the camera is told each
+frame (`Camera::set_send_size`), so a hardware encoder that fails mid-call and
+hands over to software also shrinks what the camera sends. The bitrate grows
+with pixels to the power 0.6: ~575 kbit/s VP9, ~1 Mbit/s VP8 — through a
+forwarder that does no congestion control yet, which is the real limit on
+going higher. Software encoders (Google's and ours) stay at 320×240.
+`CARTO_VIDEO_SIZE=small` keeps hardware at 320×240 too.
+
+What a receiver pays for 640×480, measured in Rust on the VPS: ~7–8 ms to
+decode a frame (VP8 or VP9), on the decode thread, plus a 1.2 MB texture
+upload per picture at 15 fps on the main thread — fine one-to-one, worth
+watching in a group of several senders on a phone.
+
 Only encoding: at 320×240 decoding is ~1.5 ms in Rust, and a hardware decoder
-would add a copy out of its buffers for nothing. It matters again if the call
-goes above 320×240, which is what a hardware encoder makes possible.
+would add a copy out of its buffers for nothing.
 
 **Compiled for aarch64 only, never run.** The emulator here cannot run the
 app. The phone's log says what happened: `call video: encoder chosen` (name,

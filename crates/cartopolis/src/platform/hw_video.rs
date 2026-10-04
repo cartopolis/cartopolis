@@ -40,12 +40,27 @@ const CONFIGURE_FLAG_ENCODE: u32 = 1;
 const BUFFER_FLAG_CODEC_CONFIG: u32 = 2;
 const INFO_TRY_AGAIN_LATER: isize = -1;
 
-/// Bitrates a hardware encoder is asked for at the call's 320×240, 15 fps:
-/// about what the software encoders measured at the same picture quality
-/// (`docs/notes/calls.md`). A hardware encoder rate-controls; it has no
-/// constant-quality knob to match the software one by.
-const VP9_BITRATE: i32 = 250_000;
-const VP8_BITRATE: i32 = 450_000;
+/// Bitrates at the software encoder's 320×240, 15 fps: about what the software
+/// encoders measured at the same picture quality (`docs/notes/calls.md`). A
+/// hardware encoder rate-controls; it has no constant-quality knob to match
+/// the software one by.
+const VP9_BITRATE: f64 = 250_000.0;
+const VP8_BITRATE: f64 = 450_000.0;
+
+/// The bitrate for `kind` at `width`×`height`: grown with the pixel count to
+/// the power 0.6, not linearly — a codec spends less per pixel on a bigger
+/// picture of the same scene, and this goes up a phone's uplink through a
+/// forwarder that does no congestion control yet. 640×480 (four times the
+/// pixels) is 2.3×: ~575 kbit/s for VP9, ~1 Mbit/s for VP8.
+fn bitrate(kind: Codec, width: u32, height: u32) -> i32 {
+    let base = if kind == Codec::Vp9 {
+        VP9_BITRATE
+    } else {
+        VP8_BITRATE
+    };
+    let ratio = f64::from(width * height) / f64::from(video::WIDTH * video::HEIGHT);
+    (base * ratio.powf(0.6)) as i32
+}
 
 /// How long one picture may wait for a free input buffer, and for its frame.
 const INPUT_WAIT: Duration = Duration::from_millis(20);
@@ -70,18 +85,34 @@ pub fn encoder_factory() -> EncoderFactory {
     })
 }
 
+/// Hardware sends [`video::HW_WIDTH`]×[`video::HW_HEIGHT`] — the camera's own
+/// size, a few ms of the encoder's time — and a software codec the call's
+/// usual 320×240. `CARTO_VIDEO_SIZE=small` keeps hardware at 320×240 too, for
+/// an A/B or a poor uplink.
 fn choose() -> Option<MediaEncoder> {
-    let (w, h) = (video::WIDTH, video::HEIGHT);
+    let small = (video::WIDTH, video::HEIGHT);
+    let large = if std::env::var("CARTO_VIDEO_SIZE").is_ok_and(|v| v.eq_ignore_ascii_case("small"))
+    {
+        small
+    } else {
+        (video::HW_WIDTH, video::HW_HEIGHT)
+    };
     for kind in [Codec::Vp9, Codec::Vp8] {
-        match MediaEncoder::open(kind, None, w, h) {
+        match MediaEncoder::open(kind, None, large, large.0, large.1) {
             Ok(e) if e.hardware => return Some(e),
             Ok(e) => tracing::info!(name = %e.name, "call video: not hardware, passed over"),
             Err(why) => tracing::info!(?kind, %why, "call video: no system encoder"),
         }
     }
-    MediaEncoder::open(Codec::Vp9, Some("c2.android.vp9.encoder"), w, h)
-        .map_err(|why| tracing::info!(%why, "call video: no system software VP9"))
-        .ok()
+    MediaEncoder::open(
+        Codec::Vp9,
+        Some("c2.android.vp9.encoder"),
+        small,
+        small.0,
+        small.1,
+    )
+    .map_err(|why| tracing::info!(%why, "call video: no system software VP9"))
+    .ok()
 }
 
 /// Google's software codecs carry these names; everything else a phone lists
@@ -106,6 +137,8 @@ struct MediaEncoder {
     by_name: Option<String>,
     kind: Codec,
     hardware: bool,
+    /// The size this encoder sends, landscape ([`VideoEncode::picture_size`]).
+    base: (u32, u32),
     width: u32,
     height: u32,
     /// How the codec wants its input laid out, from its input format.
@@ -169,7 +202,15 @@ impl Drop for Format {
 }
 
 impl MediaEncoder {
-    fn open(kind: Codec, by_name: Option<&str>, width: u32, height: u32) -> Result<Self, String> {
+    /// Open `kind` (or the codec named `by_name`) to send `base` (landscape),
+    /// configured now for a `width`×`height` picture — `base` or its turn.
+    fn open(
+        kind: Codec,
+        by_name: Option<&str>,
+        base: (u32, u32),
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
         // SAFETY: every pointer handed in is a live, NUL-terminated string or
         // a format/codec created just above and not yet freed.
         unsafe {
@@ -197,6 +238,7 @@ impl MediaEncoder {
                 name,
                 by_name: by_name.map(str::to_string),
                 kind,
+                base,
                 width,
                 height,
                 color: 0,
@@ -215,14 +257,7 @@ impl MediaEncoder {
                 f.int(c"width", width as i32);
                 f.int(c"height", height as i32);
                 f.int(c"color-format", color);
-                f.int(
-                    c"bitrate",
-                    if kind == Codec::Vp9 {
-                        VP9_BITRATE
-                    } else {
-                        VP8_BITRATE
-                    },
-                );
+                f.int(c"bitrate", bitrate(kind, width, height));
                 f.int(c"frame-rate", video::FPS as i32);
                 // Seconds between scheduled keyframes; requests come sooner.
                 f.int(c"i-frame-interval", 4);
@@ -331,12 +366,13 @@ impl MediaEncoder {
 impl VideoEncode for MediaEncoder {
     fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error> {
         let started = Instant::now();
-        let (w, h) = video::call_size(frame.width, frame.height);
+        let (w, h) = video::oriented(self.base, frame.width, frame.height);
         let mut key = key;
         if (w, h) != (self.width, self.height) {
             // The phone turned: a codec is configured for one size, so a new
             // one, whose first picture is a keyframe.
-            *self = Self::open(self.kind, self.by_name.as_deref(), w, h).map_err(Error::new)?;
+            *self = Self::open(self.kind, self.by_name.as_deref(), self.base, w, h)
+                .map_err(Error::new)?;
             key = true;
         }
         let scaled;
@@ -420,6 +456,10 @@ impl VideoEncode for MediaEncoder {
 
     fn codec(&self) -> Codec {
         self.kind
+    }
+
+    fn picture_size(&self) -> (u32, u32) {
+        self.base
     }
 }
 
