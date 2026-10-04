@@ -19,6 +19,7 @@ impl Plugin for NetPlugin {
             .init_resource::<systems::calls::CallInbox>()
             .init_resource::<systems::calls::Calls>()
             .init_resource::<systems::contacts::ContactsInbox>()
+            .init_resource::<systems::prim_sound::PrimSoundInbox>()
             .init_resource::<systems::contacts::Contacts>()
             .init_resource::<systems::voice::VoiceState>();
         // Headless call tests (`CARTO_CALL`, `CARTO_ANSWER`): writes the request
