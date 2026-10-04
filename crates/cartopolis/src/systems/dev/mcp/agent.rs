@@ -21,7 +21,7 @@
 //!
 //! Two things make a name trustworthy enough to filter on, and both were holes:
 //!
-//! - **A scripted object speaks under its own name.** `vfSay` arrives as local
+//! - **A scripted object speaks under its own name.** `say` arrives as local
 //!   chat with `sender_id == 0` and the prim's name as the sender, and anybody who
 //!   builds can name a prim anything — including the one username on the list.
 //!   [`ChatLine::sender_is_account`](crate::systems::chat::ChatLine::sender_is_account)
@@ -4691,7 +4691,7 @@ pub fn scripting_guide() -> String {
     use cartopolis_core::script_api::{api_in_group, ScriptGroup, SCRIPT_EVENTS};
     let mut out = String::from(
         "# Scripting objects\n\n\
-         Objects run Luau (a sandboxed Lua). A script is event handlers plus `vf*` calls, \
+         Objects run Luau (a sandboxed Lua). A script is event handlers plus calls such as `say` and `set_color`, \
          and every call acts on the object the script is in: another object is reached \
          only by messages on a channel. Luau's own `math`, `string`, `table` and `os` are \
          there too.\n\n## Events (define the ones you need)\n",
@@ -4707,7 +4707,7 @@ pub fn scripting_guide() -> String {
     }
     out.push_str(
         "\n## Worth knowing before you build\n\
-         - Place objects horizontally with `vfSetGeo`; `vfSetPos` only keeps its height.\n\
+         - Place objects horizontally with `set_geo`; `set_pos` only keeps its height.\n\
          - Nothing can be shown to one person only: speech is heard by everyone in range, \
          and names, colours and particles are seen by everyone. A card game with hidden \
          hands cannot be built this way.\n\
@@ -4824,6 +4824,6 @@ mod tests {
     fn the_guide_carries_a_real_script() {
         let guide = scripting_guide();
         assert!(guide.contains("function on_touch"));
-        assert!(guide.contains("vfSetGeo("));
+        assert!(guide.contains("set_geo("));
     }
 }

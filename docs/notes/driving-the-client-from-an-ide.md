@@ -207,7 +207,7 @@ the owner's own model, and the owner's own client is on their side.
 Two holes had to be closed before a name was worth filtering on, and both were
 live for every user, not only for agents:
 
-- **A scripted object speaks under its own name.** `vfSay` arrives as local chat
+- **A scripted object speaks under its own name.** `say` arrives as local chat
   with `sender_id == 0` and the prim's name as the sender. Anybody who builds can
   name a prim after the one account on the list. `ChatLine::sender_is_account`
   is the test, and public lines only count with a real avatar behind them.

@@ -67,7 +67,7 @@ pub fn pack(name: &str) -> Option<Pack> {
 /// The firebird and the beacon that calls it.
 ///
 /// Two prims and two scripts, because the pair is the demonstration: a button
-/// cannot reach the thing it controls except over a channel (`vfSend` /
+/// cannot reach the thing it controls except over a channel (`send` /
 /// `on_message`), and that is the only way any prim reaches any other.
 fn firebird() -> Pack {
     Pack {
@@ -87,7 +87,7 @@ fn firebird() -> Pack {
                 // own `on_start` has run — and a demonstration that an emitter is
                 // an ordinary authored field rather than something only a script
                 // can set. Only what differs from the fire preset is named, which
-                // is the same way `vfParticles` takes a rules table.
+                // is the same way `particles` takes a rules table.
                 particles: Some(Some(ParticleSpec {
                     count: Some(120),
                     speed: Some(2.2),

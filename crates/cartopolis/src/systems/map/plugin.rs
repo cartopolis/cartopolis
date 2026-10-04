@@ -36,6 +36,21 @@ impl Plugin for MapPlugin {
                     .after(systems::network::apply_network_snapshot),
             )
             .add_systems(Update, systems::prim_video::drive_video_actions);
+        // Sounds from prim scripts (protocol 33). The inbox exists in every
+        // build, because the network fills it whether or not anything can play.
+        app.init_resource::<systems::prim_sound::PrimSoundInbox>()
+            .add_systems(
+                Update,
+                systems::prim_sound::play_prim_sounds
+                    .after(systems::network::apply_network_snapshot),
+            );
+        #[cfg(feature = "audio")]
+        app.add_systems(Startup, systems::prim_sound::setup_prim_sounds)
+            .add_systems(
+                Update,
+                systems::prim_sound::drive_prim_loops
+                    .after(systems::network::apply_network_snapshot),
+            );
         // The sky's reflections re-bake when the sky moves, not every frame
         // (`systems::sky_bake`): decided here, held in the render world after the
         // extract commands have put the bake's components back.

@@ -672,7 +672,7 @@ impl Tools {
 
     #[tool(
         description = "What your objects' scripts have printed: compile errors, runtime \
-                       errors and vfLog lines."
+                       errors and log lines."
     )]
     async fn script_output(
         &self,
@@ -968,7 +968,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "How to script an object: the events a script can handle, every vf* \
+        description = "How to script an object: the events a script can handle, every \
                        function with its arguments, what cannot be done, and a complete \
                        working example."
     )]

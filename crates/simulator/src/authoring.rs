@@ -39,7 +39,7 @@
 //! # Degrees, not radians
 //!
 //! Rotations here are **degrees**, like the edit dialog's fields and like
-//! `vfSetRot`, and are converted at this boundary. The wire and the client's
+//! `set_rot`, and are converted at this boundary. The wire and the client's
 //! `Quat::from_euler` are radians, and the rule this tree follows is that only
 //! one of the two conventions is ever in flight past the API boundary — the
 //! author-facing side is the one that gets degrees.
@@ -101,7 +101,7 @@ where
 /// or `Option`s would change what the bytes mean and desync every client. The
 /// leniency belongs at the boundary where a person is typing, which is here.
 ///
-/// It also makes the two authoring surfaces behave the same. `vfParticles{ color
+/// It also makes the two authoring surfaces behave the same. `particles{ color
 /// = {0,0.4,1} }` is a blue flame with everything else left alone, and so is
 /// `{"color_start": [0,0.4,1]}` — before this, the second was an error listing
 /// the thirteen fields it had not mentioned.
@@ -109,8 +109,8 @@ where
 #[serde(deny_unknown_fields)]
 pub struct ParticleSpec {
     /// Which preset the unmentioned fields come from — a one-shot blast, or a
-    /// continuous flame. Exactly the choice `vfParticleBurst` versus
-    /// `vfParticles` makes on the script side.
+    /// continuous flame. Exactly the choice `particle_burst` versus
+    /// `particles` makes on the script side.
     #[serde(default)]
     pub burst: bool,
     pub count: Option<u16>,
@@ -511,7 +511,7 @@ async fn put_script(
     Ok(Json(json!({
         "stored": true,
         "scripted": scripted,
-        "note": "compile errors and vfLog output arrive on the wire as ScriptOutput, \
+        "note": "compile errors and log output arrive on the wire as ScriptOutput, \
                  not in this response",
     })))
 }
@@ -818,7 +818,7 @@ async fn install_content(
     Ok(Json(json!({
         "installed": installed,
         "replaced": replaced,
-        "note": "compile errors and vfLog output arrive on the wire as ScriptOutput, \
+        "note": "compile errors and log output arrive on the wire as ScriptOutput, \
                  not in this response",
     })))
 }

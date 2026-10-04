@@ -51,6 +51,7 @@ pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
+pub mod prim_sound;
 pub mod roof_colours;
 // The clip player is a thread of its own, which the browser build does not have.
 #[cfg(not(target_arch = "wasm32"))]

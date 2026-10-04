@@ -67,7 +67,7 @@ pub fn geo_from_world(world: Vec3, map_anchor: &MapAnchor) -> Option<GeoAnchor> 
 /// **The `Changed` arm is what lets a prim move at all.** Before it, a prim was
 /// placed once and then only re-placed on a re-anchor, which was right while the
 /// only way a prim's geo changed was somebody dragging it (and the drag moves the
-/// `Transform` directly). A script writing `vfSetGeo` twenty times a second
+/// `Transform` directly). A script writing `set_geo` twenty times a second
 /// updates `PrimGeo` and nothing else: the prim would have sat exactly where it
 /// was first drawn, while the server, the database and every reconnecting client
 /// agreed it had moved.

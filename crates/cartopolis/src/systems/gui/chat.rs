@@ -214,7 +214,7 @@ impl ChatLine {
     /// Whether the name on this line is one the **server** vouches for.
     ///
     /// A line on a public channel with `sender_id == 0` is a scripted object
-    /// speaking (`vfSay`), and its name is the object's name — which anybody who
+    /// speaking (`say`), and its name is the object's name — which anybody who
     /// builds can set to anything, including somebody else's username. Private
     /// lines carry no avatar id but are checked against the account the server
     /// delivered them from (`private_chat::Engine::on_deliver`). So this is the

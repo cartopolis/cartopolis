@@ -9,15 +9,16 @@
 //! no documented-but-missing one. A reference that drifts is worse than none,
 //! because an author trusts it.
 //!
-//! Names follow Second Life's `ll*` convention with a `vf` prefix: a flat
-//! namespace of `verbNoun` calls, `vfSetPos` beside `llSetPos`. That is a
-//! deliberate borrowing — the people most likely to script here have twenty years
-//! of muscle memory for it, and a gratuitously different spelling of the same idea
-//! buys nothing.
+//! Names are a flat namespace of plain `verb_noun` calls — `set_pos`, `say`,
+//! `play_sound`. Second Life's *shape* (one global per verb, `set_pos` where it
+//! has `llSetPos`) without its prefix: the `vf` prefix the API had until
+//! 2026-10-04 was a brand name standing in front of every call, and it outlived
+//! the brand. snake_case because that is what Luau's own library uses
+//! (`string.format`, `table.insert`), so a script reads as one language.
 //!
 //! What is *not* here is as deliberate. Luau already ships `math`, `string`,
-//! `table` and `os`, so there is no `vfFrand` (that is `math.random`) and no
-//! `vfGetUnixTime` (that is `os.time`). A host function that only forwards to the
+//! `table` and `os`, so there is no `frand` (that is `math.random`) and no
+//! `get_unix_time` (that is `os.time`). A host function that only forwards to the
 //! standard library is a second name for one thing, which is how a reference
 //! becomes a place names go to drift apart.
 
@@ -29,6 +30,8 @@ pub enum ScriptGroup {
     Movement,
     /// What it looks like.
     Appearance,
+    /// Making a noise.
+    Sound,
     /// Saying things — to the world, or to the script console.
     Chat,
     /// Events over time, and suspending a handler.
@@ -47,6 +50,7 @@ impl ScriptGroup {
         match self {
             Self::Movement => "Movement",
             Self::Appearance => "Appearance",
+            Self::Sound => "Sound",
             Self::Chat => "Chat",
             Self::Timing => "Timing",
             Self::Sensing => "Sensing",
@@ -61,6 +65,7 @@ impl ScriptGroup {
         &[
             Self::Movement,
             Self::Appearance,
+            Self::Sound,
             Self::Chat,
             Self::Timing,
             Self::Sensing,
@@ -98,7 +103,7 @@ pub const SCRIPT_EVENTS: &[ScriptFn] = &[
     ScriptFn {
         name: "on_timer",
         signature: "on_timer()",
-        summary: "Every interval set with vfSetTimerEvent.",
+        summary: "Every interval set with set_timer_event.",
         group: ScriptGroup::Timing,
     },
     ScriptFn {
@@ -114,178 +119,201 @@ pub const SCRIPT_EVENTS: &[ScriptFn] = &[
 pub const SCRIPT_API: &[ScriptFn] = &[
     // ── Movement ──
     ScriptFn {
-        name: "vfGetPos",
-        signature: "vfGetPos() -> x, y, z",
+        name: "get_pos",
+        signature: "get_pos() -> x, y, z",
         summary: "This prim's position in metres.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfSetPos",
-        signature: "vfSetPos(x, y, z)",
+        name: "set_pos",
+        signature: "set_pos(x, y, z)",
         summary: "Move it. Height is durable; horizontal motion lasts until the \
                   map re-anchors (the geo anchor owns x/z).",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfGetGeo",
-        signature: "vfGetGeo() -> latitude, longitude",
+        name: "get_geo",
+        signature: "get_geo() -> latitude, longitude",
         summary: "Where this prim is on Earth, in degrees.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfSetGeo",
-        signature: "vfSetGeo(latitude, longitude)",
+        name: "set_geo",
+        signature: "set_geo(latitude, longitude)",
         summary: "Move it across the map, durably — this writes the prim's own \
-                  geographic anchor, so unlike vfSetPos's x/z it survives a \
-                  re-anchor and a restart. Height stays where vfSetPos put it.",
+                  geographic anchor, so unlike set_pos's x/z it survives a \
+                  re-anchor and a restart. Height stays where set_pos put it.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfGeoScale",
-        signature: "vfGeoScale(latitude) -> metres_per_degree_lat, metres_per_degree_lng",
+        name: "geo_scale",
+        signature: "geo_scale(latitude) -> metres_per_degree_lat, metres_per_degree_lng",
         summary: "The local scale of the map at a latitude, so metres can be \
                   turned into degrees: lat + north/mlat, lng + east/mlng.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfGetRot",
-        signature: "vfGetRot() -> rx, ry, rz",
+        name: "get_rot",
+        signature: "get_rot() -> rx, ry, rz",
         summary: "Euler rotation in degrees, the same numbers the edit dialog shows.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfSetRot",
-        signature: "vfSetRot(rx, ry, rz)",
+        name: "set_rot",
+        signature: "set_rot(rx, ry, rz)",
         summary: "Turn it. Degrees, not radians.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfGetScale",
-        signature: "vfGetScale() -> x, y, z",
+        name: "get_scale",
+        signature: "get_scale() -> x, y, z",
         summary: "Size in metres per axis.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
-        name: "vfSetScale",
-        signature: "vfSetScale(x, y, z)",
+        name: "set_scale",
+        signature: "set_scale(x, y, z)",
         summary: "Resize, clamped to 0.01–64 m.",
         group: ScriptGroup::Movement,
     },
     // ── Appearance ──
     ScriptFn {
-        name: "vfGetColor",
-        signature: "vfGetColor() -> r, g, b",
+        name: "get_color",
+        signature: "get_color() -> r, g, b",
         summary: "Tint, each channel 0–1.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfSetColor",
-        signature: "vfSetColor(r, g, b)",
+        name: "set_color",
+        signature: "set_color(r, g, b)",
         summary: "Set the tint; values outside 0–1 are clamped.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfGetAlpha",
-        signature: "vfGetAlpha() -> a",
+        name: "get_alpha",
+        signature: "get_alpha() -> a",
         summary: "Opacity, 0 (invisible) to 1 (solid).",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfSetAlpha",
-        signature: "vfSetAlpha(a)",
+        name: "set_alpha",
+        signature: "set_alpha(a)",
         summary: "Set opacity. SL's transparency % is (1 - a) * 100.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfGetGlow",
-        signature: "vfGetGlow() -> g",
+        name: "get_glow",
+        signature: "get_glow() -> g",
         summary: "Surface glow, 0–1.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfSetGlow",
-        signature: "vfSetGlow(g)",
+        name: "set_glow",
+        signature: "set_glow(g)",
         summary: "Make it emit light of its own, independent of the sun.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfSetFullBright",
-        signature: "vfSetFullBright(on)",
+        name: "set_full_bright",
+        signature: "set_full_bright(on)",
         summary: "Render fully lit whatever the time of day.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfParticles",
-        signature: "vfParticles(rules)",
+        name: "particles",
+        signature: "particles(rules)",
         summary: "Attach a particle emitter, described by a table of named fields \
                   (count, life, speed, spread_deg, gravity, source_radius, \
                   size_start, size_end, color_start, color_end, alpha, \
                   turbulence) — the same names the admin API takes. Anything left \
-                  out keeps the fire preset's value; vfParticles(nil) puts the \
+                  out keeps the fire preset's value; particles(nil) puts the \
                   emitter out.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
-        name: "vfParticleBurst",
-        signature: "vfParticleBurst(rules)",
+        name: "particle_burst",
+        signature: "particle_burst(rules)",
         summary: "The same table, fired once instead of continuously — an \
                   explosion. Defaults to the blast preset rather than the fire one.",
         group: ScriptGroup::Appearance,
     },
+    // ── Sound ──
+    ScriptFn {
+        name: "play_sound",
+        signature: "play_sound(name, volume?, range_m?)",
+        summary: "Play a sound once from this prim. Names: firework, crackle, pop, \
+                  chime, bell, click, whoosh. Volume 0–1 (default 1); heard out to \
+                  range_m metres (default 50, at most 300). An unknown name is an error.",
+        group: ScriptGroup::Sound,
+    },
+    ScriptFn {
+        name: "loop_sound",
+        signature: "loop_sound(name, volume?, range_m?)",
+        summary: "Play a sound over and over until stop_sound. One loop per prim: \
+                  calling it again replaces the loop. Not kept over a server \
+                  restart, so start a standing loop in on_start.",
+        group: ScriptGroup::Sound,
+    },
+    ScriptFn {
+        name: "stop_sound",
+        signature: "stop_sound()",
+        summary: "Stop this prim's looping sound.",
+        group: ScriptGroup::Sound,
+    },
     // ── Chat ──
     ScriptFn {
-        name: "vfLog",
-        signature: "vfLog(text)",
+        name: "log",
+        signature: "log(text)",
         summary: "Write to the script console. Nobody in-world hears this.",
         group: ScriptGroup::Chat,
     },
     ScriptFn {
-        name: "vfWhisper",
-        signature: "vfWhisper(text)",
+        name: "whisper",
+        signature: "whisper(text)",
         summary: "Say it in local chat, to 10 m.",
         group: ScriptGroup::Chat,
     },
     ScriptFn {
-        name: "vfSay",
-        signature: "vfSay(text)",
+        name: "say",
+        signature: "say(text)",
         summary: "Say it in local chat, to 50 m.",
         group: ScriptGroup::Chat,
     },
     ScriptFn {
-        name: "vfShout",
-        signature: "vfShout(text)",
+        name: "shout",
+        signature: "shout(text)",
         summary: "Say it in local chat, to 300 m.",
         group: ScriptGroup::Chat,
     },
     // ── Timing ──
     ScriptFn {
-        name: "vfSetTimerEvent",
-        signature: "vfSetTimerEvent(seconds)",
+        name: "set_timer_event",
+        signature: "set_timer_event(seconds)",
         summary: "Call on_timer every `seconds` (minimum 0.05). Zero cancels it.",
         group: ScriptGroup::Timing,
     },
     ScriptFn {
-        name: "vfSleep",
-        signature: "vfSleep(seconds)",
+        name: "sleep",
+        signature: "sleep(seconds)",
         summary: "Suspend this handler and continue later. Only inside a handler.",
         group: ScriptGroup::Timing,
     },
     ScriptFn {
-        name: "vfGetTime",
-        signature: "vfGetTime() -> seconds",
+        name: "get_time",
+        signature: "get_time() -> seconds",
         summary: "Seconds of simulated time since the script started or was reset.",
         group: ScriptGroup::Timing,
     },
     ScriptFn {
-        name: "vfResetTime",
-        signature: "vfResetTime()",
-        summary: "Put vfGetTime back to zero.",
+        name: "reset_time",
+        signature: "reset_time()",
+        summary: "Put get_time back to zero.",
         group: ScriptGroup::Timing,
     },
     // ── Sensing ──
     ScriptFn {
-        name: "vfSensor",
-        signature: "vfSensor(range_m) -> avatar_id, name, distance_m",
+        name: "sensor",
+        signature: "sensor(range_m) -> avatar_id, name, distance_m",
         summary: "The nearest avatar within range, or nothing at all if there is \
                   none. Measured on the ground, between the prim's geographic \
                   anchor and the avatar's — an avatar whose client has not said \
@@ -294,42 +322,42 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     // ── Messaging ──
     ScriptFn {
-        name: "vfSend",
-        signature: "vfSend(channel, text)",
+        name: "send",
+        signature: "send(channel, text)",
         summary: "Say something to the other scripts in this region on a numeric \
                   channel. Nobody in-world hears it, and the sender does not hear \
                   itself. This is the only way one prim can reach another.",
         group: ScriptGroup::Messaging,
     },
     ScriptFn {
-        name: "vfListen",
-        signature: "vfListen(channel [, on])",
-        summary: "Start hearing a channel as on_message; vfListen(channel, false) \
+        name: "listen",
+        signature: "listen(channel [, on])",
+        summary: "Start hearing a channel as on_message; listen(channel, false) \
                   stops. A script hears nothing until it asks.",
         group: ScriptGroup::Messaging,
     },
     // ── Prim / lifecycle ──
     ScriptFn {
-        name: "vfGetPrimId",
-        signature: "vfGetPrimId() -> id",
+        name: "get_prim_id",
+        signature: "get_prim_id() -> id",
         summary: "This prim's id — the number the editor's title shows.",
         group: ScriptGroup::Lifecycle,
     },
     ScriptFn {
-        name: "vfGetName",
-        signature: "vfGetName() -> name",
+        name: "get_name",
+        signature: "get_name() -> name",
         summary: "This prim's name.",
         group: ScriptGroup::Lifecycle,
     },
     ScriptFn {
-        name: "vfSetName",
-        signature: "vfSetName(name)",
-        summary: "Rename it. This is the name vfSay speaks under.",
+        name: "set_name",
+        signature: "set_name(name)",
+        summary: "Rename it. This is the name say speaks under.",
         group: ScriptGroup::Lifecycle,
     },
     ScriptFn {
-        name: "vfDie",
-        signature: "vfDie()",
+        name: "die",
+        signature: "die()",
         summary: "Delete this prim, and the script with it. There is no undo.",
         group: ScriptGroup::Lifecycle,
     },
@@ -346,13 +374,59 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// Luau's own globals. A host function named like one of these would hide it
+    /// from every script.
+    const LUAU_GLOBALS: &[&str] = &[
+        "assert",
+        "error",
+        "getmetatable",
+        "ipairs",
+        "next",
+        "pairs",
+        "pcall",
+        "print",
+        "rawequal",
+        "rawget",
+        "rawlen",
+        "rawset",
+        "require",
+        "select",
+        "setmetatable",
+        "tonumber",
+        "tostring",
+        "type",
+        "typeof",
+        "unpack",
+        "xpcall",
+        "gcinfo",
+        "newproxy",
+        "bit32",
+        "buffer",
+        "coroutine",
+        "debug",
+        "math",
+        "os",
+        "string",
+        "table",
+        "utf8",
+        "vector",
+    ];
+
     #[test]
-    fn names_are_unique_and_prefixed() {
+    fn names_are_unique_snake_case_and_clear_of_luau() {
         let mut seen = HashSet::new();
         for f in SCRIPT_API {
             assert!(
-                f.name.starts_with("vf"),
-                "{} is not vf-prefixed — the whole point of the naming",
+                !f.name.is_empty()
+                    && f.name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{} is not snake_case",
+                f.name
+            );
+            assert!(
+                !LUAU_GLOBALS.contains(&f.name),
+                "{} would hide a Luau global of the same name",
                 f.name
             );
             assert!(seen.insert(f.name), "{} is listed twice", f.name);

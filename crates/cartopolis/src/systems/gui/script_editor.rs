@@ -33,26 +33,26 @@ const MAX_CONSOLE_LINES: usize = 200;
 /// clock — so the first thing an author reads is the shape of a script rather than
 /// a blank page.
 ///
-/// The hover is deliberately **vertical**. A script's `vfSetPos` writes the prim's
+/// The hover is deliberately **vertical**. A script's `set_pos` writes the prim's
 /// sim position, but horizontal placement is re-derived from the geo anchor
 /// (`prim_geo::place_geo_prims`), so an orbiting demo would quietly snap back the
 /// next time the map re-anchors. Height has no such owner and stays put.
 const TEMPLATE: &str = "\
 -- Handlers are plain functions. The host calls them; you define them.
 function on_start()
-    vfLog(\"hello from \" .. vfGetName())
-    vfSetTimerEvent(0.1)
+    log(\"hello from \" .. get_name())
+    set_timer_event(0.1)
 end
 
 function on_touch(id, name)
-    vfSay(name .. \" touched me\")
-    vfSetColor(math.random(), math.random(), math.random())
+    say(name .. \" touched me\")
+    set_color(math.random(), math.random(), math.random())
 end
 
 function on_timer()
     -- Bob gently, using the script's own clock.
-    local x, y, z = vfGetPos()
-    vfSetPos(x, y + math.sin(vfGetTime() * 2) * 0.01, z)
+    local x, y, z = get_pos()
+    set_pos(x, y + math.sin(get_time() * 2) * 0.01, z)
 end
 ";
 
@@ -158,7 +158,7 @@ impl ScriptEditorState {
     }
 }
 
-/// The collapsed API reference: every `vf*` call and every handler, grouped.
+/// The collapsed API reference: every call and every handler, grouped.
 ///
 /// Rendered straight from [`cartopolis_core::SCRIPT_API`], which the *server* is
 /// tested against — so this list cannot drift into describing functions that do

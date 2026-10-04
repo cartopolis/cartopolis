@@ -41,6 +41,8 @@ pub struct AuthWriteback<'w> {
     calls: ResMut<'w, crate::systems::calls::CallInbox>,
     /// Contacts and message requests, handed on to `contacts::drive_contacts`.
     contacts: ResMut<'w, crate::systems::contacts::ContactsInbox>,
+    /// One-shot prim sounds, played by `prim_sound::play_prim_sounds`.
+    sounds: ResMut<'w, crate::systems::prim_sound::PrimSoundInbox>,
 }
 use crate::systems::locomotion;
 use crate::systems::model_assets;
@@ -988,6 +990,9 @@ pub fn apply_network_snapshot(
             } => {
                 auth.script.receive_source(prim_id, source, running);
             }
+            NetMessage::PrimSound { prim_id, sound } => {
+                auth.sounds.0.push((prim_id, sound));
+            }
             NetMessage::ScriptOutput {
                 prim_id,
                 level,
@@ -1207,6 +1212,7 @@ fn prim_from_dto(p: &PrimDto) -> Prim {
         particles: p.particles,
         scripted: p.scripted,
         video: p.video.clone(),
+        sound_loop: p.sound_loop,
     }
 }
 
@@ -1579,7 +1585,7 @@ pub fn send_network_intent(
     // Where the avatar actually is on Earth (protocol 20). The sim cannot work
     // this out: its avatar coordinates are metres in *this* client's anchored
     // frame, and every client anchors somewhere else, so an absolute position is
-    // the only thing a prim's `vfSensor` can measure against a prim's own
+    // the only thing a prim's `sensor` can measure against a prim's own
     // `GeoAnchor`. `None` before the map has anchored — a sensor then does not see
     // this avatar, which beats inventing a position for it.
     //

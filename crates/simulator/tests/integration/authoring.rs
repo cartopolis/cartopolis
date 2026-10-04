@@ -12,10 +12,10 @@
 //! * **A prim authored over HTTP appears in the world**, not merely in SQLite —
 //!   the world is the authority and holds prims in memory, so a row written
 //!   behind its back would be invisible until a restart.
-//! * **`vfSetGeo` is durable horizontal motion.** `vfSetPos`'s x and z are a
+//! * **`set_geo` is durable horizontal motion.** `set_pos`'s x and z are a
 //!   client-frame echo (ADR-029), so this was the one thing a script could not do
 //!   before protocol 20, and "the prim moved" has to mean the *anchor* moved.
-//! * **`vfSensor` sees an avatar**, which needs the avatar's `ClientIntent` to
+//! * **`sensor` sees an avatar**, which needs the avatar's `ClientIntent` to
 //!   carry a geographic position, the sim to keep it, and `script_views` to
 //!   measure it against the prim's anchor — three files, one answer.
 
@@ -402,7 +402,7 @@ async fn an_operator_can_build_without_a_viewer() {
 ///
 /// The alternative — and what this API did for an afternoon — is that authoring a
 /// fire means writing fourteen fields, and getting one wrong is a 422 listing the
-/// other thirteen. It also has to match `vfParticles`, or the same effect is
+/// other thirteen. It also has to match `particles`, or the same effect is
 /// spelled two ways depending on which surface set it.
 #[tokio::test]
 async fn an_emitter_can_be_described_by_what_differs_from_the_preset() {
@@ -431,7 +431,7 @@ async fn an_emitter_can_be_described_by_what_differs_from_the_preset() {
     assert_eq!(blue["particles"]["burst"], false);
 
     // A blast takes the *other* preset's defaults, which is the same choice
-    // `vfParticleBurst` makes against `vfParticles`.
+    // `particle_burst` makes against `particles`.
     let (status, blast) = api(
         "PATCH",
         format!("{}/api/admin/prims/{prim_id}", base(&handle)),
@@ -478,7 +478,7 @@ async fn a_player_can_export_their_own_build_and_import_it_back() {
     // Built over the wire, which is the path that records an owner.
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
     let prim_id = build(&mut c, "Lamp", LAT, LNG).await;
-    set_script(&mut c, prim_id, "function on_touch(id, who) vfSay(who) end").await;
+    set_script(&mut c, prim_id, "function on_touch(id, who) say(who) end").await;
 
     // Give it something worth carrying, so the document is not trivially equal.
     let (status, _) = api(
@@ -915,7 +915,7 @@ async fn only_the_owner_or_an_admin_may_change_a_prim() {
 
     // …and cannot take it over by scripting it either, which would be the most
     // complete way around an edit check.
-    send_script(&mut other, theirs, "function on_start() vfDie() end").await;
+    send_script(&mut other, theirs, "function on_start() die() end").await;
     let (level, text) = recv_output(&mut other).await;
     assert_eq!(level, cartopolis_core::ScriptLevel::Error, "{text}");
     assert!(text.contains("somebody else"), "{text}");
@@ -1026,7 +1026,7 @@ async fn authoring_needs_an_admin() {
 /// watch the firebird come in, press it again and watch it go back out.
 ///
 /// This is the one test that exercises **script-to-script messaging**, which is
-/// the whole reason a button can exist at all: every `vf` call acts on the
+/// the whole reason a button can exist at all: every host call acts on the
 /// script's own prim, so a beacon cannot reach a firebird except over a channel.
 /// It is written against the shipped content rather than a fixture on purpose —
 /// the pair only works if they agree about a channel and about what a press
@@ -1061,7 +1061,7 @@ async fn the_beacon_summons_the_firebird_and_sends_it_back() {
         .unwrap();
 
     // The beacon asks on startup and the firebird answers, so the label is right
-    // before anybody has pressed anything. That round trip is `vfSend` out and
+    // before anybody has pressed anything. That round trip is `send` out and
     // `on_message` back, and nothing else could have set this string.
     wait_for(&handle, &tok, beacon, "the beacon to hear back", |p| {
         p["name"].as_str().is_some_and(|n| n.contains("summon"))
@@ -1176,41 +1176,41 @@ async fn a_scripted_prim_circles_senses_and_explodes() {
 
     // Small numbers so the test is seconds rather than a minute: a 40 m circle, a
     // quick lap, and a shake short enough not to dominate the run. The shape is
-    // the shipped firebird's exactly, except that this one ends on `vfDie` —
-    // the shipped one reforms, and `vfDie` is the arm nothing else covers.
+    // the shipped firebird's exactly, except that this one ends on `die` —
+    // the shipped one reforms, and `die` is the arm nothing else covers.
     let source = r#"
         local LAT, LNG = 53.2194, 6.5665
         local RADIUS, LAP, NOTICE, SHAKE = 40.0, 4.0, 60.0, 0.4
-        local M_LAT, M_LNG = vfGeoScale(LAT)
+        local M_LAT, M_LNG = geo_scale(LAT)
         local state, marked = "flying", 0
 
         function on_start()
-            vfSetName("Firebird")
-            vfParticles{ count = 64, life = 1.0 }
-            vfSetTimerEvent(0.05)
+            set_name("Firebird")
+            particles{ count = 64, life = 1.0 }
+            set_timer_event(0.05)
         end
 
         function on_timer()
-            local now = vfGetTime()
+            local now = get_time()
             if state == "flying" then
                 local a = (now / LAP) * 2 * math.pi
-                vfSetGeo(LAT + (RADIUS * math.cos(a)) / M_LAT,
+                set_geo(LAT + (RADIUS * math.cos(a)) / M_LAT,
                          LNG + (RADIUS * math.sin(a)) / M_LNG)
-                local id, who = vfSensor(NOTICE)
+                local id, who = sensor(NOTICE)
                 if id then
                     state, marked = "shaking", now
-                    vfSetName("Firebird sees " .. who)
+                    set_name("Firebird sees " .. who)
                 end
             elseif state == "shaking" then
-                local lat, lng = vfGetGeo()
-                vfSetGeo(lat + 0.4 * math.sin(now * 47.0) / M_LAT, lng)
+                local lat, lng = get_geo()
+                set_geo(lat + 0.4 * math.sin(now * 47.0) / M_LAT, lng)
                 if now - marked >= SHAKE then
                     state, marked = "blown", now
-                    vfParticleBurst{ count = 200, life = 0.5 }
-                    vfSetAlpha(0.0)
+                    particle_burst{ count = 200, life = 0.5 }
+                    set_alpha(0.0)
                 end
             elseif state == "blown" and now - marked >= 0.3 then
-                vfDie()
+                die()
             end
         end
     "#;
@@ -1326,7 +1326,7 @@ async fn a_scripted_prim_circles_senses_and_explodes() {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "vfDie never removed the prim; it was last {body}"
+            "die never removed the prim; it was last {body}"
         );
     }
 

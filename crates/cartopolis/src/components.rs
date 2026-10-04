@@ -49,6 +49,9 @@ pub struct Prim {
     pub scripted: bool,
     /// A clip playing on the prim (protocol 28), drawn by `systems::prim_video`.
     pub video: Option<cartopolis_core::PrimVideo>,
+    /// The sound the prim's script is looping (protocol 33), played by
+    /// `systems::prim_sound`.
+    pub sound_loop: Option<cartopolis_core::PrimSound>,
 }
 
 /// ADR-029: a prim's absolute geographic placement. Present iff the prim was

@@ -55,7 +55,7 @@ a burning prim put the fire out.
 **An emitter is described by what differs from a preset**, on both surfaces and
 **in one vocabulary**. A JSON body naming `color_start` alone is a blue flame with
 the fire preset's other eleven fields; so is
-`vfParticles{ color_start = {0,0.4,1} }` — the same twelve names either way.
+`particles{ color_start = {0,0.4,1} }` — the same twelve names either way.
 
 They were not, for a day: the script API took `spread`, `radius`, `size`,
 `end_size`, `color`, `end_color` while the HTTP body took `spread_deg`,
@@ -72,7 +72,7 @@ drift apart again. A script using an old name is refused with its new one rather
 than with the whole list.
 
 Two fields are HTTP-only and meant to be: `burst`, because a script says which it
-wants by calling `vfParticles` or `vfParticleBurst`, and `sequence`, which is
+wants by calling `particles` or `particle_burst`, and `sequence`, which is
 derived from the prim so a re-armed blast cannot reuse a number a client has
 already played.
 

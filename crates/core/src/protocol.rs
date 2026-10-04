@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::error::ProtocolError;
 use crate::particles::ParticleEffect;
+use crate::sounds::PrimSound;
 
 /// One wire-protocol revision: what changed and which ADR decided it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +92,7 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
     ProtocolRevision {
         version: 20,
         adr: "",
-        summary: "particles + avatar geo — PrimDto.particles carries an emitter; ClientIntent.geo says where on Earth the avatar is, which is the only frame a script's vfSensor can measure in",
+        summary: "particles + avatar geo — PrimDto.particles carries an emitter; ClientIntent.geo says where on Earth the avatar is, which is the only frame a script's sensor can measure in",
     },
     ProtocolRevision {
         version: 21,
@@ -152,6 +153,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         version: 32,
         adr: "",
         summary: "VP9 in calls — no message changes, but the app now sends VP9 video (receivers must decode VP8 and VP9, with VP9's own clear SFrame prefix), so a client that decodes only VP8 must not share a call (docs/notes/calls.md)",
+    },
+    ProtocolRevision {
+        version: 33,
+        adr: "",
+        summary: "prim sound — PrimSound, a one-shot a script played (play_sound), and PrimDto::sound_loop, the loop a prim is playing (loop_sound / stop_sound); sounds are a closed library named by cartopolis_core::SoundName (docs/notes/prim-scripting.md)",
     },
 ];
 
@@ -237,6 +243,7 @@ pub enum MessageKind {
     PeopleWhere = 66,
     CallDecline = 67,
     CallDeclined = 68,
+    PrimSound = 69,
 }
 
 impl MessageKind {
@@ -310,6 +317,7 @@ impl MessageKind {
             66 => Some(Self::PeopleWhere),
             67 => Some(Self::CallDecline),
             68 => Some(Self::CallDeclined),
+            69 => Some(Self::PrimSound),
             _ => None,
         }
     }
@@ -503,6 +511,13 @@ pub struct PrimDto {
     /// video by forgetting to carry it.
     #[serde(default)]
     pub video: Option<PrimVideo>,
+    /// The sound this prim is looping (`loop_sound`, protocol 33), or `None`.
+    /// A level rather than an event, so somebody walking up to a fountain hears
+    /// it. Set only by the prim's script; held in the simulator's memory and
+    /// **not persisted** — a restart runs every script's `on_start` again, which
+    /// is where a standing loop is started.
+    #[serde(default)]
+    pub sound_loop: Option<PrimSound>,
 }
 
 /// A video on a prim: which clip, and when it started, so everybody near it
@@ -726,7 +741,7 @@ pub enum NetMessage {
         /// somewhere else and re-anchors when it teleports — so "is this avatar
         /// near that prim?" is not a question sim space can answer, while a prim
         /// has carried an absolute `GeoAnchor` since ADR-029. This is the other
-        /// half of that pair, and `vfSensor` is what it exists for.
+        /// half of that pair, and `sensor` is what it exists for.
         ///
         /// `None` from a client that does not know yet (before the map has
         /// anchored) — a sensor simply does not see such an avatar, which is the
@@ -847,7 +862,7 @@ pub enum NetMessage {
         /// Whether the host currently holds a live, compiled instance.
         running: bool,
     },
-    /// A line from a script: `vf.log`, a compile error, or a runtime fault. This
+    /// A line from a script: `log`, a compile error, or a runtime fault. This
     /// is the script editor's console, and the only channel a broken script has.
     ScriptOutput {
         prim_id: i64,
@@ -1247,6 +1262,12 @@ pub enum NetMessage {
     /// connected devices: the caller's, which stop ringing out, and the
     /// decliner's others, which stop ringing.
     CallDeclined { group: Vec<u8>, username: String },
+    /// Server: a script on `prim_id` played a one-shot sound (`play_sound`, protocol
+    /// 33). Sent to every connection: the client knows where the prim is in its own
+    /// frame and the server does not, so the client measures the distance and
+    /// drops it when out of `sound.range_m`. A one-shot is an edge, not a level —
+    /// somebody arriving a second later does not hear a bang that already happened.
+    PrimSound { prim_id: i64, sound: PrimSound },
 }
 
 /// One person's avatar on Earth ([`NetMessage::PeopleWhere`]).
@@ -1516,7 +1537,7 @@ pub const MAX_REPORT_MESSAGE_LEN: usize = 2000;
 /// Severity of a [`NetMessage::ScriptOutput`] line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScriptLevel {
-    /// `vf.log` from a running script.
+    /// `log` from a running script.
     Info,
     /// The host has something to say about the script's lifecycle (compiled,
     /// stopped, out of fuel).
@@ -1595,6 +1616,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::PeopleWhere { .. } => MessageKind::PeopleWhere,
         NetMessage::CallDecline { .. } => MessageKind::CallDecline,
         NetMessage::CallDeclined { .. } => MessageKind::CallDeclined,
+        NetMessage::PrimSound { .. } => MessageKind::PrimSound,
     }
 }
 
@@ -2091,6 +2113,11 @@ mod tests {
                 started_at_ms: 1_790_000_000_000,
                 looped: true,
             }),
+            sound_loop: Some(crate::sounds::PrimSound {
+                sound: crate::sounds::SoundName::Bell,
+                volume: 0.5,
+                range_m: 80.0,
+            }),
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();
@@ -2107,7 +2134,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 67] = [
+        const ALL: [MessageKind; 68] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2175,6 +2202,7 @@ mod tests {
             PeopleWhere,
             CallDecline,
             CallDeclined,
+            PrimSound,
         ];
         for k in ALL {
             assert_eq!(
@@ -2188,7 +2216,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(CallDeclined as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(PrimSound as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

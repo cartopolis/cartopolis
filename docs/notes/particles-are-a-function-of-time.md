@@ -12,7 +12,7 @@ updated: 2026-08-29
 # A particle here is a formula, not a simulation
 
 `cartopolis_core::ParticleEffect` is fourteen numbers on a prim. It travels in
-every `WorldSnapshot`, it is one JSON column in SQLite, `vfParticles` writes it
+every `WorldSnapshot`, it is one JSON column in SQLite, `particles` writes it
 and the client hands it to a shader. **No particle exists anywhere as data**:
 `assets/shaders/particles.wgsl` computes where each one is, how big, what colour
 and whether it is alive, from those numbers, the clock and the particle's own

@@ -1,6 +1,6 @@
 use cartopolis_core::{
     snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
-    EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
+    PrimSound, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -52,7 +52,7 @@ struct AvatarSim {
     /// had before the floor stopped it.
     moved: Vec3,
     /// The account this avatar is signed in as, for anything that has to *name*
-    /// it — today that is `vfSensor`, which hands a script the name so a prim can
+    /// it — today that is `sensor`, which hands a script the name so a prim can
     /// greet whoever walked up. Set once at the handshake; "Someone" until then,
     /// which is what a connection that has not authenticated yet is.
     name: String,
@@ -61,7 +61,7 @@ struct AvatarSim {
     /// The sim cannot compute this and does not use it to move anything: it is
     /// the only frame in which "is this avatar near that prim?" has an answer
     /// (see [`cartopolis_core::NetMessage::ClientIntent`]'s `geo`), and
-    /// `vfSensor` is the one consumer. `None` until a client that knows says so —
+    /// `sensor` is the one consumer. `None` until a client that knows says so —
     /// an avatar with no fix is invisible to a sensor, which is the honest
     /// answer.
     geo: Option<GeoAnchor>,
@@ -121,7 +121,7 @@ pub struct SimWorld {
     /// rate, which is 20 disk writes a second per script for state that is
     /// re-derivable and changes again immediately.
     dirty: HashSet<i64>,
-    /// Prims a script deleted (`vfDie`) whose rows are still to be removed —
+    /// Prims a script deleted (`die`) whose rows are still to be removed —
     /// the deletion half of `dirty` ([`Self::retire_prim`]).
     retired: HashSet<i64>,
     /// Who has been near whom, by lowercase username pair (sorted), for the
@@ -161,7 +161,7 @@ fn pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-/// Furthest a `vfSensor` may see, whatever a script asks for.
+/// Furthest a `sensor` may see, whatever a script asks for.
 ///
 /// A cap on the *gathering*, not on the question: [`SimWorld::script_views`]
 /// measures every located avatar against every scripted prim once a tick, and
@@ -169,7 +169,7 @@ fn pair(a: &str, b: &str) -> (String, String) {
 /// generous next to any plausible in-world use and stingy next to a planet.
 const SENSOR_MAX_RANGE_M: f32 = 4_096.0;
 
-/// Most neighbours carried to one script per tick. `vfSensor` returns the nearest
+/// Most neighbours carried to one script per tick. `sensor` returns the nearest
 /// one, so this only bounds what a future "list everyone" call could ask for —
 /// and bounds the per-tick allocation now, which is the reason it exists.
 const SENSOR_MAX_RESULTS: usize = 16;
@@ -769,7 +769,7 @@ impl SimWorld {
     /// Replace a prim's in-memory copy with what the database now holds for it.
     ///
     /// `false` when the prim is no longer in the world — a script can retire one
-    /// (`vfDie`) between an edit's database write and this call, and a caller
+    /// (`die`) between an edit's database write and this call, and a caller
     /// that broadcast the edit anyway would hand every client a resurrected copy.
     pub fn replace_prim(&mut self, mut prim: PrimDto) -> bool {
         let Some(&pos) = self.index.get(&prim.id) else {
@@ -778,6 +778,9 @@ impl SimWorld {
         // The in-memory flag is the one maintained beside the script store, so it
         // wins over whatever the row read back said.
         prim.scripted = self.scripted.contains(&prim.id);
+        // A looping sound is never in the row at all (it is not persisted), so an
+        // edit carries the one playing across rather than silencing it.
+        prim.sound_loop = self.prims[pos].sound_loop;
         self.prims[pos] = prim;
         true
     }
@@ -801,7 +804,7 @@ impl SimWorld {
 
     /// Remove a prim now and delete its row at the next flush.
     ///
-    /// For `vfDie`, which is applied inside the tick while this lock is held and
+    /// For `die`, which is applied inside the tick while this lock is held and
     /// so cannot wait on the database the way a person's delete does. The world
     /// is the authority — the prim is gone for every client at once — and the row
     /// follows on the same cadence script writes do; a failed delete stays queued
@@ -933,12 +936,12 @@ impl SimWorld {
     /// Read-only views of every scripted prim, handed to the host each tick.
     ///
     /// The neighbours are computed here rather than answered on demand from the
-    /// script thread, and that is the whole shape of `vfSensor`: the host thread
+    /// script thread, and that is the whole shape of `sensor`: the host thread
     /// holds no reference to `SimWorld` (that is what keeps a script off the tick's
     /// write lock — see `scripting`'s module note), so anything a script can ask
     /// about has to have been pushed to it at the barrier. A sensor therefore
     /// reads a snapshot that is at most one tick old, which is the same freshness
-    /// `vfGetPos` has always had.
+    /// `get_pos` has always had.
     pub fn script_views(&self) -> Vec<(i64, PrimView)> {
         // Every avatar that has told us where on Earth it is. Gathered once for
         // the whole pass: a world with 200 scripted prims and 20 avatars would
@@ -957,7 +960,7 @@ impl SimWorld {
                     .map(|(id, g, name)| (*id, name.clone(), ground_distance_m(p.geo, *g)))
                     .filter(|(_, _, d)| d.is_finite() && *d <= SENSOR_MAX_RANGE_M)
                     .collect();
-                // Nearest first, so `vfSensor(range)` is a prefix scan and the
+                // Nearest first, so `sensor(range)` is a prefix scan and the
                 // truncation below drops the ones a script is least likely to
                 // have been asking about.
                 nearby.sort_by(|a, b| a.2.total_cmp(&b.2));
@@ -1051,9 +1054,17 @@ impl SimWorld {
                     Box::new(move |p: &mut PrimDto| p.particles = effect),
                 )
             }
-            // Not a field write: the caller routes these to chat, to the editor,
-            // and to `remove_prim` respectively.
+            ScriptCommand::SetSoundLoop { prim_id, sound } => {
+                let sound = sound.map(PrimSound::sanitized);
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.sound_loop = sound),
+                )
+            }
+            // Not a field write: the caller routes these to chat, to every
+            // connection, to the editor, and to `remove_prim` respectively.
             ScriptCommand::Say { .. }
+            | ScriptCommand::PlaySound { .. }
             | ScriptCommand::Output { .. }
             | ScriptCommand::Die { .. } => return None,
         };
@@ -1107,7 +1118,7 @@ impl SimWorld {
 }
 
 /// What one flush writes: prims scripts have changed, and prims scripts have
-/// deleted (`vfDie`). See [`SimWorld::take_dirty`].
+/// deleted (`die`). See [`SimWorld::take_dirty`].
 #[derive(Debug, Default)]
 pub struct DirtyBatch {
     pub rows: Vec<PrimDto>,
@@ -1179,6 +1190,29 @@ mod tests {
         world.restore_dirty(&batch);
         assert_eq!(world.take_dirty().retired, vec![c.id]);
         assert_eq!(world.prims().len(), 1);
+    }
+
+    /// A looping sound is never in the database, so an edit — which replaces the
+    /// prim with the row read back — must carry it across rather than silence it.
+    #[test]
+    fn an_edit_keeps_the_loop_a_script_started() {
+        use crate::scripting::ScriptCommand;
+        use cartopolis_core::SoundName;
+        let (mut world, dir) = test_world();
+        let prim = stored_prim(&mut world, &dir);
+        let sound = PrimSound {
+            sound: SoundName::Bell,
+            volume: 0.5,
+            range_m: 40.0,
+        };
+        world
+            .apply_script_command(&ScriptCommand::SetSoundLoop {
+                prim_id: prim.id,
+                sound: Some(sound),
+            })
+            .expect("prim is there");
+        assert!(world.replace_prim(prim.clone()));
+        assert_eq!(world.prim(prim.id).unwrap().sound_loop, Some(sound));
     }
 
     /// A reservation counts against the budget before its row exists, so two

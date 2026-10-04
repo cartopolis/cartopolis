@@ -108,9 +108,9 @@ The **content the server installs is the server's**, not the tool's:
 repository beside it. Installing a pack twice replaces what it installed.
 
 The `firebird` pack is the worked example for the script API and is two prims: a
-burning thing that flies a circle with `vfSetGeo`, watches for company with
-`vfSensor` and goes off with `vfParticleBurst`, and a beacon on the Grote Markt
-that calls it in and sends it back out over `vfSend` / `on_message` — which is
+burning thing that flies a circle with `set_geo`, watches for company with
+`sensor` and goes off with `particle_burst`, and a beacon on the Grote Markt
+that calls it in and sends it back out over `send` / `on_message` — which is
 the only way one prim can reach another. Walk up to the beacon and press E.
 
 The in-editor reference is generated from `cartopolis_core::SCRIPT_API`, which is

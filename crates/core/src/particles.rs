@@ -2,7 +2,7 @@
 //!
 //! The shape of this struct is decided by where it has to survive: it is a field
 //! of [`crate::PrimDto`], so it travels in every `WorldSnapshot`, it is persisted
-//! as one row's column, a script writes it with `vfParticles`, and the client
+//! as one row's column, a script writes it with `particles`, and the client
 //! turns it into uniforms. That is four consumers, so it is a **flat set of plain
 //! numbers with no options in it** — every field always has a value, every value
 //! is finite and in range by the time it leaves [`ParticleEffect::sanitized`],
@@ -115,7 +115,7 @@ pub struct ParticleEffect {
     /// lives, and [`Self::sequence`] is what tells a receiver that a *second*
     /// blast happened rather than the same one being re-described.
     pub burst: bool,
-    /// Bumped by the author (or by `vfParticleBurst`) every time the effect is
+    /// Bumped by the author (or by `particle_burst`) every time the effect is
     /// (re)started. A receiver that diffs on the struct alone would never replay
     /// an identical blast; one that replays on every snapshot would restart the
     /// fire 20 times a second.
@@ -179,7 +179,7 @@ impl ParticleEffect {
     /// the shader is a particle at an undefined position, i.e. a triangle
     /// stretched across the whole screen with no error anywhere, and it would be
     /// persisted and replicated to everyone. Clamping rather than refusing keeps
-    /// a script running (`vfSetColor` follows the same rule), and the check has
+    /// a script running (`set_color` follows the same rule), and the check has
     /// to come *before* the clamp because `f32::clamp` propagates NaN.
     #[must_use]
     pub fn sanitized(&self) -> Self {
@@ -261,7 +261,7 @@ mod tests {
     }
 
     /// The clamp cannot stand in for the finite check — this is the exact trap
-    /// `vfSetColor` documents, in a second place.
+    /// `set_color` documents, in a second place.
     #[test]
     fn clamp_alone_would_have_kept_the_nan() {
         assert!(f32::NAN.clamp(0.0, 1.0).is_nan());

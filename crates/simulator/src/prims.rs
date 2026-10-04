@@ -526,7 +526,7 @@ impl PrimService {
             return Err(PrimError::Storage(format!("could not store script: {e:#}")));
         }
         if !self.world.read().await.has_prim(prim_id) {
-            // A script deleted its own prim (`vfDie`) while this was being stored.
+            // A script deleted its own prim (`die`) while this was being stored.
             // Its row goes at the next flush, and the script row with it; the VM
             // this call just started has to go now.
             self.scripts.unload(prim_id);

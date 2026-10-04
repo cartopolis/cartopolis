@@ -31,9 +31,9 @@
 //! Handlers are plain functions defined at the top level of the chunk:
 //!
 //! ```lua
-//! function on_start()  vfLog("hello")  vfSetTimerEvent(1.0)  end
-//! function on_touch(id, name)  vfSay(name .. " touched me")  end
-//! function on_timer()  local x, y, z = vfGetPos()  vfSetPos(x, y + 0.1, z)  end
+//! function on_start()  log("hello")  set_timer_event(1.0)  end
+//! function on_touch(id, name)  say(name .. " touched me")  end
+//! function on_timer()  local x, y, z = get_pos()  set_pos(x, y + 0.1, z)  end
 //! ```
 //!
 //! The chunk runs in its own environment table whose `__index` is the (read-only)
@@ -41,7 +41,9 @@
 //! space. Without that, `sandbox(true)` would make the global table read-only and
 //! every script would fail on its first `function` statement.
 
-use cartopolis_core::{GeoAnchor, ParticleEffect, ScriptLevel};
+use cartopolis_core::{
+    GeoAnchor, ParticleEffect, PrimSound, ScriptLevel, SoundName, DEFAULT_SOUND_RANGE_M,
+};
 use glam::Vec3;
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, LuaOptions, StdLib, Thread, VmState};
@@ -106,7 +108,7 @@ const LOAD_FUEL: i64 = 200_000;
 /// `Slot::compile` applies to `require`.
 ///
 /// Everything else Luau ships stays: the note in `docs/notes/prim-scripting.md`
-/// says there is no `vfFrand` and no `vfGetUnixTime` *because* `math.random` and
+/// says there is no `frand` and no `get_unix_time` *because* `math.random` and
 /// `os.time` are there, so trimming the list further would quietly take the
 /// documented answer away. A function rather than a `const` because `StdLib`'s
 /// `BitOr` is a plain trait impl, not a `const fn`.
@@ -132,18 +134,25 @@ pub const MAX_SOURCE_BYTES: usize = 64 * 1024;
 /// misbehaving; unbounded queueing would turn that into host memory growth.
 const MAX_PENDING_EVENTS: usize = 32;
 
-/// Commands one script may emit per tick. Caps `vfLog` in a loop, which is the
+/// Commands one script may emit per tick. Caps `log` in a loop, which is the
 /// most likely way an author floods the wire by accident.
 const MAX_COMMANDS_PER_TICK: usize = 64;
 
 /// Shortest repeating timer a script may ask for — one tick at 20 Hz.
 const MIN_TIMER_INTERVAL: f32 = 0.05;
 
-/// Messages one script may send per tick (`vfSend`). Separate from
+/// Messages one script may send per tick (`send`). Separate from
 /// [`MAX_COMMANDS_PER_TICK`] because it bounds a different thing: a command costs
 /// one wire frame, while a message costs an event queued on *every* listening
 /// script in the world, so the same number would mean very different work.
 const MAX_MESSAGES_PER_TICK: usize = 8;
+
+/// One-shot sounds one script may start per tick (`play_sound`). Two at 20 Hz is
+/// forty a second from one object, which no volley needs; the ceiling is there so
+/// a `play_sound` in a tight loop cannot flood every client in the world with
+/// overlapping players. Over it, the sound is dropped and counted with the other
+/// dropped commands — a busy script, not a broken one, so it is not faulted.
+const MAX_SOUNDS_PER_TICK: u32 = 2;
 
 /// Channels one script may listen on. A ceiling rather than a policy — a script
 /// that wants a thousand channels is describing a design problem, and the set is
@@ -193,7 +202,7 @@ pub enum ScriptCommand {
         pos: Vec3,
     },
     /// Euler rotation in **radians**, converted at the API boundary from the
-    /// degrees an author writes (`vfSetRot`) — the wire and the client's
+    /// degrees an author writes (`set_rot`) — the wire and the client's
     /// `Quat::from_euler` are both radians, and only one of the two conventions
     /// should ever be in flight past this point.
     SetRot {
@@ -225,9 +234,9 @@ pub enum ScriptCommand {
         name: String,
     },
     /// Move the prim's **geographic anchor** — the durable half of its placement
-    /// (ADR-029). `vfSetPos`'s x/z are re-derived from this by every client, so a
+    /// (ADR-029). `set_pos`'s x/z are re-derived from this by every client, so a
     /// script that wants a prim to *go* somewhere writes this and a script that
-    /// wants it higher writes `vfSetPos`.
+    /// wants it higher writes `set_pos`.
     SetGeo {
         prim_id: i64,
         latitude: f64,
@@ -250,7 +259,20 @@ pub enum ScriptCommand {
         level: ScriptLevel,
         text: String,
     },
-    /// Delete the prim and everything of it, `vfDie`.
+    /// A one-shot sound at the prim (`play_sound`). Not a field write: the tick
+    /// loop sends it to every connection as `NetMessage::PrimSound`, and each
+    /// client decides from its own distance whether it is in range.
+    PlaySound {
+        prim_id: i64,
+        sound: PrimSound,
+    },
+    /// Start or replace (`loop_sound`), or with `None` stop (`stop_sound`), the
+    /// prim's looping sound. A field write on `PrimDto::sound_loop`.
+    SetSoundLoop {
+        prim_id: i64,
+        sound: Option<PrimSound>,
+    },
+    /// Delete the prim and everything of it, `die`.
     Die {
         prim_id: i64,
     },
@@ -273,6 +295,8 @@ impl ScriptCommand {
             | Self::SetGeo { prim_id, .. }
             | Self::SetParticles { prim_id, .. }
             | Self::Say { prim_id, .. }
+            | Self::PlaySound { prim_id, .. }
+            | Self::SetSoundLoop { prim_id, .. }
             | Self::Output { prim_id, .. }
             | Self::Die { prim_id } => *prim_id,
         }
@@ -288,7 +312,7 @@ impl ScriptCommand {
 #[derive(Debug, Clone, Default)]
 pub struct PrimView {
     pub pos: Vec3,
-    /// Radians, as stored on the wire. `vfGetRot` converts on the way out.
+    /// Radians, as stored on the wire. `get_rot` converts on the way out.
     pub rot: Vec3,
     pub color: [f32; 3],
     pub scale: Vec3,
@@ -306,7 +330,7 @@ pub struct PrimView {
     ///
     /// Pushed with the view rather than queried, because the host thread has no
     /// access to the world (see the module note on threading) — a sensor is a
-    /// *read of last tick's neighbours*, which is exactly what `vfGetPos` is too.
+    /// *read of last tick's neighbours*, which is exactly what `get_pos` is too.
     pub nearby: Vec<(u64, String, f32)>,
 }
 
@@ -451,17 +475,19 @@ impl Drop for ScriptHost {
     }
 }
 
-/// Per-slot state shared with the `vf*` host closures. Everything lives on the
+/// Per-slot state shared with the host closures. Everything lives on the
 /// host thread, so `Rc`/`Cell` rather than `Arc`/`Mutex`.
 struct Shared {
     prim_id: i64,
     out: RefCell<Vec<ScriptCommand>>,
     view: RefCell<PrimView>,
-    /// Set by `vfSetTimerEvent(seconds)`; `Some(0.0)` cancels.
+    /// Set by `set_timer_event(seconds)`; `Some(0.0)` cancels.
     timer_request: Cell<Option<f32>>,
     /// Commands dropped this tick because the script exceeded its output budget.
     dropped: Cell<u32>,
-    /// `vfSend` calls made this slice, drained by the scheduler and fanned out to
+    /// `play_sound` calls this tick, against [`MAX_SOUNDS_PER_TICK`].
+    sounds: Cell<u32>,
+    /// `send` calls made this slice, drained by the scheduler and fanned out to
     /// the other scripts in the world.
     ///
     /// **Not a [`ScriptCommand`]**, and that is the whole design: a message never
@@ -469,12 +495,12 @@ struct Shared {
     /// to do with it, and routing it out to the tick loop and back would put a
     /// button's press behind the world's write lock for no reason.
     outbox: RefCell<Vec<(i64, String)>>,
-    /// `vfListen` calls made this slice — `(channel, on)`, applied by the
+    /// `listen` calls made this slice — `(channel, on)`, applied by the
     /// scheduler for the same reason `timer_request` is.
     listen_changes: RefCell<Vec<(i64, bool)>>,
     /// Simulated seconds since the script started, advanced by the scheduler and
-    /// zeroed by `vfResetTime`. Simulated rather than wall-clock so `vfGetTime`
-    /// and `vfSleep` agree with the tick that drives them — and so two hosts
+    /// zeroed by `reset_time`. Simulated rather than wall-clock so `get_time`
+    /// and `sleep` agree with the tick that drives them — and so two hosts
     /// running the same script see the same numbers, as they do for fuel.
     time: Cell<f32>,
 }
@@ -526,9 +552,9 @@ struct Slot {
     first_args: Option<ScriptEvent>,
     /// `(interval, remaining)` for a repeating `on_timer`.
     timer: Option<(f32, f32)>,
-    /// Channels this script has asked to hear (`vfListen`).
+    /// Channels this script has asked to hear (`listen`).
     ///
-    /// Opt-in, as Second Life's `llListen` is: without it every `vfSend` would be
+    /// Opt-in, as Second Life's `llListen` is: without it every `send` would be
     /// queued on every script in the world, so one chatty prim would cost every
     /// other one an event per tick whether or not it cared.
     listening: std::collections::HashSet<i64>,
@@ -586,6 +612,7 @@ impl Slot {
             view: RefCell::new(PrimView::default()),
             timer_request: Cell::new(None),
             dropped: Cell::new(0),
+            sounds: Cell::new(0),
             outbox: RefCell::new(Vec::new()),
             listen_changes: RefCell::new(Vec::new()),
             time: Cell::new(0.0),
@@ -604,11 +631,12 @@ impl Slot {
             .map_err(|e| format!("could not create environment: {e}"))?;
         env.set_metatable(Some(meta))
             .map_err(|e| format!("could not create environment: {e}"))?;
-        install_api(&lua, &env, &shared).map_err(|e| format!("could not install vf API: {e}"))?;
+        install_api(&lua, &env, &shared)
+            .map_err(|e| format!("could not install the script API: {e}"))?;
         // The prelude is host code, so it runs before the ceiling below applies to
         // the author's chunk.
         lua.load(PRELUDE)
-            .set_name("=vfprelude")
+            .set_name("=prelude")
             .set_environment(env.clone())
             .exec()
             .map_err(|e| format!("could not install the prelude: {e}"))?;
@@ -698,7 +726,7 @@ impl Slot {
     /// Two rules, both learned from what the plain ring buffer did. **Timers
     /// coalesce**: `on_timer` means "the interval elapsed", so a second pending
     /// one only asks for the same handler twice in a row later — a script whose
-    /// handler is slower than its own `vfSetTimerEvent` would otherwise fill the
+    /// handler is slower than its own `set_timer_event` would otherwise fill the
     /// queue in a couple of seconds and stay full forever. And **`Start` is never
     /// evicted**: it is queued once, and a script that loses it runs with none of
     /// its own setup — no timer, no state — which looks like a script that ran but
@@ -825,16 +853,16 @@ fn clean_error(e: &mlua::Error) -> String {
 /// Lua-side half of the API, loaded into every script's environment before the
 /// author's chunk.
 ///
-/// `vfSleep` lives here rather than in Rust because a host function cannot yield
+/// `sleep` lives here rather than in Rust because a host function cannot yield
 /// the coroutine it is called from — but Lua code can, and the scheduler already
 /// resumes a yielded handler on the next tick. So sleeping is "yield until the
 /// clock says otherwise", which needs no new machinery in the scheduler at all:
 /// a sleeping script costs one resume and a compare per tick, and is descheduled
 /// by exactly the mechanism that deschedules a script which ran too long.
 const PRELUDE: &str = r#"
-function vfSleep(seconds)
-    local wake = vfGetTime() + seconds
-    while vfGetTime() < wake do
+function sleep(seconds)
+    local wake = get_time() + seconds
+    while get_time() < wake do
         coroutine.yield()
     end
 end
@@ -848,15 +876,15 @@ const MAX_TEXT: usize = 500;
 /// thing that whispers.
 const WHISPER_RADIUS_M: f32 = 10.0;
 
-/// Install the `vf*` functions into a script's environment.
+/// Install the host functions into a script's environment.
 ///
 /// This is the entire authority a script has. Every entry acts on the script's
 /// own prim — `prim_id` is captured, never passed in — so there is no argument an
 /// author can supply that reaches another object.
 ///
-/// The names are flat and `vf`-prefixed rather than methods on a `vf` table, which
-/// is Second Life's shape (`llSetPos`, `llSay`) and therefore the one the people
-/// most likely to write these already know. `cartopolis_core::SCRIPT_API` is the
+/// The names are flat globals rather than methods on a table, which is Second
+/// Life's shape (`llSetPos`, `llSay`) and therefore the one the people most likely
+/// to write these already know. `cartopolis_core::SCRIPT_API` is the
 /// catalogue the editor shows, and a test asserts the two agree exactly — add a
 /// function here without listing it there and the suite fails.
 fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Result<()> {
@@ -864,7 +892,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetPos",
+        "get_pos",
         lua.create_function(move |_, ()| {
             let v = s.view.borrow().pos;
             Ok((v.x, v.y, v.z))
@@ -873,7 +901,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetPos",
+        "set_pos",
         lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
             let pos = finite_vec3(x, y, z)?;
             s.push(ScriptCommand::SetPos {
@@ -890,7 +918,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetGeo",
+        "get_geo",
         lua.create_function(move |_, ()| {
             let g = s.view.borrow().geo;
             Ok((g.latitude, g.longitude))
@@ -899,7 +927,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetGeo",
+        "set_geo",
         lua.create_function(move |_, (lat, lng): (f64, f64)| {
             // The globe's own bounds, not a taste: a latitude past a pole names no
             // point, and everything downstream (the projection, the distance, the
@@ -923,7 +951,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     )?;
 
     env.set(
-        "vfGeoScale",
+        "geo_scale",
         lua.create_function(move |_, lat: f64| {
             if !lat.is_finite() {
                 return Err(mlua::Error::RuntimeError(
@@ -936,7 +964,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetRot",
+        "get_rot",
         lua.create_function(move |_, ()| {
             let v = s.view.borrow().rot;
             Ok((v.x.to_degrees(), v.y.to_degrees(), v.z.to_degrees()))
@@ -945,7 +973,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetRot",
+        "set_rot",
         lua.create_function(move |_, (rx, ry, rz): (f32, f32, f32)| {
             // Degrees in, radians out: an author reads the numbers off the edit
             // dialog, which shows degrees, and the wire is radians.
@@ -962,7 +990,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetScale",
+        "get_scale",
         lua.create_function(move |_, ()| {
             let v = s.view.borrow().scale;
             Ok((v.x, v.y, v.z))
@@ -971,7 +999,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetScale",
+        "set_scale",
         lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
             let scale = finite_vec3(x, y, z)?;
             // A zero or negative scale is a degenerate mesh, and a huge one is a
@@ -990,7 +1018,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetColor",
+        "get_color",
         lua.create_function(move |_, ()| {
             let c = s.view.borrow().color;
             Ok((c[0], c[1], c[2]))
@@ -999,10 +1027,10 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetColor",
+        "set_color",
         lua.create_function(move |_, (r, g, b): (f32, f32, f32)| {
             // Check *then* clamp. `f32::clamp` returns NaN for NaN — it is a
-            // range limit, not a validator — so `vfSetColor(0/0, 0, 0)` used to
+            // range limit, not a validator — so `set_color(0/0, 0, 0)` used to
             // put a NaN straight into the prim's colour, from there into SQLite
             // and into every client's material.
             let color = [
@@ -1021,13 +1049,13 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetAlpha",
+        "get_alpha",
         lua.create_function(move |_, ()| Ok(s.view.borrow().alpha))?,
     )?;
 
     let s = shared.clone();
     env.set(
-        "vfSetAlpha",
+        "set_alpha",
         lua.create_function(move |_, a: f32| {
             let alpha = finite(a)?.clamp(0.0, 1.0);
             s.push(ScriptCommand::SetAlpha {
@@ -1041,13 +1069,13 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetGlow",
+        "get_glow",
         lua.create_function(move |_, ()| Ok(s.view.borrow().glow))?,
     )?;
 
     let s = shared.clone();
     env.set(
-        "vfSetGlow",
+        "set_glow",
         lua.create_function(move |_, g: f32| {
             let glow = finite(g)?.clamp(0.0, 1.0);
             s.push(ScriptCommand::SetGlow {
@@ -1061,7 +1089,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetFullBright",
+        "set_full_bright",
         lua.create_function(move |_, on: bool| {
             s.push(ScriptCommand::SetFullBright {
                 prim_id: s.prim_id,
@@ -1075,13 +1103,13 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     // Two entry points, one implementation. The only difference between a fire and
     // an explosion is `burst` and which preset the unspecified fields come from —
     // spelling them out twice would be two tables of defaults to keep in step.
-    for (name, burst) in [("vfParticles", false), ("vfParticleBurst", true)] {
+    for (name, burst) in [("particles", false), ("particle_burst", true)] {
         let s = shared.clone();
         env.set(
             name,
             lua.create_function(move |_, rules: Option<mlua::Table>| {
                 let effect = match rules {
-                    // `vfParticles(nil)` puts it out. There is no `vfParticlesOff`
+                    // `particles(nil)` puts it out. There is no `particles_off`
                     // because "no rules" already means "no emitter", and a second
                     // name for it is a second thing to document.
                     None => None,
@@ -1097,11 +1125,60 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         )?;
     }
 
+    // ── Sound ──
+
+    let s = shared.clone();
+    env.set(
+        "play_sound",
+        lua.create_function(
+            move |_, (name, volume, range): (String, Option<f32>, Option<f32>)| {
+                let sound = prim_sound("play_sound", &name, volume, range)?;
+                if s.sounds.get() >= MAX_SOUNDS_PER_TICK {
+                    s.dropped.set(s.dropped.get() + 1);
+                    return Ok(());
+                }
+                s.sounds.set(s.sounds.get() + 1);
+                s.push(ScriptCommand::PlaySound {
+                    prim_id: s.prim_id,
+                    sound,
+                });
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "loop_sound",
+        lua.create_function(
+            move |_, (name, volume, range): (String, Option<f32>, Option<f32>)| {
+                let sound = prim_sound("loop_sound", &name, volume, range)?;
+                s.push(ScriptCommand::SetSoundLoop {
+                    prim_id: s.prim_id,
+                    sound: Some(sound),
+                });
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "stop_sound",
+        lua.create_function(move |_, ()| {
+            s.push(ScriptCommand::SetSoundLoop {
+                prim_id: s.prim_id,
+                sound: None,
+            });
+            Ok(())
+        })?,
+    )?;
+
     // ── Chat ──
 
     let s = shared.clone();
     env.set(
-        "vfLog",
+        "log",
         lua.create_function(move |_, text: String| {
             s.push(ScriptCommand::Output {
                 prim_id: s.prim_id,
@@ -1113,9 +1190,9 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     )?;
 
     for (name, radius) in [
-        ("vfWhisper", WHISPER_RADIUS_M),
-        ("vfSay", crate::chat::SAY_RADIUS_M),
-        ("vfShout", crate::chat::SHOUT_RADIUS_M),
+        ("whisper", WHISPER_RADIUS_M),
+        ("say", crate::chat::SAY_RADIUS_M),
+        ("shout", crate::chat::SHOUT_RADIUS_M),
     ] {
         let s = shared.clone();
         env.set(
@@ -1135,7 +1212,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSetTimerEvent",
+        "set_timer_event",
         lua.create_function(move |_, seconds: f32| {
             s.timer_request.set(Some(seconds.max(0.0)));
             Ok(())
@@ -1144,13 +1221,13 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetTime",
+        "get_time",
         lua.create_function(move |_, ()| Ok(s.time.get()))?,
     )?;
 
     let s = shared.clone();
     env.set(
-        "vfResetTime",
+        "reset_time",
         lua.create_function(move |_, ()| {
             s.time.set(0.0);
             Ok(())
@@ -1161,7 +1238,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSensor",
+        "sensor",
         lua.create_function(move |_, range: f32| {
             let range = finite(range)?.max(0.0);
             // `nearby` is already nearest-first, so this is the head of the list
@@ -1179,7 +1256,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfSend",
+        "send",
         lua.create_function(move |_, (channel, text): (i64, String)| {
             let mut out = s.outbox.borrow_mut();
             if out.len() >= MAX_MESSAGES_PER_TICK {
@@ -1197,7 +1274,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfListen",
+        "listen",
         lua.create_function(move |_, (channel, on): (i64, Option<bool>)| {
             s.listen_changes
                 .borrow_mut()
@@ -1210,19 +1287,19 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfGetPrimId",
+        "get_prim_id",
         lua.create_function(move |_, ()| Ok(s.prim_id))?,
     )?;
 
     let s = shared.clone();
     env.set(
-        "vfGetName",
+        "get_name",
         lua.create_function(move |_, ()| Ok(s.view.borrow().name.clone()))?,
     )?;
 
     let s = shared.clone();
     env.set(
-        "vfSetName",
+        "set_name",
         lua.create_function(move |_, name: String| {
             // The same cap the edit dialog's field has; a name is a label, and an
             // unbounded one is a way to put a kilobyte in every snapshot.
@@ -1238,7 +1315,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 
     let s = shared.clone();
     env.set(
-        "vfDie",
+        "die",
         lua.create_function(move |_, ()| {
             s.push(ScriptCommand::Die { prim_id: s.prim_id });
             Ok(())
@@ -1248,12 +1325,12 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     Ok(())
 }
 
-/// Read a `vfParticles` rules table into an effect.
+/// Read a `particles` rules table into an effect.
 ///
 /// Unspecified fields keep the preset's value, which is what makes
-/// `vfParticles{ color_start = {0,0.4,1} }` a blue flame rather than an error
+/// `particles{ color_start = {0,0.4,1} }` a blue flame rather than an error
 /// message about the eleven fields it did not mention. An **unknown** key is an
-/// error, though, and deliberately so: `vfParticles{ lifetime = 3 }` silently
+/// error, though, and deliberately so: `particles{ lifetime = 3 }` silently
 /// emitting the default 1.4 s is the kind of bug an author cannot see, and this
 /// is the same rule the shot manifest applies to its own keys.
 ///
@@ -1324,7 +1401,7 @@ fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Resul
             return Ok(fallback);
         };
         // Positional, `{1.0, 0.5, 0.1}`, because that is how a colour is written
-        // everywhere else in this API (`vfSetColor(r, g, b)`).
+        // everywhere else in this API (`set_color(r, g, b)`).
         Ok([
             finite(c.get::<Option<f32>>(1)?.unwrap_or(fallback[0]))?,
             finite(c.get::<Option<f32>>(2)?.unwrap_or(fallback[1]))?,
@@ -1348,7 +1425,7 @@ fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Resul
         burst,
         sequence,
     }
-    // Clamped here, at the boundary, exactly as `vfSetScale` clamps rather than
+    // Clamped here, at the boundary, exactly as `set_scale` clamps rather than
     // refuses: a script that asks for a thousand particles gets the ceiling and
     // keeps running.
     .sanitized())
@@ -1374,6 +1451,31 @@ fn finite(v: f32) -> mlua::Result<f32> {
         ));
     }
     Ok(v)
+}
+
+/// Read `play_sound` / `loop_sound`'s arguments into a [`PrimSound`].
+///
+/// An unknown name is an **error** naming the library, never a silent no-op: a
+/// typo that plays nothing looks exactly like a speaker that is off, and the
+/// author has no way to tell the two apart.
+fn prim_sound(
+    call: &str,
+    name: &str,
+    volume: Option<f32>,
+    range: Option<f32>,
+) -> mlua::Result<PrimSound> {
+    let sound = SoundName::from_slug(name).ok_or_else(|| {
+        mlua::Error::RuntimeError(format!(
+            "{call}: no sound called \"{name}\" — the sounds are {}",
+            SoundName::catalogue()
+        ))
+    })?;
+    Ok(PrimSound {
+        sound,
+        volume: finite(volume.unwrap_or(1.0))?,
+        range_m: finite(range.unwrap_or(DEFAULT_SOUND_RANGE_M))?,
+    }
+    .sanitized())
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -1458,7 +1560,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
     for id in &ids {
         if let Some(slot) = slots.get_mut(id) {
             // The script clock advances with simulated time, for every script,
-            // whether or not it gets a slice this tick — `vfGetTime` measures the
+            // whether or not it gets a slice this tick — `get_time` measures the
             // world going by, not the script's own share of the CPU.
             let t = &slot.shared.time;
             t.set(t.get() + dt);
@@ -1472,7 +1574,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
         }
     }
 
-    // Everything `vfSend` produced this tick, gathered across the slice loop and
+    // Everything `send` produced this tick, gathered across the slice loop and
     // delivered *after* it. Two reasons it is not delivered inline. The loop holds
     // one slot mutably, and a listener is another slot. And delivering mid-loop
     // would make "does this listener see the message this tick or next?" depend on
@@ -1497,7 +1599,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
         let budget = bank.min(SCRIPT_FUEL_SLICE);
         bank -= slot.run_slice(budget);
 
-        // A `vfSetTimerEvent` call inside that slice takes effect now.
+        // A `set_timer_event` call inside that slice takes effect now.
         if let Some(seconds) = slot.shared.timer_request.take() {
             slot.timer = if seconds <= 0.0 {
                 None
@@ -1507,8 +1609,8 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
             };
         }
 
-        // `vfListen` calls made in that slice take effect now, as
-        // `vfSetTimerEvent` does.
+        // `listen` calls made in that slice take effect now, as
+        // `set_timer_event` does.
         for (channel, on) in slot.shared.listen_changes.borrow_mut().drain(..) {
             if on {
                 if slot.listening.len() < MAX_LISTEN_CHANNELS {
@@ -1522,6 +1624,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
             posted.push((id, channel, text));
         }
 
+        slot.shared.sounds.set(0);
         let dropped = slot.shared.dropped.replace(0);
         let mut out = std::mem::take(&mut *slot.shared.out.borrow_mut());
         if dropped > 0 {
@@ -1544,7 +1647,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
     // regions are gone, and nothing that survived them divides the world into
     // estates, so a channel now reaches every listening script on the server. A
     // radius would be the way to bring that property back if it is ever wanted —
-    // every prim carries a `GeoAnchor`, which is what `vfSensor` already measures
+    // every prim carries a `GeoAnchor`, which is what `sensor` already measures
     // against. Fan-out is still **never back to the sender**, which is the one
     // deviation from Second Life
     // here and is deliberate: a script listening on the channel it sends on is the

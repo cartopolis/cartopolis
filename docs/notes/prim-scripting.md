@@ -1,7 +1,7 @@
 ---
 topic: prim-scripting
-triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "vf.", "sandbox", "fuel", "on_touch", vfSetGeo, vfSensor, vfParticles, vfSend, on_message]
-updated: 2026-08-29
+triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "sandbox", "fuel", "on_touch", set_geo, sensor, particles, send, on_message, play_sound, loop_sound, prim_sound, SoundName]
+updated: 2026-10-04
 ---
 
 # What the scripting engine is, and what mlua hands you that Luau does not
@@ -87,39 +87,41 @@ gives up the per-script memory ceiling (the allocator limit is per *state*).
 
 ## The API is Second Life's shape, and the catalogue is shared
 
-Calls are flat and `vf`-prefixed — `vfSetPos`, `vfSay`, `vfSetTimerEvent` — which
-is `ll*` with the serial numbers filed off, deliberately. The people most likely
-to write scripts here have twenty years of muscle memory for that namespace, and
-a differently-spelled version of the same idea buys nothing.
+Calls are flat, plain snake_case globals — `set_pos`, `say`, `set_timer_event`,
+`play_sound` — which is Second Life's `ll*` shape (one global per verb) without a
+prefix. They were `vf`-prefixed (`vfSetPos`) until 2026-10-04; that prefix was
+the old brand name in front of every call, and it went without aliases, so a
+script written against it fails on its first call and has to be rewritten.
+snake_case matches Luau's own library, so a script reads as one language.
 
 Two consequences worth knowing:
 
-- **A script can shadow a `vf` function, and that is not a hole.** The functions
+- **A script can shadow a host function, and that is not a hole.** The functions
   live in the script's own environment table, which is also where
   `function on_start()` lands — a read-only table could not hold a handler. Since
-  every script is its own Luau state, `vfSay = nil` breaks exactly one script.
+  every script is its own Luau state, `say = nil` breaks exactly one script.
   (The earlier design had a read-only `vf` *table*; the flat namespace gave that
   up, and the thing it was protecting turns out not to need protecting.)
 - **The catalogue lives in `cartopolis_core::SCRIPT_API`**, not in the simulator,
   because the editor renders it and the server implements it. A simulator test
-  compiles an empty script and asserts the installed `vf*` names are exactly the
+  compiles an empty script and asserts the installed names are exactly the
   catalogued ones — a reference that drifts is worse than none, since an author
   trusts it.
 
 What is *not* in the API is equally deliberate. Luau ships `math`, `string`,
-`table` and `os`, so there is no `vfFrand` (`math.random`) and no `vfGetUnixTime`
+`table` and `os`, so there is no `frand` (`math.random`) and no `get_unix_time`
 (`os.time`). A host function that only forwards to the standard library is a
 second name for one thing.
 
-`vfSleep` is written in Lua, not Rust, and that is the interesting one: a host
+`sleep` is written in Lua, not Rust, and that is the interesting one: a host
 function cannot yield the coroutine that called it, but Lua code can, and the
 scheduler already resumes a yielded handler next tick. So sleeping is "yield
 until the clock says otherwise" — no scheduler machinery at all, and a sleeping
 script is descheduled by exactly the mechanism that deschedules one which
-overran. Its clock (`vfGetTime`) is *simulated* time for the same reason fuel is
+overran. Its clock (`get_time`) is *simulated* time for the same reason fuel is
 counted in instructions: two hosts running the same script should agree.
 
-## `vfSetPos` is durable in y and not in x/z — `vfSetGeo` is the horizontal one
+## `set_pos` is durable in y and not in x/z — `set_geo` is the horizontal one
 
 A prim's horizontal placement is re-derived from its geo anchor
 (`prim_geo::place_geo_prims`), so a script's write to `position.x/z` leaves `geo`
@@ -127,10 +129,10 @@ stale: the motion is visible and persists until the map re-anchors or the client
 reconnects, at which point the prim returns to its anchored spot. Height has no
 second owner and stays where a script puts it.
 
-**The fix, since protocol 20, is not to make `vfSetPos` durable but to give the
-anchor its own call.** `vfSetGeo(lat, lng)` writes the anchor directly — which is
+**The fix, since protocol 20, is not to make `set_pos` durable but to give the
+anchor its own call.** `set_geo(lat, lng)` writes the anchor directly — which is
 the authoritative value, so it survives a re-anchor, a reconnect and a restart —
-and `vfGeoScale(lat)` hands back metres per degree so a script can turn a radius
+and `geo_scale(lat)` hands back metres per degree so a script can turn a radius
 into an offset. The firebird in the `firebird` content pack flies a 180 m circle
 with the two of them.
 
@@ -147,7 +149,7 @@ The old advice — that the editor's template bobs a prim up and down rather tha
 orbiting it — is why that template is what it is, not a statement that orbiting
 is impossible.
 
-## `vfSensor` is the only thing that can see an avatar, and it needed a wire change
+## `sensor` is the only thing that can see an avatar, and it needed a wire change
 
 An avatar's *sim* position is metres in its own client's anchored frame. Every
 client anchors somewhere else and re-anchors when it teleports, so two avatars in
@@ -157,27 +159,27 @@ answer in sim space at all. A prim, meanwhile, has carried an absolute
 
 So protocol 20 added the other half: `ClientIntent.geo`, the avatar's own client
 saying where on Earth it is. The sim keeps it, `SimWorld::script_views` measures
-it against each scripted prim's anchor once per tick, and `vfSensor(range)`
+it against each scripted prim's anchor once per tick, and `sensor(range)`
 returns the nearest one.
 
 Three consequences worth knowing. The neighbours are **pushed with the view**,
 not queried — the host thread holds no reference to `SimWorld` (that is what
 keeps a script off the tick's write lock), so a sensor reads a snapshot at most
-one tick old, exactly as `vfGetPos` always has. An avatar whose client has not
+one tick old, exactly as `get_pos` always has. An avatar whose client has not
 sent a fix is **not seen**, which is the honest answer rather than a guessed
 position. And the range is capped at `SENSOR_MAX_RANGE_M` however wide a script
 asks, because the gathering is what costs, not the question.
 
 ## One prim reaches another only over a channel
 
-Every `vf` call acts on the script's own prim — `prim_id` is captured by the host
+Every host call acts on the script's own prim — `prim_id` is captured by the host
 and is not an argument — so a button cannot reach the thing it controls. That is
 the *authorisation surface* working as designed (there is no argument an author
 can supply that touches somebody else's object) and it also meant a button was
 impossible to build.
 
-`vfSend(channel, text)` and `on_message(channel, text, sender)` are the way
-through, with `vfListen(channel)` to opt in. Four properties, each chosen against
+`send(channel, text)` and `on_message(channel, text, sender)` are the way
+through, with `listen(channel)` to opt in. Four properties, each chosen against
 an alternative:
 
 - **A message never leaves the host thread.** It is not a `ScriptCommand`: the
@@ -199,10 +201,40 @@ to the sender's region, so that an estate's button could not work its
 neighbour's door — regions are retired
 ([retired/regions.md](retired/regions.md)) and nothing that survived them divides
 the world into estates. Bringing that property back means a **radius** around the
-sender's `GeoAnchor`, measured the way `vfSensor` already measures, not a new
+sender's `GeoAnchor`, measured the way `sensor` already measures, not a new
 container. `MAX_MESSAGES_PER_TICK` bounds a sender for a different reason than
 `MAX_COMMANDS_PER_TICK` does: a command costs one wire frame, a message costs an
 event queued on every listener.
+
+## Sound is a closed library, and the client measures the distance
+
+`play_sound(name, volume?, range_m?)`, `loop_sound(...)` and `stop_sound()`
+(protocol 33). Four decisions, each against an alternative:
+
+- **Names, not URLs or uploads** (`cartopolis_core::SoundName`). A URL makes
+  every client fetch whatever a stranger's script points at; an upload needs a
+  store, a ceiling and a decoder per platform. The client synthesises the seven
+  clips at startup (`systems::prim_sound::clips`), as it does its footsteps, so
+  every sound is loaded before it is played and there is no `preload_sound`.
+  The enum is append-only: postcard encodes the variant index.
+- **An unknown name is a script error that lists the library**, never silence.
+  A typo that plays nothing is indistinguishable from a speaker that is off.
+- **The server sends every one-shot to every connection and the client drops
+  it by distance.** The server cannot measure the distance: an avatar's sim
+  position is metres in its own client's frame. The listener is the camera, the
+  same rule `prim_video` uses, with a squared fade to zero at `range_m` (default
+  50 m = `say`, at most 300 m = `shout`). `play_sound` is capped at two per
+  script per tick (over it: dropped and counted, not faulted), and a client plays
+  at most sixteen one-shots at once.
+- **A loop is a level on the prim (`PrimDto::sound_loop`) and is not
+  persisted.** Somebody walking up to a fountain must hear it, so it cannot be an
+  event; but it lives in `SimWorld` only, carried across an edit by
+  `replace_prim`, because a restart runs `on_start` again and that is where a
+  standing loop belongs. A client keeps a player only for loops in range.
+
+The names were `vf`-prefixed until the same day this landed; the rename had no
+aliases, so every stored script written against `vfSay` and friends fails on its
+first call until it is rewritten.
 
 ## The unit of accounting is the world
 

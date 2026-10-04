@@ -23,7 +23,7 @@ this in one sitting".
 | Block and report | blocking a user, what the blocked party can still see, filing a report |
 | Delete account | the password re-check, what happens to owned prims and sessions |
 | Create and edit a prim | context menu, gizmo drag, edit dialog, another client seeing the change |
-| Script a prim | the script store, ScriptOutput on errors, vfSend/vfListen between two prims |
+| Script a prim | the script store, ScriptOutput on errors, send/listen between two prims |
 | Touch and interact | left-click on a scripted prim, E on a nearby one, the prompt choosing prim over place |
 | Export, import, transfer builds | /api/content routes as a plain player and as an admin |
 | Bookmarks and place pins | folders, colours, drag-and-drop, rename, pins culled to the map area |

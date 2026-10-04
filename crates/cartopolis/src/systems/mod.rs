@@ -59,6 +59,7 @@ pub use gui::{
     model_library, onscreen_keyboard, place_card, place_pins, script_editor, settings, splash,
     text_touch, theme, ui,
 };
+pub use map::prim_sound;
 #[cfg(not(target_arch = "wasm32"))]
 pub use map::prim_video;
 pub use map::{

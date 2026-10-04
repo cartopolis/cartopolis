@@ -167,6 +167,9 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
                 }
             }
         }),
+        // Protocol 32. A loop lives in memory only (`SimWorld::replace_prim`
+        // carries it across an edit); a restart runs `on_start` again.
+        sound_loop: None,
     })
 }
 

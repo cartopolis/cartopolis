@@ -47,7 +47,7 @@ compiles on its own thread and reports through `ScriptOutput` on the *wire*, so
 the answer to "did my script work?" is the script console in a connected viewer,
 not a 200 here. `store_script` in the simulator says the same thing in its reply.
 
-**Rotations are degrees**, as they are in the edit dialog and in `vfSetRot`, and
+**Rotations are degrees**, as they are in the edit dialog and in `set_rot`, and
 are converted at the API boundary. The wire is radians and nothing outside the
 server should ever see them.
 """

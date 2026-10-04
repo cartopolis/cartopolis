@@ -369,7 +369,7 @@ mod tests {
     }
 
     /// Degrees at the author's end, radians at the shader's — the same boundary
-    /// rule `vfSetRot` follows.
+    /// rule `set_rot` follows.
     #[test]
     fn the_cone_is_converted_to_radians() {
         let e = ParticleEffect {

@@ -534,6 +534,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallOffer { .. }
             | NetMessage::CallRoster { .. }
             | NetMessage::CallDeclined { .. }
+            | NetMessage::PrimSound { .. }
             | NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
             | NetMessage::NearbyPeople { .. }

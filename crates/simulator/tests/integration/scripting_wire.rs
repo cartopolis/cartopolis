@@ -4,7 +4,7 @@
 //! They test the VM in isolation — a `Slot` compiled and stepped in-process. This
 //! tests everything between it and a client: that a stored script is compiled and
 //! answers, that its console output reaches the wire, that a touch from a
-//! connection becomes an `on_touch`, and that a `vfSetPos` becomes an authoritative
+//! connection becomes an `on_touch`, and that a `set_pos` becomes an authoritative
 //! prim update every observer sees. Each of those is a seam the unit tests cannot
 //! see past, and three of them (the host thread, the tick barrier, the broadcast)
 //! were wired by hand.
@@ -159,7 +159,7 @@ async fn store_compile_touch_and_hear_back() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_touch(id, name) vfLog('touched by ' .. name) end".into(),
+            source: "function on_touch(id, name) log('touched by ' .. name) end".into(),
         },
     )
     .await;
@@ -207,7 +207,7 @@ async fn store_compile_touch_and_hear_back() {
     assert!(running, "a stored script should read back as running");
 }
 
-/// A script's `vfSetPos` has to become authoritative world state, not just a
+/// A script's `set_pos` has to become authoritative world state, not just a
 /// number inside the VM: it is applied at the tick barrier and broadcast like any
 /// other prim update.
 #[tokio::test]
@@ -225,7 +225,7 @@ async fn script_moves_the_prim_for_everyone() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() vfSetPos(42.0, 7.0, -3.0) end".into(),
+            source: "function on_start() set_pos(42.0, 7.0, -3.0) end".into(),
         },
     )
     .await;
@@ -278,7 +278,7 @@ async fn an_empty_script_removes_it() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() vfLog('up') end".into(),
+            source: "function on_start() log('up') end".into(),
         },
     )
     .await;
@@ -326,11 +326,11 @@ async fn appearance_calls_become_prim_state() {
             request_id: 2,
             prim_id,
             source: "function on_start() \
-                     vfSetName('lantern') \
-                     vfSetAlpha(0.5) \
-                     vfSetGlow(0.75) \
-                     vfSetFullBright(true) \
-                     vfSetRot(0, 90, 0) \
+                     set_name('lantern') \
+                     set_alpha(0.5) \
+                     set_glow(0.75) \
+                     set_full_bright(true) \
+                     set_rot(0, 90, 0) \
                      end"
             .into(),
         },
@@ -359,7 +359,7 @@ async fn appearance_calls_become_prim_state() {
     );
 }
 
-/// `vfDie` removes the prim for everyone and gives its budget back.
+/// `die` removes the prim for everyone and gives its budget back.
 #[tokio::test]
 async fn a_script_can_end_its_own_prim() {
     let (handle, _dir) = start_sim().await;
@@ -372,7 +372,7 @@ async fn a_script_can_end_its_own_prim() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() vfDie() end".into(),
+            source: "function on_start() die() end".into(),
         },
     )
     .await;

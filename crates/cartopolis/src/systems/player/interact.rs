@@ -904,6 +904,7 @@ mod prim_prompt_tests {
                     particles: None,
                     scripted: *scripted,
                     video: None,
+                    sound_loop: None,
                 },
                 PrimGeo {
                     latitude: *lat,

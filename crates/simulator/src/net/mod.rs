@@ -595,7 +595,7 @@ pub async fn handle_connection<T: FrameTransport>(
     let avatar_id = {
         let mut w = world.write().await;
         let id = w.spawn_avatar();
-        // Who this avatar is, for anything that has to name it — `vfSensor` hands
+        // Who this avatar is, for anything that has to name it — `sensor` hands
         // the name to a script so a prim can greet whoever walked up.
         w.set_avatar_name(id, &username);
         id
@@ -1266,7 +1266,7 @@ pub async fn tick_loop(
         let mut died: Vec<i64> = Vec::new();
         let mut changed: Vec<i64> = Vec::new();
         for cmd in &commands {
-            // `vfDie` is handled before the field writes, and its prim is skipped
+            // `die` is handled before the field writes, and its prim is skipped
             // by everything after: a script's last act is often a move *and* a
             // death in the same tick, and broadcasting an update for a prim that
             // is about to be removed leaves the client holding a resurrected copy.
@@ -1379,6 +1379,27 @@ pub async fn tick_loop(
                         Bytes::from(frame),
                     ),
                     Err(e) => tracing::error!("script say encode: {e}"),
+                }
+            }
+        }
+        // A one-shot sound goes to every connection, like a console line: the
+        // client knows where the prim is in its own frame and the server does
+        // not (an avatar's sim position is metres in *its* client's frame), so
+        // the range test is the client's. Capped per script at the host
+        // (`MAX_SOUNDS_PER_TICK`). A prim that died this tick makes no sound.
+        for cmd in &commands {
+            if let crate::scripting::ScriptCommand::PlaySound { prim_id, sound } = cmd {
+                if died.contains(prim_id) {
+                    continue;
+                }
+                match encode_app_frame(&NetMessage::PrimSound {
+                    prim_id: *prim_id,
+                    sound: *sound,
+                }) {
+                    Ok(frame) => {
+                        let _ = tx.send(Bytes::from(frame));
+                    }
+                    Err(e) => tracing::error!("script sound encode: {e}"),
                 }
             }
         }
