@@ -913,6 +913,21 @@ pub fn camera_available() -> bool {
     Camera::available()
 }
 
+/// The call's session thread. On a phone its video goes through the system's
+/// codecs (`platform::hw_video`), with the pure-Rust encoder behind them.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_session(host: String) -> cartopolis_calls::session::Session {
+    #[cfg(target_os = "android")]
+    return cartopolis_calls::session::Session::start_with_encoder(
+        host,
+        RATE,
+        true,
+        crate::platform::hw_video::encoder_factory(),
+    );
+    #[cfg(not(target_os = "android"))]
+    cartopolis_calls::session::Session::start(host, RATE, true)
+}
+
 /// Start a call's session towards the simulator this client is connected to.
 fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
     let host = addr.map_or_else(|| "127.0.0.1".to_string(), |a| host_of(&a.0));
@@ -925,7 +940,7 @@ fn start(group: &[u8], addr: Option<&ConnectAddr>) -> Option<Active> {
         // Always offer a camera track, whether the camera is on or not: turning
         // it on mid-call must not need a renegotiation, and a track with no
         // frames on it costs nothing.
-        session: cartopolis_calls::session::Session::start(host, RATE, true),
+        session: start_session(host),
         #[cfg(target_arch = "wasm32")]
         web: crate::platform::web_call::WebSession::start(),
         #[cfg(target_arch = "wasm32")]

@@ -283,6 +283,74 @@ impl I420 {
 #[error("video: {0}")]
 pub struct Error(String);
 
+impl Error {
+    #[must_use]
+    pub fn new(why: impl Into<String>) -> Self {
+        Self(why.into())
+    }
+}
+
+/// Something that turns a call's pictures into VP8 or VP9 frames: this
+/// module's [`Encoder`], or a platform's own (the phone's system codecs,
+/// `platform::hw_video` in the app). Runs on the call's encoder thread.
+pub trait VideoEncode: Send {
+    /// Encode one picture; `key` forces a keyframe. Usually one frame comes
+    /// back, but a codec with a pipeline may hand back none yet, or two.
+    fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error>;
+    /// The codec of what [`VideoEncode::encode`] last returned.
+    fn codec(&self) -> Codec;
+}
+
+impl VideoEncode for Encoder {
+    fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error> {
+        Encoder::encode(self, frame, key).map(|f| vec![f])
+    }
+    fn codec(&self) -> Codec {
+        self.codec
+    }
+}
+
+/// A platform encoder with this module's [`Encoder`] behind it: the first
+/// error from the platform's drops it for good, and the stream carries on in
+/// software from a keyframe. A phone's codec can fail in ways no test here
+/// reaches (a vendor quirk, the codec reclaimed by the system), and a call
+/// whose video stopped is worse than one whose video got slower.
+pub struct WithFallback {
+    primary: Option<Box<dyn VideoEncode>>,
+    software: Option<Encoder>,
+}
+
+impl WithFallback {
+    #[must_use]
+    pub fn new(primary: Option<Box<dyn VideoEncode>>) -> Self {
+        Self {
+            primary,
+            software: None,
+        }
+    }
+}
+
+impl VideoEncode for WithFallback {
+    fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error> {
+        let mut key = key;
+        if let Some(p) = self.primary.as_mut() {
+            match p.encode(frame, key) {
+                Ok(out) => return Ok(out),
+                Err(e) => {
+                    tracing::warn!(%e, "call video: the platform encoder failed; encoding in software");
+                    self.primary = None;
+                    key = true;
+                }
+            }
+        }
+        let soft = self.software.get_or_insert_with(Encoder::new);
+        VideoEncode::encode(soft, frame, key)
+    }
+    fn codec(&self) -> Codec {
+        self.primary.as_ref().map_or(Codec::Vp9, |p| p.codec())
+    }
+}
+
 /// The call's size for `frame`: it turns with the picture, so an upright phone
 /// sends [`HEIGHT`]×[`WIDTH`] rather than a portrait squashed into landscape.
 #[must_use]
@@ -809,6 +877,53 @@ mod tests {
             );
             let got = Decoder::with_codec(codec).decode_as(codec, &key).unwrap();
             assert_eq!(test_pattern_number(&got), Some(5), "{codec:?}");
+        }
+    }
+
+    /// A platform encoder that works twice and then breaks, as a phone codec
+    /// reclaimed mid-call would.
+    struct Flaky {
+        inner: Encoder,
+        left: u32,
+    }
+
+    impl VideoEncode for Flaky {
+        fn encode(&mut self, frame: &I420, key: bool) -> Result<Vec<Vec<u8>>, Error> {
+            if self.left == 0 {
+                return Err(Error::new("codec reclaimed"));
+            }
+            self.left -= 1;
+            VideoEncode::encode(&mut self.inner, frame, key)
+        }
+        fn codec(&self) -> Codec {
+            Codec::Vp8
+        }
+    }
+
+    #[test]
+    fn a_failing_platform_encoder_hands_over_to_software_on_a_keyframe() {
+        let mut enc = WithFallback::new(Some(Box::new(Flaky {
+            inner: Encoder::with_codec(Codec::Vp8),
+            left: 2,
+        })));
+        let mut dec = Decoder::new();
+        for n in 0..5u64 {
+            let out = enc.encode(&test_pattern(n), n == 0).unwrap();
+            let codec = enc.codec();
+            assert_eq!(
+                codec,
+                if n < 2 { Codec::Vp8 } else { Codec::Vp9 },
+                "frame {n}"
+            );
+            assert_eq!(out.len(), 1);
+            if n == 2 {
+                assert!(
+                    codec.is_keyframe(&out[0]),
+                    "the switch starts on a keyframe"
+                );
+            }
+            let got = dec.decode_as(codec, &out[0]).unwrap();
+            assert_eq!(test_pattern_number(&got), Some(n));
         }
     }
 

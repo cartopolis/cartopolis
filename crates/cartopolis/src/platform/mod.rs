@@ -33,6 +33,9 @@ pub mod camera;
 pub mod cell_source;
 pub mod fetch_gate;
 pub mod http;
+// A call's video encoded by the phone's own codecs (`MediaCodec`).
+#[cfg(target_os = "android")]
+pub mod hw_video;
 pub mod location;
 pub mod model_file;
 pub mod orientation;

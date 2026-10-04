@@ -53,6 +53,9 @@ const KEYFRAME_ASK_EVERY: Duration = Duration::from_millis(500);
 /// asked for a keyframe to start again from.
 const DECODE_QUEUE: usize = 16;
 
+/// Makes a call's video encoder, on the encoder's own thread.
+pub type EncoderFactory = Box<dyn FnOnce() -> Box<dyn video::VideoEncode> + Send>;
+
 /// What the app tells the thread.
 enum Cmd {
     Joined(String),
@@ -146,6 +149,24 @@ impl Session {
     /// device receives video whether it sends any or not.
     #[must_use]
     pub fn start(server: String, rate: u32, video: bool) -> Self {
+        Self::start_with_encoder(
+            server,
+            rate,
+            video,
+            Box::new(|| Box::new(video::Encoder::new())),
+        )
+    }
+
+    /// [`Session::start`], with the video encoder made by `make` (on the
+    /// encoder's thread) rather than this crate's software one: a phone's
+    /// system codec, behind [`video::WithFallback`].
+    #[must_use]
+    pub fn start_with_encoder(
+        server: String,
+        rate: u32,
+        video: bool,
+        make_encoder: EncoderFactory,
+    ) -> Self {
         let (tx, cmd_rx) = mpsc::channel();
         let (ev_tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
@@ -156,7 +177,16 @@ impl Session {
         let thread = std::thread::Builder::new()
             .name("call".into())
             .spawn(move || {
-                if let Err(e) = run(&server, rate, video, &cmd_rx, &ev_tx, &thread_shared) {
+                let r = run(
+                    &server,
+                    rate,
+                    video,
+                    make_encoder,
+                    &cmd_rx,
+                    &ev_tx,
+                    &thread_shared,
+                );
+                if let Err(e) = r {
                     let _ = ev_tx.send(Event::Failed(e));
                 }
             })
@@ -307,15 +337,21 @@ struct VideoEncoder {
 }
 
 impl VideoEncoder {
-    fn start() -> Self {
+    fn start(make: EncoderFactory) -> Self {
         let (tx, frames) = mpsc::sync_channel::<(video::I420, Instant, bool)>(1);
         let (out, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("call-video".into())
             .spawn(move || {
-                let mut enc = video::Encoder::new();
+                // Made here, on the thread that uses it: a platform codec is
+                // seconds to open on some phones, and that is the call's
+                // first picture late, not the call.
+                let mut enc = make();
                 while let Ok((frame, taken, key)) = frames.recv() {
-                    if let Ok(bytes) = enc.encode(&frame, key) {
+                    let Ok(coded) = enc.encode(&frame, key) else {
+                        continue;
+                    };
+                    for bytes in coded {
                         if out.send((enc.codec(), taken, bytes)).is_err() {
                             return;
                         }
@@ -450,6 +486,7 @@ fn run(
     server: &str,
     rate: u32,
     send_video: bool,
+    make_encoder: EncoderFactory,
     cmds: &mpsc::Receiver<Cmd>,
     events: &mpsc::Sender<Event>,
     shared: &Arc<Shared>,
@@ -471,7 +508,7 @@ fn run(
     .map_err(|e| e.to_string())?;
     events.send(Event::Offer(offer)).map_err(|_| "app gone")?;
 
-    let video_encoder = send_video.then(VideoEncoder::start);
+    let video_encoder = send_video.then(|| VideoEncoder::start(make_encoder));
     let video_decoder = VideoDecoder::start(Arc::clone(shared));
     // A receiver asked for a full picture; the next one sent is a keyframe.
     let mut keyframe_wanted = false;

@@ -120,6 +120,30 @@ as it is: it is public, like nearby chat.
   `rusty_vp9` has no "force a keyframe", so a request makes a fresh encoder,
   whose first picture is one.
 
+## Hardware encoding on the phone (2026-10-04)
+
+`platform::hw_video` encodes a call's video with the phone's own codecs,
+`MediaCodec` through its C API (`libmediandk`, as the camera uses
+`libcamera2ndk`): no Java, no Gradle, no C of ours. It takes the first of: the
+system's VP9 encoder *if it is hardware*, the system's VP8 encoder if hardware,
+Google's software VP9 (`c2.android.vp9.encoder`, the system's libvpx), else
+the pure-Rust encoder. "Hardware" is decided by name: Google's codecs are
+`c2.android.*` / `OMX.google.*`. NV12 input is asked for first, I420 second,
+and the input format's `stride` / `slice-height` are honoured. Keyframe
+requests become `request-sync`; a turn of the phone reopens the codec at the
+new size. It sits behind `video::WithFallback`, so its first error hands the
+stream to the Rust encoder from a keyframe for the rest of the call.
+
+Only encoding: at 320×240 decoding is ~1.5 ms in Rust, and a hardware decoder
+would add a copy out of its buffers for nothing. It matters again if the call
+goes above 320×240, which is what a hardware encoder makes possible.
+
+**Compiled for aarch64 only, never run.** The emulator here cannot run the
+app. The phone's log says what happened: `call video: encoder chosen` (name,
+codec, hardware) and `call video: encoding` every 5 s with the mean ms a
+picture took. `CARTO_VIDEO_ENCODER=software` skips it for an A/B. Which
+encoders a phone has: `adb shell dumpsys media.codec | grep -iE "vp8|vp9"`.
+
 ## Where the call's CPU goes (2026-10-04)
 
 An audit of the media path found the main thread doing work for pictures
