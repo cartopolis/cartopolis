@@ -279,7 +279,6 @@ pub fn right_panel(
         egui.ui_mut(),
         &mut open,
         |ui| {
-            crate::systems::theme::paint_panel_backdrop(ui.painter(), ui.clip_rect());
             close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
             body(ui);
         },

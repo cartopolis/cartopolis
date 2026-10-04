@@ -2238,7 +2238,6 @@ pub fn render_data_layers_panel(
         300.0,
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-        crate::systems::theme::paint_panel_backdrop(ui.painter(), ui.clip_rect());
         let panel = crate::resources::RightPanel::Layers;
         // **The one dead end in the client.** These ~13 toggles persist to
         // `user.json`, so a map switched off by mistake — or by curiosity —

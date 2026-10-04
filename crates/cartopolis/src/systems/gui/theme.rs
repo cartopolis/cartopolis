@@ -299,8 +299,13 @@ pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0
 /// white page darker.
 pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 215);
 
-/// The docked side panels' surface: solid [`INK`], with
-/// [`paint_panel_backdrop`]'s lift and glow over it.
+/// The docked side panels' surface: [`INK`] with 6 % of [`BRAND`] mixed into
+/// it, one flat tone.
+///
+/// The theme colour lives *in* the dark rather than on top of it: a lift and
+/// a corner glow were tried first and read as a lighting effect, which is not
+/// what a surface is. 6 % keeps it a near-black that is plainly warm next to
+/// the grey ramp, without becoming brown.
 ///
 /// **Not glass, since 2026-10-04.** The panels were [`GLASS`] and the Chats
 /// screen was solid ink by design (a conversation is read, and a map showing
@@ -310,7 +315,7 @@ pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x1
 /// Floating readouts and menus over the map stay glass. Being opaque, a panel
 /// also no longer pays for `systems::glass`'s blur, which only runs behind the
 /// glass fills.
-pub const PANEL: Color32 = INK;
+pub const PANEL: Color32 = Color32::from_rgb(0x1D, 0x12, 0x0B);
 
 /// The rim around a glass surface — an [`OVERLAY`] box, a panel, a window.
 ///
@@ -1818,53 +1823,6 @@ fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
     );
 }
 
-/// Every docked panel's backdrop: the [`PANEL`] ink, lifted to a warm grey at the top and
-/// warmed by a soft brand glow behind the title, so the screen has a light
-/// source instead of being a black rectangle. Painted first, under everything.
-pub fn paint_panel_backdrop(p: &egui::Painter, rect: egui::Rect) {
-    // The lift, top 45 % of the screen: the warm grey one step up.
-    let top = egui::Color32::from_rgb(0x29, 0x22, 0x1E);
-    let fade = rect.top() + rect.height() * 0.45;
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(egui::pos2(rect.right(), fade), INK);
-    mesh.colored_vertex(egui::pos2(rect.left(), fade), INK);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    p.add(mesh);
-    // The warm glow: a fan from a brand-tinted centre to a clear rim.
-    radial_glow(
-        p,
-        egui::pos2(rect.right() - rect.width() * 0.2, rect.top() + 10.0),
-        rect.width() * 0.75,
-        egui::Color32::from_rgba_unmultiplied(0xFD, 0x60, 0x12, 60),
-    );
-}
-
-/// A soft round glow: `colour` at the centre, transparent at `radius`.
-pub(crate) fn radial_glow(
-    p: &egui::Painter,
-    centre: egui::Pos2,
-    radius: f32,
-    colour: egui::Color32,
-) {
-    const SEGMENTS: u32 = 48;
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(centre, colour);
-    for i in 0..=SEGMENTS {
-        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-        mesh.colored_vertex(
-            centre + radius * egui::vec2(a.cos(), a.sin()),
-            egui::Color32::TRANSPARENT,
-        );
-        if i > 0 {
-            mesh.add_triangle(0, i, i + 1);
-        }
-    }
-    p.add(mesh);
-}
-
 // ─── Panel header ─────────────────────────────────────────────────────────────
 
 /// Diameter of the header's icon medallion. Small enough to sit on one text
@@ -2814,6 +2772,12 @@ mod tests {
     ///
     /// [`OVERLAY`] is the other half, and it was worse, because its background is
     /// not in this file at all.
+    /// The panel tone is a recipe, not a pick: [`INK`] with 6 % of [`BRAND`].
+    #[test]
+    fn the_panel_is_ink_with_a_little_brand_in_it() {
+        assert_eq!(PANEL, mix(INK, BRAND, 0.06));
+    }
+
     #[test]
     fn text_clears_every_surface_it_can_land_on() {
         let over_bright = over(OVERLAY, BRIGHT_MAP);
@@ -2852,6 +2816,10 @@ mod tests {
             ("body on ink", TEXT, INK, 4.5),
             ("dim on ink", TEXT_DIM, INK, 4.5),
             ("link on ink", ACCENT_TEXT, INK, 4.5),
+            // The docked panels, which are this warm ink.
+            ("body on a panel", TEXT, PANEL, 4.5),
+            ("dim on a panel", TEXT_DIM, PANEL, 4.5),
+            ("hairline on a panel", LINE, PANEL, 3.0),
             // The boxes over the map, against the map — both ends of it.
             ("body on an overlay over bright map", TEXT, over_bright, 4.5),
             (

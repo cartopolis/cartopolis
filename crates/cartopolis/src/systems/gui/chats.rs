@@ -714,11 +714,10 @@ pub fn render_chats_panel(
     crate::systems::egui_manager::responsive_right_panel("chats_panel", compact, viewport_w, 360.0)
         .frame(
             egui::Frame::NONE
-                .fill(theme::INK)
+                .fill(theme::PANEL)
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
-            theme::paint_panel_backdrop(ui.painter(), ui.clip_rect());
             let me = identity.username.clone().unwrap_or_default();
             match (view.sub.clone(), view.open.clone()) {
                 (Some(sub), _) => crate::systems::contacts::screen(
@@ -1270,7 +1269,7 @@ fn chat_screen(
     // can take every point of height that is left and scroll. The band is the
     // design's composer: ink, a hairline on top, "+", the field, send.
     egui::Panel::bottom(egui::Id::new("chats_composer_band"))
-        .frame(egui::Frame::NONE.fill(theme::INK))
+        .frame(egui::Frame::NONE.fill(theme::PANEL))
         .show_separator_line(false)
         .show(ui, |ui| {
             let top = ui.max_rect().top();
