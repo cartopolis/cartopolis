@@ -110,7 +110,7 @@ fn lit_disc(p: &egui::Painter, c: egui::Pos2, r: f32, tone: egui::Color32) {
     );
 }
 /// The "Here" disc: the v1 inbox's dark slate, with a location pin on it.
-const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x45, 0x3D, 0x39);
+const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x3F, 0x3B, 0x38);
 /// Bubble corners: round, with the corner nearest the speaker tucked in.
 const BUBBLE_R: u8 = 18;
 const TAIL_R: u8 = 6;

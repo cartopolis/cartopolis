@@ -1,68 +1,49 @@
 //! The Cartopolis look: one palette, one `egui::Style`, one place to change them.
 //!
-//! A graphite ramp from `#191615` up to `#332E2B` carries the chrome, a pale
-//! `#D4CECB` carries every live thing, and `#F8F6F4` is the off-white. The
-//! chrome is **monochrome**: one hue, 22° — the brand orange's — at 4–18 %
-//! saturation for every surface, rim, fill and text tone in the ramp. Read the
-//! numbers and it is a warm grey; put it beside a true grey and it is the
-//! logo's orange seen through smoked glass. The only other colours in the
-//! palette are the two that are *statements* rather than decoration ([`WARN`]
-//! and [`ERROR`]) and the brand orange the splash and the app mark keep for
-//! themselves ([`BRAND`]).
+//! **Charcoal and ember.** A near-neutral charcoal ramp — `#0E0D0C` ink,
+//! `#171615` surface, `#22201E` raised, `#2E2B29` hover — carries the chrome,
+//! warm by a hair (hue ~25°, a few percent saturation) so it sits beside the
+//! brand orange as its shadow rather than as a second colour. The live things
+//! are an **ember**: [`ACCENT`] `#FF8A4C`, the brand orange lifted and softened
+//! for a UI, with [`INK`] on it. [`WARN`] and [`ERROR`] are the only other
+//! hues, and [`BRAND`] itself stays with the mark and the badges.
 //!
-//! **The hue moved from 197° (a blue-teal) to 22° on 2026-10-04**, at constant
-//! HSL lightness and at 55 % of the old saturation, on the ask that the grey
-//! carry "a bit of the orange": the cool cast sat beside the brand orange as a
-//! second, unrelated colour, and a grey drawn from the orange makes the two
-//! one family.
-//!
-//! **One hue, not none.** The ramp was neutral for half a day and it was flat:
-//! a colourless panel over a coloured map reads as a dialog pasted onto a
-//! photograph, and glass has never been colourless — it is the one material
-//! whose whole character is the faint cast it gives what you see through it.
-//! The tint is deliberately below the threshold where anyone would call the UI
-//! blue. It is applied at **constant lightness** (hue rotated in HSL, saturation
-//! raised ~30 %, `l` untouched), so every ratio the tests pin moved by at most
-//! 0.5 and none of the tonal structure the widget table depends on changed.
-//!
-//! **The chrome went monochrome on 2026-09-10, and the argument is the same one
-//! the desaturation before it made, taken to its end.** The ramp was a slate
-//! blue with an orange accent on top — a *branded* UI, in the sense that the
-//! chrome carried the logo's colours rather than the map's content. Over a
-//! basemap that is itself full of hue (green parks, blue water, beige paper,
-//! and, on the aerial layer, a photograph) two saturated families competed for
-//! the same eye: the orange never stopped meaning "look here", so it stopped
-//! meaning anything. Removing the hue removes the competition, and what is left
-//! to say "this is the live thing" is **lightness**, which the map cannot take
-//! away — the accent is now the brightest thing on a dark plate, and an engaged
-//! control inverts to a light plate with dark ink.
+//! **How it got here, so nobody walks the same circle.** The ramp was a slate
+//! blue with the full brand orange as accent; then (2026-09-10) it went
+//! monochrome — a blue-teal grey with a *pale grey* accent — on the argument
+//! that a saturated accent competes with a colourful map; then (2026-10-04)
+//! the grey was turned toward orange, and the panels tinted brown. Both of the
+//! last two were rejected on sight: the pale accent made every selected tab,
+//! ticked box and engaged button read as one more shade of grey — the UI looked
+//! dull, which is the complaint that started this — and orange mixed *into* the
+//! surfaces read as brown, not as warmth. The resolution is the usual one for a
+//! dark UI: **neutral surfaces, one saturated accent, used sparingly.** The
+//! accent is lighter and softer than [`BRAND`] so it is a state rather than an
+//! alarm, and it appears only where something is selected, engaged, pressed or
+//! focused, which is what keeps it meaning "this is the live thing" over a map.
 //!
 //! Three consequences worth knowing before editing a value:
 //!
 //!   - **The state ladder is monotonic in lightness** — rest ([`SURFACE_RAISED`])
 //!     → hover ([`SURFACE_HOVER`] plus an [`ACCENT`] rim) → pressed
-//!     ([`ACCENT_MUTED`] plus an [`ACCENT_RING`] rim) → engaged (an [`ACCENT`]
-//!     plate carrying [`INK`]). Each step is up. Break the order and the UI
-//!     loses the only channel it has left to say what state a control is in.
-//!   - **Text on the accent is [`INK`], never [`CREAM`]** — the accent is a
-//!     *light* tone now, so the pairing that used to be wrong by 2.7:1 is wrong
-//!     by 1.4:1 in the other direction. This is what `active.weak_bg_fill` being
-//!     [`ACCENT_MUTED`] protects (see [`widgets`]).
+//!     ([`ACCENT_MUTED`], a dark ember, plus an [`ACCENT_RING`] rim) → engaged
+//!     (an [`ACCENT`] plate carrying [`INK`]). Each step is up, so state still
+//!     reads for someone who cannot see the hue.
+//!   - **Text on the accent is [`INK`], never [`CREAM`]** — [`CREAM`] on the
+//!     ember measures 2.2:1. This is what `active.weak_bg_fill` being
+//!     [`ACCENT_MUTED`] protects (see [`widgets`]): a pressed button carries a
+//!     light label, so its fill is the dark ember, not the accent.
 //!   - **Two constants deliberately share a value.** [`ACCENT_TEXT`] and
 //!     [`ACCENT_BRIGHT`] are both pure white: one is type, one is a stroke, they
-//!     answer to different tests, and in a palette with no hue left the top of
-//!     both ladders is the same white. Keeping both names is what lets one move
+//!     answer to different tests. Keeping both names is what lets one move
 //!     without the other.
 //!
-//! **The surfaces are glass.** [`GLASS`] — the panel and window fill — is
-//! [`SURFACE`] at 95 %, so the map moves behind a panel instead of being cut out
-//! by it, and the rims are white at low alpha ([`OVERLAY_LINE`]) rather than a
-//! drawn border. There is no backdrop blur: egui has no such pass, and adding
-//! one would mean a render-graph node reading the main texture per panel. What
-//! carries the effect instead is the translucency, the light top rim, the wider
-//! corner radii and a soft, far shadow — and the alpha is the one number that is
-//! *not* free to move for looks, because it is what the contrast tests over a
-//! bright basemap are measured through.
+//! **Docked panels are solid; what floats over the map is glass.** [`PANEL`]
+//! is opaque, because a panel is where you read. [`GLASS`] — windows, menus,
+//! readouts over the map — is [`SURFACE`] at 84 % over a blurred copy of the
+//! frame (`systems::glass`), with white-at-low-alpha rims ([`OVERLAY_LINE`])
+//! rather than drawn borders. The alpha is the one number *not* free to move
+//! for looks: the contrast tests over a bright basemap are measured through it.
 //!
 //! Two things this replaces, both of which the UI used to get by default:
 //!
@@ -75,10 +56,10 @@
 //!     double the vertical rhythm and give buttons a real hit area.
 //!
 //! Contrast was checked against the surface each colour actually lands on:
-//! [`TEXT`] is 13.6:1 on [`SURFACE`], [`TEXT_DIM`] 8.1:1, [`ACCENT_TEXT`] 18.0:1.
-//! Plain [`ACCENT`] is 11.6:1 — it is a *light* tone, so it is comfortable as a
-//! fill, a rule or a focus ring on any surface in the ramp. Anything sitting *on*
-//! an accent fill is drawn in [`INK`] (12.5:1) rather than [`CREAM`] (1.4:1).
+//! [`TEXT`] is 14.9:1 on [`SURFACE`], [`TEXT_DIM`] 8.0:1, [`ACCENT_TEXT`] 18.1:1.
+//! Plain [`ACCENT`] is 7.7:1, comfortable as a fill, a rule or a ring on any
+//! surface in the ramp. Anything sitting *on* an accent fill is drawn in
+//! [`INK`] (8.3:1) rather than [`CREAM`] (2.2:1).
 //!
 //! [`install`] is called once, from `EguiManager::default`, before the first
 //! pass — early enough that the brand font family is bound on frame one, which
@@ -106,19 +87,19 @@ use crate::systems::icons;
 
 /// Deeper than any of the surface tones: text-edit wells, code blocks, and the
 /// boot backdrop. Also the ink on an [`ACCENT`] plate.
-pub const INK: Color32 = Color32::from_rgb(0x0F, 0x0D, 0x0B);
+pub const INK: Color32 = Color32::from_rgb(0x0E, 0x0D, 0x0C);
 /// The surface ramp's bottom, and the tone every glass surface is made of.
 ///
 /// Opaque, and used as such by the handful of call sites that need a solid
 /// panel colour; the *panel and window fill* is [`GLASS`], which is this at
 /// 95 %. Keep the two in step — a solid box beside a glass one that were meant
 /// to be the same surface is exactly the drift the shared frames exist to stop.
-pub const SURFACE: Color32 = Color32::from_rgb(0x19, 0x16, 0x15);
+pub const SURFACE: Color32 = Color32::from_rgb(0x17, 0x16, 0x15);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
 /// striped rows, anything that should read as sitting *on* a panel.
-pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x25, 0x21, 0x1F);
+pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x22, 0x20, 0x1E);
 /// The ramp's top. Hover, and open menus over a panel.
-pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x33, 0x2E, 0x2B);
+pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x2E, 0x2B, 0x29);
 /// Hairlines: separators, widget frames, indent guides.
 ///
 /// **Lightened on 2026-08-14, and the reason is WCAG 1.4.11.** (It was a slate
@@ -134,17 +115,16 @@ pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x33, 0x2E, 0x2B);
 /// It is a **solid grey, not white-at-an-alpha**, which the glass rims are: a
 /// hairline that has to clear a fixed ratio cannot be a translucent one, because
 /// what it composites over changes with the surface under it.
-pub const LINE: Color32 = Color32::from_rgb(0x76, 0x70, 0x6D);
+pub const LINE: Color32 = Color32::from_rgb(0x78, 0x72, 0x6E);
 
-/// The live tone. Focus rings, hover outlines, sliders, and the plate an engaged
-/// control wears — the brightest thing in the chrome, so it always means "this is
-/// the live thing".
+/// The live tone — the **ember**. Selected segments, ticked boxes, hover and
+/// focus rings, sliders, and the plate an engaged control wears: the one
+/// saturated colour in the chrome, so it always means "this is the live thing".
 ///
-/// **It is a light tone, and everything about the palette follows from that.**
-/// The orange it replaced was a mid tone that could carry [`CREAM`] badly and
-/// [`INK`] well; this one carries [`INK`] at 12.5:1 and [`CREAM`] at 1.4:1, i.e.
-/// not at all. Anything filled with it is labelled in [`INK`].
-pub const ACCENT: Color32 = Color32::from_rgb(0xD4, 0xCE, 0xCB);
+/// The brand orange lifted and softened for a UI: [`BRAND`] at full strength
+/// is an alarm, and a selected tab is not one. It carries [`INK`] at 8.3:1 and
+/// [`CREAM`] at only 2.2:1, so anything filled with it is labelled in [`INK`].
+pub const ACCENT: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x4C);
 /// The accent at the top of its ladder: the text cursor, a text-selection
 /// handle, the rim on a *held* control (north-up lock, caps lock).
 ///
@@ -155,54 +135,44 @@ pub const ACCENT_BRIGHT: Color32 = Color32::WHITE;
 /// The ring around an *accent-filled* widget: the pressed button, the focused
 /// control, a dock disc whose panel is open, the panel header's medallion.
 ///
-/// Brighter than [`ACCENT`] on purpose, and it does two jobs at once now: on the
-/// dark [`ACCENT_MUTED`] of a pressed button it is the boundary (7.4:1, well over
-/// the 3:1 a UI component needs), and on the light [`ACCENT`] plate of an engaged
-/// disc it is the lit top rim that makes the plate read as glass rather than as a
-/// sticker.
-pub const ACCENT_RING: Color32 = Color32::from_rgb(0xED, 0xE9, 0xE7);
+/// A pale ember, brighter than [`ACCENT`] on purpose, doing two jobs: on the
+/// dark [`ACCENT_MUTED`] of a pressed button it is the boundary (5.5:1, well
+/// over the 3:1 a UI component needs), and on the [`ACCENT`] plate of an
+/// engaged disc it is the lit top rim that makes the plate read as a raised
+/// thing rather than as a sticker.
+pub const ACCENT_RING: Color32 = Color32::from_rgb(0xFF, 0xB4, 0x8A);
 /// The accent, pushed *down* — the fill of an accent-filled button while the
 /// pointer is held on it.
 ///
 /// A press has to move the surface in the opposite direction from a hover, or
-/// the two states are one state: [`primary_button_sized`] lifts to [`ACCENT_BRIGHT`]
-/// under the pointer and sinks to this while held, which is what makes a click
-/// on the app's one call-to-action *feel* like a click.
-///
-/// **The direction survived the repaint; the constraint that bounds it did not.**
-/// While the accent was a mid orange this was the *darker* orange and the binding
-/// number was [`INK`]'s 4.62:1 against it — how far down it could go before its
-/// own label stopped reading. The accent is a light tone now, so [`INK`] on this
-/// measures 9.4:1 and is nowhere near binding; what bounds it instead is
-/// [`ACCENT`] one step above (1.35:1) and [`ACCENT_BRIGHT`] two steps above
-/// (2.06:1) — it has to be a visible step down from a plate that is already pale,
-/// without falling out of the light half of the ramp and reading as a *different*
-/// control rather than the same one pressed.
-pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xB8, 0xB1, 0xAD);
+/// the two states are one state: [`primary_button_sized`] lifts to
+/// [`ACCENT_BRIGHT`] under the pointer and sinks to this while held, which is
+/// what makes a click on the app's one call-to-action *feel* like a click. Its
+/// label is still [`INK`], at 6.4:1.
+pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0xE8, 0x72, 0x3A);
 /// The top of the *text* ladder — [`TEXT`] → [`CREAM`] → this. Links, speaker
 /// names, emphasised values.
 ///
-/// With no hue left in the chrome, emphasis is lightness: this is the one pure
-/// white in the palette's type, and it reads as emphasis by being a step above
-/// the headings rather than by being a different colour.
+/// Emphasis in type is lightness, not the accent: the ember is for controls,
+/// and text in it would make every link look pressable and every value look
+/// selected.
 pub const ACCENT_TEXT: Color32 = Color32::WHITE;
-/// The dark half of the accent: a pressed button, a selected row. Dark enough to
-/// carry [`CREAM`] at 8.3:1, light enough to be a clear step above
-/// [`SURFACE_HOVER`].
+/// The dark half of the accent: a pressed button, a selected row, a text
+/// selection. A deep ember, dark enough to carry [`CREAM`] at 9.0:1 and light
+/// enough to be a clear step above [`SURFACE_HOVER`].
 ///
 /// This is what keeps the ladder safe. `active.weak_bg_fill` carries a label
-/// drawn in egui's `strong_text_color`, which is [`CREAM`]; filling it with the
-/// light [`ACCENT`] instead would make every pressed button's label vanish.
-pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x50, 0x48, 0x43);
+/// drawn in egui's `strong_text_color`, which is [`CREAM`]; filling it with
+/// [`ACCENT`] instead would put a light label on a light plate.
+pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x6E, 0x36, 0x1A);
 
-/// **The brand orange, and the only saturated colour left in this file.**
+/// **The brand orange, kept for the brand.**
 ///
-/// It is not an accent and must never be used as one: its whole scope is the
-/// logo — the roofs and the pin of [`paint_mark`], the tail of the wordmark
-/// ([`WORDMARK_TAIL_COLOR`]) and, in `index.html`, the loader's mark and progress
-/// bar. That is the *brand*, which survived the chrome going monochrome on
-/// purpose: a product keeps its name in its own colour, and a splash is the one
-/// screen with nothing else on it to compete.
+/// Its scope is the logo — the roofs and the pin of [`paint_mark`], the tail
+/// of the wordmark ([`WORDMARK_TAIL_COLOR`]) and, in `index.html`, the
+/// loader's mark and progress bar — plus the few things that must shout: an
+/// unread badge, the live dot. The live *controls* are [`ACCENT`], its softer
+/// sibling, and must not use this.
 ///
 /// The separation is the point. While the chrome was orange this was spelled
 /// `= ACCENT`, so the logo and every live control in the app were one constant —
@@ -217,9 +187,9 @@ pub const BRAND: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
 pub const REAL_LOCATION: Color32 = Color32::from_rgb(0x4F, 0xB2, 0xFF);
 
 /// Off-white. Headings and the one or two things that must read brightest.
-pub const CREAM: Color32 = Color32::from_rgb(0xF8, 0xF6, 0xF4);
+pub const CREAM: Color32 = Color32::from_rgb(0xFA, 0xF8, 0xF6);
 /// Body text.
-pub const TEXT: Color32 = Color32::from_rgb(0xE3, 0xDF, 0xDD);
+pub const TEXT: Color32 = Color32::from_rgb(0xEC, 0xE9, 0xE6);
 /// Secondary text: units, coordinates, hints. Also `index.html`'s muted tone,
 /// so the pre-wasm splash and this one agree — **change it in both**.
 ///
@@ -229,7 +199,7 @@ pub const TEXT: Color32 = Color32::from_rgb(0xE3, 0xDF, 0xDD);
 /// `weak_text_color`, i.e. the one that lands on every surface in the ramp: it
 /// measured 4.40:1 on [`SURFACE_HOVER`] and 4.12:1 inside an [`OVERLAY`] box
 /// over bright map imagery. Both now clear 4.5.
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xB3, 0xAD, 0xA9);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0xB2, 0xAC, 0xA7);
 /// Warnings — a desaturated gold.
 ///
 /// **One of the two colours the monochrome chrome keeps**, and it keeps them for
@@ -270,7 +240,7 @@ pub const ERROR: Color32 = Color32::from_rgb(0xF2, 0xA2, 0x96);
 /// between the two visits is that the tones themselves were lifted in between —
 /// this alpha is a *measured* floor now rather than an eyeballed one, and
 /// `text_clears_every_surface_it_can_land_on` is what keeps it one.
-pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 215);
+pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x17, 0x16, 0x15, 215);
 
 /// The panel and window fill: [`SURFACE`] at 84 %.
 ///
@@ -297,15 +267,15 @@ pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0
 /// ratios at once. Note what the test cannot know: it measures against the
 /// *unblurred* white, which is the honest worst case — a blur cannot make a
 /// white page darker.
-pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 215);
+pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x17, 0x16, 0x15, 215);
 
-/// The docked side panels' surface: [`INK`] with 6 % of [`BRAND`] mixed into
-/// it, one flat tone.
+/// The docked side panels' surface: one flat near-black, between [`INK`] and
+/// [`SURFACE`], and as neutral as the ramp it belongs to.
 ///
-/// The theme colour lives *in* the dark rather than on top of it: a lift and
-/// a corner glow were tried first and read as a lighting effect, which is not
-/// what a surface is. 6 % keeps it a near-black that is plainly warm next to
-/// the grey ramp, without becoming brown.
+/// Two warmer versions were tried and dropped the same day: a lift with a
+/// brand-orange corner glow (read as a lighting effect, not a surface), then
+/// [`INK`] with 6 % of [`BRAND`] mixed in (read as brown). The warmth lives in
+/// the [`ACCENT`] now, on the things that are live.
 ///
 /// **Not glass, since 2026-10-04.** The panels were [`GLASS`] and the Chats
 /// screen was solid ink by design (a conversation is read, and a map showing
@@ -315,7 +285,7 @@ pub const GLASS: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x1
 /// Floating readouts and menus over the map stay glass. Being opaque, a panel
 /// also no longer pays for `systems::glass`'s blur, which only runs behind the
 /// glass fills.
-pub const PANEL: Color32 = Color32::from_rgb(0x1D, 0x12, 0x0B);
+pub const PANEL: Color32 = Color32::from_rgb(0x14, 0x13, 0x12);
 
 /// The rim around a glass surface — an [`OVERLAY`] box, a panel, a window.
 ///
@@ -331,7 +301,7 @@ pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x
 /// labels, the drag ghost, a feature's hover card. Darker and more opaque than
 /// [`OVERLAY`] on purpose: these are a few words over an arbitrary tile, so
 /// legibility beats letting the map through.
-pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x0D, 0x0B, 235);
+pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0E, 0x0D, 0x0C, 235);
 /// Halo behind map text that has no chip to sit on — the street names
 /// (`systems::street_labels`), which are painted *along* their street and would
 /// black it out under a chip. Pale and only mostly opaque: it has to lift
@@ -341,11 +311,11 @@ pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x0D
 /// no tint left to carry, and a **neutral** halo is the better answer anyway —
 /// the map underneath supplies all the hue in the frame, and a coloured plate
 /// over it was a second opinion about what colour a road is.
-pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xE7, 0xE1, 0xDE, 205);
+pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xEC, 0xE9, 0xE6, 205);
 /// The stroke inside [`LABEL_HALO`]. A hair lighter than [`INK`] and not the
 /// same constant: this one lies on a pale halo over an arbitrary tile, that one
 /// is the chrome's text-well fill, and the two are free to move apart.
-pub const LABEL_INK: Color32 = Color32::from_rgb(0x13, 0x10, 0x0F);
+pub const LABEL_INK: Color32 = Color32::from_rgb(0x12, 0x11, 0x10);
 
 // ─── Fonts ────────────────────────────────────────────────────────────────────
 
@@ -624,21 +594,17 @@ fn widgets() -> Widgets {
             expansion: 1.0,
             ..visuals(SURFACE_HOVER, ACCENT, CREAM)
         },
-        // Pressed / focused — **one fill, not two**, and that is a simplification
-        // the monochrome palette bought rather than a detail lost. It used to be
-        // two different oranges, because `bg_fill` (the graphical fill: slider
-        // grab, checkbox box) could take the full accent while `weak_bg_fill` (the
-        // button fill, which carries a label) could not: [`CREAM`] measured only
-        // 2.7:1 on the old accent. The accent is a *light* tone now, so that
-        // pairing is 1.4:1 — worse, in the same direction — and the answer is for
-        // both to be [`ACCENT_MUTED`], which carries [`CREAM`] at 8.5:1 and looks
-        // the same whether a control is a button or a checkbox.
+        // Pressed / focused — **one fill, not two.** `bg_fill` (the graphical
+        // fill: slider grab, checkbox box) could take the full accent but
+        // `weak_bg_fill` (the button fill) carries a [`CREAM`] label, which
+        // measures 2.2:1 on the ember — so both are the dark [`ACCENT_MUTED`],
+        // which carries [`CREAM`] at 9.0:1 and looks the same whether a control
+        // is a button or a checkbox.
         //
         // `fg_stroke` must stay bright regardless: egui derives
         // `Visuals::strong_text_color` from it, so *every* `RichText::strong()` in
         // the app is this colour. Setting it to ink to suit a light fill would
-        // turn every bold value in the UI near-invisible — which is exactly the
-        // trap the light accent makes easier to fall into, not harder.
+        // turn every bold value in the UI near-invisible.
         active: WidgetVisuals {
             expansion: 1.0,
             ..visuals(ACCENT_MUTED, ACCENT_RING, CREAM)
@@ -1432,7 +1398,7 @@ const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 /// alike: the sign-in CTA was a hand-built filled `Button` and the Route panel's
 /// equally-primary "▶ Driver mode" was a plain `ui.button`, so the same rank read
 /// as two different ones. `INK` on `ACCENT` and not white is the palette's rule for
-/// text on the accent (12.5:1 against 1.4:1) and is unit-tested below.
+/// text on the accent (8.3:1 against 2.2:1) and is unit-tested below.
 ///
 /// The width is always stated by the caller. A no-width `primary_button` wrapper
 /// over a `PRIMARY_BUTTON_MIN_WIDTH` constant shipped beside this and never grew
@@ -1711,7 +1677,7 @@ pub const OSD_GROUP_GAP: f32 = 18.0;
 /// own note is a contrast argument about the text inside a box, and there is no
 /// text here. The floor is the other direction: at alpha 90 the well vanished
 /// into pale beige map, and a stick you cannot see the travel of is a pad.
-pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x19, 0x16, 0x15, 140);
+pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x17, 0x16, 0x15, 140);
 
 /// Where a [`map_disc`] wants its mark drawn, and in what ink.
 pub struct DiscFace {
@@ -1727,12 +1693,9 @@ pub struct DiscFace {
 /// the reason).
 ///
 /// `on` is the engaged state — a panel open, a lock held, a button pressed — and
-/// wears the same light [`ACCENT`] plate a selected dock disc does, so "this is
-/// on" is one treatment everywhere on the map. **It inverts rather than tinting**,
-/// which is what the monochrome palette costs and buys: there is no accent hue
-/// left to fill a plate with, and a dark-glyph-on-light-plate toggle is
-/// unmistakable against a map at any brightness in a way a slightly different
-/// grey would not be. `tone` is the rim that engagement carries: [`ACCENT_RING`]
+/// wears the same [`ACCENT`] plate a selected dock disc does, so "this is on" is
+/// one treatment everywhere on the map: a dark glyph on an ember plate, which
+/// is unmistakable against a map at any brightness. `tone` is the rim that engagement carries: [`ACCENT_RING`]
 /// normally, [`ACCENT_BRIGHT`] for the *held* states (north-up lock,
 /// follow-and-rotate), which also draw a second, heavier ring — with no second
 /// accent left, "held" is said by weight, not by colour.
@@ -2031,7 +1994,7 @@ fn menu_entry_full(
 /// raised surface and hairline every button at rest wears — and on is the light
 /// engaged plate the dock discs and [`map_disc`] wear for "this is the live one",
 /// which is also what a segmented control looks like everywhere else: the
-/// selected segment is the *pale* one.
+/// selected segment is the ember one.
 ///
 /// It takes its height from the enclosing `interact_size` rather than pinning
 /// one, which is what keeps it finger-sized inside a box that has already raised
@@ -2554,14 +2517,44 @@ pub fn checkbox(
     checked: &mut bool,
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
+    // A ticked box is an ember plate with a dark tick: "on" in the same
+    // treatment as every other engaged control. egui strokes the tick in the
+    // label's colour, so the box takes the accent through the style and the
+    // tick is painted again over it in [`INK`].
+    let was = *checked;
     ui.scope(|ui| {
         let square = CornerRadius::same(RADIUS_SM);
         let w = &mut ui.style_mut().visuals.widgets;
-        w.noninteractive.corner_radius = square;
-        w.inactive.corner_radius = square;
-        w.hovered.corner_radius = square;
-        w.active.corner_radius = square;
-        ui.checkbox(checked, text)
+        for v in [
+            &mut w.noninteractive,
+            &mut w.inactive,
+            &mut w.hovered,
+            &mut w.active,
+        ] {
+            v.corner_radius = square;
+            if was {
+                v.bg_fill = ACCENT;
+                v.bg_stroke = Stroke::new(1.0, ACCENT_RING);
+            }
+        }
+        let resp = ui.checkbox(checked, text);
+        if was && *checked {
+            let size = ui.spacing().icon_width_inner;
+            let c = egui::pos2(
+                resp.rect.left() + ui.spacing().icon_width / 2.0,
+                resp.rect.center().y,
+            );
+            let r = egui::Rect::from_center_size(c, egui::Vec2::splat(size));
+            ui.painter().add(egui::Shape::line(
+                vec![
+                    egui::pos2(r.left(), r.center().y),
+                    egui::pos2(r.center().x, r.bottom()),
+                    egui::pos2(r.right(), r.top()),
+                ],
+                Stroke::new(2.0, INK),
+            ));
+        }
+        resp
     })
     .inner
 }
@@ -2772,10 +2765,14 @@ mod tests {
     ///
     /// [`OVERLAY`] is the other half, and it was worse, because its background is
     /// not in this file at all.
-    /// The panel tone is a recipe, not a pick: [`INK`] with 6 % of [`BRAND`].
+    /// The panel tone is neutral and sits inside the ramp: the brown a mix of
+    /// the brand orange produced is what this pins against.
     #[test]
-    fn the_panel_is_ink_with_a_little_brand_in_it() {
-        assert_eq!(PANEL, mix(INK, BRAND, 0.06));
+    fn the_panel_is_a_neutral_near_black() {
+        let ch = [PANEL.r(), PANEL.g(), PANEL.b()];
+        let spread = ch.iter().max().unwrap() - ch.iter().min().unwrap();
+        assert!(spread <= 4, "the panel has a colour cast: {PANEL:?}");
+        assert!(luminance(INK) <= luminance(PANEL) && luminance(PANEL) <= luminance(SURFACE));
     }
 
     #[test]
@@ -3027,20 +3024,20 @@ mod tests {
             // 11.8461 — the module note said "11.9:1" from the day it was
             // written, which is this rounded the wrong way. Nobody could have
             // caught that by reading it; that is the point of the test.
-            ("TEXT on SURFACE", TEXT, SURFACE, 13.6),
-            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 8.1),
-            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 18.0),
-            ("ACCENT on SURFACE", ACCENT, SURFACE, 11.6),
-            ("INK on ACCENT", INK, ACCENT, 12.5),
-            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 8.3),
-            ("LINE on SURFACE", LINE, SURFACE, 3.7),
+            ("TEXT on SURFACE", TEXT, SURFACE, 14.9),
+            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 8.0),
+            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 18.1),
+            ("ACCENT on SURFACE", ACCENT, SURFACE, 7.7),
+            ("INK on ACCENT", INK, ACCENT, 8.3),
+            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 9.0),
+            ("LINE on SURFACE", LINE, SURFACE, 3.8),
             (
                 "ACCENT_RING on ACCENT_MUTED",
                 ACCENT_RING,
                 ACCENT_MUTED,
-                7.4,
+                5.5,
             ),
-            ("CREAM on ACCENT (the rejected pairing)", CREAM, ACCENT, 1.4),
+            ("CREAM on ACCENT (the rejected pairing)", CREAM, ACCENT, 2.2),
         ] {
             // Compare at the precision the prose actually claims: the docs say
             // "11.9:1", so the test that keeps them honest is whether the
@@ -3553,7 +3550,7 @@ mod tests {
         assert_eq!(
             WORDMARK_TAIL_COLOR, BRAND,
             "the wordmark tail is the brand orange — not the chrome's accent, \
-             which is a grey since the UI went monochrome"
+             which is a softer ember of its own"
         );
         let css = format!(
             "#{:02x}{:02x}{:02x}",
