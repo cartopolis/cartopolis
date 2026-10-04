@@ -589,12 +589,16 @@ pub(crate) fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::Vo
     }
 
     let mut mode = voice.mode;
-    ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Voice").color(theme::TEXT));
-        ui.selectable_value(&mut mode, VoiceMode::Off, "Off");
-        ui.selectable_value(&mut mode, VoiceMode::PushToTalk, "Hold");
-        ui.selectable_value(&mut mode, VoiceMode::Open, "Open mic");
-    });
+    ui.label(egui::RichText::new("Voice").color(theme::TEXT));
+    theme::segmented(
+        ui,
+        &mut mode,
+        &[
+            (VoiceMode::Off, "Off"),
+            (VoiceMode::PushToTalk, "Hold"),
+            (VoiceMode::Open, "Open mic"),
+        ],
+    );
     if mode != voice.mode {
         voice.set_mode(mode);
     }

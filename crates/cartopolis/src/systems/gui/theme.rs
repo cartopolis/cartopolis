@@ -416,6 +416,9 @@ pub const SIZE_VALUE: f32 = 15.0;
 pub const SIZE_TITLE: f32 = 17.0;
 /// [`egui::TextStyle::Heading`], in the brand face.
 pub const SIZE_HEADING: f32 = 19.0;
+/// A panel's own name in its title bar: the Chats screen's large title, so
+/// every panel opens the same way.
+pub const SIZE_PANEL_TITLE: f32 = 20.5;
 /// [`egui::TextStyle::Monospace`] — the code-ish body size. Monospace runs
 /// visually larger than proportional at the same point size, which is why this is
 /// a point under [`SIZE_BODY`] rather than equal to it.
@@ -1776,7 +1779,7 @@ fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
 /// Diameter of the header's icon medallion. Small enough to sit on one text
 /// line, large enough that the dock's glyph survives the shrink. It is not a
 /// target — nothing clicks it — so it does not grow on the touch tier.
-const HEADER_MEDALLION: f32 = 24.0;
+const HEADER_MEDALLION: f32 = 28.0;
 
 /// Padding between the header band's edge and its contents.
 const HEADER_INSET: f32 = 7.0;
@@ -1798,7 +1801,7 @@ pub fn close_button_size() -> f32 {
 /// Height of the band [`panel_header`] paints, in points — whatever the close
 /// button needs plus its inset, floored at the pointer tier's 38.
 fn header_height() -> f32 {
-    38.0_f32.max(close_button_size() + 2.0 * HEADER_INSET)
+    44.0_f32.max(close_button_size() + 2.0 * HEADER_INSET)
 }
 
 /// Should an icon action beside a field be drawn `small()`?
@@ -2130,33 +2133,19 @@ pub fn panel_header_with(
     title: &str,
     extra: impl FnOnce(&mut egui::Ui),
 ) -> bool {
+    // **No band.** The header used to be a raised, bordered, shadowed box —
+    // a panel inside the panel — which made every panel start with a second
+    // frame and pushed the title down to body size. It is now the Chats
+    // screen's title bar (`chats::list_screen`): a large title straight on the
+    // surface and a hairline under it, so all the panels read as one family.
     let avail = ui.available_rect_before_wrap();
     let band = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), header_height()));
-    let radius = CornerRadius::same(RADIUS);
-
-    let p = ui.painter();
-    p.add(
-        Shadow {
-            offset: [0, 3],
-            blur: 10,
-            spread: 0,
-            color: Color32::from_black_alpha(90),
-        }
-        .as_shape(band, radius),
-    );
-    p.rect(
-        band,
-        radius,
-        SURFACE_RAISED,
-        Stroke::new(1.0, LINE),
-        egui::StrokeKind::Inside,
-    );
-    p.line_segment(
+    ui.painter().line_segment(
         [
-            egui::pos2(band.left() + HEADER_INSET, band.top() + 1.5),
-            egui::pos2(band.right() - HEADER_INSET, band.top() + 1.5),
+            egui::pos2(band.left(), band.bottom() - 0.5),
+            egui::pos2(band.right(), band.bottom() - 0.5),
         ],
-        Stroke::new(1.0, SURFACE_HOVER),
+        Stroke::new(1.0, OVERLAY_LINE),
     );
 
     let close;
@@ -2170,7 +2159,7 @@ pub fn panel_header_with(
         // in the Places panel makes with its kebab.
         let mut row = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(band.shrink2(egui::Vec2::splat(HEADER_INSET)))
+                .max_rect(band.shrink2(egui::vec2(0.0, HEADER_INSET)))
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
         row.spacing_mut().item_spacing.x = 8.0;
@@ -2192,14 +2181,14 @@ pub fn panel_header_with(
                     ring: ACCENT_RING,
                     ink: INK,
                     icon,
-                    icon_size: 13.0,
+                    icon_size: 15.0,
                     ring_width: 1.0,
                 },
             );
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(title)
-                        .font(FontId::new(SIZE_TITLE, brand_family()))
+                        .font(FontId::new(SIZE_PANEL_TITLE, brand_family()))
                         .color(CREAM),
                 )
                 .truncate()
@@ -2208,8 +2197,7 @@ pub fn panel_header_with(
         });
     }
     ui.advance_cursor_after_rect(band);
-    // Clears the shadow, which reaches below the band.
-    ui.add_space(4.0);
+    ui.add_space(10.0);
     close
 }
 
@@ -2237,14 +2225,109 @@ pub fn panel_header_with(
 /// Appearance used a bare `ui.label`, About used `strong().color(CREAM)`, the
 /// script editor used a `small()` dim label, and Layers overloaded a checkbox as
 /// a heading. Four idioms across ten panels, and only one of them had a name.
+///
+/// Small capitals in the dim tone, as the contacts screen labels its groups
+/// ("ONLINE NOW"): a section title is a signpost, and drawn bold in the brightest
+/// tone it competed with the controls under it for the eye.
 pub fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(6.0);
+    ui.add_space(12.0);
     ui.label(
-        egui::RichText::new(title)
-            .size(SIZE_SUB)
-            .strong()
-            .color(CREAM),
+        egui::RichText::new(title.to_uppercase())
+            .size(SIZE_CHIP)
+            .extra_letter_spacing(0.6)
+            .color(TEXT_DIM),
     );
+    ui.add_space(2.0);
+}
+
+/// One control with several positions: a raised pill with equal-width
+/// segments, the chosen one on the [`ACCENT`] plate in [`INK`] — the Chats
+/// screen's toggle (`chats::segmented`) made general. Returns whether the
+/// value changed; `value` is written only on a click, so a caller holding a
+/// resource does not mark it changed every frame.
+///
+/// It replaced rows of `selectable_value`s, which wrapped as soon as a panel
+/// was narrow ("Full detail" alone on a second line) and read as loose words
+/// rather than one choice. Labels that do not fit their segment are set
+/// smaller, down to [`SIZE_TINY`], before anything wraps.
+pub fn segmented<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    value: &mut T,
+    options: &[(T, &str)],
+) -> bool {
+    if options.is_empty() {
+        return false;
+    }
+    let height = row_height().max(30.0);
+    let (rect, track) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let inner = rect.shrink(3.0);
+    let gap = 2.0;
+    let n = options.len() as f32;
+    let seg_w = (inner.width() - gap * (n - 1.0)) / n;
+    // Keyed on the track's own auto id: two rows with the same first label
+    // ("Automatic") in one tab must not share segment ids.
+    let base = track.id;
+
+    // One size for every label, so the segments read as one control.
+    let fits = |size: f32| {
+        options.iter().all(|(_, label)| {
+            ui.ctx().fonts_mut(|f| {
+                f.layout_no_wrap((*label).to_string(), FontId::proportional(size), TEXT)
+                    .size()
+                    .x
+            }) <= seg_w - 8.0
+        })
+    };
+    let mut size = SIZE_BODY - 1.0;
+    while size > SIZE_TINY && !fits(size) {
+        size -= 0.5;
+    }
+
+    let p = ui.painter().clone();
+    p.rect_filled(rect, CornerRadius::same(12), SURFACE_RAISED);
+    p.rect_stroke(
+        rect,
+        CornerRadius::same(12),
+        Stroke::new(1.0, OVERLAY_LINE),
+        egui::StrokeKind::Inside,
+    );
+    let mut changed = false;
+    for (i, (option, label)) in options.iter().enumerate() {
+        let r = egui::Rect::from_min_size(
+            egui::pos2(inner.left() + i as f32 * (seg_w + gap), inner.top()),
+            egui::vec2(seg_w, inner.height()),
+        );
+        let resp = ui
+            .interact(r, base.with(i), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let on = *value == *option;
+        let (fill, ink) = if on {
+            (ACCENT, INK)
+        } else if resp.is_pointer_button_down_on() {
+            (ACCENT_MUTED, CREAM)
+        } else if resp.hovered() {
+            (SURFACE_HOVER, CREAM)
+        } else {
+            (Color32::TRANSPARENT, TEXT_DIM)
+        };
+        p.rect_filled(r, CornerRadius::same(9), fill);
+        p.text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            FontId::proportional(size),
+            ink,
+        );
+        paint_focus_ring(ui, &resp, r, false);
+        if resp.clicked() && !on {
+            *value = *option;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// A line under a control stating a constraint or a stored intention — *not* a
@@ -3548,6 +3631,7 @@ mod tests {
             ("value", SIZE_VALUE),
             ("title", SIZE_TITLE),
             ("heading", SIZE_HEADING),
+            ("panel title", SIZE_PANEL_TITLE),
         ];
         for pair in scale.windows(2) {
             let ((a, lo), (b, hi)) = (pair[0], pair[1]);

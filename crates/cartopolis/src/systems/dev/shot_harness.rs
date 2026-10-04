@@ -2120,6 +2120,7 @@ const UI_ELEMENTS: &[&str] = &[
     "addcontact",
     "privacy",
     "personcard",
+    "friends",
     "sit",
     "building",
     "locate",
@@ -2285,7 +2286,12 @@ pub fn open_scripted_ui(
         }
         None => {
             crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats);
-            cards.chat.contacts.whereabouts.clear();
+            // `--ui friends`: the Friends layer's markers, no chat open.
+            if want("friends") {
+                crate::systems::contacts::seed_demo_friends(&mut cards.chat.contacts);
+            } else {
+                cards.chat.contacts.whereabouts.clear();
+            }
         }
     }
     // The call screens (`systems::call_screen`): a call ringing, a voice call, a

@@ -1,7 +1,7 @@
 ---
 topic: contacts
-triggers: [contacts.rs, chat_people.rs, WherePeople, PeopleWhere, "contact request", "message request", RequestContact, ContactsState, PersonInfo, V21__contacts.sql, request_policy, link_code, "Say hi", tap_avatar]
-updated: 2026-09-30
+triggers: [contacts.rs, chat_people.rs, friends_enabled, "Friends layer", WherePeople, PeopleWhere, "contact request", "message request", RequestContact, ContactsState, PersonInfo, V21__contacts.sql, request_policy, link_code, "Say hi", tap_avatar]
+updated: 2026-10-04
 ---
 
 # Contacts and message requests
@@ -83,3 +83,14 @@ fact as whether it is online, so it rides the same switch; anybody else is
 left out of the answer rather than marked, so it says nothing about them.
 This is the avatar, never the phone — the real location is still only what a
 person shares with one chat, for a time.
+
+## Friends on the map by default (Layers ▸ Friends)
+
+The same markers, for every contact, with no chat open: when no private chat's
+World view is up, `drive_contacts` asks `WherePeople` for the whole contact
+list instead (online-first, capped at the simulator's `MAX_WHERE_PEOPLE` of
+32), and `place_pins` draws the answers without balloons. It needs no server
+change — the answer is already limited to contacts who show they are online,
+so a person who hides that is never on anybody's map. The layer is on by
+default (`LayerPrefs::friends`, `serde(default = "yes")`), and an open chat's
+World view still narrows the markers to that chat's people.

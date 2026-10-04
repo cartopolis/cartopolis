@@ -306,6 +306,10 @@ pub struct LayerPrefs {
     /// which is what the one toggle they *did* have meant for the walkers too.
     #[serde(default = "detail_default")]
     pub people: bool,
+    /// Your contacts on the map, where their avatars are (`systems::chat_people`).
+    /// On by default: seeing where your friends are is the point of having them.
+    #[serde(default = "yes")]
+    pub friends: bool,
     /// The Overpass street-detail layer (`systems::street_detail`).
     #[serde(default = "detail_default")]
     pub street_detail: bool,

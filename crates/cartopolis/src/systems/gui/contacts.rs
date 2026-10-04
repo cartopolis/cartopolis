@@ -116,6 +116,23 @@ fn merge_whereabouts(
         .collect()
 }
 
+/// Most people one `WherePeople` is answered for: the simulator's
+/// `MAX_WHERE_PEOPLE`, which drops the rest of a longer list.
+const MAX_FRIENDS_ASKED: usize = 32;
+
+/// Whom the Friends layer asks after: every contact, in a stable order so an
+/// unchanged list is not mistaken for a new one and re-asked at once. Anybody
+/// last said to be offline goes to the back, so a long list spends its places
+/// on the people who can be on the map.
+fn friends_to_ask(contacts: &[ContactDto]) -> Vec<String> {
+    let mut sorted: Vec<&ContactDto> = contacts.iter().collect();
+    sorted.sort_by_key(|c| (c.online == Some(false), c.username.to_lowercase()));
+    let mut names: Vec<String> = sorted.into_iter().map(|c| c.username.clone()).collect();
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    names.truncate(MAX_FRIENDS_ASKED);
+    names
+}
+
 /// A tap this close to an avatar's feet, in points, is a tap on the avatar.
 const TAP_RADIUS_PTS: f32 = 36.0;
 
@@ -466,6 +483,7 @@ pub fn drive_contacts(
     mut contacts: ResMut<Contacts>,
     mut chat: ResMut<ChatState>,
     private: Res<crate::systems::private_chat::PrivateChats>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
     mut launched: Local<bool>,
 ) {
     if !*launched {
@@ -605,12 +623,21 @@ pub fn drive_contacts(
 
     // A private chat's World view: where the people in it are, asked again
     // every few seconds while it is open and forgotten the moment it closes.
+    // With no chat's view open, the Friends layer asks the same about every
+    // contact, so they are on the map by default; the server still answers only
+    // for those who show that they are online.
     let wanted = chat
         .world
         .as_deref()
         .filter(|k| ChatState::is_private(k))
         .map(|k| private.people_in(k))
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if layers.friends_enabled {
+                friends_to_ask(&contacts.contacts)
+            } else {
+                Vec::new()
+            }
+        });
     if wanted.is_empty() {
         contacts.whereabouts.clear();
         contacts.where_asked_at = None;
@@ -1360,7 +1387,14 @@ fn title_row(
         {
             act.back = true;
         }
-        ui.label(egui::RichText::new(title).size(22.0).color(theme::CREAM));
+        ui.label(
+            egui::RichText::new(title)
+                .font(egui::FontId::new(
+                    theme::SIZE_PANEL_TITLE,
+                    theme::brand_family(),
+                ))
+                .color(theme::CREAM),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             right(ui, act);
         });
@@ -1374,7 +1408,8 @@ fn section_label(ui: &mut egui::Ui, text: &str, count: Option<usize>) {
         ui.label(
             egui::RichText::new(text.to_uppercase())
                 .size(12.0)
-                .color(theme::TEXT_DIM),
+                .color(crate::systems::chats::LABEL_WARM)
+                .extra_letter_spacing(0.6),
         );
         if let Some(n) = count {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1399,7 +1434,37 @@ fn person_row(
     online: bool,
     right: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    let inner = ui.horizontal(|ui| {
+    // A soft card per person, as the chat list draws its rows
+    // (`chats::ROW_CARD`), lit on hover.
+    // By position, not by name: one person is listed under both "Online now"
+    // and "All contacts".
+    let id = ui.next_auto_id().with("person_row");
+    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+    let inner = egui::Frame::NONE
+        .fill(if hovered {
+            theme::SURFACE_HOVER
+        } else {
+            crate::systems::chats::ROW_CARD
+        })
+        .corner_radius(egui::CornerRadius::same(14))
+        .inner_margin(egui::Margin::symmetric(8, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            person_row_body(ui, name, sub, sub_color, online, right);
+        });
+    ui.add_space(6.0);
+    ui.interact(inner.response.rect, id, egui::Sense::click())
+}
+
+fn person_row_body(
+    ui: &mut egui::Ui,
+    name: &str,
+    sub: &str,
+    sub_color: egui::Color32,
+    online: bool,
+    right: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         avatar(&mut child, name, ChatKind::Private, 44.0);
@@ -1417,8 +1482,6 @@ fn person_row(
             });
         });
     });
-    ui.add_space(4.0);
-    inner.response.interact(egui::Sense::click())
 }
 
 fn requests_screen(ui: &mut egui::Ui, contacts: &Contacts, act: &mut Act, now: u64) {
@@ -2091,6 +2154,23 @@ pub fn seed_demo_whereabouts(contacts: &mut Contacts) {
     }];
 }
 
+/// Three friends around Groningen's centre for `--ui friends`: the Friends
+/// layer's markers with no chat open, which a scripted run has no server for.
+pub fn seed_demo_friends(contacts: &mut Contacts) {
+    let at = |username: &str, avatar_id, lat, lng| Whereabout {
+        username: username.into(),
+        avatar_id,
+        from: (lat, lng),
+        to: (lat, lng),
+        arrived: 0.0,
+    };
+    contacts.whereabouts = vec![
+        at("Sanne", 2, 53.2154, 6.5671),
+        at("Joris", 3, 53.2190, 6.5630),
+        at("Mila", 4, 53.2172, 6.5728),
+    ];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2116,6 +2196,24 @@ mod tests {
         assert_eq!(jump[0].at(20.0), (54.0, 6.0));
         // Somebody the answer leaves out is gone.
         assert!(merge_whereabouts(&jump, vec![], 30.0).is_empty());
+    }
+
+    #[test]
+    fn the_friends_layer_asks_after_online_contacts_first_and_at_most_a_page() {
+        let c = |name: &str, online| ContactDto {
+            username: name.into(),
+            since_ms: 0,
+            met: None,
+            online,
+        };
+        let list = vec![
+            c("Bas", Some(false)),
+            c("anna", None),
+            c("Joris", Some(true)),
+        ];
+        assert_eq!(friends_to_ask(&list), vec!["anna", "Joris", "Bas"]);
+        let many: Vec<ContactDto> = (0..50).map(|i| c(&format!("p{i:02}"), None)).collect();
+        assert_eq!(friends_to_ask(&many).len(), MAX_FRIENDS_ASKED);
     }
 
     #[test]

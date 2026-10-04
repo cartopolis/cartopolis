@@ -530,6 +530,10 @@ pub struct DataLayers {
     /// want exactly one of them. Cheap, too — a hidden pool costs a transform
     /// write it never makes.
     pub people_enabled: bool,
+    /// Your contacts on the map, wherever their avatars are, with or without a
+    /// chat open (`contacts::drive_contacts` asks, `place_pins` draws). Only
+    /// contacts who show they are online are ever answered for.
+    pub friends_enabled: bool,
     /// Feature toggle (under Map): textured road surfaces (generated tarmac +
     /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
     pub roads_textured: bool,
@@ -687,6 +691,7 @@ impl DataLayers {
             furniture,
             traffic: self.traffic_enabled,
             people: self.people_enabled,
+            friends: self.friends_enabled,
             street_detail,
             aerial: self.aerial_enabled,
             vehicles,
@@ -765,6 +770,7 @@ impl DataLayers {
         self.furniture_enabled = p.furniture;
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
+        self.friends_enabled = p.friends;
         self.street_detail_enabled = p.street_detail;
         self.aerial_enabled = p.aerial;
         self.vehicles_enabled = p.vehicles;
@@ -828,6 +834,7 @@ impl Default for DataLayers {
             // draw on the one platform whose schedule has no second thread.
             traffic_enabled: detail,
             people_enabled: detail,
+            friends_enabled: true,
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
@@ -2228,7 +2235,7 @@ pub fn render_data_layers_panel(
         "layers_panel",
         compact,
         viewport_w,
-        260.0,
+        300.0,
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = crate::resources::RightPanel::Layers;
@@ -2416,6 +2423,20 @@ pub fn render_data_layers_panel(
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
+                crate::systems::theme::checkbox(
+                    ui,
+                    &mut dl.friends_enabled,
+                    egui::RichText::new("Friends"),
+                );
+                ui.indent("friends", |ui| {
+                    ui.label(
+                        egui::RichText::new("Contacts who show they are online, at their avatars")
+                            .size(theme::SIZE_SUB),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
                 // In the flow, not `bottom_up`: a bottom-anchored layout inside a scroll
                 // area asks for the scroll viewport's height and pins the credits to the
                 // wrong end of an unbounded canvas. The short form stays here because it
@@ -2508,6 +2529,7 @@ pub fn render_data_layers_panel(
         // toggle that has stuck.
         dl.traffic_enabled = fresh.traffic_enabled;
         dl.people_enabled = fresh.people_enabled;
+        dl.friends_enabled = fresh.friends_enabled;
         dl.street_detail_enabled = fresh.street_detail_enabled;
         dl.aerial_enabled = fresh.aerial_enabled;
     }

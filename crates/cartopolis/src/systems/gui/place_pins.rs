@@ -188,6 +188,7 @@ pub fn render_place_pins(
         && chat_points.is_empty()
         && people.is_empty()
         && chat_world.is_none()
+        && contacts.whereabouts.is_empty()
     {
         return;
     }
@@ -339,7 +340,11 @@ pub fn render_place_pins(
     }
     // The people in the chat whose World view is open, at their avatars, with
     // what each last said floating over them (`chat_people`, design v5 B).
-    if let Some(key) = chat_world {
+    // With no chat's view open, `whereabouts` is every contact the Friends
+    // layer asked after, drawn the same way without the balloons: there is no
+    // conversation for them to come from.
+    if chat_world.is_some() || !contacts.whereabouts.is_empty() {
+        let key = chat_world.unwrap_or_default();
         let now = chat.clock;
         // Over the head on the flat map; from orbit a head is not a distance.
         let head_up = if in_space {

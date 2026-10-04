@@ -583,17 +583,21 @@ pub fn render_model_library_panel(
                 return;
             }
 
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut tab, Tab::Mine, "Mine");
-                ui.selectable_value(&mut tab, Tab::Library, "Library");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(icons::REFRESH)
-                        .on_hover_text("fetch both lists again")
-                        .clicked()
-                    {
-                        want_refresh = true;
-                    }
+            // Refresh first, from the right, so the two tabs take what is left.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(icons::REFRESH)
+                    .on_hover_text("fetch both lists again")
+                    .clicked()
+                {
+                    want_refresh = true;
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    theme::segmented(
+                        ui,
+                        &mut tab,
+                        &[(Tab::Mine, "Mine"), (Tab::Library, "Library")],
+                    );
                 });
             });
             ui.add_space(4.0);

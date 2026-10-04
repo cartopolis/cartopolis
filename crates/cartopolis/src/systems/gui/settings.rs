@@ -120,7 +120,9 @@ impl SettingsTab {
             Self::General => "General",
             Self::World => "World",
             Self::Graphics => "Graphics",
-            Self::Audio => "Audio & video",
+            // "Audio & video" until the tabs became one segmented row, where
+            // five equal segments leave no room for three words.
+            Self::Audio => "Audio",
             Self::Account => "Account",
         }
     }
@@ -314,14 +316,11 @@ pub fn render_settings_panel(
         &mut right_panel,
         RightPanel::Settings,
         "settings_panel",
-        320.0,
+        340.0,
         |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for tab in SettingsTab::ALL {
-                    ui.selectable_value(&mut state.tab, tab, tab.label());
-                }
-            });
-            ui.separator();
+            let tabs = SettingsTab::ALL.map(|t| (t, t.label()));
+            crate::systems::theme::segmented(ui, &mut state.tab, &tabs);
+            ui.add_space(6.0);
 
             // Every tab is a list that can outgrow a phone's 609 pt of viewport, and
             // a `Panel` clips rather than scrolls (the Layers panel had lost its last
@@ -681,11 +680,8 @@ fn general_tab(
     editor: &mut EditorRow,
 ) -> bool {
     section(ui, "Units");
-    ui.horizontal_wrapped(|ui| {
-        for units in Units::ALL {
-            ui.selectable_value(&mut prefs.units, units, units.label());
-        }
-    });
+    let units = Units::ALL.map(|u| (u, u.label()));
+    crate::systems::theme::segmented(ui, &mut prefs.units, &units);
     // The consumers are `navigation::format_distance` / `format_duration` and the
     // driver bar's speed pill, all of which are metric-hardcoded today. The field
     // is here so there is one place for them to read, not so the switch does
@@ -1064,20 +1060,20 @@ fn world_tab(
     ui.spacing_mut().item_spacing.y = 4.0;
 
     section(ui, "Time");
-    ui.horizontal_wrapped(|ui| {
-        // `Manual` belongs here now. It used to be left out of this tab because
-        // its controls were in the other panel, which made it a mode you could
-        // land in and not get out of — the old copy literally told the reader to
-        // go and find the developer panel.
-        for (mode, label) in [
+    // `Manual` belongs here now. It used to be left out of this tab because
+    // its controls were in the other panel, which made it a mode you could
+    // land in and not get out of — the old copy literally told the reader to
+    // go and find the developer panel.
+    crate::systems::theme::segmented(
+        ui,
+        &mut dev.sun_mode,
+        &[
             (SunMode::Auto, "Automatic"),
             (SunMode::Day, "Day"),
             (SunMode::Night, "Night"),
             (SunMode::Manual, "Manual"),
-        ] {
-            ui.selectable_value(&mut dev.sun_mode, mode, label);
-        }
-    });
+        ],
+    );
 
     // The four presets sit **outside** the manual gate, because clicking one is
     // the natural way to *enter* Manual — they are a mode row as much as the row
@@ -1146,10 +1142,7 @@ fn world_tab(
     ui.add_space(6.0);
     ui.separator();
     section(ui, "Weather");
-    ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(weather_live, true, "Automatic");
-        ui.selectable_value(weather_live, false, "Manual");
-    });
+    crate::systems::theme::segmented(ui, weather_live, &[(true, "Automatic"), (false, "Manual")]);
 
     // Deliberately *outside* the Manual-only block below. The sliders are the
     // manual sky and are rightly dead in Automatic mode, but "don't draw clouds"
@@ -1287,11 +1280,8 @@ fn graphics_tab(
     sky: Option<crate::systems::sky_dome::SkyMode>,
 ) {
     section(ui, "Detail");
-    ui.horizontal_wrapped(|ui| {
-        for preset in QualityPreset::ALL {
-            ui.selectable_value(&mut prefs.quality, preset, preset.label());
-        }
-    });
+    let presets = QualityPreset::ALL.map(|p| (p, p.label()));
+    crate::systems::theme::segmented(ui, &mut prefs.quality, &presets);
     pending(
         ui,
         "Applies immediately. Automatic picks by device. The settings below that \
@@ -1491,11 +1481,8 @@ fn sky_section(
     use crate::systems::sky_dome::SkyMode;
 
     section(ui, "Sky");
-    ui.horizontal_wrapped(|ui| {
-        for preference in SkyPreference::ALL {
-            ui.selectable_value(&mut prefs.sky, preference, preference.label());
-        }
-    });
+    let skies = SkyPreference::ALL.map(|s| (s, s.label()));
+    crate::systems::theme::segmented(ui, &mut prefs.sky, &skies);
     pending(
         ui,
         "Applies immediately. Simple is cheaper and works on every device.",
@@ -1573,11 +1560,7 @@ fn frame_rate_row(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
         (Some(0), "No cap"),
     ];
     ui.label("Frame rate");
-    ui.horizontal_wrapped(|ui| {
-        for (value, label) in CHOICES {
-            ui.selectable_value(&mut prefs.frame_rate, value, label);
-        }
-    });
+    crate::systems::theme::segmented(ui, &mut prefs.frame_rate, &CHOICES);
     let note = match prefs.frame_rate {
         None => {
             let fps = crate::quality::budget().target_fps();

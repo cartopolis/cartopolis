@@ -222,14 +222,24 @@ pub fn responsive_right_panel(
     viewport_w: f32,
     wide_width: f32,
 ) -> egui::Panel {
+    // The surface every panel shares: the glass fill and rim the style already
+    // gives a panel, with room round the content. egui's own side-panel margin
+    // is 8 x 2 pt, which set every title and row against the panel's edge; the
+    // Chats screen sets its own frame over this one.
+    let frame = egui::Frame::NONE
+        .fill(crate::systems::theme::GLASS)
+        .stroke(egui::Stroke::new(1.0, crate::systems::theme::OVERLAY_LINE))
+        .inner_margin(egui::Margin::symmetric(14, 10));
     if compact {
         egui::Panel::right(id)
+            .frame(frame)
             .resizable(false)
             // Fill the whole viewport — any inset leaves a strip of map peeking
             // down the left edge of the docked panel.
             .exact_size(compact_panel_width(viewport_w))
     } else {
         egui::Panel::right(id)
+            .frame(frame)
             .resizable(true)
             .default_size(wide_width)
     }

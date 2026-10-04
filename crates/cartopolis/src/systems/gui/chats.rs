@@ -43,14 +43,114 @@ use crate::systems::{icons, theme};
 /// 14 %).
 const GLINE: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 36);
 /// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
+///
+/// Lifted from the mockup's muted set on 2026-10-04: on the ink screen those
+/// read as six shades of the same mud, and a person's colour is the one
+/// thing in a list of names that is theirs. Each still carries white initials
+/// at better than 3:1.
 const AVATAR_TONES: [egui::Color32; 6] = [
-    egui::Color32::from_rgb(0x7A, 0x5A, 0x9A),
-    egui::Color32::from_rgb(0x3F, 0x7D, 0x6E),
-    egui::Color32::from_rgb(0xA0, 0x62, 0x3E),
-    egui::Color32::from_rgb(0x4D, 0x6A, 0x91),
-    egui::Color32::from_rgb(0x8A, 0x4F, 0x5F),
-    egui::Color32::from_rgb(0x5E, 0x6F, 0x3C),
+    egui::Color32::from_rgb(0x86, 0x5C, 0xC4),
+    egui::Color32::from_rgb(0x2C, 0x91, 0x7C),
+    egui::Color32::from_rgb(0xC0, 0x66, 0x30),
+    egui::Color32::from_rgb(0x43, 0x74, 0xC4),
+    egui::Color32::from_rgb(0xB8, 0x48, 0x68),
+    egui::Color32::from_rgb(0x5F, 0x8A, 0x2E),
 ];
+/// The section labels' tone ("ONLINE NOW"): a warm tint of the brand orange,
+/// so the signposts in a list carry a little colour without competing with
+/// the unread badges, which are the full orange.
+pub(crate) const LABEL_WARM: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xA0, 0x6E);
+/// A row's resting card: white at 4 %, so the list reads as a stack of
+/// rounded rows on the screen rather than as text on black.
+pub(crate) const ROW_CARD: egui::Color32 =
+    egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 10);
+
+/// Blend `base` toward `over` by `k`.
+fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
+    let ch = |b: u8, o: u8| (f32::from(b) + (f32::from(o) - f32::from(b)) * k).round() as u8;
+    egui::Color32::from_rgb(
+        ch(base.r(), over.r()),
+        ch(base.g(), over.g()),
+        ch(base.b(), over.b()),
+    )
+}
+
+/// The Chats screen's backdrop: the ink, lifted to a cool slate at the top and
+/// warmed by a soft brand glow behind the title, so the screen has a light
+/// source instead of being a black rectangle. Painted first, under everything.
+pub(crate) fn paint_backdrop(p: &egui::Painter, rect: egui::Rect) {
+    // The cool lift, top 45 % of the screen.
+    let top = egui::Color32::from_rgb(0x1A, 0x27, 0x2D);
+    let fade = rect.top() + rect.height() * 0.45;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(egui::pos2(rect.right(), fade), theme::INK);
+    mesh.colored_vertex(egui::pos2(rect.left(), fade), theme::INK);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    p.add(mesh);
+    // The warm glow: a fan from a brand-tinted centre to a clear rim.
+    radial_glow(
+        p,
+        egui::pos2(rect.right() - rect.width() * 0.2, rect.top() + 10.0),
+        rect.width() * 0.75,
+        egui::Color32::from_rgba_unmultiplied(0xFD, 0x60, 0x12, 60),
+    );
+}
+
+/// A soft round glow: `colour` at the centre, transparent at `radius`.
+fn radial_glow(p: &egui::Painter, centre: egui::Pos2, radius: f32, colour: egui::Color32) {
+    const SEGMENTS: u32 = 48;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(centre, colour);
+    for i in 0..=SEGMENTS {
+        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        mesh.colored_vertex(
+            centre + radius * egui::vec2(a.cos(), a.sin()),
+            egui::Color32::TRANSPARENT,
+        );
+        if i > 0 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+    }
+    p.add(mesh);
+}
+
+/// A disc lit from above: `tone` in the middle, lighter at the top rim and
+/// deeper at the bottom, with a faint light edge. What makes an initial read
+/// as a token rather than a flat sticker.
+fn lit_disc(p: &egui::Painter, c: egui::Pos2, r: f32, tone: egui::Color32) {
+    const SEGMENTS: u32 = 40;
+    let light = blend(tone, egui::Color32::WHITE, 0.30);
+    let deep = blend(tone, egui::Color32::BLACK, 0.22);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(c, tone);
+    for i in 0..=SEGMENTS {
+        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        let d = egui::vec2(a.cos(), a.sin());
+        // `d.y` is -1 at the top of the disc and +1 at the bottom.
+        let k = (d.y + 1.0) / 2.0;
+        let rim = if k < 0.5 {
+            blend(light, tone, k * 2.0)
+        } else {
+            blend(tone, deep, (k - 0.5) * 2.0)
+        };
+        mesh.colored_vertex(c + r * d, rim);
+        if i > 0 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+    }
+    p.add(mesh);
+    p.circle_stroke(
+        c,
+        r - 0.5,
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 40),
+        ),
+    );
+}
 /// The "Here" disc: the v1 inbox's dark slate, with a location pin on it.
 const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x34, 0x44, 0x4A);
 /// Bubble corners: round, with the corner nearest the speaker tucked in.
@@ -210,7 +310,7 @@ pub(crate) fn paint_avatar(
         let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(size));
         p.rect_filled(rect, egui::CornerRadius::same((size * 0.29) as u8), tone);
     } else {
-        p.circle_filled(c, size / 2.0, tone);
+        lit_disc(p, c, size / 2.0, tone);
     }
     p.text(
         c,
@@ -425,12 +525,30 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
     let h = 70.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    // Each row is a soft card, with a little air between them.
+    ui.add_space(6.0);
     let p = ui.painter();
+    let card = egui::CornerRadius::same(14);
+    let fill = if resp.hovered() || resp.is_pointer_button_down_on() {
+        theme::SURFACE_HOVER
+    } else {
+        ROW_CARD
+    };
+    p.rect_filled(rect, card, fill);
     if row.kind == ChatKind::Here {
         paint_pinned_wash(p, rect);
     }
-    if resp.hovered() || resp.is_pointer_button_down_on() {
-        p.rect_filled(rect, egui::CornerRadius::same(12), theme::SURFACE_RAISED);
+    // Something new in it: a brand stripe down the card's left edge, so an
+    // unread chat is found by the eye before the badge is read.
+    if row.unread > 0 {
+        p.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + 14.0),
+                egui::vec2(3.0, rect.height() - 28.0),
+            ),
+            egui::CornerRadius::same(2),
+            theme::BRAND,
+        );
     }
     let size = 48.0;
     paint_avatar(
@@ -479,7 +597,14 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
     let (preview, tint) = if sending && row.kind == ChatKind::Private {
         ("Tap to send the view here".to_string(), theme::BRAND)
     } else {
-        (row.preview.clone(), theme::TEXT_DIM)
+        (
+            row.preview.clone(),
+            if row.unread > 0 {
+                theme::TEXT
+            } else {
+                theme::TEXT_DIM
+            },
+        )
     };
     let mut badge_w = 0.0;
     if row.unread > 0 {
@@ -635,6 +760,7 @@ pub fn render_chats_panel(
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
+            paint_backdrop(ui.painter(), ui.clip_rect());
             let me = identity.username.clone().unwrap_or_default();
             match (view.sub.clone(), view.open.clone()) {
                 (Some(sub), _) => crate::systems::contacts::screen(
@@ -724,7 +850,11 @@ fn list_screen(
     // Contacts hang off the title bar's people button (`v5-contacts`).
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Chats").size(28.0).color(theme::CREAM));
+        ui.label(
+            egui::RichText::new("Chats")
+                .font(egui::FontId::new(28.0, theme::brand_family()))
+                .color(theme::CREAM),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if theme::round_button(ui, icons::APPEARANCE, "Contacts", false).clicked() {
                 act.sub = Some(crate::systems::contacts::Sub::Contacts);

@@ -16,6 +16,9 @@
 //! agrees with that answer, the marker stands on it instead, which is exact
 //! and moves with the avatar frame by frame.
 //!
+//! With no chat's World view open, the same markers show every contact
+//! (Layers ▸ Friends, on by default), without balloons.
+//!
 //! **A balloon is painted, never interactive**, for `chat_overlay`'s reason:
 //! it floats over the world, where a tap means something else. The marker
 //! itself can be tapped, and flies the camera to that person.
