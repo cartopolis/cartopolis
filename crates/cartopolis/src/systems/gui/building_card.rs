@@ -89,7 +89,6 @@ pub fn render_building_card(
     let shell = lod.shell_measure(&id);
     let addresses: Vec<AddressFact> = facts
         .addresses()
-        .iter()
         .filter(|a| a.pand.as_deref() == Some(&*id))
         .cloned()
         .collect();

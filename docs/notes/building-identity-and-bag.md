@@ -1,7 +1,7 @@
 ---
 topic: buildings
 triggers: [building_facts.rs, bag_attributes.py, 3dbag_lod22.py, bag.ts, lod22.ts, BAG, identificatie, bouwjaar, gebruiksdoel, PDOK, Kadaster, BIM, IFC]
-updated: 2026-08-27
+updated: 2026-10-05
 ---
 
 # The building id, and what the Dutch registers hang off it
@@ -194,3 +194,21 @@ rather than asking the same question every 30 seconds for the life of the proces
 the failure mode here is *silence*: a missing coverage manifest produces a
 perfectly good-looking city with the generated palette, and no capture can tell
 that apart from the facts having landed and changed little.
+
+## Each cell file is parsed once, and JSON is not what is slow
+
+Three readers want a cell's files: the `BuildingFacts` streamer (both), `lod22`'s
+mesh job (the buildings, for the colours it bakes) and `map_geometry`'s moorings
+(the places, and the buildings again to tell a housed berth). Each parsed its own
+copy until 2026-10-05, so the buildings file was parsed up to three times per cell
+per start. `building_facts::parse_part` now hands every reader the same parse.
+
+A binary format for these files, like `lod22`'s `.bin`, was considered and is not
+worth it. Measured 2026-10-05 on Groningen's densest cell (8490/5319), best of five,
+one core of the VPS: the 1.9 MB buildings file parses in **10.4 ms** and the 1.6 MB
+places file in **9.3 ms** in a release build (54.5 and 33.3 ms in the dev profile).
+`lod22`'s binary paid for itself in bytes on a phone link, not parse time, and its
+mesh build is ~370 ms beside a 23 ms parse. The `bag_facts` worker time a dev-build
+capture reports (~500 ms a job) is the conversion into `BagCell` at the dev
+profile's `opt-level = 1`, on a box whose cores the software renderer is also
+using — not the format.

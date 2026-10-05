@@ -501,7 +501,6 @@ pub fn describe(scene: &Scene) -> (String, Value) {
             let addr = scene
                 .facts
                 .addresses()
-                .iter()
                 .filter(|a| a.pand.as_deref() == Some(id))
                 .find_map(crate::systems::building_facts::AddressFact::label);
             let uses = use_labels(b.uses);

@@ -21,9 +21,11 @@
 //! request that is a cache hit, and in exchange the mesh and the facts it is
 //! coloured by can never arrive in the wrong order. Everything else (a readout, a
 //! lookup, a future panel) wants a resource it can ask at any time, which is what
-//! [`BuildingFacts`] and the streamer below are for. Sharing one parse would mean
-//! rebuilding meshes whenever a facts cell landed, which is the terrain-revision
-//! retear — affordable for a 6.4 km field that arrives once, not for a stream.
+//! [`BuildingFacts`] and the streamer below are for. Making the mesh wait for the
+//! resource would mean rebuilding meshes whenever a facts cell landed, which is
+//! the terrain-revision retear — affordable for a 6.4 km field that arrives once,
+//! not for a stream. What the two *do* share is the parse ([`parse_part`]):
+//! whichever asks first parses a file, and the other is handed the same one.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -762,14 +764,65 @@ async fn download_bag_text(cx: i64, cy: i64, part: BagPart, key: &str) -> Result
 ///
 /// A cell with no buildings at all has no file, and a 404 is the ordinary answer
 /// for open country inside the coverage rectangle rather than a fault.
-pub(crate) async fn load_bag_cell(cx: i64, cy: i64) -> BagCell {
+pub(crate) async fn load_bag_cell(cx: i64, cy: i64) -> Arc<BagCell> {
     if !bag_covers(cx, cy) {
-        return BagCell::default();
+        return Arc::default();
     }
     match fetch_bag_text(cx, cy, BagPart::Buildings).await {
-        Ok(text) => parse_bag_cell(&text).unwrap_or_default(),
-        Err(_) => BagCell::default(),
+        Ok(text) => parse_part(cx, cy, BagPart::Buildings, &text).unwrap_or_default(),
+        Err(_) => Arc::default(),
     }
+}
+
+/// How many parsed files are kept alive after their last reader lets go, so a
+/// reader arriving a moment later still finds one.
+const RECENT_PARSED: usize = 8;
+
+/// Every BAG file parsed this session that somebody still holds, by cache key,
+/// plus the last few whether held or not.
+#[derive(Default)]
+struct ParsedFiles {
+    live: HashMap<String, std::sync::Weak<BagCell>>,
+    recent: std::collections::VecDeque<Arc<BagCell>>,
+}
+
+static PARSED: std::sync::LazyLock<std::sync::Mutex<ParsedFiles>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Parse one of a cell's files, **once however many read it**.
+///
+/// Three readers want the same files: this module's streamer (both), `lod22`'s
+/// mesh job (the buildings, for the colours it bakes) and `map_geometry`'s
+/// moorings (the places, for the berths, and the buildings again, to tell a
+/// houseboat under a modelled building). Each used to parse its own copy, so a
+/// cell's buildings file — 1.9 MB of JSON on Groningen's densest — was parsed up
+/// to three times on every start. The download was already shared
+/// (`BAG_IN_FLIGHT`); this shares the result.
+///
+/// Held by `Weak`, so a parse lives exactly as long as a reader keeps it (the
+/// streamer keeps its ring's), plus the last [`RECENT_PARSED`] — which covers the
+/// usual race, two readers asking within the same second. A failed parse is not
+/// remembered: it is `None` to every caller, as `parse_bag_cell` failing was.
+/// Two readers parsing the same file at the same instant both parse it, which is
+/// the old cost and no worse.
+pub(crate) fn parse_part(cx: i64, cy: i64, part: BagPart, text: &str) -> Option<Arc<BagCell>> {
+    let key = cell_cache_key(cx, cy, part);
+    let lock = || match PARSED.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if let Some(hit) = lock().live.get(&key).and_then(std::sync::Weak::upgrade) {
+        return Some(hit);
+    }
+    let parsed = Arc::new(parse_bag_cell(text).ok()?);
+    let mut files = lock();
+    files.live.retain(|_, w| w.strong_count() > 0);
+    files.live.insert(key, Arc::downgrade(&parsed));
+    files.recent.push_back(parsed.clone());
+    while files.recent.len() > RECENT_PARSED {
+        files.recent.pop_front();
+    }
+    Some(parsed)
 }
 
 /// A cell's registered houseboat berths (`ligplaats`), as lat/lng, each with
@@ -785,10 +838,10 @@ pub(crate) async fn load_berths(cx: i64, cy: i64) -> Vec<((f64, f64), bool)> {
     let Ok(text) = fetch_bag_text(cx, cy, BagPart::Places).await else {
         return Vec::new();
     };
-    let berths: Vec<(f64, f64)> = parse_bag_cell(&text)
+    let berths: Vec<(f64, f64)> = parse_part(cx, cy, BagPart::Places, &text)
         .map(|c| {
             c.berths
-                .into_iter()
+                .iter()
                 .filter(|b| b.kind == BerthKind::Mooring)
                 .map(|b| b.at)
                 .collect()
@@ -822,19 +875,18 @@ fn point_in_latlng_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
 
 // ─── The resource and its streamer ───────────────────────────────────────────
 
-/// Every BAG fact the client is currently holding, keyed by building id.
+/// One loaded cell: its two files as parsed, either absent when the host has none.
+type CellFiles = (Option<Arc<BagCell>>, Option<Arc<BagCell>>);
+
+/// Every BAG fact the client is currently holding.
 ///
-/// The per-cell files are the transport; this is the index, because a caller with
-/// an id does not know which cell it came from. Cell membership is kept beside it
-/// only so eviction can be exact.
+/// Held per cell, as parsed, rather than copied into one index: the parse is
+/// shared with `lod22` and the moorings ([`parse_part`]), and a caller with an
+/// id looks it up across the ring's 25 cells, which is 25 hash lookups.
 #[derive(Resource)]
 pub struct BuildingFacts {
-    stream: CellStream<(i64, i64), Result<BagCell, String>>,
-    /// Ids contributed by each loaded cell, for eviction.
-    cell_ids: HashMap<(i64, i64), Vec<Arc<str>>>,
-    buildings: HashMap<Arc<str>, BuildingFact>,
-    addresses: Vec<AddressFact>,
-    berths: Vec<BerthFact>,
+    stream: CellStream<(i64, i64), Result<CellFiles, String>>,
+    cells: HashMap<(i64, i64), CellFiles>,
     anchor: Option<(i64, i64, u32, f64)>,
 }
 
@@ -853,10 +905,7 @@ impl Default for BuildingFacts {
                 // answer for "there is never a backlog".
                 despawns_per_frame: 1,
             }),
-            cell_ids: HashMap::new(),
-            buildings: HashMap::new(),
-            addresses: Vec::new(),
-            berths: Vec::new(),
+            cells: HashMap::new(),
             anchor: None,
         }
     }
@@ -872,29 +921,39 @@ impl crate::systems::stream_watch::StreamBusy for BuildingFacts {
 }
 
 impl BuildingFacts {
+    /// Each loaded cell's buildings file.
+    fn building_files(&self) -> impl Iterator<Item = &BagCell> {
+        self.cells.values().filter_map(|(b, _)| b.as_deref())
+    }
+
+    /// Each loaded cell's places file.
+    fn place_files(&self) -> impl Iterator<Item = &BagCell> {
+        self.cells.values().filter_map(|(_, p)| p.as_deref())
+    }
+
     /// What the register says about a building, if its cell is loaded.
     pub fn building(&self, id: &str) -> Option<&BuildingFact> {
-        self.buildings.get(id)
+        self.building_files().find_map(|c| c.building(id))
     }
 
     /// Every addressed unit currently loaded.
-    pub fn addresses(&self) -> &[AddressFact] {
-        &self.addresses
+    pub fn addresses(&self) -> impl Iterator<Item = &AddressFact> {
+        self.place_files().flat_map(|c| &c.addresses)
     }
 
     /// Every houseboat berth and mobile-home plot currently loaded.
-    pub fn berths(&self) -> &[BerthFact] {
-        &self.berths
+    pub fn berths(&self) -> impl Iterator<Item = &BerthFact> {
+        self.place_files().flat_map(|c| &c.berths)
     }
 
     /// How many buildings are indexed — the cheap "is there anything here?" test,
     /// and what `--dump-state` reports.
     pub fn len(&self) -> usize {
-        self.buildings.len()
+        self.building_files().map(|c| c.buildings.len()).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.buildings.is_empty()
+        self.building_files().all(|c| c.buildings.is_empty())
     }
 
     /// Every building whose outline starts within `max_m` of a (lat, lng), with
@@ -912,8 +971,8 @@ impl BuildingFacts {
         const M_PER_DEG: f64 = 111_320.0;
         let scale = lat.to_radians().cos();
         let max2 = max_m * max_m;
-        self.buildings
-            .iter()
+        self.building_files()
+            .flat_map(|c| &c.buildings)
             .map(|(id, b)| (&**id, b))
             .filter(|(_, b)| {
                 let Some(&(blat, blng)) = b.footprint.first() else {
@@ -936,7 +995,7 @@ impl BuildingFacts {
         const M_PER_DEG: f64 = 111_320.0;
         let scale = lat.to_radians().cos();
         let mut best: Option<(f64, &AddressFact)> = None;
-        for a in &self.addresses {
+        for a in self.addresses() {
             let dy = (a.at.0 - lat) * M_PER_DEG;
             let dx = (a.at.1 - lng) * M_PER_DEG * scale;
             let d2 = dx * dx + dy * dy;
@@ -947,24 +1006,14 @@ impl BuildingFacts {
         best.map(|(_, a)| a)
     }
 
-    fn insert_cell(&mut self, cell: (i64, i64), parsed: BagCell) {
-        let mut ids = Vec::with_capacity(parsed.buildings.len());
-        for (id, fact) in parsed.buildings {
-            ids.push(id.clone());
-            self.buildings.insert(id, fact);
-        }
-        self.cell_ids.insert(cell, ids);
-        self.addresses.extend(parsed.addresses);
-        self.berths.extend(parsed.berths);
+    fn insert_cell(&mut self, cell: (i64, i64), files: CellFiles) {
+        self.cells.insert(cell, files);
     }
 
     /// Drop everything — on a re-anchor, or when the ring moves far enough that
     /// rebuilding the index beats reconciling it.
     fn clear(&mut self) {
-        self.cell_ids.clear();
-        self.buildings.clear();
-        self.addresses.clear();
-        self.berths.clear();
+        self.cells.clear();
     }
 }
 
@@ -1048,16 +1097,16 @@ pub fn update_building_facts(
                 crate::platform::workers::submit(
                     "bag_facts",
                     Box::new(move || {
-                        let mut cell = buildings
-                            .ok()
-                            .and_then(|t| parse_bag_cell(&t).ok())
-                            .unwrap_or_default();
-                        if let Some(p) = places.ok().and_then(|t| parse_bag_cell(&t).ok()) {
-                            cell.addresses = p.addresses;
-                            cell.berths = p.berths;
-                        }
+                        let files = (
+                            buildings
+                                .ok()
+                                .and_then(|t| parse_part(cx, cy, BagPart::Buildings, &t)),
+                            places
+                                .ok()
+                                .and_then(|t| parse_part(cx, cy, BagPart::Places, &t)),
+                        );
                         if let Ok(mut g) = sink.lock() {
-                            g.push(((cx, cy), Ok(cell)));
+                            g.push(((cx, cy), Ok(files)));
                         }
                     }),
                 );
@@ -1166,16 +1215,39 @@ mod tests {
     }
 
     #[test]
+    fn a_file_is_parsed_once_however_many_read_it() {
+        // A cell number no other test uses, since the memo is process-wide.
+        let text = r#"{"buildings":[{"id":"a","year":1900}]}"#;
+        let first = parse_part(-7, -7, BagPart::Buildings, text).expect("parses");
+        let second = parse_part(-7, -7, BagPart::Buildings, text).expect("parses");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "the second reader parsed again"
+        );
+        let places = parse_part(-7, -7, BagPart::Places, text).expect("parses");
+        assert!(
+            !Arc::ptr_eq(&first, &places),
+            "the other file of the same cell is a different parse"
+        );
+        assert!(parse_part(-8, -8, BagPart::Buildings, "not json").is_none());
+    }
+
+    #[test]
     fn nearest_address_respects_its_radius() {
         let mut facts = BuildingFacts::default();
         facts.insert_cell(
             (0, 0),
-            parse_bag_cell(
-                r#"{"streets":["Near","Far"],
+            (
+                None,
+                Some(Arc::new(
+                    parse_bag_cell(
+                        r#"{"streets":["Near","Far"],
                     "addresses":[{"at":[53.2000,6.5000],"street":0,"nr":"1"},
                                  {"at":[53.2100,6.5000],"street":1,"nr":"2"}]}"#,
-            )
-            .expect("valid cell"),
+                    )
+                    .expect("valid cell"),
+                )),
+            ),
         );
         // ~11 m away: inside a 50 m radius, and the nearer of the two.
         let hit = facts
