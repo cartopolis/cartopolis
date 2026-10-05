@@ -936,11 +936,24 @@ impl BuildingDesign {
     /// shows no window would be a view out through the brick. Once a design is
     /// saved, its outer walls *are* the facade (`lod22_facade`), and a design with
     /// no windows would turn a building into a blank brick box.
+    ///
+    /// It also narrows the front doors to a door's width. A generated doorway is
+    /// [`GENERATED_DOOR_WIDTH_M`] because it has to match the collider's opening,
+    /// which is centred on the entrance point at that width whatever is drawn; on
+    /// a facade that width reads as a garage door.
     pub fn with_facade_windows(&mut self) {
         const BAY_M: f32 = 2.4;
+        const FRONT_DOOR_M: f32 = 1.0;
         for s in &mut self.storeys {
             for w in s.walls.iter_mut().filter(|w| w.exterior) {
                 let len = dist(w.a, w.b);
+                for o in w
+                    .openings
+                    .iter_mut()
+                    .filter(|o| o.kind == OpeningKind::Door)
+                {
+                    o.width = o.width.min(FRONT_DOOR_M);
+                }
                 if len < 1.5 {
                     continue;
                 }
@@ -1402,6 +1415,7 @@ mod tests {
             .iter()
             .find(|o| o.kind == OpeningKind::Door)
             .unwrap();
+        assert!(door.width <= 1.0, "a front door, not a garage door");
         for w in south
             .openings
             .iter()
