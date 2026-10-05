@@ -55,16 +55,16 @@ pub use cartopolis_geo::{
 };
 pub use gui::{
     bookmarks, building_card, call_screen, chat, chat_overlay, chat_people, chats, contacts,
-    data_layers, dismiss, dock, egui_manager, glass, hud, icons, login_screen, map_osd,
-    model_library, onscreen_keyboard, place_card, place_pins, script_editor, settings, splash,
-    text_touch, theme, ui,
+    data_layers, dismiss, dock, egui_manager, floor_picker, glass, hud, icons, login_screen,
+    map_osd, model_library, onscreen_keyboard, place_card, place_pins, script_editor, settings,
+    splash, text_touch, theme, ui,
 };
 pub use map::prim_sound;
 #[cfg(not(target_arch = "wasm32"))]
 pub use map::prim_video;
 pub use map::{
     aerial, atmosphere_patch, building_designs, building_facts, building_fade, building_select,
-    building_windows, cache_reset, cell_ring, coverage, crops, crossings, dikes, globe,
+    building_windows, cache_reset, cell_ring, coverage, crops, crossings, cutaway, dikes, globe,
     globe_ocean, globe_weather, grass, ground_detail, ground_probe, height, interiors,
     light_shafts, load_control, load_timing, lod22, lod3, map_geometry, map_stream, model_assets,
     municipal, nav_marks, osm_buildings, particles, placeholder_models, render_features,

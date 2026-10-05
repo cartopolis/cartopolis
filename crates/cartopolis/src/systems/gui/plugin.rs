@@ -93,6 +93,12 @@ impl Plugin for GuiPlugin {
                 systems::building_card::render_building_card
                     .after(systems::place_card::render_place_card)
                     .before(systems::ui::render_main_menu),
+                // The floor picker (`systems::cutaway`): a floating column at the
+                // right edge, outside the panel chain on the card's terms. After
+                // the card, whose Look inside it answers in the same frame.
+                systems::floor_picker::render_floor_picker
+                    .after(systems::building_card::render_building_card)
+                    .before(systems::ui::render_main_menu),
                 // The sign-in screen (`systems::login_screen`). It draws into its
                 // own floating `Area` (a modal must sit above the main menu, which
                 // is itself a `Foreground` area), so it is deliberately *not* in

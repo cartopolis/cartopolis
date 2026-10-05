@@ -79,7 +79,8 @@
 // space, so the floating origin is somebody else's problem.
 //
 // x: how many ring points are live (0 = nothing ghosted, and then this whole
-// block is two instructions). y, z, w unused.
+// block is two instructions). y: 1 when the roof goes as well as the walls — the
+// cutaway (`systems::cutaway`). z, w unused.
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var<uniform> ghost: vec4<f32>;
 // The ring's bounding box in render-space XZ: min x, min z, max x, max z. The
 // broad phase — without it every wall fragment in the city walks the polygon.
@@ -545,12 +546,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let horiz_len = length(vec2<f32>(n.x, n.z));
     let is_wall = abs(n.y) < WALL_NORMAL_Y && horiz_len > 1e-3;
 
-    // The ghosted building loses its **walls** and keeps its roof. That is not a
-    // saving, it is the picture: a building whose roof went too would be a hole in
-    // the street with a floor in it, and the roof standing over a glass shell is
-    // what a cutaway looks like. `is_wall` is already the right question and is
-    // already answered.
-    if is_wall && in_ghost(in.world_position.xz) {
+    // The ghosted building loses its walls, and in a cutaway (y = 1, which is
+    // every ghost since `systems::cutaway`) its roof as well. Keeping the roof
+    // was right while the inside was one empty room with a glass box round it —
+    // without the roof that was a hole in the street with a floor in it. Now the
+    // inside is every storey up to the one being looked at, with its walls, and
+    // a follow camera above and behind the avatar can only see into it from
+    // above: with the roof on it was looking at the underside of the roof.
+    // `is_wall` is already the right question and is already answered.
+    if (is_wall || ghost.y > 0.5) && in_ghost(in.world_position.xz) {
         discard;
     }
 

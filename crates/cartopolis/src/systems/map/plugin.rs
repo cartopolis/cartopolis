@@ -80,6 +80,7 @@ impl Plugin for MapPlugin {
             .watch_stream::<systems::dikes::Dikes>()
             .init_resource::<systems::interiors::Interiors>()
             .init_resource::<systems::interiors::InteriorFloors>()
+            .init_resource::<systems::cutaway::Cutaway>()
             .init_resource::<systems::tunnels::Tunnels>()
             .init_resource::<systems::terrain::RoadMask>()
             .init_resource::<systems::building_select::BuildingSelection>()
@@ -239,6 +240,10 @@ impl Plugin for MapPlugin {
                     (
                         systems::building_select::track_indoors,
                         systems::building_select::clear_selection_on_reanchor,
+                        // What is cut away, from where the avatar is and what the
+                        // card asked for — before the shells, which take the
+                        // cut-away building's roof and walls off.
+                        systems::cutaway::resolve_cutaway,
                         systems::building_select::update_building_shells,
                     )
                         .chain()

@@ -520,11 +520,15 @@ pub fn update_building_shells(
     ground: Res<TerrainField>,
     anchor: Res<MapAnchor>,
     stream: Res<MapStream>,
+    cutaway: Res<crate::systems::cutaway::Cutaway>,
     cameras: Query<&GridCell, With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
 ) {
-    let ghost_ring = selection
-        .indoors
+    // The shell that is taken away is the cutaway's building — the one the avatar
+    // walked into, or the one the card is looking inside — and all of it goes,
+    // roof included (`cutaway`).
+    let ghost_ring = cutaway
+        .building
         .clone()
         .zip(anchor.geo)
         .and_then(|(id, geo)| prism(&id, &facts, &lod, &ground, geo, |m| m.datum_m))
@@ -538,9 +542,15 @@ pub fn update_building_shells(
         write_ghost_uniform(&mut building_materials, &lod, ghost_ring.as_deref(), cell);
     }
 
+    // The highlight goes while its building is cut away: an orange box with a
+    // lid over the very building you are looking down into hides it.
+    let highlighted = selection
+        .selected
+        .clone()
+        .filter(|s| cutaway.building.as_ref() != Some(s));
     let key = (
-        selection.selected.clone(),
-        selection.indoors.clone(),
+        highlighted.clone(),
+        None,
         stream.anchor_generation,
         ground.revision,
     );
@@ -561,13 +571,16 @@ pub fn update_building_shells(
     for (entity, id, height, slot) in [
         (
             selection.highlight.take(),
-            selection.selected.clone(),
+            highlighted,
             (|m: ShellMeasure| m.top_m) as fn(ShellMeasure) -> f32,
             0usize,
         ),
+        // No glass where the cut-away shell was: with the roof gone a glass box
+        // with a lid would put back exactly what was taken off. The room's own
+        // walls stand inside the outline and are the building's edge now.
         (
             selection.ghost.take(),
-            selection.indoors.clone(),
+            None,
             (|m: ShellMeasure| m.datum_m) as fn(ShellMeasure) -> f32,
             1usize,
         ),
@@ -816,6 +829,8 @@ fn write_ghost_uniform(
             max = max.max(*p);
         }
         ghost.x = pts.len() as f32;
+        // The roof goes too (`building_windows.wgsl`): a cutaway, not a glass box.
+        ghost.y = 1.0;
         bounds = Vec4::new(min.x, min.y, max.x, max.y);
         for (i, p) in pts.iter().enumerate() {
             let slot = &mut packed[i / 2];

@@ -91,6 +91,9 @@ pub struct Interiors {
     facts_len: usize,
     /// `building_designs::revision` the set was built from.
     designs_revision: u64,
+    /// The cut the set was built with (`cutaway::Cutaway`): which building is
+    /// being looked into and the storey above which it is not drawn.
+    cut: Option<(Arc<str>, usize)>,
     /// Interiors standing, for `--dump-state`.
     rooms: usize,
     /// Of which drawn by somebody rather than generated.
@@ -125,6 +128,7 @@ pub fn update_interiors(
     anchor: Res<MapAnchor>,
     stream: Res<MapStream>,
     avatar: Res<AvatarState>,
+    cutaway: Res<crate::systems::cutaway::Cutaway>,
     bigspace: Query<Entity, With<BigSpace>>,
 ) {
     let Some(geo) = anchor.geo else {
@@ -150,9 +154,12 @@ pub fn update_interiors(
     let restreamed = interiors.facts_len != facts.len();
     let reanchored = interiors.anchor_generation != stream.anchor_generation;
     let redesigned = interiors.designs_revision != designs_revision;
-    if !(moved || restreamed || reanchored || redesigned) {
+    let cut = cutaway.cut();
+    let recut = interiors.cut != cut;
+    if !(moved || restreamed || reanchored || redesigned || recut) {
         return;
     }
+    interiors.cut = cut.clone();
     interiors.built_at = Some(here);
     interiors.facts_len = facts.len();
     interiors.anchor_generation = stream.anchor_generation;
@@ -162,7 +169,18 @@ pub fn update_interiors(
     let mut built: Vec<Placed> = Vec::new();
     let mut walls: Vec<Footprint> = Vec::new();
     let mut designed = 0usize;
-    for (id, building) in facts.near(lat, lng, f64::from(INTERIOR_RADIUS)) {
+    let mut candidates = facts.near(lat, lng, f64::from(INTERIOR_RADIUS));
+    // The building being looked into from the card is built wherever it is: a
+    // cutaway of a building across the square is the whole point of the button,
+    // and the avatar is not in it.
+    if let Some((id, _)) = &cut {
+        if !candidates.iter().any(|(c, _)| *c == &**id) {
+            if let Some(entry) = facts.building_entry(id) {
+                candidates.push(entry);
+            }
+        }
+    }
+    for (id, building) in candidates {
         if building.footprint.len() < 3 {
             continue;
         }
@@ -198,7 +216,10 @@ pub fn update_interiors(
             continue;
         }
         let to_world = DesignToWorld::new(geo, design.origin);
-        let compiled = design.compile();
+        // Cut above the storey being looked at, in the one building being looked
+        // into. Only the mesh is cut; the floors, stairs and walls are whole.
+        let storey_cut = cut.as_ref().filter(|(c, _)| &**c == id).map(|(_, k)| *k);
+        let compiled = design.compile_cut(storey_cut);
         // The wall colliders stand on the ground under the building, in the frame
         // the avatar's feet are measured in (terrain plus storey).
         let base = {
@@ -219,7 +240,8 @@ pub fn update_interiors(
             outline,
             &compiled,
             &to_world,
-            design.storeys.len(),
+            &design,
+            stored.is_some(),
         ));
     }
     interiors.rooms = built.len();
@@ -358,6 +380,13 @@ pub struct Placed {
     floors: Vec<WorldFloor>,
     ramps: Vec<WorldRamp>,
     storeys: usize,
+    /// Each storey's floor level and the name its design gives it, ground floor
+    /// first — what the floor picker lists, in the editor's own words.
+    levels: Vec<(f32, String)>,
+    /// The named rooms, by storey, in the world frame.
+    rooms: Vec<(usize, String, Vec<Vec2>)>,
+    /// Drawn by somebody rather than generated.
+    designed: bool,
 }
 
 struct WorldFloor {
@@ -392,7 +421,8 @@ impl Placed {
         outline: Vec<Vec2>,
         compiled: &Compiled,
         to_world: &DesignToWorld,
-        storeys: usize,
+        design: &BuildingDesign,
+        designed: bool,
     ) -> Self {
         let ring =
             |r: &Vec<[f32; 2]>| -> Vec<Vec2> { r.iter().map(|&p| to_world.point(p)).collect() };
@@ -427,12 +457,42 @@ impl Placed {
                 })
             })
             .collect();
+        let levels = design
+            .storeys
+            .iter()
+            .enumerate()
+            .map(|(k, s)| {
+                let name = if s.name.is_empty() {
+                    bd::storey_name(k)
+                } else {
+                    s.name.clone()
+                };
+                (s.elevation + bd::FLOOR_Y, name)
+            })
+            .collect();
+        let rooms = design
+            .storeys
+            .iter()
+            .enumerate()
+            .flat_map(|(k, s)| {
+                s.rooms.iter().filter(|r| !r.name.is_empty()).map(move |r| {
+                    (
+                        k,
+                        r.name.clone(),
+                        r.outline.iter().map(|&p| to_world.point(p)).collect(),
+                    )
+                })
+            })
+            .collect();
         Self {
             id,
             outline,
             floors,
             ramps,
-            storeys,
+            storeys: design.storeys.len(),
+            levels,
+            rooms,
+            designed,
         }
     }
 }
@@ -512,6 +572,44 @@ impl InteriorFloors {
             .iter()
             .find(|r| point_in_ring(&r.outline, p))
             .map(|r| &r.id)
+    }
+
+    fn placed(&self, id: &str) -> Option<&Placed> {
+        self.rooms.iter().find(|r| &*r.id == id)
+    }
+
+    /// The storey names of a building with an interior standing, ground floor
+    /// first.
+    pub fn storey_names(&self, id: &str) -> Option<Vec<String>> {
+        self.placed(id)
+            .map(|r| r.levels.iter().map(|(_, n)| n.clone()).collect())
+    }
+
+    /// Whether a building's interior is from a saved design.
+    pub fn is_designed(&self, id: &str) -> bool {
+        self.placed(id).is_some_and(|r| r.designed)
+    }
+
+    /// Which storey of building `id` somebody standing `lift` metres up is on:
+    /// the highest whose floor is not above their feet (with a step's grace, so
+    /// the top of a flight counts as the floor it arrives at).
+    pub fn storey_at(&self, id: &str, lift: f32) -> usize {
+        self.placed(id).map_or(0, |r| {
+            r.levels
+                .iter()
+                .rposition(|(y, _)| *y <= lift + STEP_UP_M)
+                .unwrap_or(0)
+        })
+    }
+
+    /// The name of the room at `p` on storey `k` of building `id`, if its owner
+    /// named one there.
+    pub fn room_at(&self, id: &str, p: Vec2, k: usize) -> Option<&str> {
+        self.placed(id)?
+            .rooms
+            .iter()
+            .find(|(s, _, ring)| *s == k && point_in_ring(ring, p))
+            .map(|(_, n, _)| n.as_str())
     }
 }
 
@@ -835,7 +933,8 @@ mod tests {
                 world_outline,
                 &compiled,
                 &to_world,
-                design.storeys.len(),
+                &design,
+                false,
             ),
             buf,
             to_world,

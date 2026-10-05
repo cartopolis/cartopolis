@@ -51,6 +51,22 @@ fn bag_viewer_url(id: &str) -> String {
     format!("https://bagviewer.kadaster.nl/lvbag/bag-viewer/?objectId={id}")
 }
 
+/// The building's page in the atlas floor-plan editor (`/building/{pand}`),
+/// with the outline's centre as the hint it finds the building's cell by. The
+/// editor shows a building to anybody and lets its owner change it.
+pub(crate) fn floor_plan_url(id: &str, footprint: &[(f64, f64)]) -> String {
+    let n = footprint.len().max(1) as f64;
+    let (lat, lng) = footprint
+        .iter()
+        .fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+    format!(
+        "{}/building/{id}?lat={:.6}&lng={:.6}",
+        crate::systems::place_link::WEB_ORIGIN,
+        lat / n,
+        lng / n
+    )
+}
+
 /// Draw the card for the selected building.
 pub fn render_building_card(
     egui: Res<EguiManager>,
@@ -61,6 +77,7 @@ pub fn render_building_card(
     menu: Res<crate::systems::ui::MainMenu>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
 ) {
     let Some(id) = selection.selected.clone() else {
         return;
@@ -98,6 +115,11 @@ pub fn render_building_card(
     let ctx = egui.ctx();
     let mut close = false;
     let mut open: Option<String> = None;
+    let mut look: Option<bool> = None;
+    // A building has an inside when the game can build one: an entrance to come
+    // in by (the generated layout needs it), or a design its owner drew.
+    let has_inside = !fact.doors.is_empty() || crate::systems::building_designs::get(&id).is_some();
+    let looking = cutaway.looking.as_deref() == Some(&*id);
     egui::Area::new(egui::Id::new("building_card"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(ctx, |ui| {
@@ -115,6 +137,32 @@ pub fn render_building_card(
                         rows(ui, &fact, shell, &addresses);
                     });
                 ui.add_space(6.0);
+                // The two ways into the building: look inside it here, or open its
+                // floor plan in the editor — where its owner changes it, and
+                // anybody else sees what they drew.
+                ui.horizontal(|ui| {
+                    if has_inside {
+                        let text = if looking {
+                            "Stop looking inside"
+                        } else {
+                            "Look inside"
+                        };
+                        if ui.add(egui::Button::selectable(looking, text)).clicked() {
+                            look = Some(!looking);
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            open_url_supported(),
+                            egui::Button::new(format!("Floor plan {}", icons::OPEN_EXTERNAL)),
+                        )
+                        .on_hover_text("Open this building in the floor-plan editor")
+                        .clicked()
+                    {
+                        open = Some(floor_plan_url(&id, &fact.footprint));
+                    }
+                });
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let can_open = open_url_supported();
                     /// Shown on hover where the button is dead, so the greying is
@@ -150,6 +198,11 @@ pub fn render_building_card(
 
     if let Some(url) = open {
         open_url(&url);
+    }
+    match look {
+        Some(true) => cutaway.look_inside(id.clone()),
+        Some(false) => cutaway.stop_looking(),
+        None => {}
     }
     if close {
         selection.clear();

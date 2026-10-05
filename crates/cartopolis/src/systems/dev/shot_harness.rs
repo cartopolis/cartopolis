@@ -720,6 +720,9 @@ pub struct ShotMetrics {
     /// Of `interior_rooms`, those built from a design somebody drew in the atlas
     /// editor rather than the generated one (`systems::building_designs`).
     pub interior_designed: usize,
+    /// The storey a building is cut away at (`systems::cutaway`), or -1 when
+    /// nothing is. With the avatar indoors this is the storey it stands on.
+    pub cutaway_storey: i32,
     /// Bores standing in the streamed cells (`systems::tunnels`).
     ///
     /// The one number that separates the three ways a capture over a tunnel comes
@@ -1226,7 +1229,7 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,shaft_fog,shaft_volumes,shaft_volume_m,shaft_pref,shadows_pref,\
 particle_emitters,particle_quads,\
 grass_patches,grass_slots,grass_rendered,\
-bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
+bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
 traffic_cars,traffic_walkers,\
 avatar_meshes,avatar_rendered,avatar_floor_m,\
@@ -2126,6 +2129,7 @@ const UI_ELEMENTS: &[&str] = &[
     "friends",
     "sit",
     "building",
+    "inside",
     "locate",
     "firstperson",
     "fire",
@@ -2968,7 +2972,9 @@ pub fn seat_scripted_avatar(
 }
 
 /// `--ui building` selects the building nearest the avatar, so a capture has the
-/// card and the glass to photograph.
+/// card and the glass to photograph; `--ui inside` does that and then presses the
+/// card's Look inside (`systems::cutaway`), so a capture from outside shows the
+/// building with its roof off and the floor picker beside it.
 ///
 /// **Nearest, not clicked.** The pick is a ray through a cursor and a headless run
 /// has neither, so the thing under test — the card's layout, the highlight's
@@ -2988,14 +2994,19 @@ pub fn select_scripted_building(
     facts: Res<crate::systems::building_facts::BuildingFacts>,
     avatar: Res<crate::resources::AvatarState>,
     anchor: Res<crate::resources::MapAnchor>,
+    mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
 ) {
     let panels = harness.ui_for(progress.index);
     let all = panels.iter().any(|u| u == "all");
-    if !(all || panels.iter().any(|u| u == "building")) {
+    let inside = panels.iter().any(|u| u == "inside");
+    if !(all || inside || panels.iter().any(|u| u == "building")) {
         selection.clear();
         return;
     }
-    if selection.selected.is_some() {
+    if let Some(id) = selection.selected.clone() {
+        if inside && cutaway.looking.is_none() {
+            cutaway.look_inside(id);
+        }
         return;
     }
     let Some(geo) = anchor.geo else {
@@ -3222,6 +3233,8 @@ pub struct ShotReadouts<'w, 's> {
     /// What is selected and what the avatar is standing in — see
     /// `ShotMetrics::building_selected`.
     building_selection: Res<'w, crate::systems::building_select::BuildingSelection>,
+    /// What is cut away — see `ShotMetrics::cutaway_storey`.
+    cutaway: Res<'w, crate::systems::cutaway::Cutaway>,
     /// The flood defences, for their two counts alone — see
     /// `ShotMetrics::flood_defences`.
     dikes: Res<'w, crate::systems::dikes::Dikes>,
@@ -3849,6 +3862,11 @@ pub fn drive_capture(
             interior_rooms: readouts.interiors.rooms(),
             interior_storeys: readouts.interior_floors.storeys(),
             interior_designed: readouts.interiors.designed(),
+            cutaway_storey: if readouts.cutaway.active() {
+                readouts.cutaway.storey as i32
+            } else {
+                -1
+            },
             building_selected: readouts.building_selection.is_selected(),
             building_indoors: readouts.building_selection.is_indoors(),
             building_shell_meshes: visuals.shells.iter().count(),
@@ -4591,6 +4609,7 @@ mod tests {
             interior_rooms: 0,
             interior_storeys: 0,
             interior_designed: 0,
+            cutaway_storey: -1,
             building_selected: false,
             building_indoors: false,
             building_shell_meshes: 0,

@@ -936,6 +936,14 @@ impl BuildingFacts {
         self.building_files().find_map(|c| c.building(id))
     }
 
+    /// [`Self::building`] with the id as the index holds it, in the shape
+    /// [`Self::near`] answers in.
+    pub fn building_entry(&self, id: &str) -> Option<(&str, &BuildingFact)> {
+        self.building_files()
+            .find_map(|c| c.buildings.get_key_value(id))
+            .map(|(k, v)| (&**k, v))
+    }
+
     /// Every addressed unit currently loaded.
     pub fn addresses(&self) -> impl Iterator<Item = &AddressFact> {
         self.place_files().flat_map(|c| &c.addresses)
