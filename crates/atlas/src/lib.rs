@@ -12,6 +12,7 @@ pub mod auth;
 pub mod autopilot;
 pub mod config;
 pub mod coverage;
+pub mod designs;
 pub mod http;
 pub mod jobs;
 pub mod pipeline;
@@ -42,6 +43,7 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             .with_upstream(config.upstream_concurrency),
         out_root: config.site_dir.clone(),
         autopilot: config.autopilot_config.clone(),
+        designs: Arc::new(designs::Designs::new(&config.data_dir, &config.site_dir)),
     };
     let state = http::AtlasState {
         terrain: Arc::new(terrain),

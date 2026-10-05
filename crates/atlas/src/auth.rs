@@ -30,11 +30,34 @@ pub struct Principal {
     pub username: String,
 }
 
-/// Something that can answer "is this bearer an admin?", so a test need not run a
-/// simulator.
+/// What the simulator says a session may do with one building
+/// (`/api/buildings/{pand}/access`).
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize, PartialEq)]
+pub struct Access {
+    pub username: String,
+    #[serde(default)]
+    pub admin: bool,
+    #[serde(default)]
+    pub owner: bool,
+    #[serde(default)]
+    pub can_edit: bool,
+    /// Whose building it is, if anybody's.
+    #[serde(default)]
+    pub owned_by: Option<String>,
+}
+
+/// Something that can answer "is this bearer an admin?" and "may this bearer
+/// change that building?", so a test need not run a simulator.
 pub trait Authority: Send + Sync {
     /// `Ok(None)` is a refusal; `Err` is "could not ask", which is not cached.
     fn admin(&self, token: &str) -> Result<Option<Principal>, String>;
+
+    /// `Ok(None)` is a dead session. Not cached: it is asked on opening the
+    /// editor and on a save, and an ownership just given up must stop working
+    /// at once.
+    fn access(&self, _token: &str, _pand: &str) -> Result<Option<Access>, String> {
+        Err("this authority does not know about buildings".into())
+    }
 }
 
 /// The simulator's `/api/admin/me`.
@@ -51,6 +74,24 @@ impl Authority for Simulator {
             .call()
         {
             Ok(r) => serde_json::from_reader::<_, Principal>(r.into_reader())
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            Err(ureq::Error::Status(_, _)) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn access(&self, token: &str, pand: &str) -> Result<Option<Access>, String> {
+        let url = format!(
+            "{}/api/buildings/{pand}/access",
+            self.api.trim_end_matches('/')
+        );
+        match ureq::get(&url)
+            .set("authorization", &format!("Bearer {token}"))
+            .timeout(Duration::from_secs(10))
+            .call()
+        {
+            Ok(r) => serde_json::from_reader::<_, Access>(r.into_reader())
                 .map(Some)
                 .map_err(|e| e.to_string()),
             Err(ureq::Error::Status(_, _)) => Ok(None),
@@ -77,6 +118,29 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 impl Auth {
+    /// What the bearer behind a request may do with a building. `None` for no
+    /// session, a dead one, or a simulator that could not be asked — all of
+    /// which a caller answers the same way: not you, not now.
+    pub async fn access(
+        self: &std::sync::Arc<Self>,
+        headers: &HeaderMap,
+        pand: &str,
+    ) -> Option<Access> {
+        let token = bearer(headers)?.to_string();
+        let this = std::sync::Arc::clone(self);
+        let pand = pand.to_string();
+        match tokio::task::spawn_blocking(move || this.authority.access(&token, &pand))
+            .await
+            .ok()?
+        {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("building access check: {e}");
+                None
+            }
+        }
+    }
+
     pub fn new(authority: Box<dyn Authority>) -> Self {
         Self {
             authority,

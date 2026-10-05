@@ -31,6 +31,8 @@ pub struct ApiState {
     pub out_root: PathBuf,
     /// The autopilot's control file.
     pub autopilot: PathBuf,
+    /// Building designs (`crate::designs`).
+    pub designs: Arc<crate::designs::Designs>,
 }
 
 fn fail(status: StatusCode, message: &str) -> Response {
@@ -62,6 +64,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/jobs", get(list_jobs).post(start_job))
         .route("/jobs/{id}/log", get(job_log))
         .route("/jobs/{id}/cancel", post(cancel_job))
+        .route("/buildings/{pand}", get(get_building))
+        .route(
+            "/buildings/{pand}/design",
+            axum::routing::put(put_design).delete(delete_design),
+        )
         .fallback(|| async { fail(StatusCode::NOT_FOUND, "No such endpoint") })
         .with_state(state)
 }
@@ -185,6 +192,157 @@ async fn cancel_job(
     Json(json!({"job": state.runner.get(&id)})).into_response()
 }
 
+// ─── Building designs ───────────────────────────────────────────────────────
+//
+// Under `/api/pipeline` because that is the prefix Caddy already sends here; a
+// design is map data atlas publishes, which is what this surface is about. These
+// routes take any signed-in player rather than only an admin, and ask the
+// simulator about the one building named.
+
+#[derive(Deserialize)]
+struct Near {
+    lat: Option<f64>,
+    lng: Option<f64>,
+}
+
+async fn building_access(
+    state: &ApiState,
+    headers: &HeaderMap,
+    pand: &str,
+) -> Result<crate::auth::Access, Response> {
+    if !crate::designs::valid_pand(pand) {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "That is not a BAG building number",
+        ));
+    }
+    state.auth.access(headers, pand).await.ok_or_else(|| {
+        fail(
+            StatusCode::UNAUTHORIZED,
+            "Sign in to open the building editor",
+        )
+    })
+}
+
+/// Everything the editor opens with: what the registers say about the building
+/// (outline, entrances, height, the neighbours either side), its stored design if
+/// it has one, the design it would have if it had not, and what the caller may do.
+async fn get_building(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    Query(near): Query<Near>,
+) -> Response {
+    let access = match building_access(&state, &headers, &pand).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let designs = state.designs.clone();
+    let p = pand.clone();
+    let (stored, facts, generated) = blocking(move || {
+        let stored = designs.stored(&p);
+        let near = match (near.lat, near.lng, &stored) {
+            (Some(lat), Some(lng), _) => Some((lat, lng)),
+            (_, _, Some(d)) => Some((d.origin[0], d.origin[1])),
+            _ => None,
+        };
+        let facts = near.and_then(|n| designs.facts(&p, n));
+        let generated = facts.as_ref().and_then(|f| designs.generated(f));
+        (stored, facts, generated)
+    })
+    .await;
+    if stored.is_none() && facts.is_none() {
+        return fail(
+            StatusCode::NOT_FOUND,
+            "That building is not in this server's map data",
+        );
+    }
+    Json(json!({
+        "pand": pand,
+        "access": access,
+        "facts": facts,
+        "design": stored.clone().or_else(|| generated.clone()),
+        "stored": stored.is_some(),
+        "generated": generated,
+    }))
+    .into_response()
+}
+
+async fn put_design(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let access = match building_access(&state, &headers, &pand).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if !access.can_edit {
+        return fail(
+            StatusCode::FORBIDDEN,
+            "Only the building's owner can change its design",
+        );
+    }
+    if body.len() > 2 * 1024 * 1024 {
+        return fail(StatusCode::PAYLOAD_TOO_LARGE, "That design is over 2 MB");
+    }
+    let design = match std::str::from_utf8(&body)
+        .map_err(|e| e.to_string())
+        .and_then(cartopolis_geo::building_design::BuildingDesign::from_json)
+    {
+        Ok(d) => d,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, &e),
+    };
+    if design.pand != pand {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "That design is for a different building",
+        );
+    }
+    let designs = state.designs.clone();
+    match blocking(move || designs.save(design)).await {
+        Ok(saved) => {
+            tracing::info!(
+                pand = %pand,
+                by = %access.username,
+                revision = saved.revision,
+                storeys = saved.storeys.len(),
+                "building design saved"
+            );
+            Json(json!({"design": saved})).into_response()
+        }
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn delete_design(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+) -> Response {
+    let access = match building_access(&state, &headers, &pand).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if !access.can_edit {
+        return fail(
+            StatusCode::FORBIDDEN,
+            "Only the building's owner can change its design",
+        );
+    }
+    let designs = state.designs.clone();
+    let p = pand.clone();
+    match blocking(move || designs.remove(&p)).await {
+        Ok(true) => {
+            tracing::info!(pand = %pand, by = %access.username, "building design reset");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => fail(StatusCode::NOT_FOUND, "That building has no saved design"),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 40
@@ -306,6 +464,19 @@ mod tests {
                 username: "op".into(),
             }))
         }
+
+        /// `owner` owns the eastern house; `visitor` owns nothing.
+        fn access(&self, token: &str, pand: &str) -> Result<Option<crate::auth::Access>, String> {
+            let owner = token == "owner" && pand == crate::designs::EAST;
+            Ok(
+                matches!(token, "owner" | "visitor").then(|| crate::auth::Access {
+                    username: token.into(),
+                    owner,
+                    can_edit: owner,
+                    ..Default::default()
+                }),
+            )
+        }
     }
 
     async fn serve() -> (String, tempfile::TempDir) {
@@ -324,6 +495,7 @@ mod tests {
             .collect();
         let site = dir.path().join("site");
         std::fs::create_dir_all(site.join("bgt")).unwrap();
+        crate::designs::two_houses(&site);
         std::fs::write(
             site.join("bgt/coverage.json"),
             r#"{"name":"groningen","cells":[[1,2]],"tree_count":3}"#,
@@ -332,8 +504,12 @@ mod tests {
         let state = ApiState {
             auth: Arc::new(Auth::new(Box::new(Tokens))),
             runner: Runner::new(&site, registry),
-            out_root: site,
+            out_root: site.clone(),
             autopilot: dir.path().join("autopilot.json"),
+            designs: Arc::new(crate::designs::Designs::new(
+                &dir.path().join("data"),
+                &site,
+            )),
         };
         let app = Router::new().nest("/api/pipeline", router(state));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -358,13 +534,95 @@ mod tests {
                 Ok(r) | Err(ureq::Error::Status(_, r)) => r,
                 Err(e) => panic!("{e}"),
             };
-            (
-                r.status(),
-                serde_json::from_reader(r.into_reader()).unwrap(),
-            )
+            let status = r.status();
+            let text = r.into_string().unwrap();
+            let body = if text.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&text).unwrap()
+            };
+            (status, body)
         })
         .await
         .unwrap()
+    }
+
+    /// Who may open the editor, who may save, and what a save publishes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_owner_saves_a_design_and_a_save_is_published() {
+        let (base, dir) = serve().await;
+        let east = crate::designs::EAST;
+        let at = "lat=53.2194&lng=6.5665";
+
+        // No session, no editor.
+        let (s, _) = call("GET", format!("{base}/buildings/{east}?{at}"), "", None).await;
+        assert_eq!(s, 401);
+        // A visitor opens it, and is told they may not change it.
+        let (s, v) = call(
+            "GET",
+            format!("{base}/buildings/{east}?{at}"),
+            "visitor",
+            None,
+        )
+        .await;
+        assert_eq!(s, 200);
+        assert_eq!(v["access"]["can_edit"], false);
+        assert_eq!(v["stored"], false);
+        assert_eq!(v["facts"]["outline"].as_array().unwrap().len(), 4);
+        let design = v["design"].clone();
+        assert_eq!(design["source"], "generated");
+
+        let (s, v) = call(
+            "PUT",
+            format!("{base}/buildings/{east}/design"),
+            "visitor",
+            Some(design.clone()),
+        )
+        .await;
+        assert_eq!(s, 403, "{v}");
+        // A design for another building is refused even from its owner's hand.
+        let (s, _) = call(
+            "PUT",
+            format!("{base}/buildings/0014100000000001/design"),
+            "owner",
+            Some(design.clone()),
+        )
+        .await;
+        assert_eq!(s, 403);
+
+        let (s, v) = call(
+            "PUT",
+            format!("{base}/buildings/{east}/design"),
+            "owner",
+            Some(design),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["design"]["source"], "editor");
+        assert!(dir.path().join("site/designs/coverage.json").exists());
+
+        let (s, v) = call("GET", format!("{base}/buildings/{east}"), "visitor", None).await;
+        assert_eq!(s, 200, "a stored design is found without a hint");
+        assert_eq!(v["stored"], true);
+
+        let (s, _) = call(
+            "DELETE",
+            format!("{base}/buildings/{east}/design"),
+            "visitor",
+            None,
+        )
+        .await;
+        assert_eq!(s, 403);
+        let (s, _) = call(
+            "DELETE",
+            format!("{base}/buildings/{east}/design"),
+            "owner",
+            None,
+        )
+        .await;
+        assert_eq!(s, 204);
+        let (s, _) = call("GET", format!("{base}/buildings/not-a-pand"), "owner", None).await;
+        assert_eq!(s, 400);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
