@@ -257,10 +257,23 @@ impl Designs {
                     ring.iter().any(|p| metres_between(*p, centre) < 60.0)
                 })
                 .collect();
+            // A party wall is a wall with a neighbour *beside* it. An outline
+            // that contains this building is not that: the register files some
+            // structures over or under another (Prinsenstraat 24–26 sits wholly
+            // inside a 365 m² outline from 2000), and counting one as a
+            // neighbour makes every wall a party wall and loses the door.
+            let beside: Vec<Vec<[f64; 2]>> = neighbours
+                .iter()
+                .filter(|r| !point_in_latlng_ring(r, centre))
+                .cloned()
+                .collect();
+            // Where no facade will take an entrance, the registered point is kept
+            // — the client does the same, and the generator then snaps it to the
+            // nearest wall within reach.
             let doors = me
                 .doors
                 .iter()
-                .filter_map(|&(a, b)| door_on_facade(&outline, [a, b], &neighbours))
+                .map(|&(a, b)| door_on_facade(&outline, [a, b], &beside).unwrap_or([a, b]))
                 .collect();
             return Some(Facts {
                 pand: pand.to_string(),
@@ -339,6 +352,11 @@ fn centroid(ring: &[[f64; 2]]) -> [f64; 2] {
         .iter()
         .fold((0.0, 0.0), |(a, b), p| (a + p[0], b + p[1]));
     [a / n, b / n]
+}
+
+fn point_in_latlng_ring(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let local: Vec<[f32; 2]> = ring.iter().map(|q| bd::to_local(p, q[0], q[1])).collect();
+    bd::point_in_ring(&local, [0.0, 0.0])
 }
 
 fn metres_between(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -466,6 +484,39 @@ mod tests {
         assert!(
             door[0] > -2.5,
             "the door was put on the party wall: {door:?}"
+        );
+    }
+
+    /// A building the register files wholly inside another outline: that outline
+    /// is not a neighbour, and must not turn every wall into a party wall.
+    #[test]
+    fn an_outline_around_the_building_is_not_a_party_wall() {
+        let dir = tempfile::tempdir().unwrap();
+        let site = dir.path().join("site");
+        two_houses(&site);
+        // Wrap both houses in one big outline, as the register sometimes does.
+        let (cx, cy) = cartopolis_core::world::lat_lng_to_tile(53.2194, 6.5665, CELL_ZOOM);
+        let path = site.join(format!("bag/{CELL_ZOOM}/{cx}/{cy}.json"));
+        let mut cell: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let m = 1.0 / bd::M_PER_DEG_LAT;
+        let k = 1.0 / (bd::M_PER_DEG_LAT * 53.2194f64.to_radians().cos());
+        let big: Vec<[f64; 2]> = [(-20.0, -20.0), (40.0, -20.0), (40.0, 40.0), (-20.0, 40.0)]
+            .iter()
+            .map(|&(x, y)| [53.2194 + y * m, 6.5665 + x * k])
+            .collect();
+        cell["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"id": "0014100000000009", "fp": big}));
+        std::fs::write(&path, serde_json::to_vec(&cell).unwrap()).unwrap();
+        let designs = Designs::new(&dir.path().join("data"), &site);
+        let facts = designs.facts(EAST, (53.2194, 6.5665)).unwrap();
+        let design = designs.generated(&facts).unwrap();
+        assert_eq!(design.entrances().len(), 1, "the door was lost");
+        assert!(
+            design.entrances()[0][0] > -2.5,
+            "the door is on the party wall"
         );
     }
 
