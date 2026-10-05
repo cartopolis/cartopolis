@@ -726,9 +726,23 @@ impl BuildingDesign {
     /// atlas and a generated one is built from what this module itself checks.
     #[must_use]
     pub fn compile(&self) -> Compiled {
+        self.compile_cut(None)
+    }
+
+    /// [`Self::compile`], with the **mesh** cut away above storey `cut`: the
+    /// storeys over it are not drawn and neither is its own ceiling, so the
+    /// storey can be looked down into. The floors, ramps and walls are the whole
+    /// building whatever the cut — what you can see is a choice, what you can
+    /// stand on is not, and an avatar upstairs must not fall because somebody
+    /// is looking at the ground floor.
+    #[must_use]
+    pub fn compile_cut(&self, cut: Option<usize>) -> Compiled {
         let mut out = Compiled::default();
+        let mut hidden = MeshData::default();
         let n = self.storeys.len();
         for (k, s) in self.storeys.iter().enumerate() {
+            let drawn = cut.is_none_or(|c| k <= c);
+            let mesh: &mut MeshData = if drawn { &mut out.mesh } else { &mut hidden };
             let floor_y = s.elevation + FLOOR_Y;
             let ceiling_y = s.elevation + s.height - SLAB_M;
             let wall_h = (ceiling_y - floor_y).max(0.5);
@@ -751,7 +765,7 @@ impl BuildingDesign {
             if s.floor.len() >= 3 {
                 let floor = subtract(&s.floor, &wells_in);
                 for poly in &floor {
-                    out.mesh.slab(poly, floor_y, FLOOR_COLOR, true);
+                    mesh.slab(poly, floor_y, FLOOR_COLOR, true);
                 }
                 out.floors.push(FloorLevel {
                     y: floor_y,
@@ -759,8 +773,10 @@ impl BuildingDesign {
                 });
                 // The ceiling has the outgoing flights' wells in it: a flight
                 // capped by the ceiling it rises through is a flight into a lid.
-                for poly in &subtract(&s.floor, &wells_out) {
-                    out.mesh.slab(poly, ceiling_y, CEILING_COLOR, false);
+                if cut != Some(k) {
+                    for poly in &subtract(&s.floor, &wells_out) {
+                        mesh.slab(poly, ceiling_y, CEILING_COLOR, false);
+                    }
                 }
             }
 
@@ -821,8 +837,7 @@ impl BuildingDesign {
                     };
                     for &(t0, t1, b, t) in &pieces {
                         let (p, q) = (add(w.a, scale(dir, t0)), add(w.a, scale(dir, t1)));
-                        out.mesh
-                            .face(p, q, inward, floor_y + b, floor_y + t, WALL_COLOR);
+                        mesh.face(p, q, inward, floor_y + b, floor_y + t, WALL_COLOR);
                     }
                     if k == 0 {
                         for o in w
@@ -841,9 +856,8 @@ impl BuildingDesign {
                     for &(t0, t1, b, t) in &pieces {
                         let (p, q) = (add(w.a, scale(dir, t0)), add(w.a, scale(dir, t1)));
                         let (y0, y1) = (floor_y + b, floor_y + t);
-                        out.mesh
-                            .face(add(p, off), add(q, off), left, y0, y1, WALL_COLOR);
-                        out.mesh.face(
+                        mesh.face(add(p, off), add(q, off), left, y0, y1, WALL_COLOR);
+                        mesh.face(
                             sub(p, off),
                             sub(q, off),
                             scale(left, -1.0),
@@ -853,7 +867,7 @@ impl BuildingDesign {
                         );
                         // The reveals: the wall's cut ends, at the wall's ends and
                         // either side of each opening.
-                        out.mesh.face(
+                        mesh.face(
                             sub(p, off),
                             add(p, off),
                             scale(dir, -1.0),
@@ -861,11 +875,10 @@ impl BuildingDesign {
                             y1,
                             WALL_COLOR,
                         );
-                        out.mesh
-                            .face(sub(q, off), add(q, off), dir, y0, y1, WALL_COLOR);
+                        mesh.face(sub(q, off), add(q, off), dir, y0, y1, WALL_COLOR);
                         if b > 0.0 {
                             // The underside of a lintel.
-                            out.mesh.flat(
+                            mesh.flat(
                                 [add(p, off), add(q, off), sub(q, off), sub(p, off)],
                                 y0,
                                 false,
@@ -874,7 +887,7 @@ impl BuildingDesign {
                         }
                         if t < wall_h {
                             // The top of a sill.
-                            out.mesh.flat(
+                            mesh.flat(
                                 [add(p, off), add(q, off), sub(q, off), sub(p, off)],
                                 y1,
                                 true,
@@ -903,7 +916,7 @@ impl BuildingDesign {
                     if st.rect().is_none() || rise <= 0.0 {
                         continue;
                     }
-                    out.mesh.flight(st, floor_y, rise);
+                    mesh.flight(st, floor_y, rise);
                     out.ramps.push(Ramp {
                         stair: st.clone(),
                         y0: floor_y,
@@ -1352,6 +1365,42 @@ mod tests {
         let h = ramp.height_at(mid).unwrap();
         assert!((h - (FLOOR_Y + STOREY_M * 0.5)).abs() < 0.05, "{h}");
         assert!(!c.mesh.indices.is_empty());
+    }
+
+    /// Cut at the first floor, nothing above it is drawn and neither is its
+    /// ceiling — but every floor is still there to stand on.
+    #[test]
+    fn a_cut_hides_what_is_above_and_keeps_what_is_underfoot() {
+        let d = house();
+        let whole = d.compile();
+        let cut = d.compile_cut(Some(1));
+        let top = |c: &Compiled| {
+            c.mesh
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::MIN, f32::max)
+        };
+        // Nothing is higher than the top of the flight rising out of the first
+        // floor — kept on purpose, it is the way up — which lands on the second
+        // floor's level.
+        assert!(
+            top(&cut) <= STOREY_M * 2.0 + FLOOR_Y + 1e-3,
+            "{}",
+            top(&cut)
+        );
+        assert!(top(&whole) > STOREY_M * 3.0 - SLAB_M - 1e-3);
+        assert!(cut.mesh.indices.len() < whole.mesh.indices.len());
+        // No down-facing surface at the first floor's ceiling height.
+        let ceiling = STOREY_M * 2.0 - SLAB_M;
+        assert!(!cut
+            .mesh
+            .positions
+            .iter()
+            .zip(&cut.mesh.normals)
+            .any(|(p, n)| n[1] < -0.9 && (p[1] - ceiling).abs() < 1e-3));
+        assert_eq!(cut.floors.len(), whole.floors.len());
+        assert_eq!(cut.ramps.len(), whole.ramps.len());
     }
 
     #[test]
