@@ -567,10 +567,17 @@ impl InteriorFloors {
     /// it safe to key a see-through shell off: a sealed building is never
     /// reported, so its walls are never dissolved to show an inside it does not
     /// have.
+    ///
+    /// **The smallest building containing `p` wins.** The register files some
+    /// structures over or under another — Prinsenstraat 24–26 stands wholly
+    /// inside a 365 m² outline from 2000 — and taking the first match put the
+    /// avatar "in" the big one: that one was cut away, and the house the avatar
+    /// had walked into kept its ceiling over the camera.
     pub fn building_at(&self, p: Vec2) -> Option<&Arc<str>> {
         self.rooms
             .iter()
-            .find(|r| point_in_ring(&r.outline, p))
+            .filter(|r| point_in_ring(&r.outline, p))
+            .min_by(|a, b| ring_area(&a.outline).total_cmp(&ring_area(&b.outline)))
             .map(|r| &r.id)
     }
 
@@ -731,6 +738,15 @@ pub fn room_ring(outline: &[Vec2]) -> Option<Vec<Vec2>> {
 /// Whether this outline has a room behind its door — see [`room_ring`].
 pub fn can_hold_a_room(outline: &[Vec2]) -> bool {
     room_ring(outline).is_some()
+}
+
+fn ring_area(ring: &[Vec2]) -> f32 {
+    let n = ring.len();
+    (0..n)
+        .map(|i| ring[i].perp_dot(ring[(i + 1) % n]))
+        .sum::<f32>()
+        .abs()
+        * 0.5
 }
 
 /// Even-odd ray cast against a bare ring.
@@ -1020,6 +1036,41 @@ mod tests {
         // the avatar up there.
         let over_well = foot + dir * (run * 0.5) + left * (width * 0.5);
         assert!(floors.support(over_well, first) < first);
+    }
+
+    /// Two outlines over one point — the register does this — and the avatar is in
+    /// the smaller.
+    #[test]
+    fn the_avatar_is_in_the_smallest_building_around_it() {
+        let (house, _, to_world) = house();
+        let big_ring: Vec<Vec2> = [[-20.0, -20.0], [30.0, -20.0], [30.0, 30.0], [-20.0, 30.0]]
+            .iter()
+            .map(|&p| to_world.point(p))
+            .collect();
+        let big = Placed {
+            id: Arc::from("big"),
+            outline: big_ring,
+            floors: Vec::new(),
+            ramps: Vec::new(),
+            storeys: 1,
+            levels: Vec::new(),
+            rooms: Vec::new(),
+            designed: false,
+        };
+        // Either order: the answer must not depend on which was built first.
+        for rooms in [vec![big, house]] {
+            let floors = InteriorFloors { rooms };
+            assert_eq!(
+                floors.building_at(to_world.point([3.0, 6.0])).map(|s| &**s),
+                Some("p")
+            );
+            assert_eq!(
+                floors
+                    .building_at(to_world.point([20.0, 20.0]))
+                    .map(|s| &**s),
+                Some("big")
+            );
+        }
     }
 
     /// The doorway is inside the building as far as the glass is concerned.
