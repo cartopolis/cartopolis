@@ -392,11 +392,16 @@ impl BuildingDesign {
 }
 
 fn check_point(p: P2) -> Result<(), String> {
-    if p[0].is_finite() && p[1].is_finite() && p[0].abs() <= MAX_EXTENT_M && p[1].abs() <= MAX_EXTENT_M
+    if p[0].is_finite()
+        && p[1].is_finite()
+        && p[0].abs() <= MAX_EXTENT_M
+        && p[1].abs() <= MAX_EXTENT_M
     {
         Ok(())
     } else {
-        Err(format!("a point lies more than {MAX_EXTENT_M} m from the origin"))
+        Err(format!(
+            "a point lies more than {MAX_EXTENT_M} m from the origin"
+        ))
     }
 }
 
@@ -408,7 +413,9 @@ fn check_polygon(ring: &[P2], may_be_empty: bool) -> Result<(), String> {
         return Err("an outline needs at least three points".into());
     }
     if ring.len() > MAX_POLYGON_POINTS {
-        return Err(format!("an outline has more than {MAX_POLYGON_POINTS} points"));
+        return Err(format!(
+            "an outline has more than {MAX_POLYGON_POINTS} points"
+        ));
     }
     for &p in ring {
         check_point(p)?;
@@ -612,7 +619,10 @@ fn find_stair(ring: &[P2]) -> Option<Stair> {
         // Deep enough here, not merely long enough along the wall: a corridor
         // passes the length test and has no room for a flight.
         let Some(rect) = stair.rect() else { continue };
-        if !rect.iter().all(|&c| point_in_ring(ring, shrink_toward(c, mid, 0.01))) {
+        if !rect
+            .iter()
+            .all(|&c| point_in_ring(ring, shrink_toward(c, mid, 0.01)))
+        {
             continue;
         }
         if best.as_ref().is_none_or(|(l, _)| len > *l) {
@@ -719,7 +729,11 @@ impl BuildingDesign {
 
             // The floor, less the wells of the flights arriving from below.
             let wells_in: Vec<[P2; 4]> = if k > 0 {
-                self.storeys[k - 1].stairs.iter().filter_map(Stair::rect).collect()
+                self.storeys[k - 1]
+                    .stairs
+                    .iter()
+                    .filter_map(Stair::rect)
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -801,7 +815,8 @@ impl BuildingDesign {
                     };
                     for &(t0, t1, b, t) in &pieces {
                         let (p, q) = (add(w.a, scale(dir, t0)), add(w.a, scale(dir, t1)));
-                        out.mesh.face(p, q, inward, floor_y + b, floor_y + t, WALL_COLOR);
+                        out.mesh
+                            .face(p, q, inward, floor_y + b, floor_y + t, WALL_COLOR);
                     }
                     if k == 0 {
                         for o in w
@@ -832,9 +847,16 @@ impl BuildingDesign {
                         );
                         // The reveals: the wall's cut ends, at the wall's ends and
                         // either side of each opening.
+                        out.mesh.face(
+                            sub(p, off),
+                            add(p, off),
+                            scale(dir, -1.0),
+                            y0,
+                            y1,
+                            WALL_COLOR,
+                        );
                         out.mesh
-                            .face(sub(p, off), add(p, off), scale(dir, -1.0), y0, y1, WALL_COLOR);
-                        out.mesh.face(sub(q, off), add(q, off), dir, y0, y1, WALL_COLOR);
+                            .face(sub(q, off), add(q, off), dir, y0, y1, WALL_COLOR);
                         if b > 0.0 {
                             // The underside of a lintel.
                             out.mesh.flat(
@@ -920,7 +942,12 @@ fn subtract(ring: &[P2], cuts: &[[P2; 4]]) -> Vec<Vec<Vec<P2>>> {
     }
     // Millimetres on an integer lattice, which is the interface `road_stitch`
     // uses for the same reason: exact, with nothing to tune.
-    let mm = |p: P2| IntPoint::new((p[0] * 1000.0).round() as i32, (p[1] * 1000.0).round() as i32);
+    let mm = |p: P2| {
+        IntPoint::new(
+            (p[0] * 1000.0).round() as i32,
+            (p[1] * 1000.0).round() as i32,
+        )
+    };
     let wound = |pts: &[P2]| -> Vec<IntPoint<i32>> {
         let mut out: Vec<IntPoint<i32>> = pts.iter().map(|&p| mm(p)).collect();
         if signed_area(pts) < 0.0 {
@@ -998,7 +1025,11 @@ impl MeshData {
 
     /// A horizontal quad.
     fn flat(&mut self, corners: [P2; 4], y: f32, up: bool, c: [f32; 4]) {
-        let n = if up { [0.0, 1.0, 0.0] } else { [0.0, -1.0, 0.0] };
+        let n = if up {
+            [0.0, 1.0, 0.0]
+        } else {
+            [0.0, -1.0, 0.0]
+        };
         let v = corners.map(|p| self.push([p[0], y, p[1]], n, c));
         self.tri([v[0], v[1], v[2]], n);
         self.tri([v[0], v[2], v[3]], n);
@@ -1028,13 +1059,20 @@ impl MeshData {
         let Ok(tris) = earcutr::earcut(&flat, &holes, 2) else {
             return;
         };
-        let n = if up { [0.0, 1.0, 0.0] } else { [0.0, -1.0, 0.0] };
+        let n = if up {
+            [0.0, 1.0, 0.0]
+        } else {
+            [0.0, -1.0, 0.0]
+        };
         let base = self.positions.len() as u32;
         for &p in &pts {
             self.push([p[0], y, p[1]], n, c);
         }
         for t in tris.chunks_exact(3) {
-            self.tri([base + t[0] as u32, base + t[1] as u32, base + t[2] as u32], n);
+            self.tri(
+                [base + t[0] as u32, base + t[1] as u32, base + t[2] as u32],
+                n,
+            );
         }
     }
 
@@ -1054,7 +1092,12 @@ impl MeshData {
             let y = bottom + (s + 1) as f32 * rise;
             let front = add(st.foot, scale(d, s as f32 * going));
             let back = add(front, scale(d, going));
-            self.flat([front, back, add(back, across), add(front, across)], y, true, WALL_COLOR);
+            self.flat(
+                [front, back, add(back, across), add(front, across)],
+                y,
+                true,
+                WALL_COLOR,
+            );
             self.face(front, add(front, across), back_n, y - rise, y, FLOOR_COLOR);
         }
         // The underside: one sloped quad, its normal perpendicular to the ramp and
@@ -1204,8 +1247,14 @@ mod tests {
     /// shell tall enough for three storeys.
     fn house() -> BuildingDesign {
         let outline = [[0.0, 0.0], [6.0, 0.0], [6.0, 12.0], [0.0, 12.0]];
-        generate("0014100010938796", [53.2, 6.56], &outline, Some(9.8), &[[3.0, 0.0]])
-            .expect("a house this size holds a room")
+        generate(
+            "0014100010938796",
+            [53.2, 6.56],
+            &outline,
+            Some(9.8),
+            &[[3.0, 0.0]],
+        )
+        .expect("a house this size holds a room")
     }
 
     #[test]
@@ -1324,7 +1373,10 @@ mod tests {
     fn nonsense_is_refused_with_a_reason() {
         let mut d = house();
         d.storeys[1].elevation = 1.0;
-        assert!(d.validate().unwrap_err().contains("inside the storey below"));
+        assert!(d
+            .validate()
+            .unwrap_err()
+            .contains("inside the storey below"));
         let mut d = house();
         d.storeys[0].walls[0].openings.push(Opening {
             id: String::new(),
