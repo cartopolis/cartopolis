@@ -709,8 +709,9 @@ pub fn update_tall_structures(
             .spawn(async move {
                 match fetch_cell_text(cx, cy).await {
                     Ok(text) => {
-                        crate::platform::workers::submit(
+                        crate::platform::workers::submit_ranked(
                             "tall_structures",
+                            crate::platform::workers::FAR,
                             Box::new(move || {
                                 let built = build_cell(&text, cx, cy, ax, ay, z, lat, &ground);
                                 if let Ok(mut g) = results.lock() {

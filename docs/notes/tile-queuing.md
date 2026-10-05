@@ -1,7 +1,7 @@
 ---
 topic: streaming
 triggers: [workers.rs, "workers::submit", submit_ranked, submit_heavy_ranked, Urgency, urgency_for_ring, AGING_JOBS, fetch_gate, Dispatcher, reprice, wanted_shared, tile_rank_at, "tiles queue", "tile stall", "unseen tiles keep loading", wait_us]
-updated: 2026-09-29
+updated: 2026-10-05
 ---
 
 # Where a tile waits, and who decides the order
@@ -43,8 +43,17 @@ a ring distance onto them.
 
 Who states an urgency: map tiles `BASEMAP`; `surfaces` and `lod22` by ring;
 `terrain_field` and `terrain_fine` `NEAR` (ground and building cells wait on the
-field); `globe` `FAR`. Everything else is `NORMAL`. **That is a choice made without a
-measurement** — look at the wait column for the other labels before ranking more.
+field); `routing` `NEAR` (a person tapped for it and is watching a spinner);
+`globe`, `tall_structures`, `transit` and `data_layers` `FAR` (decoration nobody is
+waiting on). Everything else is `NORMAL`. **The ranks are reasoned, not measured** —
+look at the wait column for a label before moving it.
+
+What the wait column said on a warm start over Groningen at 3 km (2026-10-05, this
+container, dev build, 7 worker threads, `worker_split` in `--dump-state`; busy and
+wait are summed over jobs, in seconds): `lod22` 9 jobs, 25.5 busy, 27.4 wait;
+`surfaces` 9, 23.0, 11.2; `bag_facts` 25, 12.5, 0.0; `osm_buildings` 76, 10.0, 1.2;
+`map_tiles` 145, 7.5, 2.9; `globe` 166, 3.8, 7.7. The building cells wait longest
+because each is seconds of work in the heavy lane.
 
 ## Two more rules in `map_stream`
 
@@ -63,7 +72,7 @@ measurement** — look at the wait column for the other labels before ranking mo
 ## Not done
 
 - **In-flight fetches are not cancelled**, only their decode is skipped. Cancelling the
-  request would save bandwidth, not CPU.
-- The other twelve streamers still state no urgency.
+  request would save bandwidth, not CPU. A map tile retired *before* its fetch starts
+  is not fetched at all (2026-10-05), which frees an io thread rather than bandwidth.
 - Nothing here has been timed against a cold fill. It is expected to help
   `time-to-first-map` and to leave a warm start alone; check both.

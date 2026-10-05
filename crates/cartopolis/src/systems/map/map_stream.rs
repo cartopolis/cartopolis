@@ -677,6 +677,13 @@ fn spawn_map_tile(
                 }
                 return;
             }
+            // Retired while it waited for an io thread: not fetched at all. A
+            // fast camera retires tiles faster than sixteen threads drain them,
+            // and each fetch here holds a thread a cell under the camera could
+            // be using. Push nothing, as for a fetch that lands retired below.
+            if !tile_still_wanted(key, gen, &live_gen, &wanted) {
+                return;
+            }
             // The clipmap's raster size, read here rather than threaded in — it is a
             // `OnceLock` load, and this is the one place that decides how much of
             // the phone's memory the 224-tile ring costs. 512² RGBA plus mips is

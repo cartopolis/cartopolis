@@ -344,8 +344,9 @@ pub fn poll_transit_vehicles(
                 Some(load_line_body().await)
             };
             let feed = fetch_feed_bytes().await;
-            crate::platform::workers::submit(
+            crate::platform::workers::submit_ranked(
                 "transit",
+                crate::platform::workers::FAR,
                 Box::new(move || {
                     let map = resolve_line_map(&lines, line_body);
                     let fetched = feed.map(|buf| parse_vehicle_positions(&buf, &map));

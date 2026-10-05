@@ -1129,8 +1129,9 @@ pub fn update_data_layers(
                 };
                 match source {
                     Ok(source) => {
-                        crate::platform::workers::submit(
+                        crate::platform::workers::submit_ranked(
                             "data_layers",
+                            crate::platform::workers::FAR,
                             Box::new(move || {
                                 let built =
                                     build_layer_cell(li, &source, cx, cy, ax, ay, z, lat, ground);
@@ -1160,8 +1161,9 @@ pub fn update_data_layers(
                     Ok(text) => {
                         // Same reason as the marker path: the parse is CPU work
                         // and the awaiting thread is the frame loop on wasm.
-                        crate::platform::workers::submit(
+                        crate::platform::workers::submit_ranked(
                             "data_layers",
+                            crate::platform::workers::FAR,
                             Box::new(move || {
                                 let parsed = parse_pois(&LAYER_DEFS[li], &text);
                                 if let Ok(mut g) = detail_sink.lock() {

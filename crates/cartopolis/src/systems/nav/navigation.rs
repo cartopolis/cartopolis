@@ -738,8 +738,11 @@ pub fn drive_route_solver(
             match fetch_corridor(from, to, &template, &progress, &cache).await {
                 Err(e) => publish_solve(&sink, seq, Err(e)),
                 Ok(input) => {
-                    crate::platform::workers::submit(
+                    // Somebody tapped for this and is watching a spinner, so it
+                    // goes ahead of the map cells — behind only the basemap.
+                    crate::platform::workers::submit_ranked(
                         "routing",
+                        crate::platform::workers::NEAR,
                         Box::new(move || {
                             let result = build_and_search(input, from, to, mode, &cache);
                             publish_solve(&sink, seq, result);
