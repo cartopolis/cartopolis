@@ -617,11 +617,17 @@ fn find_stair(ring: &[P2]) -> Option<Stair> {
             run: STAIR_RUN_M,
         };
         // Deep enough here, not merely long enough along the wall: a corridor
-        // passes the length test and has no room for a flight.
+        // passes the length test and has no room for a flight. Two corners lie
+        // exactly on the wall, where an even-odd test answers by rounding, so
+        // each is nudged toward the middle of the flight — into the room if the
+        // flight is in it — before it is asked. Nudging along the wall instead
+        // left them on the edge, and whether a real terrace house got its
+        // stairs depended on where the frame's origin was.
         let Some(rect) = stair.rect() else { continue };
+        let centre = scale(add(rect[0], rect[2]), 0.5);
         if !rect
             .iter()
-            .all(|&c| point_in_ring(ring, shrink_toward(c, mid, 0.01)))
+            .all(|&c| point_in_ring(ring, shrink_toward(c, centre, 0.02)))
         {
             continue;
         }
@@ -1288,6 +1294,35 @@ mod tests {
                     point_in_ring(ring, shrink_toward(c, [3.0, 6.0], 0.02)),
                     "a corner of the flight is outside the room: {c:?}"
                 );
+            }
+        }
+    }
+
+    /// Prinsenstraat 24–26, Groningen (pand 0014100010938796): a real BAG
+    /// outline, with a nearly collinear fifth corner, under an 11 m shell. It
+    /// came out as one storey — the flight's corners on the wall were tested
+    /// for being inside the room while lying exactly on its edge.
+    #[test]
+    fn a_real_terrace_house_gets_its_stairs_and_its_storeys() {
+        let fp = [
+            (53.215_249_7, 6.570_901_7),
+            (53.215_303_6, 6.570_820_0),
+            (53.215_214_4, 6.570_614_4),
+            (53.215_158_9, 6.570_699_4),
+            (53.215_229_8, 6.570_856_8),
+        ];
+        let n = fp.len() as f64;
+        let centre = [
+            fp.iter().map(|p| p.0).sum::<f64>() / n,
+            fp.iter().map(|p| p.1).sum::<f64>() / n,
+        ];
+        // Atlas puts the origin at the centre, the client at the first corner.
+        for origin in [[fp[0].0, fp[0].1], centre] {
+            let outline: Vec<[f32; 2]> = fp.iter().map(|&(a, b)| to_local(origin, a, b)).collect();
+            for ring in [outline.clone(), outline.iter().rev().copied().collect()] {
+                let d = generate("0014100010938796", origin, &ring, Some(11.15), &[]).unwrap();
+                assert_eq!(d.storeys.len(), 3, "an 11 m shell holds three storeys");
+                assert!(d.validate().is_ok());
             }
         }
     }
