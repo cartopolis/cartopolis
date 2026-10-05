@@ -305,7 +305,8 @@ const DOOR_H: f32 = 2.1;
 
 /// A doorway part (`lod22::push_doorway`). The surround, reveals and step have
 /// UV0.y = -0.5 and keep their plain colour; the leaf has UV0 = (x + 10 × style,
-/// -1 - y) and is drawn here: panels, glass and a handle.
+/// -1 - y) and is drawn here: panels, glass and a handle. Style 3 is a window's
+/// pane in a designed facade (`lod22_facade`): all glass, no handle.
 fn door_surface(pbr_input: ptr<function, PbrInput>, uv: vec2<f32>) {
     if uv.y > -0.75 {
         (*pbr_input).material.perceptual_roughness = 0.7;
@@ -332,15 +333,18 @@ fn door_surface(pbr_input: ptr<function, PbrInput>, uv: vec2<f32>) {
     } else if style < 1.5 {
         // A glass door in a slim frame.
         glass = f32(x > 0.07 && x < DOOR_W - 0.07 && y > 0.07 && y < DOOR_H - 0.07);
-    } else {
+    } else if style < 2.5 {
         // Flush, with a tall glass strip on the lock side.
         glass = f32(x > DOOR_W * 0.6 && x < DOOR_W - 0.13 && y > 0.3 && y < DOOR_H - 0.3);
+    } else {
+        // A window's pane: glass edge to edge; its frame is geometry.
+        glass = 1.0;
     }
     let c = (*pbr_input).material.base_color.rgb;
     var col = mix(c * tone, vec3<f32>(0.02, 0.025, 0.03), glass);
     var metal = 0.0;
     // The handle, on the lock side at hand height.
-    if length(vec2<f32>(x - (DOOR_W - 0.13), y - 1.05)) < 0.035 {
+    if style < 2.5 && length(vec2<f32>(x - (DOOR_W - 0.13), y - 1.05)) < 0.035 {
         col = vec3<f32>(0.55, 0.4, 0.15);
         metal = 1.0;
     }

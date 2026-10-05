@@ -2248,6 +2248,15 @@ impl MeshData {
         idx
     }
 
+    /// Every triangle as its three corners, for a test that asks what was drawn
+    /// where.
+    #[cfg(test)]
+    pub(crate) fn test_triangles(&self) -> impl Iterator<Item = [Vec3; 3]> + '_ {
+        self.indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]].map(|i| Vec3::from(self.positions[i as usize])))
+    }
+
     /// Push a triangle with a flat computed normal.
     pub(crate) fn tri(&mut self, a: Vec3, b: Vec3, c: Vec3, color: [f32; 4]) {
         let n = (b - a).cross(c - a).normalize_or_zero();

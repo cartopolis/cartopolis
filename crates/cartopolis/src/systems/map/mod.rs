@@ -41,6 +41,7 @@ pub mod cutaway;
 pub mod ground_probe;
 pub mod load_control;
 pub mod lod22;
+pub mod lod22_facade;
 pub mod lod3;
 pub mod map_geometry;
 pub mod map_stream;

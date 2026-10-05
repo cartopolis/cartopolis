@@ -1392,6 +1392,9 @@ pub fn update_lod22(
                 // doorway in the room are the door its owner drew.
                 let designs = crate::systems::building_designs::load_around(cx, cy).await;
                 let facts = crate::systems::building_designs::with_design_doors(facts, &designs);
+                // The designs travel on too: a designed building's walls are drawn
+                // from its design, with the windows and doors its owner drew
+                // (`lod22_facade`).
                 // …the roof colours measured from the aerial photo, likewise baked.
                 let roofs = crate::systems::roof_colours::load_roof_cell(cx, cy).await;
                 // …and the imported models for the same cell, on the same terms.
@@ -1437,6 +1440,7 @@ pub fn update_lod22(
                             lod3.as_deref(),
                             detail,
                             streets.as_deref(),
+                            &designs,
                         );
                         if let Ok(mut g) = results.lock() {
                             g.push(((cx, cy), (built, built_rev)));
@@ -1743,6 +1747,7 @@ fn build_lod22_from_body(
     lod3_text: Option<&str>,
     detail: load_control::Detail,
     streets: Option<&cartopolis_geo::vector_tiles::TileData>,
+    designs: &[std::sync::Arc<cartopolis_geo::building_design::BuildingDesign>],
 ) -> Result<Option<Lod22Build>, String> {
     let shell = body.parse()?;
     // An imported-model cell, when the host serves one. A failure to parse it is
@@ -1805,6 +1810,32 @@ fn build_lod22_from_body(
     // height: it arrives on the vertices, is baked into a merged mesh, and is
     // unrecoverable from anything downstream.
     let mut heights: ShellStats = Vec::new();
+    // The buildings drawn from a design (`lod22_facade`): their surveyed walls
+    // are left out and drawn again with the design's openings, and the survey's
+    // wall vertices are what the redrawn walls take their height from.
+    let designed: HashMap<&str, &cartopolis_geo::building_design::BuildingDesign> =
+        designs.iter().map(|d| (d.pand.as_str(), &**d)).collect();
+    let mut shell_walls: HashMap<&str, Vec<Vec3>> = HashMap::new();
+    if !designed.is_empty() {
+        for b in elements
+            .iter()
+            .filter(|b| designed.contains_key(b.id.as_str()))
+        {
+            let v = shell_walls.entry(b.id.as_str()).or_default();
+            for &(i, j, k, is_roof) in &b.t {
+                if is_roof == 1 {
+                    continue;
+                }
+                for ix in [i, j, k] {
+                    if let Some(&(la, lo, h)) = b.p.get(ix) {
+                        let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
+                        v.push(Vec3::new(w.x, h, w.y));
+                    }
+                }
+            }
+        }
+    }
+    let mut facades_drawn: HashSet<&str> = HashSet::new();
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -1821,6 +1852,7 @@ fn build_lod22_from_body(
         // BAG tree and this element carries an id. `None` everywhere else, and
         // every read below has the old behaviour as its `None` arm.
         let fact = (!b.id.is_empty()).then(|| facts.building(&b.id)).flatten();
+        let design = designed.get(b.id.as_str()).copied();
         dated.1 += 1;
         if fact.is_some() {
             dated.0 += 1;
@@ -1987,7 +2019,13 @@ fn build_lod22_from_body(
         // costs nothing to carry and a building sealed at range would be a
         // building the avatar could not walk into on the frame the cell was
         // promoted.
-        if detail == load_control::Detail::Near && !doors.is_empty() && outline.len() >= 3 {
+        // A designed building's doors are openings in its redrawn walls, not
+        // panels on the surveyed ones.
+        if design.is_none()
+            && detail == load_control::Detail::Near
+            && !doors.is_empty()
+            && outline.len() >= 3
+        {
             let base = ground.level_over(outline.iter().map(|w| [w.x, w.y]));
             // Only the entrances no wall face could take; the rest are built
             // as doorways further down, once the building's base is known.
@@ -2035,7 +2073,27 @@ fn build_lod22_from_body(
         if let Some(fp) = pending_fp {
             footprints.push(fp.with_extent(base - 3.0, base + wall_h.max(3.0)));
         }
-        if detail == load_control::Detail::Near {
+        if let Some(d) = design {
+            // Once per building, whichever of its parts gets here first.
+            if facades_drawn.insert(b.id.as_str()) && outline.len() >= 3 {
+                let openings = crate::systems::lod22_facade::openings_of(d, |la, lo| {
+                    lat_lng_to_local(la, lo, ax, ay, z, tile_m)
+                });
+                crate::systems::lod22_facade::draw(
+                    &mut buf,
+                    &outline,
+                    base,
+                    shell_walls
+                        .get(b.id.as_str())
+                        .map_or(&[][..], Vec::as_slice),
+                    wall_h,
+                    &openings,
+                    wall,
+                    Vec2::new(ox, oz),
+                );
+            }
+        }
+        if design.is_none() && detail == load_control::Detail::Near {
             for (face, _) in placed.iter().filter_map(|p| p.0.map(|i| (i, p.1))) {
                 let face = &faces.faces[face];
                 let Some(at) = face.door_at() else { continue };
@@ -2061,6 +2119,10 @@ fn build_lod22_from_body(
                     roof_tile
                 };
                 buf.tri(a, bb, c, color);
+                continue;
+            }
+            // Redrawn from the design, above.
+            if design.is_some() {
                 continue;
             }
             // Ground-contact darkening, baked into the wall vertices on the
@@ -2624,6 +2686,7 @@ mod tests {
             None,
             load_control::Detail::Near,
             None,
+            &[],
         )
     }
 
