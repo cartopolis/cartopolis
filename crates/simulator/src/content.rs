@@ -270,6 +270,52 @@ fn goal(end: f64, label: &str) -> Vec<PrimSpec> {
     ]
 }
 
+/// How far outside the lines the advertising boards stand.
+const BOARDS_OUT_M: f64 = 4.0;
+const BOARD_HEIGHT_M: f32 = 1.0;
+const BOARD_THICKNESS_M: f32 = 0.1;
+
+/// The advertising boards round the pitch: eight, two to a side, because a prim
+/// is at most 64 m long. They are what keeps the ball on the pitch — the
+/// server's physics sees prims and nothing else, so the stadium around it
+/// (`docs/notes/building-models.md`) is not there for a ball. Avatars are not
+/// stopped by prims, so the boards are no fence for people.
+fn boards() -> Vec<PrimSpec> {
+    let half_len = pitch_half_length();
+    let along = half_len + BOARDS_OUT_M;
+    let across = PITCH_HALF_WIDTH_M + BOARDS_OUT_M;
+    let mut out = Vec::new();
+    for (side, s) in [("west", -1.0), ("east", 1.0)] {
+        for (half, a) in [("north", 1.0), ("south", -1.0)] {
+            out.push(goal_part(
+                &format!("Advertising board — {side} side, {half} half"),
+                a * along / 2.0,
+                s * across,
+                BOARD_HEIGHT_M / 2.0,
+                [BOARD_THICKNESS_M, BOARD_HEIGHT_M, along as f32],
+                false,
+            ));
+        }
+    }
+    for (end, a) in [("north", 1.0), ("south", -1.0)] {
+        for (side, s) in [("west", -1.0), ("east", 1.0)] {
+            out.push(goal_part(
+                &format!("Advertising board — {end} end, {side} side"),
+                a * along,
+                s * across / 2.0,
+                BOARD_HEIGHT_M / 2.0,
+                [across as f32, BOARD_HEIGHT_M, BOARD_THICKNESS_M],
+                false,
+            ));
+        }
+    }
+    out
+}
+
+/// Half the pitch's width, from the same OpenStreetMap way: 68 m. The goal-line
+/// points carry the length and not the width, so the width is stated.
+const PITCH_HALF_WIDTH_M: f64 = 34.0;
+
 /// A ball and two goals on the Euroborg's pitch.
 ///
 /// The ball is the only physical prim (`docs/notes/physical-prims.md`); the
@@ -293,6 +339,7 @@ fn football() -> Pack {
     }];
     prims.extend(goal(1.0, "North"));
     prims.extend(goal(-1.0, "South"));
+    prims.extend(boards());
     Pack {
         name: "football",
         summary: "A football and two goals on the Euroborg's pitch. Run into the \

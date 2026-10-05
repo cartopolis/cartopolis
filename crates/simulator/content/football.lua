@@ -17,8 +17,11 @@ local SOUTH = { lat = 53.20566315, lng = 6.5916427 }
 local GOAL_HALF_WIDTH = 3.66 -- metres either side of the middle of the line
 local GOAL_HEIGHT = 2.44
 local BALL_RADIUS = 0.11
--- Further than this outside the pitch and the ball has left the stadium.
-local OUT_OF_PLAY = 40
+-- Further than this outside the lines and the ball is past the advertising
+-- boards (4 m out), where nobody can play it back.
+local OUT_OF_PLAY = 4.5
+-- Half of the pitch's 68 m width; the two goal points carry only its length.
+local HALF_WIDTH = 34
 
 local centre = {
     lat = (NORTH.lat + SOUTH.lat) / 2,
@@ -96,8 +99,8 @@ function on_timer()
         shout("GOAL at the south end! " .. score_line())
         play_sound("bell")
         restart_in = 3
-    elseif math.abs(along) > HALF_LENGTH + OUT_OF_PLAY or math.abs(across) > 34 + OUT_OF_PLAY then
-        say("The ball left the stadium; back to the centre spot.")
+    elseif math.abs(along) > HALF_LENGTH + OUT_OF_PLAY or math.abs(across) > HALF_WIDTH + OUT_OF_PLAY then
+        say("The ball went over the boards; back to the centre spot.")
         restart_in = 1
     end
 end

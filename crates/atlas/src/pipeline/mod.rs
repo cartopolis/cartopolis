@@ -28,6 +28,7 @@ pub mod dikes;
 pub mod geom;
 pub mod http;
 pub mod lod22;
+pub mod models;
 pub mod rd;
 pub mod roofs;
 pub mod tall;
@@ -481,6 +482,18 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "lod22/coverage.json",
         typical_minutes: 1,
         run: lod22::run,
+    },
+    Dataset {
+        id: "models",
+        label: "Building models (landmarks)",
+        description: "Generated models for the landmarks the survey gets wrong — the Euroborg \
+                      is a 23 m block with its pitch filled in — measured from the AHN \
+                      surface model and drawn in place of their LoD2.2 shell. Reads the \
+                      LoD2.2 cells to file each model where its shell is, so it runs after \
+                      them.",
+        coverage: "lod3/coverage.json",
+        typical_minutes: 1,
+        run: models::run,
     },
     Dataset {
         id: "roofs",

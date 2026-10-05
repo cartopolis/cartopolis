@@ -1833,7 +1833,9 @@ fn build_lod22_from_body(
     let mut buf = MeshData::with_dedup().with_uvs();
     // Imported models mesh into their own buffer: they are drawn with culling off
     // (see [`Piece`]) and so cannot share a mesh with the shells.
-    let mut interior = MeshData::with_dedup();
+    // UV0 carries `building_windows::WINDOWLESS_UV` on every vertex: a model's
+    // walls get no painted windows.
+    let mut interior = MeshData::with_dedup().with_uvs();
     // One footprint polygon per building, in world XZ (for avatar collision).
     let mut footprints: Vec<crate::systems::collision::Footprint> = Vec::new();
     // Buildings the register has struck off, for the log line below — a silent
@@ -2259,7 +2261,11 @@ fn build_lod22_from_body(
             for &(i, j, k, is_roof) in &b.t {
                 let (a, bb, c) = (local[i], local[j], local[k]);
                 let color = if is_roof == 1 { roof_tile } else { wall };
-                interior.tri(a, bb, c, color);
+                interior.tri_graded_uv(
+                    [a, bb, c],
+                    [color; 3],
+                    [crate::systems::building_windows::WINDOWLESS_UV; 3],
+                );
             }
         }
     }

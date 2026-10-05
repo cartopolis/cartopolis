@@ -241,6 +241,13 @@ impl WallFace {
     }
 }
 
+/// The UV0 of a wall that must carry no painted windows: no position along a
+/// face, and the 1 cm bay [`WallFace::uv`] gives a face too short for one. An
+/// imported model (`systems::lod3`) is the case — its windows, if it has any,
+/// are its own geometry, and a stadium's stands painted as office floors read
+/// as a building, not as seating.
+pub const WINDOWLESS_UV: [f32; 2] = [0.0, 1.0];
+
 /// A building's walls grouped into flat faces, for the facade shader.
 ///
 /// The shader could see a wall's normal and position and nothing else, so it
