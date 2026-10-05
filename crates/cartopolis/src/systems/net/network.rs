@@ -918,7 +918,7 @@ pub fn apply_network_snapshot(
                 sender_name,
                 body,
                 distance_m,
-                ..
+                sent_at_ms,
             } => {
                 // `sender_id` is carried through rather than dropped: it is the
                 // same number as `RemoteAvatar::sim_id`, which is what lets a
@@ -926,6 +926,10 @@ pub fn apply_network_snapshot(
                 // a display name.
                 auth.chat
                     .receive(&channel, sender_id, sender_name, body, distance_m);
+                // The sign-in replay of a channel's scrollback arrives down this
+                // same arm; dating it by when it was sent keeps it out of the
+                // bubbles and the transcript.
+                auth.chat.date_last(&channel, sent_at_ms);
             }
             // An edit the server would not allow. The dialog and the gizmo both
             // applied it locally already — for the feel of it — so the client is

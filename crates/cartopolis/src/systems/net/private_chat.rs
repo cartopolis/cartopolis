@@ -1601,14 +1601,16 @@ pub fn drive_private_chats(
                 body,
                 point,
                 picture,
-                ..
+                sent_at_ms,
             } => {
+                let channel = channel_key(&group);
                 let filter = private
                     .filter
                     .get_or_insert_with(cartopolis_core::Filter::seeded);
                 let (body, _) = filter.mask(&body);
                 if let Some(picture) = picture {
-                    chat.receive_picture(&channel_key(&group), 0, from, body, picture);
+                    chat.receive_picture(&channel, 0, from, body, picture);
+                    chat.date_last(&channel, sent_at_ms);
                     continue;
                 }
                 // A point's own text is masked too: it is shown in the same log.
@@ -1617,7 +1619,8 @@ pub fn drive_private_chats(
                     p.name = p.name.map(|n| filter.mask(&n).0);
                     p
                 });
-                chat.receive_point(&channel_key(&group), 0, from, body, None, point);
+                chat.receive_point(&channel, 0, from, body, None, point);
+                chat.date_last(&channel, sent_at_ms);
             }
             Event::Location {
                 group,

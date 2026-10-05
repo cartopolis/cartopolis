@@ -21,6 +21,15 @@ use crate::systems::theme;
 /// Per-channel scrollback cap on the client.
 const MAX_LINES: usize = 200;
 
+/// A line sent longer ago than this when it reaches the device is history, not
+/// news: the server replays each channel's scrollback on sign-in (and private
+/// chats catch up on what arrived while the device was away), and before this
+/// every replayed line was stamped as arriving *now* — so opening the client
+/// put week-old messages up as fresh bubbles and transcript lines. Two minutes
+/// rather than "since the handshake" because `sent_at_ms` is another machine's
+/// clock: generous enough to absorb ordinary skew, far short of a replay's age.
+const BACKLOG_AFTER_MS: u64 = 120_000;
+
 #[derive(Resource)]
 pub struct ChatState {
     pub channels: Vec<ChatChannel>,
@@ -449,6 +458,29 @@ impl ChatState {
             let excess = lines.len() - MAX_LINES;
             lines.drain(0..excess);
         }
+    }
+
+    /// Date the line just received on `channel` by when it was **sent**, and
+    /// keep it out of everything that surfaces new lines if that was long ago
+    /// ([`BACKLOG_AFTER_MS`]).
+    ///
+    /// It stays in the log, at its real time — that is what scrollback is for —
+    /// but its [`ChatLine::arrived`] goes to minus infinity, so every fade reads
+    /// it as long gone: no bubble, no transcript line, nothing in
+    /// [`Self::recent`]. `sent_at_ms == 0` means the sender did not say, and the
+    /// line keeps its arrival stamp.
+    pub fn date_last(&mut self, channel: &str, sent_at_ms: u64) {
+        if sent_at_ms == 0 {
+            return;
+        }
+        let idx = self.channel_index(channel);
+        let Some(line) = self.channels[idx].lines.last_mut() else {
+            return;
+        };
+        if line.at_ms.saturating_sub(sent_at_ms) > BACKLOG_AFTER_MS {
+            line.arrived = f64::NEG_INFINITY;
+        }
+        line.at_ms = sent_at_ms;
     }
 
     /// [`Self::receive`], for a line that is a picture.

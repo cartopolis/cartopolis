@@ -897,6 +897,37 @@ mod tests {
         assert_eq!(got[0].1.body, "fresh");
     }
 
+    /// The scrollback a channel replays on sign-in is history: it lands in the
+    /// log at the time it was sent, and never pops up as if just said.
+    #[test]
+    fn replayed_scrollback_does_not_pop_up() {
+        let mut chat = ChatState::default();
+        chat.clock = 50.0;
+        chat.receive("geo:", 8, "far".into(), "last week".into(), None);
+        let now_ms = chat
+            .channels
+            .iter()
+            .find(|c| c.key == "geo:")
+            .unwrap()
+            .lines[0]
+            .at_ms;
+        let week_ago = now_ms - 7 * 24 * 3_600_000;
+        chat.date_last("geo:", week_ago);
+        chat.receive("geo:", 8, "far".into(), "just now".into(), None);
+        chat.date_last("geo:", now_ms - 5_000);
+        let got = chat.recent(50.0, 14.0, 10);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1.body, "just now");
+        let lines = &chat
+            .channels
+            .iter()
+            .find(|c| c.key == "geo:")
+            .unwrap()
+            .lines;
+        assert_eq!(lines.len(), 2, "history stays in the log");
+        assert_eq!(lines[0].at_ms, week_ago);
+    }
+
     /// The cap keeps the *newest*, not the first ones it happened to see.
     #[test]
     fn recent_keeps_the_newest_when_it_has_to_choose() {
