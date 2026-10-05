@@ -728,6 +728,13 @@ pub struct Lod22Buildings {
     /// Cells re-spawned out of [`Self::retained`] over the life of the process,
     /// for `--dump-state`.
     warm_restored: u32,
+    /// The building-design stamps each cell was built under
+    /// (`building_designs::neighbourhood_revision`). A designed building's
+    /// entrances are baked into its facade and collider here, so an edit has to
+    /// rebuild the cell it stands in — and only that cell, not the ring.
+    design_rev: HashMap<(i64, i64), u64>,
+    /// `building_designs::manifest_revision` last compared against.
+    design_manifest_seen: u64,
 }
 
 impl crate::systems::stream_watch::StreamBusy for Lod22Buildings {
@@ -852,6 +859,8 @@ impl Default for Lod22Buildings {
             live: HashMap::new(),
             retained: crate::platform::warm::WarmStore::new(crate::quality::warm_gpu_ceiling()),
             warm_restored: 0,
+            design_rev: HashMap::new(),
+            design_manifest_seen: 0,
         }
     }
 }
@@ -928,6 +937,7 @@ fn rebuild_cell(
 ) {
     lod.dated.remove(&c);
     lod.doors.remove(&c);
+    lod.design_rev.remove(&c);
     lod.built_detail.remove(&c);
     lod.heights.remove(&c);
     lod.built_rev.remove(&c);
@@ -992,6 +1002,7 @@ pub fn update_lod22(
     // one built on flat ground. Unlike the terrain it can only change once.
     crate::systems::building_facts::prefetch_coverage(now);
     crate::systems::lod3::prefetch_coverage(now);
+    crate::systems::building_designs::poll(now);
     crate::systems::roof_colours::prefetch_coverage(now);
     // The additive manifests are folded in the same way and for the same reason:
     // the BAG and the roofs decide a building's colours, lod3 decides whether it
@@ -1048,6 +1059,34 @@ pub fn update_lod22(
         // The held cells stand on the old ground, and nothing records which.
         lod.retained.clear();
     }
+    // **A building design that changed rebuilds the cells around it, and only
+    // those** — an owner moving a door is a door in one building, and the ring
+    // retear below is for causes that move every building at once. Asked only
+    // when the published manifest moves, which is rare.
+    let design_manifest = crate::systems::building_designs::manifest_revision();
+    if !reanchored && lod.design_manifest_seen != design_manifest {
+        lod.design_manifest_seen = design_manifest;
+        let stale: Vec<(i64, i64)> = lod
+            .design_rev
+            .iter()
+            .filter(|(c, rev)| {
+                crate::systems::building_designs::neighbourhood_revision(c.0, c.1) != **rev
+            })
+            .map(|(c, _)| *c)
+            .collect();
+        if !stale.is_empty() {
+            tracing::info!(
+                cells = stale.len(),
+                "lod22 cells rebuilt for a building design"
+            );
+            // Held cells were built under the old designs and nothing records
+            // which; dropping them costs a re-mesh on return, never a wrong door.
+            lod.retained.clear();
+            for c in stale {
+                rebuild_cell(&mut lod, &mut colliders, c);
+            }
+        }
+    }
     if reanchored || lod.terrain_revision != terrain.revision || lod.bag_revision != bag_revision {
         // The same line `map_geometry` logs, for the same reason: a ring rebuilt
         // once because the ground arrived and a ring rebuilt four times because
@@ -1068,6 +1107,7 @@ pub fn update_lod22(
         lod.built_digest.clear();
         lod.dated.clear();
         lod.doors.clear();
+        lod.design_rev.clear();
         lod.built_detail.clear();
         lod.heights.clear();
         colliders.clear_lod22();
@@ -1255,6 +1295,12 @@ pub fn update_lod22(
             lod.cells.insert(c, spawned);
             lod.dated.insert(c, warm.dated);
             lod.doors.insert(c, warm.doors);
+            // The pool is emptied whenever a design changes, so what it holds
+            // was built under the stamps standing now.
+            lod.design_rev.insert(
+                c,
+                crate::systems::building_designs::neighbourhood_revision(c.0, c.1),
+            );
             lod.heights.insert(c, warm.heights);
             lod.built_detail.insert(c, warm.detail);
             lod.live.insert(c, warm.meshes);
@@ -1307,6 +1353,10 @@ pub fn update_lod22(
         let detail = door_detail(ring_distance((cx, cy), ccx, ccy));
         let urgency = crate::platform::workers::urgency_for_ring(ring_distance((cx, cy), ccx, ccy));
         lod.built_detail.insert((cx, cy), detail);
+        lod.design_rev.insert(
+            (cx, cy),
+            crate::systems::building_designs::neighbourhood_revision(cx, cy),
+        );
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
         let mut ground_now = (!held).then(|| (terrain.snapshot(), terrain.revision));
@@ -1337,6 +1387,11 @@ pub fn update_lod22(
                 // fetch the streamer then reads. Uncovered cells return an empty
                 // set without asking anything.
                 let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
+                // …with any designed building's entrances taken from its design, so
+                // the door drawn on the facade, the opening in the collider and the
+                // doorway in the room are the door its owner drew.
+                let designs = crate::systems::building_designs::load_around(cx, cy).await;
+                let facts = crate::systems::building_designs::with_design_doors(facts, &designs);
                 // …the roof colours measured from the aerial photo, likewise baked.
                 let roofs = crate::systems::roof_colours::load_roof_cell(cx, cy).await;
                 // …and the imported models for the same cell, on the same terms.

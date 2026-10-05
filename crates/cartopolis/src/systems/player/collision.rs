@@ -135,6 +135,13 @@ impl Footprint {
         Self::with_doors(ring, &[], false)
     }
 
+    /// One straight piece of wall, `a` to `b`: hollow, so it is only ever
+    /// *crossed*, never stood in. Written as the ring `a, b, a` — both edges are
+    /// the same segment, which is all [`Self::crosses_wall`] asks about.
+    pub fn wall(a: Vec2, b: Vec2) -> Option<Self> {
+        (a.distance_squared(b) > 1e-6).then(|| Self::with_doors(vec![a, b, a], &[], true))?
+    }
+
     /// Build a footprint that can be walked through at the given entrance points.
     ///
     /// A door only opens the collider; nothing here decides whether there is
@@ -345,9 +352,20 @@ pub struct BuildingColliders {
     /// the props are mirrored from `WorldPlaces`, so the wall you are stopped by
     /// and the floor you are standing on come from one description of one tunnel.
     tunnels: Vec<Footprint>,
+    /// The inner walls of the designed buildings near the avatar
+    /// (`systems::interiors`), each a hollow two-point segment bounded to its
+    /// storey's height, already split around its doorways. Whole set replaced on
+    /// each rebuild, and gated with the LoD2.2 source: a room is only ever inside
+    /// a shell that source drew.
+    rooms: Vec<Footprint>,
 }
 
 impl BuildingColliders {
+    /// Replace the inner walls.
+    pub fn set_rooms(&mut self, walls: Vec<Footprint>) {
+        self.rooms = walls;
+    }
+
     /// Replace the tunnel corridors.
     pub fn set_bores(&mut self, tunnels: Vec<Footprint>) {
         self.tunnels = tunnels;
@@ -436,6 +454,7 @@ impl BuildingColliders {
             && (self.lod22_off || self.lod22.is_empty())
             && self.props.is_empty()
             && self.features.is_empty()
+            && (self.lod22_off || self.rooms.is_empty())
     }
 
     /// True if `p` is inside a prop's circle that the avatar is low enough to hit.
@@ -458,6 +477,7 @@ impl BuildingColliders {
         detail
             .iter()
             .chain(self.lod22.values().filter(move |_| lod22_on).flatten())
+            .chain(self.rooms.iter().filter(move |_| lod22_on))
             .chain(self.features.values().flatten())
     }
 
@@ -1011,6 +1031,34 @@ mod tests {
             c.slide(inside, Vec2::new(-6.0, 0.0), Body::standing()),
             inside
         );
+    }
+
+    /// An inner wall is a segment: crossing it is refused from either side, at
+    /// its own storey's height only, and walking past its end is not crossing it.
+    #[test]
+    fn an_inner_wall_stops_a_crossing_and_nothing_else() {
+        let mut c = BuildingColliders::default();
+        c.set_rooms(vec![Footprint::wall(
+            Vec2::new(0.0, -2.0),
+            Vec2::new(0.0, 2.0),
+        )
+        .unwrap()
+        .with_extent(0.0, 2.9)]);
+        let (west, east) = (Vec2::new(-0.5, 0.0), Vec2::new(0.5, 0.0));
+        assert_eq!(c.slide(west, east, Body::standing()), west);
+        assert_eq!(c.slide(east, west, Body::standing()), east);
+        // Round the end of it.
+        let (sw, se) = (Vec2::new(-0.5, 3.0), Vec2::new(0.5, 3.0));
+        assert_eq!(c.slide(sw, se, Body::standing()), se);
+        // A storey up, the ground floor's wall is under your feet.
+        let upstairs = Body::new(3.26, 3.26);
+        assert_eq!(c.slide(west, east, upstairs), east);
+        // Nothing ejects from a segment: standing on its line is not inside it.
+        assert_eq!(
+            c.eject(Vec2::ZERO, EJECT_MARGIN, Body::standing()),
+            Vec2::ZERO
+        );
+        assert!(Footprint::wall(Vec2::ZERO, Vec2::ZERO).is_none());
     }
 
     /// A wall has no thickness, so a point test would step over it. Crossing the

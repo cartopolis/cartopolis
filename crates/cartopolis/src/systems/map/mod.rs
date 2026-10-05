@@ -36,6 +36,7 @@ pub mod interiors;
 // sun carry the other two halves (`free_camera::setup_camera`, `sky`).
 pub mod light_shafts;
 // Sunbeams through cloud gaps and past buildings: a pass over the finished frame.
+pub mod building_designs;
 pub mod ground_probe;
 pub mod load_control;
 pub mod lod22;
