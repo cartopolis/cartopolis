@@ -217,8 +217,8 @@ fn pack_land_alpha(img: &mut image::RgbaImage, mask: Result<Vec<u8>, String>) {
 }
 
 /// What the pixels a [`rendered_cache_key`] entry holds *mean*, beyond what the
-/// renderer's fingerprint already covers. The fingerprint hashes
-/// `cartopolis_geo`, and the water mask is packed on this side of the seam
+/// renderer's revision already covers. The revision measures what
+/// `cartopolis_geo` draws, and the water mask is packed on this side of the seam
 /// (`pack_land_alpha`), so without this an entry drawn before the mask existed
 /// would be read back as a tile with no water in it.
 ///
@@ -236,8 +236,9 @@ const RENDERED_FORMAT: u32 = 3;
 /// too, as a PNG, and a return visit decodes one instead of drawing it.
 ///
 /// The key carries everything the pixels depend on, so a hit can never be a stale
-/// picture: the renderer's fingerprint (`build.rs` hashes `cartopolis_geo`'s
-/// sources and `Cargo.lock`), the raster size, the tile, and a hash of the vector
+/// picture: the renderer's revision (`cartopolis_geo::render_revision`, a hash
+/// of what it draws, so a build that changed no pixel keeps every stored tile),
+/// the raster size, the tile, and a hash of the vector
 /// body it was drawn from — a server that re-publishes the tile publishes a
 /// different body, and the old entry is simply never asked for again.
 ///
@@ -274,8 +275,8 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     }
     use std::hash::Hasher;
     Some(format!(
-        "rendered/{}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
-        env!("CARTO_RENDER_FINGERPRINT"),
+        "rendered/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
+        cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
         key.y,
@@ -307,8 +308,8 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
     bytes.hash(&mut h);
     hash_fills(&mut h, underlay);
     Some(format!(
-        "rendered-globe/{}/{size}/{}/{}/{}-{:016x}.png",
-        env!("CARTO_RENDER_FINGERPRINT"),
+        "rendered-globe/{:016x}/{size}/{}/{}/{}-{:016x}.png",
+        cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
         key.y,
@@ -675,7 +676,10 @@ mod tests {
         };
         let size = 256;
         let cache_key = rendered_cache_key(&key, &payload, size).expect("a vector tile is kept");
-        assert!(cache_key.contains(env!("CARTO_RENDER_FINGERPRINT")));
+        assert!(cache_key.contains(&format!(
+            "{:016x}",
+            cartopolis_geo::render_revision::RENDER_REVISION
+        )));
         let drawn = payload.decode(size).expect("fixture draws");
         let png = encode_rendered(&drawn).expect("encodes");
         let back = decode_rendered(&png, size).expect("decodes");
