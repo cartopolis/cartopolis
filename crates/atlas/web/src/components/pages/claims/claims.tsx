@@ -5,7 +5,7 @@ import {loadClaims, releaseClaim} from '@/lib/accounts'
 import {formatTimestamp} from '@/lib/utils'
 
 /**
- * Who holds which house.
+ * Who owns which building.
  *
  * This list *is* the dispute mechanism. Claiming is first come first served with
  * no proof of residence, so the only answer to "that is my house" is an operator
@@ -24,26 +24,26 @@ export const Claims = () => {
     return (
         <>
             <div class="section-head">
-                <h1>Houses</h1>
+                <h1>Buildings</h1>
                 <span class="count">{claims.length}</span>
             </div>
 
             {claims.length === 0 ? (
-                <div class="empty">Nobody has claimed a house yet.</div>
+                <div class="empty">Nobody has claimed a building yet.</div>
             ) : (
                 <ul class="account-list">
                     {claims.map((claim) => (
-                        <li class="account" key={claim.nummeraanduiding_id}>
+                        <li class="account" key={claim.pand_id}>
                             <div class="account-main">
                                 <span class="account-name">{claim.address}</span>
                                 <span style="flex:1" />
                                 {/*
                                   * Two presses, like the account delete: releasing
-                                  * a house takes it off somebody who believes it
+                                  * a building takes it off somebody who believes it
                                   * is theirs, and there is no undo but asking them
                                   * to claim it again first.
                                   */}
-                                {confirming === claim.nummeraanduiding_id ? (
+                                {confirming === claim.pand_id ? (
                                     <>
                                         <button
                                             class="danger"
@@ -66,7 +66,7 @@ export const Claims = () => {
                                 ) : (
                                     <button
                                         class="ghost"
-                                        onClick={() => setConfirming(claim.nummeraanduiding_id)}
+                                        onClick={() => setConfirming(claim.pand_id)}
                                         type="button"
                                     >
                                         Release

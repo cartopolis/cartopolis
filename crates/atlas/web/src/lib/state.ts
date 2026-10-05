@@ -1,7 +1,7 @@
 import type {
     Account,
     AdminState,
-    HouseClaim,
+    OwnedBuilding,
     LibraryEntry,
     Notification,
     PipelineCoverage,
@@ -37,7 +37,8 @@ export const persistentState: AdminState = {
     libraryEditing: null,
     librarySearch: '',
     loading: false,
-    myHouse: null,
+    buildingLimit: 0,
+    myBuildings: [],
     notifications: [],
     placeholders: [],
     /*
@@ -83,7 +84,7 @@ export const volatileState: Partial<AdminState> = {
     accounts: [] as Account[],
     adminTab: 'accounts',
     autopilot: null,
-    claims: [] as HouseClaim[],
+    claims: [] as OwnedBuilding[],
     editing: null,
     library: [] as LibraryEntry[],
     libraryAssets: [] as StoredAsset[],
@@ -93,7 +94,8 @@ export const volatileState: Partial<AdminState> = {
     // Re-fetched from the server that holds it, for the same reason the account
     // list is: a house shown from localStorage is a claim that may have been
     // released, rendered as though it had just been confirmed.
-    myHouse: null,
+    buildingLimit: 0,
+    myBuildings: [],
     notifications: [] as Notification[],
     // Server state, so not persisted: a placeholder shown from localStorage is a
     // street another operator may have put back to its default.

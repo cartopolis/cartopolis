@@ -4,7 +4,7 @@ import {route} from 'preact-router'
 import {useEffect, useState} from 'preact/hooks'
 
 import {$s} from '@/app'
-import {HousePicker} from '@/components/elements/house/house'
+import {BuildingPicker} from '@/components/elements/buildings/buildings'
 import {ADMIN} from '@/lib/base'
 import {resend, tokenFromLocation, verify} from '@/lib/signup'
 
@@ -54,7 +54,7 @@ export const Verify = (_props: RoutableProps) => {
                         operators in.
                     </p>
                 </div>
-                <HousePicker />
+                <BuildingPicker />
             </>
         )
     }

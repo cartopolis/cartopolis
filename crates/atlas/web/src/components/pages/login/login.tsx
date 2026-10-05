@@ -64,11 +64,11 @@ export const Login = () => {
             )}
             {/*
               * The player's one errand on this origin. Gated the same way: a
-              * server that does not hand out houses should not offer the page.
+              * server that does not hand out buildings should not offer the page.
               */}
             {$s.registration?.houses_open && (
-                <button class="ghost" disabled={busy} onClick={() => route('/house')} type="button">
-                    Claim your house
+                <button class="ghost" disabled={busy} onClick={() => route('/buildings')} type="button">
+                    Your buildings
                 </button>
             )}
         </form>

@@ -9,7 +9,8 @@ import {Accounts} from '@/components/pages/accounts/accounts'
 import {Autopilot} from '@/components/pages/autopilot/autopilot'
 import {Claims} from '@/components/pages/claims/claims'
 import {Home} from '@/components/pages/home/home'
-import {House} from '@/components/pages/house/house'
+import {Building} from '@/components/pages/building/building'
+import {Buildings} from '@/components/pages/buildings/buildings'
 import {Library} from '@/components/pages/library/library'
 import {Login} from '@/components/pages/login/login'
 import {Pipeline} from '@/components/pages/pipeline/pipeline'
@@ -59,7 +60,7 @@ const AdminView = (_props: RoutableProps) => {
                     }}
                     type="button"
                 >
-                    Houses
+                    Buildings
                 </button>
                 <button
                     class={$s.adminTab === 'library' ? 'tab is-current' : 'tab'}
@@ -108,7 +109,8 @@ const AdminView = (_props: RoutableProps) => {
  * The whole site, told apart by the path (`lib/base.ts`).
  *
  * `/` is the front page. `/register` and `/verify` are for people who have no
- * account, `/house` is for players who do, and `/admin` is the operator's. They
+ * account, `/buildings` and `/building/…` are for players who do, and `/admin`
+ * is the operator's. They
  * share this build because they share an API, and because the verification
  * link has to point *somewhere* the simulator's `/api` is same-origin with.
  * Caddy serves `index.html` for every path it does not route elsewhere, so each
@@ -119,7 +121,8 @@ const AdminView = (_props: RoutableProps) => {
  * their inbox — or signing in to claim their house — has never seen it.
  */
 export const Main = () => {
-    const playerRoute = PLAYER_PATHS.includes(window.location.pathname)
+    const path = window.location.pathname
+    const playerRoute = PLAYER_PATHS.some((p) => path === p || path.startsWith(`${p}/`))
 
     return (
         <div class="app">
@@ -145,7 +148,11 @@ export const Main = () => {
                 <Router>
                     <Register path="/register" />
                     <Verify path="/verify" />
-                    <House path="/house" />
+                    <Buildings path="/buildings" />
+                    {/* The old path, from before a person owned buildings rather
+                        than one house; links to it are in sent mail. */}
+                    <Buildings path="/house" />
+                    <Building path="/building/:pand" />
                     <AdminView path={ADMIN} />
                     <Home default />
                 </Router>

@@ -502,7 +502,7 @@ a.wordmark {
     color: var(--warn);
 }
 
-/* ── Houses ──────────────────────────────────────────────────────────────── */
+/* ── Buildings ───────────────────────────────────────────────────────────── */
 
 .house-search {
     align-items: flex-end;
@@ -938,4 +938,213 @@ a.button.primary {
 
 a.button.primary:hover {
     background: var(--accent-bright);
+}
+
+/* ── The floor-plan editor ───────────────────────────────────────────────── */
+
+/*
+ * The plan is drawn in metres (`building.tsx` puts one SVG unit at one metre,
+ * north up), so every stroke width in this block is set there, scaled to stay a
+ * pixel or two wide at any zoom; only colours live here. The colours are the
+ * palette's: walls in cream on the ink of an empty floor, the accent for what is
+ * selected and what is being drawn.
+ */
+.designer .storeys {
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.tool-hint {
+    margin-bottom: 8px;
+}
+
+.plan-wrap {
+    position: relative;
+}
+
+.plan {
+    background: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    display: block;
+    height: auto;
+    /* A drag on the plan pans it; the page must not scroll or zoom instead. */
+    touch-action: none;
+    user-select: none;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+}
+
+.plan.tool-select {
+    cursor: grab;
+}
+
+.plan:not(.tool-select) {
+    cursor: crosshair;
+}
+
+.plan .grid .g1 {
+    stroke: var(--surface);
+}
+
+.plan .grid .g5 {
+    stroke: var(--surface-raised);
+}
+
+.plan .neighbour {
+    fill: var(--surface);
+    stroke: var(--line);
+}
+
+.plan .outline {
+    fill: none;
+    stroke: var(--text-dim);
+}
+
+.plan .floor {
+    fill: var(--surface-raised);
+}
+
+.plan .room polygon {
+    fill: rgba(253, 146, 18, 0.07);
+    stroke: rgba(253, 146, 18, 0.35);
+}
+
+.plan .room.is-selected polygon {
+    fill: rgba(253, 96, 18, 0.18);
+    stroke: var(--accent);
+}
+
+.plan .room text {
+    fill: var(--cream);
+    text-anchor: middle;
+}
+
+.plan .room text.area {
+    fill: var(--text-dim);
+}
+
+.plan .wall {
+    stroke: var(--cream);
+    stroke-linecap: square;
+}
+
+.plan .wall.outer {
+    stroke: var(--text);
+}
+
+.plan .wall.is-selected,
+.plan .opening.is-selected line,
+.plan .opening.is-selected path {
+    stroke: var(--accent);
+}
+
+.plan .opening .gap {
+    stroke: var(--surface-raised);
+}
+
+.plan .opening line,
+.plan .opening path {
+    stroke: var(--amber);
+}
+
+.plan .opening.window line:not(.gap) {
+    stroke: var(--accent-text);
+}
+
+.plan .stair polygon {
+    fill: rgba(242, 239, 234, 0.08);
+    stroke: var(--cream);
+}
+
+.plan .stair line {
+    stroke: var(--text-dim);
+}
+
+.plan .stair .arrow {
+    stroke: var(--cream);
+}
+
+.plan #arrow path {
+    fill: var(--cream);
+}
+
+.plan .stair.is-selected polygon {
+    stroke: var(--accent);
+}
+
+.plan .well {
+    fill: var(--ink);
+    stroke: var(--text-dim);
+    stroke-dasharray: 0.2 0.1;
+}
+
+.plan .below,
+.plan .faint {
+    opacity: 0.25;
+}
+
+.plan .preview line,
+.plan polyline.preview {
+    stroke: var(--accent);
+}
+
+.plan .preview text {
+    fill: var(--accent-text);
+    text-anchor: middle;
+}
+
+.plan .cursor {
+    fill: var(--accent);
+}
+
+.plan .north {
+    fill: var(--text-dim);
+}
+
+.zoom {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: absolute;
+    right: 8px;
+    top: 8px;
+}
+
+.zoom button {
+    min-width: 40px;
+}
+
+.designer .props {
+    margin-top: var(--gap);
+}
+
+.designer .props .fields {
+    display: grid;
+    gap: 0 var(--gap);
+    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+    margin-top: 8px;
+}
+
+.field.compact {
+    margin-bottom: 8px;
+}
+
+.designer .problems p {
+    color: var(--warn);
+}
+
+.save-bar {
+    align-items: center;
+    margin-top: var(--gap);
+}
+
+a.ghost-link {
+    font-size: 0.9rem;
 }

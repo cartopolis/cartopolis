@@ -29,10 +29,10 @@ export interface Account {
 }
 
 /** One address the register offered, with this server's answer about it. */
-export interface HouseAddress {
+export interface BuildingAddress {
     address: string
     adresseerbaarobject_id: string
-    /** False when somebody already holds it. */
+    /** False when somebody already owns the building it was claimed through. */
     available: boolean
     latitude: number
     longitude: number
@@ -42,8 +42,12 @@ export interface HouseAddress {
     postcode: null | string
 }
 
-/** A house somebody holds. */
-export interface HouseClaim {
+/**
+ * A building somebody owns, as `buildings::Ownership` serialises it. One
+ * building has one owner; one account may own several.
+ */
+export interface OwnedBuilding {
+    /** The address it was claimed through, and the one it is shown by. */
     address: string
     claimed_at: string
     latitude: number
@@ -52,7 +56,7 @@ export interface HouseClaim {
     /** The 3DBAG building id — the join to the geometry the game client draws. */
     pand_id: string
     postcode: null | string
-    /** Present on the operator's listing only; your own claim is yours. */
+    /** Present on the operator's listing only; your own buildings are yours. */
     username?: string
 }
 
@@ -72,7 +76,7 @@ export interface SignupSession {
 
 /** What the sign-up form asks the server before it draws itself. */
 export interface RegistrationRules {
-    /** Whether this server hands out houses. Absent on simulators older than 2026-08. */
+    /** Whether this server hands out buildings. Absent on simulators older than 2026-08. */
     houses_open?: boolean
     max_username_length: number
     min_password_length: number
@@ -297,8 +301,8 @@ export interface AdminState extends Record<string, unknown> {
     adminTab: 'accounts' | 'claims' | 'library' | 'pipeline' | 'autopilot'
     /** The development lane's throttle; `null` until the server has answered. */
     autopilot: AutopilotConfig | null
-    /** The operator's view of who holds which house. */
-    claims: HouseClaim[]
+    /** The operator's view of who owns which building. */
+    claims: OwnedBuilding[]
     /** Which account's row is expanded into its edit form, by id. */
     editing: string | null
     /** True between "signed in" and the first accounts response. */
@@ -307,8 +311,10 @@ export interface AdminState extends Record<string, unknown> {
     profile: Profile
     /** Substring filter over the username column. */
     search: string
-    /** The house the *signed-up* account holds, or `null` for none yet. */
-    myHouse: HouseClaim | null
+    /** The buildings the *signed-up* account owns. */
+    myBuildings: OwnedBuilding[]
+    /** How many one account may own, from the server; 0 until it has said. */
+    buildingLimit: number
     /** `null` until `/api/register` has answered; the form waits rather than guessing. */
     registration: RegistrationRules | null
     /** `null` until `/api/admin/me` has answered — the app shows a splash. */

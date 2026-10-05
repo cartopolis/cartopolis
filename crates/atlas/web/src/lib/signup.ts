@@ -1,4 +1,4 @@
-import type {HouseAddress, HouseClaim} from '@/types'
+import type {BuildingAddress, OwnedBuilding} from '@/types'
 
 import {$s, notifier, signupApi, store} from '@/app'
 import {ApiError} from '@/lib/api'
@@ -12,8 +12,8 @@ import {ApiError} from '@/lib/api'
  * session, and a 401 on this side must not sign an operator out of the tab they
  * are working in. The shared piece is `report`'s rule — the server writes the
  * sentence, this passes it through — because the refusals here are the ones only
- * the server can phrase: a taken name, an expired link, a house somebody else got
- * to first.
+ * the server can phrase: a taken name, an expired link, a building somebody else
+ * got to first.
  */
 function report(e: unknown, fallback: string): string {
     const message = e instanceof ApiError ? e.message : fallback
@@ -55,7 +55,7 @@ export async function verify(token: string): Promise<boolean> {
         )
         $s.signup = {token: result.token, username: result.username}
         store.save()
-        await loadMyHouse()
+        await loadMyBuildings()
         return true
     } catch (e) {
         report(e, 'Could not confirm that link')
@@ -85,9 +85,9 @@ export async function resend(email: string): Promise<boolean> {
  * Sign back in with the password, for the person who registered some other day.
  *
  * The verification link mints a session exactly once, so before this the
- * claim-your-house screen was reachable only in the minute after signing up.
+ * claim-a-building screen was reachable only in the minute after signing up.
  * It fills the same `$s.signup` session `verify` does — `signupApi` reads the
- * token from there, so everything on the house screen works identically
+ * token from there, so everything on the buildings screen works identically
  * whichever way the session was made, and the operator's own session in
  * `$s.profile` is untouched.
  */
@@ -99,7 +99,7 @@ export async function playerSignIn(username: string, password: string): Promise<
         })
         $s.signup = {token: result.token, username: result.username}
         store.save()
-        await loadMyHouse()
+        await loadMyBuildings()
         return true
     } catch (e) {
         // A 401 from a *login* is a wrong password, not an expired session —
@@ -124,17 +124,17 @@ export async function playerSignOut() {
         // reached; the token expires on its own.
     }
     $s.signup = {token: '', username: ''}
-    $s.myHouse = null
+    $s.myBuildings = []
     store.save()
 }
 
-export async function searchHouses(query: string): Promise<HouseAddress[]> {
+export async function searchBuildings(query: string): Promise<BuildingAddress[]> {
     if (!query.trim()) {
         return []
     }
     try {
-        const result = await signupApi.get<{results: HouseAddress[]}>(
-            `/api/houses/search?q=${encodeURIComponent(query)}`,
+        const result = await signupApi.get<{results: BuildingAddress[]}>(
+            `/api/buildings/search?q=${encodeURIComponent(query)}`,
         )
         return result.results
     } catch (e) {
@@ -143,42 +143,45 @@ export async function searchHouses(query: string): Promise<HouseAddress[]> {
     }
 }
 
-export async function claimHouse(address: HouseAddress): Promise<boolean> {
+export async function claimBuilding(address: BuildingAddress): Promise<boolean> {
     try {
-        const result = await signupApi.post<{claim: HouseClaim}>('/api/houses/claim', {
+        const result = await signupApi.post<{building: OwnedBuilding}>('/api/buildings/claim', {
             nummeraanduiding_id: address.nummeraanduiding_id,
         })
-        $s.myHouse = result.claim
-        notifier.success(`${result.claim.address} is yours`)
+        notifier.success(`${result.building.address} is yours`)
+        await loadMyBuildings()
         return true
     } catch (e) {
-        report(e, 'Could not claim that house')
+        report(e, 'Could not claim that building')
         return false
     }
 }
 
-export async function loadMyHouse() {
+export async function loadMyBuildings() {
     if (!$s.signup.token) {
         return
     }
     try {
-        const result = await signupApi.get<{claim: HouseClaim | null}>('/api/houses/mine')
-        $s.myHouse = result.claim
+        const result = await signupApi.get<{buildings: OwnedBuilding[]; limit: number}>(
+            '/api/buildings/mine',
+        )
+        $s.myBuildings = result.buildings
+        $s.buildingLimit = result.limit
     } catch {
         // Not worth a toast: this runs on load, and the screen it feeds shows
-        // "no house yet", which is also what a failure looks like from here.
-        $s.myHouse = null
+        // "nothing yet", which is also what a failure looks like from here.
+        $s.myBuildings = []
     }
 }
 
-export async function releaseHouse(): Promise<boolean> {
+export async function releaseBuilding(building: OwnedBuilding): Promise<boolean> {
     try {
-        await signupApi.delete('/api/houses/mine')
-        $s.myHouse = null
-        notifier.success('Given up')
+        await signupApi.delete(`/api/buildings/${building.pand_id}`)
+        notifier.success(`Gave up ${building.address}`)
+        await loadMyBuildings()
         return true
     } catch (e) {
-        report(e, 'Could not give that house up')
+        report(e, 'Could not give that building up')
         return false
     }
 }

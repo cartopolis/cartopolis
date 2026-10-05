@@ -3,19 +3,19 @@ import type {RoutableProps} from 'preact-router'
 import {useEffect, useState} from 'preact/hooks'
 
 import {$s} from '@/app'
-import {HousePicker} from '@/components/elements/house/house'
-import {loadMyHouse, playerSignIn, playerSignOut} from '@/lib/signup'
+import {BuildingPicker} from '@/components/elements/buildings/buildings'
+import {loadMyBuildings, playerSignIn, playerSignOut} from '@/lib/signup'
 
 /**
- * Claim your house, for the account that already exists.
+ * Your buildings, for the account that already exists.
  *
- * The verify screen mounts `HousePicker` for the person who signed up a minute
+ * The verify screen mounts `BuildingPicker` for the person who signed up a minute
  * ago; this page is the way back for everyone else — registered players never
  * held a browser session before `/api/login` existed, because the admin login
  * refuses them by design. The session lands in `$s.signup`, same slot the
  * verification link fills, so the picker itself needs no second variant.
  */
-export const House = (_props: RoutableProps) => {
+export const Buildings = (_props: RoutableProps) => {
     const [username, setUsername] = useState('')
     const [password, setPassword] = useState('')
     const [busy, setBusy] = useState(false)
@@ -23,17 +23,17 @@ export const House = (_props: RoutableProps) => {
     const signedIn = Boolean($s.signup.token)
 
     useEffect(() => {
-        // A remembered session: ask the server which claim it holds. A dead
+        // A remembered session: ask the server which buildings it owns. A dead
         // token answers 401, `signupApi` clears it, and the form below appears.
         if ($s.signup.token) {
-            void loadMyHouse()
+            void loadMyBuildings()
         }
     }, [])
 
     if (signedIn) {
         return (
             <>
-                <HousePicker />
+                <BuildingPicker />
                 <div class="card">
                     <p class="hint">
                         You're signed in as <b>{$s.signup.username}</b>.
@@ -63,7 +63,7 @@ export const House = (_props: RoutableProps) => {
 
     return (
         <form class="card signin" onSubmit={submit}>
-            <h1>Claim your house</h1>
+            <h1>Your buildings</h1>
             <p class="hint">
                 Sign in with your Cartopolis account — the one you play with. No admin flag
                 needed here.

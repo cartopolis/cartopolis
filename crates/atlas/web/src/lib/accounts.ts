@@ -1,4 +1,4 @@
-import type {Account, HouseClaim} from '@/types'
+import type {Account, OwnedBuilding} from '@/types'
 
 import {$s, api, notifier, store} from '@/app'
 import {ApiError} from '@/lib/api'
@@ -154,22 +154,22 @@ export function visibleAccounts(): Account[] {
  */
 export async function loadClaims() {
     try {
-        const result = await api.get<{claims: HouseClaim[]}>('/api/admin/claims')
-        $s.claims = result.claims
+        const result = await api.get<{buildings: OwnedBuilding[]}>('/api/admin/claims')
+        $s.claims = result.buildings
     } catch (e) {
-        report(e, 'Could not load the houses')
+        report(e, 'Could not load the buildings')
     }
 }
 
-/** Take a house back, keyed by the address — which is what a complaint names. */
-export async function releaseClaim(claim: HouseClaim): Promise<boolean> {
+/** Take a building back from its owner. */
+export async function releaseClaim(claim: OwnedBuilding): Promise<boolean> {
     try {
-        await api.delete(`/api/admin/claims/${claim.nummeraanduiding_id}`)
+        await api.delete(`/api/admin/claims/${claim.pand_id}`)
         notifier.success(`Released ${claim.address}`)
         await loadClaims()
         return true
     } catch (e) {
-        report(e, 'Could not release that house')
+        report(e, 'Could not release that building')
         return false
     }
 }

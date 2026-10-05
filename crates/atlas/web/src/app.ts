@@ -52,7 +52,7 @@ const signupApi = new Api(
     () => $s.signup.token,
     () => {
         $s.signup = {token: '', username: ''}
-        $s.myHouse = null
+        $s.myBuildings = []
         store.save()
     },
 )
