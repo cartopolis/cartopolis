@@ -141,6 +141,13 @@ describe('problems', () => {
         expect(problems(house())).toEqual([])
     })
 
+    test('a storey taller than the building is said', () => {
+        const d = house()
+        expect(problems(d, 4)).toEqual([])
+        addStorey(d)
+        expect(problems(d, 4).some((p) => p.includes('out of the roof'))).toBe(true)
+    })
+
     test('no front door, and a stair to nowhere, are both said', () => {
         const d = house()
         d.storeys[0].walls[0].openings = []

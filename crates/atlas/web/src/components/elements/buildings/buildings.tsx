@@ -12,6 +12,14 @@ export function editorPath(building: Pick<OwnedBuilding, 'latitude' | 'longitude
 }
 
 /**
+ * The game, opened over a place: the `/go?place=` link the app and the web
+ * client both answer (`systems::place_link`), looking down at it from 45 m.
+ */
+export function gamePlaceUrl(lat: number, lng: number) {
+    return `/go?place=${lat.toFixed(5)},${lng.toFixed(5)},45m,-50,0`
+}
+
+/**
  * The buildings this account owns, and a way to claim another.
  *
  * The search is on a button and not on every keystroke. It reaches two public
@@ -83,6 +91,14 @@ export const BuildingPicker = () => {
                                         >
                                             Design
                                         </button>
+                                        <a
+                                            class="ghost-link"
+                                            href={gamePlaceUrl(building.latitude, building.longitude)}
+                                            rel="noreferrer"
+                                            target="_blank"
+                                        >
+                                            View in the game
+                                        </a>
                                         <button
                                             class="ghost"
                                             onClick={() => setConfirming(building.pand_id)}
@@ -97,7 +113,8 @@ export const BuildingPicker = () => {
                     </ul>
                     <p class="hint">
                         Design lays out the floors, walls, doors and stairs inside the building. What you
-                        save is what everybody sees when they walk in.
+                        save is what everybody sees when they walk in — or tap the building in the game
+                        and choose Look inside.
                     </p>
                 </div>
             )}

@@ -16,6 +16,7 @@ import type {
 } from '@/lib/design'
 
 import {$s, api, notifier, signupApi} from '@/app'
+import {gamePlaceUrl} from '@/components/elements/buildings/buildings'
 import {ApiError} from '@/lib/api'
 import {
     addOpening,
@@ -454,7 +455,7 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
         </label>
     )
 
-    const issues = problems(design)
+    const issues = problems(design, data.facts?.height ?? null)
     const toolHint = TOOLS.find((t) => t.id === tool)?.hint
 
     // ── The plan ───────────────────────────────────────────────────────────
@@ -563,8 +564,8 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                 <h1>{owner ? `${owner}'s building` : 'Building'}</h1>
                 <span class="count mono">{pand}</span>
                 <span style="flex:1" />
-                <a class="ghost-link" href={`/go?place=${lat.toFixed(5)},${lng.toFixed(5)},45m,-50,0`} rel="noreferrer" target="_blank">
-                    Open in the game
+                <a class="ghost-link" href={gamePlaceUrl(lat, lng)} rel="noreferrer" target="_blank">
+                    View in the game
                 </a>
             </div>
 
@@ -874,6 +875,11 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                     ))}
                 </div>
             )}
+
+            <p class="hint">
+                In the game, walk in — or tap the building and choose Look inside — and pick a floor on
+                the right. The floor names are yours, and a room's name shows when somebody stands in it.
+            </p>
 
             {canEdit && (
                 <div class="row-actions save-bar">

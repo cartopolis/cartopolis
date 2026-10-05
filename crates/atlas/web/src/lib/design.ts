@@ -377,8 +377,21 @@ export function removeSelected(storey: Storey, sel: Selection): void {
  * it again and is the one that decides; this is so the Save button can explain
  * itself instead of failing.
  */
-export function problems(design: BuildingDesign): string[] {
+export function problems(design: BuildingDesign, shellHeight: number | null = null): string[] {
     const out: string[] = []
+    // The inside has to fit in the outside: the building everybody sees from the
+    // street is still the surveyed shell, and a storey above its eaves would
+    // stand out of the roof. A little grace, because the eaves datum is a
+    // percentile of a roof, not a ruler.
+    if (shellHeight !== null && design.storeys.length) {
+        const top = design.storeys[design.storeys.length - 1]
+        const ceiling = top.elevation + top.height - 0.3
+        if (ceiling > shellHeight + 0.5) {
+            out.push(
+                `The building is ${shellHeight.toFixed(1)} m tall to its eaves, and ${top.name} reaches ${ceiling.toFixed(1)} m — it would stand out of the roof`,
+            )
+        }
+    }
     const top = design.storeys.length - 1
     design.storeys.forEach((s, k) => {
         if (s.stairs.length && k === top) {
