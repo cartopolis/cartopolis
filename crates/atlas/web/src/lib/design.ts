@@ -416,3 +416,98 @@ export function problems(design: BuildingDesign, shellHeight: number | null = nu
 export function clone<T>(v: T): T {
     return JSON.parse(JSON.stringify(v)) as T
 }
+
+/**
+ * Move a wall end from `from` to `to`, and every other wall end and floor corner
+ * on the same storey that was at the same point with it — so a corner dragged is
+ * a corner moved, not a wall pulled away from the two it met.
+ */
+export function moveCorner(storey: Storey, from: P2, to: P2): void {
+    const same = (p: P2) => dist(p, from) < 0.03
+    for (const w of storey.walls) {
+        let moved = false
+        if (same(w.a)) {
+            w.a = [to[0], to[1]]
+            moved = true
+        }
+        if (same(w.b)) {
+            w.b = [to[0], to[1]]
+            moved = true
+        }
+        if (moved) {
+            // Openings keep their distance from the end they were measured from,
+            // and stay inside the wall however short it got.
+            const len = wallLength(w)
+            w.openings = w.openings
+                .filter((o) => o.width < len - 0.1)
+                .map((o) => ({...o, at: clampOpening(o.at, o.width, len)}))
+        }
+    }
+    storey.floor = storey.floor.map((p) => (same(p) ? ([to[0], to[1]] as P2) : p))
+}
+
+/** Slide an opening along its wall to the point nearest `p`. */
+export function slideOpening(wall: Wall, openingId: string, p: P2): void {
+    const o = wall.openings.find((x) => x.id === openingId)
+    if (!o) {
+        return
+    }
+    o.at = clampOpening(nearestOnSegment(p, wall.a, wall.b).along, o.width, wallLength(wall))
+}
+
+/**
+ * Put `count` windows on a wall, evenly spaced, replacing the windows it had.
+ * Doors stay, and a window that would overlap one is left out. How a terrace
+ * facade gets its rhythm in one tap instead of one window at a time.
+ */
+export function spreadWindows(wall: Wall, count: number): void {
+    const len = wallLength(wall)
+    const doors = wall.openings.filter((o) => o.kind === 'door')
+    const width = Math.min(WINDOW.width, (len / Math.max(count, 1)) * 0.6)
+    const windows: Opening[] = []
+    for (let i = 0; i < count; i++) {
+        const at = (len * (i + 0.5)) / count
+        const clear = doors.every((d) => Math.abs(d.at - at) > (d.width + width) / 2 + 0.15)
+        if (clear && width >= 0.4) {
+            windows.push({...WINDOW, at, id: newId('n'), kind: 'window', width})
+        }
+    }
+    wall.openings = [...doors, ...windows]
+}
+
+/** How many windows suit a wall this long: one per ~2.4 m bay. */
+export function suggestedWindows(wall: Wall): number {
+    return Math.max(1, Math.round(wallLength(wall) / 2.4))
+}
+
+/**
+ * Give every storey above `k` the windows of this wall — on the outer wall that
+ * stands on the same line there. A facade is mostly the same window repeated up
+ * the building; this is that, in one tap.
+ */
+export function copyWindowsUp(design: BuildingDesign, k: number, wallId: string): number {
+    const wall = design.storeys[k]?.walls.find((w) => w.id === wallId)
+    if (!wall) {
+        return 0
+    }
+    const windows = wall.openings.filter((o) => o.kind === 'window')
+    let n = 0
+    for (const s of design.storeys.slice(k + 1)) {
+        const twin = s.walls.find(
+            (w) =>
+                (dist(w.a, wall.a) < 0.05 && dist(w.b, wall.b) < 0.05) ||
+                (dist(w.a, wall.b) < 0.05 && dist(w.b, wall.a) < 0.05),
+        )
+        if (!twin) {
+            continue
+        }
+        const flipped = dist(twin.a, wall.b) < 0.05
+        const len = wallLength(twin)
+        twin.openings = [
+            ...twin.openings.filter((o) => o.kind === 'door'),
+            ...windows.map((o) => ({...o, at: flipped ? len - o.at : o.at, id: newId('n')})),
+        ]
+        n++
+    }
+    return n
+}

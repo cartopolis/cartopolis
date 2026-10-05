@@ -11,8 +11,12 @@ import {
     flipStair,
     pointInRing,
     problems,
+    copyWindowsUp,
+    moveCorner,
     removeTopStorey,
+    slideOpening,
     snap,
+    spreadWindows,
     stairRect,
     toLatLng,
     toLocal,
@@ -155,5 +159,45 @@ describe('problems', () => {
         const said = problems(d)
         expect(said.some((p) => p.includes('leads nowhere'))).toBe(true)
         expect(said.some((p) => p.includes('no outside door'))).toBe(true)
+    })
+})
+
+describe('editing by hand', () => {
+    test('dragging a corner moves both walls that meet there, and the floor with them', () => {
+        const d = house()
+        const s = d.storeys[0]
+        moveCorner(s, [5.78, 11.78], [7, 13])
+        const ends = s.walls.flatMap((w) => [w.a, w.b]).filter((p) => p[0] === 7 && p[1] === 13)
+        expect(ends.length).toBe(2)
+        expect(s.floor.some((p) => p[0] === 7 && p[1] === 13)).toBe(true)
+    })
+
+    test('a door slides along its wall and stays inside it', () => {
+        const s = house().storeys[0]
+        const wall = s.walls[0]
+        slideOpening(wall, 'd0', [100, 0])
+        expect(wall.openings[0].at).toBeCloseTo(5.56 - 0.5, 6)
+    })
+
+    test('windows spread along a wall keep clear of its door', () => {
+        const s = house().storeys[0]
+        const wall = s.walls[0] // 5.56 m with a door in the middle
+        spreadWindows(wall, 3)
+        const windows = wall.openings.filter((o) => o.kind === 'window')
+        expect(wall.openings.filter((o) => o.kind === 'door').length).toBe(1)
+        expect(windows.length).toBe(2)
+        for (const w of windows) {
+            expect(Math.abs(w.at - 2.78)).toBeGreaterThan(0.5 + w.width / 2)
+        }
+    })
+
+    test('the same windows go up to the wall on the same line above', () => {
+        const d = house()
+        addStorey(d)
+        spreadWindows(d.storeys[0].walls[1], 4)
+        expect(copyWindowsUp(d, 0, d.storeys[0].walls[1].id)).toBe(1)
+        const up = d.storeys[1].walls[1].openings.filter((o) => o.kind === 'window')
+        expect(up.length).toBe(4)
+        expect(up.map((o) => o.at)).toEqual(d.storeys[0].walls[1].openings.map((o) => o.at))
     })
 })

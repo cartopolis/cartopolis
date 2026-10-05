@@ -1148,3 +1148,13 @@ a.button.primary:hover {
 a.ghost-link {
     font-size: 0.9rem;
 }
+
+.row-actions.wrap {
+    flex-wrap: wrap;
+}
+
+/* A room nobody has named yet: just its area, quietly, until it is tapped. */
+.plan .room.unnamed text {
+    fill: var(--text-dim);
+    opacity: 0.7;
+}

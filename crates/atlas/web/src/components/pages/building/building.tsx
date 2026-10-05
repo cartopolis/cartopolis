@@ -26,10 +26,11 @@ import {
     alongWall,
     clampOpening,
     clone,
+    copyWindowsUp,
     dist,
     flipStair,
+    moveCorner,
     nearestOnSegment,
-    newId,
     norm,
     pointInRing,
     problems,
@@ -38,20 +39,33 @@ import {
     restack,
     snap,
     stairRect,
+    slideOpening,
+    spreadWindows,
     sub,
+    suggestedWindows,
     toLocal,
     wallLength,
 } from '@/lib/design'
+import {findRooms, labelPoint, nameRoomAt, relabel} from '@/lib/rooms'
 
-type Tool = 'door' | 'room' | 'select' | 'stair' | 'wall' | 'window'
+type Tool = 'door' | 'select' | 'stair' | 'wall' | 'window'
 
-const TOOLS: {hint: string; id: Tool; label: string}[] = [
-    {hint: 'Tap a wall, a door or a stair to change it. Drag the plan to move around.', id: 'select', label: 'Select'},
-    {hint: 'Tap where a wall starts, then where it ends. Keep tapping to carry on; Done to stop.', id: 'wall', label: 'Wall'},
-    {hint: 'Tap a wall where the door should be.', id: 'door', label: 'Door'},
-    {hint: 'Tap a wall where the window should be.', id: 'window', label: 'Window'},
-    {hint: 'Tap where the stairs start, then the direction they climb. They rise to the floor above.', id: 'stair', label: 'Stairs'},
-    {hint: 'Tap the corners of a room, then its first corner again to close it.', id: 'room', label: 'Room'},
+/**
+ * The tools, each with its keyboard key. There is no room tool: a room is
+ * whatever the walls enclose, found by `lib/rooms`, and naming one is a tap on
+ * it with Select.
+ */
+const TOOLS: {hint: string; id: Tool; key: string; label: string}[] = [
+    {
+        hint: 'Tap a wall, a door, a window or the stairs to change them — drag a wall’s end or a door to move it. Tap a room to name it. Drag the plan to move around.',
+        id: 'select',
+        key: 'v',
+        label: 'Select',
+    },
+    {hint: 'Tap where a wall starts, then where it ends. Keep tapping to carry on; Done (or Esc) to stop. Rooms appear by themselves.', id: 'wall', key: 'w', label: 'Wall'},
+    {hint: 'Tap a wall where the door should be. A door in an outside wall is a front door in the street too.', id: 'door', key: 'd', label: 'Door'},
+    {hint: 'Tap a wall where the window should be. Windows in outside walls are the building’s windows in the street.', id: 'window', key: 'n', label: 'Window'},
+    {hint: 'Tap where the stairs start, then the direction they climb. They rise to the floor above.', id: 'stair', key: 's', label: 'Stairs'},
 ]
 
 /** How far, in screen pixels, a tap may be from a thing and still hit it. */
@@ -93,13 +107,20 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
     const [tool, setTool] = useState<Tool>('select')
     const [sel, setSel] = useState<Selection | null>(null)
     const [pending, setPending] = useState<P2 | null>(null)
-    const [roomPts, setRoomPts] = useState<P2[]>([])
+    /** An enclosed area nobody has named yet, tapped with Select. */
+    const [face, setFace] = useState<P2[] | null>(null)
     const [cursor, setCursor] = useState<P2 | null>(null)
     const [view, setView] = useState<View>({cx: 0, cy: 0, w: 30})
     const [dirty, setDirty] = useState(false)
     const [busy, setBusy] = useState(false)
     const svg = useRef<SVGSVGElement>(null)
-    const drag = useRef<{moved: boolean; start: [number, number]; view: View} | null>(null)
+    const drag = useRef<{
+        /** A wall end or an opening being dragged, with the draft before it. */
+        edit?: {before: BuildingDesign; from: P2; target: {kind: 'corner'} | {id: string; kind: 'opening'; wallId: string}}
+        moved: boolean
+        start: [number, number]
+        view: View
+    } | null>(null)
 
     const load = async () => {
         if (!$s.signup.token && !$s.profile.token) {
@@ -126,6 +147,16 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
     useEffect(() => {
         void load()
     }, [pand])
+
+    // The keyboard, for whoever has one. Registered once, here above the early
+    // returns where hooks must be; the handler itself is rebuilt each render
+    // (below) so it sees the current draft.
+    const keys = useRef<(e: KeyboardEvent) => void>(() => {})
+    useEffect(() => {
+        const on = (e: KeyboardEvent) => keys.current(e)
+        window.addEventListener('keydown', on)
+        return () => window.removeEventListener('keydown', on)
+    }, [])
 
     // Leaving with unsaved work is the one mistake this page can make for you.
     useEffect(() => {
@@ -185,8 +216,13 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
     const hitM = HIT_PX / pxPerM
 
     /** Make `next` the draft, with an undo step back to the current one. */
-    const commit = (next: BuildingDesign) => {
-        setHistory([...history.slice(-60), design])
+    const commit = (next: BuildingDesign, before: BuildingDesign = design) => {
+        // Rooms follow their walls: every change re-finds them, and a named room
+        // keeps its name wherever its walls went.
+        for (const st of next.storeys) {
+            st.rooms = relabel(st)
+        }
+        setHistory([...history.slice(-60), before])
         setFuture([])
         setDesign(next)
         setDirty(true)
@@ -254,11 +290,44 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
         setBusy(false)
     }
 
+    keys.current = (e: KeyboardEvent) => {
+        const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
+        if (typing) {
+            return
+        }
+        const mod = e.ctrlKey || e.metaKey
+        if (mod && e.key.toLowerCase() === 'z') {
+            e.preventDefault()
+            if (e.shiftKey) {
+                redo()
+            } else {
+                undo()
+            }
+        } else if (mod && e.key.toLowerCase() === 'y') {
+            e.preventDefault()
+            redo()
+        } else if (e.key === 'Escape') {
+            setPending(null)
+            setSel(null)
+            setFace(null)
+        } else if ((e.key === 'Delete' || e.key === 'Backspace') && sel && canEdit) {
+            e.preventDefault()
+            const was = sel
+            mutate((_, st) => removeSelected(st, was))
+            setSel(null)
+        } else if (!mod && canEdit) {
+            const t = TOOLS.find((x) => x.key === e.key.toLowerCase())
+            if (t) {
+                pick(t.id)
+            }
+        }
+    }
+
     const pick = (tid: Tool) => {
         setTool(tid)
         setPending(null)
-        setRoomPts([])
         setSel(null)
+        setFace(null)
     }
 
     // ── Pointer handling ───────────────────────────────────────────────────
@@ -304,15 +373,21 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
         return room ? {id: room.id, kind: 'room'} : null
     }
 
+    /** The unnamed enclosed area under `p`, if the tap found nothing else. */
+    const faceAt = (p: P2): P2[] | null => findRooms(storey).find((f) => pointInRing(f, p)) ?? null
+
     const tap = (raw: P2) => {
         if (!canEdit && tool !== 'select') {
             return
         }
         const p = snapped(raw)
         switch (tool) {
-            case 'select':
-                setSel(hitTest(raw))
+            case 'select': {
+                const hit = hitTest(raw)
+                setSel(hit)
+                setFace(hit ? null : faceAt(raw))
                 return
+            }
             case 'wall':
                 if (!pending) {
                     setPending(p)
@@ -354,25 +429,33 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                     setPending(null)
                 }
                 return
-            case 'room':
-                if (roomPts.length >= 3 && dist(p, roomPts[0]) < hitM) {
-                    const outlinePts = roomPts
-                    const id = newId('r')
-                    mutate((_, s) => {
-                        s.rooms.push({id, name: 'Room', outline: outlinePts})
-                    })
-                    setRoomPts([])
-                    setTool('select')
-                    setSel({id, kind: 'room'})
-                } else {
-                    setRoomPts([...roomPts, p])
-                }
         }
     }
 
     const onPointerDown = (e: PointerEvent) => {
         ;(e.target as Element).setPointerCapture?.(e.pointerId)
         drag.current = {moved: false, start: [e.clientX, e.clientY], view}
+        // With Select, a press on the selected wall's end or the selected
+        // opening grabs it instead of the plan.
+        const p = toPlan(e)
+        if (!p || tool !== 'select' || !canEdit) {
+            return
+        }
+        const grab = hitM * 1.5
+        if (selWall) {
+            const end = [selWall.a, selWall.b].find((c) => dist(c, p) < grab)
+            if (end) {
+                drag.current.edit = {before: design, from: end, target: {kind: 'corner'}}
+            }
+        } else if (selOpening && selOpeningWall) {
+            if (dist(alongWall(selOpeningWall, selOpening.at), p) < Math.max(grab, selOpening.width / 2)) {
+                drag.current.edit = {
+                    before: design,
+                    from: p,
+                    target: {id: selOpening.id, kind: 'opening', wallId: selOpeningWall.id},
+                }
+            }
+        }
     }
 
     const onPointerMove = (e: PointerEvent) => {
@@ -390,6 +473,24 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
             return
         }
         d.moved = true
+        if (d.edit && p) {
+            // Rebuilt from the draft as it was at the press, so the drag is one
+            // move however many frames it took, and one undo step.
+            const next = clone(d.edit.before)
+            const st = next.storeys[Math.min(k, next.storeys.length - 1)]
+            const target = d.edit.target
+            if (target.kind === 'corner') {
+                const others: Storey = {...st, walls: st.walls.filter((w) => dist(w.a, d.edit!.from) > 0.03 && dist(w.b, d.edit!.from) > 0.03)}
+                moveCorner(st, d.edit.from, snap(p, others, outline, hitM))
+            } else {
+                const wall = st.walls.find((w) => w.id === target.wallId)
+                if (wall) {
+                    slideOpening(wall, target.id, p)
+                }
+            }
+            setDesign(next)
+            return
+        }
         // Any tool pans on a drag: on a phone there is no other way to move.
         setView({...d.view, cx: d.view.cx - dx / pxPerM, cy: d.view.cy + dy / pxPerM})
     }
@@ -397,6 +498,10 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
     const onPointerUp = (e: PointerEvent) => {
         const d = drag.current
         drag.current = null
+        if (d?.edit && d.moved) {
+            commit(clone(design), d.edit.before)
+            return
+        }
         if (d && !d.moved) {
             const p = toPlan(e)
             if (p) {
@@ -419,6 +524,8 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
     const selOpening = selOpeningWall?.openings.find((o) => sel && o.id === sel.id)
     const selStair = sel?.kind === 'stair' ? storey.stairs.find((s) => s.id === sel.id) : undefined
     const selRoom = sel?.kind === 'room' ? storey.rooms.find((r) => r.id === sel.id) : undefined
+    const faces = findRooms(storey)
+    const unnamed = faces.filter((f) => !storey.rooms.some((r) => pointInRing(f, labelPoint(r.outline))))
 
     /** Edit the selected thing in a fresh draft, found again by id. */
     const editSel = (fn: (x: {opening?: Wall['openings'][0]; room?: Storey['rooms'][0]; stair?: Stair; wall?: Wall}) => void) =>
@@ -552,7 +659,6 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
         )
     }
 
-    const centroid = (r: P2[]): P2 => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length]
     const area = (r: P2[]) => Math.abs(r.reduce((a, p, i) => a + p[0] * r[(i + 1) % r.length][1] - r[(i + 1) % r.length][0] * p[1], 0) / 2)
 
     const owner = data.access.owned_by
@@ -585,7 +691,7 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                             setK(i)
                             setSel(null)
                             setPending(null)
-                            setRoomPts([])
+                            setFace(null)
                         }}
                         type="button"
                     >
@@ -612,17 +718,22 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
             {canEdit && (
                 <div class="toolbar">
                     {TOOLS.map((t) => (
-                        <button class={t.id === tool ? 'primary' : 'ghost'} key={t.id} onClick={() => pick(t.id)} type="button">
+                        <button
+                            class={t.id === tool ? 'primary' : 'ghost'}
+                            key={t.id}
+                            onClick={() => pick(t.id)}
+                            title={`${t.label} (${t.key.toUpperCase()})`}
+                            type="button"
+                        >
                             {t.label}
                         </button>
                     ))}
                     <span style="flex:1" />
-                    {(pending || roomPts.length > 0) && (
+                    {pending && (
                         <button
                             class="ghost"
                             onClick={() => {
                                 setPending(null)
-                                setRoomPts([])
                             }}
                             type="button"
                         >
@@ -680,8 +791,20 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                     {below?.stairs.map((s) => (
                         <polygon class="well" key={`well${s.id}`} points={pts(stairRect(s))} stroke-width={stroke(0.03)} />
                     ))}
+                    {unnamed.map((f, i) => {
+                        const c = labelPoint(f)
+                        const isSel = face !== null && pointInRing(f, labelPoint(face))
+                        return (
+                            <g class={`room unnamed ${isSel ? 'is-selected' : ''}`} key={`f${i}`}>
+                                {isSel && <polygon points={pts(f)} stroke-width={stroke(0.03)} />}
+                                <text class="area" font-size={Math.max(0.24, 9 / pxPerM)} x={c[0]} y={-c[1]}>
+                                    {area(f).toFixed(1)} m²
+                                </text>
+                            </g>
+                        )
+                    })}
                     {storey.rooms.map((r) => {
-                        const c = centroid(r.outline)
+                        const c = labelPoint(r.outline)
                         const isSel = sel?.kind === 'room' && sel.id === r.id
                         return (
                             <g class={`room ${isSel ? 'is-selected' : ''}`} key={r.id}>
@@ -712,15 +835,6 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                             </text>
                         </g>
                     )}
-                    {roomPts.length > 0 && (
-                        <polyline
-                            class="preview"
-                            fill="none"
-                            points={pts(cursor ? [...roomPts, cursor] : roomPts)}
-                            stroke-dasharray={`${stroke(0.15)} ${stroke(0.1)}`}
-                            stroke-width={stroke(0.04)}
-                        />
-                    )}
                     {cursor && tool !== 'select' && <circle class="cursor" cx={cursor[0]} cy={-cursor[1]} r={stroke(0.08)} />}
                     <text class="north" font-size={Math.max(0.4, 12 / pxPerM)} x={view.cx - view.w / 2 + 14 / pxPerM} y={-view.cy - h / 2 + 22 / pxPerM}>
                         N ↑
@@ -743,9 +857,42 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                 {selWall ? (
                     <>
                         <h3>{selWall.exterior ? 'Outer wall' : 'Wall'}</h3>
-                        <p class="hint">{wallLength(selWall).toFixed(2)} m long</p>
+                        <p class="hint">
+                            {wallLength(selWall).toFixed(2)} m long.
+                            {canEdit && ' Drag either end to move it; the walls meeting it come along.'}
+                        </p>
                         {!selWall.exterior &&
                             num('Thickness (m)', selWall.thickness, 0.01, (v) => editSel(({wall}) => wall && (wall.thickness = v)), 0.02, 1.5)}
+                        {canEdit && (
+                            <div class="row-actions wrap">
+                                <button
+                                    class="ghost"
+                                    onClick={() => editSel(({wall}) => wall && spreadWindows(wall, suggestedWindows(wall)))}
+                                    type="button"
+                                >
+                                    Space {suggestedWindows(selWall)} windows along it
+                                </button>
+                                {k + 1 < design.storeys.length && selWall.openings.some((o) => o.kind === 'window') && (
+                                    <button
+                                        class="ghost"
+                                        onClick={() => {
+                                            let n = 0
+                                            mutate((d) => {
+                                                n = copyWindowsUp(d, k, selWall.id)
+                                            })
+                                            notifier.success(
+                                                n
+                                                    ? `Same windows on ${n} floor${n === 1 ? '' : 's'} above`
+                                                    : 'No floor above has a wall on the same line',
+                                            )
+                                        }}
+                                        type="button"
+                                    >
+                                        Same windows on the floors above
+                                    </button>
+                                )}
+                            </div>
+                        )}
                     </>
                 ) : selOpening && selOpeningWall ? (
                     <>
@@ -800,7 +947,37 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                                 value={selRoom.name}
                             />
                         </label>
-                        <p class="hint">{area(selRoom.outline).toFixed(1)} m²</p>
+                        <p class="hint">{area(selRoom.outline).toFixed(1)} m². The name shows in the game when somebody stands in it.</p>
+                    </>
+                ) : face ? (
+                    <>
+                        <h3>Room</h3>
+                        <label class="field compact">
+                            <span>Name</span>
+                            <input
+                                disabled={!canEdit}
+                                maxLength={120}
+                                onChange={(e) => {
+                                    const v = (e.target as HTMLInputElement).value.trim()
+                                    if (!v) {
+                                        return
+                                    }
+                                    const at = labelPoint(face)
+                                    let id: null | string = null
+                                    mutate((_, st) => {
+                                        id = nameRoomAt(st, at, v)
+                                    })
+                                    if (id) {
+                                        setSel({id, kind: 'room'})
+                                        setFace(null)
+                                    }
+                                }}
+                                placeholder="Keuken, Woonkamer…"
+                                type="text"
+                                value=""
+                            />
+                        </label>
+                        <p class="hint">{area(face).toFixed(1)} m², not named yet.</p>
                     </>
                 ) : (
                     <>
