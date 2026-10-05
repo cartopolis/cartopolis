@@ -93,6 +93,8 @@ pub(crate) struct DiagnosticsSources<'w, 's> {
     /// own frame hitches delaying the mailbox drain from a real disagreement with
     /// the server.
     net: Res<'w, crate::resources::NetPredictionHealth>,
+    /// The recent map loads (`systems::load_timing`).
+    loads: Option<Res<'w, crate::systems::load_timing::LoadTimings>>,
     /// Only to say whether the numbers above describe anything at all — offline
     /// there is no sim to be waiting for, and a row of zeroes must not read as a
     /// healthy connection.
@@ -335,6 +337,13 @@ fn compose(s: &DiagnosticsSources) -> String {
             s.net.stalled_fraction() * 100.0,
             s.net.frames,
         ));
+    }
+
+    // How long the map took to load, and what it was waiting on — the answer to
+    // "it sometimes takes too long", which nothing on a phone measured before.
+    if let Some(loads) = &s.loads {
+        out.push('\n');
+        out.push_str(&loads.report());
     }
 
     // The avatar block, and the order is the diagnosis. `holders = 0` is "no model

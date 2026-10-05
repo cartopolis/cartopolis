@@ -528,5 +528,13 @@ impl Plugin for MapPlugin {
             )
                 .in_set(ClientPhase::Present),
         );
+        // After every streamer has said whether it is busy this frame.
+        app.init_resource::<systems::load_timing::LoadTimings>()
+            .add_systems(
+                Update,
+                systems::load_timing::track_loads
+                    .after(systems::stream_watch::StreamReport)
+                    .in_set(ClientPhase::Present),
+            );
     }
 }
