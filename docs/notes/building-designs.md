@@ -73,6 +73,23 @@ Prinsenstraat 24–26 (pand 0014100010938796) is where both were found:
   got its stairs (and its upper storeys) or not depending on where the frame's
   origin was. They are nudged toward the flight's middle now.
 
+## Seeing in: the cutaway, and why the roof has to go
+
+Inside a building the roof comes off with the walls and everything above the
+avatar's storey stops being drawn (`systems::cutaway`, `compile_cut`). Removing
+only the walls — what `building_select` did first — left the follow camera,
+which is always above and behind the avatar, looking at the underside of the
+roof; culling the ceiling as well only moved the problem to the floor of the
+storey above. Four captures over Prinsenstraat 24–26 on 2026-10-05 showed the
+avatar inside and nothing legible. What is cut is the mesh alone: floors, stairs
+and walls stay whole, so an avatar upstairs does not fall because somebody is
+looking at the ground floor.
+
+The building card's Look inside does the same from outside, and the floor picker
+lists the storeys by the names in the design, so the game and the editor use one
+vocabulary: the picker says "In the Keuken" because the owner drew a room called
+that, and its Floor plan button opens the same building in the editor.
+
 ## What is not done
 
 - **The outside.** A drawn design changes the inside; the 3DBAG shell is still
@@ -80,8 +97,6 @@ Prinsenstraat 24–26 (pand 0014100010938796) is where both were found:
   ([importing-a-building-model.md](importing-a-building-model.md)), whose
   floors and stairs are still not walkable.
 - **IFC import into a design**, and export back out.
-- **Rooms are labels.** Their names and areas show in the editor; the game does
-  not draw or announce them yet.
-- **The floor picker and cutaway in the game**, and an "Edit building" button on
-  the building card.
+- **Rooms are labels.** The game names the room you stand in; it does not tint
+  or draw them.
 - **Visitors.** Anybody may walk into any building; there is no private setting.
