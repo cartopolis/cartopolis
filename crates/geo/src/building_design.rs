@@ -928,6 +928,54 @@ impl BuildingDesign {
         out
     }
 
+    /// Space windows along every outer wall, a bay about every 2.4 m, clear of
+    /// the doors — the starting facade an owner's first save is made from.
+    ///
+    /// Not part of [`generate`], on purpose: a building nobody has designed keeps
+    /// its shell's painted windows, and a hole in a room's wall where the street
+    /// shows no window would be a view out through the brick. Once a design is
+    /// saved, its outer walls *are* the facade (`lod22_facade`), and a design with
+    /// no windows would turn a building into a blank brick box.
+    pub fn with_facade_windows(&mut self) {
+        const BAY_M: f32 = 2.4;
+        for s in &mut self.storeys {
+            for w in s.walls.iter_mut().filter(|w| w.exterior) {
+                let len = dist(w.a, w.b);
+                if len < 1.5 {
+                    continue;
+                }
+                let count = ((len / BAY_M).round() as usize).max(1);
+                let width = (len / count as f32 * 0.6).min(1.2);
+                if width < 0.4 {
+                    continue;
+                }
+                let doors: Vec<(f32, f32)> = w
+                    .openings
+                    .iter()
+                    .filter(|o| o.kind == OpeningKind::Door)
+                    .map(|o| (o.at, o.width))
+                    .collect();
+                for i in 0..count {
+                    let at = len * (i as f32 + 0.5) / count as f32;
+                    if doors
+                        .iter()
+                        .any(|&(d, dw)| (d - at).abs() < (dw + width) * 0.5 + 0.15)
+                    {
+                        continue;
+                    }
+                    w.openings.push(Opening {
+                        id: format!("{}n{i}", w.id),
+                        kind: OpeningKind::Window,
+                        at,
+                        width,
+                        height: 1.3,
+                        sill: 0.9,
+                    });
+                }
+            }
+        }
+    }
+
     /// The ground floor's outer doorways, without compiling anything else.
     #[must_use]
     pub fn entrances(&self) -> Vec<P2> {
@@ -1338,6 +1386,41 @@ mod tests {
                 assert!(d.validate().is_ok());
             }
         }
+    }
+
+    /// The editor's starting facade: windows on every outer wall of every
+    /// storey, none over a door, and still a valid document.
+    #[test]
+    fn facade_windows_keep_clear_of_the_door() {
+        let mut d = house();
+        d.with_facade_windows();
+        assert!(d.validate().is_ok(), "{:?}", d.validate());
+        let ground = &d.storeys[0];
+        let south = &ground.walls[0];
+        let door = south
+            .openings
+            .iter()
+            .find(|o| o.kind == OpeningKind::Door)
+            .unwrap();
+        for w in south
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Window)
+        {
+            assert!((w.at - door.at).abs() >= (w.width + door.width) * 0.5);
+        }
+        let windows: usize = d
+            .storeys
+            .iter()
+            .flat_map(|s| &s.walls)
+            .map(|w| {
+                w.openings
+                    .iter()
+                    .filter(|o| o.kind == OpeningKind::Window)
+                    .count()
+            })
+            .sum();
+        assert!(windows >= 12, "{windows}");
     }
 
     #[test]

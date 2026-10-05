@@ -301,7 +301,12 @@ impl Designs {
             .iter()
             .map(|p| bd::to_local(origin, p[0], p[1]))
             .collect();
-        bd::generate(&facts.pand, origin, &outline, facts.height, &doors)
+        // With windows: this is where an owner starts, and their first save
+        // makes these outer walls the building's facade.
+        bd::generate(&facts.pand, origin, &outline, facts.height, &doors).map(|mut d| {
+            d.with_facade_windows();
+            d
+        })
     }
 
     fn bag_cell(&self, (x, y): (i64, i64)) -> Option<Vec<cartopolis_geo::formats::bag::Building>> {
