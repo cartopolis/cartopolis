@@ -118,7 +118,8 @@ pub struct SimConfig {
     /// header; see [`crate::mail::MailConfig::public_base_url`].
     #[serde(default = "default_public_base_url")]
     pub public_base_url: String,
-    /// Whether an account may claim a house (`houses`).
+    /// Whether an account may claim a building (`buildings`). The name is from
+    /// when it was one house per account, kept so a deployment's setting holds.
     #[serde(default = "default_house_claims_open")]
     pub house_claims_open: bool,
     /// The one municipality whose addresses may be claimed.
@@ -130,6 +131,14 @@ pub struct SimConfig {
     /// map coverage and should be made once the coverage exists.
     #[serde(default = "default_claim_municipality")]
     pub claim_municipality: String,
+    /// How many buildings one account may own (`buildings`). A fairness
+    /// setting, not a security one: it keeps one account from claiming a street.
+    #[serde(default = "default_max_buildings_per_account")]
+    pub max_buildings_per_account: usize,
+}
+
+fn default_max_buildings_per_account() -> usize {
+    10
 }
 
 fn default_house_claims_open() -> bool {
@@ -219,6 +228,7 @@ impl Default for SimConfig {
             public_base_url: default_public_base_url(),
             house_claims_open: default_house_claims_open(),
             claim_municipality: default_claim_municipality(),
+            max_buildings_per_account: default_max_buildings_per_account(),
         }
     }
 }

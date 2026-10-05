@@ -374,12 +374,15 @@ async fn a_player_can_sign_in_and_hold_a_session() {
     // The session works where any session works…
     let (status, _) = api(
         "GET",
-        format!("{base}/api/houses/mine"),
+        format!("{base}/api/buildings/mine"),
         Some(token.clone()),
         None,
     )
     .await;
-    assert_eq!(status, 200, "a player session must reach the house routes");
+    assert_eq!(
+        status, 200,
+        "a player session must reach the building routes"
+    );
 
     // …and not where only an admin's does.
     let (status, _) = api(
@@ -412,7 +415,13 @@ async fn a_player_can_sign_in_and_hold_a_session() {
     )
     .await;
     assert_eq!(status, 204);
-    let (status, _) = api("GET", format!("{base}/api/houses/mine"), Some(token), None).await;
+    let (status, _) = api(
+        "GET",
+        format!("{base}/api/buildings/mine"),
+        Some(token),
+        None,
+    )
+    .await;
     assert_eq!(status, 401, "a revoked session must be dead");
 }
 
@@ -727,24 +736,24 @@ async fn registration_can_be_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// Claiming a house
+// Owning buildings
 // ---------------------------------------------------------------------------
 
 /// Everything about a claim that can be proved without reaching PDOK.
 ///
-/// The register lookups themselves are covered by `houses`' own `#[ignore]`d test
+/// The register lookups themselves are covered by `buildings`' own `#[ignore]`d test
 /// — they are somebody else's service and a suite that fails when it is down is a
 /// suite people learn to disbelieve. What is worth pinning here is the shape
 /// around them: who may ask, what an unresolvable address does, and that
 /// confirming an email hands back a session the claim step can use.
 #[tokio::test]
-async fn a_house_is_claimed_with_the_session_confirmation_hands_back() {
+async fn a_building_is_claimed_with_the_session_confirmation_hands_back() {
     let (handle, dir) = server().await;
     let db = dir.path().join("http.db").to_str().unwrap().to_string();
     let base = http_base(&handle);
 
-    // No session: no house.
-    let (status, _) = api("GET", format!("{base}/api/houses/mine"), None, None).await;
+    // No session: no buildings.
+    let (status, _) = api("GET", format!("{base}/api/buildings/mine"), None, None).await;
     assert_eq!(status, 401);
 
     api(
@@ -776,19 +785,48 @@ async fn a_house_is_claimed_with_the_session_confirmation_hands_back() {
 
     let (status, body) = api(
         "GET",
-        format!("{base}/api/houses/mine"),
+        format!("{base}/api/buildings/mine"),
         Some(session.clone()),
         None,
     )
     .await;
     assert_eq!(status, 200);
-    assert!(body["claim"].is_null(), "a new account holds nothing");
+    assert_eq!(
+        body["buildings"].as_array().map(Vec::len),
+        Some(0),
+        "a new account owns nothing"
+    );
+    assert!(body["limit"].as_u64().unwrap_or(0) >= 1);
+
+    // Atlas's question — may this session change that building? — answers no for
+    // a building nobody owns, and says why.
+    let (status, body) = api(
+        "GET",
+        format!("{base}/api/buildings/0014100010938796/access"),
+        Some(session.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["username"], "ada");
+    assert_eq!(body["owner"], false);
+    assert_eq!(body["can_edit"], false);
+    assert!(body["owned_by"].is_null());
+    // Giving up a building you do not own is refused.
+    let (status, _) = api(
+        "DELETE",
+        format!("{base}/api/buildings/0014100010938796"),
+        Some(session.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
 
     // An id the register cannot possibly hold is refused before any network call
     // — and refused as "not one of Groningen's", which is the rule being applied.
     let (status, body) = api(
         "POST",
-        format!("{base}/api/houses/claim"),
+        format!("{base}/api/buildings/claim"),
         Some(session.clone()),
         Some(serde_json::json!({ "nummeraanduiding_id": "not-an-id" })),
     )
@@ -809,7 +847,18 @@ async fn a_house_is_claimed_with_the_session_confirmation_hands_back() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(body["claims"].as_array().map(Vec::len), Some(0));
+    assert_eq!(body["buildings"].as_array().map(Vec::len), Some(0));
+
+    // An admin may change any building, owned or not.
+    let (_, body) = api(
+        "GET",
+        format!("{base}/api/buildings/0014100010938796/access"),
+        Some(admin.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(body["admin"], true);
+    assert_eq!(body["can_edit"], true);
 
     // ...and a player cannot read it.
     let (status, _) = api(

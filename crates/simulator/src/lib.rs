@@ -9,6 +9,7 @@
 pub mod assets;
 pub mod auth;
 pub mod authoring;
+pub mod buildings;
 pub mod calls;
 pub mod chat;
 pub mod cli;
@@ -17,7 +18,6 @@ pub mod contacts;
 pub mod content;
 pub mod db;
 pub mod e2ee;
-pub mod houses;
 pub mod http;
 pub mod library;
 pub mod mail;

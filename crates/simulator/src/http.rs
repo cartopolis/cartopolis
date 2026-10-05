@@ -25,8 +25,8 @@
 //! HTTP port at all. A deployment turns it on.
 
 use crate::auth::{self, Sessions};
+use crate::buildings;
 use crate::config::SimConfig;
-use crate::houses;
 use crate::mail::{self, Mailer};
 use crate::registration::{self, Throttle};
 use crate::scripting::ScriptHandle;
@@ -97,9 +97,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/register", get(registration_status).post(register))
         .route("/api/register/verify", post(verify_registration))
         .route("/api/register/resend", post(resend_verification))
-        .route("/api/houses/search", get(search_houses))
-        .route("/api/houses/claim", post(claim_house))
-        .route("/api/houses/mine", get(my_house).delete(release_house))
+        .route("/api/buildings/search", get(search_buildings))
+        .route("/api/buildings/claim", post(claim_building))
+        .route("/api/buildings/mine", get(my_buildings))
+        .route("/api/buildings/{pand}", delete(release_building))
+        .route("/api/buildings/{pand}/access", get(building_access))
         .route("/api/login", post(player_login))
         .route("/api/logout", post(logout))
         .route("/api/admin/login", post(login))
@@ -269,8 +271,8 @@ async fn registration_status(State(state): State<HttpState>) -> Json<serde_json:
         // without the number living in two repositories.
         "verification_valid_hours": registration::VERIFICATION_TTL.as_secs() / 3600,
         // Read by the sign-in screen to decide whether to offer the way to the
-        // claim-your-house page at all — a link on a server that does not hand
-        // out houses would lead to a refusal.
+        // claim-a-building page at all — a link on a server that does not hand
+        // out buildings would lead to a refusal.
         "houses_open": state.config.house_claims_open,
     }))
 }
@@ -748,7 +750,7 @@ async fn login(
 /// verification link (spent once, at sign-up) and the admin login (which refuses
 /// players) — so an already-registered person could never reach the
 /// claim-your-house screen again. The token is the ordinary session token, same
-/// store and lifetime as the game's; `/api/houses/*` takes it via
+/// store and lifetime as the game's; `/api/buildings/*` takes it via
 /// `require_session`, and the admin routes still refuse it.
 async fn player_login(
     State(state): State<HttpState>,
@@ -979,7 +981,7 @@ async fn remove_account(
 }
 
 // ---------------------------------------------------------------------------
-// Claiming a house
+// Owning buildings
 // ---------------------------------------------------------------------------
 
 /// The caller's principal, if they presented a live token. **No admin check** —
@@ -1011,12 +1013,12 @@ fn claims_open(state: &HttpState) -> ApiResult<()> {
     }
     Err(ApiError(
         StatusCode::FORBIDDEN,
-        "this server does not hand out houses".into(),
+        "this server does not hand out buildings".into(),
     ))
 }
 
 #[derive(serde::Deserialize)]
-struct HouseQuery {
+struct BuildingQuery {
     q: String,
 }
 
@@ -1025,11 +1027,11 @@ struct HouseQuery {
 /// Reaches two services somebody else runs, so it is throttled per caller on the
 /// same limiter the registration paths use: a search box that fires per keystroke
 /// against a public register is how a keyless service stops being keyless.
-async fn search_houses(
+async fn search_buildings(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    axum::extract::Query(query): axum::extract::Query<HouseQuery>,
+    axum::extract::Query(query): axum::extract::Query<BuildingQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_session(&state, &headers)?;
     claims_open(&state)?;
@@ -1043,7 +1045,7 @@ async fn search_houses(
 
     let municipality = state.config.claim_municipality.clone();
     let q = query.q.clone();
-    let found = tokio::task::spawn_blocking(move || houses::search(&q, &municipality))
+    let found = tokio::task::spawn_blocking(move || buildings::search(&q, &municipality))
         .await
         .map_err(|e| internal(anyhow::anyhow!("address search task: {e}")))?
         .map_err(|e| {
@@ -1058,7 +1060,7 @@ async fn search_houses(
         .iter()
         .map(|a| a.nummeraanduiding_id.clone())
         .collect();
-    let taken = with_db(&state, |c| houses::taken(c, &ids))?;
+    let taken = with_db(&state, |c| buildings::taken(c, &ids))?;
     let results: Vec<serde_json::Value> = found
         .into_iter()
         .map(|a| {
@@ -1080,14 +1082,14 @@ struct ClaimRequest {
     nummeraanduiding_id: String,
 }
 
-/// Claim one address for the signed-in account.
+/// Claim the building at one address for the signed-in account.
 ///
 /// The id from the search is treated as a *hint*, not as a fact: the address is
-/// re-resolved from the register here, and the municipality re-checked against
-/// the server's own setting. Otherwise the id is just a field, and a claim in
-/// another province is one `curl` away from a rule that only the search box
-/// enforces.
-async fn claim_house(
+/// re-resolved from the register here, the municipality re-checked against the
+/// server's own setting, and the building looked up from the address. Otherwise
+/// the id is just a field, and a claim in another province is one `curl` away
+/// from a rule that only the search box enforces.
+async fn claim_building(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Json(body): Json<ClaimRequest>,
@@ -1100,7 +1102,7 @@ async fn claim_house(
     let resolved = {
         let id = id.clone();
         let municipality = municipality.clone();
-        tokio::task::spawn_blocking(move || houses::lookup(&id, &municipality))
+        tokio::task::spawn_blocking(move || buildings::lookup(&id, &municipality))
             .await
             .map_err(|e| internal(anyhow::anyhow!("address lookup task: {e}")))?
             .map_err(|e| {
@@ -1119,7 +1121,7 @@ async fn claim_house(
     })?;
 
     let object_id = address.adresseerbaarobject_id.clone();
-    let pand = tokio::task::spawn_blocking(move || houses::pand_for(&object_id))
+    let pand = tokio::task::spawn_blocking(move || buildings::pand_for(&object_id))
         .await
         .map_err(|e| internal(anyhow::anyhow!("building lookup task: {e}")))?
         .map_err(|e| {
@@ -1138,67 +1140,115 @@ async fn claim_house(
         )
     })?;
 
-    let outcome = with_db(&state, |c| houses::claim(c, principal, &address, &pand))?;
+    let limit = state.config.max_buildings_per_account;
+    let outcome = with_db(&state, |c| {
+        buildings::claim(c, principal, &address, &pand, limit)
+    })?;
     match outcome {
-        houses::Claimed::Ok => {
-            tracing::info!(%username, address = %address.address, pand = %pand, "house claimed");
-            let claim = with_db(&state, |c| houses::for_principal(c, principal))?;
-            Ok((StatusCode::CREATED, Json(json!({ "claim": claim }))).into_response())
+        buildings::Claimed::Ok => {
+            tracing::info!(%username, address = %address.address, pand = %pand, "building claimed");
+            let building = with_db(&state, |c| buildings::ownership(c, &pand))?.map(|mut o| {
+                o.username = None;
+                o
+            });
+            Ok((StatusCode::CREATED, Json(json!({ "building": building }))).into_response())
         }
-        houses::Claimed::AddressTaken => Err(ApiError(
+        buildings::Claimed::Taken => Err(ApiError(
             StatusCode::CONFLICT,
-            "somebody already has that house".into(),
+            "somebody already owns that building".into(),
         )),
-        houses::Claimed::AlreadyHolding { address } => Err(ApiError(
+        buildings::Claimed::AlreadyYours => Err(ApiError(
             StatusCode::CONFLICT,
-            format!("you already have {address} — give it up first"),
+            "you already own that building".into(),
+        )),
+        buildings::Claimed::AtLimit { limit } => Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("you already own {limit} buildings, which is as many as one account may"),
         )),
     }
 }
 
-async fn my_house(
+async fn my_buildings(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
     let (principal, _) = require_session(&state, &headers)?;
-    let claim = with_db(&state, |c| houses::for_principal(c, principal))?;
-    Ok(Json(json!({ "claim": claim })))
+    let owned = with_db(&state, |c| buildings::owned_by(c, principal))?;
+    Ok(Json(json!({
+        "buildings": owned,
+        "limit": state.config.max_buildings_per_account,
+    })))
 }
 
-async fn release_house(
+async fn release_building(
     State(state): State<HttpState>,
+    Path(pand): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
     let (principal, username) = require_session(&state, &headers)?;
-    let released = with_db(&state, |c| houses::release(c, principal))?;
-    if released {
-        tracing::info!(%username, "house released");
+    if !with_db(&state, |c| buildings::release(c, principal, &pand))? {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "you do not own that building".into(),
+        ));
     }
+    tracing::info!(%username, %pand, "building released");
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Every claim, for the operator. The dispute-resolution surface: claiming is
-/// first come first served, so the only answer to "that is my house" is a person
-/// with this list and the button below it.
+/// "May the bearer of this token change this building?" — the question atlas
+/// asks before it saves a building design, answered here because ownership is
+/// this server's (atlas stores the design and nothing about who may edit it).
+///
+/// Any live session gets an answer, and the answer is about the caller only, so
+/// it leaks nothing a person could not learn by trying to save: whether *they*
+/// own it or are an admin. The owner's name is included because the editor shows
+/// whose building a visitor is looking at, which the game's building card will
+/// too.
+async fn building_access(
+    State(state): State<HttpState>,
+    Path(pand): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (principal, username) = require_session(&state, &headers)?;
+    let admin = is_caller_admin(&state, principal)?;
+    let row = with_db(&state, |c| buildings::ownership(c, &pand))?;
+    let owner = with_db(&state, |c| buildings::owner_of(c, &pand))?
+        .is_some_and(|p| p == principal.to_string());
+    Ok(Json(json!({
+        "username": username,
+        "admin": admin,
+        "owner": owner,
+        "can_edit": owner || admin,
+        "owned_by": row.and_then(|r| r.username),
+    })))
+}
+
+/// Every owned building, for the operator. The dispute-resolution surface:
+/// claiming is first come first served, so the only answer to "that is my
+/// house" is a person with this list and the button below it.
 async fn list_claims(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&state, &headers)?;
-    let claims = with_db(&state, houses::list)?;
-    Ok(Json(json!({ "claims": claims })))
+    let owned = with_db(&state, buildings::list)?;
+    Ok(Json(json!({ "buildings": owned })))
 }
 
 async fn release_claim(
     State(state): State<HttpState>,
-    Path(id): Path<String>,
+    Path(pand): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
     let (caller, _) = require_admin(&state, &headers)?;
-    if !with_db(&state, |c| houses::release_address(c, &id))? {
-        return Err(ApiError(StatusCode::NOT_FOUND, "no such claim".into()));
+    if !with_db(&state, |c| buildings::release_building(c, &pand))? {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "nobody owns that building".into(),
+        ));
     }
-    tracing::info!(%caller, address = %id, "house claim released by an operator");
+    tracing::info!(%caller, %pand, "building released by an operator");
     Ok(StatusCode::NO_CONTENT)
 }
 

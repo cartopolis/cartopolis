@@ -1,5 +1,11 @@
-//! Claiming a house: resolving a typed address against the Dutch address
-//! register, and recording who holds which one.
+//! Owning a building: resolving a typed address against the Dutch address
+//! register to the building it is in, and recording who owns which building.
+//!
+//! An account may own several buildings and a building has one owner
+//! (`V25__building_owners.sql` says why it is the building and not the
+//! address). Ownership is what atlas asks about before it lets anybody save a
+//! building design (`/api/buildings/{pand}/access`): the design is atlas's, the
+//! answer to "may this person change it" is this server's.
 //!
 //! # Two registers, because neither one answers the whole question
 //!
@@ -293,23 +299,24 @@ pub fn pand_for(adresseerbaarobject_id: &str) -> anyhow::Result<Option<String>> 
         .map(str::to_string);
     Ok(pand)
 }
-
 // ---------------------------------------------------------------------------
-// The claim itself
+// Owning a building
 // ---------------------------------------------------------------------------
 
-/// One claim, as the API reports it.
+/// One building somebody owns, as the API reports it.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct Claim {
-    pub nummeraanduiding_id: String,
+pub struct Ownership {
+    /// The 3DBAG/BAG building id: the key.
     pub pand_id: String,
+    /// The address the building was claimed through, and the one shown for it.
+    pub nummeraanduiding_id: String,
     pub address: String,
     pub postcode: Option<String>,
     pub latitude: f64,
     pub longitude: f64,
     pub claimed_at: String,
-    /// Who holds it. Present on the admin listing, where the operator is
-    /// resolving a dispute and needs to know; the holder's own view has no use
+    /// Who owns it. Present on the admin listing, where the operator is
+    /// resolving a dispute and needs to know; an owner's own view has no use
     /// for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
@@ -319,59 +326,66 @@ pub struct Claim {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Claimed {
     Ok,
-    /// Somebody else holds that address.
-    AddressTaken,
-    /// This account already holds one. Releasing is a separate, deliberate act —
-    /// a claim that silently moved would let one account cycle through a street.
-    AlreadyHolding {
-        address: String,
+    /// Somebody else owns that building.
+    Taken,
+    /// The caller already owns it.
+    AlreadyYours,
+    /// The caller already owns as many as an account may.
+    AtLimit {
+        limit: usize,
     },
 }
 
-/// Record a claim. Both rules are the database's, not the handler's: the address
-/// is a primary key and the principal is unique, so two simultaneous claims
-/// cannot both win.
+/// Record that `principal` owns the building at `address`.
+///
+/// "Somebody else has it" is the database's rule — the building is a primary
+/// key, so two simultaneous claims cannot both win. The per-account limit is
+/// checked here instead, inside the same connection the insert uses; a race
+/// between one account's own two requests can exceed it by one, which is a
+/// cosmetic overrun of a fairness setting rather than a security property.
 pub fn claim(
     conn: &Connection,
     principal: Uuid,
     address: &Address,
     pand_id: &str,
+    limit: usize,
 ) -> anyhow::Result<Claimed> {
-    if let Some(existing) = for_principal(conn, principal)? {
-        return Ok(Claimed::AlreadyHolding {
-            address: existing.address,
+    if let Some(owner) = owner_of(conn, pand_id)? {
+        return Ok(if owner == principal.to_string() {
+            Claimed::AlreadyYours
+        } else {
+            Claimed::Taken
         });
+    }
+    if owned_by(conn, principal)?.len() >= limit {
+        return Ok(Claimed::AtLimit { limit });
     }
     let n = conn
         .execute(
-            "INSERT OR IGNORE INTO house_claims
-         (nummeraanduiding_id, principal, pand_id, address, postcode, latitude, longitude)
+            "INSERT OR IGNORE INTO building_owners
+         (pand_id, principal, nummeraanduiding_id, address, postcode, latitude, longitude)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                address.nummeraanduiding_id,
-                principal.to_string(),
                 pand_id,
+                principal.to_string(),
+                address.nummeraanduiding_id,
                 address.address,
                 address.postcode,
                 address.latitude,
                 address.longitude,
             ],
         )
-        .context("insert house claim")?;
-    Ok(if n > 0 {
-        Claimed::Ok
-    } else {
-        Claimed::AddressTaken
-    })
+        .context("insert building owner")?;
+    Ok(if n > 0 { Claimed::Ok } else { Claimed::Taken })
 }
 
-const CLAIM_COLUMNS: &str =
-    "nummeraanduiding_id, pand_id, address, postcode, latitude, longitude, claimed_at";
+const OWNER_COLUMNS: &str =
+    "pand_id, nummeraanduiding_id, address, postcode, latitude, longitude, claimed_at";
 
-fn row_to_claim(r: &rusqlite::Row<'_>) -> rusqlite::Result<Claim> {
-    Ok(Claim {
-        nummeraanduiding_id: r.get(0)?,
-        pand_id: r.get(1)?,
+fn row_to_ownership(r: &rusqlite::Row<'_>) -> rusqlite::Result<Ownership> {
+    Ok(Ownership {
+        pand_id: r.get(0)?,
+        nummeraanduiding_id: r.get(1)?,
         address: r.get(2)?,
         postcode: r.get(3)?,
         latitude: r.get(4)?,
@@ -381,18 +395,52 @@ fn row_to_claim(r: &rusqlite::Row<'_>) -> rusqlite::Result<Claim> {
     })
 }
 
-/// The claim this account holds, if any.
-pub fn for_principal(conn: &Connection, principal: Uuid) -> anyhow::Result<Option<Claim>> {
-    let sql = format!("SELECT {CLAIM_COLUMNS} FROM house_claims WHERE principal = ?1");
+/// The principal that owns a building, if anybody does.
+pub fn owner_of(conn: &Connection, pand_id: &str) -> anyhow::Result<Option<String>> {
     Ok(conn
-        .query_row(&sql, [principal.to_string()], row_to_claim)
+        .query_row(
+            "SELECT principal FROM building_owners WHERE pand_id = ?1",
+            [pand_id],
+            |r| r.get(0),
+        )
         .optional()?)
 }
 
-/// Which of these addresses are already spoken for.
+/// One building's ownership row, with the owner's name.
+pub fn ownership(conn: &Connection, pand_id: &str) -> anyhow::Result<Option<Ownership>> {
+    let sql = format!(
+        "SELECT {}, accounts.username FROM building_owners
+         LEFT JOIN accounts ON accounts.id = building_owners.principal
+         WHERE building_owners.pand_id = ?1",
+        qualified()
+    );
+    Ok(conn
+        .query_row(&sql, [pand_id], |r| {
+            let mut o = row_to_ownership(r)?;
+            o.username = r.get(7)?;
+            Ok(o)
+        })
+        .optional()?)
+}
+
+/// The buildings this account owns, oldest claim first.
+pub fn owned_by(conn: &Connection, principal: Uuid) -> anyhow::Result<Vec<Ownership>> {
+    let sql = format!(
+        "SELECT {OWNER_COLUMNS} FROM building_owners WHERE principal = ?1 ORDER BY claimed_at, pand_id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([principal.to_string()], row_to_ownership)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Which of these addresses are in a building somebody already owns.
 ///
-/// A set rather than a per-row query: the search returns eight candidates and
-/// this is what marks them, so it is one statement instead of eight.
+/// Only as good as the address a building was claimed *through*: the search
+/// happens before the building behind each address is looked up (that is a
+/// request per candidate), so another flat in an owned block reads as free here
+/// and is refused at the claim, which looks the building up.
 pub fn taken(
     conn: &Connection,
     ids: &[String],
@@ -404,7 +452,7 @@ pub fn taken(
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT nummeraanduiding_id FROM house_claims WHERE nummeraanduiding_id IN ({placeholders})"
+        "SELECT nummeraanduiding_id FROM building_owners WHERE nummeraanduiding_id IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -413,54 +461,57 @@ pub fn taken(
     Ok(rows)
 }
 
-/// Give up a claim. Returns whether there was one.
-pub fn release(conn: &Connection, principal: Uuid) -> anyhow::Result<bool> {
+/// Give a building up. Only its owner can — `principal` is part of the match.
+/// Returns whether there was one to give up.
+pub fn release(conn: &Connection, principal: Uuid, pand_id: &str) -> anyhow::Result<bool> {
     let n = conn.execute(
-        "DELETE FROM house_claims WHERE principal = ?1",
-        [principal.to_string()],
+        "DELETE FROM building_owners WHERE principal = ?1 AND pand_id = ?2",
+        rusqlite::params![principal.to_string(), pand_id],
     )?;
     Ok(n > 0)
 }
 
-/// Release by address, which is the operator's handle on it: a dispute is about
-/// a house, and the person complaining knows the address and not the principal.
-pub fn release_address(conn: &Connection, nummeraanduiding_id: &str) -> anyhow::Result<bool> {
-    let n = conn.execute(
-        "DELETE FROM house_claims WHERE nummeraanduiding_id = ?1",
-        [nummeraanduiding_id],
-    )?;
+/// Release by building, whoever owns it: the operator's handle.
+pub fn release_building(conn: &Connection, pand_id: &str) -> anyhow::Result<bool> {
+    let n = conn.execute("DELETE FROM building_owners WHERE pand_id = ?1", [pand_id])?;
     Ok(n > 0)
 }
 
-/// Every claim, newest first, with the holder's name. The admin list.
-pub fn list(conn: &Connection) -> anyhow::Result<Vec<Claim>> {
+fn qualified() -> String {
+    OWNER_COLUMNS
+        .split(", ")
+        .map(|c| format!("building_owners.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Every building with an owner, newest claim first, with the owner's name.
+pub fn list(conn: &Connection) -> anyhow::Result<Vec<Ownership>> {
     let sql = format!(
-        "SELECT {}, accounts.username FROM house_claims
-         LEFT JOIN accounts ON accounts.id = house_claims.principal
+        "SELECT {}, accounts.username FROM building_owners
+         LEFT JOIN accounts ON accounts.id = building_owners.principal
          ORDER BY claimed_at DESC",
-        CLAIM_COLUMNS
-            .split(", ")
-            .map(|c| format!("house_claims.{c}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        qualified()
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
         .query_map([], |r| {
-            let mut claim = row_to_claim(r)?;
-            claim.username = r.get(7)?;
-            Ok(claim)
+            let mut o = row_to_ownership(r)?;
+            o.username = r.get(7)?;
+            Ok(o)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
-/// Delete the claim an account held, for the account-erasure paths.
-///
-/// A house held by an account that no longer exists is unclaimable by anyone and
-/// invisible to everyone, which is the worst of both — so deletion frees it.
+/// Free every building an account owned, for the account-erasure paths. A
+/// building owned by an account that no longer exists is one nobody can edit
+/// and nobody can claim.
 pub fn erase_for(conn: &Connection, principal: &str) -> anyhow::Result<()> {
-    conn.execute("DELETE FROM house_claims WHERE principal = ?1", [principal])?;
+    conn.execute(
+        "DELETE FROM building_owners WHERE principal = ?1",
+        [principal],
+    )?;
     Ok(())
 }
 
@@ -497,71 +548,114 @@ mod tests {
     }
 
     #[test]
-    fn one_address_goes_to_one_account_and_one_account_holds_one_address() {
+    fn one_building_has_one_owner_and_an_owner_has_several() {
         let conn = db();
         let ada = Uuid::new_v4();
         let grace = Uuid::new_v4();
 
         assert_eq!(
-            claim(&conn, ada, &address("1"), "pand-a").unwrap(),
+            claim(&conn, ada, &address("1"), "pand-a", 3).unwrap(),
             Claimed::Ok
         );
-        // Somebody else's house.
+        // The same building through another of its addresses: a block of flats
+        // has one owner now.
         assert_eq!(
-            claim(&conn, grace, &address("1"), "pand-a").unwrap(),
-            Claimed::AddressTaken
+            claim(&conn, grace, &address("2"), "pand-a", 3).unwrap(),
+            Claimed::Taken
         );
-        // A second house for the same person.
-        assert!(matches!(
-            claim(&conn, ada, &address("2"), "pand-a").unwrap(),
-            Claimed::AlreadyHolding { .. }
-        ));
-        // A different house in the *same building* is fine — that is a block of
-        // flats, not a conflict.
         assert_eq!(
-            claim(&conn, grace, &address("2"), "pand-a").unwrap(),
+            claim(&conn, ada, &address("2"), "pand-a", 3).unwrap(),
+            Claimed::AlreadyYours
+        );
+        // A second and a third building for the same person, and not a fourth.
+        assert_eq!(
+            claim(&conn, ada, &address("3"), "pand-b", 3).unwrap(),
             Claimed::Ok
+        );
+        assert_eq!(
+            claim(&conn, ada, &address("4"), "pand-c", 3).unwrap(),
+            Claimed::Ok
+        );
+        assert_eq!(
+            claim(&conn, ada, &address("5"), "pand-d", 3).unwrap(),
+            Claimed::AtLimit { limit: 3 }
         );
 
-        let held = for_principal(&conn, ada).unwrap().unwrap();
-        assert_eq!(held.nummeraanduiding_id, "1");
+        let held: Vec<String> = owned_by(&conn, ada)
+            .unwrap()
+            .into_iter()
+            .map(|o| o.pand_id)
+            .collect();
+        assert_eq!(held, ["pand-a", "pand-b", "pand-c"]);
+        assert_eq!(owner_of(&conn, "pand-a").unwrap(), Some(ada.to_string()));
         assert_eq!(
             taken(&conn, &["1".to_string(), "2".to_string(), "3".to_string()]).unwrap(),
-            ["1".to_string(), "2".to_string()].into_iter().collect()
+            ["1".to_string(), "3".to_string()].into_iter().collect()
         );
 
-        assert!(release(&conn, ada).unwrap());
-        assert!(!release(&conn, ada).unwrap());
-        assert!(for_principal(&conn, ada).unwrap().is_none());
-        // And now it is available again.
+        // Only the owner can give one up, and only that one.
+        assert!(!release(&conn, grace, "pand-a").unwrap());
+        assert!(release(&conn, ada, "pand-a").unwrap());
+        assert!(!release(&conn, ada, "pand-a").unwrap());
+        assert_eq!(owned_by(&conn, ada).unwrap().len(), 2);
         assert_eq!(
-            claim(&conn, ada, &address("1"), "pand-a").unwrap(),
+            claim(&conn, grace, &address("2"), "pand-a", 3).unwrap(),
             Claimed::Ok
         );
     }
 
     #[test]
-    fn the_admin_listing_names_the_holder() {
+    fn the_admin_listing_names_the_owner() {
         let conn = db();
         let ada =
             crate::auth::create_account_with_role(&conn, "ada", "hunter2long", false).unwrap();
-        claim(&conn, ada, &address("1"), "pand-a").unwrap();
+        claim(&conn, ada, &address("1"), "pand-a", 10).unwrap();
         let listed = list(&conn).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].username.as_deref(), Some("ada"));
+        assert_eq!(
+            ownership(&conn, "pand-a")
+                .unwrap()
+                .unwrap()
+                .username
+                .as_deref(),
+            Some("ada")
+        );
 
-        assert!(release_address(&conn, "1").unwrap());
+        assert!(release_building(&conn, "pand-a").unwrap());
         assert!(list(&conn).unwrap().is_empty());
     }
 
     #[test]
-    fn deleting_an_account_frees_its_house() {
+    fn deleting_an_account_frees_its_buildings() {
         let conn = db();
         let ada =
             crate::auth::create_account_with_role(&conn, "ada", "hunter2long", false).unwrap();
-        claim(&conn, ada, &address("1"), "pand-a").unwrap();
+        claim(&conn, ada, &address("1"), "pand-a", 10).unwrap();
+        claim(&conn, ada, &address("2"), "pand-b", 10).unwrap();
         crate::db::erase_account_traces(&conn, &ada.to_string(), "ada").unwrap();
-        assert!(taken(&conn, &["1".to_string()]).unwrap().is_empty());
+        assert!(list(&conn).unwrap().is_empty());
+    }
+
+    /// The V12 → V25 migration: every house claim becomes its building, and
+    /// where two people held flats in one building the earlier claim keeps it.
+    #[test]
+    fn house_claims_become_building_owners() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_to(&mut conn, 24).unwrap();
+        conn.execute_batch(
+            "INSERT INTO house_claims (nummeraanduiding_id, principal, pand_id, address, latitude, longitude, claimed_at)
+             VALUES ('1', 'p-ada', 'pand-a', 'A 1', 53.2, 6.5, '2026-08-01 10:00:00'),
+                    ('2', 'p-grace', 'pand-a', 'A 2', 53.2, 6.5, '2026-08-02 10:00:00'),
+                    ('3', 'p-hopper', 'pand-b', 'B 1', 53.2, 6.5, '2026-08-03 10:00:00');",
+        )
+        .unwrap();
+        crate::db::migrate(&mut conn).unwrap();
+        assert_eq!(owner_of(&conn, "pand-a").unwrap().as_deref(), Some("p-ada"));
+        assert_eq!(
+            owner_of(&conn, "pand-b").unwrap().as_deref(),
+            Some("p-hopper")
+        );
     }
 
     /// Both services are somebody else's and this reaches them, so it is

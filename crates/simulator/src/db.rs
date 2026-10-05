@@ -282,6 +282,17 @@ pub fn migrate(conn: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Migrate only up to (and including) `version` — for a test that has to seed
+/// rows in an old schema and watch a later migration carry them across.
+#[cfg(test)]
+pub fn migrate_to(conn: &mut Connection, version: u32) -> anyhow::Result<()> {
+    embedded::migrations::runner()
+        .set_target(refinery::Target::Version(version))
+        .run(conn)
+        .context("refinery migrate")?;
+    Ok(())
+}
+
 pub fn load_world(conn: &Connection) -> anyhow::Result<Vec<PrimDto>> {
     let sql = format!("SELECT {PRIM_COLUMNS} FROM prims ORDER BY id");
     let mut stmt = conn.prepare(&sql)?;
@@ -926,7 +937,7 @@ pub fn erase_account_traces(
     )?;
     // A house held by an account that no longer exists is claimable by nobody
     // and visible to no one — the worst of both, so deletion frees it.
-    crate::houses::erase_for(conn, principal)?;
+    crate::buildings::erase_for(conn, principal)?;
     // Devices, key packages and memberships go; the sealed logs stay, being
     // the other members' history (`e2ee::erase_account` says why that is safe).
     crate::e2ee::erase_account(conn, principal)?;
