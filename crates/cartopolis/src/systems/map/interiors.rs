@@ -180,8 +180,31 @@ pub fn update_interiors(
             }
         }
     }
+    // Outlines that contain another building's centre. The register files some
+    // structures over or under others — a garage under a block, a record for a
+    // whole complex — and Prinsenstraat 24–26 stands inside a 365 m² one that
+    // also takes in the street in front of it. Rooms laid out in one of those
+    // fill the street and the houses with an interior, the avatar on the
+    // pavement counts as indoors, and its cutaway takes the real houses' walls
+    // away with it. So a container gets no generated interior; a design its
+    // owner saved for it still stands.
+    let containers: std::collections::HashSet<&str> = candidates
+        .iter()
+        .filter(|(id, b)| {
+            b.footprint.len() >= 3
+                && candidates.iter().any(|(other, o)| {
+                    other != id
+                        && !o.footprint.is_empty()
+                        && latlng_in_ring(&b.footprint, latlng_centre(&o.footprint))
+                })
+        })
+        .map(|(id, _)| *id)
+        .collect();
     for (id, building) in candidates {
         if building.footprint.len() < 3 {
+            continue;
+        }
+        if containers.contains(id) && crate::systems::building_designs::get(id).is_none() {
             continue;
         }
         let outline: Vec<Vec2> = building
@@ -738,6 +761,30 @@ pub fn room_ring(outline: &[Vec2]) -> Option<Vec<Vec2>> {
 /// Whether this outline has a room behind its door — see [`room_ring`].
 pub fn can_hold_a_room(outline: &[Vec2]) -> bool {
     room_ring(outline).is_some()
+}
+
+fn latlng_centre(ring: &[(f64, f64)]) -> (f64, f64) {
+    let n = ring.len().max(1) as f64;
+    let (a, b) = ring.iter().fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+    (a / n, b / n)
+}
+
+/// Even-odd point in a lat/lng ring — the same test, in degrees, which is exact
+/// enough for "is this centre inside that outline".
+fn latlng_in_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (u, v) = (ring[i], ring[j]);
+        if (u.0 > p.0) != (v.0 > p.0) {
+            let x = u.1 + (p.0 - u.0) / (v.0 - u.0) * (v.1 - u.1);
+            if p.1 < x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 fn ring_area(ring: &[Vec2]) -> f32 {
