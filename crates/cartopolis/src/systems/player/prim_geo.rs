@@ -74,7 +74,13 @@ pub fn geo_from_world(world: Vec3, map_anchor: &MapAnchor) -> Option<GeoAnchor> 
 pub fn place_geo_prims(
     mut commands: Commands,
     bigspace: Query<Entity, With<BigSpace>>,
-    mut prims: Query<(Entity, Ref<PrimGeo>, &mut Transform, Option<&GridCell>), With<Prim>>,
+    // A physical prim in motion is placed by `smooth_physical_prims` instead,
+    // and two systems writing one `GridCell` in a frame is a race on whose
+    // command lands last.
+    mut prims: Query<
+        (Entity, Ref<PrimGeo>, &mut Transform, Option<&GridCell>),
+        (With<Prim>, Without<crate::components::PhysicalMotion>),
+    >,
     mut last_anchor: Local<Option<(f64, f64, u32)>>,
     map_anchor: Res<MapAnchor>,
 ) {
@@ -104,4 +110,65 @@ pub fn place_geo_prims(
     }
 
     *last_anchor = Some(anchor);
+}
+
+/// How far past the last pose a physical prim is carried along its velocity
+/// before it waits for the next one — four ticks. Further than that and a lost
+/// packet draws a ball sailing on through the goal it actually hit.
+const MOTION_EXTRAPOLATE_S: f64 = 0.2;
+/// How quickly what is drawn closes on where the body should be, per second.
+/// High, because the target is already extrapolated: this only hides the step
+/// a correction makes, it is not what makes the motion smooth.
+const MOTION_EASE_RATE: f32 = 18.0;
+/// A correction this large is a teleport (a `set_geo`, an edit) and is drawn
+/// as one rather than as a streak across the pitch.
+const MOTION_SNAP_M: f64 = 4.0;
+
+/// Draw each physical prim where the simulator says it is going
+/// (`docs/notes/physical-prims.md`).
+///
+/// Runs after [`place_geo_prims`] and overrides it for these prims: their
+/// `PrimGeo` is still kept current (other systems match prims by it), but the
+/// placement here is the extrapolated, eased one.
+pub fn smooth_physical_prims(
+    mut commands: Commands,
+    time: Res<Time>,
+    map_anchor: Res<MapAnchor>,
+    mut prims: Query<(
+        Entity,
+        &mut crate::components::PhysicalMotion,
+        &mut Transform,
+        Option<&GridCell>,
+    )>,
+) {
+    let Some(anchor) = map_anchor.geo else {
+        return;
+    };
+    let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+    let now = time.elapsed_secs_f64();
+    let dt = time.delta_secs();
+    let blend = 1.0 - (-MOTION_EASE_RATE * dt).exp();
+    for (entity, mut motion, mut transform, cell) in &mut prims {
+        let (wx, wz) = lat_lng_to_world(anchor, motion.geo.latitude, motion.geo.longitude);
+        let mut target = DVec3::new(wx, f64::from(motion.altitude), wz);
+        if !motion.resting {
+            let ahead = (now - motion.received).clamp(0.0, MOTION_EXTRAPOLATE_S);
+            target += motion.velocity.as_dvec3() * ahead;
+        }
+        let shown = match motion.shown {
+            Some(s) if s.distance(target) <= MOTION_SNAP_M => s + (target - s) * f64::from(blend),
+            _ => target,
+        };
+        motion.shown = Some(shown);
+        let (new_cell, local) = grid.translation_to_grid(shown);
+        transform.translation = local;
+        transform.rotation = if motion.resting {
+            motion.rotation
+        } else {
+            transform.rotation.slerp(motion.rotation, blend)
+        };
+        if cell != Some(&new_cell) {
+            commands.entity(entity).try_insert(new_cell);
+        }
+    }
 }

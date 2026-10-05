@@ -2597,6 +2597,7 @@ pub fn hold_scripted_fire(
                     scripted: false,
                     video: None,
                     sound_loop: None,
+                    physical: false,
                 },
                 crate::systems::particles::ScriptedFire { burst },
                 Transform::from_translation(place(distance * offset.0, offset.1))

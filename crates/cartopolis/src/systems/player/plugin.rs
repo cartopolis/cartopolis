@@ -100,7 +100,12 @@ impl Plugin for PlayerPlugin {
             Update,
             // ADR-029: derive geo-anchored prims' GridCell/Transform from the
             // current OSM anchor (and re-project on re-anchor) before meshing.
-            systems::prim_geo::place_geo_prims
+            (
+                systems::prim_geo::place_geo_prims,
+                // Physical prims: drawn where the simulator's step is taking them.
+                systems::prim_geo::smooth_physical_prims,
+            )
+                .chain()
                 .after(network::apply_network_snapshot)
                 .before(rendering::spawn_prims)
                 .in_set(ClientPhase::Stream),

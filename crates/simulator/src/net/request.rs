@@ -90,6 +90,11 @@ pub enum ClientRequest {
         prim_id: i64,
         video: Option<cartopolis_core::SetVideo>,
     },
+    SetPrimPhysical {
+        request_id: u32,
+        prim_id: i64,
+        physical: bool,
+    },
     SetPushEndpoint {
         endpoint: Option<String>,
     },
@@ -326,6 +331,15 @@ impl TryFrom<NetMessage> for ClientRequest {
                 prim_id,
                 video,
             },
+            NetMessage::SetPrimPhysical {
+                request_id,
+                prim_id,
+                physical,
+            } => Self::SetPrimPhysical {
+                request_id,
+                prim_id,
+                physical,
+            },
             NetMessage::SetPushEndpoint { endpoint } => Self::SetPushEndpoint { endpoint },
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
             NetMessage::TextureRequest {
@@ -535,6 +549,7 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::CallRoster { .. }
             | NetMessage::CallDeclined { .. }
             | NetMessage::PrimSound { .. }
+            | NetMessage::PrimMotion { .. }
             | NetMessage::ContactsState { .. }
             | NetMessage::PersonInfo { .. }
             | NetMessage::NearbyPeople { .. }

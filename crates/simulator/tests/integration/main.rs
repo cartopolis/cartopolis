@@ -28,6 +28,7 @@ mod connection_teardown;
 mod http_surface;
 mod model_library;
 mod moderation;
+mod physical_prims;
 mod presence;
 mod prim_video;
 mod private_chat;

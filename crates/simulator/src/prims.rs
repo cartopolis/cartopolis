@@ -425,6 +425,52 @@ impl PrimService {
         Ok(prim)
     }
 
+    /// Switch a prim's physics on or off (protocol 34). The same ownership rule
+    /// as any edit, and the world's [`crate::physics::MAX_PHYSICAL_PRIMS`]
+    /// ceiling, checked before the row is written.
+    pub async fn set_physical(
+        &self,
+        actor: &Actor,
+        prim_id: i64,
+        physical: bool,
+    ) -> Result<PrimDto, PrimError> {
+        let _writer = self.writer.lock().await;
+        {
+            let w = self.world.read().await;
+            let prim = editable(&w, actor, prim_id)?;
+            if physical
+                && !prim.physical
+                && w.physical_count() >= crate::physics::MAX_PHYSICAL_PRIMS
+            {
+                return Err(PrimError::Refused(format!(
+                    "this world already has {} physical prims, the most it may hold",
+                    crate::physics::MAX_PHYSICAL_PRIMS
+                )));
+            }
+        }
+        let written = db::call(&self.conn, move |c| {
+            db::set_prim_physical(c, prim_id, physical)
+        })
+        .await;
+        match written {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Err(PrimError::NotFound(prim_id)),
+            Ok(Err(e)) | Err(e) => {
+                return Err(PrimError::Storage(format!(
+                    "set_prim_physical failed: {e:#}"
+                )))
+            }
+        }
+        let prim = {
+            let mut w = self.world.write().await;
+            w.set_physical(prim_id, physical)
+                .map_err(PrimError::Refused)?
+                .ok_or(PrimError::NotFound(prim_id))?
+        };
+        self.broadcast(&NetMessage::PrimUpsert { prim: prim.clone() });
+        Ok(prim)
+    }
+
     /// Delete a prim: its row, its script, its place in the world, and every
     /// client's copy.
     ///
@@ -683,6 +729,9 @@ fn write_batch(c: &mut Connection, batch: &DirtyBatch) -> anyhow::Result<()> {
         // `None` is a row already gone — a delete that landed first — and there
         // is nothing to write back to it.
         let _ = PrimFields::of(p).write(&tx, p.id)?;
+        // Not one of the edit's fields (an edit must not switch physics), but a
+        // script's `set_physical` lands here and nowhere else.
+        db::set_prim_physical(&tx, p.id, p.physical)?;
     }
     for &id in &batch.retired {
         db::delete_prim(&tx, id)?;

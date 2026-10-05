@@ -1344,3 +1344,89 @@ async fn a_scripted_prim_circles_senses_and_explodes() {
         "the exploded prim should have released its budget: {capacity}"
     );
 }
+
+/// The football pack is a game: the ball is physical, an avatar's kick puts it
+/// in the net, and the ball's own script calls the goal.
+///
+/// Physics, the kick, the goals as static colliders and the referee script are
+/// four pieces that each pass on their own; this is the one place all four have
+/// to agree — about where the goal line is, above all.
+#[tokio::test]
+async fn a_kick_into_the_north_goal_is_called_a_goal() {
+    let (handle, _dir) = server().await;
+    let tok = token(&handle).await;
+    let (status, body) = api(
+        "POST",
+        format!("{}/api/admin/content/football", base(&handle)),
+        Some(tok.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let ball = body["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "Football")
+        .expect("a football")["id"]
+        .as_i64()
+        .unwrap();
+
+    // Dropped from a metre, it lands on the centre spot.
+    wait_for(&handle, &tok, ball, "the ball to land", |p| {
+        p["physical"] == true && p["position"][1].as_f64().is_some_and(|y| y < 0.2)
+    })
+    .await;
+
+    // Put it three metres in front of the north goal.
+    const NORTH_GOAL: (f64, f64) = (53.20661975, 6.5916658);
+    let (m_lat, _) = cartopolis_core::degree_scale_m(NORTH_GOAL.0);
+    let spot = (NORTH_GOAL.0 - 3.0 / m_lat, NORTH_GOAL.1);
+    let (status, body) = api(
+        "PATCH",
+        format!("{}/api/admin/prims/{ball}", base(&handle)),
+        Some(tok.clone()),
+        Some(serde_json::json!({
+            "latitude": spot.0, "longitude": spot.1, "altitude": 0.11
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    // An edit holds a physical prim still for a moment before it is live again.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    // A player half a metre behind it, facing north (yaw π faces -z), kicks.
+    let mut player = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let behind = (spot.0 - 0.5 / m_lat, spot.1);
+    let intent = |emote| NetMessage::ClientIntent {
+        request_id: 0,
+        move_x: 0.0,
+        move_z: 0.0,
+        display_yaw: std::f32::consts::PI,
+        flying: false,
+        fly_up: false,
+        fly_down: false,
+        jump: false,
+        emote,
+        seated: None,
+        geo: Some(GeoAnchor {
+            latitude: behind.0,
+            longitude: behind.1,
+        }),
+    };
+    for msg in [intent(None), intent(Some(cartopolis_core::Emote::Kick))] {
+        player
+            .send(Bytes::from(encode_app_frame(&msg).unwrap()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    let call = recv_until(&mut player, "the referee to call it", |m| match m {
+        NetMessage::ChatMessage { body, .. } if body.contains("GOAL") => Some(body),
+        _ => None,
+    })
+    .await;
+    assert!(call.contains("north end"), "{call}");
+    assert!(call.contains("North 0 – 1 South"), "{call}");
+}

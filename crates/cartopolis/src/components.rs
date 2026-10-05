@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use cartopolis_core::PrimSurface;
+use cartopolis_core::{GeoAnchor, PrimSurface};
 
 #[derive(Component, Debug, Clone)]
 #[allow(dead_code)] // name kept for future UI labelling
@@ -52,6 +52,29 @@ pub struct Prim {
     /// The sound the prim's script is looping (protocol 33), played by
     /// `systems::prim_sound`.
     pub sound_loop: Option<cartopolis_core::PrimSound>,
+    /// The simulator moves this prim (protocol 34); its pose arrives as
+    /// [`PhysicalMotion`] rather than through `PrimUpsert`.
+    pub physical: bool,
+}
+
+/// The last pose the simulator sent for a physical prim
+/// (`NetMessage::PrimMotion`), and where it is being drawn on the way there.
+///
+/// Twenty poses a second is a stutter if each is drawn as it lands, so
+/// `prim_geo::smooth_physical_prims` carries the body on along its velocity
+/// between them and eases what is drawn toward that — the way a remote avatar is
+/// drawn, and for the same reason.
+#[derive(Component, Debug, Clone)]
+pub struct PhysicalMotion {
+    pub geo: GeoAnchor,
+    pub altitude: f32,
+    pub rotation: Quat,
+    pub velocity: Vec3,
+    pub resting: bool,
+    /// `Time::elapsed_secs_f64` when this pose arrived.
+    pub received: f64,
+    /// Absolute world position currently drawn; `None` until the first frame.
+    pub shown: Option<bevy::math::DVec3>,
 }
 
 /// ADR-029: a prim's absolute geographic placement. Present iff the prim was

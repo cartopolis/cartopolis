@@ -23,7 +23,7 @@ use bevy::ecs::system::SystemParam;
 /// system writes on behalf of some other part of the client, and each addition
 /// buys back a parameter slot the system does not have.
 #[derive(SystemParam)]
-pub struct AuthWriteback<'w> {
+pub struct AuthWriteback<'w, 's> {
     identity: ResMut<'w, AuthIdentity>,
     connect_auth: Option<Res<'w, ConnectAuth>>,
     connect_addr: Option<Res<'w, ConnectAddr>>,
@@ -43,6 +43,11 @@ pub struct AuthWriteback<'w> {
     contacts: ResMut<'w, crate::systems::contacts::ContactsInbox>,
     /// One-shot prim sounds, played by `prim_sound::play_prim_sounds`.
     sounds: ResMut<'w, crate::systems::prim_sound::PrimSoundInbox>,
+    /// Physical prims' poses (`PrimMotion`), updated in place so the smoothing
+    /// keeps what it is drawing between messages.
+    motions: Query<'w, 's, &'static mut crate::components::PhysicalMotion>,
+    /// Optional: the session tests drive this system in an app with no clock.
+    time: Option<Res<'w, Time>>,
 }
 use crate::systems::locomotion;
 use crate::systems::model_assets;
@@ -860,6 +865,13 @@ pub fn apply_network_snapshot(
                             latitude: prim.geo.latitude,
                             longitude: prim.geo.longitude,
                         });
+                        // A full upsert is the newer word on where it is (an edit,
+                        // a script's `set_geo`, physics switched off): drop the
+                        // motion so it is placed from this, and the next
+                        // `PrimMotion` picks it up from here.
+                        commands
+                            .entity(entity)
+                            .try_remove::<crate::components::PhysicalMotion>();
                         found = true;
                         break;
                     }
@@ -996,6 +1008,51 @@ pub fn apply_network_snapshot(
             }
             NetMessage::PrimSound { prim_id, sound } => {
                 auth.sounds.0.push((prim_id, sound));
+            }
+            NetMessage::PrimMotion { bodies, .. } => {
+                // Physical prims the simulator moved (protocol 34). Only the pose
+                // is touched: no mesh rebuild, no material refresh — that is the
+                // whole difference from a `PrimUpsert`.
+                for body in bodies {
+                    // The prim being edited stays where the editor has it, as it
+                    // does for an upsert.
+                    if game_state.selected_prim_id == Some(body.id) {
+                        continue;
+                    }
+                    let Some((entity, _, _)) =
+                        prim_entities.iter().find(|(_, p, _)| p.id == body.id)
+                    else {
+                        continue;
+                    };
+                    let received = auth.time.as_ref().map_or(0.0, |t| t.elapsed_secs_f64());
+                    let rotation = Quat::from_array(body.rotation).normalize();
+                    commands.entity(entity).try_insert(PrimGeo {
+                        latitude: body.geo.latitude,
+                        longitude: body.geo.longitude,
+                    });
+                    if let Ok(mut m) = auth.motions.get_mut(entity) {
+                        // In place, keeping `shown`: a fresh component would
+                        // snap the drawing to every pose as it lands.
+                        m.geo = body.geo;
+                        m.altitude = body.altitude;
+                        m.rotation = rotation;
+                        m.velocity = body.velocity;
+                        m.resting = body.resting;
+                        m.received = received;
+                    } else {
+                        commands
+                            .entity(entity)
+                            .try_insert(crate::components::PhysicalMotion {
+                                geo: body.geo,
+                                altitude: body.altitude,
+                                rotation,
+                                velocity: body.velocity,
+                                resting: body.resting,
+                                received,
+                                shown: None,
+                            });
+                    }
+                }
             }
             NetMessage::ScriptOutput {
                 prim_id,
@@ -1217,6 +1274,7 @@ fn prim_from_dto(p: &PrimDto) -> Prim {
         scripted: p.scripted,
         video: p.video.clone(),
         sound_loop: p.sound_loop,
+        physical: p.physical,
     }
 }
 

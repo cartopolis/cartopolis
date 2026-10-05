@@ -276,6 +276,23 @@ pub enum ScriptCommand {
     Die {
         prim_id: i64,
     },
+    /// Switch the prim's physics on or off (`set_physical`). A field write on
+    /// `PrimDto::physical`, refused past `physics::MAX_PHYSICAL_PRIMS`.
+    SetPhysical {
+        prim_id: i64,
+        on: bool,
+    },
+    /// Set a physical prim's velocity, m/s (`set_vel`). Handed to the physics
+    /// step, not written to the prim.
+    SetVel {
+        prim_id: i64,
+        velocity: Vec3,
+    },
+    /// Shove a physical prim, kg·m/s (`apply_impulse`).
+    ApplyImpulse {
+        prim_id: i64,
+        impulse: Vec3,
+    },
 }
 
 impl ScriptCommand {
@@ -298,6 +315,9 @@ impl ScriptCommand {
             | Self::PlaySound { prim_id, .. }
             | Self::SetSoundLoop { prim_id, .. }
             | Self::Output { prim_id, .. }
+            | Self::SetPhysical { prim_id, .. }
+            | Self::SetVel { prim_id, .. }
+            | Self::ApplyImpulse { prim_id, .. }
             | Self::Die { prim_id } => *prim_id,
         }
     }
@@ -332,6 +352,12 @@ pub struct PrimView {
     /// access to the world (see the module note on threading) — a sensor is a
     /// *read of last tick's neighbours*, which is exactly what `get_pos` is too.
     pub nearby: Vec<(u64, String, f32)>,
+    /// Whether the physics step moves this prim (`get_physical`).
+    pub physical: bool,
+    /// Metres per second, last tick (`get_vel`). Zero unless physical.
+    pub velocity: Vec3,
+    /// Kilograms, from the prim's size and shape (`get_mass`).
+    pub mass: f32,
 }
 
 /// Tick-side → host-thread messages.
@@ -986,6 +1012,67 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
             s.view.borrow_mut().rot = rot;
             Ok(())
         })?,
+    )?;
+
+    // ── Physics ──
+    let s = shared.clone();
+    env.set(
+        "set_physical",
+        lua.create_function(move |_, on: bool| {
+            s.push(ScriptCommand::SetPhysical {
+                prim_id: s.prim_id,
+                on,
+            });
+            s.view.borrow_mut().physical = on;
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "get_physical",
+        lua.create_function(move |_, ()| Ok(s.view.borrow().physical))?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "get_vel",
+        lua.create_function(move |_, ()| {
+            let v = s.view.borrow().velocity;
+            Ok((v.x, v.y, v.z))
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "set_vel",
+        lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
+            let velocity = finite_vec3(x, y, z)?;
+            s.push(ScriptCommand::SetVel {
+                prim_id: s.prim_id,
+                velocity,
+            });
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "apply_impulse",
+        lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
+            let impulse = finite_vec3(x, y, z)?;
+            s.push(ScriptCommand::ApplyImpulse {
+                prim_id: s.prim_id,
+                impulse,
+            });
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "get_mass",
+        lua.create_function(move |_, ()| Ok(s.view.borrow().mass))?,
     )?;
 
     let s = shared.clone();

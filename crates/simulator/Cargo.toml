@@ -55,6 +55,13 @@ lettre = { version = "0.11", default-features = false, features = [
 # compiles perfectly, dies when somebody registers.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 glam.workspace = true
+# Physical prims (`physics.rs`, docs/notes/physical-prims.md). Pure Rust, so it
+# adds no C toolchain to any lane; the simulator is the only crate that links
+# it, because the server is the one authority over where a physical prim is.
+# `simd8`: the contact solver works on eight constraints at once (the `wide`
+# crate, stable Rust). It costs only cross-platform bit-determinism, which a
+# server-authoritative step does not need.
+rapier3d = { version = "0.36", features = ["simd8"] }
 # Parsing an uploaded model, to count what is in it before it is stored
 # (`assets::inspect`). Already in the tree — `bevy_gltf` builds it for the client
 # — so naming it here costs the dependency graph nothing new.

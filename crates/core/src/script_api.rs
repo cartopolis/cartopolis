@@ -28,6 +28,8 @@
 pub enum ScriptGroup {
     /// Where the prim is and how it is turned.
     Movement,
+    /// Being a physical object: falling, bouncing, being pushed.
+    Physics,
     /// What it looks like.
     Appearance,
     /// Making a noise.
@@ -49,6 +51,7 @@ impl ScriptGroup {
     pub fn label(self) -> &'static str {
         match self {
             Self::Movement => "Movement",
+            Self::Physics => "Physics",
             Self::Appearance => "Appearance",
             Self::Sound => "Sound",
             Self::Chat => "Chat",
@@ -64,6 +67,7 @@ impl ScriptGroup {
     pub fn all() -> &'static [ScriptGroup] {
         &[
             Self::Movement,
+            Self::Physics,
             Self::Appearance,
             Self::Sound,
             Self::Chat,
@@ -175,6 +179,47 @@ pub const SCRIPT_API: &[ScriptFn] = &[
         signature: "set_scale(x, y, z)",
         summary: "Resize, clamped to 0.01–64 m.",
         group: ScriptGroup::Movement,
+    },
+    // ── Physics ──
+    ScriptFn {
+        name: "set_physical",
+        signature: "set_physical(on)",
+        summary: "Make this prim a physical object, which falls, bounces off \
+                  other prims and is pushed by avatars, or make it stay put again.",
+        group: ScriptGroup::Physics,
+    },
+    ScriptFn {
+        name: "get_physical",
+        signature: "get_physical() -> on",
+        summary: "Whether this prim is a physical object.",
+        group: ScriptGroup::Physics,
+    },
+    ScriptFn {
+        name: "get_vel",
+        signature: "get_vel() -> x, y, z",
+        summary: "How fast it is moving, in metres per second (x east, y up, \
+                  z south). Zero for a prim that is not physical.",
+        group: ScriptGroup::Physics,
+    },
+    ScriptFn {
+        name: "set_vel",
+        signature: "set_vel(x, y, z)",
+        summary: "Set how fast it is moving, in metres per second. Only a \
+                  physical prim moves; capped at 60 m/s.",
+        group: ScriptGroup::Physics,
+    },
+    ScriptFn {
+        name: "apply_impulse",
+        signature: "apply_impulse(x, y, z)",
+        summary: "Give it a shove, in kilogram-metres per second: a heavy prim \
+                  moves less for the same push. Only a physical prim moves.",
+        group: ScriptGroup::Physics,
+    },
+    ScriptFn {
+        name: "get_mass",
+        signature: "get_mass() -> kilograms",
+        summary: "What it weighs, from its size and shape.",
+        group: ScriptGroup::Physics,
     },
     // ── Appearance ──
     ScriptFn {

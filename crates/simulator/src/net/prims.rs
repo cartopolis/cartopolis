@@ -103,6 +103,38 @@ pub(super) async fn on_set_video<T: FrameTransport>(
     Ok(())
 }
 
+pub(super) async fn on_set_physical<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    prim_id: i64,
+    physical: bool,
+) -> anyhow::Result<()> {
+    match ctx.prims.set_physical(&ctx.actor, prim_id, physical).await {
+        Ok(_) => tracing::debug!(
+            request_id,
+            prim_id,
+            physical,
+            "prim physics set and broadcast"
+        ),
+        Err(PrimError::NotYours(_)) => {
+            let truth = ctx.world.read().await.prim(prim_id).cloned();
+            refuse_and_correct(&mut ctx.framed, request_id, prim_id, truth).await?;
+        }
+        Err(e) => {
+            let code = match e {
+                PrimError::NotFound(_) => 404,
+                PrimError::Storage(_) => 500,
+                PrimError::Refused(_) | PrimError::NotYours(_) => 400,
+            };
+            let message = e.to_string();
+            ctx.send(&server_error(request_id, code, message.clone()))
+                .await?;
+            tracing::warn!(request_id, prim_id, error = %message, "prim physics refused");
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn on_delete<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
     request_id: u32,

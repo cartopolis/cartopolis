@@ -1105,6 +1105,12 @@ pub struct EditDialogState {
     pub video_action: Option<VideoAction>,
     /// What the last video action came to, for the row to say.
     pub video_note: Option<String>,
+    /// Whether the prim is physical (protocol 34), as the dialog shows it.
+    /// Not part of the save — like a video, it has a message of its own.
+    pub physical: bool,
+    /// Set when the Physical box is ticked or cleared; taken and sent by
+    /// `ui::send_prim_mutations`.
+    pub physical_request: Option<bool>,
     /// The model asset this prim wears, if it wears one (protocol v22).
     ///
     /// Carried through the dialog even though nothing in the dialog edits it,
@@ -1155,6 +1161,8 @@ impl Default for EditDialogState {
             playing_video: false,
             video_action: None,
             video_note: None,
+            physical: false,
+            physical_request: None,
             model: None,
             path_cut_begin: 0.0,
             path_cut_end: 1.0,

@@ -959,6 +959,11 @@ async fn dispatch<T: FrameTransport>(
             prim_id,
             video,
         } => prims::on_set_video(ctx, request_id, prim_id, video).await,
+        ClientRequest::SetPrimPhysical {
+            request_id,
+            prim_id,
+            physical,
+        } => prims::on_set_physical(ctx, request_id, prim_id, physical).await,
         ClientRequest::SetPushEndpoint { endpoint } => {
             calls::on_set_push_endpoint(ctx, endpoint).await
         }
@@ -1306,6 +1311,16 @@ pub async fn tick_loop(
             match encode_app_frame(&NetMessage::PrimUpsert { prim }) {
                 Ok(bytes) => script_frames.push(bytes),
                 Err(e) => tracing::error!("script prim upsert encode: {e}"),
+            }
+        }
+        // Where the physics step moved the physical prims, as one message for all
+        // of them (protocol 34). A prim a script also changed this tick has had
+        // its upsert queued above; its pose here is the step's, which is newer.
+        let bodies = w.take_motion();
+        if !bodies.is_empty() {
+            match encode_app_frame(&NetMessage::PrimMotion { tick, bodies }) {
+                Ok(bytes) => script_frames.push(bytes),
+                Err(e) => tracing::error!("prim motion encode: {e}"),
             }
         }
         let snap = w.avatar_snapshot(tick);

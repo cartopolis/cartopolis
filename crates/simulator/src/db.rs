@@ -77,7 +77,7 @@ const PRIM_COLUMNS: &str = "id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude, particles, model, video, \
+     latitude, longitude, particles, model, video, physical, \
      EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
 
 /// How many columns [`PRIM_COLUMNS`] selects.
@@ -155,7 +155,7 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // still updates its in-memory copy so the next snapshot is current
         // without a re-read — the database is what it falls back to being right
         // from.
-        scripted: row.get(42)?,
+        scripted: row.get(43)?,
         // Protocol v28. A column that will not parse is no video, and a
         // warning — the `particles` rule, for the same reason.
         video: row.get::<_, Option<String>>(41)?.and_then(|json| {
@@ -170,6 +170,8 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // Protocol 32. A loop lives in memory only (`SimWorld::replace_prim`
         // carries it across an edit); a restart runs `on_start` again.
         sound_loop: None,
+        // Protocol 34 (`V25__prim_physical.sql`).
+        physical: row.get(42)?,
     })
 }
 
@@ -474,6 +476,18 @@ pub fn set_prim_video(
         return Ok(None);
     }
     select_prim_by_id(conn, prim_id)
+}
+
+/// Switch a prim's physics (`V25__prim_physical.sql`). Its own write for the
+/// reason [`set_prim_video`] is: `update_prim` is every edit, and an edit must
+/// not be able to switch a ball off by leaving the flag out. `false` when there
+/// is no such prim.
+pub fn set_prim_physical(conn: &Connection, prim_id: i64, physical: bool) -> anyhow::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE prims SET physical = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, physical],
+    )?;
+    Ok(changed > 0)
 }
 
 /// One clip in the video store, as measured when it was uploaded.

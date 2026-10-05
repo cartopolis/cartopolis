@@ -214,6 +214,9 @@ pub struct PrimSpec {
     /// Luau source. Empty string removes the script, exactly as the editor's
     /// empty buffer does. Absent leaves whatever is there.
     pub script: Option<String>,
+    /// Whether the simulator's physics moves it (`docs/notes/physical-prims.md`).
+    /// Absent on a create is `false`; on a patch it leaves the flag alone.
+    pub physical: Option<bool>,
 }
 
 impl PrimSpec {
@@ -259,6 +262,7 @@ impl PrimSpec {
             }),
             particles: Some(p.particles.as_ref().map(ParticleSpec::of)),
             script,
+            physical: Some(p.physical),
         }
     }
 }
@@ -425,8 +429,9 @@ async fn create(state: &HttpState, actor: &Actor, spec: &PrimSpec) -> ApiResult<
         shape,
         geo,
     };
+    let physical = spec.physical;
     let spec = spec.clone();
-    state
+    let created = state
         .prims
         .create(
             actor,
@@ -435,7 +440,17 @@ async fn create(state: &HttpState, actor: &Actor, spec: &PrimSpec) -> ApiResult<
             ModelCheck::Skip,
         )
         .await
-        .map_err(|e| bad(e.to_string()))
+        .map_err(|e| bad(e.to_string()))?;
+    // Physics has its own write (an edit must not be able to switch it), so it
+    // is a second step — after the prim exists, under the same actor.
+    if physical == Some(true) {
+        return state
+            .prims
+            .set_physical(actor, created.id, true)
+            .await
+            .map_err(|e| bad(e.to_string()));
+    }
+    Ok(created)
 }
 
 async fn update_prim(
@@ -463,6 +478,14 @@ async fn update_prim(
             other => bad(other.to_string()),
         })?;
     tracing::info!(%who, prim_id = id, "prim edited");
+    let updated = match spec.physical {
+        Some(on) if on != updated.physical => state
+            .prims
+            .set_physical(&operator, id, on)
+            .await
+            .map_err(|e| bad(e.to_string()))?,
+        _ => updated,
+    };
 
     let scripted = store_script(&state, &operator, id, spec.script.as_deref()).await?;
     Ok(Json(PrimView {

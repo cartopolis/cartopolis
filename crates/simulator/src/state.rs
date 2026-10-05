@@ -1,10 +1,11 @@
 use cartopolis_core::{
-    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
-    PrimSound, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
+    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimBody,
+    PrimDto, PrimSound, EMOTE_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 
+use crate::physics::{AvatarProbe, Kick, Physics, MAX_PHYSICAL_PRIMS};
 use crate::scripting::{PrimView, ScriptCommand};
 use cartopolis_core::motion;
 
@@ -131,6 +132,11 @@ pub struct SimWorld {
     met: HashMap<(String, String), cartopolis_core::MetDto>,
     /// Seconds since the last pass over [`Self::met`].
     meet_clock: f32,
+    /// The rigid-body step for physical prims (`physics.rs`).
+    physics: Physics,
+    /// What the last [`Self::step`] moved, for the tick loop to send as one
+    /// `PrimMotion` ([`Self::take_motion`]).
+    motion: Vec<PrimBody>,
 }
 
 /// Two avatars this close count as having met (`contacts`). Twice the Here
@@ -234,6 +240,8 @@ impl SimWorld {
             retired: HashSet::new(),
             met: HashMap::new(),
             meet_clock: 0.0,
+            physics: Physics::new(),
+            motion: Vec::new(),
         }
     }
 
@@ -565,6 +573,17 @@ impl SimWorld {
                 sequence: av.emote_sequence,
             });
             av.emote_age = 0.0;
+            // The kick emote is also a kick: a physical prim at the avatar's feet
+            // is sent the way it faces (`physics::Physics::kick`).
+            if e == Emote::Kick {
+                if let Some(g) = av.geo {
+                    self.physics.kick(Kick {
+                        geo: g,
+                        feet_y: av.position.y,
+                        yaw: av.yaw,
+                    });
+                }
+            }
         }
     }
 
@@ -631,6 +650,65 @@ impl SimWorld {
             // Horizontal yaw comes from [`SimWorld::apply_intent`] (`display_yaw`); do not derive from
             // `atan2(velocity)` (branch cuts + integration drift caused client flip-flops).
         }
+
+        // Physical prims, after the avatars have moved so a push uses where they
+        // are now. Avatars take part by their geographic fix, the only frame they
+        // share with a prim; one that has not sent one cannot push anything.
+        let probes: Vec<AvatarProbe> = self
+            .avatars
+            .iter()
+            .filter_map(|(&id, a)| {
+                a.geo.map(|geo| AvatarProbe {
+                    id,
+                    geo,
+                    feet_y: a.position.y,
+                })
+            })
+            .collect();
+        let moved = self.physics.step(dt, &mut self.prims, &probes);
+        // Persisted on the same timer as a script's writes, so a ball left in the
+        // goal is still in the goal after a restart.
+        self.dirty.extend(moved.iter().map(|b| b.id));
+        self.motion.extend(moved);
+    }
+
+    /// The physical prims the steps since the last call moved, one entry per
+    /// prim (its latest pose), for one `PrimMotion`.
+    pub fn take_motion(&mut self) -> Vec<PrimBody> {
+        let mut out = std::mem::take(&mut self.motion);
+        // Two steps between takes leave two entries for one prim; keep the last.
+        out.reverse();
+        let mut seen = HashSet::new();
+        out.retain(|b| seen.insert(b.id));
+        out.sort_unstable_by_key(|b| b.id);
+        out
+    }
+
+    /// How many prims are physical now.
+    #[must_use]
+    pub fn physical_count(&self) -> usize {
+        self.prims.iter().filter(|p| p.physical).count()
+    }
+
+    /// Switch a prim's physics on or off in memory. Refused (`Err`) when turning
+    /// it on would put the world over [`MAX_PHYSICAL_PRIMS`].
+    pub fn set_physical(&mut self, prim_id: i64, on: bool) -> Result<Option<PrimDto>, String> {
+        let Some(&pos) = self.index.get(&prim_id) else {
+            return Ok(None);
+        };
+        if on && !self.prims[pos].physical && self.physical_count() >= MAX_PHYSICAL_PRIMS {
+            return Err(format!(
+                "this world already has {MAX_PHYSICAL_PRIMS} physical prims, the most it may hold"
+            ));
+        }
+        self.prims[pos].physical = on;
+        Ok(Some(self.prims[pos].clone()))
+    }
+
+    /// How fast a physical prim is moving (`get_vel`).
+    #[must_use]
+    pub fn prim_velocity(&self, prim_id: i64) -> Vec3 {
+        self.physics.velocity(prim_id)
     }
 
     /// Every prim and every avatar, to every client.
@@ -781,6 +859,10 @@ impl SimWorld {
         // A looping sound is never in the row at all (it is not persisted), so an
         // edit carries the one playing across rather than silencing it.
         prim.sound_loop = self.prims[pos].sound_loop;
+        // Physics is switched in memory first and written after (a script's
+        // `set_physical` reaches the row at the next flush), so memory wins here
+        // as it does for `scripted`.
+        prim.physical = self.prims[pos].physical;
         self.prims[pos] = prim;
         true
     }
@@ -979,6 +1061,9 @@ impl SimWorld {
                         particles: p.particles,
                         geo: p.geo,
                         nearby,
+                        physical: p.physical,
+                        velocity: self.physics.velocity(p.id),
+                        mass: crate::physics::mass_of(p),
                     },
                 )
             })
@@ -1060,6 +1145,29 @@ impl SimWorld {
                     *prim_id,
                     Box::new(move |p: &mut PrimDto| p.sound_loop = sound),
                 )
+            }
+            ScriptCommand::SetPhysical { prim_id, on } => {
+                return match self.set_physical(*prim_id, *on) {
+                    Ok(Some(p)) => {
+                        self.dirty.insert(*prim_id);
+                        Some(p)
+                    }
+                    Ok(None) => None,
+                    Err(why) => {
+                        tracing::debug!(prim_id, "script set_physical refused: {why}");
+                        None
+                    }
+                };
+            }
+            // Motion, not a field write: the physics step applies it, and the
+            // pose it produces goes out in `PrimMotion`.
+            ScriptCommand::SetVel { prim_id, velocity } => {
+                self.physics.set_velocity(*prim_id, *velocity);
+                return None;
+            }
+            ScriptCommand::ApplyImpulse { prim_id, impulse } => {
+                self.physics.apply_impulse(*prim_id, *impulse);
+                return None;
             }
             // Not a field write: the caller routes these to chat, to every
             // connection, to the editor, and to `remove_prim` respectively.

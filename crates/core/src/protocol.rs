@@ -159,6 +159,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "prim sound — PrimSound, a one-shot a script played (play_sound), and PrimDto::sound_loop, the loop a prim is playing (loop_sound / stop_sound); sounds are a closed library named by cartopolis_core::SoundName (docs/notes/prim-scripting.md)",
     },
+    ProtocolRevision {
+        version: 34,
+        adr: "",
+        summary: "physical prims — PrimDto.physical, SetPrimPhysical to switch it, and PrimMotion: where the simulator's rigid-body step has moved each physical prim, a compact pose + velocity per body instead of a PrimUpsert per tick (docs/notes/physical-prims.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -244,6 +249,8 @@ pub enum MessageKind {
     CallDecline = 67,
     CallDeclined = 68,
     PrimSound = 69,
+    SetPrimPhysical = 70,
+    PrimMotion = 71,
 }
 
 impl MessageKind {
@@ -318,6 +325,8 @@ impl MessageKind {
             67 => Some(Self::CallDecline),
             68 => Some(Self::CallDeclined),
             69 => Some(Self::PrimSound),
+            70 => Some(Self::SetPrimPhysical),
+            71 => Some(Self::PrimMotion),
             _ => None,
         }
     }
@@ -518,6 +527,14 @@ pub struct PrimDto {
     /// is where a standing loop is started.
     #[serde(default)]
     pub sound_loop: Option<PrimSound>,
+    /// The simulator moves this prim: it falls, collides with other prims and
+    /// with avatars, and can be pushed and kicked (protocol 34,
+    /// `docs/notes/physical-prims.md`). Second Life's *Physical* checkbox. Set
+    /// only by [`NetMessage::SetPrimPhysical`] and by a script, never by
+    /// `UpdatePrim`; while it is set the prim's pose arrives in
+    /// [`NetMessage::PrimMotion`].
+    #[serde(default)]
+    pub physical: bool,
 }
 
 /// A video on a prim: which clip, and when it started, so everybody near it
@@ -1268,6 +1285,49 @@ pub enum NetMessage {
     /// drops it when out of `sound.range_m`. A one-shot is an edge, not a level —
     /// somebody arriving a second later does not hear a bang that already happened.
     PrimSound { prim_id: i64, sound: PrimSound },
+
+    // ── Physical prims (protocol 34, `docs/notes/physical-prims.md`) ─────────
+    /// Client switches a prim it may edit between physical (the simulator moves
+    /// it: it falls, collides and can be pushed) and not. Its own message, as
+    /// `SetPrimVideo` is, because `UpdatePrim` is a full-state edit every tool
+    /// sends and a tool that forgot the flag would drop every ball it touched.
+    /// Answered with the prim's `PrimUpsert` to everyone, or a `ServerError`.
+    SetPrimPhysical {
+        request_id: u32,
+        prim_id: i64,
+        physical: bool,
+    },
+    /// Server: where the physics step has moved the physical prims that moved
+    /// this tick. Sent instead of a `PrimUpsert` per prim per tick, which would
+    /// carry every field of the prim and make the client rebuild its mesh twenty
+    /// times a second; a body is ~50 bytes. A body that has come to rest is sent
+    /// once more with `resting` set, and then not until it moves again.
+    PrimMotion { tick: u64, bodies: Vec<PrimBody> },
+}
+
+/// One physical prim's pose and velocity ([`NetMessage::PrimMotion`]).
+///
+/// The pose is the same pair a prim is always placed by — the geo anchor for
+/// the horizontal and an altitude for the vertical — so a client applies it
+/// exactly as it applies a `PrimUpsert`, with no frame of the server's own to
+/// translate from. The velocity is in the client world frame's axes (x east,
+/// y up, z south: every client's frame shares them, only the origin differs),
+/// which is what lets a receiver carry a body forward between ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PrimBody {
+    pub id: i64,
+    pub geo: GeoAnchor,
+    /// Metres above the ground, as `PrimDto::position.y`.
+    pub altitude: f32,
+    /// Orientation as a quaternion `[x, y, z, w]` — not the Euler angles
+    /// `PrimDto::rotation` stores, because a tumbling body is interpolated, and
+    /// interpolating Euler angles is how a ball spins the long way round.
+    pub rotation: [f32; 4],
+    /// Metres per second.
+    pub velocity: Vec3,
+    /// The body has come to rest: place it exactly here and stop carrying it
+    /// forward.
+    pub resting: bool,
 }
 
 /// One person's avatar on Earth ([`NetMessage::PeopleWhere`]).
@@ -1617,6 +1677,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::CallDecline { .. } => MessageKind::CallDecline,
         NetMessage::CallDeclined { .. } => MessageKind::CallDeclined,
         NetMessage::PrimSound { .. } => MessageKind::PrimSound,
+        NetMessage::SetPrimPhysical { .. } => MessageKind::SetPrimPhysical,
+        NetMessage::PrimMotion { .. } => MessageKind::PrimMotion,
     }
 }
 
@@ -1659,6 +1721,7 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::SetContactSettings { request_id, .. } => *request_id,
         NetMessage::LookupPerson { request_id, .. } => *request_id,
         NetMessage::SetPrimVideo { request_id, .. } => *request_id,
+        NetMessage::SetPrimPhysical { request_id, .. } => *request_id,
         NetMessage::WherePeople { request_id, .. } => *request_id,
         NetMessage::PeopleWhere { request_id, .. } => *request_id,
         NetMessage::PersonInfo { request_id, .. } => *request_id,
@@ -2118,11 +2181,36 @@ mod tests {
                 volume: 0.5,
                 range_m: 80.0,
             }),
+            physical: true,
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
         assert_eq!(m, m2);
+    }
+
+    #[test]
+    fn prim_motion_round_trip_and_size() {
+        let body = PrimBody {
+            id: 42,
+            geo: GeoAnchor {
+                latitude: 53.2066,
+                longitude: 6.5918,
+            },
+            altitude: 0.11,
+            rotation: [0.0, 0.38, 0.0, 0.92],
+            velocity: Vec3::new(4.0, 1.5, -2.0),
+            resting: false,
+        };
+        let m = NetMessage::PrimMotion {
+            tick: 9_000,
+            bodies: vec![body; 3],
+        };
+        let b = encode_app_frame(&m).unwrap();
+        assert_eq!(decode_app_frame(&b).unwrap(), m);
+        // The point of the message is that it is small: a ball in play is one of
+        // these twenty times a second to every client.
+        assert!(b.len() < 3 * 64, "{} bytes for three bodies", b.len());
     }
 
     /// Every `MessageKind` must survive the `discriminant → from_wire` trip, and
@@ -2134,7 +2222,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 68] = [
+        const ALL: [MessageKind; 70] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -2203,6 +2291,8 @@ mod tests {
             CallDecline,
             CallDeclined,
             PrimSound,
+            SetPrimPhysical,
+            PrimMotion,
         ];
         for k in ALL {
             assert_eq!(
@@ -2216,7 +2306,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(PrimSound as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(PrimMotion as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

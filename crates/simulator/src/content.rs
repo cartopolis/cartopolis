@@ -55,7 +55,7 @@ const MARKT_LNG: f64 = 6.5665;
 /// Every pack this build carries.
 #[must_use]
 pub fn packs() -> Vec<Pack> {
-    vec![firebird()]
+    vec![firebird(), football()]
 }
 
 /// One pack by name.
@@ -132,6 +132,176 @@ fn firebird() -> Pack {
     }
 }
 
+/// The middle of each goal line on the Euroborg's pitch — FC Groningen's
+/// stadium — from OpenStreetMap way 185043967 (106 × 68 m, running north–south).
+/// `football.lua` carries the same two numbers; a test holds them together.
+const EUROBORG_NORTH_GOAL: (f64, f64) = (53.206_619_75, 6.591_665_8);
+const EUROBORG_SOUTH_GOAL: (f64, f64) = (53.205_663_15, 6.591_642_7);
+
+/// A goal mouth, inside the posts.
+const GOAL_WIDTH_M: f64 = 7.32;
+const GOAL_HEIGHT_M: f32 = 2.44;
+/// Posts and crossbar.
+const GOAL_BAR_M: f32 = 0.12;
+/// How far the net runs back from the line.
+const GOAL_DEPTH_M: f64 = 2.0;
+
+/// A point on the Euroborg pitch, `along` metres from the centre spot toward the
+/// north goal and `across` metres square to that (roughly east). Returns the geo
+/// anchor and the pitch's heading, in degrees about the vertical, that a box
+/// laid square to the goal line wants.
+fn pitch_point(along: f64, across: f64) -> (f64, f64, f32) {
+    let (n, s) = (EUROBORG_NORTH_GOAL, EUROBORG_SOUTH_GOAL);
+    let centre = ((n.0 + s.0) / 2.0, (n.1 + s.1) / 2.0);
+    let (m_lat, m_lng) = cartopolis_core::degree_scale_m(centre.0);
+    let (ae, an) = ((n.1 - s.1) * m_lng, (n.0 - s.0) * m_lat);
+    let len = (ae * ae + an * an).sqrt();
+    let (ae, an) = (ae / len, an / len);
+    // Square to the axis, pointing east-ish: (an, -ae) in (east, north).
+    let east = along * ae + across * an;
+    let north = along * an - across * ae;
+    // A box's local x turned about +y by `a` points (cos a, 0, -sin a) in the
+    // client frame (x east, z south), i.e. north by sin a. The across direction
+    // is north by -ae.
+    let heading = (-ae).asin().to_degrees() as f32;
+    (centre.0 + north / m_lat, centre.1 + east / m_lng, heading)
+}
+
+fn pitch_half_length() -> f64 {
+    let (n, s) = (EUROBORG_NORTH_GOAL, EUROBORG_SOUTH_GOAL);
+    cartopolis_core::ground_distance_m(n.0, n.1, s.0, s.1) / 2.0
+}
+
+/// One box of a goal frame or net, square to the goal line.
+fn goal_part(
+    name: &str,
+    along: f64,
+    across: f64,
+    altitude: f32,
+    size: [f32; 3],
+    net: bool,
+) -> PrimSpec {
+    let (lat, lng, heading) = pitch_point(along, across);
+    PrimSpec {
+        name: Some(name.into()),
+        shape: Some("box".into()),
+        latitude: Some(lat),
+        longitude: Some(lng),
+        altitude: Some(altitude),
+        rotation: Some([0.0, heading, 0.0]),
+        scale: Some(size),
+        color: Some([1.0, 1.0, 1.0]),
+        surface: net.then(|| cartopolis_core::PrimSurface {
+            alpha: 0.3,
+            ..cartopolis_core::PrimSurface::default()
+        }),
+        ..PrimSpec::default()
+    }
+}
+
+/// A goal on the line at `end` (+1 north, -1 south): two posts, a crossbar, and
+/// a net — back, sides and roof — for the ball to stop in.
+fn goal(end: f64, label: &str) -> Vec<PrimSpec> {
+    let line = end * pitch_half_length();
+    let bar = f64::from(GOAL_BAR_M);
+    let post_across = GOAL_WIDTH_M / 2.0 + bar / 2.0;
+    let outer = (GOAL_WIDTH_M + 2.0 * bar) as f32;
+    let height = GOAL_HEIGHT_M + GOAL_BAR_M;
+    let behind = line + end * (bar / 2.0);
+    let net_mid = line + end * GOAL_DEPTH_M / 2.0;
+    let depth = GOAL_DEPTH_M as f32;
+    vec![
+        goal_part(
+            &format!("{label} goal — left post"),
+            behind,
+            -post_across,
+            height / 2.0,
+            [GOAL_BAR_M, height, GOAL_BAR_M],
+            false,
+        ),
+        goal_part(
+            &format!("{label} goal — right post"),
+            behind,
+            post_across,
+            height / 2.0,
+            [GOAL_BAR_M, height, GOAL_BAR_M],
+            false,
+        ),
+        goal_part(
+            &format!("{label} goal — crossbar"),
+            behind,
+            0.0,
+            GOAL_HEIGHT_M + GOAL_BAR_M / 2.0,
+            [outer, GOAL_BAR_M, GOAL_BAR_M],
+            false,
+        ),
+        goal_part(
+            &format!("{label} goal — back net"),
+            line + end * GOAL_DEPTH_M,
+            0.0,
+            height / 2.0,
+            [outer, height, 0.05],
+            true,
+        ),
+        goal_part(
+            &format!("{label} goal — left net"),
+            net_mid,
+            -post_across,
+            height / 2.0,
+            [0.05, height, depth],
+            true,
+        ),
+        goal_part(
+            &format!("{label} goal — right net"),
+            net_mid,
+            post_across,
+            height / 2.0,
+            [0.05, height, depth],
+            true,
+        ),
+        goal_part(
+            &format!("{label} goal — roof net"),
+            net_mid,
+            0.0,
+            height,
+            [outer, 0.05, depth],
+            true,
+        ),
+    ]
+}
+
+/// A ball and two goals on the Euroborg's pitch.
+///
+/// The ball is the only physical prim (`docs/notes/physical-prims.md`); the
+/// goals are ordinary prims it bounces off. Its script referees: it keeps the
+/// score and puts the ball back on the centre spot after a goal.
+fn football() -> Pack {
+    let (lat, lng, _) = pitch_point(0.0, 0.0);
+    let mut prims = vec![PrimSpec {
+        name: Some("Football".into()),
+        shape: Some("sphere".into()),
+        latitude: Some(lat),
+        longitude: Some(lng),
+        // Dropped onto the centre spot, so the first thing anyone sees it do is
+        // bounce.
+        altitude: Some(1.0),
+        scale: Some([0.22, 0.22, 0.22]),
+        color: Some([1.0, 1.0, 1.0]),
+        physical: Some(true),
+        script: Some(include_str!("../content/football.lua").into()),
+        ..PrimSpec::default()
+    }];
+    prims.extend(goal(1.0, "North"));
+    prims.extend(goal(-1.0, "South"));
+    Pack {
+        name: "football",
+        summary: "A football and two goals on the Euroborg's pitch. Run into the \
+                  ball to dribble it, kick it with the kick emote; the ball keeps \
+                  the score.",
+        prims,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,7 +338,14 @@ mod tests {
     #[test]
     fn every_pack_prim_carries_its_script() {
         for p in packs() {
-            for prim in &p.prims {
+            // Not every prim: a goal post is scenery. But every pack is driven by
+            // at least one, and none of those is a stub.
+            assert!(
+                p.prims.iter().any(|prim| prim.script.is_some()),
+                "{} has no script at all",
+                p.name
+            );
+            for prim in p.prims.iter().filter(|prim| prim.script.is_some()) {
                 let source = prim.script.as_deref().unwrap_or_default();
                 assert!(
                     source.len() > 200,
@@ -178,6 +355,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The referee in `football.lua` finds the goals by the same two points the
+    /// pack built them on. Written twice, so held together here.
+    #[test]
+    fn the_football_script_knows_where_the_goals_are() {
+        let source = include_str!("../content/football.lua");
+        for (name, (lat, lng)) in [
+            ("NORTH", EUROBORG_NORTH_GOAL),
+            ("SOUTH", EUROBORG_SOUTH_GOAL),
+        ] {
+            let line = format!("local {name} = {{ lat = {lat}, lng = {lng} }}");
+            assert!(source.contains(&line), "football.lua lacks `{line}`");
+        }
+    }
+
+    /// The goals stand where the pitch is: the posts of each goal are a goal's
+    /// width apart and on that end's goal line, 106 m from each other.
+    #[test]
+    fn the_goals_are_on_the_goal_lines() {
+        let pack = football();
+        let at = |name: &str| {
+            let p = pack
+                .prims
+                .iter()
+                .find(|p| p.name.as_deref() == Some(name))
+                .unwrap();
+            (p.latitude.unwrap(), p.longitude.unwrap())
+        };
+        let d =
+            |a: (f64, f64), b: (f64, f64)| cartopolis_core::ground_distance_m(a.0, a.1, b.0, b.1);
+        let width = d(at("North goal — left post"), at("North goal — right post"));
+        assert!(
+            (width - (GOAL_WIDTH_M + f64::from(GOAL_BAR_M))).abs() < 0.01,
+            "{width}"
+        );
+        let length = d(at("North goal — crossbar"), at("South goal — crossbar"));
+        assert!((length - 106.5).abs() < 1.0, "goals {length} m apart");
+        let ball = pack.prims[0].clone();
+        let to_north = d(
+            (ball.latitude.unwrap(), ball.longitude.unwrap()),
+            EUROBORG_NORTH_GOAL,
+        );
+        assert!((to_north - pitch_half_length()).abs() < 0.01);
+        assert_eq!(ball.physical, Some(true));
     }
 
     /// The pair only works because they agree on a channel, and nothing but this

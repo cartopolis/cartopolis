@@ -678,6 +678,8 @@ pub fn populate_edit_dialog(edit_dialog: &mut EditDialogState, prim: &Prim, tran
     edit_dialog.original_model = prim.model.clone();
     edit_dialog.playing_video = prim.video.is_some();
     edit_dialog.video_note = None;
+    edit_dialog.physical = prim.physical;
+    edit_dialog.physical_request = None;
     edit_dialog.original_path_cut_begin = prim.path_cut_begin;
     edit_dialog.original_path_cut_end = prim.path_cut_end;
     edit_dialog.original_hollow = prim.hollow;
@@ -1061,6 +1063,25 @@ pub fn render_edit_dialog(
                                 );
                             });
                             ui.end_row();
+
+                            // Physical (protocol 34): its own message, like Video,
+                            // so it applies at once rather than on Save, and only to
+                            // a prim the server already has.
+                            if !edit_dialog.is_new {
+                                ui.label("Physical");
+                                let mut on = edit_dialog.physical;
+                                if crate::systems::theme::checkbox(
+                                    ui,
+                                    &mut on,
+                                    "Falls, bounces and can be pushed",
+                                )
+                                .changed()
+                                {
+                                    edit_dialog.physical = on;
+                                    edit_dialog.physical_request = Some(on);
+                                }
+                                ui.end_row();
+                            }
                         });
                 }
                 // ── Shape tab ───────────────────────────────────────────────
@@ -1772,7 +1793,22 @@ pub fn send_prim_mutations(
     texture_cache: Res<PrimTextureCache>,
     online: Option<Res<OnlineSession>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    mut edit_dialog: ResMut<EditDialogState>,
 ) {
+    // The dialog's Physical box: sent the moment it is ticked, answered by the
+    // server's `PrimUpsert` (or a refusal, which the next upsert corrects).
+    if let Some(on) = edit_dialog.physical_request.take() {
+        if let (Some(prim_id), Some(sess)) = (edit_dialog.prim_id, online.as_ref()) {
+            sess.send(
+                "prim physics",
+                NetMessage::SetPrimPhysical {
+                    request_id: 0,
+                    prim_id,
+                    physical: on,
+                },
+            );
+        }
+    }
     if let Some(dialog_state) = game_state.pending_prim_save.take() {
         if dialog_state.is_new {
             let pos = Vec3::new(
