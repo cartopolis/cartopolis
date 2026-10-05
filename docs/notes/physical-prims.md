@@ -9,7 +9,7 @@ updated: 2026-10-05
 A prim can be switched to **physical** — Second Life's checkbox — and from then
 on the simulator moves it: it falls, bounces off other prims, rolls, and is
 pushed by avatars walking into it. Wire protocol 34 (`PrimDto::physical`,
-`SetPrimPhysical`, `PrimMotion`), migration V25 (`prims.physical`),
+`SetPrimPhysical`, `PrimMotion`), migration V26 (`prims.physical`; V25 is `building_owners` on the building-designs branch, which must land and deploy first),
 `simulator::physics`, and the client's `prim_geo::smooth_physical_prims`. The
 reason it exists is the `football` content pack: a ball and two goals on FC
 Groningen's pitch in the Euroborg.
