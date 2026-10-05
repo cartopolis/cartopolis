@@ -669,13 +669,16 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                             stroke-width={stroke(0.05)}
                         />
                     )}
-                    {below && (
-                        <g class="below">
-                            {below.walls.map((w) => drawWall(w, true))}
-                            {below.stairs.map((s) => drawStair(s, true))}
-                        </g>
-                    )}
                     {storey.floor.length > 2 && <polygon class="floor" points={pts(storey.floor)} />}
+                    {/* Over the floor, or the floor hides it: the storey below, faint,
+                        because a staircase has to land somewhere. */}
+                    {below && <g class="below">{below.walls.map((w) => drawWall(w, true))}</g>}
+                    {/* The flights arriving from below, as the hole they come up
+                        through — under this storey's own flights, which may rise
+                        out of the same well. */}
+                    {below?.stairs.map((s) => (
+                        <polygon class="well" key={`well${s.id}`} points={pts(stairRect(s))} stroke-width={stroke(0.03)} />
+                    ))}
                     {storey.rooms.map((r) => {
                         const c = centroid(r.outline)
                         const isSel = sel?.kind === 'room' && sel.id === r.id
@@ -693,10 +696,6 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                     })}
                     {storey.walls.map((w) => drawWall(w, false))}
                     {storey.stairs.map((s) => drawStair(s, false))}
-                    {/* The flights arriving from below, as the hole they come up through. */}
-                    {below?.stairs.map((s) => (
-                        <polygon class="well" key={`well${s.id}`} points={pts(stairRect(s))} stroke-width={stroke(0.03)} />
-                    ))}
                     {pending && cursor && (
                         <g class="preview">
                             <line
@@ -722,7 +721,7 @@ export const Building = (props: RoutableProps & {pand?: string}) => {
                         />
                     )}
                     {cursor && tool !== 'select' && <circle class="cursor" cx={cursor[0]} cy={-cursor[1]} r={stroke(0.08)} />}
-                    <text class="north" font-size={Math.max(0.4, 12 / pxPerM)} x={view.cx + view.w / 2 - 1.2} y={-view.cy - h / 2 + 1}>
+                    <text class="north" font-size={Math.max(0.4, 12 / pxPerM)} x={view.cx - view.w / 2 + 14 / pxPerM} y={-view.cy - h / 2 + 22 / pxPerM}>
                         N ↑
                     </text>
                 </svg>
