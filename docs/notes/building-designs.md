@@ -90,12 +90,34 @@ lists the storeys by the names in the design, so the game and the editor use one
 vocabulary: the picker says "In the Keuken" because the owner drew a room called
 that, and its Floor plan button opens the same building in the editor.
 
+## The facade is the design's outer walls
+
+A saved design's outer walls are the building's facade (`lod22_facade`): the
+surveyed walls are left out and drawn again along the register outline, up to
+the height the survey measured along each edge (so a gable keeps its point and
+meets the surveyed roof, which stays), with the design's doors and windows cut
+through as real openings. The painted window lattice is switched off for those
+walls — it guesses windows from the era, and a guess in a different place from
+the window drawn would show the street a pane the room does not have. So the
+editor's starting layout carries windows on its outer walls
+(`with_facade_windows`): saved as-is, a design without them would turn the
+building into a blank brick box.
+
+## Authoring: draw walls, the rooms find themselves
+
+The editor has no room tool. A room is whatever the walls enclose, found by
+`lib/rooms` (split at crossings and T-junctions, then the planar face walk), and
+a person names one by tapping it; a name follows its room when walls move.
+Walls' ends and doors drag directly, an outer wall takes "space N windows along
+it" and "same windows on the floors above" in one tap each, and the keyboard
+has V/W/D/N/S, Esc, Delete and Ctrl+Z.
+
 ## What is not done
 
-- **The outside.** A drawn design changes the inside; the 3DBAG shell is still
-  what the street sees. Replacing a shell needs the LoD3 path
-  ([importing-a-building-model.md](importing-a-building-model.md)), whose
-  floors and stairs are still not walkable.
+- **The massing.** A design changes the inside and the facade's openings; the
+  building's shape and roof are still the survey's. Replacing those is the
+  exterior-override work (an admin-only record in atlas, the LoD3 path), agreed
+  with the session building it on 2026-10-05.
 - **IFC import into a design**, and export back out.
 - **Rooms are labels.** The game names the room you stand in; it does not tint
   or draw them.
