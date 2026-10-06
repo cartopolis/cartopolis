@@ -723,6 +723,12 @@ enum TileFetch {
     /// The tile left the desired set while queued — dropped without a network
     /// call; not a failure.
     Cancelled,
+    /// The tile server has no such tile (404). An answer, not a failure: the
+    /// planet's bottom row is absent from our OSM tiles (`3/0/7` … `3/7/7` all
+    /// answer 404), and retrying those every [`QT_RETRY_AFTER_SECS`] kept the globe busy — and a
+    /// fresh map load in the load log — for as long as the app ran. The parent
+    /// tile stays drawn over the gap.
+    Absent,
 }
 
 /// Once the map anchor exists, build and place the base globe sphere (and start
@@ -1507,6 +1513,12 @@ fn spawn_globe_tile(
                         }),
                     );
                 }
+                Err(e) if crate::platform::http::is_absent(&e) => {
+                    tracing::debug!(tile = %key.to_path(), "globe tile not served");
+                    if let Ok(mut g) = results.lock() {
+                        g.push((key, TileFetch::Absent));
+                    }
+                }
                 Err(e) => {
                     tracing::error!(tile = %key.to_path(), error = %e, "globe tile fetch failed");
                     if let Ok(mut g) = results.lock() {
@@ -1569,6 +1581,12 @@ pub fn update_globe_tiles(
             TileFetch::Failed => {
                 globe.tiles.failed(&key, now_secs);
                 fetch_failures += 1;
+                continue;
+            }
+            // Kept as requested, so it is not asked for again while it stays in
+            // view; leaving the view forgets it like any other tile.
+            TileFetch::Absent => {
+                globe.tiles.adopt(key);
                 continue;
             }
             TileFetch::Ok(tile) => tile,

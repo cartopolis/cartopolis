@@ -403,6 +403,15 @@ pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Whether an error from [`fetch`] is the host saying the document does not exist
+/// (404 or 410) rather than not having been reached — for a caller that has only
+/// the message, several layers up. It reads the message [`fetch`] writes, which
+/// is why it lives beside it. A caller that can, should use [`fetch_optional`].
+#[must_use]
+pub fn is_absent(error: &str) -> bool {
+    error.ends_with(": status code 404") || error.ends_with(": status code 410")
+}
+
 /// Fetch a document the host is allowed not to have.
 ///
 /// Three outcomes rather than two. `Ok(Some)` is the document; **`Ok(None)` is the
@@ -543,6 +552,16 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_document_reads_as_absent() {
+        let url = "https://tiles.cartopolis.org/tiles/osm/3/3/7";
+        assert!(is_absent(&format!("{url}: status code 404")));
+        assert!(is_absent(&format!("{url}: status code 410")));
+        assert!(!is_absent(&format!("{url}: status code 503")));
+        assert!(!is_absent(&format!("{url}: status code 4040")));
+        assert!(!is_absent("connection timed out"));
+    }
 
     /// The whole point of the optional-layer bound is that it is *shorter* than
     /// the one a fetcher inherits by not asking.
