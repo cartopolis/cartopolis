@@ -3455,8 +3455,12 @@ fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
 }
 
 /// Even-odd point-in-ring test (lat/lng or any planar pair).
-fn point_in_ring(p: (f64, f64), ring: &[(f64, f64)]) -> bool {
+pub(crate) fn point_in_ring(p: (f64, f64), ring: &[(f64, f64)]) -> bool {
     let n = ring.len();
+    if n < 3 {
+        // No area to be inside; and `n - 1` below would underflow on an empty one.
+        return false;
+    }
     let mut inside = false;
     let mut j = n - 1;
     for i in 0..n {

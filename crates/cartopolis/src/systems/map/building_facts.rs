@@ -993,6 +993,33 @@ impl BuildingFacts {
             .collect()
     }
 
+    /// The door nearest a point **inside** a building: where a walk to that
+    /// building ends (`navigation::snap_walk_to_door`).
+    ///
+    /// `None` when the point is in no loaded building, or the building has no
+    /// door — a destination on a square, in a park or at a person is left alone,
+    /// which is the point of asking "inside?" rather than "near?". A building's
+    /// first vertex is within 300 m of any point inside it for all but the very
+    /// largest, which is the radius [`Self::near`] is asked with.
+    #[must_use]
+    pub fn door_for(&self, lat: f64, lng: f64) -> Option<(f64, f64)> {
+        let scale = lat.to_radians().cos();
+        let d2 = |p: &(f64, f64)| {
+            let dy = p.0 - lat;
+            let dx = (p.1 - lng) * scale;
+            dx * dx + dy * dy
+        };
+        self.near(lat, lng, 300.0)
+            .into_iter()
+            .find(|(_, b)| crate::systems::osm_buildings::point_in_ring((lat, lng), &b.footprint))
+            .and_then(|(_, b)| {
+                b.doors
+                    .iter()
+                    .copied()
+                    .min_by(|a, b| d2(a).total_cmp(&d2(b)))
+            })
+    }
+
     /// The nearest addressed unit to a (lat, lng), within `max_m` metres.
     ///
     /// Linear over the loaded set: a ring of cells holds a few thousand addresses
@@ -1238,6 +1265,36 @@ mod tests {
             "the other file of the same cell is a different parse"
         );
         assert!(parse_part(-8, -8, BagPart::Buildings, "not json").is_none());
+    }
+
+    /// A walk ends at the door of the building its destination is *in*, and
+    /// nowhere else: a point on the square outside is not moved to anybody's
+    /// front door.
+    #[test]
+    fn a_door_is_found_only_from_inside_its_building() {
+        let mut cell = BagCell::default();
+        cell.buildings.insert(
+            Arc::from("NL.IMBAG.Pand.1"),
+            BuildingFact {
+                // ~20 m × ~22 m around (53.2000, 6.5000).
+                footprint: vec![
+                    (53.1999, 6.4998),
+                    (53.1999, 6.5002),
+                    (53.2001, 6.5002),
+                    (53.2001, 6.4998),
+                ],
+                doors: vec![(53.1999, 6.5001), (53.2001, 6.4999)],
+                ..BuildingFact::default()
+            },
+        );
+        let mut facts = BuildingFacts::default();
+        facts.insert_cell((0, 0), (Some(Arc::new(cell)), None));
+        // Inside, nearer the south door.
+        assert_eq!(facts.door_for(53.19995, 6.5001), Some((53.1999, 6.5001)));
+        // Inside, nearer the north door.
+        assert_eq!(facts.door_for(53.20005, 6.4999), Some((53.2001, 6.4999)));
+        // Out on the street beside it: left alone.
+        assert_eq!(facts.door_for(53.1997, 6.5000), None);
     }
 
     #[test]

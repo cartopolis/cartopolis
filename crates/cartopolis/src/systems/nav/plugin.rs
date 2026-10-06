@@ -61,6 +61,9 @@ impl Plugin for NavPlugin {
                 // A route to a person moves with their shared location. After
                 // the request that may have just started following them.
                 systems::navigation::follow_shared_location.after(systems::geo_nav::drive_geocode),
+                // A walk to a building ends at its door. After the request that
+                // set the destination, so it is moved before the solver sees it.
+                systems::navigation::snap_walk_to_door.after(systems::geo_nav::drive_geocode),
             )
                 .in_set(ClientPhase::Input),
         )

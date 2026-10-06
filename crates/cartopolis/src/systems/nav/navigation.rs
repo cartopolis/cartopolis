@@ -271,6 +271,10 @@ pub struct RouteState {
     /// Dropped by anything else that sets the destination, so a route to Sanne
     /// that is then pointed at a café stops chasing Sanne.
     pub following: Option<(String, String)>,
+    /// The door a walking destination was moved to ([`snap_walk_to_door`]).
+    /// Compared against the destination rather than cleared by every setter, so
+    /// "to the door" is only ever said about the door the route actually ends at.
+    pub door: Option<(f64, f64)>,
     /// The route the display keeps using while a replacement is being solved.
     ///
     /// Only [`Self::reroute_from`] fills it, and that is the point: an ordinary
@@ -336,6 +340,7 @@ impl Default for RouteState {
             route: None,
             by_mode: Vec::new(),
             following: None,
+            door: None,
             held: None,
             status: SolveStatus::Idle,
             picking: None,
@@ -572,6 +577,59 @@ const FOLLOW_RESOLVE_M: f64 = 50.0;
 ///
 /// When their share ends, the route stays where they last were — that is still
 /// the best answer anyone has, and they may well be standing there.
+/// A walk to a building ends at its door (`docs/mockups/routing/v1`, frame D).
+///
+/// A destination from a search, a saved place or a tap on a building is
+/// usually the building's middle, so a walking route used to end at whichever
+/// path was nearest to that point — often the back of the block. When the
+/// destination lies *inside* a building the register has doors for, it moves to
+/// the nearest of them ([`BuildingFacts::door_for`]) and the route re-solves to
+/// it. Only on foot: a car's route ends at the road either way. Never for a
+/// person being followed, and never for anything outside a building — a square,
+/// a park, a meet-up — which keeps its own spot.
+///
+/// The register streams around the camera, and the first solve frames the
+/// route, which brings the destination's cells in; so this re-checks whenever
+/// more of the register has loaded, until the destination has been decided.
+pub fn snap_walk_to_door(
+    mut route: ResMut<RouteState>,
+    facts: Res<crate::systems::building_facts::BuildingFacts>,
+    mut decided: Local<Option<(f64, f64)>>,
+    mut tried: Local<Option<((f64, f64), usize)>>,
+) {
+    if route.mode != TravelMode::Foot || route.following.is_some() {
+        return;
+    }
+    let Some(to) = route.to.coord else {
+        return;
+    };
+    // Settled for this destination; or asked already, against the same register.
+    if *decided == Some(to) || *tried == Some((to, facts.len())) {
+        return;
+    }
+    *tried = Some((to, facts.len()));
+    match facts.door_for(to.0, to.1) {
+        Some(door) => {
+            *decided = Some(door);
+            if crate::systems::driver::metres_between([to.0, to.1], [door.0, door.1]) > 1.0 {
+                tracing::info!(?door, "walking destination moved to the building's door");
+                route.door = Some(door);
+                let previous = route.route.take();
+                let label = std::mem::take(&mut route.to.label);
+                route.to.set(label, door);
+                route.invalidate();
+                route.held = previous;
+            } else {
+                route.door = Some(to);
+            }
+        }
+        // Inside nothing that has loaded. Decided only once the register around
+        // it is here, or a walk planned before the cells arrive never snaps.
+        None if !facts.near(to.0, to.1, 300.0).is_empty() => *decided = Some(to),
+        None => {}
+    }
+}
+
 pub fn follow_shared_location(
     mut route: ResMut<RouteState>,
     chat: Res<crate::systems::chat::ChatState>,
@@ -2137,8 +2195,13 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState) {
                         .size(theme::SIZE_HEADING)
                         .strong(),
                 );
+                let door = if route.door.is_some() && route.door == route.to.coord {
+                    " · to the door"
+                } else {
+                    ""
+                };
                 ui.label(
-                    egui::RichText::new(format!("· {}", format_distance(r.distance_m)))
+                    egui::RichText::new(format!("· {}{door}", format_distance(r.distance_m)))
                         .color(theme::TEXT_DIM),
                 );
             });
