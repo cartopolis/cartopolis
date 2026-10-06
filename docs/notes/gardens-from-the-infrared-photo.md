@@ -1,0 +1,67 @@
+---
+topic: map
+triggers: [gardens.rs, "erf", garden, gardens, PavingKind::Garden, luchtfotocir, ortho25IR, NDVI, "vegetation index", "planted", roofs.rs]
+updated: 2026-10-06
+---
+
+# Gardens are split along the infrared photograph
+
+The BGT records a private plot as `onbegroeidterreindeel` with
+`fysiek_voorkomen = erf` and nothing about what is on it. Until 2026-10-06 the
+extractor mapped `erf` to the same `yard` form as squares and forecourts, so
+**every garden in the country was drawn as paving**. Over a few streets of
+Groningen: 144 current `erf` plots, none with a material.
+
+`erf` now has its own form (`garden`, wire position 12), and atlas's `roofs`
+step — which already fetches each cell's photograph — also fetches PDOK's
+colour-infrared flight and cuts every garden into a planted half and a hard half
+(`pipeline/gardens.rs`, written into `roofs/14/x/y.json` as `gardens`, keyed like
+`paving` by the plot's first vertex). The client draws the planted half as grass
+— and grows blades on it, along with every surveyed verge and grassed surface
+(`turf::GrassArea::add_surveyed`) — and the hard half as paving that wears at its
+lawn edge (`paving_edges`). A client older than this drops the `garden` surfaces
+and shows the ground under them.
+
+## What was measured, and what the photograph cannot say
+
+Over 150 m squares of Groningen (Oosterpoort/Helpman), Den Haag (Bomen- en
+Bloemenbuurt) and Leidsche Rijn, 2026-10-06:
+
+- **Planted versus hard matches the photograph** — schoolyards and car parks
+  come out hard, lawns and planted back gardens green. Eyeball estimate 85–90 %
+  per pixel in sunlight; there is no ground truth.
+- **Lawn versus shrub versus tree does not.** A Den Haag block interior that is a
+  canopy of crowns in the photograph classifies as lawn. AHN's height (DSM − DTM)
+  cannot rescue it: AHN4 is flown leaf-off and the 0.5 m raster interpolates
+  through bare crowns, and the lawn/tree split moved 20 points on one filter
+  setting. So only the two-way split is made; trees stay with the layers that
+  already draw them.
+- The index is `(R − G) / (R + G)` of the infrared product alone — its red
+  channel is near-infrared, its green is red light (the RGB product's red
+  correlates 0.995 with it, same capture, no offset). Threshold **0.10** on the
+  **2025 summer 25 cm** flight (`2025_ortho25IR`). It is an uncalibrated JPEG,
+  so another year's flight needs its own threshold. The 2026 spring HR flight is
+  sharper but leaf-off with long shadows, and reads as hard ground.
+- JPEG stores colour at reduced resolution, so the index is only good to ~1 m:
+  the split is voted on 4×4-pixel (~0.9 m) cells, smoothed once by 3×3 majority,
+  and a plot under 8 % or over 92 % planted is left whole.
+
+**The known error:** the 25 cm photograph is not a true orthophoto, so a tall
+building leans over the strip of garden behind it and its roof reads as hard
+ground. Seen beside Leidsche Rijn's apartment blocks. Those strips were drawn as
+paving before, so this is no worse than it was; it is left in rather than guessed
+around.
+
+## Cost
+
+The whole of Groningen (`--area groningen`): 17,124 gardens split across 49
+cells, the whole `roofs` step taking **589 s** with the second photograph
+included (run in this container, 2026-10-06). How that divides between the
+fetch and the split was not measured.
+
+`gardens::real_area::plan_of_real_gardens` (ignored, live network) draws the
+split over the photograph for any `ATLAS_GARDEN_BBOX` — the way to judge a new
+flight or a new threshold by eye.
+
+Imagery: Beeldmateriaal Nederland via PDOK, CC BY 4.0 — credited in the
+`roofs` coverage's attribution.

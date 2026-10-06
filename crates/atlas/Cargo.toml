@@ -34,6 +34,9 @@ ureq.workspace = true
 # gzip for the CityJSON tiles, query encoding, and the WFS capabilities XML.
 flate2 = "1.1"
 earcutr.workspace = true
+# Cutting garden plots along the infrared photograph (`pipeline/gardens.rs`);
+# the same overlay the geo crate cuts its ground sheets with.
+i_overlay.workspace = true
 url = "2.5"
 # Already in the lockfile through winit; streams the BGT extract's GML, which is
 # hundreds of megabytes and never held whole.

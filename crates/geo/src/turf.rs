@@ -239,6 +239,40 @@ impl GrassArea {
         area
     }
 
+    /// Add a surveyed green surface — a verge, a grass-material surface, the
+    /// planted part of a garden — in the cell's tile-local metres, outer ring
+    /// first. The tile's `land` layer rarely maps private gardens or verges, so
+    /// without this the survey's green would be drawn green and grow nothing.
+    pub fn add_surveyed(&mut self, rings: &[Vec<[f32; 2]>], tile_m: f32) {
+        let Some(outer) = rings.first() else {
+            return;
+        };
+        if outer.len() < 3 {
+            return;
+        }
+        let mut flat: Vec<f64> = Vec::new();
+        let mut holes = Vec::new();
+        for (i, ring) in rings.iter().enumerate() {
+            if ring.len() < 3 {
+                continue;
+            }
+            if i > 0 {
+                holes.push(flat.len() / 2);
+            }
+            for p in ring {
+                flat.push(f64::from(p[0]));
+                flat.push(f64::from(p[1]));
+            }
+        }
+        let Ok(tris) = earcutr::earcut(&flat, &holes, 2) else {
+            return;
+        };
+        let p = |i: usize| (flat[i * 2] as f32, flat[i * 2 + 1] as f32);
+        for t in tris.chunks_exact(3) {
+            self.push([p(t[0]), p(t[1]), p(t[2])], tile_m);
+        }
+    }
+
     fn push(&mut self, v: [(f32, f32); 3], tile_m: f32) {
         let idx = self.tris.len() as u32;
         self.tris.push(v);

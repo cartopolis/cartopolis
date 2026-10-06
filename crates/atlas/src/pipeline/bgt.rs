@@ -67,7 +67,7 @@ fn bridge_part(props: &Value) -> Option<&'static str> {
 }
 
 /// Paved forms in wire order, mirrored by `SURFACE_KINDS`.
-const SURFACE_KINDS: [&str; 12] = [
+const SURFACE_KINDS: [&str; 13] = [
     "footway",
     "cycleway",
     "parking",
@@ -80,6 +80,10 @@ const SURFACE_KINDS: [&str; 12] = [
     "living_street",
     "road",
     "yard",
+    // A private plot (`erf`). Its own form so `roofs` can split it along the
+    // infrared photograph; a client that predates it drops the surface and
+    // draws the ground under it.
+    "garden",
 ];
 /// Materials in wire order, mirrored by `SURFACE_MATERIALS` and `PavingMaterial`.
 const SURFACE_MATERIALS: [&str; 12] = [
@@ -155,7 +159,8 @@ fn surface_form(f: &str) -> Option<&'static str> {
 /// material the same way a road's does.
 fn yard_form(v: &str) -> Option<&'static str> {
     Some(match v {
-        "gesloten verharding" | "open verharding" | "half verhard" | "erf" | "onverhard" => "yard",
+        "gesloten verharding" | "open verharding" | "half verhard" | "onverhard" => "yard",
+        "erf" => "garden",
         _ => return None,
     })
 }

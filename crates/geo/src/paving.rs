@@ -99,6 +99,11 @@ pub enum PavingKind {
     /// Paved open ground with no traffic function: squares, yards, forecourts
     /// (`onbegroeid terreindeel`).
     Yard,
+    /// A garden plot (`erf`): private ground the register says nothing more
+    /// about. Drawn as hard ground like a yard unless atlas has split it along
+    /// the infrared photograph (`formats::roofs::Garden`), and then its planted
+    /// part as grass.
+    Garden,
 }
 
 impl PavingKind {
@@ -135,6 +140,7 @@ impl PavingKind {
             Self::LivingStreet => 0x84_66_5A,
             Self::Road => 0x60_5F_5C,
             Self::Yard => 0xA8_A4_9C,
+            Self::Garden => 0xA8_A4_9C,
         }
     }
 
@@ -288,6 +294,7 @@ pub fn area_pattern(kind: PavingKind, material: Option<PavingMaterial>) -> u8 {
             PavingKind::Street | PavingKind::Road => pattern::ASPHALT,
             PavingKind::LivingStreet => pattern::BRICK,
             PavingKind::Yard => pattern::PAVER,
+            PavingKind::Garden => pattern::PAVER,
         },
     }
 }

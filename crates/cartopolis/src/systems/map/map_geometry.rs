@@ -2102,6 +2102,18 @@ fn spawn_geometry_task(
                                 // them: without this a park whose tile says grass
                                 // across the block grows a lawn over the trench.
                                 area.block_mouths(&cell_openings);
+                                // …and the survey's own lawns: verges, grassed
+                                // surfaces and the planted half of a garden.
+                                // The tile's `land` layer rarely maps private
+                                // ground, so these were drawn green and bare.
+                                for a in &paved {
+                                    if a.kind == crate::systems::paving::PavingKind::Verge
+                                        || a.material
+                                            == Some(crate::systems::paving::PavingMaterial::Grass)
+                                    {
+                                        area.add_surveyed(&a.rings, tile_m);
+                                    }
+                                }
                                 if !area.is_empty() {
                                     grass = Some(area);
                                 }

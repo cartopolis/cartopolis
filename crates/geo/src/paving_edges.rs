@@ -116,6 +116,7 @@ fn is_hard(a: &PavedArea) -> bool {
                 | PavingKind::Paved
                 | PavingKind::Steps
                 | PavingKind::Yard
+                | PavingKind::Garden
         )
 }
 

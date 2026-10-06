@@ -72,8 +72,25 @@ pub struct Cell {
     /// next `bgt` run.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub paving: BTreeMap<String, PavingColour>,
+    /// Garden plots (the BGT's `erf`) split into what the infrared photograph
+    /// shows planted and what it shows hard, keyed like [`Self::paving`]. The
+    /// register says a plot is private ground and nothing about what is on it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gardens: BTreeMap<String, Garden>,
     #[serde(default)]
     pub roofs: BTreeMap<String, Roof>,
+}
+
+/// One garden plot, cut in two along the photograph's vegetation. Each side is a
+/// list of polygons, each outer ring first and holes after, as `[lat, lng]`
+/// pairs to 7 decimals. The two sides come out of one overlay, so together they
+/// cover the plot exactly once.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Garden {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planted: Vec<Vec<Vec<(f64, f64)>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paved: Vec<Vec<Vec<(f64, f64)>>>,
 }
 
 /// The key a paved surface is measured under: its outer ring's first vertex,
@@ -119,6 +136,7 @@ mod tests {
         Cell {
             roofs,
             paving: BTreeMap::new(),
+            gardens: BTreeMap::new(),
         }
     }
 

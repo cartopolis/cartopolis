@@ -2398,6 +2398,7 @@ dependencies = [
  "flate2",
  "glam 0.32.1",
  "gltf",
+ "i_overlay",
  "image",
  "quick-xml",
  "serde",

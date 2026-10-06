@@ -110,7 +110,7 @@ const LINE_KINDS: [LineKind; 4] = [
 
 /// The paved forms, in wire order. Mirrors `SURFACE_KINDS` in
 /// atlas's `pipeline/bgt.rs` — **append, never renumber**.
-const SURFACE_KINDS: [PavingKind; 12] = [
+const SURFACE_KINDS: [PavingKind; 13] = [
     PavingKind::Footway,
     PavingKind::Cycleway,
     PavingKind::Parking,
@@ -123,6 +123,7 @@ const SURFACE_KINDS: [PavingKind; 12] = [
     PavingKind::LivingStreet,
     PavingKind::Road,
     PavingKind::Yard,
+    PavingKind::Garden,
 ];
 
 /// The surveyed materials, in wire order. Mirrors `SURFACE_MATERIALS` in
@@ -232,29 +233,57 @@ pub fn surveyed_paving(
             .collect();
         (out.len() == pts.len() && out.len() >= 3).then_some(out)
     };
-    paving
-        .areas
-        .iter()
-        .filter_map(|(kind, material, rings)| {
-            let first = *rings.first()?.first()?;
-            let outer = to_local(rings.first()?)?;
-            let mut local = vec![outer];
-            local.extend(rings[1..].iter().filter_map(to_local));
-            // The photo's measurement, where atlas took one (`roofs` step).
-            let measured = measured
-                .paving
-                .get(&cartopolis_geo::formats::roofs::paving_key(
-                    first.0, first.1,
-                ))
-                .map(|m| u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2]));
-            Some(PavedArea {
-                kind: *kind,
-                material: *material,
-                rings: local,
-                measured,
-            })
-        })
-        .collect()
+    let polygon = |rings: &[Vec<(f64, f64)>]| -> Option<Vec<Vec<[f32; 2]>>> {
+        let mut local = vec![to_local(rings.first()?)?];
+        local.extend(rings[1..].iter().filter_map(to_local));
+        Some(local)
+    };
+    let mut out = Vec::with_capacity(paving.areas.len());
+    for (kind, material, rings) in &paving.areas {
+        let Some(&first) = rings.first().and_then(|r| r.first()) else {
+            continue;
+        };
+        let key = cartopolis_geo::formats::roofs::paving_key(first.0, first.1);
+        // A garden atlas has split along the infrared photograph is drawn as
+        // its two halves: the planted part as grass, the rest as hard ground.
+        // They were cut by one overlay, so together they are the plot.
+        if *kind == PavingKind::Garden {
+            if let Some(split) = measured.gardens.get(&key) {
+                for (polys, material) in [
+                    (&split.planted, Some(PavingMaterial::Grass)),
+                    (&split.paved, None),
+                ] {
+                    out.extend(
+                        polys
+                            .iter()
+                            .filter_map(|p| polygon(p))
+                            .map(|rings| PavedArea {
+                                kind: PavingKind::Garden,
+                                material,
+                                rings,
+                                measured: None,
+                            }),
+                    );
+                }
+                continue;
+            }
+        }
+        let Some(local) = polygon(rings) else {
+            continue;
+        };
+        // The photo's measurement, where atlas took one (`roofs` step).
+        let measured = measured
+            .paving
+            .get(&key)
+            .map(|m| u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2]));
+        out.push(PavedArea {
+            kind: *kind,
+            material: *material,
+            rings: local,
+            measured,
+        });
+    }
+    out
 }
 
 /// One cell's surveyed objects, still in lat/lng as the host sent them.
@@ -694,9 +723,32 @@ pub(crate) async fn raster_survey(
                 let Some(&(lat, lng)) = rings.first().and_then(|r| r.first()) else {
                     continue;
                 };
+                let key = cartopolis_geo::formats::roofs::paving_key(lat, lng);
+                // A split garden is painted as its two halves here too, or the
+                // distant image would show every garden as paving while the
+                // meshes up close show it planted.
+                if *kind == PavingKind::Garden {
+                    if let Some(split) = measured.gardens.get(&key) {
+                        for (polys, material) in [
+                            (&split.planted, Some(PavingMaterial::Grass)),
+                            (&split.paved, None),
+                        ] {
+                            for poly in polys {
+                                survey.paving.push(OverlayFill {
+                                    rings: poly
+                                        .iter()
+                                        .map(|r| r.iter().map(to_unit).collect())
+                                        .collect(),
+                                    rgb: cartopolis_geo::paving::far_rgb(*kind, material, None),
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                }
                 let measured = measured
                     .paving
-                    .get(&cartopolis_geo::formats::roofs::paving_key(lat, lng))
+                    .get(&key)
                     .map(|m| u32::from(m.c[0]) << 16 | u32::from(m.c[1]) << 8 | u32::from(m.c[2]));
                 survey.paving.push(OverlayFill {
                     rings: rings

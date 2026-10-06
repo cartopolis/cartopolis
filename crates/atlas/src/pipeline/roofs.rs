@@ -70,7 +70,8 @@ fn layer() -> String {
     std::env::var("ATLAS_ROOFS_LAYER").unwrap_or_else(|_| LAYER.to_string())
 }
 
-const ATTRIBUTION: &str = "Luchtfoto © Beeldmateriaal Nederland (PDOK), CC BY 4.0; \
+const ATTRIBUTION: &str =
+    "Luchtfoto and infrared luchtfoto © Beeldmateriaal Nederland (PDOK), CC BY 4.0; \
                            roof geometry © 3DBAG by TU Delft, CC BY 4.0";
 
 /// Blocks per cell edge, i.e. the photograph is fetched as z16 tiles.
@@ -730,6 +731,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         .flat_map(|j| (0..BLOCKS).map(move |i| (i, j)))
         .collect();
     let (mut measured, mut pitched, mut flat, mut written) = (0usize, 0usize, 0usize, Vec::new());
+    let mut gardens = 0usize;
 
     for (done, (cell, lod)) in cells.iter().enumerate() {
         ctx.progress(Progress {
@@ -848,6 +850,8 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         {
             Some(paving) => {
                 doc.paving = measure_paving(&photo, &roofed, gains, &paving.surfaces, *cell);
+                doc.gardens = measure_gardens(ctx, *cell, &blocks, &paving.surfaces)?;
+                gardens += doc.gardens.len();
                 paving.surfaces.len()
             }
             None => 0,
@@ -861,10 +865,18 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             by_pand.len(),
             doc.paving.len(),
         ));
+        if !doc.gardens.is_empty() {
+            ctx.log(format!(
+                "cell {}/{}: {} gardens split",
+                cell.0,
+                cell.1,
+                doc.gardens.len()
+            ));
+        }
         if let (Some(dir), Some(panels)) = (&debug, panels) {
             write_debug(ctx, dir, *cell, &panels);
         }
-        if !doc.roofs.is_empty() || !doc.paving.is_empty() {
+        if !doc.roofs.is_empty() || !doc.paving.is_empty() || !doc.gardens.is_empty() {
             ctx.write_doc(&cell_path("roofs", *cell), &doc)?;
             written.push(*cell);
         }
@@ -892,6 +904,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             Count::new("roofs", measured),
             Count::new("pitched", pitched),
             Count::new("flat", flat),
+            Count::new("gardens", gardens),
         ],
     })
 }
@@ -904,8 +917,11 @@ const MIN_PAVING_PIXELS: usize = 130;
 const MIN_PAVING_VISIBLE: f64 = 0.25;
 
 /// Surface kinds and materials not worth measuring: verges, lawns and beds are
-/// drawn green whatever the photo says.
-const UNMEASURED_KINDS: [usize; 1] = [4];
+/// drawn green whatever the photo says, and a garden is lawn and paving
+/// together — `gardens` cuts it in two instead.
+const UNMEASURED_KINDS: [usize; 2] = [4, GARDEN];
+/// `SURFACE_KINDS` position of a garden plot (`bgt.rs`).
+const GARDEN: usize = 12;
 const UNMEASURED_MATERIALS: [usize; 2] = [7, 8];
 
 /// Every pixel inside a polygon (outer ring and holes, even-odd), by scanline.
@@ -1378,4 +1394,69 @@ mod tests {
             "sampled the shaded slope"
         );
     }
+}
+
+// ─── Gardens ─────────────────────────────────────────────────────────────────
+
+/// Every garden plot in this cell, split along the infrared photograph
+/// (`gardens`). Fetches that photograph only for a cell that has a garden.
+fn measure_gardens(
+    ctx: &Ctx,
+    cell: Cell,
+    blocks: &[(u32, u32)],
+    surfaces: &[cartopolis_geo::formats::bgt::Surface],
+) -> Outcome<BTreeMap<String, cartopolis_geo::formats::roofs::Garden>> {
+    let mut out = BTreeMap::new();
+    let plots: Vec<_> = surfaces.iter().filter(|s| s.0 == GARDEN).collect();
+    if plots.is_empty() {
+        return Ok(out);
+    }
+    let mut cir = RgbImage::new(CELL_PX, CELL_PX);
+    in_order(
+        ctx,
+        blocks,
+        ctx.upstream(),
+        |&(i, j)| {
+            super::gardens::fetch_block(
+                ctx,
+                &super::gardens::block_url(cell, i, j, BLOCKS, BLOCK_PX),
+                BLOCK_PX,
+            )
+        },
+        |&(i, j), block| {
+            image::imageops::replace(
+                &mut cir,
+                &block?,
+                i64::from(i * BLOCK_PX),
+                i64::from(j * BLOCK_PX),
+            );
+            Ok(())
+        },
+    )?;
+    let pixel = |lat: f64, lng: f64| {
+        let (fx, fy) = cartopolis_core::lat_lng_to_tile_frac(lat, lng, CACHE_ZOOM);
+        [
+            (fx - cell.0 as f64) * f64::from(CELL_PX),
+            (fy - cell.1 as f64) * f64::from(CELL_PX),
+        ]
+    };
+    for s in plots {
+        let Some(&first) = s.1.first().and_then(|r| r.first()) else {
+            continue;
+        };
+        let rings: Vec<Vec<[f64; 2]>> =
+            s.1.iter()
+                .map(|r| r.iter().map(|&(lat, lng)| pixel(lat, lng)).collect())
+                .collect();
+        let Some((planted, paved)) = super::gardens::split(&rings, CELL_PX, |x, y| {
+            super::gardens::index(cir.get_pixel(x, y).0)
+        }) else {
+            continue;
+        };
+        out.insert(
+            cartopolis_geo::formats::roofs::paving_key(first.0, first.1),
+            super::gardens::to_lat_lng(cell, CELL_PX, &planted, &paved),
+        );
+    }
+    Ok(out)
 }

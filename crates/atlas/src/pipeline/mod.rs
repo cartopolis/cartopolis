@@ -25,6 +25,7 @@ pub mod brp;
 pub mod buildings;
 pub mod bv3d;
 pub mod dikes;
+pub mod gardens;
 pub mod geom;
 pub mod http;
 pub mod lod22;
