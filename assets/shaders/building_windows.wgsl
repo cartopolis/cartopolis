@@ -310,7 +310,7 @@ const DOOR_H: f32 = 2.1;
 fn door_surface(pbr_input: ptr<function, PbrInput>, uv: vec2<f32>) {
     if uv.y > -0.75 {
         // UV0.x = 1 is a scaffold's galvanised tube (`scaffolding`).
-        let metal = f32(uv.x > 0.5);
+        let metal = f32(uv.x > 0.5 && uv.x < 1.5);
         (*pbr_input).material.perceptual_roughness = mix(0.7, 0.45, metal);
         (*pbr_input).material.metallic = 0.7 * metal;
         return;
@@ -399,6 +399,32 @@ fn shop_through_glass(pm: vec2<f32>, hs: vec2<f32>, along: f32) -> vec3<f32> {
     return vec3<f32>(0.1, 0.09, 0.075) * racks * lights;
 }
 
+// ─── Scaffold netting ────────────────────────────────────────────────────────
+
+/// The netting's mesh pitch, metres.
+const NET_MESH_M: f32 = 0.06;
+/// Width of one roll of netting; the rolls overlap at a darker seam.
+const NET_ROLL_M: f32 = 2.5;
+
+/// Debris netting on a scaffold: a woven sheet, its rolls lapped at seams and
+/// sagging between the ties at each lift. The holes show the shadow behind, so
+/// up close it is a fabric and from across the street a pale sheet over the
+/// facade — which is the whole point of drawing it.
+fn netting(pbr_input: ptr<function, PbrInput>, u: f32, v: f32, weave: vec2<f32>, weave_px: f32) {
+    let g = abs(fract(weave) - 0.5);
+    let strand = smoothstep(0.22, 0.34, max(g.x, g.y));
+    let near = 1.0 - clamp(weave_px * 1.6 - 0.35, 0.0, 1.0);
+    let mesh = mix(0.86, mix(0.7, 1.05, strand), near);
+    let seam_d = abs(fract(u / NET_ROLL_M + 0.5) - 0.5) * NET_ROLL_M;
+    let seam = mix(0.78, 1.0, smoothstep(0.03, 0.07, seam_d));
+    // Each lift's sheet sags a little away from its tie line.
+    let sag = 0.92 + 0.08 * smoothstep(0.0, 0.5, abs(fract(v / 2.0) - 0.5));
+    let c = (*pbr_input).material.base_color;
+    (*pbr_input).material.base_color = vec4<f32>(c.rgb * mesh * seam * sag, c.a);
+    (*pbr_input).material.perceptual_roughness = 0.95;
+    (*pbr_input).material.metallic = 0.0;
+}
+
 // ─── Neglect ─────────────────────────────────────────────────────────────────
 //
 // A building the register lists as out of use, or as waiting for demolition
@@ -411,9 +437,10 @@ fn shop_through_glass(pm: vec2<f32>, hs: vec2<f32>, along: f32) -> vec3<f32> {
 /// Weathered plywood over an opening, in pane-local metres: 1.22 m sheets with
 /// a darker seam between them and a grain running up them.
 fn boarded(pm: vec2<f32>, hs: vec2<f32>, r: f32) -> vec3<f32> {
-    // Fresh boards are yellow-brown; a year out in the rain greys them.
-    let age = fract(r * 5.3);
-    let ply = mix(vec3<f32>(0.32, 0.22, 0.11), vec3<f32>(0.19, 0.18, 0.16), age);
+    // Pale yellow-brown plywood, a little greyed by the rain — never as grey as
+    // glass, or a boarded window reads as a dark pane from the street.
+    let age = fract(r * 5.3) * 0.35;
+    let ply = mix(vec3<f32>(0.46, 0.33, 0.16), vec3<f32>(0.3, 0.27, 0.22), age);
     let grain = 0.9 + 0.1 * value_noise(vec2<f32>(pm.x / 0.04, pm.y / 0.9));
     let seam_y = abs(fract((pm.y + hs.y) / 1.22 + 0.5) - 0.5) * 1.22;
     let seam = mix(0.6, 1.0, smoothstep(0.004, 0.012, seam_y));
@@ -421,7 +448,7 @@ fn boarded(pm: vec2<f32>, hs: vec2<f32>, r: f32) -> vec3<f32> {
 }
 
 /// What boarded windows average to at range.
-const BOARD_MEAN: vec3<f32> = vec3<f32>(0.24, 0.19, 0.13);
+const BOARD_MEAN: vec3<f32> = vec3<f32>(0.4, 0.3, 0.17);
 
 /// A shop window whitewashed from the inside: swirls of chalk on the glass.
 fn whitewashed(pm: vec2<f32>, along: f32) -> vec3<f32> {
@@ -702,9 +729,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let brick = vec2<f32>(u / BRICK_LENGTH_M, v / BRICK_COURSE_M);
     let brick_px = max(fwidth(brick.x), fwidth(brick.y));
     let gutter_px = fwidth(v) / GUTTER_M;
+    let weave = vec2<f32>(u, v) / NET_MESH_M;
+    let weave_px = max(fwidth(weave.x), fwidth(weave.y));
 
     if door_part {
         door_surface(&pbr_input, face_uv);
+        // A scaffold's debris netting (`scaffolding`, UV0.x = 2).
+        if face_uv.y > -0.75 && face_uv.x > 1.5 {
+            netting(&pbr_input, u, v, weave, weave_px);
+        }
     } else if is_wall {
         let idx = floor(cell);
         let f = cell - idx;
@@ -851,10 +884,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             shop_front,
         ) * look.z;
         // A neglected building: an empty room behind the glass, a whitewashed
-        // shop window, and boards over the ground floor and over some of the
-        // windows above it — more of them once it is waiting to come down.
+        // shop window, and boards over the ground floor and over half the windows
+        // above it — all of them once it is waiting to come down.
         let boards = neglected && !shop_front
-            && (on_ground || fract(r * 17.3) < select(0.2, 0.55, neglect > 1.5));
+            && (on_ground || fract(r * 17.3) < select(0.5, 1.0, neglect > 1.5));
         let board_k = f32(boards);
         if neglected {
             interior = select(GLASS_BASE * 0.7, whitewashed(pm, along), shop_front) * look.z;

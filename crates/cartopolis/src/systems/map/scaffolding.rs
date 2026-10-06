@@ -16,6 +16,11 @@
 //! built on a `Near` cell only, as the doors are, and it is a few hundred
 //! triangles a face on a few dozen buildings a city.
 //!
+//! **The netting is what reads.** Tubes alone are a few grey lines on a brick
+//! wall from across the street, so the outside face carries debris netting from
+//! the first deck up (the ground lift stays open for the pavement), drawn as a
+//! weave by the shader (UV0.x = 2).
+//!
 //! **Which walls.** A pand's solid includes its party walls, and a scaffold on
 //! one of those stands inside the neighbour. So a face is only a candidate if a
 //! step off it lands outside *every* building in the cell — a measurement on
@@ -44,6 +49,9 @@ const TUBE_UV: [f32; 2] = [1.0, -0.5];
 /// Scaffold boards: weathered softwood.
 const BOARD: [f32; 4] = [0.26, 0.17, 0.085, 1.0];
 const BOARD_UV: [f32; 2] = [0.0, -0.5];
+/// Debris netting: off-white. UV0.x = 2 asks the shader for its weave.
+const NET: [f32; 4] = [0.62, 0.64, 0.62, 1.0];
+const NET_UV: [f32; 2] = [2.0, -0.5];
 
 /// The inner and outer standards' distance off the wall, metres. Between them
 /// is one deck of boards, 0.7 m — a standard access scaffold.
@@ -305,6 +313,21 @@ pub fn push(buf: &mut MeshData, face: &WallFace, base: f32, origin: Vec2) -> boo
             );
         }
     }
+    // Debris netting over the outside face, from the first deck up: the
+    // ground lift is left open for the pavement. It is what makes a
+    // scaffold read from across the street at all — the tubes alone are a
+    // few grey lines on a brick wall. Both sides, since the shell mesh is
+    // back-face culled and the net is a single sheet.
+    let (net_lo, net_hi) = (u_lo - 0.05, u_hi + 0.05);
+    let net_out = OUTER_M + TUBE_W * 2.0;
+    let sheet = [
+        p(net_lo, LIFT_M, net_out),
+        p(net_hi, LIFT_M, net_out),
+        p(net_hi, top, net_out),
+        p(net_lo, top, net_out),
+    ];
+    buf.quad_facing_uv(sheet, NET, n3, [NET_UV; 4]);
+    buf.quad_facing_uv(sheet, NET, -n3, [NET_UV; 4]);
     true
 }
 

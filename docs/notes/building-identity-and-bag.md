@@ -146,11 +146,11 @@ ask at any time.
   an empty building is still a building; nothing weaker qualifies.
 - **Work in progress and neglect are drawn from the status** (2026-10-06,
   `systems::scaffolding`, `building_windows::Condition`). `Renovation` and
-  `UnderConstruction` get a scaffold — tubes and boards built into the cell mesh
+  `UnderConstruction` get a scaffold — tubes, boards and debris netting built into the cell mesh
   on a `Near` cell, on the walls carrying a door, or the longest outside wall when
   the register places none — and their windows mostly dark at night. `OutOfUse` and
-  `DemolitionPermit` get a dark building, a boarded ground floor (more boards
-  above it once demolition is permitted), a whitewashed shop window and grime on
+  `DemolitionPermit` get a dark building, a boarded ground floor (half the windows
+  above it too, all of them once demolition is permitted), a whitewashed shop window and grime on
   the walls. Measured over Groningen's four central z14 cells on 2026-10-06: 31
   renovations, 56 under construction, 2 demolition permits and **no** out-of-use
   building at all, so the scaffolds are what anybody will see. Three things are
