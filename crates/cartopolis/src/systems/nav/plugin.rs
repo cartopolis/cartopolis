@@ -53,6 +53,9 @@ impl Plugin for NavPlugin {
                 // pass.
                 systems::geo_nav::answer_view_requests
                     .before(systems::private_chat::drive_private_chats),
+                // A chat's "+ → Meet up": where to propose, halfway along the
+                // walk when the other person is sharing (`systems::meetup`).
+                systems::meetup::answer_meetup_requests,
                 systems::geo_nav::drive_geocode,
                 systems::navigation::drive_route_geocoding,
                 // A route to a person moves with their shared location. After
@@ -131,6 +134,11 @@ impl Plugin for NavPlugin {
                     .after(systems::driver::drive_driver_mode)
                     .after(avatar::handle_avatar_movement)
                     .before(systems::navigation::drive_route_solver),
+                // Arriving at a meet-up ends its location share: after both
+                // arrival latches have been set this frame.
+                systems::meetup::finish_on_arrival
+                    .after(systems::walk_guide::drive_walk_guide)
+                    .after(systems::driver::drive_driver_mode),
             )
                 .in_set(ClientPhase::Move),
         )

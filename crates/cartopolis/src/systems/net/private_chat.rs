@@ -1333,6 +1333,9 @@ fn share_location(
     use crate::platform::location::LocationWatch;
     let now = now_ms();
     chat.expire_shares(now);
+    // A meet-up somebody said they are going to starts its share here, on the
+    // same tick that sends shares, so it goes out the moment it is due.
+    chat.tick_meetups(now);
     for channel in std::mem::take(&mut chat.share_stops) {
         private.last_sent.remove(&channel);
         if let Some(group) = group_of(&channel) {
@@ -1934,6 +1937,7 @@ mod loopback {
                 pitch: -35.0,
                 yaw: 40.0,
             }),
+            meetup: None,
         };
         let mut out = Vec::new();
         alice

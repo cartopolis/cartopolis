@@ -2050,6 +2050,7 @@ pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
                 name: Some("Vismarkt".into()),
                 text: None,
                 view: None,
+                meetup: None,
             }),
         );
     }

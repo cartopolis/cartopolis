@@ -1980,6 +1980,7 @@ pub fn render_search_panel(
                     pitch,
                     yaw,
                 }),
+                meetup: None,
             });
             *right_panel = RightPanel::Chat;
         }
@@ -2028,6 +2029,7 @@ pub fn answer_view_requests(
             pitch: pitch.to_degrees(),
             yaw: yaw.to_degrees(),
         }),
+        meetup: None,
     };
     for key in requests {
         if crate::systems::chat::ChatState::is_private(&key) {

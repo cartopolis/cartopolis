@@ -692,6 +692,21 @@ async fn search_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
 /// Name a map-picked point, so the field reads a place name rather than a pair of
 /// decimals. Best-effort: a failure just leaves the coordinates showing.
 fn spawn_reverse(end: Endpoint, lat: f64, lng: f64, sink: Arc<Mutex<Vec<(Endpoint, String)>>>) {
+    spawn_place_name(lat, lng, move |name| {
+        if let (Some(name), Ok(mut g)) = (name, sink.lock()) {
+            g.push((end, name));
+        }
+    });
+}
+
+/// Ask the geocoder what a point is called, and hand the answer (or `None`) to
+/// `done` — the first three parts of its address, which is a street, a number
+/// or a place, and a district.
+pub(crate) fn spawn_place_name(
+    lat: f64,
+    lng: f64,
+    done: impl FnOnce(Option<String>) + Send + 'static,
+) {
     // Detached fetch on the IoTaskPool (ADR-033 seam): wasm-safe, no OS thread.
     IoTaskPool::get()
         .spawn(async move {
@@ -712,9 +727,7 @@ fn spawn_reverse(end: Endpoint, lat: f64, lng: f64, sink: Arc<Mutex<Vec<(Endpoin
                             .join(", ")
                     })
                 });
-            if let (Some(name), Ok(mut g)) = (name, sink.lock()) {
-                g.push((end, name));
-            }
+            done(name);
         })
         .detach();
 }
@@ -902,17 +915,16 @@ pub fn drive_route_solver(
 }
 
 /// Where a detached solve leaves its answer: empty until it lands.
-#[cfg(mcp)]
 pub(crate) type DetachedSolve = Arc<Mutex<Option<Result<Route, RouteError>>>>;
 
 /// Solve a route for something other than the Route panel: an agent walking the
-/// avatar along streets rather than through buildings (`mcp::agent`).
+/// avatar along streets rather than through buildings (`mcp::agent`), or the
+/// walk between two friends a meet-up is placed halfway along (`meetup`).
 ///
 /// The same fetch, graph build and search the panel runs, with a cache and a
 /// progress counter of its own — so it neither replaces a route somebody has on
 /// screen nor waits behind one. A raster basemap has no geometry to route on and
 /// answers `NoData` at once.
-#[cfg(mcp)]
 pub(crate) fn solve_detached(
     from: (f64, f64),
     to: (f64, f64),

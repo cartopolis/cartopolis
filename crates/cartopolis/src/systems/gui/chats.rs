@@ -620,6 +620,14 @@ struct Actions {
     /// Plan a route to a person sharing their location, which follows them:
     /// `(chat key, username, lat, lng)`.
     route_to_person: Option<(String, String, f64, f64)>,
+    /// `+ → Meet up` in this chat.
+    meetup: Option<String>,
+    /// Move the draft meet-up's time, in minutes.
+    meetup_shift: Option<i64>,
+    meetup_send: bool,
+    meetup_cancel: bool,
+    /// "I'm going" to a meet-up: (chat key, the meet-up).
+    meetup_going: Option<(String, cartopolis_core::point::Point)>,
     block: Option<String>,
     unblock: Option<String>,
     report: Option<(String, Option<String>)>,
@@ -1342,6 +1350,22 @@ fn chat_screen(
                         last_day = day;
                     }
                 }
+                // A meet-up is its own card, and an answer to one is a small
+                // line under it rather than a second card at the same place.
+                match line.point.as_ref().and_then(|p| p.meetup) {
+                    Some(m) if m.going => {
+                        going_chip(ui, chat, line);
+                        ui.add_space(4.0);
+                        continue;
+                    }
+                    Some(_) => {
+                        number += 1;
+                        meetup_card(ui, chat, key, line, &lines, now, act);
+                        ui.add_space(4.0);
+                        continue;
+                    }
+                    None => {}
+                }
                 let n = line.point.as_ref().map(|_| {
                     number += 1;
                     number
@@ -1350,6 +1374,282 @@ fn chat_screen(
                 ui.add_space(4.0);
             }
         });
+}
+
+/// "Sanne is going", centred under the thread like a day chip: an answer to a
+/// meet-up, which the meet-up's own card also counts.
+fn going_chip(ui: &mut egui::Ui, chat: &ChatState, line: &ChatLine) {
+    let who = if is_mine(chat, line) {
+        "You are going".to_string()
+    } else {
+        format!("{} is going", line.sender)
+    };
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{}  {who}", icons::CHECK))
+                .size(12.0)
+                .color(theme::REAL_LOCATION),
+        );
+    });
+}
+
+/// Who is going to a meet-up and how far each is from it, as the card lists
+/// them: `(name, status)`.
+///
+/// The proposer counts as going. A person's distance comes from the location
+/// they are sharing with this chat — which "I'm going" turns on before the start
+/// — measured on this phone; somebody going who is not sharing (yet) reads as
+/// "going", and nothing more.
+fn meetup_people(
+    chat: &ChatState,
+    key: &str,
+    proposal: &ChatLine,
+    thread: &[ChatLine],
+) -> Vec<(String, String)> {
+    let Some(place) = proposal.point.as_ref() else {
+        return Vec::new();
+    };
+    let mut names: Vec<(String, bool)> = vec![(proposal.sender.clone(), is_mine(chat, proposal))];
+    for l in thread {
+        let answers = l
+            .point
+            .as_ref()
+            .is_some_and(|p| p.meetup.is_some_and(|m| m.going) && p.same_meetup(place));
+        if answers && !names.iter().any(|(n, _)| *n == l.sender) {
+            names.push((l.sender.clone(), is_mine(chat, l)));
+        }
+    }
+    // An answer this phone sent but has not seen echoed back yet.
+    if chat
+        .meetups_going
+        .iter()
+        .any(|(k, p)| k == key && p.same_meetup(place))
+        && !names.iter().any(|(_, mine)| *mine)
+    {
+        names.push(("You".into(), true));
+    }
+    names
+        .into_iter()
+        .map(|(name, mine)| {
+            let status = if mine {
+                "going".to_string()
+            } else {
+                chat.locations
+                    .iter()
+                    .find(|l| l.channel == key && l.from == name)
+                    .map_or_else(
+                        || "going".to_string(),
+                        |l| {
+                            let d = crate::systems::driver::metres_between(
+                                [l.latitude, l.longitude],
+                                [place.latitude, place.longitude],
+                            );
+                            if d < 60.0 {
+                                "there".to_string()
+                            } else {
+                                format!("{} away", crate::systems::routing::format_distance(d))
+                            }
+                        },
+                    )
+            };
+            (if mine { "You".to_string() } else { name }, status)
+        })
+        .collect()
+}
+
+/// A meet-up as the thread shows it: chat-world v4's card (screen 6) — where
+/// and when, who is going and how far off they are, what "I'm going" will share,
+/// and the two things to do about it.
+fn meetup_card(
+    ui: &mut egui::Ui,
+    chat: &ChatState,
+    key: &str,
+    line: &ChatLine,
+    thread: &[ChatLine],
+    now: u64,
+    act: &mut Actions,
+) {
+    let Some(point) = line.point.as_ref() else {
+        return;
+    };
+    let Some(m) = point.meetup else {
+        return;
+    };
+    let people = meetup_people(chat, key, line, thread);
+    let im_going = people.iter().any(|(n, _)| n == "You");
+    let place = point
+        .name
+        .clone()
+        .unwrap_or_else(|| "this spot".to_string());
+    let when = crate::systems::meetup::when_label(m.start_ms, now, local_offset_s(m.start_ms));
+    let by = if is_mine(chat, line) {
+        "you suggested it".to_string()
+    } else {
+        format!("suggested by {}", line.sender)
+    };
+    let w = (ui.available_width() * 0.86).clamp(220.0, 330.0);
+    egui::Frame::NONE
+        .fill(theme::SURFACE_RAISED)
+        .corner_radius(egui::CornerRadius::same(18))
+        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(w);
+            ui.label(
+                egui::RichText::new(format!("{}  Meet at {place}", icons::FLAG))
+                    .size(15.5)
+                    .strong()
+                    .color(theme::CREAM),
+            );
+            ui.label(
+                egui::RichText::new(format!("{when} · {by}"))
+                    .size(12.5)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add_space(6.0);
+            for (name, status) in &people {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(name).size(13.0).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(status).size(12.0).color(
+                            if status == "going" {
+                                theme::TEXT_DIM
+                            } else {
+                                theme::REAL_LOCATION
+                            },
+                        ));
+                    });
+                });
+            }
+            if !im_going {
+                ui.add_space(6.0);
+                let from = crate::systems::meetup::when_label(
+                    m.start_ms
+                        .saturating_sub(crate::systems::chat::MEETUP_SHARE_BEFORE_MS),
+                    now,
+                    local_offset_s(m.start_ms),
+                );
+                egui::Frame::NONE
+                    .fill(theme::REAL_LOCATION.gamma_multiply(0.16))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        theme::REAL_LOCATION.gamma_multiply(0.4),
+                    ))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Going shares your real location with this chat from {} \
+                                 until you arrive.",
+                                from.to_lowercase()
+                            ))
+                            .size(12.5)
+                            .color(theme::TEXT),
+                        );
+                    });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                if !im_going {
+                    if theme::primary_button_sized(
+                        ui,
+                        &format!("{}  I'm going", icons::CHECK),
+                        half,
+                    )
+                    .clicked()
+                    {
+                        act.meetup_going = Some((key.to_string(), point.clone()));
+                    }
+                } else if theme::primary_button_sized(
+                    ui,
+                    &format!("{}  Open in world", icons::CAM_EARTH),
+                    half,
+                )
+                .clicked()
+                {
+                    act.go_to = Some(point.clone());
+                }
+                if ui
+                    .add_sized(
+                        egui::vec2(half, theme::row_height()),
+                        egui::Button::new(format!("{}  Route", icons::ROUTE)),
+                    )
+                    .clicked()
+                {
+                    act.route_to = Some((point.latitude, point.longitude, place.clone()));
+                }
+            });
+        });
+}
+
+/// This device's UTC offset at `at_ms`, in seconds — the time zone the thread's
+/// own clock times are printed in (`day_label`, `clock_time`).
+fn local_offset_s(at_ms: u64) -> Option<i32> {
+    let ts = jiff::Timestamp::from_millisecond(at_ms as i64).ok()?;
+    Some(jiff::tz::TimeZone::system().to_offset(ts).seconds())
+}
+
+/// The meet-up being proposed in this chat, above its composer: where, when
+/// (moved a quarter hour at a time), and Send.
+fn meetup_draft(ui: &mut egui::Ui, chat: &ChatState, key: &str, now: u64, act: &mut Actions) {
+    let Some((draft_key, point)) = chat.meetup_draft.as_ref() else {
+        return;
+    };
+    if draft_key != key {
+        return;
+    }
+    let Some(m) = point.meetup else {
+        return;
+    };
+    raised_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let place = point
+            .name
+            .clone()
+            .unwrap_or_else(|| "this spot".to_string());
+        ui.label(
+            egui::RichText::new(format!("{}  Meet at {place}", icons::FLAG))
+                .size(15.0)
+                .color(theme::CREAM),
+        );
+        let halfway = chat.locations.iter().any(|l| l.channel == key);
+        theme::note(
+            ui,
+            if halfway {
+                "Halfway along the walk between you."
+            } else {
+                "Where the map is now. Move the map and ask again for somewhere else."
+            },
+        );
+        ui.horizontal(|ui| {
+            if theme::action_button(ui, "−15 min").clicked() {
+                act.meetup_shift = Some(-15);
+            }
+            ui.label(
+                egui::RichText::new(crate::systems::meetup::when_label(
+                    m.start_ms,
+                    now,
+                    local_offset_s(m.start_ms),
+                ))
+                .color(theme::TEXT),
+            );
+            if theme::action_button(ui, "+15 min").clicked() {
+                act.meetup_shift = Some(15);
+            }
+        });
+        ui.horizontal(|ui| {
+            if theme::action_button(ui, "Cancel").clicked() {
+                act.meetup_cancel = true;
+            }
+            if theme::primary_button_sized(ui, &format!("{}  Send", icons::SEND), 120.0).clicked() {
+                act.meetup_send = true;
+            }
+        });
+    });
+    ui.add_space(6.0);
 }
 
 /// "Today", "Yesterday", or the date, in this device's time zone.
@@ -1944,6 +2244,7 @@ fn composer(
     now: u64,
 ) {
     if kind == ChatKind::Private {
+        meetup_draft(ui, chat, key, now, act);
         if let Some(share) = chat.sharing.iter().find(|s| s.channel == key) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -2014,6 +2315,16 @@ fn composer(
                     .clicked()
                 {
                     act.view_to = Some(key.to_string());
+                }
+                if ui
+                    .button(format!("{} Meet up", icons::FLAG))
+                    .on_hover_text(
+                        "Propose a place and a time. Halfway between you when they are \
+                         sharing where they are; otherwise where the map is now.",
+                    )
+                    .clicked()
+                {
+                    act.meetup = Some(key.to_string());
                 }
                 if !chat.sharing.iter().any(|s| s.channel == key) {
                     ui.horizontal_wrapped(|ui| {
@@ -2218,6 +2529,53 @@ fn apply(
     if let Some(key) = act.view_to {
         chat.view_requests.push(key);
         view.attach = false;
+    }
+    // Meet-ups (`systems::meetup`): ask for a place, adjust the time, send.
+    if let Some(key) = act.meetup {
+        chat.meetup_requests.push(key);
+        view.attach = false;
+    }
+    if let Some(minutes) = act.meetup_shift {
+        let floor = crate::systems::meetup::default_start_ms(now_ms()).saturating_sub(30 * 60_000);
+        if let Some(m) = chat
+            .meetup_draft
+            .as_mut()
+            .and_then(|(_, p)| p.meetup.as_mut())
+        {
+            // Never into the past: a meet-up that has already started is not
+            // something to propose.
+            m.start_ms = m
+                .start_ms
+                .saturating_add_signed(minutes * 60_000)
+                .max(floor);
+        }
+    }
+    if act.meetup_cancel {
+        chat.meetup_draft = None;
+    }
+    if act.meetup_send {
+        if let Some((key, point)) = chat.meetup_draft.take() {
+            // The proposer is going to their own meet-up: the share and the
+            // arrival apply to them as to everyone who answers.
+            chat.meetups_going.push((key.clone(), point.clone()));
+            chat.private_points.push((key, point));
+        }
+    }
+    if let Some((key, place)) = act.meetup_going {
+        let mut answer = place.clone();
+        answer.text = Some("I'm going".into());
+        answer.view = None;
+        if let Some(m) = answer.meetup.as_mut() {
+            m.going = true;
+        }
+        chat.private_points.push((key.clone(), answer));
+        chat.meetups_going.push((key, place.clone()));
+        // And the way there, which is what somebody going needs next.
+        nav.route_to(
+            place.name.clone().unwrap_or_else(|| "Meet-up".to_string()),
+            place.latitude,
+            place.longitude,
+        );
     }
     if let Some(point) = act.go_to {
         // A point opens where the sender stood, on the chat's World view.
@@ -2755,6 +3113,7 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
                 pitch: -35.0,
                 yaw: 20.0,
             }),
+            meetup: None,
         };
         push(
             chat,
@@ -2811,6 +3170,34 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
         {
             l.at_ms = at(8);
         }
+        // A meet-up (`systems::meetup`), and Sanne sharing where she is, so the
+        // card has a distance to show and the share row its Route.
+        let mut vismarkt = point(53.2166, 6.5683, "Vismarkt", "halfway for both?");
+        vismarkt.view = None;
+        vismarkt.meetup = Some(cartopolis_core::point::Meetup {
+            start_ms: crate::systems::meetup::default_start_ms(now_ms()),
+            going: false,
+        });
+        push(
+            chat,
+            sanne,
+            0,
+            "Sanne",
+            "halfway for both?",
+            Some(vismarkt),
+            9,
+        );
+        chat.update_location(
+            crate::systems::chat::SharedLocation {
+                channel: sanne.into(),
+                from: "Sanne".into(),
+                latitude: 53.2232,
+                longitude: 6.5720,
+                accuracy_m: 8.0,
+                until_ms: now_ms() + 60 * 60_000,
+            },
+            now_ms(),
+        );
         let joris = "dm:10a5";
         chat.open_channel(joris, &crate::systems::private_chat::private_label("Joris"));
         push(

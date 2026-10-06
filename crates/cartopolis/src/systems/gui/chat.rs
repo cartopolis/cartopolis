@@ -30,6 +30,14 @@ const MAX_LINES: usize = 200;
 /// clock: generous enough to absorb ordinary skew, far short of a replay's age.
 const BACKLOG_AFTER_MS: u64 = 120_000;
 
+/// How long before a meet-up's start "I'm going" starts sharing your location
+/// with the chat (chat-world v4, screen 6).
+pub const MEETUP_SHARE_BEFORE_MS: u64 = 15 * 60_000;
+
+/// The latest a meet-up's share runs past its start, if arriving has not ended
+/// it already — a meet-up nobody got to must not leave a phone sharing all night.
+pub const MEETUP_SHARE_AFTER_MS: u64 = 60 * 60_000;
+
 #[derive(Resource)]
 pub struct ChatState {
     pub channels: Vec<ChatChannel>,
@@ -119,6 +127,16 @@ pub struct ChatState {
     /// the messenger's "+ → Send this view" and answered by `geo_nav`, which is
     /// what knows where the camera is.
     pub view_requests: Vec<String>,
+    /// Chats asking for a meet-up proposal (`+ → Meet up`). Answered by
+    /// `systems::meetup`, which knows where the camera is and can route.
+    pub meetup_requests: Vec<String>,
+    /// The meet-up being proposed, while its time is chosen: (channel key, the
+    /// meet-up point). Shown above the composer of that chat.
+    pub meetup_draft: Option<(String, cartopolis_core::point::Point)>,
+    /// Meet-ups this account said "I'm going" to: (channel key, the meet-up).
+    /// What turns the location share on before the start and off on arrival
+    /// ([`Self::tick_meetups`], `systems::meetup`).
+    pub meetups_going: Vec<(String, cartopolis_core::point::Point)>,
     /// First messages to people who are not contacts yet: (username, text).
     /// Each is sent into the direct chat with that person the moment
     /// `systems::private_chat` has opened it (`systems::contacts`).
@@ -275,6 +293,9 @@ impl Default for ChatState {
             group_name_input: String::new(),
             group_members_input: String::new(),
             view_requests: Vec::new(),
+            meetup_requests: Vec::new(),
+            meetup_draft: None,
+            meetups_going: Vec::new(),
             private_hello: Vec::new(),
             direct: HashMap::new(),
             private_forget: Vec::new(),
@@ -349,6 +370,35 @@ impl ChatState {
         self.sharing = live;
         self.share_stops.extend(done.into_iter().map(|s| s.channel));
         self.locations.retain(|l| l.until_ms > now_ms);
+    }
+
+    /// Turn the location share on for the meet-ups this account is going to,
+    /// from [`MEETUP_SHARE_BEFORE_MS`] before the start, and forget the ones long
+    /// over.
+    ///
+    /// This is chat-world v4's consent (screen 6): saying "I'm going" asks *once*,
+    /// and the share then starts and ends by itself. It ends at the latest
+    /// [`MEETUP_SHARE_AFTER_MS`] after the start; arriving ends it sooner
+    /// (`systems::meetup::finish_on_arrival`).
+    pub fn tick_meetups(&mut self, now_ms: u64) {
+        self.meetups_going.retain(|(_, p)| {
+            p.meetup
+                .is_some_and(|m| now_ms < m.start_ms + MEETUP_SHARE_AFTER_MS)
+        });
+        let due: Vec<(String, u64)> = self
+            .meetups_going
+            .iter()
+            .filter_map(|(key, p)| {
+                let start = p.meetup?.start_ms;
+                let window =
+                    start.saturating_sub(MEETUP_SHARE_BEFORE_MS)..start + MEETUP_SHARE_AFTER_MS;
+                (window.contains(&now_ms) && !self.sharing.iter().any(|s| &s.channel == key))
+                    .then(|| (key.clone(), start + MEETUP_SHARE_AFTER_MS - now_ms))
+            })
+            .collect();
+        for (key, duration) in due {
+            self.start_sharing(&key, duration, now_ms);
+        }
     }
 
     /// Record somebody's shared position, replacing what they shared before.
@@ -800,6 +850,34 @@ mod tests {
     /// A share ends on time on both sides: this phone's own is queued to tell the
     /// chat, and somebody else's is dropped whatever was last heard.
     #[test]
+    fn going_to_a_meetup_shares_from_a_quarter_hour_before_and_stops_after() {
+        let start = 10 * 3_600_000;
+        let mut chat = ChatState::default();
+        let place = cartopolis_core::point::Point {
+            latitude: 53.2,
+            longitude: 6.5,
+            meetup: Some(cartopolis_core::point::Meetup {
+                start_ms: start,
+                going: false,
+            }),
+            ..Default::default()
+        };
+        chat.meetups_going.push(("dm:aa".into(), place));
+        // An hour before: nothing yet.
+        chat.tick_meetups(start - 3_600_000);
+        assert!(chat.sharing.is_empty());
+        // Ten minutes before: sharing, until an hour after the start.
+        chat.tick_meetups(start - 10 * 60_000);
+        assert_eq!(chat.sharing.len(), 1);
+        assert_eq!(chat.sharing[0].until_ms, start + MEETUP_SHARE_AFTER_MS);
+        // Long over: forgotten, and the share has run out on its own.
+        chat.tick_meetups(start + MEETUP_SHARE_AFTER_MS + 1);
+        assert!(chat.meetups_going.is_empty());
+        chat.expire_shares(start + MEETUP_SHARE_AFTER_MS + 1);
+        assert!(chat.sharing.is_empty());
+    }
+
+    #[test]
     fn a_location_share_ends_on_time_on_both_sides() {
         let mut chat = ChatState::default();
         chat.start_sharing("dm:aa", 60_000, 1_000);
@@ -858,6 +936,7 @@ mod tests {
             name: None,
             text: None,
             view: None,
+            meetup: None,
         };
         let mut chat = ChatState::default();
         chat.receive_point(

@@ -8,6 +8,7 @@ pub use plugin::NavPlugin;
 pub mod driver;
 pub mod geo_nav;
 pub mod locate;
+pub mod meetup;
 pub mod navigation;
 pub mod place_link;
 pub mod route_ahead;
