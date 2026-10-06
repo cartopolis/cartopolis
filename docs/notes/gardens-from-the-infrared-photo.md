@@ -66,12 +66,21 @@ pieces under 4 m². The staircase tolerance (2 px) sat under the ~2.8 px a
 diagonal one-metre staircase stands off its line, so nothing was straightened,
 and the cut left a crumb wherever the outline ran along the plot's edge. The
 phone parses and triangulates every one, which made loading visibly slower.
-Now the tolerance is 3 px and a piece under ~4 m² goes to the other side (both
-sides recomputed from the plot, so they still cover it once): **1.98 MB, 4,579
-pieces, 76,000 vertices** on the same cell (2026-10-06). Of what is left, 10,000
-vertices are the 1,277 gardens left whole, each a copy of a plot ring the `bgt`
-surfaces already carry; a "whole" marker instead would save them, at the cost of
-a format change on both sides.
+Now the tolerance is one classification cell (4 px, ~0.9 m) and a piece under
+~4 m² goes to the other side (both sides recomputed from the plot, so they still
+cover it once). A plot the photograph shows all hard is not written at all — the
+client draws an unsplit garden from the `bgt` file as hard ground, which is the
+same picture — and neither is a plot that shares its first vertex (the lookup
+key) with a neighbour, since a split under a shared key lands on both. Same
+cell, 2026-10-06: **1.54 MB, 754 gardens, 3,446 pieces, 60,000 vertices**; the
+whole file 2.2 MB (455 kB compressed).
+
+Rejected, measured the same day: **shipping only the planted side** and letting
+the client derive the hard one as plot minus planted. It halves the gardens to
+0.75 MB, but the overlay costs ~120 ms of worker time per cell, twice (meshes
+and the far image), against ~10 ms to parse the half it replaces — a phone is
+short of CPU while the map loads, not of bandwidth. And **10 m² crumbs** saved
+another 0.2 MB by deleting real 3 × 3 m lawns.
 
 `gardens::real_area::plan_of_real_gardens` (ignored, live network) draws the
 split over the photograph for any `ATLAS_GARDEN_BBOX` — the way to judge a new

@@ -1440,10 +1440,26 @@ fn measure_gardens(
             (fy - cell.1 as f64) * f64::from(CELL_PX),
         ]
     };
+    // A garden is found by its first vertex, and neighbouring plots can start
+    // on the same corner (14 of Groningen centre's 1,838). A split written under
+    // a shared key is drawn over both plots, so those stay unsplit — hard
+    // ground, as every garden was before the split.
+    let mut starts: BTreeMap<String, usize> = BTreeMap::new();
+    for s in &plots {
+        if let Some(&(lat, lng)) = s.1.first().and_then(|r| r.first()) {
+            *starts
+                .entry(cartopolis_geo::formats::roofs::paving_key(lat, lng))
+                .or_default() += 1;
+        }
+    }
     for s in plots {
         let Some(&first) = s.1.first().and_then(|r| r.first()) else {
             continue;
         };
+        let key = cartopolis_geo::formats::roofs::paving_key(first.0, first.1);
+        if starts.get(&key) != Some(&1) {
+            continue;
+        }
         let rings: Vec<Vec<[f64; 2]>> =
             s.1.iter()
                 .map(|r| r.iter().map(|&(lat, lng)| pixel(lat, lng)).collect())
@@ -1453,8 +1469,15 @@ fn measure_gardens(
         }) else {
             continue;
         };
+        // A plot the photograph shows all hard is drawn from the `bgt` file as
+        // it stands — an unsplit garden is hard ground — so writing its ring
+        // again here would only be a second copy of it. Most plots in a city
+        // centre are this: 1,063 of the 1,824 in Groningen's.
+        if planted.is_empty() {
+            continue;
+        }
         out.insert(
-            cartopolis_geo::formats::roofs::paving_key(first.0, first.1),
+            key,
             super::gardens::to_lat_lng(cell, CELL_PX, &planted, &paved),
         );
     }

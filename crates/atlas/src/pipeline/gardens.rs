@@ -65,11 +65,12 @@ const MIN_INSIDE: u32 = 4;
 /// planted: a split that small is more likely the photograph than the garden.
 const WHOLE: f32 = 0.08;
 /// How far the planted outline may move when its staircase is straightened,
-/// in photo pixels (~0.7 m). It has to clear a diagonal staircase of `STEP`
-/// cells, whose corners stand `STEP / √2` ≈ 2.8 px off the line: at the first
-/// setting, 2 px, nothing was straightened and Groningen's centre cell shipped
-/// 186,000 garden vertices.
-const SIMPLIFY_PX: f64 = 3.0;
+/// in photo pixels: one classification cell (~0.9 m), the resolution the split
+/// is measured at anyway. It has to clear a diagonal staircase of `STEP` cells,
+/// whose corners stand `STEP / √2` ≈ 2.8 px off the line: at the first setting,
+/// 2 px, nothing was straightened and Groningen's centre cell shipped 186,000
+/// garden vertices. 3 px left 68,600 there and this 60,500.
+const SIMPLIFY_PX: f64 = 4.0;
 /// A planted or hard piece smaller than this, in photo pixels (~4 m² at the
 /// cell photo's 0.23 m), goes to the other side. The cut leaves crumbs wherever
 /// the straightened outline runs along the plot's own edge — 16,581 of the
