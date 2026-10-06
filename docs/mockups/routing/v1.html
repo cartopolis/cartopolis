@@ -12,6 +12,11 @@
     <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6.1-6-11a6 6 0 0 1 12 0c0 4.9-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
     <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></symbol>
     <symbol id="meet" viewBox="0 0 24 24"><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M6.5 16.5L12 9l5.5 7.5"/><path d="M12 9V4l3 1.5L12 7"/></symbol>
+    <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></symbol>
+    <symbol id="here" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></symbol>
+    <symbol id="nav" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol>
   </defs>
 </svg>
 </head>
@@ -113,20 +118,19 @@ so choosing a mode is a look rather than three solves. The Start button names wh
   <div class="shot">
     <div class="screen" style="background-image:url(shots/walk.png)">
       <svg class="new" style="left:0;top:0;width:412px;height:915px;outline:none" viewBox="0 0 412 915">
-        <path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#0A0E10" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/><path id="walkline" d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#F3F7F9" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-        <text font-size="15" fill="#0A0E10" font-weight="600" dominant-baseline="central"><textPath href="#walkline" startOffset="30">&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;&#x2003;&#x203A;</textPath></text>
+        <path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#0A0E10" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><path id="walkline" d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#3E8EDE" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <div class="tag" style="left:350px;top:520px">NEW</div>
       <div class="glass turn new" style="top:16px;left:60px"><div class="arrow" style="background:var(--brand)"><svg class="i" style="transform:scaleX(-1)"><use href="#left"/></svg></div>
         <div><b>40 m</b><span>Right into Oude Ebbingestraat</span></div></div>
       <div class="glass new" style="left:10px;right:10px;bottom:72px;padding:8px 10px;display:flex;align-items:center;gap:8px">
         <div style="flex:1"><div style="color:var(--cream);font-size:15px">27 min <span class="dim small">· 2.1 km left</span></div><div class="dim small">Stadsschouwburg, front door</div></div>
-        <span class="btn"><svg class="i"><use href="#skip"/></svg>Skip</span><span class="btn"><svg class="i"><use href="#play"/></svg>Auto</span><span class="btn">Stop</span>
+        <span class="btn v4"><svg class="i"><use href="#skip"/></svg>Skip</span><span class="btn v4"><svg class="i"><use href="#play"/></svg>Auto</span><span class="btn v4">Stop</span>
       </div>
     </div>
     <h3><span>E</span>Walking <em class="new">new</em></h3>
     <ul><li>Avatar, buildings, people, chat and the follow camera all stay. Only the route and two small boxes are added.</li>
-        <li>The line near you turns into <b>chevrons on the ground</b>; the next turn is a small card, orange because it is the world's chrome, not the satnav's blue.</li>
+        <li>The route is today's blue line with a dark edge, as in v4; the next turn is a small card, orange because it is the world's chrome, not the satnav's blue.</li>
         <li><b>Skip</b> jumps to the next junction (long-press: to the destination). <b>Auto</b> is Walk me there.</li></ul>
   </div>
 
@@ -144,14 +148,14 @@ so choosing a mode is a look rather than three solves. The Start button names wh
     <div class="screen" style="background-image:url(shots/walk.png)">
       <div class="glass pill new" style="left:50%;transform:translateX(-50%);top:58px;white-space:nowrap"><span class="dot" style="background:var(--brand)"></span>Walking you there · any key takes over</div>
       <svg style="left:0;top:0;width:412px;height:915px" viewBox="0 0 412 915">
-        <path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#0A0E10" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/><path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#F3F7F9" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#0A0E10" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><path d="M214 762 C 290 764, 336 706, 344 610 S 356 360, 372 240" fill="none" stroke="#3E8EDE" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <div class="glass new" style="left:10px;right:10px;bottom:72px;padding:10px 12px">
         <div style="display:flex;justify-content:space-between;color:var(--cream)"><span>Skip ahead to…</span><span class="dim small">✕</span></div>
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:13.5px">
-          <div class="btn" style="justify-content:space-between"><span>Next turn · Oude Ebbingestraat</span><span class="dim">40 m</span></div>
-          <div class="btn" style="justify-content:space-between"><span>Halfway · Noorderplantsoen</span><span class="dim">1.1 km</span></div>
-          <div class="btn primary" style="justify-content:space-between"><span>Arrive · Stadsschouwburg</span><span>2.1 km</span></div>
+          <div class="btn v4" style="justify-content:space-between"><span>Next turn · Oude Ebbingestraat</span><span class="dim">40 m</span></div>
+          <div class="btn v4" style="justify-content:space-between"><span>Halfway · Noorderplantsoen</span><span class="dim">1.1 km</span></div>
+          <div class="btn v4 po" style="justify-content:space-between"><span>Arrive · Stadsschouwburg</span><span>2.1 km</span></div>
         </div>
       </div>
     </div>
@@ -166,87 +170,70 @@ so choosing a mode is a look rather than three solves. The Start button names wh
 
 <!-- ============================================================ -->
 <section>
-<h2><span>3</span>Meeting a friend: a route can start from a chat</h2>
-<p>Today's private chats already carry points and live shared locations, and tapping either flies the camera there. Each gains <i>Route here</i>; and one new kind of message,
-a <i>meet-up</i>, proposes a place that is fair to both of you. Everything new travels inside the chat's end-to-end encrypted messages — the server never learns where anyone is meeting.</p>
+<h2><span>3</span>Meeting a friend: v4's meet-up, with a route for each person</h2>
+<p>The meet-up is the one already designed in <a style="color:var(--brand)" href="../chat-world/README.md">chat-world v4</a> (screen 6): a place, a time and who's coming, where saying <i>I'm going</i> asks once to share your real location with the others going, from 15 minutes before until you arrive.
+This adds three things: <i>Route</i> on everything in a chat, a suggested place that is fair to both of you, and each person's route on the chat's map. All of it travels inside the chat's end-to-end encrypted messages.</p>
 <div class="row">
 
   <div class="shot">
-    <div class="screen" style="background-image:url(shots/chatthread.png)" id="thread">
-      <!-- the point's single "Open in world" becomes two buttons -->
-      <div style="left:20px;top:468px;width:244px;height:36px;background:var(--raised)"></div>
-      <span class="btn brand" style="left:24px;top:471px;width:114px;height:30px;font-size:12.5px">Open in world</span>
-      <span class="btn new" style="left:146px;top:471px;width:112px;height:30px;font-size:12.5px;background:var(--surface);border-color:var(--brand);color:var(--accent)"><svg class="i"><use href="#route"/></svg>Route here</span>
-      <!-- a live location in place of the picture -->
-      <div style="left:0;top:572px;width:412px;height:272px;background:rgb(20,19,18)"></div>
-      <div class="chatbox new" style="left:12px;top:590px;width:280px;padding:0;overflow:hidden">
-        <div style="height:120px;background:url(shots/chatworld.png) -60px -330px;position:relative">
-          <div style="position:absolute;left:118px;top:48px;width:22px;height:22px;border-radius:50%;background:rgba(79,178,255,.3)"></div>
-          <div style="position:absolute;left:123px;top:53px;width:12px;height:12px;border-radius:50%;background:var(--real);border:2px solid #fff"></div>
-        </div>
-        <div style="padding:8px 12px 10px">
-          <b>Sanne's location</b>
-          <div class="sub"><span style="color:var(--real)">●</span> live until 20:00 · 1.2 km from you</div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <span class="btn brand" style="flex:1;font-size:12.5px;padding:6px 0">Open in world</span>
-            <span class="btn new" style="flex:1;font-size:12.5px;padding:6px 0;background:var(--surface);border-color:var(--brand);color:var(--accent)"><svg class="i"><use href="#route"/></svg>Route here</span>
-          </div>
-        </div>
-      </div>
-          </div>
-    <h3><span>H</span>A thread <em class="new">new: Route here</em></h3>
-    <ul><li>A point and a friend's live location each get <b>Route here</b> beside today's fly-to.</li>
-        <li>Routing to a <b>person</b> follows them: the route re-plans when they have moved ~50 m. That is the one case where a route's destination moves.</li></ul>
+    <div class="screen" style="background-image:url(shots/chatthread.png)">
+      <!-- the point's single "Open in world" becomes a row of two -->
+      <div style="left:20px;top:466px;width:244px;height:40px;background:var(--raised)"></div>
+      <div class="brow" style="left:24px;top:471px;width:236px"><span class="po"><svg class="i"><use href="#globe"/></svg>Open in world</span><span class="new"><svg class="i"><use href="#route"/></svg>Route</span></div>
+      <!-- today's "shares their location" row, with Route beside Show -->
+      <div style="left:0;top:572px;width:412px;height:274px;background:rgb(20,19,18)"></div>
+      <div class="locrow" style="left:12px;top:806px"><span style="color:var(--real)"><svg class="i"><use href="#here"/></svg>Sanne shares their location</span><span class="btn">Show</span><span class="btn new"><svg class="i"><use href="#route"/></svg>Route</span></div>
+    </div>
+    <h3><span>H</span>Route from a chat <em class="new">new: Route</em></h3>
+    <ul><li>A point's card gets <b>Route</b> beside today's Open in world, in v4's button row.</li>
+        <li>Today's "Sanne shares their location · Show" line gets <b>Route</b> too. A route to a person follows them: it re-plans when they have moved ~50 m.</li></ul>
   </div>
 
   <div class="shot">
-    <div class="screen" style="background-image:url(shots/chatthread.png)" id="meetcard">
-      <div style="left:0;top:520px;width:412px;height:326px;background:rgb(20,19,18)"></div>
-      <div class="chatbox new" style="left:12px;top:540px;width:300px;padding:0;overflow:hidden">
-        <div style="padding:8px 12px 4px;font-size:12px;color:var(--accent);display:flex;gap:6px;align-items:center"><svg class="i"><use href="#meet"/></svg>Sanne suggests meeting</div>
-        <div style="height:128px;background:url(shots/chatworld.png) -50px -250px;position:relative">
-          <svg style="position:absolute;left:0;top:0" width="300" height="128" viewBox="0 0 300 128">
-            <path d="M10 120 L60 96 L95 98 L140 64" fill="none" stroke="#0A0E10" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/><path d="M10 120 L60 96 L95 98 L140 64" fill="none" stroke="#F3F7F9" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M292 8 L250 30 L210 30 L176 50 L148 60" fill="none" stroke="#0A0E10" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/><path d="M292 8 L250 30 L210 30 L176 50 L148 60" fill="none" stroke="#F3F7F9" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <div class="ppin sm" style="left:144px;top:66px"><div class="head"><span class="n">3</span>Vismarkt</div><div class="stem"></div><div class="dot"></div></div>
+    <div class="screen" style="background-image:url(shots/chatthread.png)">
+      <div style="left:0;top:276px;width:412px;height:570px;background:rgb(20,19,18)"></div>
+      <div class="bubble" style="left:12px;top:300px;background:var(--raised);border:none"><div class="who">Sanne</div>Somewhere in between?</div>
+      <div class="meetcard new" style="left:12px;top:372px;width:330px">
+        <div class="img" style="background:url(shots/chatworld.png) -40px -300px">
+          <div class="dest" style="left:165px;top:66px"><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="stem"></div></div>
         </div>
-        <div style="padding:8px 12px 10px">
-          <b>Vismarkt</b>
-          <div class="sub">fair for both of you · about 7 pm</div>
-          <div class="etas"><div><span class="dot" style="background:var(--real)"></span>You <svg class="i"><use href="#bike"/></svg>12 min</div><div><span class="dot" style="background:var(--real)"></span>Sanne <svg class="i"><use href="#walk"/></svg>11 min</div></div>
-          <div style="display:flex;gap:8px">
-            <span class="btn brand" style="flex:1;font-size:13px;padding:6px 0">Accept</span>
-            <span class="btn" style="flex:1;font-size:13px;padding:6px 0">Another spot</span>
+        <div class="body"><b><svg class="i" style="vertical-align:-3px"><use href="#cal"/></svg> Meet at the Vismarkt</b><span>Today 19:00 · about halfway for both · suggested by Sanne</span>
+          <div class="who2">
+            <div><span class="av2" style="background:#4374C4">S</span>Sanne<span class="st o"><svg class="i"><use href="#walk"/></svg>11 min</span></div>
+            <div><span class="av2" style="background:#865CC4">J</span>You<span class="st o"><svg class="i"><use href="#bike"/></svg>12 min</span></div>
           </div>
         </div>
+        <div class="consent"><svg class="i" style="color:var(--real)"><use href="#nav"/></svg><span>Going shares your real location with <b>Sanne</b> from 18:45 until you arrive.</span></div>
+        <div class="brow" style="position:static;margin:0 12px 12px"><span class="po"><svg class="i"><use href="#check"/></svg>I'm going</span><span><svg class="i"><use href="#pin"/></svg>Another place</span></div>
       </div>
-      
-          </div>
-    <h3><span>I</span>A meet-up <em class="new">new</em></h3>
-    <ul><li>Chat <b>+ ▸ Meet up</b> proposes a spot where your travel times are about equal, each by your own mode, moved onto a named place.</li>
-        <li>The card shows both times. <b>Accept</b> plans your route; <b>Another spot</b> offers the next candidate.</li></ul>
+    </div>
+    <h3><span>I</span>A suggested meet-up <em class="new">new</em></h3>
+    <ul><li>v4's meet-up card, as it arrives in the thread. <b>New</b>: the place is suggested, not typed — about equally far for both, each by your own mode, moved onto a named place.</li>
+        <li>The times are worked out from where each of you said you'd start, so nobody has to share a location just to be asked.</li>
+        <li><b>I'm going</b> is v4's consent; <b>Another place</b> asks for the next one.</li></ul>
   </div>
 
   <div class="shot">
-    <div class="screen" style="background-image:url(shots/chatworld.png)" id="onway">
-      <svg class="new" style="left:0;top:0;outline:none" width="412" height="915" viewBox="0 0 412 915">
-        <path d="M40 700 L90 640 L120 600 L150 540 L190 470 L222 404" fill="none" stroke="#0A0E10" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/><path d="M40 700 L90 640 L120 600 L150 540 L190 470 L222 404" fill="none" stroke="#F3F7F9" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 398" fill="none" stroke="#0A0E10" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/><path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 398" fill="none" stroke="#F3F7F9" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <div class="screen" style="background-image:url(shots/chatworld.png)">
+      <svg style="left:0;top:0" width="412" height="915" viewBox="0 0 412 915">
+        <path d="M40 700 L90 640 L120 600 L150 540 L190 470 L224 410" stroke="#0A0E10" stroke-width="10" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M40 700 L90 640 L120 600 L150 540 L190 470 L224 410" stroke="#3E8EDE" stroke-width="5.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 404" stroke="#0A0E10" stroke-width="10" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M400 170 L360 220 L330 262 L300 300 L262 350 L232 404" stroke="#3E8EDE" stroke-width="5.5" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity=".75"/>
       </svg>
-      <div class="ppin new" style="left:228px;top:404px"><div class="head"><span class="n">3</span>Vismarkt · 7 pm</div><div class="stem"></div><div class="dot"></div></div>
-      <div class="gpsdot new" style="left:120px;top:600px"><div class="ring"><div class="core"></div></div><div class="name">You <b>· by bike, 6 min</b></div></div>
-      <div class="gpsdot new" style="left:330px;top:262px"><div class="ring"><div class="core"></div></div><div class="name">Sanne <b>· walking, 4 min</b></div></div>
-      <div class="glass pill new" style="left:50%;transform:translateX(-50%);top:132px;white-space:nowrap;font-size:12px"><span class="dot" style="background:var(--real)"></span>Sharing your trip with Sanne until you arrive<span class="btn" style="padding:1px 8px;font-size:11.5px">Stop</span></div>
+      <div class="dest new" style="left:228px;top:410px"><div class="disc"><svg class="i"><use href="#pin"/></svg></div><div class="stem"></div><div class="name">Vismarkt · 19:00</div></div>
+      <div class="gpsdot new" style="left:120px;top:600px"><div class="ring"><div class="core"></div></div><div class="name">You <b>· 6 min · bike</b></div></div>
+      <div class="gpsdot new" style="left:330px;top:262px"><div class="ring"><div class="core"></div></div><div class="name">Sanne <b>· 4 min</b></div></div>
+      <div class="sharepill" style="top:132px"><svg class="i"><use href="#nav"/></svg>Sharing with Sanne until you arrive</div>
       <div style="left:0;top:752px;width:412px;height:96px;background:rgb(28,26,24)"></div>
-      <div class="chatline" style="left:16px;top:758px"><b>Sanne</b>Meet-up at Vismarkt, 7 pm <span class="dim small">· accepted</span></div>
-      <div class="chatline" style="left:16px;top:788px"><b>You</b>On my way <span class="dim small">· by bike, 6 min</span></div>
-      <div class="chatline new" style="left:16px;top:818px"><b>Sanne</b>On the way <span class="dim small">· walking, 4 min</span></div>
+      <div class="chatline" style="left:16px;top:758px"><b>Sanne</b>Meet at the Vismarkt, 19:00 <span class="dim small">· going</span></div>
+      <div class="chatline" style="left:16px;top:788px"><b>You</b>I'm going <span class="dim small">· by bike</span></div>
+      <div class="chatline new" style="left:16px;top:818px"><b>Sanne</b>On the way <span class="dim small">· 4 min</span></div>
     </div>
     <h3><span>J</span>On the way, in the chat's World view <em class="new">new</em></h3>
-    <ul><li>Each person's route is drawn with their dot on it and their arrival time, from the existing live location share.</li>
-        <li>The share has a chip and Stop, as today, and <b>ends by itself</b> ten minutes after you arrive. Arriving posts "arrived".</li>
-        <li>If your friend is online as an avatar, <b>Join</b> puts you beside them instead.</li></ul>
+    <ul><li>Both routes in today's blue, the meeting place as v4's white pin, each person as v4's blue real-location dot with their time left.</li>
+        <li>The share is v4's: it started when you said you were going and <b>ends on arrival</b>, which posts "arrived".</li>
+        <li>In driver mode, v4's <i>Let someone know when you'll arrive</i> (screen 8) is the same message for a trip that isn't a meet-up.</li></ul>
   </div>
 
 </div>
@@ -257,14 +244,13 @@ a <i>meet-up</i>, proposes a place that is fair to both of you. Everything new t
     <li><b>The router</b>: Car, Bike and Walk on the noded graph, long routes by tier, the cost model.</li>
     <li><b>The planner sheet</b>: its place, its two detents, the endpoint fields, pick-on-map, "Route to here" in the context menu.</li>
     <li><b>Driver mode</b> for the car: chase camera, turn card, route rail, reroute, arrival.</li>
-    <li><b>Chats</b>: encryption, points, live location sharing and its chip.</li></ul></div>
+    <li><b>Chats</b>: encryption, points, live location sharing and its chip. Routes, pins, people and buttons are drawn in chat-world v4's style.</li></ul></div>
   <div><h3>New</h3><ul>
     <li>Times for all three modes on the chips; Start names its action; Car needs a fix.</li>
-    <li>Walking in the world: ground chevrons, small turn card, Walk me there, Skip ahead.</li>
+    <li>Walking in the world: route drawn in the street, small turn card, Walk me there, Skip ahead.</li>
     <li>Routes that end at the door (BAG entrance points).</li>
     <li>Bike variant of driver mode.</li>
-    <li>The route line is <b>white with a dark edge</b>, the chat-world design's route (its v3 legend: white never reads as a person or a point). Today's line is blue, which in a chat means a real location.</li>
-    <li>Route here from a chat; meet-up messages; route and arrival time on the chat's map; "arrived".</li>
+    <li>From a chat: <b>Route</b> on points and shared locations; v4's meet-up (screen 6) with a suggested place; each person's route and time on the chat's map; "arrived".</li>
     <li>Later: a desktop location source.</li></ul></div>
 </div>
 

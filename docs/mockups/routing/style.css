@@ -108,10 +108,49 @@ svg.i { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.
 .ppin.sm .head { height:22px; font-size:11px; padding:0 8px 0 3px; gap:5px; border-radius:11px; }
 .ppin.sm .n { width:16px; height:16px; font-size:10px; }
 .ppin.sm .stem { height:10px; }
-/* routes and people, in the chat-world design's language (v3 legend):
-   a route is white so it never reads as a presence; a real location is blue */
-.gpsdot { position:absolute; z-index:4; transform:translate(-50%,-23px); display:flex; flex-direction:column; align-items:center; }
+/* a person on a chat's map, as chat_people::marker paints it: their disc in a
+   ring on a short stem, a shadow at the tip, the name in a chip under it.
+   Orange for an avatar; .gps is the same pin for a shared real location. */
+.mk { position:absolute; z-index:4; transform:translate(-50%,-56px); display:flex; flex-direction:column; align-items:center; }
+.mk .av { width:42px; height:42px; border-radius:50%; background:var(--brand); box-shadow:0 0 0 5px rgba(253,96,18,.28); display:grid; place-items:center; }
+.mk .av span { width:36px; height:36px; border-radius:50%; display:grid; place-items:center; color:#fff; font-size:14px; background:radial-gradient(circle at 35% 30%, rgba(255,255,255,.25), transparent 60%), var(--tone); }
+.mk .stem { width:3px; height:12px; background:var(--brand); }
+.mk .foot { width:12px; height:5px; border-radius:50%; background:rgba(0,0,0,.35); margin-top:-2px; }
+.mk .name { margin-top:3px; font-size:11.5px; color:#fff; background:rgba(10,14,16,.8); padding:1px 7px; border-radius:8px; white-space:nowrap; }
+.mk .name b { color:var(--real); font-weight:inherit; }
+.mk.gps .av { background:var(--real); box-shadow:0 0 0 5px rgba(79,178,255,.28); }
+.mk.gps .stem { background:var(--real); }
+.mk.sm { transform:translate(-50%,-38px) scale(.7); transform-origin:50% 100%; }
+/* chat-world v4's vocabulary: button rows, the destination pin, the real-location
+   dot, the meet-up card and the share pill (chat-world/v4.html) */
+.brow { position:absolute; display:flex; gap:8px; }
+.brow span { flex:1; display:flex; justify-content:center; align-items:center; gap:5px; padding:7px 4px; border-radius:10px; font-size:13px; background:var(--hover); color:var(--text); white-space:nowrap; }
+.brow .po { background:var(--brand); color:#fff; }
+.locrow { display:flex; gap:8px; align-items:center; font-size:13.5px; }
+.locrow > span:first-child { display:flex; gap:5px; align-items:center; }
+.locrow .btn { border:none; background:var(--hover); border-radius:10px; padding:5px 10px; }
+.dest { position:absolute; z-index:4; transform:translate(-50%,-48px); display:flex; flex-direction:column; align-items:center; }
+.dest .disc { width:30px; height:30px; border-radius:50%; background:#fff; color:var(--ink); display:grid; place-items:center; box-shadow:0 3px 8px rgba(0,0,0,.4); }
+.dest .stem { width:3px; height:14px; background:#fff; }
+.dest .name { margin-top:3px; font-size:11.5px; color:#fff; background:rgba(10,14,16,.8); padding:1px 7px; border-radius:8px; white-space:nowrap; }
+.gpsdot { position:absolute; z-index:3; transform:translate(-50%,-23px); display:flex; flex-direction:column; align-items:center; }
 .gpsdot .ring { width:46px; height:46px; border-radius:50%; background:rgba(79,178,255,.16); border:2px solid rgba(79,178,255,.6); display:grid; place-items:center; }
 .gpsdot .core { width:18px; height:18px; border-radius:50%; background:var(--real); border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.4); }
 .gpsdot .name { margin-top:2px; font-size:11.5px; color:#fff; background:rgba(10,14,16,.8); padding:1px 7px; border-radius:8px; white-space:nowrap; }
 .gpsdot .name b { color:var(--real); font-weight:inherit; }
+.meetcard { position:absolute; background:var(--raised); border-radius:18px; overflow:hidden; border:1px solid var(--gline); }
+.meetcard .img { height:92px; position:relative; }
+.meetcard .body { padding:10px 12px; }
+.meetcard .body b { color:var(--cream); font-weight:600; font-size:15.5px; display:block; }
+.meetcard .body > span { color:var(--dim); font-size:12.5px; }
+.who2 { margin-top:9px; display:flex; flex-direction:column; gap:6px; }
+.who2 div { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text); }
+.who2 .st { margin-left:auto; font-size:12px; color:var(--real); display:flex; gap:4px; align-items:center; }
+.who2 .st.o { color:var(--dim); }
+.av2 { width:24px; height:24px; border-radius:50%; color:#fff; font-size:11px; display:grid; place-items:center; }
+.consent { margin:0 12px 10px; background:rgba(79,178,255,.16); border:1px solid rgba(79,178,255,.35); border-radius:12px; padding:8px 10px; font-size:12.5px; color:var(--text); display:flex; gap:8px; align-items:center; }
+.consent b { color:var(--real); font-weight:inherit; }
+.sharepill { position:absolute; left:50%; transform:translateX(-50%); z-index:9; background:var(--real); color:#06121c; font-size:12px; padding:4px 10px 4px 8px; border-radius:14px; display:flex; gap:5px; align-items:center; white-space:nowrap; }
+.sharepill svg { width:14px; height:14px; }
+.btn.v4 { border:none; background:var(--hover); border-radius:10px; padding:5px 10px; }
+.btn.v4.po { background:var(--brand); color:#fff; }
