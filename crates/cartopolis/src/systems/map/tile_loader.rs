@@ -414,6 +414,136 @@ fn decode_tile_image(bytes: &[u8]) -> Result<image::RgbaImage, String> {
     Ok(reader.decode().map_err(|e| e.to_string())?.to_rgba8())
 }
 
+/// The layers painted into one source tile from outside its body: the crop
+/// parcels, the land cover and the surveyed paving.
+type Overlays = (
+    Arc<Vec<vector_tiles::OverlayFill>>,
+    Arc<Vec<vector_tiles::OverlayFill>>,
+    Arc<vector_tiles::Survey>,
+);
+
+/// What a source's overlays were built against: the source, the map template
+/// (which names the land cover), and the coverage revisions of the three trees
+/// they are read from — so an answer built before a manifest landed is never
+/// served after it.
+type OverlayKey = (TileKey, String, (u32, u32, u32));
+
+type OverlayWaiters = Vec<futures_channel::oneshot::Sender<Overlays>>;
+
+/// Overlays already built, held by `Weak` — alive exactly as long as some tile
+/// drawn from them still is — plus the builds in progress and who is waiting.
+#[derive(Default)]
+struct OverlayMemo {
+    built: HashMap<
+        OverlayKey,
+        (
+            std::sync::Weak<Vec<vector_tiles::OverlayFill>>,
+            std::sync::Weak<Vec<vector_tiles::OverlayFill>>,
+            std::sync::Weak<vector_tiles::Survey>,
+        ),
+    >,
+    building: HashMap<OverlayKey, OverlayWaiters>,
+}
+
+static OVERLAYS: std::sync::LazyLock<Mutex<OverlayMemo>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// One source tile's overlays, **built once however many tiles are drawn from
+/// it**.
+///
+/// Every clipmap tile above z14 is drawn from its z14 ancestor, so up to 64 tiles
+/// share one source — and each used to build that source's overlays itself:
+/// read and parse the crop parcels (no memo at all), the land cover, and every
+/// surveyed paving and roof file under it (a 24-entry memo that the first eight
+/// tiles, starting together, all missed). Groningen's densest paving file is
+/// 2.3 MB of JSON. All of it also ran before a tile could look up its finished
+/// image on disk, whose key is made from these, so a launch with every tile
+/// already drawn still paid for it per tile.
+///
+/// A second tile asking while the first is building waits for its answer rather
+/// than building its own; the answer lives as long as a tile holding it does.
+async fn source_overlays(source: TileKey, template: &str) -> Overlays {
+    let key: OverlayKey = (
+        source,
+        template.to_string(),
+        (
+            crate::systems::crops::coverage_revision(),
+            crate::systems::surveyed::coverage_revision(),
+            crate::systems::roof_colours::coverage_revision(),
+        ),
+    );
+    let lock = || {
+        OVERLAYS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    let waiter = {
+        let mut memo = lock();
+        if let Some((c, u, s)) = memo.built.get(&key) {
+            if let (Some(c), Some(u), Some(s)) = (c.upgrade(), u.upgrade(), s.upgrade()) {
+                return (c, u, s);
+            }
+        }
+        match memo.building.get_mut(&key) {
+            Some(waiters) => {
+                let (tx, rx) = futures_channel::oneshot::channel();
+                waiters.push(tx);
+                Some(rx)
+            }
+            None => {
+                memo.building.insert(key.clone(), Vec::new());
+                None
+            }
+        }
+    };
+    if let Some(rx) = waiter {
+        // A dropped sender (the builder's task went away) is not an answer;
+        // build it here instead.
+        if let Ok(overlays) = rx.await {
+            return overlays;
+        }
+    }
+    // Whatever happens to this build — finished, or its task dropped or panicking
+    // part-way — the entry leaves `building`, which drops any waiters' senders so
+    // they build for themselves instead of waiting for ever.
+    struct Building(Option<OverlayKey>);
+    impl Drop for Building {
+        fn drop(&mut self) {
+            if let Some(key) = self.0.take() {
+                OVERLAYS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .building
+                    .remove(&key);
+            }
+        }
+    }
+    let mut guard = Building(Some(key.clone()));
+    let built: Overlays = (
+        Arc::new(crate::systems::crops::raster_overlay(source).await),
+        Arc::new(landcover_underlay(source, template).await),
+        crate::systems::surveyed::raster_survey(source).await,
+    );
+    let waiters = {
+        let mut memo = lock();
+        memo.built.retain(|_, (c, _, _)| c.strong_count() > 0);
+        memo.built.insert(
+            key.clone(),
+            (
+                Arc::downgrade(&built.0),
+                Arc::downgrade(&built.1),
+                Arc::downgrade(&built.2),
+            ),
+        );
+        guard.0 = None;
+        memo.building.remove(&key)
+    };
+    for tx in waiters.into_iter().flatten() {
+        let _ = tx.send(built.clone());
+    }
+    built
+}
+
 /// The network half: fetch the tile body and classify it, decoding nothing.
 pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePayload, String> {
     use crate::systems::vector_tiles;
@@ -432,9 +562,7 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
         return Ok(TilePayload::Raster(bytes));
     }
 
-    let crops = Arc::new(crate::systems::crops::raster_overlay(source).await);
-    let underlay = Arc::new(landcover_underlay(source, template).await);
-    let survey = crate::systems::surveyed::raster_survey(source).await;
+    let (crops, underlay, survey) = source_overlays(source, template).await;
     Ok(TilePayload::Vector {
         bytes,
         sub,

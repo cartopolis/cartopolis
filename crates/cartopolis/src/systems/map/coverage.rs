@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use bevy::tasks::IoTaskPool;
 
-use crate::platform::http;
+use crate::platform::{http, storage};
 use crate::systems::osm_buildings::tdbag_url;
 
 /// Attempts before an unreachable manifest latches as "no coverage here".
@@ -40,6 +40,7 @@ const MAX_ATTEMPTS: u8 = 3;
 const RETRY_SECS: f64 = 30.0;
 
 /// One manifest's answer.
+#[derive(PartialEq)]
 struct Manifest {
     zoom: u32,
     cells: HashSet<(i64, i64)>,
@@ -149,6 +150,11 @@ pub struct CoverageSlot {
     /// A short name for the log line, so two slots' messages are tellable apart.
     label: &'static str,
     answer: RwLock<Option<Arc<Manifest>>>,
+    /// How many different answers this slot has held: what [`Self::revision`]
+    /// reports. 0 until the first.
+    generation: AtomicU32,
+    /// Whether the copy kept on the device has been looked for yet.
+    stored_read: AtomicBool,
     /// The [`REFRESH_EPOCH`] the answer belongs to.
     epoch: AtomicU32,
     registered: AtomicBool,
@@ -165,6 +171,8 @@ impl CoverageSlot {
             zoom,
             label,
             answer: RwLock::new(None),
+            generation: AtomicU32::new(0),
+            stored_read: AtomicBool::new(false),
             epoch: AtomicU32::new(0),
             registered: AtomicBool::new(false),
             fetching: AtomicBool::new(false),
@@ -180,12 +188,23 @@ impl CoverageSlot {
             .clone()
     }
 
+    /// Hold `manifest` as the answer. The revision moves only when it differs
+    /// from the one already held, so the network confirming the stored copy —
+    /// the ordinary launch — rebuilds nothing.
     fn set(&self, manifest: Manifest, epoch: u32) {
-        *self
+        let mut answer = self
             .answer
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(manifest));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if answer.as_deref() != Some(&manifest) {
+            *answer = Some(Arc::new(manifest));
+            self.generation.fetch_add(1, Ordering::Relaxed);
+        }
         self.epoch.store(epoch, Ordering::Relaxed);
+    }
+
+    fn stored_key(&self) -> String {
+        stored_key(self.sub)
     }
 
     /// Start the fetch if it has not been answered and nothing is in flight.
@@ -214,8 +233,31 @@ impl CoverageSlot {
         self.last_attempt.store(now.to_bits(), Ordering::Relaxed);
         IoTaskPool::get()
             .spawn(async move {
+                // **The copy kept from the last launch answers first.** Every
+                // consumer holds its first cells for this answer (the basemap and
+                // the ground cells for up to three seconds each), and a manifest
+                // changes when atlas re-runs a city — days apart — so waiting for
+                // the network every launch was a round trip, often several in a
+                // row, spent re-learning yesterday's answer before anything could
+                // be drawn. The network is still asked, right after; an answer that
+                // differs replaces this one and moves the revision, which rebuilds
+                // exactly what a late manifest always rebuilt.
+                let key = self.stored_key();
+                let mut stored = None;
+                if !self.stored_read.swap(true, Ordering::Relaxed) && self.manifest().is_none() {
+                    stored = storage::get_string(storage::Namespace::Cache, &key).await;
+                    if let Some(text) = &stored {
+                        let url = format!("{}{}", tdbag_url(), self.sub);
+                        self.set(parse(&url, text, self.zoom), epoch);
+                    }
+                }
                 match fetch(self.sub, self.zoom).await {
-                    Some(m) => self.set(m, epoch),
+                    Some((m, text)) => {
+                        if let Some(text) = text.filter(|t| stored.as_ref() != Some(t)) {
+                            storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
+                        }
+                        self.set(m, epoch);
+                    }
                     None => {
                         let n = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
                         if n >= MAX_ATTEMPTS {
@@ -266,15 +308,18 @@ impl CoverageSlot {
         self.manifest().map_or(0, |m| m.stamp)
     }
 
-    /// 0 while the question is open, 1 once it has an answer of any kind.
+    /// 0 while the question is open; otherwise how many different answers the
+    /// slot has held, so it moves exactly when the answer does.
     ///
     /// A streamer that bakes this tree's data into geometry reads it as a
     /// revision and rebuilds when it changes, the way the terrain field is
     /// handled — otherwise whatever was built during the gap keeps the
-    /// no-coverage look for ever. It changes once per process: a [`refresh_all`]
-    /// replaces the answer without passing back through 0.
+    /// no-coverage look for ever. It used to change once per process; with the
+    /// stored copy answering first it changes again if the network then says
+    /// something different, and a [`refresh_all`] that finds a new answer moves
+    /// it too. It never passes back through 0.
     pub fn revision(&self) -> u32 {
-        u32::from(self.manifest().is_some())
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// The tree's attribution line, once it has loaded and has any cells.
@@ -285,12 +330,28 @@ impl CoverageSlot {
     }
 }
 
+/// Where the manifest at `sub` is kept on the device, per data host: a QA run
+/// against a loopback host must not read the production host's answer. Shared
+/// with `osm_buildings`' two 3DBAG manifests, which keep theirs the same way.
+pub(crate) fn stored_key(sub: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tdbag_url().hash(&mut h);
+    format!("coverage/v1/{:016x}{sub}", h.finish())
+}
+
+/// What a host that does not serve a tree is remembered as on the device: no
+/// cells, which [`parse`] reads back as the empty answer the 404 gave.
+const NOT_SERVED: &str = "{}";
+
 /// `None` means "could not ask" — a transient failure worth retrying. `Some` is
-/// an answer, empty or not, and latches.
-async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
+/// an answer, empty or not, and latches; with it, the text worth keeping on the
+/// device for the next launch (`None` for an answer that should not be kept).
+async fn fetch(sub: &str, zoom: u32) -> Option<(Manifest, Option<String>)> {
     let base = tdbag_url();
     if base.is_empty() {
-        return Some(Manifest::empty(zoom)); // configured off: a definitive "no"
+        // Configured off: a definitive "no", and nothing to remember.
+        return Some((Manifest::empty(zoom), None));
     }
     let url = format!("{base}{sub}");
     // **A 404 here is the answer, not a failure to get one**, and the difference was
@@ -309,7 +370,7 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
             // of retries — and every consumer sees "no coverage" before it builds
             // anything, which is the whole point.
             tracing::info!(%url, "no coverage on this host; the layer stays as it was");
-            return Some(Manifest::empty(zoom));
+            return Some((Manifest::empty(zoom), Some(NOT_SERVED.to_string())));
         }
         Err(e) => {
             tracing::debug!(%url, error = %e, "coverage unreachable");
@@ -321,14 +382,22 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
         Err(e) => {
             // Reached, answered, unreadable — an answer, and the same one next time.
             tracing::warn!(%url, error = %e, "coverage is not UTF-8");
-            return Some(Manifest::empty(zoom));
+            return Some((Manifest::empty(zoom), None));
         }
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        // The host answered with something unreadable. Asking again would get the
-        // same answer, so this one latches.
+    let manifest = parse(&url, &text, zoom);
+    tracing::info!(%url, cells = manifest.cells.len(), graded = manifest.graded.len(),
+                   zoom = manifest.zoom, "coverage loaded");
+    Some((manifest, Some(text)))
+}
+
+/// Read a manifest's text — from the host, or as kept on the device. Anything
+/// that is not one reads as the empty answer, which latches: the host gave it,
+/// and asking again would get the same.
+fn parse(url: &str, text: &str, zoom: u32) -> Manifest {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
         tracing::warn!(%url, "coverage is not JSON");
-        return Some(Manifest::empty(zoom));
+        return Manifest::empty(zoom);
     };
     let zoom = json
         .get("zoom")
@@ -365,13 +434,41 @@ async fn fetch(sub: &str, zoom: u32) -> Option<Manifest> {
         .get("stamp")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
-    tracing::info!(%url, cells = cells.len(), graded = graded.len(), zoom, "coverage loaded");
-    Some(Manifest {
+    Manifest {
         zoom,
         cells,
         attribution,
         graded,
         graded_stamp,
         stamp,
-    })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MANIFEST: &str = r#"{"zoom":14,"cells":[[8490,5319],[8491,5319]],"attribution":"x"}"#;
+
+    #[test]
+    fn the_same_answer_twice_is_one_revision() {
+        static SLOT: CoverageSlot = CoverageSlot::new("test", "/test/coverage.json", 14);
+        assert_eq!(SLOT.revision(), 0, "unanswered");
+        // The copy kept from the last launch answers first…
+        SLOT.set(parse("kept", MANIFEST, 14), 0);
+        assert_eq!(SLOT.revision(), 1);
+        assert!(SLOT.covers(8490, 5319));
+        // …and the host saying the same thing rebuilds nothing.
+        SLOT.set(parse("host", MANIFEST, 14), 0);
+        assert_eq!(SLOT.revision(), 1, "a confirmed answer moved the revision");
+        // A host that disagrees does move it, once.
+        SLOT.set(parse("host", r#"{"cells":[[1,2]]}"#, 14), 0);
+        assert_eq!(SLOT.revision(), 2);
+        assert!(!SLOT.covers(8490, 5319) && SLOT.covers(1, 2));
+    }
+
+    #[test]
+    fn a_kept_not_served_reads_back_as_the_404_answer() {
+        assert!(parse("kept", NOT_SERVED, 14) == Manifest::empty(14));
+    }
 }

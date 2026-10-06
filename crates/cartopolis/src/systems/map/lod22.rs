@@ -57,7 +57,12 @@ const LOD22_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 /// not three: the fetch is the long pole of a cold load (the 5×5 ring took
 /// ceil(25/3) serial rounds of network), the parse runs on the worker pool, and
 /// the GPU guard is the per-frame upload cap, not this.
-const LOD22_CONCURRENCY: usize = 6;
+///
+/// Nine, the near 3×3 ring, for the reason `map_geometry::SURFACE_MAX_IN_FLIGHT`
+/// gives: over graded ground a job parks on the terrain hold holding its slot,
+/// and at six the last three cells of the ring could not start downloading until
+/// the hold was over. The mesh build is bounded separately, by the heavy lane.
+const LOD22_CONCURRENCY: usize = 9;
 /// Bounded attempts per cell. A 3DBAG cell that fails three times is either absent
 /// upstream or corrupt in the cache (which the error path invalidates), so the
 /// fourth attempt would cost a fetch to learn the same thing.
@@ -681,13 +686,14 @@ pub struct Lod22Buildings {
     /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
     /// teardown in [`update_lod22`] runs exactly once per uncheck.
     enabled_was: bool,
-    /// BAG coverage revision these cells were built against
-    /// (`building_facts::coverage_revision`) — 0 while the manifest is still in
-    /// flight, 1 once it has answered. The era palette and the window occupancy
+    /// BAG, LoD3 and roofs coverage revisions these cells were built against
+    /// (`building_facts::coverage_revision` and its two siblings) — 0 while a
+    /// manifest is still in flight, counting up with each different answer. The era palette and the window occupancy
     /// are baked into vertex colours, so cells built during that gap carry the
-    /// generated look and have to be rebuilt once the answer arrives. It changes
-    /// at most once per process.
-    bag_revision: u32,
+    /// generated look and have to be rebuilt once the answer arrives. With the
+    /// copy kept from the last launch answering first, that is only when the
+    /// network disagrees with it.
+    bag_revision: (u32, u32, u32),
     /// Per-cell BAG join tally ([`DatedCount`]), summed for `--dump-state`.
     dated: HashMap<(i64, i64), DatedCount>,
     /// Per-cell tally of doors drawn ([`DoorCount`]).
@@ -854,7 +860,7 @@ impl Default for Lod22Buildings {
             interior_material: None,
             enabled_was: true,
             terrain_revision: 0,
-            bag_revision: 0,
+            bag_revision: (0, 0, 0),
             partial: None,
             live: HashMap::new(),
             retained: crate::platform::warm::WarmStore::new(crate::quality::warm_gpu_ceiling()),
@@ -1008,9 +1014,11 @@ pub fn update_lod22(
     // the BAG and the roofs decide a building's colours, lod3 decides whether it
     // is drawn from a shell or from a model, and a cell built before one landed
     // has none of what it says.
-    let bag_revision = crate::systems::building_facts::coverage_revision()
-        | (crate::systems::lod3::coverage_revision() << 1)
-        | (crate::systems::roof_colours::coverage_revision() << 2);
+    let bag_revision = (
+        crate::systems::building_facts::coverage_revision(),
+        crate::systems::lod3::coverage_revision(),
+        crate::systems::roof_colours::coverage_revision(),
+    );
     let reanchored = lod.stream.sync(stream.anchor_generation);
     // **A new field alone rebuilds only the cells built on an older one**, as the
     // ground cells do (`MapSurfaces::built_rev`). Over graded ground the cells were
@@ -1097,8 +1105,8 @@ pub fn update_lod22(
             reanchored,
             terrain_rev = terrain.revision,
             was_terrain_rev = lod.terrain_revision,
-            bag_rev = bag_revision,
-            was_bag_rev = lod.bag_revision,
+            bag_rev = ?bag_revision,
+            was_bag_rev = ?lod.bag_revision,
             "lod22 ring retear"
         );
         lod.terrain_revision = terrain.revision;
@@ -1369,15 +1377,12 @@ pub fn update_lod22(
         // is what put `serde_json` at ~46% of the main thread's non-idle time.
         IoTaskPool::get()
             .spawn(async move {
-                let body = match fetch_lod22_body(cx, cy).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        if let Ok(mut g) = results.lock() {
-                            g.push(((cx, cy), (Err(e), 0)));
-                        }
-                        return;
-                    }
-                };
+                // **Each input is its own task, so the downloads overlap** — the
+                // reason `map_geometry::spawn_geometry_task` gives: natively a fetch
+                // is a blocking call with no await point, so awaiting these in turn
+                // ran four requests end to end per cell, one round trip after
+                // another before the mesh could start.
+                let io = IoTaskPool::get();
                 // The cell's BAG facts travel with the mesh job rather than
                 // arriving through the `BuildingFacts` resource on their own
                 // schedule: a year and a use are baked into vertex colours, so
@@ -1386,19 +1391,40 @@ pub fn update_lod22(
                 // streamer's, so at worst it is a cache read; at best it is the
                 // fetch the streamer then reads. Uncovered cells return an empty
                 // set without asking anything.
-                let facts = crate::systems::building_facts::load_bag_cell(cx, cy).await;
+                let facts_task = io.spawn(crate::systems::building_facts::load_bag_cell(cx, cy));
                 // …with any designed building's entrances taken from its design, so
                 // the door drawn on the facade, the opening in the collider and the
-                // doorway in the room are the door its owner drew.
-                let designs = crate::systems::building_designs::load_around(cx, cy).await;
-                let facts = crate::systems::building_designs::with_design_doors(facts, &designs);
-                // The designs travel on too: a designed building's walls are drawn
-                // from its design, with the windows and doors its owner drew
+                // doorway in the room are the door its owner drew. The designs
+                // travel on too: a designed building's walls are drawn from its
+                // design, with the windows and doors its owner drew
                 // (`lod22_facade`).
+                let designs_task = io.spawn(crate::systems::building_designs::load_around(cx, cy));
                 // …the roof colours measured from the aerial photo, likewise baked.
-                let roofs = crate::systems::roof_colours::load_roof_cell(cx, cy).await;
+                let roofs_task = io.spawn(crate::systems::roof_colours::load_roof_cell(cx, cy));
                 // …and the imported models for the same cell, on the same terms.
-                let lod3 = crate::systems::lod3::load_lod3_text(cx, cy).await;
+                let lod3_task = io.spawn(crate::systems::lod3::load_lod3_text(cx, cy));
+                let body = match fetch_lod22_body(cx, cy).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        // Let the others finish rather than dropping them, which
+                        // would cancel them: a BAG download that other readers are
+                        // waiting on (`building_facts::fetch_bag_text`) must not
+                        // be abandoned half-way.
+                        facts_task.detach();
+                        designs_task.detach();
+                        roofs_task.detach();
+                        lod3_task.detach();
+                        if let Ok(mut g) = results.lock() {
+                            g.push(((cx, cy), (Err(e), 0)));
+                        }
+                        return;
+                    }
+                };
+                let designs = designs_task.await;
+                let facts =
+                    crate::systems::building_designs::with_design_doors(facts_task.await, &designs);
+                let roofs = roofs_task.await;
+                let lod3 = lod3_task.await;
                 // The ground last, after every fetch.
                 if let Some(rx) = ground_later {
                     let (placement, rev) = rx.await.unwrap_or((None, 0));

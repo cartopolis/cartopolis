@@ -161,7 +161,14 @@ type Cell = (i64, i64);
 /// uncapped burst trades a frame-time problem for a memory one. Matching the
 /// pool's own ceiling keeps every worker fed without queueing results faster than
 /// they can be consumed.
-const SURFACE_MAX_IN_FLIGHT: usize = 8;
+///
+/// **Nine, the whole 3×3 ring, not the eight it was.** Over graded ground every
+/// job parks after its downloads until the terrain lands
+/// (`TerrainField::holds_builds`, up to `terrain::GRADED_HOLD_S`) and keeps its
+/// slot while it waits, so at eight the ninth cell could not even start
+/// downloading until the hold ended — one cell of every start built a hold later
+/// than the rest. A parked job holds downloaded text, not meshes.
+const SURFACE_MAX_IN_FLIGHT: usize = 9;
 
 /// How much bigger a ground surface gets when it is refined against the measured
 /// terrain, as a divisor on the byte cap handed to the tessellators.
@@ -776,14 +783,15 @@ pub struct MapSurfaces {
     /// Terrain-field revision the live cells were tessellated against, so a field
     /// that lands (or goes away) after them rebuilds them onto the right ground.
     terrain_revision: u32,
-    /// Surveyed-coverage revision these cells were built against — the BGT's
-    /// (`surveyed::coverage_revision`) in bit 0 and the crop register's
-    /// (`crops::coverage_revision`) in bit 1, each 0 while its manifest is in
-    /// flight and 1 once it has answered. Surveyed trees, lampposts and crop
+    /// Surveyed-coverage revisions these cells were built against — the BGT's
+    /// (`surveyed::coverage_revision`) and the crop register's
+    /// (`crops::coverage_revision`), each 0 while its manifest is in flight and
+    /// counting up with each different answer. Surveyed trees, lampposts and crop
     /// parcels are merged into these cells' meshes, so a cell built during either
-    /// gap has none of them and nothing would revisit it. Each bit changes at
-    /// most once per process.
-    bgt_revision: u32,
+    /// gap has none of them and nothing would revisit it. Each moves at most
+    /// twice per process: the copy kept from the last launch, then the network if
+    /// it disagrees (`coverage`).
+    bgt_revision: (u32, u32),
     /// Cells whose bridge decks are tessellated but not yet *placed*: their height
     /// is a measurement that arrives from `systems::height` some frames later. Held
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
@@ -824,7 +832,7 @@ impl Default for MapSurfaces {
             materials: HashMap::new(),
             road_materials: HashMap::new(),
             terrain_revision: 0,
-            bgt_revision: 0,
+            bgt_revision: (0, 0),
             pending_decks: HashMap::new(),
             detail_wants: None,
             ground_finish: None,
@@ -2421,15 +2429,17 @@ pub fn update_map_surfaces(
     // rebuild that happens once per anchor.
     // The BGT coverage answer lands the same way and takes the same retear: it
     // decides whether a cell gets its surveyed street trees and lighting, and
-    // those are merged into the cell's own meshes. Unlike the terrain it can only
-    // change once, so this costs one rebuild of whatever was standing when the
-    // manifest arrived.
+    // those are merged into the cell's own meshes. Unlike the terrain it changes
+    // at most twice — the copy kept from the last launch answers at once, and only
+    // a network answer that differs from it moves it again.
     // The crop coverage is folded in beside it — same shape, same one-shot answer,
     // and the parcels are baked into the same meshes — so the two share a rebuild
-    // rather than costing one each. Two bits of one revision, as `lod22` already
-    // does with the BAG and the LoD3 manifests.
-    let bgt_revision = crate::systems::surveyed::coverage_revision()
-        | (crate::systems::crops::coverage_revision() << 1);
+    // rather than costing one each. One pair of revisions, as `lod22` keeps for the
+    // BAG, LoD3 and roofs manifests.
+    let bgt_revision = (
+        crate::systems::surveyed::coverage_revision(),
+        crate::systems::crops::coverage_revision(),
+    );
     // **A new field alone retires only the cells built on an older one** (step 2c
     // of `level-of-detail-tile-tree.md`). The ring used to go whole, which also threw
     // away the in-flight cells waiting for this very field and built them twice.
@@ -2485,8 +2495,8 @@ pub fn update_map_surfaces(
             cells = surfaces.loaded.len(),
             terrain_rev = terrain.revision,
             was_terrain_rev = surfaces.terrain_revision,
-            bgt_rev = bgt_revision,
-            was_bgt_rev = surfaces.bgt_revision,
+            bgt_rev = ?bgt_revision,
+            was_bgt_rev = ?surfaces.bgt_revision,
             "surface ring retear"
         );
         surfaces.terrain_revision = terrain.revision;
@@ -2603,7 +2613,8 @@ pub fn update_map_surfaces(
             t
         }
     };
-    let coverage_known = bgt_revision == 0b11 || since.elapsed().as_secs_f32() > COVERAGE_WAIT_S;
+    let coverage_known = (bgt_revision.0 != 0 && bgt_revision.1 != 0)
+        || since.elapsed().as_secs_f32() > COVERAGE_WAIT_S;
     while let Some(c) = coverage_known
         .then(|| surfaces.stream.next_job(now))
         .flatten()

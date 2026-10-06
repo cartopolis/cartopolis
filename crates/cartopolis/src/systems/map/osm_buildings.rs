@@ -167,6 +167,10 @@ static COVERAGE_LOD22: RwLock<Option<Arc<Coverage>>> = RwLock::new(None);
 /// The `coverage::refresh_epoch` both manifests answer for — see
 /// [`refresh_coverage`].
 static COVERAGE_EPOCH: AtomicU32 = AtomicU32::new(0);
+/// Whether the host itself has answered each manifest this process, as opposed
+/// to the copy kept from the last launch.
+static COVERAGE_ASKED: AtomicBool = AtomicBool::new(false);
+static COVERAGE_LOD22_ASKED: AtomicBool = AtomicBool::new(false);
 
 fn read_coverage(slot: &RwLock<Option<Arc<Coverage>>>) -> Option<Arc<Coverage>> {
     slot.read()
@@ -244,15 +248,14 @@ pub(crate) fn buildings_user_enabled() -> bool {
 /// unrecoverably — `coverage_resolved()` reported `true`, every `*_covers` call
 /// answered `false`, and the client spent the session on Overpass footprints with
 /// nothing in the log to say a better source existed.
-async fn fetch_coverage(sub: &str) -> Option<Coverage> {
-    let empty = Coverage {
-        zoom: CACHE_ZOOM,
-        cells: HashSet::new(),
-        attribution: String::new(),
-    };
+///
+/// With the answer comes its text, for [`ensure_coverage_prefetch`] to keep on
+/// the device (`None` when there is nothing worth keeping).
+async fn fetch_coverage(sub: &str) -> Option<(Coverage, Option<String>)> {
     let base = tdbag_url();
     if base.is_empty() {
-        return Some(empty); // configured off: a definitive "no 3DBAG here"
+        // Configured off: a definitive "no 3DBAG here".
+        return Some((parse_coverage(sub, ""), None));
     }
     let url = format!("{base}{sub}");
     let text = match http::fetch_string(http::Request::get(url.clone())).await {
@@ -262,11 +265,31 @@ async fn fetch_coverage(sub: &str) -> Option<Coverage> {
             return None;
         }
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let coverage = parse_coverage(sub, &text);
+    tracing::info!(
+        sub,
+        cells = coverage.cells.len(),
+        zoom = coverage.zoom,
+        "3DBAG coverage loaded"
+    );
+    Some((coverage, Some(text)))
+}
+
+/// Read a 3DBAG manifest's text, from the host or as kept on the device.
+fn parse_coverage(sub: &str, text: &str) -> Coverage {
+    let empty = Coverage {
+        zoom: CACHE_ZOOM,
+        cells: HashSet::new(),
+        attribution: String::new(),
+    };
+    if text.is_empty() {
+        return empty;
+    }
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
         // The host answered, with something we cannot read. Retrying would ask the
         // same question and get the same answer, so this one does latch.
-        tracing::warn!(%url, "3DBAG coverage is not JSON; using OSM buildings");
-        return Some(empty);
+        tracing::warn!(sub, "3DBAG coverage is not JSON; using OSM buildings");
+        return empty;
     };
     let zoom = json
         .get("zoom")
@@ -290,12 +313,11 @@ async fn fetch_coverage(sub: &str) -> Option<Coverage> {
             }
         }
     }
-    tracing::info!(sub, cells = cells.len(), zoom, "3DBAG coverage loaded");
-    Some(Coverage {
+    Coverage {
         zoom,
         cells,
         attribution,
-    })
+    }
 }
 
 /// Fetch both coverage manifests, retrying while the host is unreachable.
@@ -325,17 +347,60 @@ fn ensure_coverage_prefetch(now: f64) {
     COVERAGE_LAST_ATTEMPT.store(now.to_bits(), Ordering::Relaxed);
     IoTaskPool::get()
         .spawn(async move {
-            // Each manifest is asked for only while still unanswered, so a run
-            // where one succeeded and the other did not costs one request, not two.
-            // A refresh asks both again, and keeps an answer it could not replace.
-            if stale || read_coverage(&COVERAGE).is_none() {
-                if let Some(c) = fetch_coverage("/coverage.json").await {
-                    write_coverage(&COVERAGE, c);
+            // **The copies kept from the last launch answer first**, for the reason
+            // `coverage::CoverageSlot::ensure` gives: every building streamer holds
+            // its work for `coverage_resolved`, and these two were asked one after
+            // the other on every launch to re-learn an answer that changes when
+            // atlas re-runs a city. The network still answers right after, and
+            // replaces a copy it disagrees with.
+            let mut kept: [Option<String>; 2] = [None, None];
+            for (i, (slot, sub)) in [
+                (&COVERAGE, "/coverage.json"),
+                (&COVERAGE_LOD22, "/lod22/coverage.json"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if read_coverage(slot).is_none() && !tdbag_url().is_empty() {
+                    kept[i] = storage::get_string(
+                        storage::Namespace::Cache,
+                        &crate::systems::coverage::stored_key(sub),
+                    )
+                    .await;
+                    if let Some(text) = &kept[i] {
+                        write_coverage(slot, parse_coverage(sub, text));
+                    }
                 }
             }
-            if stale || read_coverage(&COVERAGE_LOD22).is_none() {
-                if let Some(c) = fetch_coverage("/lod22/coverage.json").await {
-                    write_coverage(&COVERAGE_LOD22, c);
+            // Each manifest is asked for only while still unanswered by the host,
+            // so a run where one succeeded and the other did not costs one
+            // request, not two. A refresh asks both again, and keeps an answer it
+            // could not replace.
+            for (i, (slot, sub, asked)) in [
+                (&COVERAGE, "/coverage.json", &COVERAGE_ASKED),
+                (
+                    &COVERAGE_LOD22,
+                    "/lod22/coverage.json",
+                    &COVERAGE_LOD22_ASKED,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if !stale && asked.load(Ordering::Relaxed) {
+                    continue;
+                }
+                if let Some((c, text)) = fetch_coverage(sub).await {
+                    if let Some(text) = text.filter(|t| kept[i].as_ref() != Some(t)) {
+                        storage::put(
+                            storage::Namespace::Cache,
+                            &crate::systems::coverage::stored_key(sub),
+                            text.as_bytes(),
+                        )
+                        .await;
+                    }
+                    write_coverage(slot, c);
+                    asked.store(true, Ordering::Relaxed);
                 }
             }
             if coverage_resolved() {

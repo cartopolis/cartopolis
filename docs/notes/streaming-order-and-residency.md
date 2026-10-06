@@ -1,7 +1,7 @@
 ---
 topic: streaming-order-and-residency
 triggers: [fetch_gate, cell_source, spawn_geometry_task, load_control, take_shed, "shed", "CellStream", "Dispatcher", request_ranked, ring_distance, resident_bytes_target, radius_bias, "streaming radius", "cell bundle", door_detail, "Detail::Far"]
-updated: 2026-09-26
+updated: 2026-10-06
 ---
 
 # What decides the order things stream in, and how much of them stays
@@ -123,3 +123,48 @@ Flattening one into the other would silently delete a retry policy.
 `systems::municipal` is in neither: its key and URL are functions of which register
 and which source, and every `CellSource` field is a bare function pointer so the
 descriptor can be a `const`.
+
+## What a launch waited on before it fetched anything (2026-10-06)
+
+Three things held the opening ring back that had nothing to do with its own data:
+
+- **The coverage manifests were asked for on every launch, and the map waited.**
+  About ten `coverage.json` files decide which trees a cell is asked for; the
+  basemap holds every tile (even ones finished on disk) and the ground holds every
+  cell until the BGT, crop and roof answers are in (3 s cap each), and the two
+  3DBAG manifests were asked one after the other. Each is now kept on the device
+  (`coverage::stored_key`) and answers from there at once; the host is still asked
+  right after, and only an answer that **differs** moves the revision
+  (`CoverageSlot::revision` counts distinct answers now, not 0/1), so the usual
+  launch rebuilds nothing. A host that answers 404 is kept as `{}`.
+- **Each basemap tile rebuilt its source's overlays.** Up to 64 tiles share a z14
+  source, and each re-read and re-parsed the crop parcels, the land cover and the
+  paving under it (2.3 MB of JSON on the densest cell) before it could even look up
+  its finished image on disk. `tile_loader::source_overlays` builds them once per
+  source, held by `Weak` and single-flight.
+- **Parked jobs held their slots.** Over graded ground every ground and building
+  job parks after downloading until the terrain bakes, keeping its in-flight slot,
+  so the ring's last cells could not start downloading. The caps are the ring
+  (`SURFACE_MAX_IN_FLIGHT` 9, `LOD22_CONCURRENCY` 9), the terrain tiles go eight at
+  a time and the water levels sixteen. `lod22`'s four inputs download side by side
+  as `map_geometry`'s already did.
+
+Raising the terrain concurrency alone made the field bake before the last water
+levels were in (the stream dispatches a round per frame), and the late levels then
+re-baked it and rebuilt the ground cells over water; the water concurrency is what
+removed that second bake.
+
+Measured on `vps-1` (llvmpipe, dev build, 320×200, warm cache, Grote Markt at
+600 m, wall seconds after the camera was placed until each layer went quiet; the
+box was shared, so read the direction, not the digits):
+
+| | `main` (two runs) | this change (two runs) |
+|---|---|---|
+| terrain | 27.6 / 13.3 | 5.3 / 5.5 |
+| ground cells | 65.4 / 31.4 | 12.9 / 12.2 |
+| LoD2.2 buildings | 80.6 / 44.8 | 21.3 / 23.1 |
+| map image | 143.7 / 188.7 | 93.3 / 85.4 |
+
+At ~1.5–2.5 s a frame here, every per-frame dispatch round is expensive, which
+exaggerates anything that saves rounds; on a real device expect the same order and
+much smaller numbers.

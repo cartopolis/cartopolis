@@ -81,7 +81,13 @@ const WATER_RADIUS: i64 = 3;
 
 /// Concurrent cell fetches and the retry policy — our own host, so this is throughput
 /// rather than courtesy.
-const WATER_CONCURRENCY: usize = 4;
+///
+/// Sixteen, not four: graded ground waits for these before it bakes
+/// (`terrain::GRADED_WATER_HOLD_S`), and a stream dispatches a round per frame, so
+/// 49 cells four at a time took thirteen frames of a slow start to come in — long
+/// enough that the field baked without the last of them and baked again when they
+/// landed, rebuilding the ground cells over water. The files are tens of kilobytes.
+const WATER_CONCURRENCY: usize = 16;
 const WATER_MAX_ATTEMPTS: u32 = 3;
 const WATER_BACKOFF_SECS: f64 = 1.0;
 const WATER_BACKOFF_DOUBLINGS: u32 = 3;

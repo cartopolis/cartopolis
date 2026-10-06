@@ -52,9 +52,11 @@ use crate::systems::coverage::CoverageSlot;
 /// `pipeline::terrain::ZOOM`.
 pub const TILE_ZOOM: u32 = 14;
 
-/// Tiles in flight at once. Four rather than the WCS layer's three: these are
-/// ~0.5 MB files atlas already holds, not cuts PDOK has to make.
-const CONCURRENCY: usize = 4;
+/// Tiles in flight at once. More than the WCS layer's three: these are ~0.5 MB
+/// files atlas already holds, not cuts PDOK has to make. Eight rather than the
+/// four it was, because the field cannot bake until all ~30 have answered and
+/// over graded ground every ground and building cell waits on that bake.
+const CONCURRENCY: usize = 8;
 
 /// Attempts before a tile is given up on, and the anchor falls back to WCS.
 const MAX_ATTEMPTS: u32 = 2;
