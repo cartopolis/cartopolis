@@ -111,6 +111,19 @@ const ROUTE_WIDTH_PER_ALT: f32 = 0.0017;
 /// hidden at — it is a backstop against a degenerate camera, not a working limit.
 const ROUTE_WIDTH_MAX_SCALE: f32 = 64.0;
 
+/// Below this camera height the line is a **footpath**, not a road on a map.
+///
+/// The ground widths are drawn a shade wider than a carriageway so a route reads
+/// from a few hundred metres up; from behind a walking avatar the same 6.4 m band
+/// and 14 m start disc covered a whole square and the avatar standing in it
+/// (`walk_guide`, 2026-10-06). Only the street-level camera is ever this low —
+/// driver mode's chase rig sits at ~65 m — so this is the walking view's width
+/// without asking which mode is on.
+const STREET_LEVEL_ALT: f32 = 40.0;
+
+/// The width multiplier at street level: a ~2 m path and ~4 m markers.
+const STREET_LEVEL_SCALE: f32 = 0.3;
+
 /// The width multiplier for a camera this high, **quantised to powers of two**.
 ///
 /// Stepped rather than continuous for the same reason `street_labels`' size bands
@@ -121,6 +134,9 @@ const ROUTE_WIDTH_MAX_SCALE: f32 = 64.0;
 /// width within √2 of the ideal in both directions.
 #[must_use]
 fn route_width_scale(altitude_m: f32) -> f32 {
+    if altitude_m.is_finite() && altitude_m < STREET_LEVEL_ALT {
+        return STREET_LEVEL_SCALE;
+    }
     let wanted = altitude_m.max(0.0) * ROUTE_WIDTH_PER_ALT / ROUTE_HALF_WIDTH;
     if !wanted.is_finite() || wanted <= 1.0 {
         return 1.0;
@@ -3081,7 +3097,11 @@ mod tests {
     #[test]
     fn the_route_line_stays_wide_enough_to_see() {
         // Ground level and a city view keep the real road width.
-        assert!((route_width_scale(0.0) - 1.0).abs() < f32::EPSILON);
+        // Behind a walking avatar the line is a footpath…
+        assert!((route_width_scale(0.0) - STREET_LEVEL_SCALE).abs() < f32::EPSILON);
+        assert!((route_width_scale(10.0) - STREET_LEVEL_SCALE).abs() < f32::EPSILON);
+        // …and from driver mode's chase rig and above, the road it always was.
+        assert!((route_width_scale(65.0) - 1.0).abs() < f32::EPSILON);
         assert!((route_width_scale(500.0) - 1.0).abs() < f32::EPSILON);
 
         // Every altitude a route is looked at from lands within a factor of √2 of
