@@ -15,6 +15,7 @@ import {Library} from '@/components/pages/library/library'
 import {Login} from '@/components/pages/login/login'
 import {Pipeline} from '@/components/pages/pipeline/pipeline'
 import {Register} from '@/components/pages/register/register'
+import {Overrides} from '@/components/pages/overrides/overrides'
 import {Roles} from '@/components/pages/roles/roles'
 import {Verify} from '@/components/pages/verify/verify'
 import {loadAccounts, signOut} from '@/lib/accounts'
@@ -67,6 +68,8 @@ const AdminView = (_props: RoutableProps) => {
             </nav>
             {$s.adminTab === 'claims' ? (
                 <Claims />
+            ) : $s.adminTab === 'overrides' ? (
+                <Overrides />
             ) : $s.adminTab === 'roles' ? (
                 <Roles />
             ) : $s.adminTab === 'library' ? (

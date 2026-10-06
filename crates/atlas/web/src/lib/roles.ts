@@ -29,6 +29,7 @@ export const TABS: {tab: AdminTab; label: string; needs: string[]}[] = [
     {label: 'Accounts', needs: ['accounts_manage'], tab: 'accounts'},
     {label: 'Roles', needs: ['roles_manage'], tab: 'roles'},
     {label: 'Buildings', needs: ['reports_triage'], tab: 'claims'},
+    {label: 'Overrides', needs: ['building_override'], tab: 'overrides'},
     {label: 'Models', needs: ['library_manage'], tab: 'library'},
     {label: 'Data', needs: ['pipeline_run'], tab: 'pipeline'},
     {label: 'Autopilot', needs: ['pipeline_run'], tab: 'autopilot'},

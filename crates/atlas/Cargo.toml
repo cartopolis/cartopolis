@@ -44,6 +44,15 @@ serde_json.workspace = true
 tiff.workspace = true
 # JPEG decoding for the aerial photographs `roofs` samples.
 image.workspace = true
+# Reading an uploaded building model (`overrides::gltf_model`). The same crate,
+# version and features the simulator's model store reads with, so a second
+# copy costs the lockfile nothing.
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+# Placing that model (`overrides::gltf_model`), and naming which upload a record
+# was saved with. Both already in the lockfile (the workspace's glam; the calls
+# crate's sha2 0.10).
+glam.workspace = true
+sha2 = "0.10"
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
 

@@ -193,6 +193,10 @@ mod tests {
                 out_root: dir.path().to_path_buf(),
                 autopilot: dir.path().join("autopilot.json"),
                 designs: std::sync::Arc::new(crate::designs::Designs::new(dir.path(), dir.path())),
+                overrides: std::sync::Arc::new(crate::overrides::Overrides::new(
+                    dir.path(),
+                    dir.path(),
+                )),
             },
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

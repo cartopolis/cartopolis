@@ -330,7 +330,7 @@ export interface Me {
     permissions: string[]
 }
 
-export type AdminTab = 'accounts' | 'roles' | 'claims' | 'library' | 'pipeline' | 'autopilot'
+export type AdminTab = 'accounts' | 'roles' | 'claims' | 'overrides' | 'library' | 'pipeline' | 'autopilot'
 
 export interface AdminState extends Record<string, unknown> {
     accounts: Account[]
@@ -348,6 +348,8 @@ export interface AdminState extends Record<string, unknown> {
     autopilot: AutopilotConfig | null
     /** The operator's view of who owns which building. */
     claims: OwnedBuilding[]
+    /** Buildings whose survey shell is replaced; `null` until atlas answers. */
+    overrides: BuildingOverride[] | null
     /** Which account's row is expanded into its edit form, by id. */
     editing: string | null
     /** True between "signed in" and the first accounts response. */
@@ -386,4 +388,37 @@ export interface AdminState extends Record<string, unknown> {
     librarySearch: string
     /** What this server draws its street objects with. */
     placeholders: PlaceholderModel[]
+}
+
+/** Where a replacement building stands (`overrides::Placement`). An absent
+ * lat/lng puts it on the register outline's centre. */
+export interface OverridePlacement {
+    base_m: number
+    heading_deg: number
+    lat: number | null
+    lng: number | null
+    scale: number
+}
+
+/** A building whose survey shell is replaced (`overrides::Override`). Deleting
+ * it brings the 3DBAG building back. */
+export interface BuildingOverride {
+    author: string
+    /** `[x, y]` at z14 — a list rather than a tuple, which deepsignal does not type. */
+    cell: number[] | null
+    collision: 'parts' | 'walls' | 'none'
+    interior: 'none' | 'design'
+    name: string
+    pand: string
+    placement: OverridePlacement
+    revision: number
+    source: {kind: 'stadium'; pitch: number[][]} | {kind: 'model'; sha256: string; triangles: number}
+}
+
+/** What a save compiled to (`overrides::Summary`). */
+export interface OverrideSummary {
+    cell: number[]
+    cell_found: boolean
+    elements: number
+    triangles: number
 }

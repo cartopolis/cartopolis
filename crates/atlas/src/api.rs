@@ -33,6 +33,8 @@ pub struct ApiState {
     pub autopilot: PathBuf,
     /// Building designs (`crate::designs`).
     pub designs: Arc<crate::designs::Designs>,
+    /// Building overrides (`crate::overrides`).
+    pub overrides: Arc<crate::overrides::Overrides>,
 }
 
 fn fail(status: StatusCode, message: &str) -> Response {
@@ -77,6 +79,20 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/buildings/{pand}/design",
             axum::routing::put(put_design).delete(delete_design),
+        )
+        // Building overrides (`crate::overrides`, `docs/notes/building-models.md`).
+        .route("/overrides", get(list_overrides))
+        .route(
+            "/overrides/{pand}",
+            get(get_override).put(put_override).delete(delete_override),
+        )
+        .route(
+            "/overrides/{pand}/model",
+            // Raised on this route alone, to the model store's own ceiling;
+            // axum's two-megabyte default refuses nearly every real model.
+            post(upload_override_model).layer(axum::extract::DefaultBodyLimit::max(
+                cartopolis_core::model_limits::MAX_ASSET_BYTES + 1024,
+            )),
         )
         .fallback(|| async { fail(StatusCode::NOT_FOUND, "No such endpoint") })
         .with_state(state)
@@ -352,6 +368,122 @@ async fn delete_design(
     }
 }
 
+// ─── Building overrides ─────────────────────────────────────────────────────
+
+/// The signed-in operator, if their roles let them replace a building's outside
+/// (`building_override`; an admin always may).
+async fn override_operator(state: &ApiState, headers: &HeaderMap) -> Result<Principal, Response> {
+    let who = state.auth.admin(headers).await.ok_or_else(|| {
+        fail(
+            StatusCode::UNAUTHORIZED,
+            "That session is not an operator session",
+        )
+    })?;
+    if !who.may(cartopolis_core::permissions::Permission::BuildingOverride) {
+        return Err(fail(
+            StatusCode::FORBIDDEN,
+            "That account may not replace buildings",
+        ));
+    }
+    Ok(who)
+}
+
+async fn list_overrides(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = override_operator(&state, &headers).await {
+        return r;
+    }
+    let store = state.overrides.clone();
+    let all = blocking(move || store.list()).await;
+    Json(json!({ "overrides": all })).into_response()
+}
+
+async fn get_override(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+) -> Response {
+    if let Err(r) = override_operator(&state, &headers).await {
+        return r;
+    }
+    let store = state.overrides.clone();
+    match blocking(move || store.get(&pand)).await {
+        Some(o) => Json(json!({ "override": o })).into_response(),
+        None => fail(StatusCode::NOT_FOUND, "That building has no override"),
+    }
+}
+
+/// Save an edit, and with it a recompile and a republish. Slow on purpose when
+/// the source is a stadium: it measures the bowl from AHN again.
+async fn put_override(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    Json(edit): Json<crate::overrides::Edit>,
+) -> Response {
+    let who = match override_operator(&state, &headers).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let store = state.overrides.clone();
+    let p = pand.clone();
+    let by = who.username.clone();
+    match blocking(move || store.save(&p, edit, None, &by)).await {
+        Ok((o, summary)) => {
+            tracing::info!(pand = %pand, by = %who.username, ?summary, "building override saved");
+            Json(json!({ "override": o, "summary": summary })).into_response()
+        }
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+/// Upload a GLB for a building: creates the override, or replaces its model.
+async fn upload_override_model(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let who = match override_operator(&state, &headers).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let store = state.overrides.clone();
+    let p = pand.clone();
+    let by = who.username.clone();
+    let bytes = body.to_vec();
+    match blocking(move || store.save(&p, crate::overrides::Edit::default(), Some(bytes), &by))
+        .await
+    {
+        Ok((o, summary)) => {
+            tracing::info!(pand = %pand, by = %who.username, ?summary, "building model uploaded");
+            Json(json!({ "override": o, "summary": summary })).into_response()
+        }
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+/// Delete an override: the building goes back to what the survey drew.
+async fn delete_override(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+) -> Response {
+    let who = match override_operator(&state, &headers).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let store = state.overrides.clone();
+    let p = pand.clone();
+    match blocking(move || store.remove(&p)).await {
+        Ok(true) => {
+            tracing::info!(pand = %pand, by = %who.username, "building override deleted");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => fail(StatusCode::NOT_FOUND, "That building has no override"),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 40
@@ -518,6 +650,10 @@ mod tests {
             out_root: site.clone(),
             autopilot: dir.path().join("autopilot.json"),
             designs: Arc::new(crate::designs::Designs::new(
+                &dir.path().join("data"),
+                &site,
+            )),
+            overrides: Arc::new(crate::overrides::Overrides::new(
                 &dir.path().join("data"),
                 &site,
             )),

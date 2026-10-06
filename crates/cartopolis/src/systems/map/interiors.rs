@@ -226,6 +226,11 @@ pub fn update_interiors(
         if building.footprint.len() < 3 {
             continue;
         }
+        // A building whose outside an override replaced with `interior: none`
+        // (a stadium) has no inside to lay out (`docs/notes/building-models.md`).
+        if crate::systems::lod3::no_interior(id) {
+            continue;
+        }
         if containers.contains(id) && crate::systems::building_designs::get(id).is_none() {
             continue;
         }

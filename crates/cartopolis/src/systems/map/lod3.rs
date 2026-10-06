@@ -28,36 +28,159 @@
 //!   sealing the doorway the model actually has. So each wall-like element gets
 //!   its own hull and everything else gets none, which leaves the openings open.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{LazyLock, RwLock};
+
+use bevy::tasks::IoTaskPool;
 
 use crate::platform::cell_source::CellSource;
-use crate::systems::coverage::CoverageSlot;
+use crate::platform::http;
+use crate::systems::osm_buildings::tdbag_url;
 
 /// Fixed cache/streaming zoom — the same cells as every other building tier.
 const LOD3_ZOOM: u32 = 14;
 
-/// Which cells the host serves imported models for.
-static COVERAGE: CoverageSlot = CoverageSlot::new("lod3", "/lod3/coverage.json", LOD3_ZOOM);
+/// How often the manifest is asked again, seconds — the designs' rate, for the
+/// designs' reason: an override is an operator's edit, made a minute ago, and
+/// they are looking at the building to see it (`docs/notes/building-models.md`).
+const POLL_SECS: f64 = 30.0;
 
-/// Keep the coverage manifest fetched. Called from `update_lod22`, which is the
-/// only consumer and already has the clock.
+/// The published manifest (`lod3/coverage.json`): which cells hold models, each
+/// with the stamp it was last written under, and which buildings get no
+/// interior at all.
+#[derive(Default, PartialEq)]
+struct Manifest {
+    cells: HashMap<(i64, i64), u64>,
+    no_interior: HashSet<String>,
+    attribution: Option<String>,
+}
+
+static MANIFEST: LazyLock<RwLock<Manifest>> = LazyLock::new(Default::default);
+/// 0 until the first manifest (or the host saying it has none), 1 after.
+static ANSWERED: AtomicU32 = AtomicU32::new(0);
+/// Bumped whenever the manifest's content changes.
+static MANIFEST_REVISION: AtomicU64 = AtomicU64::new(0);
+static POLLING: AtomicBool = AtomicBool::new(false);
+static LAST_POLL: AtomicU64 = AtomicU64::new(0);
+
+fn manifest() -> std::sync::RwLockReadGuard<'static, Manifest> {
+    MANIFEST
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Keep the manifest fresh. Called from `update_lod22`, which is the only
+/// consumer that has the clock; cheap between polls.
 pub(crate) fn prefetch_coverage(now: f64) {
-    COVERAGE.ensure(now);
+    let last = f64::from_bits(LAST_POLL.load(Ordering::Relaxed));
+    if (last > 0.0 && now - last < POLL_SECS) || POLLING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    LAST_POLL.store(now.to_bits(), Ordering::Relaxed);
+    IoTaskPool::get()
+        .spawn(async {
+            if let Some(m) = fetch_manifest().await {
+                let mut slot = MANIFEST
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *slot != m {
+                    tracing::info!(cells = m.cells.len(), "building models manifest");
+                    *slot = m;
+                    MANIFEST_REVISION.fetch_add(1, Ordering::Relaxed);
+                }
+                ANSWERED.store(1, Ordering::Relaxed);
+            }
+            POLLING.store(false, Ordering::Relaxed);
+        })
+        .detach();
 }
 
-/// 0 while the coverage question is open, 1 once answered. `lod22` folds this
+/// `None` is "could not ask"; an empty manifest is the host saying it has none.
+async fn fetch_manifest() -> Option<Manifest> {
+    let base = tdbag_url();
+    if base.is_empty() {
+        return Some(Manifest::default());
+    }
+    // Bucketed by the poll period, for the caches between here and atlas: the
+    // manifest is the one file in this tree that must not be served stale.
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let url = format!("{base}/lod3/coverage.json?t={}", now / POLL_SECS as u64);
+    match http::fetch_optional(http::Request::get(url)).await {
+        Ok(Some(bytes)) => Some(parse_manifest(&bytes)),
+        Ok(None) => Some(Manifest::default()),
+        Err(e) => {
+            tracing::debug!("building models manifest: {e}");
+            None
+        }
+    }
+}
+
+/// Read a manifest. A cell is `[x, y, stamp]`, or `[x, y]` from a host older
+/// than stamps, which reads as stamp 0 — cached for ever, as it always was.
+fn parse_manifest(bytes: &[u8]) -> Manifest {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        zoom: u32,
+        #[serde(default)]
+        cells: Vec<Vec<i64>>,
+        #[serde(default)]
+        no_interior: Vec<String>,
+        #[serde(default)]
+        attribution: Option<String>,
+    }
+    match serde_json::from_slice::<Raw>(bytes) {
+        Ok(m) if m.zoom == LOD3_ZOOM => Manifest {
+            cells: m
+                .cells
+                .iter()
+                .filter(|c| c.len() >= 2)
+                .map(|c| ((c[0], c[1]), c.get(2).copied().unwrap_or(0).max(0) as u64))
+                .collect(),
+            no_interior: m.no_interior.into_iter().collect(),
+            attribution: m.attribution,
+        },
+        Ok(_) => Manifest::default(),
+        Err(e) => {
+            tracing::warn!("building models manifest unreadable: {e}");
+            Manifest::default()
+        }
+    }
+}
+
+/// 0 while the manifest question is open, 1 once answered. `lod22` folds this
 /// into its rebuild revision: a cell built before the manifest arrived drew the
-/// shell of a building that has a model, and nothing would revisit it.
+/// shell of a building that has a model, and nothing would revisit it. After
+/// that a change rebuilds only the cell it is in ([`cell_stamp`]).
 pub(crate) fn coverage_revision() -> u32 {
-    COVERAGE.revision()
+    ANSWERED.load(Ordering::Relaxed)
 }
 
-/// The credit line for the imported models, if any are served. Unlike the BAG and
-/// the BGT this is not one national dataset with one licence — a model belongs to
-/// whoever surveyed the building — so the extractor takes the line as an argument
-/// and this passes it through.
+/// Bumped whenever the published manifest changes: what `lod22` compares before
+/// asking which of its cells moved.
+pub(crate) fn manifest_revision() -> u64 {
+    MANIFEST_REVISION.load(Ordering::Relaxed)
+}
+
+/// The stamp a cell's models were last published under; 0 for a cell with none.
+/// An override saved or deleted is a new stamp on its cell and nowhere else.
+pub(crate) fn cell_stamp(cx: i64, cy: i64) -> u64 {
+    manifest().cells.get(&(cx, cy)).copied().unwrap_or(0)
+}
+
+/// Whether this building's override says it has no inside (`interior: none`) —
+/// a stadium has a pitch where generated rooms would go.
+pub(crate) fn no_interior(pand: &str) -> bool {
+    manifest().no_interior.contains(pand)
+}
+
+/// The credit line for the models, if any are served. Unlike the BAG and the BGT
+/// this is not one national dataset with one licence — a model belongs to
+/// whoever made it — so atlas writes the line and this passes it through.
 pub fn lod3_attribution() -> Option<String> {
-    COVERAGE.attribution()
+    manifest().attribution.clone()
 }
 
 /// Element classes whose footprint should stop an avatar.
@@ -74,8 +197,13 @@ pub(crate) fn is_solid_class(class: &str) -> bool {
     )
 }
 
+/// The stamp is in the key, as the designs' is: a cached cell is good for ever
+/// under its stamp, and an edit is a new stamp, a new key and one fetch.
 fn cell_cache_key(cx: i64, cy: i64) -> String {
-    format!("buildings/lod3/{LOD3_ZOOM}/{cx}/{cy}.json")
+    format!(
+        "buildings/lod3/v2/{LOD3_ZOOM}/{cx}/{cy}.r{}.json",
+        cell_stamp(cx, cy)
+    )
 }
 
 /// One cell's imported models, as text, plus nothing else — the parse belongs to
@@ -88,12 +216,13 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
 /// how the two would come to disagree.
 const MODELS: CellSource<String> = CellSource {
     label: "lod3 models",
-    gate: Some(|cx, cy| COVERAGE.covers(cx, cy)),
+    gate: Some(|cx, cy| manifest().cells.contains_key(&(cx, cy))),
     key: cell_cache_key,
     url: Some(|cx, cy| {
         format!(
-            "{}/lod3/{LOD3_ZOOM}/{cx}/{cy}.json",
-            crate::systems::osm_buildings::tdbag_url()
+            "{}/lod3/{LOD3_ZOOM}/{cx}/{cy}.json?r={}",
+            tdbag_url(),
+            cell_stamp(cx, cy)
         )
     }),
     breaker: None,
@@ -114,6 +243,22 @@ pub(crate) fn replaced_pands(pands: &[String]) -> HashSet<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manifest_carries_stamps_and_reads_an_old_one_as_stamp_zero() {
+        let m = parse_manifest(
+            br#"{"zoom":14,"cells":[[8492,5321,7],[1,2]],
+                 "no_interior":["0014100010953806"],"attribution":"x"}"#,
+        );
+        assert_eq!(m.cells.get(&(8492, 5321)), Some(&7));
+        assert_eq!(m.cells.get(&(1, 2)), Some(&0));
+        assert!(m.no_interior.contains("0014100010953806"));
+        assert_eq!(m.attribution.as_deref(), Some("x"));
+        // Another zoom is no manifest rather than the wrong cells.
+        assert!(parse_manifest(br#"{"zoom":13,"cells":[[1,2,3]]}"#)
+            .cells
+            .is_empty());
+    }
 
     #[test]
     fn only_walls_and_columns_are_solid() {

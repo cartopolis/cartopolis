@@ -38,6 +38,7 @@ export const persistentState: AdminState = {
     roles: [],
     autopilot: null,
     claims: [],
+    overrides: null,
     editing: null,
     /*
      * Not persisted, for the reason the account list is not: a catalogue rendered
@@ -101,6 +102,7 @@ export const volatileState: Partial<AdminState> = {
     roles: [] as Role[],
     autopilot: null,
     claims: [] as OwnedBuilding[],
+    overrides: null,
     editing: null,
     library: [] as LibraryEntry[],
     libraryAssets: [] as StoredAsset[],

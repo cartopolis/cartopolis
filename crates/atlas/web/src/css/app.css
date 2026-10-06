@@ -1200,3 +1200,25 @@ a.ghost-link {
     gap: 6px 14px;
     margin: 8px 0;
 }
+
+/* A file picker dressed as a button (the overrides page): the input is hidden
+   and the label is what is pressed. */
+label.button {
+    background: var(--surface-hover);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--text);
+    cursor: pointer;
+    display: inline-block;
+    font-weight: 500;
+    padding: 8px 18px;
+}
+
+label.button:hover {
+    background: var(--line);
+}
+
+label.button.is-busy {
+    cursor: progress;
+    opacity: 0.6;
+}

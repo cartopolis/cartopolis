@@ -15,7 +15,9 @@ pub mod coverage;
 pub mod designs;
 pub mod http;
 pub mod jobs;
+pub mod overrides;
 pub mod pipeline;
+pub mod stamped;
 pub mod terrain;
 
 use std::sync::Arc;
@@ -44,6 +46,10 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
         out_root: config.site_dir.clone(),
         autopilot: config.autopilot_config.clone(),
         designs: Arc::new(designs::Designs::new(&config.data_dir, &config.site_dir)),
+        overrides: Arc::new(overrides::Overrides::new(
+            &config.data_dir,
+            &config.site_dir,
+        )),
     };
     let state = http::AtlasState {
         terrain: Arc::new(terrain),

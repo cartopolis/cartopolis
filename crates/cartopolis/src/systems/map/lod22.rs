@@ -937,6 +937,15 @@ fn cell_box(clat: f64, clng: f64, zoom: u32, c: (i64, i64)) -> (Vec2, Vec2) {
     )
 }
 
+/// What a cell's buildings depend on from the two trees that change while the
+/// app runs: the building designs around it and the building models filed in
+/// it (`lod3::cell_stamp`, `docs/notes/building-models.md`). A cell built under
+/// a different value is stale.
+fn live_rev(cx: i64, cy: i64) -> u64 {
+    crate::systems::building_designs::neighbourhood_revision(cx, cy)
+        ^ crate::systems::lod3::cell_stamp(cx, cy).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 /// Retire one live cell so that it is built again: its detail was promoted, or
 /// the ground under it changed.
 fn rebuild_cell(
@@ -1081,19 +1090,19 @@ pub fn update_lod22(
         // The held cells stand on the old ground, and nothing records which.
         lod.retained.clear();
     }
-    // **A building design that changed rebuilds the cells around it, and only
-    // those** — an owner moving a door is a door in one building, and the ring
-    // retear below is for causes that move every building at once. Asked only
-    // when the published manifest moves, which is rare.
-    let design_manifest = crate::systems::building_designs::manifest_revision();
+    // **A building design or a building model that changed rebuilds the cells
+    // it touches, and only those** — an owner moving a door is a door in one
+    // building, an operator replacing a stadium is one cell, and the ring retear
+    // below is for causes that move every building at once. Asked only when one
+    // of the two published manifests moves, which is rare ([`live_rev`]).
+    let design_manifest = crate::systems::building_designs::manifest_revision()
+        .wrapping_add(crate::systems::lod3::manifest_revision() << 32);
     if !reanchored && lod.design_manifest_seen != design_manifest {
         lod.design_manifest_seen = design_manifest;
         let stale: Vec<(i64, i64)> = lod
             .design_rev
             .iter()
-            .filter(|(c, rev)| {
-                crate::systems::building_designs::neighbourhood_revision(c.0, c.1) != **rev
-            })
+            .filter(|(c, rev)| live_rev(c.0, c.1) != **rev)
             .map(|(c, _)| *c)
             .collect();
         if !stale.is_empty() {
@@ -1319,10 +1328,7 @@ pub fn update_lod22(
             lod.doors.insert(c, warm.doors);
             // The pool is emptied whenever a design changes, so what it holds
             // was built under the stamps standing now.
-            lod.design_rev.insert(
-                c,
-                crate::systems::building_designs::neighbourhood_revision(c.0, c.1),
-            );
+            lod.design_rev.insert(c, live_rev(c.0, c.1));
             lod.heights.insert(c, warm.heights);
             lod.built_detail.insert(c, warm.detail);
             lod.live.insert(c, warm.meshes);
@@ -1375,10 +1381,7 @@ pub fn update_lod22(
         let detail = door_detail(ring_distance((cx, cy), ccx, ccy));
         let urgency = crate::platform::workers::urgency_for_ring(ring_distance((cx, cy), ccx, ccy));
         lod.built_detail.insert((cx, cy), detail);
-        lod.design_rev.insert(
-            (cx, cy),
-            crate::systems::building_designs::neighbourhood_revision(cx, cy),
-        );
+        lod.design_rev.insert((cx, cy), live_rev(cx, cy));
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
         let mut ground_now = (!held).then(|| (terrain.snapshot(), terrain.revision));

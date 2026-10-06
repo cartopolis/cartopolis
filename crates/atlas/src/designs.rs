@@ -22,7 +22,6 @@
 //! Both are rewritten by rename, never in place, so a client fetching while a
 //! person saves gets the old file or the new one and never half of each.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -164,56 +163,30 @@ impl Designs {
     /// have drawn, which is hundreds before it is anything, and the scan is what
     /// keeps the served tree a pure function of the stored one.
     ///
-    /// **A cell's revision is stamped when the cell is written**, not derived
-    /// from the designs in it. Derived, it could go *down*: remove the newest of
-    /// two designs and the cell is back at the older one's revision, under which
-    /// a client may already have cached a file that still has the removed design
-    /// in it. A stamp only ever moves forward.
+    /// The stamping — written with the cell, only ever forward — is
+    /// `crate::stamped`'s, shared with the building overrides.
     fn publish_cell(&self, cell: (i64, i64)) -> std::io::Result<()> {
         let all = self.all();
         let here: Vec<&BuildingDesign> = all.iter().filter(|d| cell_of(d.origin) == cell).collect();
-        let root = self.site_dir.join("designs");
-        let path = root
-            .join(DESIGN_ZOOM.to_string())
-            .join(cell.0.to_string())
-            .join(format!("{}.json", cell.1));
-        if here.is_empty() {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
+        let body = if here.is_empty() {
+            None
         } else {
-            let body = serde_json::to_vec(&serde_json::json!({ "designs": here }))?;
-            write_atomic(&path, &body)?;
-        }
-        let manifest_path = root.join("coverage.json");
-        let mut cells: BTreeMap<(i64, i64), u64> = std::fs::read(&manifest_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| v.get("cells").cloned())
-            .and_then(|c| serde_json::from_value::<Vec<(i64, i64, u64)>>(c).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(x, y, r)| ((x, y), r))
-            .collect();
-        if here.is_empty() {
-            cells.remove(&cell);
-        } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis() as u64);
-            let was = cells.get(&cell).copied().unwrap_or(0);
-            let newest = here.iter().map(|d| d.revision).max().unwrap_or(0);
-            cells.insert(cell, now.max(was + 1).max(newest));
-        }
-        let listed: Vec<(i64, i64, u64)> = cells.into_iter().map(|((x, y), r)| (x, y, r)).collect();
-        let manifest = serde_json::json!({
-            "zoom": DESIGN_ZOOM,
-            "attribution": "Building designs by their owners",
-            "cells": listed,
-        });
-        write_atomic(&manifest_path, &serde_json::to_vec(&manifest)?)
+            Some(serde_json::to_vec(&serde_json::json!({ "designs": here }))?)
+        };
+        let newest = here.iter().map(|d| d.revision).max().unwrap_or(0);
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "attribution".into(),
+            "Building designs by their owners".into(),
+        );
+        crate::stamped::publish_cell(
+            &self.site_dir.join("designs"),
+            DESIGN_ZOOM,
+            cell,
+            body.as_deref(),
+            newest,
+            extra,
+        )
     }
 
     /// What the registers on this host say about a building. `near` is any point
@@ -424,14 +397,7 @@ fn door_on_facade(
 }
 
 /// Write by rename, so nobody reads half a file.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id() ^ (bytes.len() as u32)));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
+use crate::stamped::write_atomic;
 
 /// The eastern house of [`two_houses`].
 #[cfg(test)]

@@ -205,6 +205,12 @@ impl Ctx {
     }
 
     /// Atlas's own store, or a failure naming the dataset that needed it.
+    /// The served tree this run writes into.
+    #[must_use]
+    pub fn site_root(&self) -> &Path {
+        &self.out_root
+    }
+
     pub fn data_dir(&self) -> Outcome<&Path> {
         self.data_dir.as_deref().ok_or_else(|| {
             PipelineError::Failed(
