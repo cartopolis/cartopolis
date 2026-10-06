@@ -399,6 +399,29 @@ const GRADED_HALF_M: f32 = TERRAIN_HALF_M * 1.5;
 const CELL_DIGEST_PAD_M: f32 = 50.0;
 const FOLLOW_LATTICE_M: f32 = 800.0;
 
+/// [`TerrainField::cell_digest`] for every `(key, min, max)` box, side by side
+/// on the compute pool.
+///
+/// Every new field — and a followed field is a new one every 1.6 km of travel —
+/// asks this of every ground and building cell built on the old one, in one
+/// frame and with no cap, because which cells to rebuild is decided before the
+/// frame can go on. Each digest walks the ~250,000 samples under its padded
+/// cell, so the ring's 18–34 cells were a visible hitch done one after another
+/// on the main thread. The answer is the same in any order, so they are spread
+/// over the pool; on the web, which has no threads here, this is the loop it was.
+pub fn cell_digests<K: Copy + Send + 'static>(
+    field: &TerrainField,
+    cells: impl Iterator<Item = (K, Vec2, Vec2)>,
+    with_water: bool,
+) -> Vec<(K, u64)> {
+    let cells: Vec<(K, Vec2, Vec2)> = cells.collect();
+    bevy::tasks::ComputeTaskPool::get().scope(|s| {
+        for &(key, lo, hi) in &cells {
+            s.spawn(async move { (key, field.cell_digest(lo, hi, with_water)) });
+        }
+    })
+}
+
 struct CoarseBake {
     /// The field's centre in the anchored frame, and its half-extent.
     centre: Vec2,

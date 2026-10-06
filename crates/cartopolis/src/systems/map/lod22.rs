@@ -1036,9 +1036,20 @@ pub fn update_lod22(
             .map(|(c, _)| *c)
             .collect();
         let mut old = Vec::new();
-        for c in stale {
-            let (lo, hi) = cell_box(clat, clng, base_zoom, c);
-            let now = terrain.cell_digest(lo, hi, false);
+        let field: &crate::systems::terrain::TerrainField = &terrain;
+        let boxes: Vec<_> = stale
+            .iter()
+            .map(|&c| {
+                let (lo, hi) = cell_box(clat, clng, base_zoom, c);
+                (c, lo, hi)
+            })
+            .collect();
+        let digests = crate::systems::terrain::cell_digests(
+            field,
+            boxes.iter().map(|&(c, lo, hi)| ((c, lo), lo, hi)),
+            false,
+        );
+        for ((c, lo), now) in digests {
             if lod.built_digest.get(&c) == Some(&now) {
                 lod.built_rev.insert(c, terrain.revision);
             } else {

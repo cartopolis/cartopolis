@@ -2460,11 +2460,17 @@ pub fn update_map_surfaces(
             .map(|(c, _)| *c)
             .collect();
         let mut old = Vec::new();
-        for c in stale {
-            let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
-            let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
-            let now =
-                terrain.cell_digest(Vec2::new(wx, wz), Vec2::new(wx + tile_m, wz + tile_m), true);
+        let field: &crate::systems::terrain::TerrainField = &terrain;
+        let digests = crate::systems::terrain::cell_digests(
+            field,
+            stale.iter().map(|&c| {
+                let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
+                let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
+                (c, Vec2::new(wx, wz), Vec2::new(wx + tile_m, wz + tile_m))
+            }),
+            true,
+        );
+        for (c, now) in digests {
             if surfaces.built_digest.get(&c) == Some(&now) {
                 surfaces.built_rev.insert(c, terrain.revision);
             } else {
@@ -2841,8 +2847,9 @@ pub fn update_map_surfaces(
             } else {
                 Stand::Terrain(&terrain, &stores.tunnels)
             };
-            let mesh = meshes.add(build_mesh(&sm, wx, wz, stand));
-            let world = Vec3::new(wx, sm.group.y_offset(), wz);
+            let group = sm.group;
+            let mesh = meshes.add(build_mesh_owned(sm, wx, wz, stand));
+            let world = Vec3::new(wx, group.y_offset(), wz);
             let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                 .translation_to_grid(world.as_dvec3());
             // Shared bundle; only the material component differs by group.
@@ -2855,14 +2862,14 @@ pub fn update_map_surfaces(
                 // Hidden from orbit alongside the ground tiles (ADR-025).
                 crate::components::HideInSpace,
             );
-            let id = if let (SurfaceGroup::Water, Some(water)) = (sm.group, &water_material) {
+            let id = if let (SurfaceGroup::Water, Some(water)) = (group, &water_material) {
                 // Water gets the wave material (`systems::water`), which owns its
                 // albedo, roughness and depth bias — and this cell's shore field.
                 commands
                     .spawn((placement, MeshMaterial3d(water.clone())))
                     .id()
             } else if matches!(
-                sm.group,
+                group,
                 SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_) | SurfaceGroup::TunnelRoad(_)
             ) {
                 // Roads and casings carry their place in the depth ladder per
@@ -2871,9 +2878,9 @@ pub fn update_map_surfaces(
                 // about the material is the standard road recipe.
                 let material = surfaces
                     .road_materials
-                    .entry(sm.group)
+                    .entry(group)
                     .or_insert_with(|| {
-                        let base = road_base_material(sm.group, &mut mats.images);
+                        let base = road_base_material(group, &mut mats.images);
                         mats.road.add(RoadMaterial {
                             base,
                             extension: RoadDepthExtension::default(),
@@ -2896,16 +2903,16 @@ pub fn update_map_surfaces(
                 // image, since the map says nothing about colour and the groups
                 // differ in nothing else.
                 let finish =
-                    wants_ground_finish(sm.group).then(|| surfaces.ground_finish(&mut mats.images));
+                    wants_ground_finish(group).then(|| surfaces.ground_finish(&mut mats.images));
                 let material = surfaces
                     .materials
-                    .entry(sm.group)
+                    .entry(group)
                     .or_insert_with(|| {
-                        let [r, g, b] = sm.group.base_color();
+                        let [r, g, b] = group.base_color();
                         mats.plain.add(GroundMaterial {
                             base: StandardMaterial {
                                 base_color: Color::srgb(r, g, b),
-                                perceptual_roughness: sm.group.perceptual_roughness(),
+                                perceptual_roughness: group.perceptual_roughness(),
                                 metallic_roughness_texture: finish,
                                 // UV0 on an area surface is **metres from the map
                                 // anchor**, so this is what turns a distance into a
@@ -2917,19 +2924,19 @@ pub fn update_map_surfaces(
                                 // What actually resolves the coplanar ground stack —
                                 // see `SurfaceGroup::depth_bias`. Physical separation
                                 // is only millimetres and cannot survive the far plane.
-                                depth_bias: sm.group.depth_bias(),
+                                depth_bias: group.depth_bias(),
                                 ..default()
                             },
-                            extension: ground_detail_for(sm.group),
+                            extension: ground_detail_for(group),
                         })
                     })
                     .clone();
                 commands.spawn((placement, MeshMaterial3d(material))).id()
             };
-            if !casts_shadow(sm.group) {
+            if !casts_shadow(group) {
                 commands.entity(id).insert(bevy::light::NotShadowCaster);
             }
-            if matches!(sm.group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
+            if matches!(group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
                 // Read the *current* ramp at spawn, the way new globe tiles read
                 // the current albedo: a cell streaming in above the fade band must
                 // not flash a full forest for the frame before the ramp catches up.
@@ -2937,20 +2944,20 @@ pub fn update_map_surfaces(
                     .entity(id)
                     .insert((VegetationSurface, veg_lod.visibility()));
             }
-            if sm.group == SurfaceGroup::Furniture {
+            if group == SurfaceGroup::Furniture {
                 // Same contract, its own (much lower) band.
                 commands
                     .entity(id)
                     .insert((FurnitureSurface, furniture_lod.visibility()));
             }
             if matches!(
-                sm.group,
+                group,
                 SurfaceGroup::TunnelRoad(_) | SurfaceGroup::TunnelStructure
             ) {
                 commands.entity(id).insert(crate::components::TunnelSurface);
             }
             if !debug_hide_tokens().is_empty() {
-                commands.entity(id).insert(DebugSurfaceGroup(sm.group));
+                commands.entity(id).insert(DebugSurfaceGroup(group));
             }
             entities.push(id);
         }
@@ -3983,34 +3990,49 @@ enum Stand<'a> {
 }
 
 fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
+    build_mesh_owned(sm.clone(), wx, wz, stand)
+}
+
+/// [`build_mesh`] for a caller that is done with the tessellated mesh — every
+/// surface cell as it lands.
+///
+/// **This is on the main thread, once per group per cell arrival**, and the
+/// borrowing version cloned every vertex attribute of the group on the way in and
+/// the positions a second time on the way out, only to read their length. A dense
+/// cell's groups are hundreds of thousands of vertices, so a cell's arrival was a
+/// few tens of megabytes of `memcpy` in one frame for nothing; moving the buffers
+/// in costs nothing.
+fn build_mesh_owned(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
 
-    let mut positions = sm.positions.clone();
-    let mut indices = sm.indices.clone();
+    let n = sm.positions.len();
+    let group = sm.group;
+    let mut positions = sm.positions;
+    let mut indices = sm.indices;
     // Ground is flat *until the terrain field says otherwise*, so the common case is
     // a straight-up normal per vertex; only the vegetation meshes have volume and
     // bring their own.
-    let mut normals: Vec<[f32; 3]> = if sm.normals.len() == sm.positions.len() {
-        sm.normals.clone()
+    let mut normals: Vec<[f32; 3]> = if sm.normals.len() == n {
+        sm.normals
     } else {
         Vec::new()
     };
-    let mut uvs: Vec<[f32; 2]> = if sm.uvs.len() == sm.positions.len() {
-        sm.uvs.clone()
+    let mut uvs: Vec<[f32; 2]> = if sm.uvs.len() == n {
+        sm.uvs
     } else {
         Vec::new()
     };
-    let mut colors: Vec<[f32; 4]> = if sm.colors.len() == sm.positions.len() {
-        sm.colors.clone()
+    let mut colors: Vec<[f32; 4]> = if sm.colors.len() == n {
+        sm.colors
     } else {
         Vec::new()
     };
     // Road groups only — and it must survive the terrain refinement below, which
     // appends midpoint vertices and would otherwise leave the attribute shorter
     // than the positions it belongs to (a mesh bevy rejects at draw time).
-    let mut rungs: Vec<f32> = if sm.rungs.len() == sm.positions.len() {
-        sm.rungs.clone()
+    let mut rungs: Vec<f32> = if sm.rungs.len() == n {
+        sm.rungs
     } else {
         Vec::new()
     };
@@ -4042,7 +4064,7 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
         Stand::Terrain(terrain, tunnels) => {
             on_terrain = true;
             stand_on_terrain(
-                sm.group,
+                group,
                 &mut positions,
                 &mut indices,
                 &mut uvs,
@@ -4075,18 +4097,19 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
     // Before `indices` is moved into the mesh: the oversize report below needs
     // both counts, and the upload cost is a function of the pair.
     let index_count = indices.len();
+    let vertex_count = positions.len();
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     .with_inserted_indices(Indices::U32(indices));
     // `StandardMaterial` multiplies `base_color` by this whenever the attribute is
     // present — which is how one canopy material gives thousands of trees their own
     // tone and brightness without a material or a draw call per tree.
-    if colors.len() == positions.len() {
+    if colors.len() == vertex_count {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     }
     // The road ladder (`systems::road_depth`). Present on road and casing meshes
@@ -4101,17 +4124,17 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
     // rungs is put flat on rung 0, which loses the ordering within the cell and
     // keeps the street.
     if matches!(
-        sm.group,
+        group,
         SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_) | SurfaceGroup::TunnelRoad(_)
     ) {
         debug_assert_eq!(
             rungs.len(),
-            positions.len(),
+            vertex_count,
             "{:?} lost its depth rungs between tessellation and upload",
-            sm.group,
+            group,
         );
-        if rungs.len() != positions.len() {
-            rungs = vec![0.0; positions.len()];
+        if rungs.len() != vertex_count {
+            rungs = vec![0.0; vertex_count];
         }
         mesh.insert_attribute(crate::systems::road_depth::ATTRIBUTE_ROAD_RUNG, rungs);
     }
@@ -4126,14 +4149,14 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> Mesh {
     // entities, which is the caller's shape to change and not this function's.
     // What this buys is knowing which caller to change.
     {
-        let bytes = cartopolis_geo::vector_tiles::mesh_upload_bytes(positions.len(), index_count);
+        let bytes = cartopolis_geo::vector_tiles::mesh_upload_bytes(vertex_count, index_count);
         let cap = crate::systems::lod22::max_cell_mesh_bytes();
         if bytes > cap {
             tracing::warn!(
-                group = ?sm.group,
+                group = ?group,
                 asset_kb = bytes / 1024,
                 cap_kb = cap / 1024,
-                vertices = positions.len(),
+                vertices = vertex_count,
                 indices = index_count,
                 terrain_ready = on_terrain,
                 "a finished surface is over the cell mesh cap — the cap is applied \

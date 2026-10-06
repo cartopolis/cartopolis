@@ -89,6 +89,9 @@ pub struct Interiors {
     anchor_generation: u32,
     /// Facts revision the set was built from.
     facts_len: usize,
+    /// Which buildings the set was built from — so facts landing for cells
+    /// nowhere near the avatar do not rebuild it.
+    candidates_digest: u64,
     /// `building_designs::revision` the set was built from.
     designs_revision: u64,
     /// The cut the set was built with (`cutaway::Cutaway`): which building is
@@ -159,16 +162,6 @@ pub fn update_interiors(
     if !(moved || restreamed || reanchored || redesigned || recut) {
         return;
     }
-    interiors.cut = cut.clone();
-    interiors.built_at = Some(here);
-    interiors.facts_len = facts.len();
-    interiors.anchor_generation = stream.anchor_generation;
-    interiors.designs_revision = designs_revision;
-
-    let mut buf = WorldMesh::default();
-    let mut built: Vec<Placed> = Vec::new();
-    let mut walls: Vec<Footprint> = Vec::new();
-    let mut designed = 0usize;
     let mut candidates = facts.near(lat, lng, f64::from(INTERIOR_RADIUS));
     // The building being looked into from the card is built wherever it is: a
     // cutaway of a building across the square is the whole point of the button,
@@ -180,6 +173,35 @@ pub fn update_interiors(
             }
         }
     }
+    // **Facts landing elsewhere are not a reason to rebuild.** The facts stream
+    // lands its 25 cells one at a time over the first seconds, and every one of
+    // them moved `facts.len()` — so the whole set was re-planned and
+    // re-triangulated 25 times at start-up, on the main thread, when only the
+    // cells within `INTERIOR_RADIUS` of the avatar could change it.
+    let candidates_digest = {
+        use std::hash::{Hash, Hasher};
+        let mut ids: Vec<&str> = candidates.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ids.hash(&mut h);
+        h.finish()
+    };
+    interiors.facts_len = facts.len();
+    if !(moved || reanchored || redesigned || recut)
+        && candidates_digest == interiors.candidates_digest
+    {
+        return;
+    }
+    interiors.candidates_digest = candidates_digest;
+    interiors.cut = cut.clone();
+    interiors.built_at = Some(here);
+    interiors.anchor_generation = stream.anchor_generation;
+    interiors.designs_revision = designs_revision;
+
+    let mut buf = WorldMesh::default();
+    let mut built: Vec<Placed> = Vec::new();
+    let mut walls: Vec<Footprint> = Vec::new();
+    let mut designed = 0usize;
     // Outlines that contain another building's centre. The register files some
     // structures over or under others — a garage under a block, a record for a
     // whole complex — and Prinsenstraat 24–26 stands inside a 365 m² one that
