@@ -40,8 +40,11 @@ pub fn roofs_attribution() -> Option<String> {
     COVERAGE.attribution()
 }
 
+/// A cached cell is never re-fetched, so the version is how a rewritten file
+/// reaches a device that already has the old one. v2: the gardens' first files
+/// (2026-10-06) were 5 MB a cell of crumbs, rewritten at under half that.
 fn cell_cache_key(cx: i64, cy: i64) -> String {
-    format!("buildings/roofs/{ROOFS_ZOOM}/{cx}/{cy}.json")
+    format!("buildings/roofs/v2/{ROOFS_ZOOM}/{cx}/{cy}.json")
 }
 
 const ROOFS: CellSource<RoofCell> = CellSource {
